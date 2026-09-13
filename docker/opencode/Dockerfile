@@ -64,7 +64,8 @@ WORKDIR /workspace
 ENV HOME=/home/node \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
-    OPENCODE_DISABLE_CLAUDE_CODE=1
+    OPENCODE_DISABLE_CLAUDE_CODE=1 \
+    OPENCODE_DISABLE_SHARE=1
 
 EXPOSE 4096
 HEALTHCHECK --interval=10s --timeout=6s --start-period=30s --retries=12 CMD ["cockpit-healthcheck"]

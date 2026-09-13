@@ -37,8 +37,9 @@ export function pickClassifierModel(configured: string | null, catalog: ModelCat
   const models = catalog.list();
   const available = new Set(models.map((m) => m.key));
   for (const key of PREFERRED_MODELS) if (available.has(key)) return key;
+  // Repli limité à GitHub Copilot : le classement n'envoie jamais de conversation à un autre fournisseur.
   const cheapest = models
-    .filter((m) => m.price !== null)
+    .filter((m) => m.price !== null && m.key.startsWith("github-copilot/"))
     .sort((a, b) => (a.price?.rates.output ?? 0) + (a.price?.rates.input ?? 0) - ((b.price?.rates.output ?? 0) + (b.price?.rates.input ?? 0)));
   return cheapest[0]?.key ?? null;
 }

@@ -81,9 +81,10 @@ const rule = (method: string, route: string, guarded = false): ProxyRule => ({
  */
 export const PROXY_RULES: ProxyRule[] = [
   rule("GET", "/provider/auth"),
-  rule("POST", `/provider/${ID}/oauth/authorize`),
-  rule("POST", `/provider/${ID}/oauth/callback`),
-  rule("DELETE", `/auth/${ID}`),
+  // Connexion limitée à GitHub Copilot : l'interface ne propose aucun autre fournisseur.
+  rule("POST", "/provider/github-copilot/oauth/authorize"),
+  rule("POST", "/provider/github-copilot/oauth/callback"),
+  rule("DELETE", "/auth/github-copilot"),
   rule("GET", "/agent"),
   rule("GET", "/command"),
   rule("GET", "/session"),
@@ -170,6 +171,39 @@ export function forbiddenCommandArguments(body: unknown, isAllowed: (file: strin
     if (ref.startsWith("~") || ref.split(/[\\/]/).includes("..")) return ref;
     const target = ref.startsWith("/") ? ref : path.posix.resolve(worktree, ref);
     if (!isAllowed(target)) return ref;
+  }
+  return undefined;
+}
+
+/** Normalisation d'un domaine GitHub Enterprise, identique à celle du plugin github-copilot d'opencode. */
+const normalizeDomain = (url: string) => url.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/$/, "");
+
+/**
+ * Corps relayés refusés, que l'interface n'envoie jamais :
+ * - création ou renommage de conversation avec autre chose qu'un titre : une règle « permission » de session
+ *   passerait avant les permissions globales ;
+ * - demande de modèle portant « tools » ou « permission », pour la même raison ;
+ * - connexion GitHub Enterprise vers un domaine autre que COCKPIT_GITHUB_ENTERPRISE_DOMAIN : opencode y
+ *   enverrait toutes les demandes et le jeton sous l'identité « github-copilot ».
+ */
+export function forbiddenProxyBody(method: string, sub: string, body: unknown, enterpriseDomain: string | null): string | undefined {
+  const record = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  if ((method === "POST" && sub === "/session") || (method === "PATCH" && /^\/session\/[^/]+$/.test(sub))) {
+    const extra = Object.keys(record).filter((key) => key !== "title");
+    if (extra.length > 0) return `Champ non accepté pour une conversation : ${extra.join(", ").slice(0, 80)}.`;
+  }
+  if (/^\/session\/[^/]+\/(prompt_async|command|summarize)$/.test(sub) && ("tools" in record || "permission" in record)) {
+    return "Les champs « tools » et « permission » ne sont pas acceptés : les permissions se règlent dans Paramètres › opencode.";
+  }
+  if (sub === "/provider/github-copilot/oauth/authorize") {
+    const inputs = record.inputs && typeof record.inputs === "object" ? (record.inputs as Record<string, unknown>) : {};
+    const type = inputs.deploymentType ?? "github.com";
+    if (type === "github.com") return undefined;
+    if (type !== "enterprise") return "Type de connexion GitHub inconnu.";
+    const expected = enterpriseDomain ? normalizeDomain(enterpriseDomain) : null;
+    const domain = typeof inputs.enterpriseUrl === "string" ? normalizeDomain(inputs.enterpriseUrl) : "";
+    if (!expected) return "Connexion GitHub Enterprise refusée : déclarez d'abord le domaine dans COCKPIT_GITHUB_ENTERPRISE_DOMAIN (.env).";
+    if (domain !== expected) return `Domaine GitHub Enterprise refusé : seul ${expected} est autorisé (COCKPIT_GITHUB_ENTERPRISE_DOMAIN).`;
   }
   return undefined;
 }
@@ -451,13 +485,15 @@ export function createApp(deps: AppDeps): Hono {
     let body: string | null = null;
     if (method !== "GET" && method !== "HEAD") {
       body = await c.req.text();
+      let parsed: unknown = {};
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch {
+        return fail(c, 400, "invalid-json", "Corps JSON invalide.");
+      }
+      const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain);
+      if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
       if (matched.guarded) {
-        let parsed: unknown = {};
-        try {
-          parsed = body ? JSON.parse(body) : {};
-        } catch {
-          return fail(c, 400, "invalid-json", "Corps JSON invalide.");
-        }
         const isAllowed = (file: string) => projects.isAllowedDirectory(file);
         const partType = forbiddenPartType(parsed);
         if (partType !== undefined) {

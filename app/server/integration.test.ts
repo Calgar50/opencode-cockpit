@@ -13,7 +13,7 @@ import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
-import { createApp, forbiddenAttachment, PROXY_RULES } from "./http.ts";
+import { createApp, forbiddenAttachment, forbiddenProxyBody, PROXY_RULES } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { csvCell, Ledger, monthBounds, monthKey } from "./ledger.ts";
 import { createLogger } from "./log.ts";
@@ -425,6 +425,25 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     } finally {
       fs.rmSync(file, { force: true });
     }
+  });
+
+  it("refuse les permissions glissées dans une requête et les connexions hors GitHub Copilot", async () => {
+    const rule = [{ permission: "webfetch", pattern: "*", action: "allow" }];
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ permission: rule }))).status, 403);
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ title: "ok" }))).status, 204);
+    assert.equal((await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ permission: rule }))).status, 403);
+    assert.equal((await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title: "renommée" }))).status, 200);
+    const confirmed = { ...mutating, "x-cockpit-confirm": "1" };
+    const prompt = { model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: [{ type: "text", text: "x" }], tools: { webfetch: true } };
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, JSON.stringify(prompt))).status, 403);
+    const authorize = (inputs: Record<string, string>) =>
+      call("POST", "/api/oc/provider/github-copilot/oauth/authorize", mutating, JSON.stringify({ method: 0, inputs }));
+    assert.equal((await authorize({ deploymentType: "enterprise", enterpriseUrl: "github-login.example" })).status, 403);
+    assert.equal((await authorize({ deploymentType: "github.com" })).status, 204);
+    assert.equal((await call("POST", "/api/oc/provider/openai/oauth/authorize", mutating, JSON.stringify({ method: 0 }))).status, 404);
+    const enterprise = { inputs: { deploymentType: "enterprise", enterpriseUrl: "https://Entreprise.ghe.com/" } };
+    assert.equal(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "entreprise.ghe.com"), undefined);
+    assert.notEqual(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "autre.ghe.com"), undefined);
   });
 
   it("refuse les pièces jointes hors du workspace", async () => {

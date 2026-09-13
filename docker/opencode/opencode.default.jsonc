@@ -12,6 +12,8 @@
   // Seul GitHub Copilot est autorisé : aucun code n'est envoyé à un autre fournisseur,
   // en particulier pas aux modèles gratuits « OpenCode Zen » activés par défaut par opencode.
   "enabled_providers": ["github-copilot"],
+  // Seconde barrière : fournisseurs gratuits d'opencode explicitement désactivés (leurs chargeurs ne tournent pas).
+  "disabled_providers": ["opencode", "opencode-go"],
 
   // Serveurs de langage et formateurs : téléchargements à la volée désactivés.
   "lsp": false,
