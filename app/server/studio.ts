@@ -1,7 +1,9 @@
 // Studio : agents, commandes, skills et instructions (AGENTS.md) sous forme de fichiers opencode.
 // Chaque écriture est vérifiée par opencode ; en cas de refus, retour arrière puis redémarrage si besoin.
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { ModelCatalog } from "./catalog.ts";
 import { CLASSIFIER_AGENT, CLASSIFIER_AGENT_FILE } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
@@ -10,6 +12,14 @@ import { assertInside, readIfExists, writeFileAtomic } from "./fsutil.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import type { ProjectsService } from "./projects.ts";
+import {
+  catalogEntry,
+  DEFAULT_ALLOWED_PROVIDERS,
+  MESSAGES,
+  providerOf,
+  unknownAgentKeyMessage,
+  unknownAgentKeys,
+} from "./shared/assistant-rules.ts";
 import {
   agentFrontmatterSchema,
   commandFrontmatterSchema,
@@ -36,6 +46,8 @@ export interface StudioItem {
   error: string | null;
   files: string[];
   updatedAt: number;
+  /** Avertissements non bloquants (agents : réglages inconnus d'opencode tolérés car déjà présents dans le fichier). */
+  warnings: string[];
 }
 
 export class StudioValidationError extends Error {
@@ -60,6 +72,16 @@ export class StudioApplyError extends Error {
   }
 }
 
+/** Nouvelle IA d'un élément lié à un niveau (réalignement en lot, conception 0.2.0 §6). */
+export interface ModelPlanItem {
+  kind: "agents" | "commands";
+  name: string;
+  /** « fournisseur/modèle ». */
+  model: string;
+  /** Réflexion à écrire ; null = clé `variant` retirée. */
+  variant: string | null;
+}
+
 const DIRS: Record<StudioKind, readonly [string, string]> = {
   agents: ["agents", "agent"],
   commands: ["commands", "command"],
@@ -74,6 +96,45 @@ export interface StudioDeps {
   projects: ProjectsService;
   control: ControlService;
   log: Logger;
+  /** Catalogue des IA : sans lui, le contrôle « IA présente sur le compte » est ignoré (seul le fournisseur est vérifié). */
+  catalog?: Pick<ModelCatalog, "loaded" | "lite">;
+}
+
+function toleratedKeyWarning(key: string): string {
+  return `Réglage inconnu « ${key} » : opencode l'envoie tel quel à l'IA. Toléré car déjà présent dans le fichier ; retirez-le dès que possible.`;
+}
+
+/** En-tête avec une nouvelle IA et une nouvelle réflexion, les autres clés gardant leur place. */
+function withModel(data: Record<string, unknown>, model: string, variant: string | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let placed = false;
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "variant") continue;
+    if (key === "model") {
+      out.model = model;
+      if (variant !== null) out.variant = variant;
+      placed = true;
+      continue;
+    }
+    out[key] = value;
+  }
+  if (!placed) {
+    out.model = model;
+    if (variant !== null) out.variant = variant;
+  }
+  return out;
+}
+
+/** Écriture atomique d'octets bruts : une sauvegarde est restaurée à l'octet près (BOM, fins de ligne). */
+async function writeBytesAtomic(file: string, bytes: Buffer): Promise<void> {
+  const tmp = `${file}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await fs.writeFile(tmp, bytes, { mode: 0o644 });
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
 }
 
 export class StudioService {
@@ -172,7 +233,17 @@ export class StudioService {
       error,
       files: kind === "skills" ? await this.#skillFiles(path.dirname(file)) : [],
       updatedAt: stat.mtimeMs,
+      warnings: kind === "agents" ? unknownAgentKeys(frontmatter).map(toleratedKeyWarning) : [],
     };
+  }
+
+  /** En-tête d'un fichier existant, null s'il est illisible. */
+  async #frontmatterOf(file: string): Promise<Record<string, unknown> | null> {
+    try {
+      return parseFrontmatter((await readIfExists(file)) ?? "").data;
+    } catch {
+      return null;
+    }
   }
 
   async list(kind: StudioKind, scope: StudioScope): Promise<StudioItem[]> {
@@ -223,10 +294,30 @@ export class StudioService {
     return { frontmatter: parsed.success ? (parsed.data as Record<string, unknown>) : candidate, issues };
   }
 
+  /**
+   * IA d'un agent ou d'une commande (§9.8) : fournisseur autorisé (COCKPIT_ALLOWED_PROVIDERS), puis, avec le
+   * catalogue, liste des IA lue et IA présente sur le compte Copilot.
+   */
+  #checkModel(model: string): ValidationIssue[] {
+    const allowed = this.#d.env.allowedProviders ?? DEFAULT_ALLOWED_PROVIDERS;
+    if (!allowed.includes(providerOf(model))) return [{ path: "model", message: MESSAGES.fournisseurRefuse }];
+    const catalog = this.#d.catalog;
+    if (!catalog) return [];
+    if (!catalog.loaded) return [{ path: "model", message: MESSAGES.catalogueIndisponible }];
+    return catalogEntry(catalog.lite(), model) ? [] : [{ path: "model", message: MESSAGES.iaAbsenteDuCompte }];
+  }
+
   async save(
     kind: StudioKind,
     scope: StudioScope,
-    input: { name: string; previousName?: string | null; frontmatter: Record<string, unknown>; body: string },
+    input: {
+      name: string;
+      previousName?: string | null;
+      frontmatter: Record<string, unknown>;
+      body: string;
+      /** Refuse d'écraser un élément existant (installation du catalogue : une fiche existante n'est jamais remplacée). */
+      createOnly?: boolean;
+    },
   ): Promise<StudioItem> {
     return this.#serialize(async () => {
       this.#assertWritableScope(scope);
@@ -237,8 +328,18 @@ export class StudioService {
       const existing = await this.#locate(kind, input.name, base);
       const renaming = Boolean(input.previousName && input.previousName !== input.name);
       const previous = renaming ? await this.#locate(kind, input.previousName as string, base) : null;
-      if (renaming && existing) throw new StudioValidationError([{ path: "name", message: "Un élément porte déjà ce nom." }]);
+      if (existing && (renaming || input.createOnly)) throw new StudioValidationError([{ path: "name", message: "Un élément porte déjà ce nom." }]);
       if (renaming && !previous) throw new StudioValidationError([{ path: "previousName", message: "Élément d'origine introuvable." }]);
+
+      const checks: ValidationIssue[] = kind !== "skills" && typeof frontmatter.model === "string" ? this.#checkModel(frontmatter.model) : [];
+      if (kind === "agents") {
+        // core/v1/config/agent.ts:62-66 : une clé inconnue partirait telle quelle chez le fournisseur. Les clés déjà
+        // présentes dans le fichier sur disque restent tolérées (StudioItem.warnings).
+        const onDisk = renaming ? previous : existing;
+        const before = onDisk ? await this.#frontmatterOf(onDisk) : null;
+        for (const key of unknownAgentKeys(frontmatter, before)) checks.push({ path: `frontmatter.${key}`, message: unknownAgentKeyMessage(key) });
+      }
+      if (checks.length > 0) throw new StudioValidationError(checks);
 
       if (!renaming) {
         const target = existing ?? this.#fileFor(kind, base, DIRS[kind][0], input.name);
@@ -280,14 +381,109 @@ export class StudioService {
     });
   }
 
+  /**
+   * Réaligne l'IA de plusieurs éléments en un seul lot (portée globale) : sauvegarde de chaque fichier, écriture de
+   * tous, un rechargement, une vérification par type touché. Au moindre refus, TOUS les fichiers sont restaurés à
+   * l'octet près, puis vérifiés à nouveau (redémarrage d'opencode s'il reste bloqué) et StudioApplyError est levée.
+   * `beforeWrite` s'exécute sous le verrou, avant toute lecture (ex. : refuser si une réponse est en cours).
+   */
+  async applyModels(plan: readonly ModelPlanItem[], beforeWrite?: () => Promise<void>): Promise<void> {
+    if (plan.length === 0) return;
+    await this.#serialize(async () => {
+      await beforeWrite?.();
+      const scope: StudioScope = { type: "global" };
+      const base = await this.#base(scope);
+      const issues: ValidationIssue[] = [];
+      const entries: Array<{ kind: "agents" | "commands"; file: string; backup: Buffer; content: string }> = [];
+      const seen = new Set<string>();
+      for (const item of plan) {
+        const where = `${String(item.kind)}/${String(item.name)}`;
+        if (item.kind !== "agents" && item.kind !== "commands") {
+          issues.push({ path: where, message: "Type inconnu (agents ou commands)." });
+          continue;
+        }
+        if (seen.has(where)) continue;
+        seen.add(where);
+        if (RESERVED.has(item.name)) {
+          issues.push({ path: where, message: "Ce nom est réservé au cockpit." });
+          continue;
+        }
+        if (item.variant !== null && (typeof item.variant !== "string" || item.variant.length === 0 || item.variant.length > 40)) {
+          issues.push({ path: `${where} → variant`, message: "Réflexion invalide." });
+          continue;
+        }
+        const file = await this.#locate(item.kind, item.name, base);
+        if (!file) {
+          issues.push({ path: where, message: "Élément introuvable." });
+          continue;
+        }
+        await assertInside(base, file);
+        const backup = await fs.readFile(file);
+        let doc: { data: Record<string, unknown>; body: string };
+        try {
+          doc = parseFrontmatter(backup.toString("utf8"));
+        } catch (err) {
+          issues.push({ path: where, message: errorMessage(err) });
+          continue;
+        }
+        const body = doc.body.replace(/^\n+/, "");
+        const checked = this.validate(item.kind, item.name, withModel(doc.data, item.model, item.variant), body);
+        const found = [...checked.issues, ...this.#checkModel(item.model)];
+        if (found.length > 0) {
+          issues.push(...found.map((i) => ({ path: `${where} → ${i.path}`, message: i.message })));
+          continue;
+        }
+        entries.push({ kind: item.kind, file, backup, content: stringifyFrontmatter(checked.frontmatter, body) });
+      }
+      if (issues.length > 0) throw new StudioValidationError(issues);
+      if (entries.length === 0) return;
+
+      const written: typeof entries = [];
+      const restoreAll = async () => {
+        for (const entry of [...written].reverse()) await writeBytesAtomic(entry.file, entry.backup);
+      };
+      try {
+        for (const entry of entries) {
+          await writeFileAtomic(entry.file, entry.content);
+          written.push(entry);
+        }
+      } catch (err) {
+        await restoreAll();
+        throw err;
+      }
+
+      const kinds = [...new Set(entries.map((e) => e.kind))];
+      let refused: ValidationIssue[];
+      try {
+        refused = await this.#verifyKinds(kinds, scope);
+      } catch (err) {
+        // Vérification impossible (opencode injoignable) : par prudence, rien ne reste modifié.
+        this.#d.log.warn("vérification impossible après la mise à jour des IA : retour arrière", { error: errorMessage(err) });
+        await restoreAll();
+        await this.#reload(scope);
+        throw err;
+      }
+      if (refused.length === 0) return;
+      this.#d.log.warn("mise à jour des IA refusée par opencode, retour arrière de tous les fichiers", { issues: refused });
+      await restoreAll();
+      let restarted = false;
+      const still = await this.#verifyKinds(kinds, scope).catch(() => [{ path: "", message: "injoignable" }]);
+      if (still.length > 0) {
+        const result = await this.#d.control.restartOpencode("mise à jour des IA annulée");
+        restarted = result.ok;
+      }
+      throw new StudioApplyError(refused, restarted);
+    });
+  }
+
   async #reload(scope: StudioScope): Promise<void> {
     await this.#d.client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
     const directory = await this.#opencodeDirectory(scope);
     if (directory) await this.#d.client.request("POST", "/instance/dispose", { directory, timeoutMs: 20_000 }).catch(() => undefined);
   }
 
-  async #verify(kind: StudioKind, scope: StudioScope): Promise<ValidationIssue[] | null> {
-    await this.#reload(scope);
+  async #verify(kind: StudioKind, scope: StudioScope, reload = true): Promise<ValidationIssue[] | null> {
+    if (reload) await this.#reload(scope);
     const directory = await this.#opencodeDirectory(scope);
     try {
       await this.#d.client.request("GET", VERIFY_ROUTE[kind], { ...(directory ? { directory } : {}), timeoutMs: 30_000 });
@@ -304,6 +500,14 @@ export class StudioService {
       }
       throw err;
     }
+  }
+
+  /** Un seul rechargement, puis une vérification par type : liste des refus (vide = accepté). */
+  async #verifyKinds(kinds: readonly StudioKind[], scope: StudioScope): Promise<ValidationIssue[]> {
+    await this.#reload(scope);
+    const issues: ValidationIssue[] = [];
+    for (const kind of kinds) issues.push(...((await this.#verify(kind, scope, false)) ?? []));
+    return issues;
   }
 
   async #verifyOrRollback(kind: StudioKind, scope: StudioScope, rollback: () => Promise<unknown>): Promise<void> {

@@ -1,4 +1,4 @@
-// Demandes d'autorisation et questions posées par l'agent pendant une réponse.
+// Demandes d'autorisation et questions posées par l'assistant pendant une réponse.
 import { useState } from "react";
 import { DiffView } from "../../components/DiffView.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -14,9 +14,12 @@ const PERMISSION_LABELS: Record<string, string> = {
   external_directory: "accéder à un dossier hors du projet",
   doom_loop: "poursuivre une action répétée en boucle",
   read: "lire un fichier",
-  task: "lancer un sous-agent",
-  skill: "charger un skill",
+  task: "déléguer le travail à un autre assistant",
+  skill: "consulter une fiche",
 };
+
+/** Mode Simple : pas de « Toujours autoriser » pour les commandes et les dossiers hors du projet. */
+const ONCE_ONLY_IN_SIMPLE = new Set(["bash", "external_directory"]);
 
 const str = (value: unknown) => (typeof value === "string" ? value : null);
 
@@ -24,12 +27,15 @@ export function PermissionPrompt({
   request,
   sessionTitle,
   taskPrompt,
+  simpleMode = true,
   onReply,
 }: {
   request: PermissionRequest;
   sessionTitle?: string | undefined;
-  /** Consigne du sous-agent demandé (opencode ne la joint pas à la demande d'autorisation). */
+  /** Consigne du travail délégué demandé (opencode ne la joint pas à la demande d'autorisation). */
   taskPrompt?: string | undefined;
+  /** Mode d'affichage Simple (défaut prudent). */
+  simpleMode?: boolean;
   onReply: (reply: "once" | "always" | "reject", message?: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -40,8 +46,9 @@ export function PermissionPrompt({
   const command = str(metadata.command);
   const file = str(metadata.filepath) ?? str(metadata.filePath);
   const isTask = request.permission === "task";
-  // Pour un sous-agent, « Toujours » (motif *) autoriserait tous les sous-agents suivants du projet sans voir leur consigne.
-  const allowAlways = request.always.length > 0 && !isTask;
+  // Pour une délégation, « Toujours » (motif *) autoriserait toutes les délégations suivantes du projet sans voir leur consigne.
+  // En mode Simple, une commande ou un dossier hors du projet s'autorise une fois à la fois.
+  const allowAlways = request.always.length > 0 && !isTask && !(simpleMode && ONCE_ONLY_IN_SIMPLE.has(request.permission));
 
   const act = async (reply: "once" | "always" | "reject", note?: string) => {
     setBusy(reply);
@@ -56,7 +63,7 @@ export function PermissionPrompt({
     <div className="interaction" role="alertdialog" aria-label="Demande d'autorisation">
       <div className="row">
         <Icon name="shield" size={18} />
-        <strong className="spacer">L'agent demande l'autorisation de {PERMISSION_LABELS[request.permission] ?? request.permission}</strong>
+        <strong className="spacer">L'assistant demande l'autorisation de {PERMISSION_LABELS[request.permission] ?? request.permission}</strong>
         {sessionTitle ? <span className="small muted ellipsis">{sessionTitle}</span> : null}
       </div>
       {command ? (
@@ -80,7 +87,7 @@ export function PermissionPrompt({
           {taskPrompt ? (
             <pre className="terminal">{taskPrompt}</pre>
           ) : (
-            <span className="tiny muted">Consigne du sous-agent indisponible : vérifiez-la dans la réponse avant d'autoriser.</span>
+            <span className="tiny muted">Consigne du travail délégué indisponible : vérifiez-la dans la réponse avant d'autoriser.</span>
           )}
         </div>
       ) : null}
@@ -88,8 +95,8 @@ export function PermissionPrompt({
         <div className="row">
           <input
             className="input sm"
-            placeholder="Consigne pour l'agent (facultatif)"
-            aria-label="Consigne pour l'agent"
+            placeholder="Consigne pour l'assistant (facultatif)"
+            aria-label="Consigne pour l'assistant"
             value={message}
             autoFocus
             onChange={(e) => setMessage(e.target.value)}
@@ -170,10 +177,10 @@ export function QuestionPrompt({
   };
 
   return (
-    <div className="interaction question" role="dialog" aria-label="Question de l'agent">
+    <div className="interaction question" role="dialog" aria-label="Question de l'assistant">
       <div className="row">
         <Icon name="question" size={18} />
-        <strong>L'agent a besoin d'une précision</strong>
+        <strong>L'assistant a besoin d'une précision</strong>
       </div>
       {request.questions.map((question, index) => (
         <div key={index} className="stack tight">

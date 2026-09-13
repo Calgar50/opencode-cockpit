@@ -1,4 +1,4 @@
-// Outils partagés du Studio : noms, en-têtes, comparaison de brouillons, modèles.
+// Outils partagés du Studio : noms, en-têtes, comparaison de brouillons, IA.
 import type { ModelInfo, StudioItem, StudioKind, ValidationIssue } from "../../lib/types.ts";
 
 /** Mêmes règles que le serveur (studio-schema.ts). */
@@ -10,11 +10,19 @@ export const THEME_COLORS = ["primary", "secondary", "accent", "success", "warni
 
 export type StudioTab = StudioKind | "instructions";
 
-export const KIND_LABELS: Record<StudioKind, { one: string; many: string; article: string }> = {
-  agents: { one: "agent", many: "agents", article: "un agent" },
-  skills: { one: "skill", many: "skills", article: "un skill" },
-  commands: { one: "commande", many: "commandes", article: "une commande" },
+export const KIND_LABELS: Record<StudioKind, { one: string; many: string; article: string; examples: string }> = {
+  agents: { one: "agent", many: "agents", article: "un agent", examples: "Exemples d'agents" },
+  skills: { one: "skill", many: "skills", article: "un skill", examples: "Exemples de skills" },
+  commands: { one: "commande", many: "commandes", article: "une commande", examples: "Exemples de commandes" },
 };
+
+/** Agent interne du cockpit (classement des conversations, server/classifier.ts). */
+const COCKPIT_INTERNAL_AGENTS = new Set(["cockpit-classifier"]);
+
+/** Agent masqué interne (compaction, title, summary d'opencode, classement du cockpit) : jamais proposé dans un choix. */
+export function isInternalAgent(agent: { name: string; hidden?: boolean; native?: boolean }): boolean {
+  return agent.hidden === true && (agent.native === true || COCKPIT_INTERNAL_AGENTS.has(agent.name));
+}
 
 export interface Draft {
   name: string;
@@ -48,6 +56,22 @@ export function stableStringify(value: unknown): string {
     return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+/** Ajoute des clés juste après la dernière clé d'ancrage présente (sinon à la fin), sans changer l'ordre des autres. */
+export function withKeysAfter(record: Record<string, unknown>, anchors: readonly string[], entries: Record<string, unknown>): Record<string, unknown> {
+  const keys = Object.keys(record).filter((k) => !Object.hasOwn(entries, k));
+  const anchor = Math.max(-1, ...anchors.map((a) => keys.indexOf(a)));
+  const next: Record<string, unknown> = {};
+  if (anchor < 0) {
+    for (const k of keys) next[k] = record[k];
+    return { ...next, ...entries };
+  }
+  keys.forEach((k, i) => {
+    next[k] = record[k];
+    if (i === anchor) Object.assign(next, entries);
+  });
+  return next;
 }
 
 /** Copie profonde d'un en-tête (valeurs JSON uniquement). */
@@ -122,7 +146,7 @@ export function validateDraft(kind: StudioKind, draft: Draft): ValidationIssue[]
   }
   if (description.length > 1024) issues.push({ path: "description", message: "1 024 caractères maximum." });
   if (fm.model !== undefined && (typeof fm.model !== "string" || !MODEL_RE.test(fm.model))) {
-    issues.push({ path: "modèle", message: "Format attendu : fournisseur/modèle." });
+    issues.push({ path: "IA", message: "Format attendu : fournisseur/modèle." });
   }
   if (kind === "agents") {
     if (fm.temperature !== undefined && (typeof fm.temperature !== "number" || fm.temperature < 0 || fm.temperature > 2)) {
@@ -155,7 +179,7 @@ export function validateDraft(kind: StudioKind, draft: Draft): ValidationIssue[]
     issues.push({ path: "licence", message: "200 caractères maximum." });
   }
   if ((kind === "commands" || kind === "skills") && !draft.body.trim()) {
-    issues.push({ path: "corps", message: kind === "commands" ? "Le modèle de la commande est obligatoire." : "Les instructions du skill sont obligatoires." });
+    issues.push({ path: "corps", message: kind === "commands" ? "Le texte de la commande est obligatoire." : "Les instructions du skill sont obligatoires." });
   }
   return issues;
 }

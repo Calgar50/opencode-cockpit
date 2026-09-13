@@ -1,4 +1,5 @@
-// Galerie de modèles prêts à l'emploi pour démarrer un agent, une commande ou un skill.
+// Galerie d'exemples prêts à l'emploi pour démarrer un agent, une commande ou un skill.
+import { TIER_HELP, TIER_LABELS } from "../../../server/shared/assistant-rules.ts";
 import { Button, EmptyState, Modal, Spinner, useAsync } from "../../components/ui.tsx";
 import { api, errorText } from "../../lib/api.ts";
 import type { StudioKind, StudioTemplate } from "../../lib/types.ts";
@@ -21,7 +22,7 @@ export function TemplatesModal({
   const list = (templates.data ?? []).filter((t) => t.kind === kind);
 
   return (
-    <Modal open={open} wide title={`Modèles de ${KIND_LABELS[kind].many}`} onClose={onClose}>
+    <Modal open={open} wide title={KIND_LABELS[kind].examples} onClose={onClose}>
       {templates.loading && !templates.data?.length ? (
         <div className="empty">
           <Spinner large />
@@ -31,10 +32,12 @@ export function TemplatesModal({
           {errorText(templates.error)}
         </div>
       ) : list.length === 0 ? (
-        <EmptyState icon="layers" title="Aucun modèle pour ce type" />
+        <EmptyState icon="layers" title="Aucun exemple pour ce type" />
       ) : (
         <div className="stack">
-          <p className="small muted">Le modèle pré-remplit un nouvel élément : rien n'est écrit tant que vous n'enregistrez pas.</p>
+          <p className="small muted">
+            L'exemple pré-remplit un nouvel élément, avec l'IA de son niveau conseillé : rien n'est écrit tant que vous n'enregistrez pas.
+          </p>
           <div className="template-grid">
             {list.map((t) => {
               const fm = t.frontmatter;
@@ -46,8 +49,13 @@ export function TemplatesModal({
                   </div>
                   <p className="small secondary">{str(fm.description)}</p>
                   <div className="row wrap" style={{ gap: 4 }}>
+                    {t.tier ? (
+                      <span className="badge good" title={TIER_HELP[t.tier]}>
+                        Niveau conseillé : {TIER_LABELS[t.tier]}
+                      </span>
+                    ) : null}
                     {str(fm.mode) ? <span className="badge accent">{MODE_LABEL[str(fm.mode)] ?? str(fm.mode)}</span> : null}
-                    {fm.subtask === true ? <span className="badge">sous-tâche</span> : null}
+                    {fm.subtask === true ? <span className="badge">travail délégué</span> : null}
                     {str(fm.agent) ? <span className="badge">@{str(fm.agent)}</span> : null}
                   </div>
                   <details>

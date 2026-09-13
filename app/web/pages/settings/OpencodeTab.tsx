@@ -1,38 +1,30 @@
 // Configuration globale d'opencode : modèles, fournisseurs, partage, permissions et fichier brut.
 import { useEffect, useId, useRef, useState } from "react";
+import { detectPermissionPreset, MESSAGES, type PermissionPresetId, presetPermission } from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Badge, Button, Card, Field, Spinner, useAsync, useConfirm } from "../../components/ui.tsx";
 import { ApiError, api, errorText } from "../../lib/api.ts";
-import { stableStringify } from "../studio/shared.ts";
 import { DirtyBadge, IssuesCallout, ModelSelect, TokenListEditor } from "../studio/widgets.tsx";
 import { useDraft } from "./common.tsx";
 
 const COPILOT = "github-copilot";
 
-const PRESETS: Array<{ id: string; title: string; summary: string; points: string[]; danger?: boolean; permission: Record<string, unknown> }> = [
+// Règles de chaque profil : PERMISSION_PRESETS (server/shared), « prudent » = docker/opencode/opencode.default.jsonc.
+const PRESETS: Array<{ id: PermissionPresetId; title: string; summary: string; points: string[]; danger?: boolean }> = [
   {
     id: "prudent",
     title: "Prudent",
     summary: "Confirmation avant toute modification ou commande (configuration d'origine).",
     points: ["Fichiers : demander", "Shell : demander (seul pwd est autorisé d'office)", "Sous-agents : demander", "Web : demander"],
-    // Mêmes règles que docker/opencode/opencode.default.jsonc.
-    permission: {
-      edit: "ask",
-      bash: { "*": "ask", pwd: "allow" },
-      task: "ask",
-      webfetch: "ask",
-      websearch: "ask",
-    },
   },
   {
     id: "equilibre",
     title: "Équilibré",
     summary: "Modifications de fichiers libres ; commandes, sous-agents et web sur confirmation.",
     points: ["Fichiers : autoriser", "Shell : demander", "Sous-agents : demander", "Web : demander"],
-    permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" },
   },
   {
     id: "autonome",
@@ -40,7 +32,6 @@ const PRESETS: Array<{ id: string; title: string; summary: string; points: strin
     summary: "Aucune confirmation : l'agent agit seul.",
     points: ["Fichiers : autoriser", "Shell : autoriser", "Sous-agents : autoriser", "Web : autoriser"],
     danger: true,
-    permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
   },
 ];
 
@@ -231,7 +222,10 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
   };
 
   const currentPermission = cfg.permission;
-  const activePreset = PRESETS.find((p) => stableStringify(p.permission) === stableStringify(currentPermission))?.id ?? null;
+  const activePreset = detectPermissionPreset(currentPermission);
+  // Mode Simple : la carte « Autonome » n'est pas proposée (seulement affichée si ce profil est déjà actif).
+  const advanced = boot.ui?.mode === "avance";
+  const visiblePresets = PRESETS.filter((p) => advanced || p.id !== "autonome" || activePreset === "autonome");
 
   const applyPreset = async (preset: (typeof PRESETS)[number]) => {
     const ok = await confirm({
@@ -244,7 +238,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
     });
     if (!ok) return;
     // Remplacement complet : aucune ancienne règle du fichier ne survit au profil choisi.
-    await patch(`preset-${preset.id}`, preset.permission, `Profil « ${preset.title} » appliqué`, api.putOpencodePermission);
+    await patch(`preset-${preset.id}`, presetPermission(preset.id), `Profil « ${preset.title} » appliqué`, api.putOpencodePermission);
   };
 
   if (config.loading && !config.data) {
@@ -270,7 +264,16 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
 
   return (
     <div className="stack loose">
-      <Card title="Modèles par défaut" subtitle="Utilisés quand ni la conversation ni l'agent n'imposent un modèle.">
+      {!advanced ? (
+        <div className="callout warning" role="status">
+          <Icon name="lock" size={18} />
+          <span>{MESSAGES.modeAvance}</span>
+        </div>
+      ) : null}
+      <Card
+        title="Modèles par défaut"
+        subtitle="Le chat du cockpit choisit toujours l'IA de chaque demande : ces réglages ne servent qu'en dehors du chat, sauf le petit modèle."
+      >
         <div className="settings-form">
           <div className="grid-2">
             <Field label="Modèle principal" htmlFor={ids.model}>
@@ -282,7 +285,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
                 onChange={(model) => models.setDraft((d) => ({ ...d, model }))}
               />
             </Field>
-            <Field label="Petit modèle" htmlFor={ids.small} hint="Tâches légères : titres des conversations, résumés.">
+            <Field label="Petit modèle" htmlFor={ids.small} hint="Sert à générer le titre des conversations.">
               <ModelSelect
                 id={ids.small}
                 value={models.draft.small_model}
@@ -385,7 +388,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
       <Card title="Permissions globales" subtitle="Ce que les agents peuvent faire sans vous demander. Les agents du Studio peuvent les surcharger.">
         <div className="stack">
           <div className="preset-grid">
-            {PRESETS.map((preset) => (
+            {visiblePresets.map((preset) => (
               <div key={preset.id} className={`preset-card${activePreset === preset.id ? " active" : ""}${preset.danger ? " danger" : ""}`}>
                 <div className="row between">
                   <strong>{preset.title}</strong>

@@ -1,4 +1,5 @@
 // Modèles prêts à l'emploi proposés dans le Studio.
+import type { Tier } from "./shared/assistant-rules.ts";
 import type { StudioKind } from "./studio-schema.ts";
 
 export interface StudioTemplate {
@@ -7,6 +8,8 @@ export interface StudioTemplate {
   title: string;
   frontmatter: Record<string, unknown>;
   body: string;
+  /** 0.2.0 : niveau conseillé (badge « Niveau conseillé : … ») ; null = l'IA vient de son assistant, ou fiche sans IA. */
+  tier: Tier | null;
 }
 
 export const TEMPLATES: StudioTemplate[] = [
@@ -14,6 +17,7 @@ export const TEMPLATES: StudioTemplate[] = [
     kind: "agents",
     name: "revue-securite",
     title: "Relecteur sécurité",
+    tier: "equilibre",
     frontmatter: {
       description: "Relit le code à la recherche de failles de sécurité (OWASP, secrets, injections) sans rien modifier.",
       mode: "subagent",
@@ -38,6 +42,7 @@ export const TEMPLATES: StudioTemplate[] = [
     kind: "agents",
     name: "architecte",
     title: "Architecte",
+    tier: "expert",
     frontmatter: {
       description: "Conçoit et planifie avant de coder : options, compromis, plan d'implémentation. Ne modifie aucun fichier.",
       mode: "primary",
@@ -61,6 +66,7 @@ Tu ne modifies aucun fichier.
     kind: "agents",
     name: "testeur",
     title: "Testeur",
+    tier: "equilibre",
     frontmatter: {
       description: "Écrit et exécute des tests unitaires ou d'intégration pour le code indiqué, en suivant les conventions du projet.",
       mode: "subagent",
@@ -80,6 +86,7 @@ Tu ne modifies aucun fichier.
     kind: "agents",
     name: "expert-sql",
     title: "Expert SQL",
+    tier: "equilibre",
     frontmatter: {
       description: "Écrit, optimise et explique des requêtes SQL (SQL Server, PostgreSQL, MySQL, SQLite) de façon sûre.",
       mode: "subagent",
@@ -99,6 +106,7 @@ Tu ne modifies aucun fichier.
     kind: "agents",
     name: "pedagogue",
     title: "Pédagogue",
+    tier: "rapide",
     frontmatter: {
       description: "Explique le code et les concepts pas à pas, avec des exemples, sans rien modifier.",
       mode: "primary",
@@ -119,6 +127,7 @@ Tu ne modifies aucun fichier et tu n'exécutes aucune commande.
     kind: "commands",
     name: "commit",
     title: "Message de commit",
+    tier: "rapide",
     frontmatter: { description: "Propose un message de commit conventionnel à partir des changements indexés." },
     body: `Voici les changements indexés :
 
@@ -131,6 +140,7 @@ Propose un message au format Conventional Commits : \`type(portée): résumé\` 
     kind: "commands",
     name: "revue",
     title: "Revue des changements",
+    tier: null,
     frontmatter: { description: "Revue sécurité et qualité des changements en cours (nécessite l'agent revue-securite).", agent: "revue-securite", subtask: true },
     body: `Relis les changements suivants :
 
@@ -143,6 +153,7 @@ Points d'attention supplémentaires : $ARGUMENTS
     kind: "commands",
     name: "explique",
     title: "Explication",
+    tier: "rapide",
     frontmatter: { description: "Explique un fichier, une fonction ou un concept." },
     body: `Explique de façon claire et progressive : $ARGUMENTS
 
@@ -153,6 +164,7 @@ Commence par la vue d'ensemble, détaille ensuite les points importants avec de 
     kind: "commands",
     name: "tests",
     title: "Écrire des tests",
+    tier: "equilibre",
     frontmatter: { description: "Écrit les tests manquants pour la cible indiquée puis les exécute." },
     body: `Écris les tests manquants pour : $ARGUMENTS
 
@@ -163,6 +175,7 @@ Suis les conventions de test du projet, couvre les cas nominaux, d'erreur et lim
     kind: "commands",
     name: "description-pr",
     title: "Description de PR",
+    tier: "rapide",
     frontmatter: { description: "Rédige la description d'une pull request à partir de l'historique récent." },
     body: `Historique récent :
 
@@ -179,6 +192,7 @@ Rédige une description de pull request en français : contexte, changements pri
     kind: "skills",
     name: "conventions-equipe",
     title: "Conventions d'équipe",
+    tier: null,
     frontmatter: {
       description: "Conventions de code de l'équipe (nommage, structure, tests, sécurité). À appliquer avant d'écrire ou de modifier du code dans les projets de l'équipe.",
     },
@@ -209,6 +223,7 @@ Rédige une description de pull request en français : contexte, changements pri
     kind: "skills",
     name: "checklist-securite-web",
     title: "Checklist sécurité web",
+    tier: null,
     frontmatter: {
       description: "Checklist de sécurité pour du code web (API, formulaires, authentification, fichiers). À utiliser avant de livrer une fonctionnalité exposée sur le réseau.",
     },
@@ -240,6 +255,7 @@ Rédige une description de pull request en français : contexte, changements pri
     kind: "skills",
     name: "requetes-sql-sures",
     title: "Requêtes SQL sûres",
+    tier: null,
     frontmatter: {
       description: "Bonnes pratiques pour écrire des requêtes SQL sûres et performantes. À utiliser dès qu'une requête SQL est écrite, modifiée ou optimisée.",
     },

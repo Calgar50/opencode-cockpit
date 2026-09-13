@@ -1,14 +1,37 @@
 // Client de l'API du cockpit et du proxy opencode (/api/oc/*).
+import { MODEL_OVERRIDE_HEADER } from "../../server/shared/assistant-rules.ts";
 import type {
+  AdoptRequest,
+  AiView,
   ArchiveDetail,
   ArchiveList,
   ArchiveStats,
+  AssistantModelChangedError,
+  AssistantPreview,
+  AssistantSaveRequest,
+  AssistantsResponse,
+  AssistantView,
   Bootstrap,
+  BudgetGuardError,
+  CatalogueItem,
+  ChoicesResponse,
   Conversation,
+  FicheInfo,
   FileDiff,
-  GuardDecision,
+  ItemKind,
+  KeepModelResponse,
   ModelInfo,
-  ModelPrice,
+  PutTiersResponse,
+  RealignRequest,
+  RealignResponse,
+  ResolveRequest,
+  ResolveResponse,
+  RestorePrudentResponse,
+  SavedAssistant,
+  TaskSize,
+  Tier,
+  TierDefs,
+  UsageEstimate,
   OcAgent,
   OcCommand,
   OcMessageWithParts,
@@ -56,8 +79,10 @@ export function onUnauthorized(listener: () => void): () => void {
 }
 
 interface RequestOptions {
-  /** Confirme l'envoi malgré le garde-fou budgétaire. */
+  /** Confirme l'envoi malgré le garde-fou budgétaire (ou une action qui le demande, ex. réalignement). */
   confirm?: boolean;
+  /** En-tête x-cockpit-model-override: 1 (mode Avancé + réglage : autre IA qu'un assistant, pour un message). */
+  modelOverride?: boolean;
   signal?: AbortSignal;
 }
 
@@ -68,6 +93,7 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
     if (body !== undefined) headers["content-type"] = "application/json";
   }
   if (options.confirm) headers["x-cockpit-confirm"] = "1";
+  if (options.modelOverride) headers[MODEL_OVERRIDE_HEADER] = "1";
   let res: Response;
   try {
     res = await fetch(url, {
@@ -140,10 +166,9 @@ export const api = {
 
   usageSummary: (month?: string) => http.get<UsageSummary>(`/api/usage/summary${query({ month })}`),
   usageExportUrl: (month: string) => `/api/usage/export.csv${query({ month })}`,
-  usageEstimate: (provider: string, model: string) =>
-    http.get<{ price: ModelPrice | null; avgUsd: number | null; samples: number; guard: GuardDecision }>(
-      `/api/usage/estimate${query({ provider, model })}`,
-    ),
+  /** `agent` : moyenne observée de cet agent (≥ 5 demandes) ; `size` : profil S/M/L (défaut M). */
+  usageEstimate: (provider: string, model: string, options: { agent?: string; size?: TaskSize } = {}) =>
+    http.get<UsageEstimate>(`/api/usage/estimate${query({ provider, model, agent: options.agent, size: options.size })}`),
   sessionUsage: (rootId: string) => http.get<SessionUsage>(`/api/usage/session/${enc(rootId)}`),
   recompute: (month?: string) => http.post<{ updated: number }>(`/api/usage/recompute${query({ month })}`),
   quota: () => http.get<{ latest: QuotaSnapshot | null; lastError: string | null; enabled: boolean }>("/api/quota"),
@@ -165,10 +190,14 @@ export const api = {
   studioList: (kind: StudioKind, project?: string | null) => http.get<StudioItem[]>(`/api/studio/${kind}${query({ project })}`),
   studioGet: (kind: StudioKind, name: string, project?: string | null) =>
     http.get<StudioItem>(`/api/studio/${kind}/${enc(name)}${query({ project })}`),
+  /**
+   * `tier` (0.2.0, agents et commandes) : niveau choisi dans LevelField, enregistré dans item_meta avec l'IA écrite
+   * (`undefined` = liaison inchangée, `null` = IA précise ou aucune). Mode Avancé uniquement (403 mode-avance).
+   */
   studioSave: (
     kind: StudioKind,
     name: string,
-    input: { frontmatter: Record<string, unknown>; body: string; previousName?: string | null },
+    input: { frontmatter: Record<string, unknown>; body: string; previousName?: string | null; tier?: Tier | null },
     project?: string | null,
   ) => http.put<StudioItem>(`/api/studio/${kind}/${enc(name)}${query({ project })}`, input),
   studioDelete: (kind: StudioKind, name: string, project?: string | null) =>
@@ -199,7 +228,60 @@ export const api = {
   restartOpencode: () => http.post<{ ok: boolean; durationMs: number; message: string }>("/api/system/restart-opencode"),
   logs: (lines = 400) => http.get<{ content: string }>(`/api/system/logs${query({ lines })}`),
   backfill: () => http.post<{ ok: boolean }>("/api/system/backfill"),
+
+  // --- 0.2.0 : assistants ----------------------------------------------------------------
+  assistants: () => http.get<AssistantsResponse>("/api/assistants"),
+  assistantsCatalogue: () => http.get<CatalogueItem[]>("/api/assistants/catalogue"),
+  /** Idempotent : renvoie l'assistant déjà installé depuis cette entrée. 409 name-taken si `name` est pris. */
+  installCatalogueAssistant: (id: string, name?: string) =>
+    http.post<AssistantView>(`/api/assistants/catalogue/${enc(id)}/install`, name ? { name } : {}),
+  /** N'écrit rien. À appeler avec un délai (300 ms) et un AbortSignal pour ignorer les réponses dépassées. */
+  previewAssistant: (draft: AssistantSaveRequest, signal?: AbortSignal) =>
+    http.post<AssistantPreview>("/api/assistants/preview", draft, signal ? { signal } : {}),
+  saveAssistant: (name: string, input: AssistantSaveRequest) => http.put<SavedAssistant>(`/api/assistants/${enc(name)}`, input),
+  adoptAssistant: (name: string, input: AdoptRequest) => http.post<AssistantView>(`/api/assistants/${enc(name)}/adopt`, input),
+  /** 409 used-by (data: UsedByError) si un raccourci l'utilise, sauf `force`. */
+  deleteAssistant: (name: string, force = false) =>
+    http.del<{ deleted: boolean }>(`/api/assistants/${enc(name)}${query({ force: force ? 1 : undefined })}`),
+  /** Retire une ligne « Fichier introuvable ». */
+  deleteAssistantMeta: (name: string, kind: ItemKind = "agents") =>
+    http.del<{ deleted: boolean }>(`/api/assistants/${enc(name)}/meta${query({ kind })}`),
+  fiches: () => http.get<FicheInfo[]>("/api/assistants/fiches"),
+
+  // --- 0.2.0 : niveaux d'IA --------------------------------------------------------------
+  ai: () => http.get<AiView>("/api/ai"),
+  /** Mode Avancé. `null` = revenir à la recommandation livrée. Ne réécrit aucun fichier. */
+  putTiers: (tiers: TierDefs | null) => http.put<PutTiersResponse>("/api/ai/tiers", { tiers }),
+  /** Réécrit les éléments liés (tous ceux « Mise à jour disponible » si `items` est absent) ; envoie x-cockpit-confirm. */
+  realign: (items?: RealignRequest["items"]) =>
+    http.post<RealignResponse>("/api/ai/realign", items ? { items } : {}, { confirm: true }),
+  /** « Garder cette IA précise » (deux modes) : l'élément ne suit plus son niveau, aucun fichier réécrit. */
+  keepModel: (kind: ItemKind, name: string) => http.post<KeepModelResponse>("/api/ai/keep-model", { kind, name }),
+
+  // --- 0.2.0 : chat et sécurité ----------------------------------------------------------
+  /** Même résolution que le proxy : IA réellement utilisée, puces et problèmes en français. */
+  resolveChat: (input: ResolveRequest, signal?: AbortSignal) =>
+    http.post<ResolveResponse>("/api/chat/resolve", input, signal ? { signal } : {}),
+  /** Derniers choix (message, jamais raccourci) d'une conversation, ou null. */
+  chatChoices: (sessionId: string) => http.get<ChoicesResponse>(`/api/chat/choices/${enc(sessionId)}`),
+  /** Réapplique le profil de droits Prudent (permission globale d'opencode). */
+  restorePrudent: () => http.post<RestorePrudentResponse>("/api/security/restore-prudent"),
 };
+
+/** Corps 409 « assistant-model-changed » d'un ApiError, sinon null (le client renvoie une fois avec ce modèle). */
+export function assistantModelChanged(err: unknown): AssistantModelChangedError | null {
+  if (!(err instanceof ApiError) || err.status !== 409 || err.code !== "assistant-model-changed") return null;
+  const data = err.data as Partial<AssistantModelChangedError> | null;
+  return data && typeof data.agent === "string" && data.model && typeof data.model.modelID === "string"
+    ? (data as AssistantModelChangedError)
+    : null;
+}
+
+/** Corps 409 « budget-guard » d'un ApiError, sinon null. */
+export function budgetGuard(err: unknown): BudgetGuardError | null {
+  if (!(err instanceof ApiError) || err.status !== 409 || err.code !== "budget-guard") return null;
+  return (err.data as BudgetGuardError | null) ?? null;
+}
 
 /** Appels opencode via le proxy filtré du cockpit. */
 export const oc = {
@@ -216,8 +298,13 @@ export const oc = {
   todo: (id: string, directory?: string) => http.get<Todo[]>(`/api/oc/session/${enc(id)}/todo${query({ directory })}`),
   diff: (id: string, directory?: string) => http.get<FileDiff[]>(`/api/oc/session/${enc(id)}/diff${query({ directory })}`),
   status: (directory?: string) => http.get<Record<string, OcSessionStatus>>(`/api/oc/session/status${query({ directory })}`),
-  promptAsync: (id: string, directory: string, body: unknown, confirm = false) =>
-    http.post<void>(`/api/oc/session/${enc(id)}/prompt_async${query({ directory })}`, body, { confirm }),
+  /**
+   * `modelOverride` : envoie x-cockpit-model-override: 1 pour utiliser une autre IA que celle de l'assistant, pour ce
+   * message (accepté seulement en mode Avancé avec ai.allowModelOverride). Sur 409 assistant-model-changed
+   * (voir assistantModelChanged), renvoyer UNE fois avec le modèle et la réflexion reçus.
+   */
+  promptAsync: (id: string, directory: string, body: unknown, confirm = false, modelOverride = false) =>
+    http.post<void>(`/api/oc/session/${enc(id)}/prompt_async${query({ directory })}`, body, { confirm, modelOverride }),
   command: (id: string, directory: string, body: unknown, confirm = false) =>
     http.post<unknown>(`/api/oc/session/${enc(id)}/command${query({ directory })}`, body, { confirm }),
   abort: (id: string, directory: string) => http.post<boolean>(`/api/oc/session/${enc(id)}/abort${query({ directory })}`),

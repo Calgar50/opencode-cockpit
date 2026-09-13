@@ -11,14 +11,17 @@ import type { ArchiveService } from "./archive.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
+import { transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, writeFileAtomic } from "./fsutil.ts";
 import { applyEdits, modify } from "jsonc-parser";
 import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
+import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
+import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
-import { COPILOT_PRICES, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
+import { COPILOT_PRICES, type ModelPrice, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
 import type { EventProcessor } from "./processor.ts";
 import type { ProjectsService } from "./projects.ts";
 import type { QuotaSync } from "./quota.ts";
@@ -35,9 +38,66 @@ import {
   setSessionCookie,
 } from "./security.ts";
 import { type Settings, SettingsError, type SettingsStore } from "./settings.ts";
+import type {
+  AssistantModelChangedError,
+  ChatTurnKind,
+  IssueLite,
+  ItemKind,
+  ResolveResponse,
+  RestorePrudentResponse,
+  TierView,
+} from "./shared/api-types.ts";
+import {
+  assistantModelChangedMessage,
+  catalogEntry,
+  changedSettingsPaths,
+  chooseEstimate,
+  describeTurn,
+  estimateText,
+  isReservedModel,
+  MESSAGES,
+  MODEL_OVERRIDE_HEADER,
+  modelKey,
+  modelName,
+  parseModelKey,
+  presetPermission,
+  type Problem,
+  problemMessage,
+  providerOf,
+  resolveChatTurn,
+  resolveCommandTurn,
+  RULES_VERSION,
+  type Run,
+  sameModel,
+  TASK_SIZES,
+  type TaskSize,
+  type Tier,
+  TIER_IDS,
+  type TierDefs,
+  type TierResolution,
+  type Turn,
+} from "./shared/assistant-rules.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
+
+/** Niveaux d'IA utilisés par l'API (TierService les fournit). */
+export interface TierPort {
+  definitions(): TierDefs;
+  resolve(id: Tier): TierResolution;
+  tierOfModel(model: string): Tier | null;
+  priceOf(model: string): ModelPrice | null;
+  isExpensive(model: string): boolean;
+  taskCost(model: string): { S: number; M: number; L: number } | null;
+  views(): TierView[];
+}
+
+/** Métadonnées d'assistants utilisées par le proxy et le Studio (AssistantService les fournit). */
+export interface AssistantsPort {
+  agentTitle(name: string): string;
+  taskSizeOf(name: string): TaskSize | null;
+  bindLevel(kind: ItemKind, name: string, tier: Tier | null, model: string | null, variant: string | null): void;
+}
 
 export interface AppDeps {
   env: AppEnv;
@@ -55,6 +115,14 @@ export interface AppDeps {
   processor: EventProcessor;
   settings: SettingsStore;
   hub: EventHub;
+  /** Agents et raccourcis d'opencode (GET /agent, GET /command) en cache court. */
+  lookup: OcLookup;
+  /** Niveaux d'IA (TierService). */
+  tiers: TierPort;
+  /** Titres, tailles et liaisons de niveau des assistants (AssistantService). */
+  assistants: AssistantsPort;
+  /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
+  routes?: Array<(app: Hono) => void>;
 }
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
@@ -208,6 +276,10 @@ export function forbiddenProxyBody(method: string, sub: string, body: unknown, e
   return undefined;
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 export function modelFromBody(body: unknown): { providerID: string; modelID: string } | undefined {
   if (!body || typeof body !== "object") return undefined;
   const b = body as Record<string, unknown>;
@@ -232,7 +304,37 @@ const studioBody = z.object({
   frontmatter: z.record(z.string(), z.unknown()),
   body: z.string().max(256 * 1024),
   previousName: z.string().max(64).nullable().optional(),
+  /** 0.2.0 (agents et commandes) : niveau lié dans item_meta ; absent = liaison inchangée, null = IA précise ou aucune. */
+  tier: z.enum(TIER_IDS).nullable().optional(),
 });
+
+/** POST /api/chat/resolve (ResolveRequest). */
+const resolveBody = z.strictObject({
+  directory: z.string().min(1).max(4_096),
+  agent: z.string().min(1).max(200),
+  tier: z.enum(TIER_IDS).optional(),
+  variant: z.string().min(1).max(40).nullable().optional(),
+  override: z
+    .strictObject({ providerID: z.string().min(1).max(100), modelID: z.string().min(1).max(200), variant: z.string().min(1).max(40).optional() })
+    .optional(),
+  command: z.string().min(1).max(200).optional(),
+});
+
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Demande facturée résolue par le proxy. */
+interface ProxyTurn {
+  turn: Turn;
+  /** Agent du corps (vide pour « Résumer »). */
+  agent: string;
+  command: string | null;
+  /** true : la réflexion calculée par le serveur remplace celle du corps. */
+  authoritative: boolean;
+  /** false : rien n'est enregistré dans chat_turns (raccourci inconnu d'opencode). */
+  record: boolean;
+}
+
+const RESET_SECTIONS = ["budget", "pricing", "classifier", "quotaSync", "chat", "ai", "ui"] as const satisfies ReadonlyArray<keyof Settings>;
 
 const archivePatch = z.strictObject({
   category: z.string().max(32).optional(),
@@ -263,7 +365,9 @@ const MIME: Record<string, string> = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function createApp(deps: AppDeps): Hono {
-  const { env, log, client, catalog, ledger, archive, classifier, studio, projects, control, quota, processor, settings, hub } = deps;
+  const { env, log, client, catalog, ledger, archive, classifier, studio, projects, control, quota, processor, settings, hub, lookup, tiers, assistants } =
+    deps;
+  const advanced = advancedOnly(settings);
   const app = new Hono();
   const expectedSession = sessionValue(env.token);
   const limiter = new LoginLimiter();
@@ -282,22 +386,31 @@ export function createApp(deps: AppDeps): Hono {
     return kind;
   };
 
-  const modelsPayload = (s: Settings) =>
-    catalog.list().map((m) => ({
-      key: m.key,
-      providerID: m.providerID,
-      providerName: m.providerName,
-      modelID: m.modelID,
-      name: m.name,
-      price: m.providerID === "github-copilot" ? (COPILOT_PRICES[m.modelID] ?? m.price) : m.price,
-      officialPrice: m.providerID === "github-copilot" && COPILOT_PRICES[m.modelID] !== undefined,
-      contextLimit: m.contextLimit,
-      outputLimit: m.outputLimit,
-      reasoning: m.reasoning,
-      attachment: m.attachment,
-      variants: m.variants,
-      expensive: (m.price?.rates.output ?? 0) > s.budget.guard.maxOutputPricePerM,
-    }));
+  const modelsPayload = () =>
+    catalog.list().map((m) => {
+      // Prix effectif (surcharges › grille › catalogue) : le même pour le badge « cher », les niveaux et le garde-fou.
+      const price = tiers.priceOf(m.key);
+      return {
+        key: m.key,
+        providerID: m.providerID,
+        providerName: m.providerName,
+        modelID: m.modelID,
+        name: m.name,
+        price,
+        officialPrice: m.providerID === "github-copilot" && Object.hasOwn(COPILOT_PRICES, m.modelID),
+        contextLimit: m.contextLimit,
+        outputLimit: m.outputLimit,
+        reasoning: m.reasoning,
+        attachment: m.attachment,
+        variants: m.variants,
+        expensive: tiers.isExpensive(m.key),
+        status: m.status,
+        toolcall: m.toolcall,
+        tier: tiers.tierOfModel(m.key),
+        taskCost: tiers.taskCost(m.key),
+        reserved: isReservedModel(m.key, price),
+      };
+    });
 
   app.use("*", securityHeaders());
   app.use("*", hostGuard(env.allowedHosts));
@@ -396,7 +509,7 @@ export function createApp(deps: AppDeps): Hono {
       projects: projectList,
       settings: s,
       copilotConnected,
-      models: modelsPayload(s),
+      models: modelsPayload(),
       modelDefaults: catalog.defaults,
       catalogLoadedAt: catalog.loadedAt,
       usage: {
@@ -409,16 +522,20 @@ export function createApp(deps: AppDeps): Hono {
       },
       quota: quota.latest(),
       pricing: { asOf: PRICING_AS_OF, sourceUrl: PRICING_SOURCE_URL, usdPerCredit: USD_PER_CREDIT },
+      ui: s.ui,
+      ai: { tiers: tiers.views(), chatDefaultTier: s.ai.chatDefaultTier, allowModelOverride: s.ai.allowModelOverride },
+      rulesVersion: RULES_VERSION,
+      allowedProviders: env.allowedProviders,
     });
   });
 
   app.get("/api/projects", async (c) => c.json(await projects.list()));
 
-  app.get("/api/models", (c) => c.json({ models: modelsPayload(settings.get()), defaults: catalog.defaults, loadedAt: catalog.loadedAt }));
+  app.get("/api/models", (c) => c.json({ models: modelsPayload(), defaults: catalog.defaults, loadedAt: catalog.loadedAt }));
 
   app.post("/api/models/refresh", async (c) => {
     await catalog.refresh();
-    return c.json({ models: modelsPayload(settings.get()), defaults: catalog.defaults, loadedAt: catalog.loadedAt });
+    return c.json({ models: modelsPayload(), defaults: catalog.defaults, loadedAt: catalog.loadedAt });
   });
 
   // --- Flux d'événements ----------------------------------------------------------------
@@ -465,6 +582,176 @@ export function createApp(deps: AppDeps): Hono {
       }
     }),
   );
+
+  // --- IA réellement facturée (conception §5.4) ---------------------------------------------
+
+  /** Agent qu'opencode prendrait sans agent valide : `preferred`, sinon build, sinon le premier agent principal visible. */
+  const defaultAgent = (snapshot: OcLookupSnapshot, preferred?: string | null): OcAgentInfo => {
+    const usable = (name: string) => snapshot.agents.find((a) => a.name === name && a.mode !== "subagent");
+    return (
+      (preferred ? usable(preferred) : undefined) ??
+      usable("build") ??
+      snapshot.agents.find((a) => a.mode !== "subagent" && !a.hidden) ?? { name: "build", mode: "primary", permission: [] }
+    );
+  };
+
+  /** Agent du corps ; inconnu, opencode refusera la demande (« Agent not found ») sans rien facturer. */
+  const bodyAgent = (snapshot: OcLookupSnapshot, requested: unknown): OcAgentInfo => {
+    if (typeof requested !== "string") return defaultAgent(snapshot);
+    return snapshot.agents.find((a) => a.name === requested) ?? { name: requested.slice(0, 200), mode: "primary", permission: [] };
+  };
+
+  interface TurnRequest {
+    kind: ChatTurnKind;
+    directory: string | null;
+    record: Record<string, unknown>;
+    bodyModel: { providerID: string; modelID: string };
+    bodyVariant: string | undefined;
+    lite: ReturnType<ModelCatalog["lite"]>;
+    names: { agentTitle: (name: string) => string; modelName: (model: string) => string };
+  }
+
+  /** Un seul appel sur l'IA du corps (Résumer, repli sans GET /agent, raccourci inconnu). */
+  const bodyTurn = (r: TurnRequest, role: Run["role"], agent: string, variant: string | undefined): Turn => ({
+    send: variant ? { model: r.bodyModel, variant } : { model: r.bodyModel },
+    runs: [{ role, model: modelKey(r.bodyModel), variant: variant ?? null, source: "niveau", agent }],
+    lock: null,
+    problems: [],
+  });
+
+  /** Résout les appels facturés d'une demande relayée ; renvoie une réponse de refus le cas échéant. */
+  const resolveProxyTurn = async (c: Context, r: TurnRequest): Promise<Response | ProxyTurn> => {
+    const bodyKey = modelKey(r.bodyModel);
+    if (r.kind === "resume") {
+      // Résumer : un appel sur l'IA du corps, sans réflexion (compaction.ts:358-361).
+      const turn = bodyTurn(r, "message", "", undefined);
+      if (r.lite.length > 0 && !catalogEntry(r.lite, bodyKey)) turn.problems.push({ code: "ia-indisponible", blocking: true, model: bodyKey });
+      return { turn, agent: "", command: null, authoritative: false, record: true };
+    }
+    const requestedCommand = r.kind === "raccourci" && typeof r.record.command === "string" ? r.record.command : null;
+    let snapshot: OcLookupSnapshot;
+    try {
+      snapshot = await lookup.get(r.directory);
+    } catch (err) {
+      // Repli (comportement 0.1.x) : garde-fou sur l'IA du corps seulement, demande relayée telle quelle.
+      log.warn("agents d'opencode illisibles : contrôle limité à l'IA de la demande", { error: errorMessage(err) });
+      const agent = typeof r.record.agent === "string" ? r.record.agent.slice(0, 200) : "";
+      const role = r.kind === "raccourci" ? "raccourci" : "message";
+      return { turn: bodyTurn(r, role, agent, r.bodyVariant), agent, command: requestedCommand?.slice(0, 200) ?? null, authoritative: false, record: true };
+    }
+
+    const chatAgent = bodyAgent(snapshot, r.record.agent);
+    const s = settings.get();
+    const allowOverride = s.ui.mode === "avance" && s.ai.allowModelOverride && c.req.header(MODEL_OVERRIDE_HEADER) === "1";
+    if (chatAgent.model && !sameModel(chatAgent.model, r.bodyModel) && !allowOverride) {
+      // IA fixée par l'assistant : le client renvoie une fois avec celle-ci.
+      const lockedKey = modelKey(chatAgent.model);
+      if (!env.allowedProviders.includes(chatAgent.model.providerID)) return fail(c, 403, "fournisseur-refuse", MESSAGES.fournisseurRefuse);
+      const entry = catalogEntry(r.lite, lockedKey);
+      if (r.lite.length > 0 && !entry) {
+        const problem: Problem = { code: "assistant-ia-indisponible", blocking: true, model: lockedKey, agent: chatAgent.name };
+        return fail(c, 409, "ia-indisponible", problemMessage(problem, r.names));
+      }
+      const lockedName = r.names.modelName(lockedKey);
+      const changed: AssistantModelChangedError = {
+        error: "assistant-model-changed",
+        message: assistantModelChangedMessage(lockedName),
+        agent: chatAgent.name,
+        model: { providerID: chatAgent.model.providerID, modelID: chatAgent.model.modelID },
+        variant: chatAgent.variant && (!entry || entry.variants.includes(chatAgent.variant)) ? chatAgent.variant : null,
+        modelName: lockedName,
+      };
+      return c.json(changed, 409);
+    }
+
+    const chatTurn = resolveChatTurn({
+      agent: chatAgent,
+      tierModel: r.bodyModel,
+      tierVariant: r.bodyVariant ?? null,
+      override: allowOverride ? { ...r.bodyModel, ...(r.bodyVariant ? { variant: r.bodyVariant } : {}) } : undefined,
+      allowOverride,
+      catalog: r.lite,
+    });
+    if (r.kind === "message") return { turn: chatTurn, agent: chatAgent.name, command: null, authoritative: true, record: true };
+
+    const command = requestedCommand === null ? undefined : snapshot.commands.find((x) => x.name === requestedCommand);
+    if (!command) {
+      // Raccourci inconnu d'opencode : il répondra lui-même ; garde-fou sur l'IA du corps, rien d'enregistré.
+      return { turn: bodyTurn(r, "raccourci", chatAgent.name, r.bodyVariant), agent: chatAgent.name, command: null, authoritative: false, record: false };
+    }
+    const turn = resolveCommandTurn({ command, agents: snapshot.agents, chatAgent, chatTurn, catalog: r.lite });
+    const refused = turn.problems.find((p) => p.blocking && (p.code === "fiche-refusee" || p.code === "agent-du-raccourci-introuvable"));
+    if (refused) return fail(c, 403, refused.code, problemMessage(refused, r.names));
+    return { turn, agent: chatAgent.name, command: command.name, authoritative: true, record: true };
+  };
+
+  /**
+   * Contrôle d'une demande facturée (prompt_async, command, summarize), après les filtres de contenu : IA obligatoire,
+   * fournisseurs autorisés, IA de l'assistant, fiches, IA disponible, garde-fou sur chaque appel facturé, trace dans
+   * chat_turns. Renvoie la réponse de refus, ou le corps à relayer (réflexion fixée par le serveur).
+   */
+  const enforceTurn = async (c: Context, sub: string, directory: string | null, body: string, parsed: unknown): Promise<Response | string> => {
+    const [, , sessionId = "", action = ""] = sub.split("/");
+    const kind: ChatTurnKind = action === "command" ? "raccourci" : action === "summarize" ? "resume" : "message";
+    const record = isRecord(parsed) ? parsed : {};
+
+    // Toujours une IA explicite : sinon opencode prendrait celle de la session, hors de tout contrôle.
+    const bodyModel = modelFromBody(parsed);
+    if (!bodyModel?.providerID || !bodyModel.modelID || bodyModel.providerID.length > 100 || bodyModel.modelID.length > 200) {
+      return fail(c, 400, "modele-requis", "Précisez l'IA de la demande.");
+    }
+    if (!env.allowedProviders.includes(bodyModel.providerID)) return fail(c, 403, "fournisseur-refuse", MESSAGES.fournisseurRefuse);
+
+    const lite = catalog.lite();
+    const names = { agentTitle: (name: string) => assistants.agentTitle(name), modelName: (model: string) => modelName(model, lite) };
+    const bodyVariant = typeof record.variant === "string" && record.variant.length > 0 ? record.variant : undefined;
+    const resolved = await resolveProxyTurn(c, { kind, directory, record, bodyModel, bodyVariant, lite, names });
+    if (resolved instanceof Response) return resolved;
+    const { turn } = resolved;
+
+    // Fournisseur de chaque appel facturé (IA d'un agent ou d'un raccourci comprise).
+    if (turn.runs.some((run) => !env.allowedProviders.includes(providerOf(run.model)))) {
+      return fail(c, 403, "fournisseur-refuse", MESSAGES.fournisseurRefuse);
+    }
+    const unavailable = turn.problems.find((p) => p.blocking && (p.code === "ia-indisponible" || p.code === "assistant-ia-indisponible"));
+    if (unavailable) return fail(c, 409, "ia-indisponible", problemMessage(unavailable, names));
+
+    const mainRun = turn.runs.find((run) => run.role === "message" || run.role === "raccourci") ?? turn.runs[0];
+    const refusal = ledger.guardRuns(turn.runs, c.req.header(CONFIRM_HEADER) === "1", {
+      command: resolved.command,
+      modelName: names.modelName,
+      tierOfModel: (model) => tiers.tierOfModel(model),
+      size: assistants.taskSizeOf(mainRun?.agent || resolved.agent) ?? "M",
+    });
+    if (refusal) return c.json(refusal, 409);
+
+    if (resolved.record) {
+      try {
+        ledger.recordChatTurn({
+          session_id: sessionId,
+          created_at: Date.now(),
+          kind,
+          agent: resolved.agent,
+          command: resolved.command,
+          tier: mainRun ? tiers.tierOfModel(mainRun.model) : null,
+          model: modelKey(turn.send.model),
+          variant: turn.send.variant ?? null,
+          runs: turn.runs,
+        });
+      } catch (err) {
+        log.warn("tour de chat non enregistré", { error: errorMessage(err) });
+      }
+    }
+
+    // Le serveur fait foi pour la réflexion (§5.2) ; le corps n'est réécrit que si elle change.
+    const wanted = turn.send.variant;
+    const differs = Object.hasOwn(record, "variant") ? record.variant !== wanted : wanted !== undefined;
+    if (!resolved.authoritative || !differs) return body;
+    const next: Record<string, unknown> = { ...record };
+    if (wanted === undefined) delete next.variant;
+    else next.variant = wanted;
+    return JSON.stringify(next);
+  };
 
   // --- Proxy vers opencode --------------------------------------------------------------
 
@@ -513,8 +800,9 @@ export function createApp(deps: AppDeps): Hono {
             );
           }
         }
-        const decision = ledger.guard(modelFromBody(parsed), c.req.header(CONFIRM_HEADER) === "1");
-        if (!decision.allowed) return c.json({ error: "budget-guard", ...decision }, 409);
+        const enforced = await enforceTurn(c, sub, directory, body, parsed);
+        if (enforced instanceof Response) return enforced;
+        body = enforced;
       }
     }
 
@@ -530,6 +818,72 @@ export function createApp(deps: AppDeps): Hono {
     const contentType = upstream.headers.get("content-type");
     if (contentType) headers.set("content-type", contentType);
     return new Response(upstream.body, { status: upstream.status, headers });
+  });
+
+  // --- Chat : IA réellement utilisée (même résolution que le proxy) ------------------------
+
+  app.post("/api/chat/resolve", bodyLimit({ maxSize: 16 * 1024 }), async (c) => {
+    const req = resolveBody.parse(await c.req.json());
+    if (!projects.isAllowedDirectory(req.directory)) return fail(c, 403, "forbidden-directory", "Ce dossier est hors du workspace monté.");
+    let snapshot: OcLookupSnapshot;
+    try {
+      snapshot = await lookup.get(req.directory);
+    } catch (err) {
+      log.warn("résolution de l'IA impossible : opencode injoignable", { error: errorMessage(err) });
+      return fail(c, 502, "opencode-unreachable", MESSAGES.opencodeInjoignable);
+    }
+    const s = settings.get();
+    const lite = catalog.lite();
+    const requested = snapshot.agents.find((a) => a.name === req.agent && a.mode !== "subagent");
+    const agent = requested ?? defaultAgent(snapshot, s.chat.defaultAgent);
+    const tier = req.tier ?? s.ai.chatDefaultTier;
+    const res = tiers.resolve(tier);
+    const plannedModel = tiers.definitions()[tier].candidates[0] ?? null;
+    const override = s.ui.mode === "avance" ? req.override : undefined;
+    if (override && !env.allowedProviders.includes(override.providerID)) return fail(c, 403, "fournisseur-refuse", MESSAGES.fournisseurRefuse);
+    const chatTurn = resolveChatTurn({
+      agent,
+      tierModel: parseModelKey(res.model ?? plannedModel ?? ""),
+      tierVariant: req.variant !== undefined ? req.variant : res.variant,
+      override,
+      allowOverride: s.ui.mode === "avance" && s.ai.allowModelOverride,
+      catalog: lite,
+    });
+    let turn = chatTurn;
+    if (req.command !== undefined) {
+      const command = snapshot.commands.find((x) => x.name === req.command);
+      if (!command) return fail(c, 404, "not-found", "Raccourci introuvable.");
+      turn = resolveCommandTurn({ command, agents: snapshot.agents, chatAgent: agent, chatTurn, catalog: lite });
+    }
+    const agentTitle = (name: string) => assistants.agentTitle(name);
+    const display = describeTurn(turn, {
+      catalog: lite,
+      agentTitle,
+      tierOfModel: (model) => tiers.tierOfModel(model),
+      priceOf: (model) => tiers.priceOf(model),
+      size: assistants.taskSizeOf(agent.name) ?? "M",
+      command: req.command ?? null,
+      chatTier: agent.model ? null : { id: tier, status: res.status, plannedModel },
+    });
+    const response: ResolveResponse = {
+      ...turn,
+      agent: agent.name,
+      agentTitle: agentTitle(agent.name),
+      agentMissing: requested ? null : req.agent,
+      tier: agent.model ? tiers.tierOfModel(modelKey(agent.model)) : tier,
+      tierStatus: agent.model ? null : res.status,
+      command: req.command ?? null,
+      delegated: display.delegated,
+      bodyModel: modelKey(turn.send.model),
+      display,
+    };
+    return c.json(response);
+  });
+
+  app.get("/api/chat/choices/:sessionId", (c) => {
+    const sessionId = c.req.param("sessionId");
+    if (!SESSION_ID_RE.test(sessionId)) return fail(c, 400, "invalid", "Identifiant de conversation invalide.");
+    return c.json(ledger.lastChatChoice(sessionId));
   });
 
   // --- Coûts -----------------------------------------------------------------------------
@@ -551,9 +905,22 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.get("/api/usage/estimate", (c) => {
-    const { provider, model } = z.object({ provider: z.string().min(1).max(100), model: z.string().min(1).max(200) }).parse(c.req.query());
-    const estimate = ledger.estimate(provider, model);
-    return c.json({ ...estimate, guard: ledger.guard({ providerID: provider, modelID: model }, false) });
+    const q = z
+      .object({
+        provider: z.string().min(1).max(100),
+        model: z.string().min(1).max(200),
+        agent: z.string().min(1).max(64).optional(),
+        size: z.enum(TASK_SIZES).optional(),
+      })
+      .parse(c.req.query());
+    const ref = { providerID: q.provider, modelID: q.model };
+    // Moyenne observée de l'agent (5 demandes au moins), sinon profil S/M/L au prix effectif.
+    const estimate = chooseEstimate(q.agent ? ledger.estimateAgent(q.agent, ref) : null, tiers.priceOf(modelKey(ref)), q.size ?? "M");
+    return c.json({
+      ...ledger.estimate(q.provider, q.model),
+      guard: ledger.guard(ref, false),
+      estimate: estimate ? { ...estimate, text: estimateText(estimate), detailText: estimateText(estimate, true) } : null,
+    });
   });
 
   app.get("/api/usage/session/:id", (c) => c.json(ledger.sessionUsage(c.req.param("id"))));
@@ -637,11 +1004,20 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Studio ----------------------------------------------------------------------------
 
+  /** Renommage dans le Studio : la ligne item_meta suit le fichier (une ligne orpheline au nouveau nom est remplacée). */
+  const moveItemMeta = (kind: ItemKind, from: string, to: string) => {
+    transaction(deps.db, () => {
+      if (!deps.db.prepare("SELECT 1 FROM item_meta WHERE kind = ? AND name = ?").get(kind, from)) return;
+      deps.db.prepare("DELETE FROM item_meta WHERE kind = ? AND name = ?").run(kind, to);
+      deps.db.prepare("UPDATE item_meta SET name = ?, updated_at = ? WHERE kind = ? AND name = ?").run(to, Date.now(), kind, from);
+    });
+  };
+
   app.get("/api/studio/templates", (c) => c.json(TEMPLATES));
 
   app.get("/api/studio/instructions", async (c) => c.json(await studio.getInstructions(scopeOf(c))));
 
-  app.put("/api/studio/instructions", bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/instructions", advanced, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     await studio.saveInstructions(scopeOf(c), content);
     return c.json({ ok: true });
@@ -653,13 +1029,13 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ content });
   });
 
-  app.put("/api/studio/skills/:name/file", bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/skills/:name/file", advanced, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string() }).parse(await c.req.json());
     await studio.writeSkillFile(c.req.param("name"), c.req.query("file") ?? "", content, scopeOf(c));
     return c.json({ ok: true });
   });
 
-  app.delete("/api/studio/skills/:name/file", async (c) => {
+  app.delete("/api/studio/skills/:name/file", advanced, async (c) => {
     await studio.deleteSkillFile(c.req.param("name"), c.req.query("file") ?? "", scopeOf(c));
     return c.json({ ok: true });
   });
@@ -672,23 +1048,49 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(item);
   });
 
-  app.put("/api/studio/:kind/:name", bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/:kind/:name", advanced, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const input = studioBody.parse(await c.req.json());
-    const item = await studio.save(kindOf(c), scopeOf(c), {
+    const kind = kindOf(c);
+    const scope = scopeOf(c);
+    const item = await studio.save(kind, scope, {
       name: c.req.param("name"),
       previousName: input.previousName ?? null,
       frontmatter: input.frontmatter,
       body: input.body,
     });
+    // item_meta n'a pas de portée : seuls les éléments globaux y sont suivis (renommage, niveau lié avec l'IA écrite).
+    const metaKind: ItemKind | null = item.kind === "agents" || item.kind === "commands" ? item.kind : null;
+    if (metaKind !== null && scope.type === "global") {
+      try {
+        if (input.previousName && input.previousName !== item.name) moveItemMeta(metaKind, input.previousName, item.name);
+        if (input.tier !== undefined) {
+          const model = typeof item.frontmatter.model === "string" ? item.frontmatter.model : null;
+          const variant = typeof item.frontmatter.variant === "string" ? item.frontmatter.variant : null;
+          assistants.bindLevel(metaKind, item.name, input.tier, model, variant);
+        }
+      } catch (err) {
+        log.warn("métadonnées d'assistant non mises à jour pour cet élément", { kind, name: item.name, error: errorMessage(err) });
+      }
+    }
     await catalog.refresh().catch(() => undefined);
     hub.cockpit("studio.changed", { kind: item.kind, name: item.name });
     return c.json(item);
   });
 
-  app.delete("/api/studio/:kind/:name", async (c) => {
+  app.delete("/api/studio/:kind/:name", advanced, async (c) => {
     const kind = kindOf(c);
-    const deleted = await studio.remove(kind, c.req.param("name"), scopeOf(c));
-    hub.cockpit("studio.changed", { kind, name: c.req.param("name") });
+    const scope = scopeOf(c);
+    const name = c.req.param("name");
+    const deleted = await studio.remove(kind, name, scope);
+    // Suppression voulue depuis le cockpit : la ligne item_meta part avec le fichier (sinon « Fichier introuvable »).
+    if (deleted && kind !== "skills" && scope.type === "global") {
+      try {
+        deps.db.prepare("DELETE FROM item_meta WHERE kind = ? AND name = ?").run(kind, name);
+      } catch (err) {
+        log.warn("métadonnées d'assistant non supprimées", { kind, name, error: errorMessage(err) });
+      }
+    }
+    hub.cockpit("studio.changed", { kind, name });
     return c.json({ deleted });
   });
 
@@ -704,7 +1106,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/opencode/config", async (c) => c.json(await client.request("GET", "/global/config", { timeoutMs: 15_000 })));
 
-  app.patch("/api/opencode/config", bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
+  app.patch("/api/opencode/config", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
     const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
     await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
@@ -737,7 +1139,7 @@ export function createApp(deps: AppDeps): Hono {
     return { ok: true as const };
   };
 
-  app.put("/api/opencode/config/raw", bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
+  app.put("/api/opencode/config/raw", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     const file = await assertInside(env.opencodeConfigDir, await configFile());
     const result = await writeConfigChecked(file, content, await readIfExists(file), "configuration brute invalide annulée");
@@ -753,26 +1155,71 @@ export function createApp(deps: AppDeps): Hono {
 
   // Remplace le bloc « permission » d'un seul tenant (commentaires du fichier conservés). Le PATCH d'opencode
   // fusionne clé par clé : il garderait d'anciennes règles et échoue quand une valeur texte devient un objet.
-  app.put("/api/opencode/config/permission", bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
-    const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
+  const replacePermission = async (permission: Record<string, unknown>, reason: string) => {
     const file = await assertInside(env.opencodeConfigDir, await configFile());
     const backup = await readIfExists(file);
     const source = backup ?? "{}\n";
     const content = applyEdits(source, modify(source, ["permission"], permission, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-    const result = await writeConfigChecked(file, content, backup, "permissions invalides annulées");
+    return writeConfigChecked(file, content, backup, reason);
+  };
+
+  app.put("/api/opencode/config/permission", advanced, bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
+    const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
+    const result = await replacePermission(permission, "permissions invalides annulées");
     if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
     return c.json({ ok: true });
+  });
+
+  // Paramètres › Sécurité (les deux modes) : revenir au profil Prudent, avec la même écriture vérifiée.
+  app.post("/api/security/restore-prudent", bodyLimit({ maxSize: 4_096 }), async (c) => {
+    z.strictObject({}).parse(await c.req.json().catch(() => null));
+    const permission = presetPermission("prudent");
+    const result = await replacePermission(permission, "profil Prudent refusé, configuration précédente rétablie");
+    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
+    const response: RestorePrudentResponse = { ok: true, permission };
+    return c.json(response);
   });
 
   // --- Paramètres du cockpit ------------------------------------------------------------
 
   app.get("/api/settings", (c) => c.json(settings.get()));
 
-  app.put("/api/settings", bodyLimit({ maxSize: 256 * 1024 }), async (c) => c.json(settings.update(await c.req.json())));
+  /** Candidats de niveaux d'un correctif dont le fournisseur n'est pas autorisé (COCKPIT_ALLOWED_PROVIDERS). */
+  const tierProviderIssues = (patch: unknown): IssueLite[] => {
+    const tiersPatch = isRecord(patch) && isRecord(patch.ai) ? patch.ai.tiers : undefined;
+    if (!isRecord(tiersPatch)) return [];
+    const issues: IssueLite[] = [];
+    for (const id of TIER_IDS) {
+      const def = tiersPatch[id];
+      const candidates: unknown[] = isRecord(def) && Array.isArray(def.candidates) ? def.candidates : [];
+      candidates.forEach((candidate, index) => {
+        if (typeof candidate === "string" && candidate.includes("/") && !env.allowedProviders.includes(providerOf(candidate))) {
+          issues.push({ path: `ai.tiers.${id}.candidates.${index}`, message: MESSAGES.fournisseurRefuse });
+        }
+      });
+    }
+    return issues;
+  };
 
-  app.post("/api/settings/reset", async (c) => {
-    const { section } = z.object({ section: z.enum(["budget", "pricing", "classifier", "quotaSync", "chat"]) }).parse(await c.req.json());
-    return c.json(settings.reset(section));
+  // Mode Simple : seuls les chemins de SIMPLE_SETTINGS_PATHS peuvent changer (settingsPatchGuard, 403 mode-avance).
+  app.put("/api/settings", bodyLimit({ maxSize: 256 * 1024 }), settingsPatchGuard(settings), async (c) => {
+    const patch: unknown = await c.req.json();
+    const changed = changedSettingsPaths(settings.get(), patch);
+    if (changed.some((p) => p === "ai.tiers" || p.startsWith("ai.tiers."))) {
+      const issues = tierProviderIssues(patch);
+      if (issues.length > 0) return fail(c, 422, "validation", MESSAGES.fournisseurRefuse, { issues });
+    }
+    const next = settings.update(patch);
+    if (changed.some((p) => p === "ai" || p.startsWith("ai."))) hub.cockpit("ai.changed", { reason: "settings" });
+    return c.json(next);
+  });
+
+  // Mode Simple : seule la section budget peut être réinitialisée (settingsResetGuard).
+  app.post("/api/settings/reset", bodyLimit({ maxSize: 4_096 }), settingsResetGuard(settings), async (c) => {
+    const { section } = z.object({ section: z.enum(RESET_SECTIONS) }).parse(await c.req.json());
+    const next = settings.reset(section);
+    if (section === "ai") hub.cockpit("ai.changed", { reason: "settings" });
+    return c.json(next);
   });
 
   app.get("/api/pricing", (c) =>
@@ -843,6 +1290,8 @@ export function createApp(deps: AppDeps): Hono {
     await processor.backfill();
     return c.json({ ok: true });
   });
+
+  for (const register of deps.routes ?? []) register(app);
 
   app.all("/api/*", (c) => fail(c, 404, "not-found", "Route inconnue."));
 

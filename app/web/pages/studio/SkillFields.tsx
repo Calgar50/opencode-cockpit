@@ -17,7 +17,7 @@ export function SkillFields({ draft, setFm }: { draft: Draft; setFm: (patch: Rec
       <Field
         label="Description"
         htmlFor={ids.description}
-        hint="Obligatoire. C'est elle qui décide le modèle à charger le skill : dites ce qu'il contient et quand l'utiliser."
+        hint="Obligatoire. C'est d'après cette phrase que l'IA décide d'ouvrir la fiche. Une fiche n'a pas d'IA à elle : pour imposer une IA, utilisez un assistant ou un raccourci."
         error={!description.trim() ? "La description est obligatoire." : null}
       >
         <textarea
@@ -151,7 +151,7 @@ export function SkillFilesPanel({ item, project }: { item: StudioItem; project: 
   return (
     <div className="stack tight">
       <p className="small muted">
-        Documents chargés par le modèle seulement quand le skill en a besoin. Citez-les dans les instructions (ex. « voir references/guide.md »).
+        Documents lus par l'IA seulement quand le skill en a besoin. Citez-les dans les instructions (ex. « voir references/guide.md »).
       </p>
       {files.length === 0 ? (
         <EmptyState icon="file" title="Aucun fichier annexe" />

@@ -12,7 +12,7 @@ import { NumberInput, TokenListEditor } from "../studio/widgets.tsx";
 import { fmtNumber, SectionFooter, useDraft, useSettingsSave } from "./common.tsx";
 
 function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
-  const { boot } = useApp();
+  const { boot, advanced } = useApp();
   const toast = useToast();
   const intervalId = useId();
   const { draft, setDraft, dirty, reset } = useDraft(boot.settings.quotaSync);
@@ -54,28 +54,36 @@ function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
             Copilot, uniquement vers api.github.com (ou votre GitHub Enterprise). Il peut changer ou disparaître sans préavis.
           </span>
         </div>
-        <div>
-          <ToggleRow
-            title="Synchroniser automatiquement"
-            description="Relevé périodique du solde depuis le serveur du cockpit."
-            checked={draft.enabled}
-            onChange={(enabled) => setDraft((d) => ({ ...d, enabled }))}
-          />
-        </div>
-        <Field label="Intervalle" htmlFor={intervalId} hint="Entre 5 et 1 440 minutes.">
-          <div className="input-suffix">
-            <NumberInput
-              id={intervalId}
-              value={draft.intervalMinutes}
-              min={5}
-              max={1440}
-              step={1}
-              disabled={!draft.enabled}
-              onChange={(n) => n !== undefined && setDraft((d) => ({ ...d, intervalMinutes: Math.round(n) }))}
-            />
-            <span className="small muted">minutes</span>
-          </div>
-        </Field>
+        {advanced ? (
+          <>
+            <div>
+              <ToggleRow
+                title="Synchroniser automatiquement"
+                description="Relevé périodique du solde depuis le serveur du cockpit."
+                checked={draft.enabled}
+                onChange={(enabled) => setDraft((d) => ({ ...d, enabled }))}
+              />
+            </div>
+            <Field label="Intervalle" htmlFor={intervalId} hint="Entre 5 et 1 440 minutes.">
+              <div className="input-suffix">
+                <NumberInput
+                  id={intervalId}
+                  value={draft.intervalMinutes}
+                  min={5}
+                  max={1440}
+                  step={1}
+                  disabled={!draft.enabled}
+                  onChange={(n) => n !== undefined && setDraft((d) => ({ ...d, intervalMinutes: Math.round(n) }))}
+                />
+                <span className="small muted">minutes</span>
+              </div>
+            </Field>
+          </>
+        ) : (
+          <p className="small secondary">
+            Synchronisation automatique : {draft.enabled ? `activée (toutes les ${fmtNumber(draft.intervalMinutes, 0)} minutes)` : "désactivée"}. Réglable en mode Avancé (Paramètres › Affichage).
+          </p>
+        )}
 
         <div className="stack tight">
           <div className="row between wrap">
@@ -136,25 +144,27 @@ function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
           {!boot.copilotConnected ? <p className="small muted">GitHub Copilot doit être connecté pour relever le solde.</p> : null}
         </div>
 
-        <SectionFooter
-          dirty={dirty}
-          saving={saving}
-          issues={issues}
-          onCancel={reset}
-          onSave={async () => {
-            if (await save({ quotaSync: draft }, "Synchronisation du solde enregistrée")) quota.reload();
-          }}
-          onReset={async () => {
-            await resetSection("quotaSync", "Synchronisation du solde réinitialisée");
-          }}
-        />
+        {advanced ? (
+          <SectionFooter
+            dirty={dirty}
+            saving={saving}
+            issues={issues}
+            onCancel={reset}
+            onSave={async () => {
+              if (await save({ quotaSync: draft }, "Synchronisation du solde enregistrée")) quota.reload();
+            }}
+            onReset={async () => {
+              await resetSection("quotaSync", "Synchronisation du solde réinitialisée");
+            }}
+          />
+        ) : null}
       </div>
     </Card>
   );
 }
 
 export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
-  const { boot } = useApp();
+  const { boot, advanced } = useApp();
   const ids = { monthly: useId(), from: useId(), price: useId() };
   const { draft, setDraft, dirty, reset } = useDraft(boot.settings.budget);
   const { save, resetSection, saving, issues } = useSettingsSave();
@@ -222,67 +232,81 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
           </div>
 
           <h3 className="settings-subtitle">Garde-fou</h3>
-          <div>
-            <ToggleRow
-              title="Confirmer avant d'utiliser un modèle cher"
-              description="Quand le budget se remplit, l'envoi vers un modèle cher demande une confirmation dans le chat."
-              checked={draft.guard.enabled}
-              onChange={(enabled) => setGuard({ enabled })}
-            />
-          </div>
-          <div className="grid-2">
-            <Field label="À partir de" htmlFor={ids.from} hint="Pourcentage du budget consommé à partir duquel le garde-fou s'active.">
-              <div className="input-suffix">
-                <NumberInput
-                  id={ids.from}
-                  value={draft.guard.fromPercent}
-                  min={0}
-                  max={200}
-                  step={1}
-                  disabled={!draft.guard.enabled}
-                  onChange={(n) => n !== undefined && setGuard({ fromPercent: n })}
+          {advanced ? (
+            <>
+              <div>
+                <ToggleRow
+                  title="Confirmer avant d'utiliser un modèle cher"
+                  description="Quand le budget se remplit, l'envoi vers un modèle cher demande une confirmation dans le chat."
+                  checked={draft.guard.enabled}
+                  onChange={(enabled) => setGuard({ enabled })}
                 />
-                <span className="small muted">%</span>
               </div>
-            </Field>
-            <Field
-              label="Modèle « cher » au-delà de"
-              htmlFor={ids.price}
-              hint="Prix de sortie en dollars par million de tokens générés au-delà duquel un modèle est considéré comme cher."
-            >
-              <div className="input-suffix">
-                <NumberInput
-                  id={ids.price}
-                  value={draft.guard.maxOutputPricePerM}
-                  min={0}
-                  max={1000}
-                  step={0.5}
-                  disabled={!draft.guard.enabled}
-                  onChange={(n) => n !== undefined && setGuard({ maxOutputPricePerM: n })}
+              <div className="grid-2">
+                <Field label="À partir de" htmlFor={ids.from} hint="Pourcentage du budget consommé à partir duquel le garde-fou s'active.">
+                  <div className="input-suffix">
+                    <NumberInput
+                      id={ids.from}
+                      value={draft.guard.fromPercent}
+                      min={0}
+                      max={200}
+                      step={1}
+                      disabled={!draft.guard.enabled}
+                      onChange={(n) => n !== undefined && setGuard({ fromPercent: n })}
+                    />
+                    <span className="small muted">%</span>
+                  </div>
+                </Field>
+                <Field
+                  label="Modèle « cher » au-delà de"
+                  htmlFor={ids.price}
+                  hint="Prix de sortie en dollars par million de tokens générés au-delà duquel un modèle est considéré comme cher."
+                >
+                  <div className="input-suffix">
+                    <NumberInput
+                      id={ids.price}
+                      value={draft.guard.maxOutputPricePerM}
+                      min={0}
+                      max={1000}
+                      step={0.5}
+                      disabled={!draft.guard.enabled}
+                      onChange={(n) => n !== undefined && setGuard({ maxOutputPricePerM: n })}
+                    />
+                    <span className="small muted">$ / M tokens</span>
+                  </div>
+                </Field>
+              </div>
+              <p className="small muted">
+                {expensive.length === 0
+                  ? "Aucun modèle du catalogue ne dépasse ce seuil."
+                  : `${expensive.length} modèle${expensive.length > 1 ? "s" : ""} au-delà de ce seuil : `}
+                {expensive.slice(0, 8).map((m) => (
+                  <Badge key={m.key} tone="warning" title={`${fmtNumber(m.price?.rates.output ?? 0, 2)} $/M en sortie`}>
+                    {m.name}
+                  </Badge>
+                ))}
+                {expensive.length > 8 ? ` +${expensive.length - 8}` : ""}
+              </p>
+              <div>
+                <ToggleRow
+                  title="Confirmation obligatoire à 100 %"
+                  description="Budget atteint : tout envoi vers un modèle payant demande une confirmation."
+                  checked={draft.guard.blockAtLimit}
+                  onChange={(blockAtLimit) => setGuard({ blockAtLimit })}
                 />
-                <span className="small muted">$ / M tokens</span>
               </div>
-            </Field>
-          </div>
-          <p className="small muted">
-            {expensive.length === 0
-              ? "Aucun modèle du catalogue ne dépasse ce seuil."
-              : `${expensive.length} modèle${expensive.length > 1 ? "s" : ""} au-delà de ce seuil : `}
-            {expensive.slice(0, 8).map((m) => (
-              <Badge key={m.key} tone="warning" title={`${fmtNumber(m.price?.rates.output ?? 0, 2)} $/M en sortie`}>
-                {m.name}
-              </Badge>
-            ))}
-            {expensive.length > 8 ? ` +${expensive.length - 8}` : ""}
-          </p>
-          <div>
-            <ToggleRow
-              title="Confirmation obligatoire à 100 %"
-              description="Budget atteint : tout envoi vers un modèle payant demande une confirmation."
-              checked={draft.guard.blockAtLimit}
-              onChange={(blockAtLimit) => setGuard({ blockAtLimit })}
-            />
-          </div>
+            </>
+          ) : (
+            <div className="callout">
+              <Icon name="lock" size={16} />
+              <span className="small">
+                {draft.guard.enabled
+                  ? `Confirmation demandée à partir de ${fmtNumber(draft.guard.fromPercent, 0)} % du budget consommé pour une IA à plus de ${fmtNumber(draft.guard.maxOutputPricePerM, 2)} $ par million de jetons produits.`
+                  : "Garde-fou désactivé."}
+                {draft.guard.enabled && draft.guard.blockAtLimit ? " Budget atteint : toute demande payante demande une confirmation." : ""} Réglable en mode Avancé (Paramètres › Affichage).
+              </span>
+            </div>
+          )}
 
           <SectionFooter
             dirty={dirty}

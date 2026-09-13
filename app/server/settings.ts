@@ -1,5 +1,31 @@
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import { DEFAULT_TIERS, TIER_IDS, UI_MODES } from "./shared/assistant-rules.ts";
+
+export {
+  changedSettingsPaths,
+  isSimpleSettingsPath,
+  RULES_VERSION,
+  SIMPLE_SETTINGS_PATHS,
+  settingsPathsOutsideSimple,
+} from "./shared/assistant-rules.ts";
+
+const modelKeyRef = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z0-9][\w.-]*\/\S+$/, "IA au format fournisseur/modèle (ex. github-copilot/claude-sonnet-5).");
+
+/** Niveau d'IA : candidats dans l'ordre de préférence et réflexion (conception 0.2.0 §6). */
+export const tierDefSchema = z.strictObject({
+  candidates: z
+    .array(modelKeyRef)
+    .min(1)
+    .max(4)
+    .refine((list) => new Set(list).size === list.length, "Candidat en double."),
+  variant: z.string().min(1).max(40).nullable(),
+});
+
+export const tierDefsSchema = z.strictObject({ rapide: tierDefSchema, equilibre: tierDefSchema, expert: tierDefSchema });
 
 const rates = z.object({
   input: z.number().min(0).max(10_000),
@@ -56,9 +82,25 @@ export const settingsSchema = z
       intervalMinutes: z.number().int().min(5).max(1_440),
     }),
     chat: z.object({
+      /** Obsolète depuis 0.2.0 : sert seulement à initialiser ai.chatDefaultTier, ignoré en mode Simple. */
       defaultModel: z.string().max(200).nullable(),
       defaultAgent: z.string().max(64).nullable(),
       defaultDirectory: z.string().max(1_000).nullable(),
+    }),
+    ai: z.object({
+      /** null : recommandation livrée avec le cockpit (DEFAULT_TIERS), mise à jour avec le cockpit. */
+      tiers: tierDefsSchema.nullable(),
+      /** Niveau de l'Assistant général et des nouvelles conversations. */
+      chatDefaultTier: z.enum(TIER_IDS),
+      /** Mode Avancé : autoriser à changer l'IA d'un assistant pour un message. */
+      allowModelOverride: z.boolean(),
+    }),
+    ui: z.object({
+      mode: z.enum(UI_MODES),
+      /** Version des règles d'utilisation acceptée (RULES_VERSION) ; 0 = jamais. */
+      rulesAcceptedVersion: z.number().int().min(0).max(1_000_000),
+      /** Version dont la notice unique « Nouveau : mode Simple » a été vue. */
+      noticeSeen: z.string().max(20).nullable(),
     }),
   })
   .superRefine((s, ctx) => {
@@ -183,12 +225,27 @@ export const DEFAULT_SETTINGS: Settings = {
   classifier: { mode: "llm", model: null, idleMinutes: 2, reclassifyAfterPrompts: 3, categories: DEFAULT_CATEGORIES },
   quotaSync: { enabled: false, intervalMinutes: 15 },
   chat: { defaultModel: null, defaultAgent: null, defaultDirectory: null },
+  ai: { tiers: null, chatDefaultTier: "equilibre", allowModelOverride: false },
+  // Mode Simple pour toute installation, y compris celles qui viennent de 0.1.x.
+  ui: { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null },
 };
 
-const REPLACED_PATHS = new Set(["pricing.overrides", "classifier.categories", "budget.alertThresholds"]);
+const REPLACED_PATHS = new Set(["pricing.overrides", "classifier.categories", "budget.alertThresholds", "ai.tiers"]);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * 0.1.x → 0.2.0 : tant qu'aucune section `ai` n'est enregistrée, un `chat.defaultModel` qui est une IA d'un niveau
+ * livré choisit `ai.chatDefaultTier`. Rien n'est écrit : la valeur est recalculée jusqu'au premier enregistrement.
+ */
+export function seedLegacySettings(stored: unknown): unknown {
+  if (!isPlainObject(stored) || Object.hasOwn(stored, "ai")) return stored;
+  const chat = stored.chat;
+  const legacy = isPlainObject(chat) && typeof chat.defaultModel === "string" ? chat.defaultModel : null;
+  const tier = legacy === null ? undefined : TIER_IDS.find((id) => DEFAULT_TIERS[id].candidates.includes(legacy));
+  return tier ? { ...stored, ai: { chatDefaultTier: tier } } : stored;
 }
 
 /** Fusion récursive : les objets se fusionnent, tableaux et dictionnaires listés sont remplacés. */
@@ -228,7 +285,7 @@ export class SettingsStore {
     let candidate: unknown = DEFAULT_SETTINGS;
     if (row) {
       try {
-        candidate = mergeSettings(DEFAULT_SETTINGS, JSON.parse(row.value));
+        candidate = mergeSettings(DEFAULT_SETTINGS, seedLegacySettings(JSON.parse(row.value)));
       } catch {
         candidate = DEFAULT_SETTINGS;
       }

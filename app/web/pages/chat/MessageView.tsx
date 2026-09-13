@@ -1,11 +1,13 @@
 // Rendu d'un échange : demande de l'utilisateur puis toutes les étapes de réponse de l'agent.
 import { memo, useDeferredValue } from "react";
+import { MESSAGES } from "../../../server/shared/assistant-rules.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { Markdown } from "../../components/Markdown.tsx";
 import { formatDuration, formatTokens, formatUsd } from "../../lib/format.ts";
 import type { OcError, OcFilePart, OcPart, OcTextPart } from "../../lib/types.ts";
 import { relativePath, ToolCard } from "./ToolCard.tsx";
 import { type MessageEntry, type Turn, turnTotals } from "./transcript.ts";
+import { isModelNotFound } from "./turn.ts";
 
 function StreamingMarkdown({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
@@ -27,6 +29,7 @@ export function describeError(error: OcError): { tone: "muted" | "critical"; tex
     case "MessageOutputLengthError":
       return { tone: "critical", text: "Réponse coupée : la limite de sortie du modèle est atteinte." };
     default:
+      if (isModelNotFound(error)) return { tone: "critical", text: `${MESSAGES.modelNotFoundTitle}. ${MESSAGES.modelNotFound}` };
       return { tone: "critical", text: detail || error.name };
   }
 }

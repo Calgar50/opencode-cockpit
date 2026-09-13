@@ -1,4 +1,5 @@
 import path from "node:path";
+import { DEFAULT_ALLOWED_PROVIDERS } from "./shared/assistant-rules.ts";
 
 export interface AppEnv {
   host: string;
@@ -28,11 +29,36 @@ export interface AppEnv {
   projectConfig: boolean;
   /** Seul domaine GitHub Enterprise vers lequel le jeton Copilot peut être envoyé (synchro du solde). */
   githubEnterpriseDomain: string | null;
+  /**
+   * Fournisseurs d'IA acceptés par le proxy, l'éditeur de niveaux et le Studio (COCKPIT_ALLOWED_PROVIDERS).
+   * Défaut : github-copilot seul ; toute autre valeur affiche le bandeau rouge « Mode test ».
+   */
+  allowedProviders: string[];
   version: string;
 }
 
 export class EnvError extends Error {
   override name = "EnvError";
+}
+
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** Liste séparée par des virgules ; vide = github-copilot ; identifiant invalide = refus de démarrer. */
+export function parseAllowedProviders(value: string | undefined): string[] {
+  const list = [
+    ...new Set(
+      (value ?? "")
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (list.length === 0) return [...DEFAULT_ALLOWED_PROVIDERS];
+  const invalid = list.find((p) => !PROVIDER_ID.test(p));
+  if (invalid !== undefined) {
+    throw new EnvError(`COCKPIT_ALLOWED_PROVIDERS : identifiant de fournisseur invalide (${invalid.slice(0, 40)}).`);
+  }
+  return list;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength: number): string {
@@ -74,6 +100,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     tlsInsecure: env.COCKPIT_TLS_INSECURE === "1" || env.COCKPIT_TLS_INSECURE === "true",
     projectConfig: env.COCKPIT_PROJECT_CONFIG === "1",
     githubEnterpriseDomain: env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null,
+    allowedProviders: parseAllowedProviders(env.COCKPIT_ALLOWED_PROVIDERS),
     version: env.COCKPIT_VERSION?.trim() || "dev",
   };
 }

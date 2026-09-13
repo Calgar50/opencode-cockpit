@@ -1,12 +1,12 @@
-// Zone de saisie : message, fichiers (@), commandes (/), images collées, agent, modèle et estimation du coût.
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+// Zone de saisie : assistant, message, fichiers (@), raccourcis (/), images collées, IA de la demande et
+// bandeau de confidentialité permanent.
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { MESSAGES } from "../../../server/shared/assistant-rules.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
-import { Badge, Button, useAsync } from "../../components/ui.tsx";
-import { api, oc } from "../../lib/api.ts";
-import { formatPricePerM, formatUsd } from "../../lib/format.ts";
-import type { ModelInfo, OcAgent, OcCommand } from "../../lib/types.ts";
-import { ModelPicker } from "./ModelPicker.tsx";
+import { Button } from "../../components/ui.tsx";
+import { oc } from "../../lib/api.ts";
+import type { CommandOption } from "./turn.ts";
 
 export interface ComposerAttachment {
   id: string;
@@ -19,6 +19,13 @@ export interface ComposerAttachment {
 export interface ComposerSubmit {
   text: string;
   attachments: ComposerAttachment[];
+}
+
+/** Assistant sélectionnable (titre affiché, aide en infobulle). */
+export interface AgentOption {
+  name: string;
+  title: string;
+  help: string | null;
 }
 
 interface MenuItem {
@@ -52,33 +59,6 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function EstimateChip({ model }: { model: ModelInfo | undefined }) {
-  const estimate = useAsync(
-    () => (model ? api.usageEstimate(model.providerID, model.modelID) : Promise.resolve(null)),
-    [model?.key],
-  );
-  if (!model) return null;
-  const data = estimate.data;
-  const guarded = data && !data.guard.allowed;
-  if (data?.avgUsd != null) {
-    return (
-      <span className="row tiny muted" title={`Coût moyen observé sur ${data.samples} demande(s) ces 30 derniers jours`}>
-        ≈ {formatUsd(data.avgUsd)} / demande
-        {guarded ? <Badge tone="warning">confirmation requise</Badge> : null}
-      </span>
-    );
-  }
-  if (model.price) {
-    return (
-      <span className="row tiny muted" title="Prix par million de tokens (entrée → sortie)">
-        {formatPricePerM(model.price.rates.input)} → {formatPricePerM(model.price.rates.output)}
-        {guarded ? <Badge tone="warning">confirmation requise</Badge> : null}
-      </span>
-    );
-  }
-  return null;
-}
-
 export function Composer({
   directory,
   busy,
@@ -86,13 +66,13 @@ export function Composer({
   placeholder,
   agents,
   agent,
+  agentTitle,
   onAgentChange,
   commands,
-  models,
-  model,
-  onModelChange,
-  variant,
-  onVariantChange,
+  onCommandChange,
+  imageModel,
+  ia,
+  notice,
   onSubmit,
   onAbort,
   seed,
@@ -100,33 +80,45 @@ export function Composer({
   directory: string;
   busy: boolean;
   disabled?: boolean;
-  placeholder?: string;
-  agents: OcAgent[];
+  placeholder?: string | undefined;
+  agents: AgentOption[];
   agent: string;
+  /** Titre de l'assistant courant (s'il n'est pas dans la liste). */
+  agentTitle: string;
   onAgentChange: (name: string) => void;
-  commands: OcCommand[];
-  models: ModelInfo[];
-  model: string | null;
-  onModelChange: (key: string) => void;
-  variant: string | null;
-  onVariantChange: (variant: string | null) => void;
-  onSubmit: (input: ComposerSubmit) => void;
+  /** Lignes du menu « / » (déjà filtrées selon le mode). */
+  commands: CommandOption[];
+  /** Nom tapé après « / » en tête du message (null sinon), pour afficher l'IA du raccourci. */
+  onCommandChange?: (name: string | null) => void;
+  /** IA qui recevra le message (vérification des images). */
+  imageModel?: { name: string; attachment: boolean } | undefined;
+  /** Choix de l'IA (puce, niveaux, réflexion, coût). */
+  ia?: ReactNode;
+  /** Message au-dessus de la zone (problème bloquant). */
+  notice?: ReactNode;
+  /** false (ou promesse de false) : rien n'a été envoyé, le texte est remis dans la zone. */
+  onSubmit: (input: ComposerSubmit) => Promise<boolean> | boolean | void;
   onAbort: () => void;
-  /** Texte à insérer (suggestions) ; `nonce` change à chaque insertion. */
-  seed?: { text: string; nonce: number };
+  /** Texte à insérer ; `nonce` change à chaque insertion. */
+  seed?: { text: string; nonce: number } | undefined;
 }) {
   const toast = useToast();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const searchTimer = useRef<number | undefined>(undefined);
   const searchSeq = useRef(0);
+  const selectId = useId();
 
-  const selectedModel = models.find((m) => m.key === model);
-  const primaryAgents = agents.filter((a) => a.mode !== "subagent" && !a.hidden);
-  const variants = selectedModel?.variants ?? [];
+  const commandName = /^\/([\w-]+)(?=\s|$)/.exec(text)?.[1] ?? null;
+  const onCommandChangeRef = useRef(onCommandChange);
+  onCommandChangeRef.current = onCommandChange;
+  useEffect(() => {
+    onCommandChangeRef.current?.(commandName);
+  }, [commandName]);
 
   useEffect(() => {
     const el = area.current;
@@ -170,7 +162,7 @@ export function Composer({
       const items = commands
         .filter((c) => c.name.toLowerCase().includes(query))
         .slice(0, 12)
-        .map((c) => ({ value: c.name, label: `/${c.name}`, hint: c.description ?? (c.source === "skill" ? "skill" : "") }));
+        .map((c) => ({ value: c.name, label: c.label, hint: c.hint }));
       setMenu(items.length > 0 ? { kind: "command", query, start: 0, items, index: 0 } : null);
       return;
     }
@@ -214,8 +206,8 @@ export function Composer({
   const addImages = async (files: Iterable<File>) => {
     for (const file of files) {
       if (!file.type.startsWith("image/")) continue;
-      if (selectedModel && !selectedModel.attachment) {
-        toast.warning("Images non prises en charge", `${selectedModel.name} n'accepte pas les images.`);
+      if (imageModel && !imageModel.attachment) {
+        toast.warning("Images non prises en charge", `${imageModel.name} n'accepte pas les images.`);
         return;
       }
       if (file.size > MAX_IMAGE_BYTES) {
@@ -232,14 +224,33 @@ export function Composer({
   };
 
   const submit = () => {
-    if (busy || disabled) return;
+    if (busy || disabled || sending) return;
     const trimmed = text.trim();
     const kept = attachments.filter((a) => a.kind === "image" || trimmed.includes(`@${a.filename}`));
     if (!trimmed && kept.length === 0) return;
-    onSubmit({ text: trimmed, attachments: kept });
+    const snapshot = { text, attachments };
+    // Rien n'a été envoyé : on remet le message, sauf si l'utilisateur a déjà recommencé à écrire.
+    const restore = () => {
+      setText((current) => (current ? current : snapshot.text));
+      setAttachments((current) => (current.length > 0 ? current : snapshot.attachments));
+    };
     setText("");
     setAttachments([]);
     setMenu(null);
+    const result = onSubmit({ text: trimmed, attachments: kept });
+    if (result instanceof Promise) {
+      setSending(true);
+      result
+        .then(
+          (ok) => {
+            if (ok === false) restore();
+          },
+          () => restore(),
+        )
+        .finally(() => setSending(false));
+    } else if (result === false) {
+      restore();
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -268,8 +279,11 @@ export function Composer({
     }
   };
 
+  const currentOption = agents.find((a) => a.name === agent);
+
   return (
     <div className="composer-wrap">
+      {notice}
       <div
         className={`composer${dragging ? " dragging" : ""}`}
         onDragOver={(e) => {
@@ -286,7 +300,7 @@ export function Composer({
         }}
       >
         {menu && menu.items.length > 0 ? (
-          <div className="popover" role="listbox" aria-label={menu.kind === "command" ? "Commandes" : "Fichiers"}>
+          <div className="popover" role="listbox" aria-label={menu.kind === "command" ? "Raccourcis" : "Fichiers"}>
             {menu.items.map((item, i) => (
               <button
                 key={item.value}
@@ -300,12 +314,39 @@ export function Composer({
                 }}
               >
                 <Icon name={menu.kind === "command" ? "terminal" : "file"} size={14} />
-                <span className="ellipsis">{item.label}</span>
-                {item.hint ? <span className="tiny muted ellipsis" style={{ marginLeft: "auto", maxWidth: 200 }}>{item.hint}</span> : null}
+                <span className="ellipsis" style={{ flex: "none", maxWidth: "45%" }}>
+                  {item.label}
+                </span>
+                {item.hint ? (
+                  <span className="tiny muted ellipsis" style={{ marginLeft: "auto", minWidth: 0 }} title={item.hint}>
+                    {item.hint}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
         ) : null}
+
+        <div className="composer-assistant">
+          <label className="small muted" htmlFor={selectId}>
+            Assistant :
+          </label>
+          <select
+            id={selectId}
+            className="select sm"
+            value={agent}
+            title={currentOption?.help ?? undefined}
+            disabled={disabled}
+            onChange={(e) => onAgentChange(e.target.value)}
+          >
+            {currentOption ? null : <option value={agent}>{agentTitle}</option>}
+            {agents.map((a) => (
+              <option key={a.name} value={a.name} title={a.help ?? undefined}>
+                {a.title}
+              </option>
+            ))}
+          </select>
+        </div>
 
         {attachments.length > 0 ? (
           <div className="composer-attachments">
@@ -351,41 +392,7 @@ export function Composer({
         />
 
         <div className="composer-toolbar">
-          <select
-            className="select sm"
-            style={{ width: "auto" }}
-            value={agent}
-            aria-label="Agent"
-            title="Agent principal"
-            onChange={(e) => onAgentChange(e.target.value)}
-          >
-            {primaryAgents.length === 0 ? <option value={agent}>{agent}</option> : null}
-            {primaryAgents.map((a) => (
-              <option key={a.name} value={a.name} title={a.description}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-          <ModelPicker models={models} value={model} onChange={onModelChange} />
-          {variants.length > 0 ? (
-            <select
-              className="select sm"
-              style={{ width: "auto" }}
-              value={variant ?? ""}
-              aria-label="Effort de raisonnement"
-              title="Effort de raisonnement (plus d'effort = plus de tokens)"
-              onChange={(e) => onVariantChange(e.target.value || null)}
-            >
-              <option value="">Effort : défaut</option>
-              {variants.map((v) => (
-                <option key={v} value={v}>
-                  Effort : {v}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <EstimateChip model={selectedModel} />
-          <span className="spacer" />
+          <div className="spacer composer-ia">{ia}</div>
           <label className="btn ghost sm icon-only" title="Joindre une image">
             <Icon name="image" size={14} />
             <input
@@ -404,15 +411,25 @@ export function Composer({
               Arrêter
             </Button>
           ) : (
-            <Button size="sm" variant="primary" icon="send" disabled={disabled || (!text.trim() && attachments.length === 0)} onClick={submit}>
+            <Button
+              size="sm"
+              variant="primary"
+              icon="send"
+              loading={sending}
+              disabled={disabled || (!text.trim() && attachments.length === 0)}
+              onClick={submit}
+            >
               Envoyer
             </Button>
           )}
         </div>
       </div>
       <p className="composer-hint">
-        <kbd>Entrée</kbd> envoyer · <kbd>Maj</kbd>+<kbd>Entrée</kbd> nouvelle ligne · <kbd>@</kbd> joindre un fichier · <kbd>/</kbd> commande · collez
-        une image
+        <kbd>Entrée</kbd> envoyer · <kbd>Maj</kbd>+<kbd>Entrée</kbd> nouvelle ligne · <kbd>@</kbd> joindre un fichier · <kbd>/</kbd> raccourci
+      </p>
+      <p className="composer-banner" role="note">
+        <Icon name="shield" size={13} />
+        <span>{MESSAGES.confidentialityBanner}</span>
       </p>
     </div>
   );

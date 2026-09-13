@@ -63,7 +63,7 @@ function rowErrors(row: CategoryRow, all: CategoryRow[]): string[] {
 }
 
 const MODE_HELP: Record<Classifier["mode"], string> = {
-  llm: "Un modèle économique lit un résumé de la conversation et choisit la catégorie, des mots-clés et un résumé (environ 0,001 $ par conversation). En cas d'échec, l'heuristique prend le relais.",
+  llm: "Une IA économique lit un résumé de la conversation et choisit la catégorie, des mots-clés et un résumé (environ 0,001 $ par conversation). En cas d'échec, l'heuristique prend le relais.",
   heuristic: "Classement gratuit par mots-clés, sans appel de modèle. Moins précis, sans résumé.",
   off: "Aucun classement par modèle ni reclassement : au premier archivage, une catégorie gratuite par mots-clés est posée (« Autre » faute d'indice), puis se corrige à la main.",
 };
@@ -148,12 +148,16 @@ export function ClassifierTab({ onDirtyChange }: { onDirtyChange: (dirty: boolea
         </div>
 
         <div className="grid-3">
-          <Field label="Modèle de classement" htmlFor={ids.model} hint={draft.mode === "llm" ? "Automatique : le modèle connecté le moins cher." : "Utilisé seulement en mode IA."}>
+          <Field
+            label="IA de classement"
+            htmlFor={ids.model}
+            hint={draft.mode === "llm" ? "Automatique : une IA économique (GPT-5 mini en priorité)." : "Utilisée seulement en mode IA."}
+          >
             <ModelSelect
               id={ids.model}
               value={draft.model}
               models={boot.models}
-              emptyLabel="Automatique (le moins cher)"
+              emptyLabel="Automatique : une IA économique (GPT-5 mini en priorité)"
               disabled={draft.mode !== "llm"}
               onChange={(model) => setDraft((d) => ({ ...d, model }))}
             />

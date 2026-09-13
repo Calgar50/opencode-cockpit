@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { ArchiveService } from "./archive.ts";
+import { AssistantService } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
 import { ControlService } from "./control.ts";
@@ -9,13 +10,16 @@ import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
+import { OcLookup } from "./oc-lookup.ts";
 import { OpencodeClient } from "./opencode.ts";
 import { EventProcessor } from "./processor.ts";
 import { ProjectsService } from "./projects.ts";
 import { QuotaSync } from "./quota.ts";
+import { registerAiRoutes, registerAssistantRoutes } from "./routes-assistants.ts";
 import { SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import { StudioService } from "./studio.ts";
+import { TierService } from "./tiers.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const log = createLogger();
@@ -58,7 +62,12 @@ const classifier = new Classifier({
   log,
   opencodeWorkspaceDir: env.opencodeWorkspaceDir,
 });
-const studio = new StudioService({ env, client, projects, control, log });
+// Avec le catalogue : une IA absente du compte Copilot (ou catalogue jamais lu) est refusée à l'enregistrement.
+const studio = new StudioService({ env, client, projects, control, log, catalog });
+// Agents et raccourcis vus par opencode (cache 15 s, invalidé par studio.changed, opencode.config.changed, ai.changed).
+const lookup = new OcLookup({ client, env, hub, log });
+const tiers = new TierService({ settings, catalog, ledger, env });
+const assistants = new AssistantService({ db, env, client, studio, lookup, tiers, ledger, settings, catalog, projects, hub, log });
 const quota = new QuotaSync({
   db,
   settings,
@@ -80,7 +89,31 @@ settings.onChange((next) => {
   hub.cockpit("settings.updated", next);
 });
 
-const app = createApp({ env, log, db, client, catalog, ledger, archive, classifier, studio, projects, control, quota, processor, settings, hub });
+// Les niveaux d'IA se résolvent sur le catalogue : une liste des IA qui change les fait recalculer côté interface.
+catalog.onChange(() => hub.cockpit("ai.changed", { reason: "catalog" }));
+
+const routeDeps = { assistants, tiers, settings, hub, log };
+const app = createApp({
+  env,
+  log,
+  db,
+  client,
+  catalog,
+  ledger,
+  archive,
+  classifier,
+  studio,
+  projects,
+  control,
+  quota,
+  processor,
+  settings,
+  hub,
+  lookup,
+  tiers,
+  assistants,
+  routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
+});
 
 const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port }, (info) => {
   log.info("cockpit à l'écoute", { host: env.host, port: info.port, version: env.version, tlsInsecure: env.tlsInsecure });
@@ -107,6 +140,7 @@ const shutdown = (signal: string) => {
   log.info("arrêt du cockpit", { signal });
   processor.stop();
   catalog.stop();
+  lookup.close();
   quota.stop();
   // Les flux SSE ouverts retiennent le serveur : arrêt forcé après 5 s.
   setTimeout(() => process.exit(0), 5_000).unref();

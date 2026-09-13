@@ -26,7 +26,8 @@ export const permissionSchema = z.union([
   }),
 ]);
 
-const modelRef = z
+/** IA « fournisseur/modèle » (frontmatter `model:`). */
+export const modelRefSchema = z
   .string()
   .max(200)
   .regex(/^[A-Za-z0-9][\w.-]*\/\S+$/, "Modèle au format fournisseur/modèle (ex. github-copilot/claude-sonnet-5).");
@@ -36,7 +37,7 @@ const THEME_COLORS = ["primary", "secondary", "accent", "success", "warning", "e
 export const agentFrontmatterSchema = z.looseObject({
   description: z.string().trim().min(1, "La description est obligatoire.").max(1024),
   mode: z.enum(["primary", "subagent", "all"]).optional(),
-  model: modelRef.optional(),
+  model: modelRefSchema.optional(),
   variant: z.string().min(1).max(40).optional(),
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
@@ -55,7 +56,7 @@ export const agentFrontmatterSchema = z.looseObject({
 export const commandFrontmatterSchema = z.strictObject({
   description: z.string().trim().max(1024).optional(),
   agent: z.string().min(1).max(64).optional(),
-  model: modelRef.optional(),
+  model: modelRefSchema.optional(),
   variant: z.string().min(1).max(40).optional(),
   subtask: z.boolean().optional(),
 });

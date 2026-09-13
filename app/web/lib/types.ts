@@ -1,4 +1,82 @@
 // Types partagés par l'interface : API du cockpit et objets opencode relayés.
+import type { AiSettings, EstimateView, TierView, UiSettings } from "../../server/shared/api-types.ts";
+import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
+
+// 0.2.0 « Assistants et niveaux d'IA » : types définis une seule fois dans server/shared (serveur et interface).
+export type {
+  Action,
+  AgentLite,
+  AssistantDraft,
+  AssistantFile,
+  AssistantIcon,
+  CatalogLite,
+  CommandLite,
+  Estimate,
+  ModelRef,
+  Problem,
+  ProblemCode,
+  Reflection,
+  RightLine,
+  RightLineKind,
+  RightsLabel,
+  RightsProfile,
+  Rule,
+  Run,
+  RunRole,
+  RunSource,
+  RunView,
+  TaskSize,
+  Tier,
+  TierDef,
+  TierDefs,
+  TierResolution,
+  TierStatus,
+  Turn,
+  TurnDisplay,
+  TurnLock,
+  UiMode,
+  UseCase,
+} from "../../server/shared/assistant-rules.ts";
+export type {
+  AdoptRequest,
+  AiSettings,
+  AiView,
+  AssistantModelChangedError,
+  AssistantOrigin,
+  AssistantPreview,
+  AssistantSaveRequest,
+  AssistantState,
+  AssistantsResponse,
+  AssistantView,
+  BudgetGuardError,
+  BuiltinAssistantView,
+  CatalogueItem,
+  ChatTurnKind,
+  ChoicesResponse,
+  EstimateView,
+  FicheInfo,
+  InstallRequest,
+  ItemKind,
+  KeepModelRequest,
+  KeepModelResponse,
+  MissingItem,
+  PutTiersRequest,
+  PutTiersResponse,
+  RealignRequest,
+  RealignResponse,
+  ResolveRequest,
+  ResolveResponse,
+  RestorePrudentResponse,
+  SavedAssistant,
+  TierView,
+  ToCompleteItem,
+  UiSettings,
+  UpdateItem,
+  UsageRow,
+  UsageRowState,
+  UsageRowType,
+  UsedByError,
+} from "../../server/shared/api-types.ts";
 
 export interface PriceRates {
   input: number;
@@ -26,7 +104,18 @@ export interface ModelInfo {
   reasoning: boolean;
   attachment: boolean;
   variants: string[];
+  /** Prix de sortie EFFECTIF (surcharges > grille > catalogue) au-delà de budget.guard.maxOutputPricePerM. */
   expensive: boolean;
+  /** Statut opencode : active, beta, alpha, deprecated. */
+  status: string;
+  /** Sait utiliser les outils (sinon inutilisable par un assistant). */
+  toolcall: boolean;
+  /** Niveau dont c'est l'IA résolue, sinon null. */
+  tier: Tier | null;
+  /** Coût estimé d'une demande S / M / L au prix effectif, null sans prix. */
+  taskCost: { S: number; M: number; L: number } | null;
+  /** Groupe « Réservé (très cher) » : prix promotionnel ou sortie ≥ 30 $/M. */
+  reserved: boolean;
 }
 
 export interface Category {
@@ -53,7 +142,10 @@ export interface Settings {
     categories: Category[];
   };
   quotaSync: { enabled: boolean; intervalMinutes: number };
+  /** `defaultModel` est obsolète depuis 0.2.0 (initialise ai.chatDefaultTier, ignoré en mode Simple). */
   chat: { defaultModel: string | null; defaultAgent: string | null; defaultDirectory: string | null };
+  ai: AiSettings;
+  ui: UiSettings;
 }
 
 export interface ProjectInfo {
@@ -106,6 +198,24 @@ export interface Bootstrap {
   usage: UsageLite;
   quota: QuotaSnapshot | null;
   pricing: { asOf: string; sourceUrl: string; usdPerCredit: number };
+  /** 0.2.0 : copie de settings.ui (mode d'affichage, règles acceptées, notice). */
+  ui: UiSettings;
+  /** 0.2.0 : niveaux résolus sur le catalogue Copilot de ce poste. */
+  ai: { tiers: TierView[]; chatDefaultTier: Tier; allowModelOverride: boolean };
+  /** RULES_VERSION du serveur : fenêtre « Avant de commencer » tant que ui.rulesAcceptedVersion est inférieur. */
+  rulesVersion: number;
+  /** COCKPIT_ALLOWED_PROVIDERS ; toute valeur autre que ["github-copilot"] affiche le bandeau « Mode test ». */
+  allowedProviders: string[];
+}
+
+/** GET /api/usage/estimate (avec `agent` et `size` facultatifs depuis 0.2.0). */
+export interface UsageEstimate {
+  price: ModelPrice | null;
+  avgUsd: number | null;
+  samples: number;
+  guard: GuardDecision;
+  /** Moyenne observée de l'agent (≥ 5 demandes) sinon profil S/M/L au prix effectif ; null sans prix. */
+  estimate: EstimateView | null;
 }
 
 export interface TokenTotals {
@@ -221,6 +331,8 @@ export interface StudioItem {
   error: string | null;
   files: string[];
   updatedAt: number;
+  /** Agents (0.2.0) : réglages inconnus déjà présents dans le fichier, tolérés avec cet avertissement. */
+  warnings?: string[];
 }
 
 export interface StudioTemplate {
@@ -229,6 +341,8 @@ export interface StudioTemplate {
   title: string;
   frontmatter: Record<string, unknown>;
   body: string;
+  /** 0.2.0 : niveau conseillé (badge « Niveau conseillé : … ») ; null = l'IA vient de son assistant. */
+  tier?: Tier | null;
 }
 
 export interface ValidationIssue {
@@ -481,6 +595,10 @@ export interface OcAgent {
   color?: string;
   model?: { modelID: string; providerID: string };
   variant?: string;
+  /** Règles effectives (défauts, configuration globale, agent) dans l'ordre d'évaluation (agent/agent.ts:35-55). */
+  permission?: Rule[];
+  /** Consignes (corps du fichier d'agent). */
+  prompt?: string;
 }
 
 export interface OcCommand {

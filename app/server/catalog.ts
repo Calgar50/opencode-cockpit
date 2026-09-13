@@ -1,6 +1,12 @@
 // Catalogue des modèles réellement utilisables (fournisseurs connectés), rafraîchi périodiquement.
 import type { OpencodeClient } from "./opencode.ts";
 import { type CatalogCost, type ModelPrice, priceFromCatalog } from "./pricing.ts";
+import { type CatalogLite, toCatalogLite } from "./shared/assistant-rules.ts";
+
+/** Modèles du catalogue réduits pour le résolveur partagé (statut, outils et réflexions compris). */
+export function catalogLite(models: readonly CatalogModel[]): CatalogLite[] {
+  return toCatalogLite(models);
+}
 
 export interface CatalogModel {
   key: string;
@@ -40,6 +46,9 @@ export class ModelCatalog {
   #prices = new Map<string, ModelPrice>();
   #loadedAt = 0;
   #timer: NodeJS.Timeout | undefined;
+  /** Empreinte de ce qui change la résolution des niveaux (IA, statut, outils, réflexions, prix). */
+  #signature = "";
+  readonly #listeners = new Set<() => void>();
 
   readonly #client: OpencodeClient;
 
@@ -59,8 +68,18 @@ export class ModelCatalog {
     return this.#prices;
   }
 
+  /** true dès que le catalogue a été lu au moins une fois. */
+  get loaded(): boolean {
+    return this.#loadedAt > 0;
+  }
+
   list(): CatalogModel[] {
     return [...this.#models.values()];
+  }
+
+  /** Catalogue pour le résolveur partagé ; vide tant qu'il n'est pas chargé (= « non vérifié »). */
+  lite(): CatalogLite[] {
+    return catalogLite(this.list());
   }
 
   get(providerID: string, modelID: string): CatalogModel | undefined {
@@ -105,6 +124,25 @@ export class ModelCatalog {
     this.#prices = prices;
     this.#defaults = data.default ?? {};
     this.#loadedAt = Date.now();
+    const signature = JSON.stringify(
+      [...models.values()].sort((a, b) => a.key.localeCompare(b.key)).map((m) => [m.key, m.status, m.toolcall, m.variants, m.price]),
+    );
+    if (signature !== this.#signature) {
+      this.#signature = signature;
+      for (const listener of this.#listeners) {
+        try {
+          listener();
+        } catch {
+          // Un abonné en échec ne doit pas empêcher la mise à jour du catalogue.
+        }
+      }
+    }
+  }
+
+  /** Appelé après une lecture du catalogue qui change la liste des IA (première lecture comprise). */
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   /** Rafraîchit maintenant puis toutes les `intervalMs` ; les échecs sont signalés sans arrêter la boucle. */

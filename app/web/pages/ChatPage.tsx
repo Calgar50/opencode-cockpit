@@ -1,17 +1,36 @@
-// Page Chat : conversations du projet, fil en direct, interactions de l'agent et saisie.
+// Page Chat : conversations du projet, fil en direct, interactions de l'assistant et saisie.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  agentMissingMessage,
+  BUDGET_CONFIRM_CANCEL,
+  BUDGET_CONFIRM_SEND,
+  BUDGET_CONFIRM_TITLE,
+  detectPermissionPreset,
+  formatUsd as usdText,
+  MESSAGES,
+  modelKey,
+  parseModelKey,
+  PERMISSION_PRESETS,
+  RIGHT_LINE_SYMBOLS,
+  RIGHTS_INFO,
+  TIER_LABELS,
+} from "../../server/shared/assistant-rules.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button, IconButton, Meter, Modal, Spinner, useConfirm } from "../components/ui.tsx";
-import { ApiError, api, oc } from "../lib/api.ts";
+import { ApiError, api, assistantModelChanged, budgetGuard, oc } from "../lib/api.ts";
 import { useEvents } from "../lib/events.ts";
 import { formatPercent, formatTokens, formatUsd } from "../lib/format.ts";
-import { navigate, useRoute } from "../lib/router.ts";
+import { CHAT_ASSISTANT_PARAM, navigate, openAssistants, useRoute, useRouteQuery } from "../lib/router.ts";
 import type {
+  AssistantsResponse,
+  AssistantView,
+  CatalogueItem,
+  ChoicesResponse,
   Conversation,
   FileDiff,
-  GuardDecision,
+  ModelRef,
   OcAgent,
   OcCommand,
   OcMessage,
@@ -21,23 +40,35 @@ import type {
   OcSessionStatus,
   PermissionRequest,
   QuestionRequest,
+  ResolveRequest,
+  ResolveResponse,
+  TaskSize,
+  Tier,
   Todo,
+  UpdateItem,
 } from "../lib/types.ts";
 import "./chat/chat.css";
-import { Composer, type ComposerSubmit } from "./chat/Composer.tsx";
+import { ChangeAssistantModal, type ChangeAssistantTarget } from "./chat/ChangeAssistantModal.tsx";
+import { type AgentOption, Composer, type ComposerSubmit } from "./chat/Composer.tsx";
 import { ContextPanel } from "./chat/ContextPanel.tsx";
+import { IaControls, ProblemNotice } from "./chat/IaChip.tsx";
 import { PermissionPrompt, QuestionPrompt } from "./chat/Interactions.tsx";
 import { TurnView } from "./chat/MessageView.tsx";
 import { SessionSidebar } from "./chat/SessionSidebar.tsx";
 import { SubSessionDrawer } from "./chat/SubSessionDrawer.tsx";
 import { contextTokens, EMPTY_TRANSCRIPT, groupTurns, transcriptReducer } from "./chat/transcript.ts";
-
-const SUGGESTIONS = [
-  { title: "Comprendre le projet", text: "Explique-moi l'architecture de ce projet : dossiers importants, points d'entrée et flux principal." },
-  { title: "Corriger un bug", text: "J'ai un bug : " },
-  { title: "Écrire des tests", text: "Écris des tests unitaires pour " },
-  { title: "Revue de sécurité", text: "Fais une revue de sécurité des changements en cours (git diff) et propose des correctifs." },
-];
+import {
+  builtinHelp,
+  builtinTitle,
+  commandOptions,
+  defaultAgentName,
+  isChatAgent,
+  isModelNotFound,
+  localResolve,
+  resolveKey,
+  useServerResolve,
+} from "./chat/turn.ts";
+import { type ProfileInfo, WelcomeCards } from "./chat/WelcomeCards.tsx";
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -66,12 +97,23 @@ function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
 
 const noop = () => undefined;
 
+const exampleText = (example: string | undefined) => (example ? `Exemple : ${example}` : null);
+
+/** Ce qui part dans le corps de la demande (modifié une fois après un 409 assistant-model-changed). */
+interface SendParams {
+  model: ModelRef;
+  variant: string | null;
+  modelOverride: boolean;
+}
+
 export function ChatPage() {
   const route = useRoute();
   const sessionId = route[0] === "chat" ? (route[1] ?? null) : null;
   const { boot, directory, setDirectory, categoryById, modelByKey } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const advanced = boot.ui.mode === "avance";
+  const allowOverride = advanced && boot.ai.allowModelOverride;
 
   const [sessions, setSessions] = useState<OcSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -92,31 +134,35 @@ export function ChatPage() {
   const [asideOpen, setAsideOpen] = useState(() => readFlag("cockpit-chat-aside", true));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [seed, setSeed] = useState<{ text: string; nonce: number } | undefined>(undefined);
 
-  const defaultModel = useMemo(() => {
-    const known = (key: string | null | undefined) => Boolean(key && boot.models.some((m) => m.key === key));
-    if (known(boot.settings.chat.defaultModel)) return boot.settings.chat.defaultModel;
-    const copilot = boot.modelDefaults["github-copilot"];
-    if (copilot && known(`github-copilot/${copilot}`)) return `github-copilot/${copilot}`;
-    for (const [provider, id] of Object.entries(boot.modelDefaults)) if (known(`${provider}/${id}`)) return `${provider}/${id}`;
-    return boot.models[0]?.key ?? null;
-  }, [boot.models, boot.modelDefaults, boot.settings.chat.defaultModel]);
-
+  // --- Choix de la demande : assistant, niveau, réflexion, autre IA (mode Avancé) ---
   const [agent, setAgent] = useState<string>(boot.settings.chat.defaultAgent ?? "build");
-  const [model, setModel] = useState<string | null>(defaultModel);
-  const [variant, setVariant] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!model || !boot.models.some((m) => m.key === model)) setModel(defaultModel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultModel, boot.models]);
+  const [tier, setTier] = useState<Tier>(boot.ai.chatDefaultTier);
+  /** undefined : réflexion du niveau ; null : standard. */
+  const [variant, setVariant] = useState<string | null | undefined>(undefined);
+  const [override, setOverride] = useState<string | null>(null);
+  const [draftCommand, setDraftCommand] = useState<string | null>(null);
+  /** Carte choisie sur l'écran d'accueil (aucune présélection). */
+  const [picked, setPicked] = useState<string | null>(null);
+  const [placeholder, setPlaceholder] = useState<string | null>(null);
+  const [assistants, setAssistants] = useState<AssistantsResponse | null>(null);
+  const [assistantsFailed, setAssistantsFailed] = useState(false);
+  const [catalogue, setCatalogue] = useState<CatalogueItem[] | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [profile, setProfile] = useState<ProfileInfo | null>(null);
+  const [resolveTick, setResolveTick] = useState(0);
+  const [changeTarget, setChangeTarget] = useState<ChangeAssistantTarget | null>(null);
 
   const sessionRef = useRef<string | null>(sessionId);
   sessionRef.current = sessionId;
   const pendingRef = useRef<string | null>(null);
   const statusesRef = useRef(statuses);
   statusesRef.current = statuses;
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  /** Assistant à garder pour la prochaine nouvelle conversation (dialogue de changement d'assistant). */
+  const nextAgentRef = useRef<string | null>(null);
+  const missingToasted = useRef<string | null>(null);
   const isVisible = (sid: unknown) => typeof sid === "string" && (sid === sessionRef.current || sid === pendingRef.current);
 
   const sessionDirectory = session?.directory ?? directory;
@@ -161,20 +207,92 @@ export function ChatPage() {
     void loadConversations();
   }, [loadConversations]);
 
-  const applyLastChoices = useCallback(
-    (messages: OcMessageWithParts[]) => {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const info = messages[i]?.info;
-        if (info?.role !== "user") continue;
-        const key = `${info.model.providerID}/${info.model.modelID}`;
-        if (boot.models.some((m) => m.key === key)) setModel(key);
-        if (info.agent) setAgent(info.agent);
-        setVariant(info.model.variant ?? null);
-        return;
+  const loadAssistants = useCallback(async () => {
+    try {
+      const data = await api.assistants();
+      setAssistants(data);
+      setAssistantsFailed(false);
+      if (data.assistants.length === 0) api.assistantsCatalogue().then(setCatalogue, () => setCatalogue([]));
+    } catch {
+      setAssistantsFailed(true);
+    }
+  }, []);
+
+  const loadProfile = useCallback(async () => {
+    try {
+      const config = await api.opencodeConfig();
+      const id = detectPermissionPreset(config.permission);
+      setProfile({ prudent: id === "prudent", label: id ? PERMISSION_PRESETS[id].label : RIGHTS_INFO.personnalise.label });
+    } catch {
+      setProfile(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAssistants();
+    void loadProfile();
+  }, [loadAssistants, loadProfile]);
+
+  const refreshAgents = useCallback(() => oc.agents(directory).then(setAgents, noop), [directory]);
+
+  // --- Titres et tailles de demande des assistants ---
+  const assistantByName = useMemo(() => new Map((assistants?.assistants ?? []).map((a) => [a.name, a])), [assistants]);
+  const titleOf = useCallback((name: string) => assistantByName.get(name)?.title ?? builtinTitle(name) ?? name, [assistantByName]);
+  const sizeOf = useCallback((name: string): TaskSize => assistantByName.get(name)?.taskSize ?? "M", [assistantByName]);
+
+  /** « Nouvelle conversation » : assistant par défaut (ou celui demandé), niveau par défaut, réflexion standard du niveau. */
+  const resetChoices = (next: string | null = null) => {
+    setAgent(next ?? defaultAgentName(boot.settings.chat.defaultAgent, agentsRef.current));
+    setTier(boot.ai.chatDefaultTier);
+    setVariant(undefined);
+    setOverride(null);
+    setPicked(next);
+    setPlaceholder(null);
+  };
+
+  /** Réouverture : derniers choix enregistrés par le cockpit (jamais l'IA d'un raccourci). */
+  const restoreChoices = async (sid: string, messages: OcMessageWithParts[]) => {
+    let choices: ChoicesResponse = null;
+    try {
+      choices = await api.chatChoices(sid);
+    } catch {
+      choices = null;
+    }
+    if (sessionRef.current !== sid) return;
+    setOverride(null);
+    if (choices) {
+      const chosen = choices;
+      setAgent(chosen.agent || defaultAgentName(boot.settings.chat.defaultAgent, agentsRef.current));
+      const known = agentsRef.current.find((a) => a.name === chosen.agent);
+      const levelOfModel = boot.ai.tiers.find((t) => t.model !== null && t.model === chosen.model)?.id ?? null;
+      const level = levelOfModel ?? chosen.tier;
+      if (level) {
+        setTier(level);
+        setVariant(chosen.variant);
+      } else if (advanced && chosen.model && known && !known.model && boot.models.some((m) => m.key === chosen.model)) {
+        // Mode Avancé : l'IA précise choisie pour un agent sans IA propre.
+        setOverride(chosen.model);
+        setVariant(chosen.variant);
+      } else {
+        setTier(boot.ai.chatDefaultTier);
+        setVariant(undefined);
       }
-    },
-    [boot.models],
-  );
+      return;
+    }
+    // Conversation antérieure à 0.2.0 : seul l'assistant du dernier message est repris.
+    let lastAgent: string | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const info = messages[i]?.info;
+      if (info?.role === "user") {
+        lastAgent = info.agent;
+        break;
+      }
+    }
+    const known = lastAgent ? agentsRef.current.find((a) => a.name === lastAgent && isChatAgent(a)) : undefined;
+    if (known) setAgent(known.name);
+    setTier(boot.ai.chatDefaultTier);
+    setVariant(undefined);
+  };
 
   useEffect(() => {
     dispatch({ type: "reset", messages: [] });
@@ -182,8 +300,14 @@ export function ChatPage() {
     setDiff([]);
     setChildren([]);
     setSession(null);
-    if (!sessionId) return;
+    if (!sessionId) {
+      const next = nextAgentRef.current;
+      nextAgentRef.current = null;
+      resetChoices(next);
+      return;
+    }
     if (pendingRef.current !== sessionId) pendingRef.current = null;
+    const restoring = pendingRef.current !== sessionId;
     let cancelled = false;
     setLoadingMessages(true);
     void (async () => {
@@ -195,7 +319,7 @@ export function ChatPage() {
         const messages = await oc.messages(sessionId, info.directory);
         if (cancelled) return;
         dispatch({ type: "merge-missing", messages });
-        applyLastChoices(messages);
+        if (restoring) void restoreChoices(sessionId, messages);
         oc.todo(sessionId, info.directory).then((t) => !cancelled && setTodos(t), noop);
         oc.diff(sessionId, info.directory).then((d) => !cancelled && setDiff(d), noop);
         oc.children(sessionId, info.directory).then((c) => !cancelled && setChildren(c), noop);
@@ -210,6 +334,24 @@ export function ChatPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // #/chat?assistant=<nom> (« Utiliser dans le chat », « Essayer ») : présélectionne cet assistant pour une nouvelle demande.
+  // Déclaré après la remise à zéro ci-dessus pour passer après elle.
+  const assistantParam = useRouteQuery().get(CHAT_ASSISTANT_PARAM);
+  const appliedParam = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionId || !assistantParam) {
+      appliedParam.current = null;
+      return;
+    }
+    if (appliedParam.current !== assistantParam) {
+      appliedParam.current = assistantParam;
+      applyAgent(assistantParam);
+    }
+    const example = assistantByName.get(assistantParam)?.examples[0];
+    if (example && agent === assistantParam) setPlaceholder((current) => current ?? exampleText(example));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, assistantParam, assistantByName, agent]);
 
   const refetchMessages = useCallback((sid: string) => {
     oc.messages(sid).then((messages) => {
@@ -230,10 +372,20 @@ export function ChatPage() {
         if (!data.rootId || data.rootId === sessionRef.current) setUsageTick((t) => t + 1);
       } else if (event.type === "stream.reconnected") {
         void loadDirectory();
+        void loadAssistants();
         if (sessionRef.current) refetchMessages(sessionRef.current);
       } else if (event.type === "studio.changed") {
-        oc.agents(directory).then(setAgents, noop);
+        void refreshAgents();
         oc.commands(directory).then(setCommands, noop);
+        void loadAssistants();
+        setResolveTick((t) => t + 1);
+      } else if (event.type === "ai.changed") {
+        void loadAssistants();
+        setResolveTick((t) => t + 1);
+      } else if (event.type === "opencode.config.changed") {
+        void loadProfile();
+        void refreshAgents();
+        setResolveTick((t) => t + 1);
       }
       return;
     }
@@ -269,7 +421,12 @@ export function ChatPage() {
       case "session.error": {
         if (!isVisible(p.sessionID)) break;
         const err = p.error as { name?: string; data?: { message?: string } } | undefined;
-        if (err && err.name !== "MessageAbortedError") toast.error("Erreur pendant la réponse", err.data?.message ?? err.name);
+        if (!err || err.name === "MessageAbortedError") break;
+        if (isModelNotFound({ name: err.name ?? "", ...(err.data ? { data: err.data } : {}) })) {
+          toast.error(MESSAGES.modelNotFoundTitle, MESSAGES.modelNotFound);
+        } else {
+          toast.error("Erreur pendant la réponse", err.data?.message ?? err.name);
+        }
         break;
       }
       case "message.updated": {
@@ -334,21 +491,77 @@ export function ChatPage() {
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [transcript, permissions, questions]);
 
+  // --- Résolution de l'IA (même calcul que le proxy) ---------------------------------------
+
+  const baseRequest: ResolveRequest = {
+    directory: sessionDirectory,
+    agent,
+    tier,
+    ...(variant !== undefined && !override ? { variant } : {}),
+    ...(override && advanced ? { override: { ...parseModelKey(override), ...(variant ? { variant } : {}) } } : {}),
+  };
+  const baseKey = resolveKey(baseRequest);
+  const commandName = draftCommand && commands.some((c) => c.name === draftCommand) ? draftCommand : null;
+  const commandRequest: ResolveRequest | null = commandName ? { ...baseRequest, command: commandName } : null;
+  const commandKey = resolveKey(commandRequest);
+  const resolveCtx = useMemo(() => ({ boot, agents, commands, titleOf, sizeOf }), [boot, agents, commands, titleOf, sizeOf]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const localChat = useMemo(() => localResolve(baseRequest, resolveCtx), [baseKey, resolveCtx]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const localCommand = useMemo(() => (commandRequest ? localResolve(commandRequest, resolveCtx) : null), [commandKey, resolveCtx]);
+  const serverChat = useServerResolve(baseRequest, resolveTick);
+  const serverCommand = useServerResolve(commandRequest, resolveTick);
+  const chatTurn = serverChat.data ?? localChat;
+  const shownTurn = commandRequest ? (serverCommand.data ?? localCommand ?? chatTurn) : chatTurn;
+  const agentHasModel = chatTurn.lock?.kind === "assistant" || Boolean(agents.find((a) => a.name === chatTurn.agent)?.model);
+
+  /** Serveur puis repli local (proxy injoignable ou route absente) ; le proxy reste l'autorité à l'envoi. */
+  const resolveForSend = async (request: ResolveRequest): Promise<ResolveResponse> => {
+    try {
+      return await api.resolveChat(request);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 0 || err.status === 404 || err.status >= 500)) return localResolve(request, resolveCtx);
+      throw err;
+    }
+  };
+
+  const notifyMissing = (missing: string, fallback: string) => {
+    if (missingToasted.current === missing) return;
+    missingToasted.current = missing;
+    toast.warning(MESSAGES.agentMissingTitle, agentMissingMessage(missing, fallback === "build" ? undefined : `« ${titleOf(fallback)} »`));
+  };
+
+  // Assistant introuvable (supprimé, renommé) : repli sur l'assistant par défaut, avec un message.
+  const localMissing = agents.length > 0 ? localChat.agentMissing : null;
+  const serverMissing = serverChat.data ? serverChat.data.agentMissing : undefined;
+  const missingAgent = serverMissing === undefined ? localMissing : serverMissing && (agents.length === 0 || localMissing) ? serverMissing : null;
+  useEffect(() => {
+    if (!missingAgent || missingAgent !== agent) return;
+    const fallback = serverChat.data && serverChat.data.agent !== missingAgent ? serverChat.data.agent : defaultAgentName(boot.settings.chat.defaultAgent, agents);
+    const target = fallback === missingAgent ? "build" : fallback;
+    setAgent(target);
+    setOverride(null);
+    setPicked(null);
+    notifyMissing(missingAgent, target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missingAgent, agent]);
+
   // --- Actions -----------------------------------------------------------------------
 
-  /** Exécute une action qui appelle un modèle ; propose de confirmer si le garde-fou budgétaire la bloque. */
+  /** Exécute une action qui appelle une IA ; propose de confirmer si le garde-fou budgétaire la bloque. */
   const withGuard = useCallback(
     async (action: (confirmed: boolean) => Promise<unknown>): Promise<boolean> => {
       try {
         await action(false);
         return true;
       } catch (err) {
-        if (err instanceof ApiError && err.status === 409 && err.code === "budget-guard") {
-          const decision = err.data as GuardDecision;
+        const guard = budgetGuard(err);
+        if (guard) {
           const ok = await confirm({
-            title: "Garde-fou budgétaire",
-            message: decision.message ?? "Ce modèle est coûteux au regard du budget restant.",
-            confirmLabel: "Envoyer quand même",
+            title: guard.title || BUDGET_CONFIRM_TITLE,
+            message: guard.message || "Cette demande est coûteuse au regard du budget restant. Envoyer quand même ?",
+            confirmLabel: BUDGET_CONFIRM_SEND,
+            cancelLabel: BUDGET_CONFIRM_CANCEL,
             danger: true,
           });
           if (ok) await action(true);
@@ -360,14 +573,57 @@ export function ChatPage() {
     [confirm],
   );
 
-  const handleSubmit = async (input: ComposerSubmit) => {
-    if (!model) {
-      toast.warning("Aucun modèle disponible", "Connectez GitHub Copilot dans Paramètres › Connexion.");
-      return;
+  /** Envoie ; sur 409 assistant-model-changed, renvoie UNE fois avec l'IA de l'assistant puis l'annonce. */
+  const sendTurn = async (initial: SendParams, send: (params: SendParams, confirmed: boolean) => Promise<unknown>): Promise<boolean> => {
+    const state = { params: initial, resent: false, message: null as string | null };
+    const ok = await withGuard(async (confirmed) => {
+      try {
+        await send(state.params, confirmed);
+      } catch (err) {
+        const changed = assistantModelChanged(err);
+        if (!changed || state.resent) throw err;
+        state.resent = true;
+        state.message = changed.message;
+        state.params = { model: changed.model, variant: changed.variant, modelOverride: false };
+        setResolveTick((t) => t + 1);
+        void refreshAgents();
+        await send(state.params, confirmed);
+      }
+    });
+    if (ok && state.message) toast.info(state.message);
+    return ok;
+  };
+
+  const handleSubmit = async (input: ComposerSubmit): Promise<boolean> => {
+    if (boot.models.length === 0) {
+      toast.warning("Aucune IA disponible", "Connectez GitHub Copilot dans Paramètres › Connexion.");
+      return false;
     }
-    const slash = model.indexOf("/");
-    const providerID = model.slice(0, slash);
-    const modelID = model.slice(slash + 1);
+    const commandMatch = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(input.text);
+    const command = commandMatch ? commands.find((c) => c.name === commandMatch[1]) : undefined;
+    const request: ResolveRequest = command ? { ...baseRequest, command: command.name } : baseRequest;
+    let turn: ResolveResponse;
+    try {
+      turn = await resolveForSend(request);
+    } catch (err) {
+      toast.error("Envoi impossible", err);
+      return false;
+    }
+    if (turn.agentMissing && turn.agent !== agent) {
+      setAgent(turn.agent);
+      notifyMissing(turn.agentMissing, turn.agent);
+    }
+    const blocking = turn.display.problems.filter((p) => p.blocking);
+    if (blocking.length > 0) {
+      toast.error("Rien n'a été envoyé", [...new Set(blocking.map((p) => p.message))].join(" "));
+      return false;
+    }
+    const oneMessageOverride = Boolean(request.override) && agentHasModel;
+    const initial: SendParams = {
+      model: turn.send.model,
+      variant: turn.send.variant ?? null,
+      modelOverride: Boolean(request.override) && allowOverride,
+    };
     try {
       let sid = sessionId;
       let dir = sessionDirectory;
@@ -382,43 +638,48 @@ export function ChatPage() {
       const targetId = sid;
       const targetDir = dir;
       const fileParts = input.attachments.map((a) => ({ type: "file", mime: a.mime, filename: a.filename, url: a.url }));
-      const commandMatch = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(input.text);
-      const command = commandMatch ? commands.find((c) => c.name === commandMatch[1]) : undefined;
       setStatuses((s) => ({ ...s, [targetId]: { type: "busy" } }));
       stick.current = true;
       const sent = command
-        ? await withGuard((confirmed) =>
+        ? await sendTurn(initial, (params, confirmed) =>
             oc.command(
               targetId,
               targetDir,
               {
                 command: command.name,
                 arguments: commandMatch?.[2] ?? "",
-                agent,
-                model,
-                ...(variant ? { variant } : {}),
+                agent: turn.agent,
+                model: modelKey(params.model),
+                ...(params.variant ? { variant: params.variant } : {}),
                 ...(fileParts.length > 0 ? { parts: fileParts } : {}),
               },
               confirmed,
             ),
           )
-        : await withGuard((confirmed) =>
+        : await sendTurn(initial, (params, confirmed) =>
             oc.promptAsync(
               targetId,
               targetDir,
               {
-                agent,
-                model: { providerID, modelID },
-                ...(variant ? { variant } : {}),
+                agent: turn.agent,
+                model: params.model,
+                ...(params.variant ? { variant: params.variant } : {}),
                 parts: [...(input.text ? [{ type: "text", text: input.text }] : []), ...fileParts],
               },
               confirmed,
+              params.modelOverride,
             ),
           );
-      if (!sent) setStatuses((s) => ({ ...s, [targetId]: { type: "idle" } }));
+      if (!sent) {
+        setStatuses((s) => ({ ...s, [targetId]: { type: "idle" } }));
+        return false;
+      }
+      if (oneMessageOverride) setOverride(null);
+      return true;
     } catch (err) {
       if (sessionRef.current) setStatuses((s) => ({ ...s, [sessionRef.current as string]: { type: "idle" } }));
       toast.error("Envoi impossible", err);
+      return false;
     }
   };
 
@@ -427,16 +688,21 @@ export function ChatPage() {
     oc.abort(sessionId, sessionDirectory).catch((err: unknown) => toast.error("Arrêt impossible", err));
   };
 
-  const compact = async () => {
-    if (!sessionId || !model) return;
-    const slash = model.indexOf("/");
+  /** « Résumer » : IA de la conversation (celle de l'assistant, sinon le niveau), jamais une IA choisie pour un message. */
+  const summarize = async () => {
+    if (!sessionId) return;
+    const request: ResolveRequest = agentHasModel ? { directory: sessionDirectory, agent, tier } : baseRequest;
     try {
-      toast.info("Compaction du contexte", "L'historique est résumé pour libérer de la place.");
-      await withGuard((confirmed) =>
-        oc.summarize(sessionId, sessionDirectory, { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }, confirmed),
-      );
+      const turn = await resolveForSend(request);
+      const blocking = turn.display.problems.filter((p) => p.blocking);
+      if (blocking.length > 0) {
+        toast.error("Résumé impossible", [...new Set(blocking.map((p) => p.message))].join(" "));
+        return;
+      }
+      toast.info("Résumé de la conversation", "L'historique est résumé pour libérer de la mémoire.");
+      await withGuard((confirmed) => oc.summarize(sessionId, sessionDirectory, turn.send.model, confirmed));
     } catch (err) {
-      toast.error("Compaction impossible", err);
+      toast.error("Résumé impossible", err);
     }
   };
 
@@ -499,14 +765,129 @@ export function ChatPage() {
     });
   };
 
+  const newConversation = () => {
+    setSidebarOpen(false);
+    if (sessionId) navigate("chat");
+    else resetChoices();
+  };
+
+  // --- Assistant : choix, changement en cours de conversation, installation ------------------
+
+  const applyAgent = (name: string) => {
+    setAgent(name);
+    setOverride(null);
+    setPicked(name);
+  };
+
+  const requestAgentChange = async (name: string) => {
+    if (name === agent) return;
+    if (!sessionId || transcript.order.length === 0) {
+      applyAgent(name);
+      return;
+    }
+    const request: ResolveRequest = { directory: sessionDirectory, agent: name, tier, ...(variant !== undefined ? { variant } : {}) };
+    let target: ResolveResponse;
+    try {
+      target = await api.resolveChat(request);
+    } catch {
+      target = localResolve(request, resolveCtx);
+    }
+    const main = target.display.runs.find((r) => r.role === "message");
+    setChangeTarget({
+      name: target.agent,
+      ia: main ? `${main.modelName}${main.tier ? ` · ${TIER_LABELS[main.tier]}` : ""}` : null,
+      cost: target.display.estimate ? usdText(target.display.estimate.max) : null,
+    });
+  };
+
+  const pickAssistant = (assistant: AssistantView) => {
+    applyAgent(assistant.name);
+    setPlaceholder(exampleText(assistant.examples[0]));
+  };
+
+  const installAndUse = async (item: CatalogueItem) => {
+    if (item.installed && item.installedName) {
+      applyAgent(item.installedName);
+      setPlaceholder(exampleText(item.examples[0]));
+      return;
+    }
+    const ok = await confirm({
+      title: `Installer « ${item.title} »`,
+      message: (
+        <div className="stack tight">
+          <p className="secondary">{item.description}</p>
+          <strong className="small">Ce qu'il peut faire</strong>
+          <ul className="right-lines">
+            {item.rightLines.map((line) => (
+              <li key={line.id} className={line.danger ? "rights-danger" : undefined}>
+                <span aria-hidden>{RIGHT_LINE_SYMBOLS[line.kind]}</span> {line.text}
+              </li>
+            ))}
+          </ul>
+          <span className="small">
+            IA utilisée : {item.modelName ?? "—"} — niveau {TIER_LABELS[item.tier]}
+            {item.estimate ? ` · ${item.estimate.text}` : ""}
+          </span>
+          {item.newFiches.map((fiche) => (
+            <span key={fiche} className="small">
+              Installe aussi la fiche « {fiche} » : relisez-la avec votre équipe.
+            </span>
+          ))}
+          <span className="tiny muted">{item.review}</span>
+        </div>
+      ),
+      confirmLabel: "Installer et utiliser",
+    });
+    if (!ok) return;
+    setInstalling(item.id);
+    try {
+      const view = await api.installCatalogueAssistant(item.id);
+      await refreshAgents();
+      await loadAssistants();
+      applyAgent(view.name);
+      setPlaceholder(exampleText(view.examples[0]));
+      setResolveTick((t) => t + 1);
+      toast.success("Assistant installé", "Il apparaît maintenant dans le chat.");
+    } catch (err) {
+      toast.error("Installation impossible", err);
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  /** Callout « L'IA de cet assistant n'est plus disponible » : [Passer à {nouvelle}]. */
+  const realignAssistant = async (item: UpdateItem) => {
+    const costs = item.fromUsd !== null && item.toUsd !== null ? ` Coût estimé : ${usdText(item.fromUsd)} → ${usdText(item.toUsd)} par demande.` : "";
+    const multiplied = item.ratio !== null && item.ratio >= 2;
+    const ok = await confirm({
+      title: "Mettre à jour 1 assistant ?",
+      message: `Il utilisera ${item.toName} au lieu de ${item.fromName ?? item.from ?? "son IA actuelle"}.${costs}${
+        multiplied ? ` Le coût estimé est multiplié par ${String(Math.round((item.ratio ?? 0) * 10) / 10).replace(".", ",")}.` : ""
+      }`,
+      confirmLabel: "Mettre à jour",
+      danger: multiplied,
+    });
+    if (!ok) return;
+    try {
+      await api.realign([{ kind: item.kind, name: item.name }]);
+      await refreshAgents();
+      await loadAssistants();
+      setResolveTick((t) => t + 1);
+      toast.success("Assistant mis à jour", `Il utilise maintenant ${item.toName}.`);
+    } catch (err) {
+      toast.error("Mise à jour impossible", err);
+    }
+  };
+
   // --- Données dérivées ---------------------------------------------------------------
 
   const turns = useMemo(() => groupTurns(transcript), [transcript]);
   const modelName = useCallback((key: string) => modelByKey(key)?.name ?? key.slice(key.indexOf("/") + 1), [modelByKey]);
   const context = useMemo(() => contextTokens(transcript), [transcript]);
-  const contextModel = modelByKey(context.modelKey) ?? modelByKey(model);
+  const contextModel = modelByKey(context.modelKey) ?? modelByKey(modelKey(chatTurn.send.model));
   const contextLimit = contextModel?.contextLimit ?? null;
   const contextPercent = contextLimit ? (context.tokens / contextLimit) * 100 : 0;
+  const summaryCost = chatTurn.display.estimate ? ` (≈ ${usdText(chatTurn.display.estimate.max)})` : "";
 
   const status = sessionId ? statuses[sessionId] : undefined;
   const lastTurn = turns.at(-1);
@@ -516,7 +897,7 @@ export function ChatPage() {
 
   const relatedIds = new Set([sessionId, ...children.map((c) => c.id)].filter((id): id is string => Boolean(id)));
   const localPermissions = permissions.filter((r) => relatedIds.has(r.sessionID));
-  // Consigne d'un sous-agent en attente d'autorisation : opencode ne la joint pas à la demande.
+  // Consigne d'un travail délégué en attente d'autorisation : opencode ne la joint pas à la demande.
   const taskPromptFor = (request: (typeof permissions)[number]): string | undefined => {
     if (request.permission !== "task" || !request.tool) return undefined;
     const { messageID, callID } = request.tool;
@@ -537,6 +918,33 @@ export function ChatPage() {
   const project = boot.projects.find((p) => p.directory === sessionDirectory);
   const projectLabel = project ? (project.isRoot ? "Tout le workspace" : project.name) : sessionDirectory;
 
+  const agentOptions = useMemo<AgentOption[]>(() => {
+    const rank = (name: string) => (assistantByName.has(name) ? 0 : builtinTitle(name) ? 1 : 2);
+    return agents
+      .filter((a) => isChatAgent(a) && !a.hidden)
+      .map((a) => {
+        const view = assistantByName.get(a.name);
+        return { name: a.name, title: view?.title ?? builtinTitle(a.name) ?? a.name, help: view?.description ?? builtinHelp(a.name) ?? a.description ?? null };
+      })
+      .sort((x, y) => rank(x.name) - rank(y.name) || x.title.localeCompare(y.title, "fr"));
+  }, [agents, assistantByName]);
+
+  const commandItems = useMemo(
+    () => commandOptions({ commands, agents, chatTurn, chatAgent: chatTurn.agent, boot, simple: !advanced, sizeOf }),
+    [commands, agents, chatTurn, boot, advanced, sizeOf],
+  );
+
+  const pickerModels = useMemo(() => {
+    const allowed = boot.allowedProviders.length > 0 ? boot.allowedProviders : ["github-copilot"];
+    return boot.models.filter((m) => allowed.includes(m.providerID));
+  }, [boot.models, boot.allowedProviders]);
+
+  const blockingProblems = shownTurn.display.problems.filter((p) => p.blocking);
+  const assistantUpdate =
+    assistants?.updates.find((u) => u.kind === "agents" && u.name === shownTurn.agent) ?? assistantByName.get(shownTurn.agent)?.update ?? null;
+  const shownModel = modelByKey(modelKey(shownTurn.send.model));
+  const hasBuild = agents.length === 0 || agents.some((a) => a.name === "build" && isChatAgent(a));
+
   return (
     <div className={`chat${asideOpen ? " aside-open" : ""}${sidebarOpen ? " sidebar-open" : ""}`}>
       <SessionSidebar
@@ -554,10 +962,7 @@ export function ChatPage() {
         conversations={conversations}
         categoryById={categoryById}
         pendingBySession={pendingBySession}
-        onNew={() => {
-          setSidebarOpen(false);
-          navigate("chat");
-        }}
+        onNew={newConversation}
       />
 
       <section className="chat-center">
@@ -575,14 +980,17 @@ export function ChatPage() {
                 </span>
               </div>
               {contextLimit && context.tokens > 0 ? (
-                <div className="context-gauge" title={`Contexte utilisé : ${formatTokens(context.tokens)} sur ${formatTokens(contextLimit)} tokens`}>
-                  <span className="tiny muted">Contexte {formatPercent(contextPercent)}</span>
-                  <Meter percent={contextPercent} label="Contexte utilisé" />
+                <div
+                  className="context-gauge"
+                  title={`Mémoire de la conversation utilisée : ${formatTokens(context.tokens)} sur ${formatTokens(contextLimit)} jetons`}
+                >
+                  <span className="tiny muted">Mémoire {formatPercent(contextPercent)}</span>
+                  <Meter percent={contextPercent} label="Mémoire de la conversation utilisée" />
                 </div>
               ) : null}
               {contextPercent >= 60 && !busy ? (
-                <Button size="sm" icon="layers" onClick={() => void compact()} title="Résumer l'historique pour libérer du contexte">
-                  Compacter
+                <Button size="sm" icon="layers" onClick={() => void summarize()} title={`Résumer la conversation${summaryCost}`}>
+                  Résumer
                 </Button>
               ) : null}
               <IconButton icon="edit" label="Renommer" onClick={() => setRenaming(session.title)} />
@@ -604,33 +1012,29 @@ export function ChatPage() {
 
         <div className="chat-scroll" ref={scroller} onScroll={onScroll}>
           {!sessionId ? (
-            <div className="chat-welcome">
-              <img src="/favicon.svg" alt="" width={52} height={52} />
-              <h2>Sur quoi travaille-t-on ?</h2>
-              <p className="secondary" style={{ maxWidth: 520 }}>
-                Projet <strong>{projectLabel}</strong>. L'agent lit et modifie les fichiers de ce dossier ; chaque modification sensible vous est
-                soumise selon les permissions configurées.
-              </p>
-              {!boot.copilotConnected ? (
-                <div className="callout warning">
-                  <Icon name="plug" />
-                  <span>
-                    GitHub Copilot n'est pas connecté. <a href="#/parametres/connexion">Connecter maintenant</a>
-                  </span>
-                </div>
-              ) : null}
-              <div className="suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <button key={s.title} type="button" className="btn" onClick={() => setSeed({ text: s.text, nonce: Date.now() })}>
-                    <strong>{s.title}</strong>
-                    <span className="small muted">{s.text}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="tiny muted">
-                Budget du mois : {formatUsd(boot.usage.spentUsd)} sur {formatUsd(boot.usage.budgetUsd)} ({formatPercent(boot.usage.percent)})
-              </p>
-            </div>
+            <WelcomeCards
+              projectLabel={projectLabel}
+              profile={profile}
+              copilotConnected={boot.copilotConnected}
+              assistants={assistants?.assistants ?? null}
+              failed={assistantsFailed}
+              catalogue={catalogue}
+              picked={picked}
+              installing={installing}
+              showGeneral={hasBuild}
+              onPick={pickAssistant}
+              onPickGeneral={() => {
+                applyAgent("build");
+                setPlaceholder(null);
+              }}
+              onInstall={(item) => void installAndUse(item)}
+              onCreate={() => openAssistants({ mode: "nouveau" })}
+              footer={
+                <p className="tiny muted">
+                  Budget du mois : {formatUsd(boot.usage.spentUsd)} sur {formatUsd(boot.usage.budgetUsd)} ({formatPercent(boot.usage.percent)})
+                </p>
+              }
+            />
           ) : (
             <div className="chat-thread">
               {loadingMessages && turns.length === 0 ? (
@@ -643,7 +1047,7 @@ export function ChatPage() {
               ))}
               {waitingFirstStep ? (
                 <div className="row small muted" style={{ paddingLeft: 34 }}>
-                  <Spinner /> L'agent réfléchit…
+                  <Spinner /> L'assistant réfléchit…
                 </div>
               ) : null}
               {status?.type === "retry" ? (
@@ -662,6 +1066,7 @@ export function ChatPage() {
               <PermissionPrompt
                 key={request.id}
                 request={request}
+                simpleMode={!advanced}
                 sessionTitle={request.sessionID !== sessionId ? children.find((c) => c.id === request.sessionID)?.title : undefined}
                 taskPrompt={taskPromptFor(request)}
                 onReply={(reply, message) => replyPermission(request, reply, message)}
@@ -701,22 +1106,47 @@ export function ChatPage() {
         <Composer
           directory={sessionDirectory}
           busy={busy}
-          agents={agents}
+          agents={agentOptions}
           agent={agent}
-          onAgentChange={setAgent}
-          commands={commands}
-          models={boot.models}
-          model={model}
-          onModelChange={(key) => {
-            setModel(key);
-            setVariant(null);
-          }}
-          variant={variant}
-          onVariantChange={setVariant}
-          onSubmit={(input) => void handleSubmit(input)}
+          agentTitle={titleOf(agent)}
+          onAgentChange={(name) => void requestAgentChange(name)}
+          commands={commandItems}
+          onCommandChange={setDraftCommand}
+          imageModel={shownModel ? { name: shownModel.name, attachment: shownModel.attachment } : undefined}
+          notice={
+            blockingProblems.length > 0 ? (
+              <ProblemNotice problems={blockingProblems} update={assistantUpdate} onRealign={realignAssistant}
+                onOpenAssistants={() => openAssistants({ mode: "detail", name: shownTurn.agent })}
+              />
+            ) : null
+          }
+          ia={
+            <IaControls
+              turn={shownTurn}
+              agentHasModel={agentHasModel}
+              advanced={advanced}
+              allowOverride={allowOverride}
+              tiers={boot.ai.tiers}
+              tier={tier}
+              onTierChange={(next) => {
+                setTier(next);
+                setOverride(null);
+                setVariant(undefined);
+              }}
+              models={pickerModels}
+              override={override}
+              onOverrideChange={(key) => {
+                setOverride(key);
+                setVariant(undefined);
+              }}
+              variant={variant}
+              onVariantChange={setVariant}
+              size={sizeOf(shownTurn.agent)}
+            />
+          }
+          onSubmit={handleSubmit}
           onAbort={abort}
-          {...(seed ? { seed } : {})}
-          {...(boot.models.length === 0 ? { placeholder: "Aucun modèle disponible : connectez GitHub Copilot." } : {})}
+          placeholder={boot.models.length === 0 ? "Aucune IA disponible : connectez GitHub Copilot." : (placeholder ?? undefined)}
         />
       </section>
 
@@ -740,6 +1170,25 @@ export function ChatPage() {
       ) : null}
 
       <RenameModal value={renaming} onClose={() => setRenaming(null)} onSave={(title) => void rename(title)} />
+
+      <ChangeAssistantModal
+        target={changeTarget}
+        onCancel={() => setChangeTarget(null)}
+        onChange={() => {
+          if (changeTarget) applyAgent(changeTarget.name);
+          setChangeTarget(null);
+        }}
+        onNewConversation={() => {
+          const name = changeTarget?.name ?? null;
+          setChangeTarget(null);
+          if (sessionId) {
+            nextAgentRef.current = name;
+            navigate("chat");
+          } else {
+            resetChoices(name);
+          }
+        }}
+      />
     </div>
   );
 }

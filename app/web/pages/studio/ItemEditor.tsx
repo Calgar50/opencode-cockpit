@@ -1,13 +1,16 @@
 // Éditeur d'un agent, d'une commande ou d'un skill : nom, champs du type, corps, enregistrement.
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { unknownAgentKeyMessage, unknownAgentKeys } from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
-import { Badge, Button, Card, Field, useConfirm } from "../../components/ui.tsx";
-import { ApiError, api } from "../../lib/api.ts";
-import type { StudioItem, StudioKind, ValidationIssue } from "../../lib/types.ts";
+import { Badge, Button, Card, Field, useAsync, useConfirm } from "../../components/ui.tsx";
+import { ApiError, api, oc } from "../../lib/api.ts";
+import { cockpitEvent, useEvents } from "../../lib/events.ts";
+import type { OcAgent, OcCommand, StudioItem, StudioKind, Tier, ValidationIssue } from "../../lib/types.ts";
 import { AgentFields } from "./AgentFields.tsx";
+import type { LevelBinding, StudioAiData } from "./aiUsage.ts";
 import { CommandBodyHelp, CommandFields } from "./CommandFields.tsx";
 import { type Draft, draftFromItem, KIND_LABELS, nameError, stableStringify, str, validateDraft, withKey } from "./shared.ts";
 import { SkillFields, SkillFilesPanel } from "./SkillFields.tsx";
@@ -19,12 +22,25 @@ type Problem =
   | { type: "rejected"; message: string; issues: ValidationIssue[]; restarted: boolean };
 
 const BODY_LABEL: Record<StudioKind, { title: string; hint: string }> = {
-  agents: { title: "Prompt système", hint: "Instructions données à l'agent à chaque conversation (Markdown)." },
-  commands: { title: "Modèle de la commande", hint: "Texte envoyé au modèle quand la commande est lancée." },
-  skills: { title: "Instructions du skill", hint: "Contenu de SKILL.md, chargé quand le modèle décide d'utiliser le skill." },
+  agents: {
+    title: "Consignes",
+    hint: "Instructions données à l'agent à chaque conversation (Markdown). Elles remplacent les consignes par défaut d'opencode.",
+  },
+  commands: { title: "Texte de la commande", hint: "Texte envoyé à l'IA quand le raccourci est lancé." },
+  skills: { title: "Instructions du skill", hint: "Contenu de SKILL.md, lu quand l'IA décide d'ouvrir le skill." },
 };
 
 const NEW_TITLE: Record<StudioKind, string> = { agents: "Nouvel agent", commands: "Nouvelle commande", skills: "Nouveau skill" };
+
+/** Ligne « !`commande` » d'un texte de commande : exécutée par opencode sans demande de permission. */
+const SHELL_LINE_RE = /!`[^`]+`/;
+
+interface TierState {
+  /** Niveau choisi dans le formulaire. */
+  tier: Tier | null | undefined;
+  /** Niveau enregistré (item_meta) ; undefined = inconnu. */
+  baseline: Tier | null | undefined;
+}
 
 export function ItemEditor({
   kind,
@@ -32,6 +48,8 @@ export function ItemEditor({
   seed,
   project,
   takenNames,
+  binding,
+  initialTier,
   onSaved,
   onDeleted,
   onDiscardNew,
@@ -43,6 +61,10 @@ export function ItemEditor({
   seed: Draft;
   project: string | null;
   takenNames: Set<string>;
+  /** Niveau lié à l'élément enregistré (item_meta) ; undefined = inconnu ou portée projet. */
+  binding?: Tier | null | undefined;
+  /** Niveau pré-choisi d'un nouvel élément (exemple avec un niveau conseillé). */
+  initialTier?: Tier | null | undefined;
   onSaved: (item: StudioItem, previousName: string | null) => void;
   onDeleted: (name: string) => void;
   onDiscardNew: () => void;
@@ -59,15 +81,40 @@ export function ItemEditor({
   const [problem, setProblem] = useState<Problem | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [tierState, setTierState] = useState<TierState>(() => (item ? { tier: binding, baseline: binding } : { tier: initialTier, baseline: undefined }));
 
   const isNew = item === null;
-  const dirty = isNew || stableStringify(draft) !== baseline;
+  const tierDirty = (tierState.tier ?? null) !== (tierState.baseline ?? null);
+  const dirty = isNew || stableStringify(draft) !== baseline || tierDirty;
   const changedElsewhere = item !== null && item.updatedAt !== syncedAt;
+
+  // Agents et raccourcis d'opencode : liste des agents du raccourci et prédiction « Quelle IA sera utilisée ? ».
+  const withAi = kind !== "skills";
+  const directory = project ? boot.projects.find((p) => p.name === project)?.directory : undefined;
+  const agents = useAsync(() => (withAi ? oc.agents(directory) : Promise.resolve([] as OcAgent[])), [withAi, directory]);
+  const commands = useAsync(() => (withAi ? oc.commands(directory) : Promise.resolve([] as OcCommand[])), [withAi, directory]);
+  useEvents((event) => {
+    if (withAi && cockpitEvent(event, "studio.changed", "opencode.config.changed", "ai.changed")) {
+      agents.reload();
+      commands.reload();
+    }
+  });
+  const ai: StudioAiData = { agents: agents.data, agentsError: agents.error, commands: commands.data, commandsError: commands.error };
+
+  const setTier = useCallback((tier: Tier | null) => setTierState((s) => ({ ...s, tier })), []);
+  const level: LevelBinding = { tier: tierState.tier, setTier, bindable: withAi && project === null };
 
   useEffect(() => {
     onDirtyChange(dirty);
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+
+  // Liaison au niveau connue après coup (GET /api/ai) : le choix suit tant qu'il n'a pas été modifié.
+  useEffect(() => {
+    if (!item) return;
+    setTierState((s) => ({ tier: s.tier === s.baseline ? binding : s.tier, baseline: binding }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding]);
 
   // Fichier modifié ailleurs (autre onglet, opencode) : resynchronisation si aucune modification locale.
   useEffect(() => {
@@ -97,6 +144,21 @@ export function ItemEditor({
     return null;
   }, [draft.name, item?.name, takenNames]);
 
+  /**
+   * Niveau à envoyer (item_meta) : un niveau choisi quand il est nouveau ou que l'IA du fichier change, null pour
+   * délier un élément qui était lié ; undefined = liaison inchangée (jamais de ligne créée pour une simple IA précise).
+   */
+  const tierToSend = (frontmatter: Record<string, unknown>, previousName: string | null): Tier | null | undefined => {
+    if (!level.bindable) return undefined;
+    const { tier, baseline: bound } = tierState;
+    const model = str(frontmatter.model);
+    if (tier && model) {
+      const fileChanged = !item || str(item.frontmatter.model) !== model || str(item.frontmatter.variant) !== str(frontmatter.variant);
+      return isNew || tier !== bound || fileChanged || previousName !== null ? tier : undefined;
+    }
+    return bound ? null : undefined;
+  };
+
   const save = async () => {
     if (saving) return;
     const issues = validateDraft(kind, draft);
@@ -111,12 +173,17 @@ export function ItemEditor({
     if (typeof frontmatter.description === "string") frontmatter = withKey(frontmatter, "description", frontmatter.description.trim() || (kind === "commands" ? undefined : ""));
     if (kind === "skills") frontmatter.name = draft.name;
     const previousName = item && item.name !== draft.name ? item.name : null;
+    const tier = tierToSend(frontmatter, previousName);
     try {
-      const saved = await api.studioSave(kind, draft.name, { frontmatter, body: draft.body, previousName }, project);
+      const input = tier === undefined ? { frontmatter, body: draft.body, previousName } : { frontmatter, body: draft.body, previousName, tier };
+      const saved = await api.studioSave(kind, draft.name, input, project);
       const fresh = draftFromItem(saved);
       setDraft(fresh);
       setBaseline(stableStringify(fresh));
       setSyncedAt(saved.updatedAt);
+      if (tier !== undefined) setTierState({ tier, baseline: tier });
+      // Niveau choisi sans IA écrite (niveau indisponible) : rien n'a été lié, le formulaire revient à la liaison enregistrée.
+      else if (!str(saved.frontmatter.model)) setTierState((s) => ({ tier: s.baseline ?? null, baseline: s.baseline }));
       toast.success(`${KIND_LABELS[kind].one.charAt(0).toUpperCase()}${KIND_LABELS[kind].one.slice(1)} enregistré${kind === "commands" ? "e" : ""}`, `${saved.name} est actif dans opencode.`);
       onSaved(saved, previousName);
     } catch (err) {
@@ -146,6 +213,7 @@ export function ItemEditor({
     setDraft(fresh);
     setBaseline(stableStringify(fresh));
     setSyncedAt(item.updatedAt);
+    setTierState((s) => ({ ...s, tier: s.baseline }));
     setProblem(null);
   };
 
@@ -176,6 +244,9 @@ export function ItemEditor({
   };
 
   const models = boot.models;
+  // Clés inconnues d'opencode : envoyées telles quelles à l'IA ; refusées pour une nouvelle clé, tolérées si déjà sur disque.
+  const unknownKeys = kind === "agents" ? unknownAgentKeys(draft.frontmatter) : [];
+  const runsShell = kind === "commands" && SHELL_LINE_RE.test(draft.body);
 
   return (
     <div
@@ -249,6 +320,22 @@ export function ItemEditor({
             </IssuesCallout>
           ) : null}
 
+          {unknownKeys.length > 0 ? (
+            <div className="callout warning" role="status">
+              <Icon name="alert" size={18} />
+              <div className="stack tight" style={{ minWidth: 0 }}>
+                {unknownKeys.map((key) => (
+                  <div key={key} className="level-note">
+                    <span className="spacer">{unknownAgentKeyMessage(key)}</span>
+                    <Button size="sm" onClick={() => setFm({ [key]: undefined })}>
+                      Retirer
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <Field
             label="Nom"
             htmlFor={nameId}
@@ -260,11 +347,9 @@ export function ItemEditor({
                   <>
                     S'utilise avec <code>/{draft.name || "nom"}</code> dans le chat.
                   </>
-                ) : kind === "agents" ? (
-                  <>
-                    S'appelle avec <code>@{draft.name || "nom"}</code>.
-                  </>
-                ) : null}
+                ) : (
+                  "Nom technique du fichier."
+                )}
                 {item && draft.name !== item.name ? " Renommer déplace le fichier." : ""}
               </>
             }
@@ -288,8 +373,10 @@ export function ItemEditor({
             </p>
           ) : null}
 
-          {kind === "agents" ? <AgentFields draft={draft} models={models} setFm={setFm} /> : null}
-          {kind === "commands" ? <CommandFields draft={draft} models={models} setFm={setFm} /> : null}
+          {kind === "agents" ? (
+            <AgentFields draft={draft} models={models} setFm={setFm} level={level} ai={ai} savedName={item?.name ?? draft.name} />
+          ) : null}
+          {kind === "commands" ? <CommandFields draft={draft} models={models} setFm={setFm} level={level} ai={ai} /> : null}
           {kind === "skills" ? <SkillFields draft={draft} setFm={setFm} /> : null}
         </div>
       </Card>
@@ -297,6 +384,14 @@ export function ItemEditor({
       <Card title={BODY_LABEL[kind].title} subtitle={BODY_LABEL[kind].hint}>
         <div className="stack">
           {kind === "commands" ? <CommandBodyHelp /> : null}
+          {runsShell ? (
+            <div className="callout warning" role="status">
+              <Icon name="terminal" size={18} />
+              <span>
+                Ce texte contient des lignes <code>!`commande`</code>. Attention : ces lignes s'exécutent à chaque lancement, sans vous demander.
+              </span>
+            </div>
+          ) : null}
           <CodeEditor
             value={draft.body}
             onChange={(body) => setDraft((d) => ({ ...d, body }))}

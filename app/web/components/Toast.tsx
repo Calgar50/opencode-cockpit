@@ -4,17 +4,24 @@ import { Icon, type IconName } from "./Icon.tsx";
 
 type ToastKind = "info" | "success" | "warning" | "error";
 
+/** Bouton d'action d'une notification (« Essayer », « Essayer dans le chat »…) ; la notification se ferme au clic. */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastItem {
   id: number;
   kind: ToastKind;
   title: string;
   message?: string;
+  action?: ToastAction;
 }
 
 interface ToastApi {
-  info: (title: string, message?: string) => void;
-  success: (title: string, message?: string) => void;
-  warning: (title: string, message?: string) => void;
+  info: (title: string, message?: string, action?: ToastAction) => void;
+  success: (title: string, message?: string, action?: ToastAction) => void;
+  warning: (title: string, message?: string, action?: ToastAction) => void;
   error: (title: string, detail?: unknown) => void;
 }
 
@@ -29,19 +36,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const dismiss = useCallback((id: number) => setItems((list) => list.filter((t) => t.id !== id)), []);
 
   const push = useCallback(
-    (kind: ToastKind, title: string, message?: string) => {
+    (kind: ToastKind, title: string, message?: string, action?: ToastAction) => {
       const id = nextId.current++;
-      setItems((list) => [...list.slice(-4), { id, kind, title, ...(message ? { message } : {}) }]);
-      window.setTimeout(() => dismiss(id), kind === "error" ? 9_000 : 5_000);
+      setItems((list) => [...list.slice(-4), { id, kind, title, ...(message ? { message } : {}), ...(action ? { action } : {}) }]);
+      // Une notification avec un bouton reste plus longtemps : le temps de le lire et de cliquer.
+      window.setTimeout(() => dismiss(id), kind === "error" || action ? 9_000 : 5_000);
     },
     [dismiss],
   );
 
   const api = useMemo<ToastApi>(
     () => ({
-      info: (title, message) => push("info", title, message),
-      success: (title, message) => push("success", title, message),
-      warning: (title, message) => push("warning", title, message),
+      info: (title, message, action) => push("info", title, message, action),
+      success: (title, message, action) => push("success", title, message, action),
+      warning: (title, message, action) => push("warning", title, message, action),
       error: (title, detail) => push("error", title, detail === undefined ? undefined : typeof detail === "string" ? detail : errorText(detail)),
     }),
     [push],
@@ -57,6 +65,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <div className="spacer" style={{ minWidth: 0 }}>
               <strong>{t.title}</strong>
               {t.message ? <p>{t.message}</p> : null}
+              {t.action ? (
+                <button
+                  type="button"
+                  className="btn sm toast-action"
+                  onClick={() => {
+                    const action = t.action;
+                    dismiss(t.id);
+                    action?.onClick();
+                  }}
+                >
+                  {t.action.label}
+                </button>
+              ) : null}
             </div>
             <button type="button" className="btn ghost sm icon-only" aria-label="Fermer" onClick={() => dismiss(t.id)}>
               <Icon name="x" size={14} />

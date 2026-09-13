@@ -1,20 +1,32 @@
-// Sélecteur de modèle avec prix, contexte et repères « cher » / « gratuit ».
+// Sélecteur « Autre IA… » (mode Avancé) : IA autorisées, coût par demande et repères « cher » / « Réservé ».
 import { useEffect, useMemo, useRef, useState } from "react";
+import { perRequestText, RESERVED_HELP, TIER_LABELS } from "../../../server/shared/assistant-rules.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { Badge } from "../../components/ui.tsx";
 import { formatPricePerM, formatTokens } from "../../lib/format.ts";
 import type { ModelInfo } from "../../lib/types.ts";
+
+const byCost = (a: ModelInfo, b: ModelInfo) => {
+  const ca = a.taskCost?.M ?? Number.POSITIVE_INFINITY;
+  const cb = b.taskCost?.M ?? Number.POSITIVE_INFINITY;
+  return ca === cb ? a.name.localeCompare(b.name) : ca - cb;
+};
 
 export function ModelPicker({
   models,
   value,
   onChange,
   disabled,
+  label,
+  title = "Choisir une IA précise",
 }: {
   models: ModelInfo[];
   value: string | null;
   onChange: (key: string) => void;
   disabled?: boolean;
+  /** Texte du bouton (défaut : nom de l'IA choisie). */
+  label?: string;
+  title?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -46,7 +58,7 @@ export function ModelPicker({
       list.push(model);
       map.set(model.providerName, list);
     }
-    return [...map.entries()].map(([provider, list]) => [provider, list.sort((a, b) => a.name.localeCompare(b.name))] as const);
+    return [...map.entries()].map(([provider, list]) => [provider, list.toSorted(byCost)] as const);
   }, [models, search]);
 
   return (
@@ -57,27 +69,26 @@ export function ModelPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
-        title="Choisir le modèle"
+        title={title}
         onClick={() => setOpen((v) => !v)}
       >
         <Icon name="sparkle" size={14} />
-        <span className="ellipsis">{current?.name ?? value ?? "Modèle"}</span>
-        {current?.price ? <span className="tiny muted">{formatPricePerM(current.price.rates.output)}</span> : null}
+        <span className="ellipsis">{label ?? current?.name ?? value ?? "Autre IA…"}</span>
         <Icon name="chevronDown" size={12} />
       </button>
       {open ? (
-        <div className="popover" role="listbox" aria-label="Modèles disponibles">
+        <div className="popover" role="listbox" aria-label="IA disponibles">
           <div style={{ padding: 4 }}>
             <input
               className="input sm"
               autoFocus
-              placeholder="Rechercher un modèle"
-              aria-label="Rechercher un modèle"
+              placeholder="Rechercher une IA"
+              aria-label="Rechercher une IA"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          {groups.length === 0 ? <div className="popover-group">Aucun modèle</div> : null}
+          {groups.length === 0 ? <div className="popover-group">Aucune IA</div> : null}
           {groups.map(([provider, list]) => (
             <div key={provider}>
               <div className="popover-group">{provider}</div>
@@ -97,16 +108,27 @@ export function ModelPicker({
                   <div className="model-row">
                     <span className="row" style={{ gap: 6, minWidth: 0 }}>
                       <span className="ellipsis">{model.name}</span>
-                      {model.expensive ? <Badge tone="warning">cher</Badge> : null}
-                      {model.price && model.price.rates.output === 0 && model.price.rates.input === 0 ? <Badge tone="good">gratuit</Badge> : null}
+                      {model.tier ? <Badge tone="accent">{TIER_LABELS[model.tier]}</Badge> : null}
+                      {model.reserved ? (
+                        <Badge tone="warning" title={RESERVED_HELP}>
+                          Réservé (très cher)
+                        </Badge>
+                      ) : model.expensive ? (
+                        <Badge tone="warning">cher</Badge>
+                      ) : null}
+                      {model.status === "deprecated" ? <Badge tone="critical">en fin de vie</Badge> : null}
                     </span>
-                    <span className="prices">
-                      {model.price ? `${formatPricePerM(model.price.rates.input)} → ${formatPricePerM(model.price.rates.output)}` : "prix inconnu"}
+                    <span
+                      className="prices"
+                      title={model.price ? `Prix par million de jetons : ${formatPricePerM(model.price.rates.input)} → ${formatPricePerM(model.price.rates.output)}` : undefined}
+                    >
+                      {model.taskCost ? perRequestText(model.taskCost.M) : "prix inconnu"}
                     </span>
                     <span className="tiny muted">
-                      {model.contextLimit ? `${formatTokens(model.contextLimit)} de contexte` : ""}
-                      {model.reasoning ? " · raisonnement" : ""}
+                      {model.contextLimit ? `${formatTokens(model.contextLimit)} de mémoire` : ""}
+                      {model.variants.length > 0 ? " · réflexion réglable" : ""}
                       {model.attachment ? " · images" : ""}
+                      {model.toolcall === false ? " · ne sait pas utiliser les outils" : ""}
                     </span>
                   </div>
                 </button>

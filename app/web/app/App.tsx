@@ -1,26 +1,30 @@
-// Coquille de l'application : amorçage, connexion, navigation, bandeaux d'alerte.
+// Coquille de l'application : amorçage, connexion, navigation, bandeaux d'alerte, règles d'utilisation.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { isDefaultProviders, MESSAGES } from "../../server/shared/assistant-rules.ts";
 import { Icon, type IconName } from "../components/Icon.tsx";
 import { ToastProvider, useToast } from "../components/Toast.tsx";
-import { Button, ConfirmProvider, IconButton, Meter, Spinner } from "../components/ui.tsx";
+import { Button, ConfirmProvider, EmptyState, IconButton, Meter, Spinner } from "../components/ui.tsx";
 import { ApiError, api, errorText, onUnauthorized } from "../lib/api.ts";
 import { cockpitEvent, eventBus, useEvents, useStreamStatus } from "../lib/events.ts";
 import { formatPercent, formatUsd } from "../lib/format.ts";
 import { navigate, routeHref, useRoute } from "../lib/router.ts";
 import type { BudgetAlert, Bootstrap, EventsStatus, Settings } from "../lib/types.ts";
 import { ArchivesPage } from "../pages/ArchivesPage.tsx";
+import { AssistantsPage } from "../pages/AssistantsPage.tsx";
 import { ChatPage } from "../pages/ChatPage.tsx";
 import { CostsPage } from "../pages/CostsPage.tsx";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage.tsx";
 import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
 import { AppProvider, type ThemeChoice, useApp } from "./AppContext.tsx";
+import { FirstRunRules, needsRules, UPGRADE_NOTICE_VERSION, UpgradeNotice } from "./FirstRunRules.tsx";
 
-const NAV: Array<{ id: string; label: string; icon: IconName }> = [
+const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean }> = [
   { id: "chat", label: "Chat", icon: "chat" },
+  { id: "assistants", label: "Assistants", icon: "sparkle" },
   { id: "couts", label: "Coûts", icon: "coins" },
   { id: "archives", label: "Archives", icon: "archive" },
-  { id: "studio", label: "Studio", icon: "bot" },
+  { id: "studio", label: "Studio (avancé)", icon: "bot", advancedOnly: true },
   { id: "parametres", label: "Paramètres", icon: "settings" },
   { id: "diagnostic", label: "Diagnostic", icon: "pulse" },
 ];
@@ -136,13 +140,34 @@ function LoginScreen({ onSuccess }: { onSuccess: () => Promise<void> }) {
   );
 }
 
+/** Page réservée au mode Avancé (le serveur refuse de toute façon les écritures en mode Simple). */
+function AdvancedOnlyPage({ title }: { title: string }) {
+  return (
+    <div className="page">
+      <EmptyState
+        icon="lock"
+        title={title}
+        action={
+          <Button variant="primary" icon="settings" onClick={() => navigate("parametres", "affichage")}>
+            Paramètres › Affichage
+          </Button>
+        }
+      >
+        {MESSAGES.modeAvance}
+      </EmptyState>
+    </div>
+  );
+}
+
 function Shell() {
   const route = useRoute();
   const section = route[0] ?? "chat";
-  const { boot, patchBoot, refresh, theme, setTheme } = useApp();
+  const { boot, patchBoot, refresh, theme, setTheme, ui, advanced, applySettings } = useApp();
   const toast = useToast();
   const streamStatus = useStreamStatus();
   const refreshTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(refreshTimer.current), []);
 
   useEvents((event) => {
     const usage = cockpitEvent(event, "usage.updated");
@@ -158,7 +183,7 @@ function Shell() {
     }
     const settings = cockpitEvent(event, "settings.updated");
     if (settings) {
-      patchBoot((b) => ({ ...b, settings: settings.data as Settings }));
+      applySettings(settings.data as Settings);
       return;
     }
     const connection = cockpitEvent(event, "opencode.connection");
@@ -176,7 +201,8 @@ function Shell() {
       toast.warning(`Budget : ${a.threshold} % atteint`, `${formatUsd(a.spentUsd)} dépensés sur ${formatUsd(a.budgetUsd)} ce mois-ci.`);
       return;
     }
-    if (cockpitEvent(event, "stream.reconnected", "opencode.config.changed")) {
+    // Niveaux d'IA résolus, catalogue et configuration : l'amorçage est recalculé par le serveur.
+    if (cockpitEvent(event, "stream.reconnected", "opencode.config.changed", "ai.changed")) {
       window.clearTimeout(refreshTimer.current);
       refreshTimer.current = window.setTimeout(() => void refresh(), 800);
     }
@@ -193,99 +219,123 @@ function Shell() {
   const themeLabel: Record<ThemeChoice, string> = { system: "Thème : système", light: "Thème : clair", dark: "Thème : sombre" };
 
   const percent = boot.usage.percent;
+  const rulesOpen = needsRules(ui.rulesAcceptedVersion, boot.rulesVersion);
+  const providers = boot.allowedProviders ?? [];
+  const testProviders = providers.length > 0 && !isDefaultProviders(providers);
+  const nav = NAV.filter((item) => advanced || !item.advancedOnly);
 
   return (
-    <div className="app">
-      <nav className="rail" aria-label="Navigation principale">
-        <div className="brand">
-          <img src="/favicon.svg" alt="" />
-          <div className="brand-text">
-            opencode cockpit
-            <small>{boot.version === "dev" ? "version de développement" : `v${boot.version}`}</small>
-          </div>
-        </div>
-        {NAV.map((item) => (
-          <a key={item.id} href={routeHref(item.id)} className={`nav-item${section === item.id ? " active" : ""}`} title={item.label}>
-            <Icon name={item.icon} size={18} />
-            <span className="label">{item.label}</span>
-          </a>
-        ))}
-        <div className="rail-footer">
-          <a className="budget-mini" href={routeHref("couts")} title="Budget du mois">
-            <div className="row between">
-              <span className="label small secondary">Budget</span>
-              <strong className="small">{formatPercent(percent)}</strong>
+    <>
+      <div className="app" inert={rulesOpen}>
+        <nav className="rail" aria-label="Navigation principale">
+          <div className="brand">
+            <img src="/favicon.svg" alt="" />
+            <div className="brand-text">
+              opencode cockpit
+              <small>{boot.version === "dev" ? "version de développement" : `v${boot.version}`}</small>
             </div>
-            <Meter percent={percent} label="Budget mensuel consommé" />
-            <span className="label tiny muted">
-              {formatUsd(boot.usage.spentUsd)} / {formatUsd(boot.usage.budgetUsd)}
-            </span>
-          </a>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="row small muted" title={boot.opencode.reachable ? `opencode ${boot.opencode.version ?? ""}` : "opencode injoignable"}>
-              <span className={`dot ${boot.opencode.reachable && streamStatus === "open" ? "good" : streamStatus === "connecting" ? "warning pulse" : "critical"}`} />
-              <span className="hide-narrow">{boot.opencode.reachable ? "opencode" : "hors ligne"}</span>
-            </span>
-            <span className="row" style={{ gap: 2 }}>
-              <IconButton icon={themeIcon[theme]} label={themeLabel[theme]} size="sm" onClick={() => setTheme(nextTheme[theme])} />
-              <IconButton icon="logout" label="Se déconnecter" size="sm" onClick={() => void logout()} />
-            </span>
           </div>
-        </div>
-      </nav>
+          {nav.map((item) => (
+            <a key={item.id} href={routeHref(item.id)} className={`nav-item${section === item.id ? " active" : ""}`} title={item.label}>
+              <Icon name={item.icon} size={18} />
+              <span className="label">{item.label}</span>
+            </a>
+          ))}
+          <div className="rail-footer">
+            <a className="budget-mini" href={routeHref("couts")} title="Budget du mois">
+              <div className="row between">
+                <span className="label small secondary">Budget</span>
+                <strong className="small">{formatPercent(percent)}</strong>
+              </div>
+              <Meter percent={percent} label="Budget mensuel consommé" />
+              <span className="label tiny muted">
+                {formatUsd(boot.usage.spentUsd)} / {formatUsd(boot.usage.budgetUsd)}
+              </span>
+            </a>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <span className="row small muted" title={boot.opencode.reachable ? `opencode ${boot.opencode.version ?? ""}` : "opencode injoignable"}>
+                <span className={`dot ${boot.opencode.reachable && streamStatus === "open" ? "good" : streamStatus === "connecting" ? "warning pulse" : "critical"}`} />
+                <span className="hide-narrow">{boot.opencode.reachable ? "opencode" : "hors ligne"}</span>
+              </span>
+              <span className="row" style={{ gap: 2 }}>
+                <IconButton icon={themeIcon[theme]} label={themeLabel[theme]} size="sm" onClick={() => setTheme(nextTheme[theme])} />
+                <IconButton icon="logout" label="Se déconnecter" size="sm" onClick={() => void logout()} />
+              </span>
+            </div>
+          </div>
+        </nav>
 
-      <main className="main">
-        {boot.security.tlsInsecure ? (
-          <div className="banner critical" role="alert">
-            <Icon name="shield" />
-            <span>
-              Vérification TLS <strong>désactivée</strong> (COCKPIT_TLS_INSECURE=1) : le trafic sortant peut être intercepté. Préférez les
-              certificats d'entreprise (dossier <code>certs/</code>).
-            </span>
-          </div>
-        ) : null}
-        {!boot.opencode.reachable ? (
-          <div className="banner warning" role="alert">
-            <Icon name="alert" />
-            <span className="spacer">opencode ne répond pas pour le moment.</span>
-            <Button size="sm" onClick={() => navigate("diagnostic")}>
-              Diagnostic
-            </Button>
-          </div>
-        ) : !boot.copilotConnected ? (
-          <div className="banner info">
-            <Icon name="plug" />
-            <span className="spacer">GitHub Copilot n'est pas encore connecté.</span>
-            <Button size="sm" variant="primary" onClick={() => navigate("parametres", "connexion")}>
-              Connecter Copilot
-            </Button>
-          </div>
-        ) : percent >= 90 ? (
-          <div className={`banner ${percent >= 100 ? "critical" : "warning"}`}>
-            <Icon name="coins" />
-            <span className="spacer">
-              {formatPercent(percent)} du budget mensuel consommé ({formatUsd(boot.usage.spentUsd)} / {formatUsd(boot.usage.budgetUsd)}).
-            </span>
-            <Button size="sm" onClick={() => navigate("couts")}>
-              Voir les coûts
-            </Button>
-          </div>
-        ) : null}
+        <main className="main">
+          {testProviders ? (
+            <div className="banner critical" role="alert">
+              <Icon name="alert" />
+              <span>
+                <strong>{MESSAGES.testProviderBanner}</strong>
+                {" "}
+                <span className="small">Fournisseurs autorisés : {providers.join(", ")}.</span>
+              </span>
+            </div>
+          ) : null}
+          {boot.security.tlsInsecure ? (
+            <div className="banner critical" role="alert">
+              <Icon name="shield" />
+              <span>
+                Vérification TLS <strong>désactivée</strong> (COCKPIT_TLS_INSECURE=1) : le trafic sortant peut être intercepté. Préférez les
+                certificats d'entreprise (dossier <code>certs/</code>).
+              </span>
+            </div>
+          ) : null}
+          {!boot.opencode.reachable ? (
+            <div className="banner warning" role="alert">
+              <Icon name="alert" />
+              <span className="spacer">opencode ne répond pas pour le moment.</span>
+              <Button size="sm" onClick={() => navigate("diagnostic")}>
+                Diagnostic
+              </Button>
+            </div>
+          ) : !boot.copilotConnected ? (
+            <div className="banner info">
+              <Icon name="plug" />
+              <span className="spacer">GitHub Copilot n'est pas encore connecté.</span>
+              <Button size="sm" variant="primary" onClick={() => navigate("parametres", "connexion")}>
+                Connecter Copilot
+              </Button>
+            </div>
+          ) : percent >= 90 ? (
+            <div className={`banner ${percent >= 100 ? "critical" : "warning"}`}>
+              <Icon name="coins" />
+              <span className="spacer">
+                {formatPercent(percent)} du budget mensuel consommé ({formatUsd(boot.usage.spentUsd)} / {formatUsd(boot.usage.budgetUsd)}).
+              </span>
+              <Button size="sm" onClick={() => navigate("couts")}>
+                Voir les coûts
+              </Button>
+            </div>
+          ) : null}
+          {!rulesOpen && ui.noticeSeen !== UPGRADE_NOTICE_VERSION ? <UpgradeNotice /> : null}
 
-        {section === "couts" ? (
-          <CostsPage />
-        ) : section === "archives" ? (
-          <ArchivesPage />
-        ) : section === "studio" ? (
-          <StudioPage />
-        ) : section === "parametres" ? (
-          <SettingsPage />
-        ) : section === "diagnostic" ? (
-          <DiagnosticsPage />
-        ) : (
-          <ChatPage />
-        )}
-      </main>
-    </div>
+          {section === "couts" ? (
+            <CostsPage />
+          ) : section === "archives" ? (
+            <ArchivesPage />
+          ) : section === "assistants" ? (
+            <AssistantsPage />
+          ) : section === "studio" ? (
+            advanced ? (
+              <StudioPage />
+            ) : (
+              <AdvancedOnlyPage title="Studio (avancé)" />
+            )
+          ) : section === "parametres" ? (
+            <SettingsPage />
+          ) : section === "diagnostic" ? (
+            <DiagnosticsPage />
+          ) : (
+            <ChatPage />
+          )}
+        </main>
+      </div>
+      {rulesOpen ? <FirstRunRules /> : null}
+    </>
   );
 }

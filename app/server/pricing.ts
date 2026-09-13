@@ -146,10 +146,11 @@ export function resolvePrice(
   ctx: Pick<PricingContext, "overrides" | "catalog">,
 ): { price: ModelPrice; source: Exclude<CostSource, "reported" | "none"> } | null {
   const key = `${providerID}/${modelID}`;
-  const override = ctx.overrides[key];
+  // Propriétés propres uniquement : un identifiant comme « constructor » ne doit pas lire Object.prototype.
+  const override = Object.hasOwn(ctx.overrides, key) ? ctx.overrides[key] : undefined;
   if (override) return { price: override, source: "override" };
   if (providerID === "github-copilot") {
-    const official = COPILOT_PRICES[modelID];
+    const official = Object.hasOwn(COPILOT_PRICES, modelID) ? COPILOT_PRICES[modelID] : undefined;
     if (official) return { price: official, source: "table" };
   }
   const fromCatalog = ctx.catalog.get(key);

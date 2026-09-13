@@ -1,11 +1,23 @@
 // Registre des coûts : un enregistrement par appel de modèle, agrégats mensuels, alertes et garde-fou.
 import type { DatabaseSync } from "node:sqlite";
 import type { ModelCatalog } from "./catalog.ts";
-import { params } from "./db.ts";
+import { type ChatTurnRow, params } from "./db.ts";
 import type { OcAssistantMessage, OcUserMessage } from "./opencode.ts";
-import { type ModelPrice, type PricingContext, resolveMessageCost, resolvePrice, usdToCredits } from "./pricing.ts";
+import { type ModelPrice, type PricingContext, resolveMessageCost, resolvePrice, roundUsd, usdToCredits } from "./pricing.ts";
 import type { SessionRow } from "./sessions.ts";
 import type { SettingsStore } from "./settings.ts";
+import type { BudgetGuardError, ChoicesResponse } from "./shared/api-types.ts";
+import {
+  BUDGET_CONFIRM_TITLE,
+  budgetConfirmMessage,
+  estimateTaskCost,
+  type ModelRef,
+  parseModelKey,
+  type Run,
+  type TaskSize,
+  type Tier,
+  TIER_IDS,
+} from "./shared/assistant-rules.ts";
 
 const DAY_MS = 86_400_000;
 export const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -71,6 +83,24 @@ export interface BudgetAlert {
 }
 
 type Num = number | null;
+
+/** Contexte du texte de confirmation du garde-fou (conception §9.2). */
+export interface GuardRunsContext {
+  /** Raccourci (sans « / ») ou null. */
+  command: string | null;
+  modelName: (model: string) => string;
+  tierOfModel: (model: string) => Tier | null;
+  /** Taille de demande de l'estimation « environ {coût} ». */
+  size: TaskSize;
+}
+
+/** Coût moyen observé par prompt de chat (sous-agents compris) : `where` est un fragment SQL interne, jamais une entrée. */
+const PROMPT_COST_SQL = `SELECT COUNT(DISTINCT p.message_id) AS prompts, COALESCE(SUM(u.cost), 0) AS cost
+  FROM prompts p
+  JOIN sessions s ON s.id = p.session_id AND s.purpose = 'chat' AND s.parent_id IS NULL
+  LEFT JOIN usage u ON u.root_id = p.root_id AND u.created_at >= p.created_at
+    AND u.created_at < COALESCE((SELECT MIN(p2.created_at) FROM prompts p2 WHERE p2.root_id = p.root_id AND p2.created_at > p.created_at), 9e15)
+  WHERE p.created_at >= ?`;
 
 export class Ledger {
   readonly #db: DatabaseSync;
@@ -281,25 +311,109 @@ export class Ledger {
     return { allowed: true, ...base };
   }
 
+  /**
+   * Garde-fou sur tous les appels réellement facturés d'un tour (message, raccourci, travail délégué, reprise) :
+   * du plus cher au moins cher (prix de sortie effectif), premier refus de guard(), avec le texte français §9.2.
+   */
+  guardRuns(runs: Run[], confirmed: boolean, ctx: GuardRunsContext): BudgetGuardError | null {
+    if (confirmed || runs.length === 0) return null;
+    const pricing = this.pricingContext();
+    const priced = runs.map((run) => {
+      const ref = parseModelKey(run.model);
+      return { run, ref, price: resolvePrice(ref.providerID, ref.modelID, pricing)?.price ?? null };
+    });
+    const ordered = [...priced].sort((a, b) => (b.price?.rates.output ?? -1) - (a.price?.rates.output ?? -1));
+    for (const item of ordered) {
+      const decision = this.guard(item.ref, false);
+      if (decision.allowed || decision.code === undefined) continue;
+      const known = priced.filter((p) => p.price !== null);
+      const usd = known.length > 0 ? roundUsd(known.reduce((sum, p) => (p.price ? sum + estimateTaskCost(p.price, ctx.size) : sum), 0)) : null;
+      const modelName = ctx.modelName(item.run.model);
+      const { message } = budgetConfirmMessage({
+        atLimit: decision.code === "budget-exhausted",
+        percent: decision.percent,
+        spentUsd: this.monthTotal(),
+        budgetUsd: this.#settings.get().budget.monthlyUsd,
+        modelName,
+        tier: ctx.tierOfModel(item.run.model),
+        usd,
+        command: ctx.command,
+      });
+      return {
+        error: "budget-guard",
+        allowed: false,
+        code: decision.code,
+        title: BUDGET_CONFIRM_TITLE,
+        message,
+        percent: decision.percent,
+        outputPricePerM: decision.outputPricePerM,
+        run: item.run,
+        modelName,
+      };
+    }
+    return null;
+  }
+
   /** Coût moyen observé par prompt pour un modèle sur 30 jours (sous-agents compris). */
   estimate(providerID: string, modelID: string, now = Date.now()): { price: ModelPrice | null; avgUsd: number | null; samples: number } {
     const since = now - 30 * DAY_MS;
     const row = this.#db
-      .prepare(
-        `SELECT COUNT(DISTINCT p.message_id) AS prompts, COALESCE(SUM(u.cost), 0) AS cost
-         FROM prompts p
-         JOIN sessions s ON s.id = p.session_id AND s.purpose = 'chat' AND s.parent_id IS NULL
-         LEFT JOIN usage u ON u.root_id = p.root_id AND u.created_at >= p.created_at
-           AND u.created_at < COALESCE((SELECT MIN(p2.created_at) FROM prompts p2 WHERE p2.root_id = p.root_id AND p2.created_at > p.created_at), 9e15)
-         WHERE p.provider_id = ? AND p.model_id = ? AND p.created_at >= ?`,
-      )
-      .get(providerID, modelID, since) as { prompts: number; cost: number };
+      .prepare(`${PROMPT_COST_SQL} AND p.provider_id = ? AND p.model_id = ?`)
+      .get(since, providerID, modelID) as { prompts: number; cost: number };
     const resolved = resolvePrice(providerID, modelID, this.pricingContext());
     return {
       price: resolved?.price ?? null,
       avgUsd: row.prompts > 0 ? row.cost / row.prompts : null,
       samples: row.prompts,
     };
+  }
+
+  /** Coût moyen observé par demande d'un agent sur 30 jours (et d'une IA si précisée) : base des estimations « observées ». */
+  estimateAgent(agent: string, model?: ModelRef, now = Date.now()): { avgUsd: number | null; samples: number } {
+    const since = now - 30 * DAY_MS;
+    const row = (
+      model
+        ? this.#db
+            .prepare(`${PROMPT_COST_SQL} AND p.agent = ? AND p.provider_id = ? AND p.model_id = ?`)
+            .get(since, agent, model.providerID, model.modelID)
+        : this.#db.prepare(`${PROMPT_COST_SQL} AND p.agent = ?`).get(since, agent)
+    ) as { prompts: number; cost: number };
+    return { avgUsd: row.prompts > 0 ? row.cost / row.prompts : null, samples: row.prompts };
+  }
+
+  /** Une ligne par demande relayée : IA et réflexion envoyées, appels facturés prévus. */
+  recordChatTurn(row: Omit<ChatTurnRow, "id" | "runs"> & { runs: Run[] }): void {
+    this.#db
+      .prepare(
+        `INSERT INTO chat_turns (session_id, created_at, kind, agent, command, tier, model, variant, runs)
+         VALUES (:session_id, :created_at, :kind, :agent, :command, :tier, :model, :variant, :runs)`,
+      )
+      .run(
+        params({
+          session_id: row.session_id,
+          created_at: row.created_at,
+          kind: row.kind,
+          agent: row.agent,
+          command: row.command,
+          tier: row.tier,
+          model: row.model,
+          variant: row.variant,
+          runs: JSON.stringify(row.runs),
+        }),
+      );
+  }
+
+  /** Derniers choix d'une conversation : dernière ligne « message » (jamais un raccourci), sinon null. */
+  lastChatChoice(sessionId: string): ChoicesResponse {
+    const row = this.#db
+      .prepare(
+        `SELECT agent, tier, model, variant, created_at FROM chat_turns
+         WHERE session_id = ? AND kind = 'message' ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .get(sessionId) as Pick<ChatTurnRow, "agent" | "tier" | "model" | "variant" | "created_at"> | undefined;
+    if (!row) return null;
+    const tier = TIER_IDS.find((id) => id === row.tier) ?? null;
+    return { agent: row.agent, tier, model: row.model, variant: row.variant, createdAt: row.created_at };
   }
 
   sessionUsage(rootId: string): {

@@ -126,7 +126,79 @@ const MIGRATIONS: readonly string[] = [
     overage_count REAL
   );
   `,
+  // 0.2.0 : métadonnées des assistants et IA réellement choisies par tour de chat.
+  `
+  CREATE TABLE item_meta (
+    kind TEXT NOT NULL,                  -- 'agents' | 'commands'
+    name TEXT NOT NULL,
+    title TEXT,                          -- titre d'assistant (NULL = pas un assistant)
+    use_case TEXT,                       -- analyser|relire|rediger|expliquer|autre
+    icon TEXT,
+    tier TEXT,                           -- rapide|equilibre|expert|NULL (IA précise ou aucune)
+    rights TEXT,                         -- lecture|propose|personnalise (recalculé à la lecture)
+    task_size TEXT,                      -- S|M|L
+    examples TEXT NOT NULL DEFAULT '[]', -- JSON, 3 × 200 caractères au plus
+    origin TEXT NOT NULL,                -- assistant|catalogue|adopte|studio
+    catalog_id TEXT,
+    catalog_version INTEGER,
+    applied_model TEXT,
+    applied_variant TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, name)
+  );
+
+  CREATE TABLE chat_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    kind TEXT NOT NULL,                  -- message|raccourci|resume
+    agent TEXT NOT NULL DEFAULT '',
+    command TEXT,
+    tier TEXT,
+    model TEXT,
+    variant TEXT,
+    runs TEXT NOT NULL DEFAULT '[]'      -- JSON Run[]
+  );
+  CREATE INDEX idx_chat_turns_session ON chat_turns(session_id, created_at);
+  `,
 ];
+
+/** Ligne de la table item_meta (migration 2). */
+export interface ItemMetaRow {
+  kind: "agents" | "commands";
+  name: string;
+  title: string | null;
+  use_case: string | null;
+  icon: string | null;
+  tier: string | null;
+  rights: string | null;
+  task_size: string | null;
+  /** JSON string[] */
+  examples: string;
+  origin: "assistant" | "catalogue" | "adopte" | "studio";
+  catalog_id: string | null;
+  catalog_version: number | null;
+  applied_model: string | null;
+  applied_variant: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Ligne de la table chat_turns (migration 2). */
+export interface ChatTurnRow {
+  id: number;
+  session_id: string;
+  created_at: number;
+  kind: "message" | "raccourci" | "resume";
+  agent: string;
+  command: string | null;
+  tier: string | null;
+  model: string | null;
+  variant: string | null;
+  /** JSON Run[] */
+  runs: string;
+}
 
 function configure(db: DatabaseSync): DatabaseSync {
   db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");

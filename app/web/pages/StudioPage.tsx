@@ -1,15 +1,27 @@
-// Studio : agents, skills, commandes et instructions (AGENTS.md) d'opencode.
+// Studio (avancé) : agents, skills, commandes et instructions (AGENTS.md) d'opencode.
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MESSAGES, TIER_LABELS } from "../../server/shared/assistant-rules.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Badge, Button, EmptyState, Spinner, Tabs, useAsync, useConfirm } from "../components/ui.tsx";
 import { api, errorText } from "../lib/api.ts";
 import { cockpitEvent, useEvents } from "../lib/events.ts";
 import { navigate, useRoute } from "../lib/router.ts";
-import type { StudioItem, StudioKind, StudioTemplate } from "../lib/types.ts";
+import type { StudioItem, StudioKind, StudioTemplate, Tier } from "../lib/types.ts";
 import { InstructionsEditor } from "./studio/InstructionsEditor.tsx";
 import { ItemEditor } from "./studio/ItemEditor.tsx";
-import { cloneJson, emptyDraft, HEX_RE, KIND_LABELS, type NewSeed, str, type StudioTab, uniqueName } from "./studio/shared.ts";
+import {
+  cloneJson,
+  type Draft,
+  emptyDraft,
+  HEX_RE,
+  KIND_LABELS,
+  type NewSeed,
+  str,
+  type StudioTab,
+  uniqueName,
+  withKeysAfter,
+} from "./studio/shared.ts";
 import { TemplatesModal } from "./studio/TemplatesModal.tsx";
 import "./studio/studio.css";
 
@@ -26,12 +38,15 @@ const MODE_BADGE: Record<string, { label: string; tone: "accent" | "neutral" }> 
   all: { label: "tous modes", tone: "neutral" },
 };
 
-type Seed = NewSeed & { kind: StudioKind; project: string };
+type Seed = NewSeed & { kind: StudioKind; project: string; tier?: Tier | null };
 
-function ItemBadges({ item }: { item: StudioItem }) {
+const PROJECT_SCOPE_HINT = "Réservé aux dépôts de confiance : désactivé sur ce poste.";
+
+function ItemBadges({ item, tier }: { item: StudioItem; tier: Tier | null | undefined }) {
   const fm = item.frontmatter;
   const badges: Array<{ key: string; label: string; tone: "accent" | "neutral" | "warning" | "critical" }> = [];
   if (item.error) badges.push({ key: "error", label: "erreur", tone: "critical" });
+  if (tier) badges.push({ key: "tier", label: `Niveau ${TIER_LABELS[tier]}`, tone: "accent" });
   if (item.kind === "agents") {
     const mode = MODE_BADGE[str(fm.mode) || "all"];
     if (mode) badges.push({ key: "mode", label: mode.label, tone: mode.tone });
@@ -39,7 +54,7 @@ function ItemBadges({ item }: { item: StudioItem }) {
     if (fm.disable === true) badges.push({ key: "disable", label: "désactivé", tone: "warning" });
   }
   if (item.kind === "commands") {
-    if (fm.subtask === true) badges.push({ key: "subtask", label: "sous-tâche", tone: "neutral" });
+    if (fm.subtask === true) badges.push({ key: "subtask", label: "délégué", tone: "neutral" });
     if (str(fm.agent)) badges.push({ key: "agent", label: `@${str(fm.agent)}`, tone: "accent" });
   }
   if (item.kind === "skills" && item.files.length > 0) {
@@ -61,6 +76,8 @@ export function StudioPage() {
   const route = useRoute();
   const { boot } = useApp();
   const confirm = useConfirm();
+  const advanced = boot.ui?.mode === "avance";
+  const projectConfig = boot.security.projectConfig;
   const tab: StudioTab = (TABS.find((t) => t.id === route[1])?.id ?? "agents") as StudioTab;
   const kind: StudioKind | null = tab === "instructions" ? null : tab;
   const selectedName = kind ? (route[2] ?? null) : null;
@@ -73,8 +90,8 @@ export function StudioPage() {
 
   const projects = useMemo(() => boot.projects.filter((p) => !p.isRoot), [boot.projects]);
   useEffect(() => {
-    if (project && !projects.some((p) => p.name === project)) setProject("");
-  }, [project, projects]);
+    if (project && (!projectConfig || !projects.some((p) => p.name === project))) setProject("");
+  }, [project, projects, projectConfig]);
 
   const list = useAsync(() => (kind ? api.studioList(kind, project || null) : Promise.resolve([] as StudioItem[])), [kind, project]);
   const items = useMemo(
@@ -83,9 +100,23 @@ export function StudioPage() {
   );
   const takenNames = useMemo(() => new Set(items.map((i) => i.name)), [items]);
 
+  // Liaisons agents/raccourcis vers un niveau d'IA (item_meta), lues dans « Qui utilise quel niveau ? » (GET /api/ai).
+  const ai = useAsync(() => (advanced && kind && kind !== "skills" ? api.ai() : Promise.resolve(null)), [advanced, kind]);
+  const bindings = useMemo(() => {
+    if (!ai.data) return null;
+    const map = new Map<string, Tier | null>();
+    for (const row of ai.data.usage) {
+      if (row.kind === "agents" || row.kind === "commands") map.set(`${row.kind}/${row.name}`, row.state === "a-ranger" ? null : row.tier);
+    }
+    return map;
+  }, [ai.data]);
+  const bindingOf = (itemKind: StudioKind, name: string): Tier | null | undefined =>
+    project || itemKind === "skills" || !bindings ? undefined : (bindings.get(`${itemKind}/${name}`) ?? null);
+
   useEvents((event) => {
     const changed = cockpitEvent(event, "studio.changed", "opencode.config.changed");
     if (changed && kind) list.reload();
+    if (cockpitEvent(event, "studio.changed", "ai.changed") && advanced && kind && kind !== "skills") ai.reload();
   });
 
   const onDirtyChange = useCallback((dirty: boolean) => {
@@ -117,12 +148,22 @@ export function StudioPage() {
 
   const startNew = (template?: StudioTemplate) => {
     if (!kind) return;
-    const base = template
-      ? { name: uniqueName(template.name, takenNames), frontmatter: cloneJson(template.frontmatter), body: template.body }
-      : emptyDraft(kind);
+    let base: Draft = emptyDraft(kind);
+    let tier: Tier | null | undefined;
+    if (template) {
+      let frontmatter = cloneJson(template.frontmatter);
+      // Niveau conseillé de l'exemple : son IA résolue sur ce poste est pré-choisie (rien n'est écrit avant « Enregistrer »).
+      const view = template.tier && kind !== "skills" ? boot.ai?.tiers.find((t) => t.id === template.tier) : undefined;
+      if (view?.model && frontmatter.model === undefined) {
+        const entries: Record<string, unknown> = view.variant ? { model: view.model, variant: view.variant } : { model: view.model };
+        frontmatter = withKeysAfter(frontmatter, ["description", "mode", "agent"], entries);
+        tier = view.id;
+      }
+      base = { name: uniqueName(template.name, takenNames), frontmatter, body: template.body };
+    }
     void guard(() => {
       setTemplatesOpen(false);
-      setSeed({ ...base, seq: seq.current++, kind, project });
+      setSeed({ ...base, seq: seq.current++, kind, project, tier });
       navigate("studio", kind);
     });
   };
@@ -162,6 +203,7 @@ export function StudioPage() {
           seed={{ name: selected.name, frontmatter: cloneJson(selected.frontmatter), body: selected.body }}
           project={project || null}
           takenNames={takenNames}
+          binding={bindingOf(kind, selected.name)}
           onSaved={onSaved}
           onDeleted={onDeleted}
           onDiscardNew={() => undefined}
@@ -200,6 +242,7 @@ export function StudioPage() {
         seed={{ name: activeSeed.name, frontmatter: activeSeed.frontmatter, body: activeSeed.body }}
         project={project || null}
         takenNames={takenNames}
+        initialTier={activeSeed.tier}
         onSaved={onSaved}
         onDeleted={() => undefined}
         onDiscardNew={() => setSeed(null)}
@@ -218,17 +261,49 @@ export function StudioPage() {
                 Nouveau
               </Button>
               <Button icon="layers" onClick={() => setTemplatesOpen(true)}>
-                Partir d'un modèle
+                Partir d'un exemple
               </Button>
             </div>
           }
         >
           {kind === "agents"
-            ? "Un agent combine un prompt système, un modèle et des permissions. Les agents intégrés d'opencode (build, plan…) ne sont pas listés ici."
+            ? "Un agent réunit des consignes, des droits et éventuellement une IA fixée. Pour un usage courant, utilisez la page Assistants."
             : kind === "skills"
-              ? "Un skill est un paquet d'instructions et de documents que le modèle charge uniquement quand il en a besoin."
-              : "Une commande est un modèle de prompt réutilisable, lancé avec /nom dans le chat."}
+              ? "Un skill (fiche) est un paquet d'instructions et de documents que l'IA ouvre uniquement quand elle en a besoin."
+              : "Une commande (raccourci) est un texte tout prêt, lancé en tapant /nom dans le chat."}
         </EmptyState>
+      </div>
+    );
+  }
+
+  if (!advanced) {
+    return (
+      <div className="page">
+        <div className="page-narrow">
+          <header className="page-header">
+            <div className="spacer" style={{ minWidth: 0 }}>
+              <h1>Studio (avancé)</h1>
+            </div>
+          </header>
+          <div className="card">
+            <EmptyState
+              icon="lock"
+              title={MESSAGES.modeAvance}
+              action={
+                <div className="row wrap" style={{ justifyContent: "center" }}>
+                  <Button variant="primary" icon="bot" onClick={() => navigate("assistants")}>
+                    Ouvrir la page Assistants
+                  </Button>
+                  <Button icon="settings" onClick={() => navigate("parametres", "affichage")}>
+                    Paramètres › Affichage
+                  </Button>
+                </div>
+              }
+            >
+              Pour un usage courant, créez ou installez un assistant depuis la page Assistants.
+            </EmptyState>
+          </div>
+        </div>
       </div>
     );
   }
@@ -238,7 +313,7 @@ export function StudioPage() {
       <div className="page-narrow" style={{ maxWidth: 1280 }}>
         <header className="page-header">
           <div className="spacer" style={{ minWidth: 0 }}>
-            <h1>Studio</h1>
+            <h1>Studio (avancé)</h1>
             <p>
               Agents, skills et commandes d'opencode. Les fichiers sont écrits dans sa configuration et pris en compte immédiatement ; opencode
               les vérifie et toute modification refusée est annulée automatiquement.
@@ -259,7 +334,7 @@ export function StudioPage() {
           />
           <div className="studio-scope">
             <label htmlFor="studio-scope" className="small secondary">
-              Portée
+              Où l'enregistrer
             </label>
             <select
               id="studio-scope"
@@ -276,11 +351,12 @@ export function StudioPage() {
             >
               <option value="">Global (tous les projets)</option>
               {projects.map((p) => (
-                <option key={p.name} value={p.name}>
+                <option key={p.name} value={p.name} disabled={!projectConfig}>
                   Projet : {p.name}
                 </option>
               ))}
             </select>
+            {!projectConfig && projects.length > 0 ? <span className="tiny muted studio-scope-hint">{PROJECT_SCOPE_HINT}</span> : null}
           </div>
         </div>
 
@@ -293,7 +369,7 @@ export function StudioPage() {
                   <span className="muted small">{list.data ? items.length : ""}</span>
                 </strong>
                 <Button size="sm" icon="layers" onClick={() => setTemplatesOpen(true)}>
-                  Modèles
+                  Exemples
                 </Button>
                 <Button size="sm" variant="primary" icon="plus" onClick={() => startNew()}>
                   Nouveau
@@ -353,7 +429,7 @@ export function StudioPage() {
                         {str(item.frontmatter.description) ? (
                           <span className="small muted ellipsis">{str(item.frontmatter.description)}</span>
                         ) : null}
-                        <ItemBadges item={item} />
+                        <ItemBadges item={item} tier={bindingOf(item.kind, item.name)} />
                       </button>
                     );
                   })}

@@ -1,10 +1,14 @@
 // Petits composants de formulaire partagés par le Studio et les Paramètres.
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { perRequestText } from "../../../server/shared/assistant-rules.ts";
 import { Icon } from "../../components/Icon.tsx";
 import type { ModelInfo, ValidationIssue } from "../../lib/types.ts";
 import { groupModels } from "./shared.ts";
 
-/** Liste déroulante des modèles, groupés par fournisseur ; conserve une valeur inconnue du catalogue. */
+/**
+ * Liste déroulante des modèles, groupés par fournisseur ; conserve une valeur inconnue du catalogue.
+ * `showCost` : coût estimé d'une demande (taille M), tri du moins cher au plus cher, mention « réservé (très cher) ».
+ */
 export function ModelSelect({
   id,
   value,
@@ -13,6 +17,7 @@ export function ModelSelect({
   emptyLabel = "Modèle par défaut",
   disabled,
   ariaLabel,
+  showCost = false,
 }: {
   id?: string;
   value: string | null;
@@ -21,8 +26,14 @@ export function ModelSelect({
   emptyLabel?: string;
   disabled?: boolean;
   ariaLabel?: string;
+  showCost?: boolean;
 }) {
   const groups = groupModels(models);
+  if (showCost) {
+    for (const g of groups) {
+      g.models.sort((a, b) => (a.taskCost?.M ?? Number.POSITIVE_INFINITY) - (b.taskCost?.M ?? Number.POSITIVE_INFINITY) || a.name.localeCompare(b.name));
+    }
+  }
   const known = value ? models.some((m) => m.key === value) : true;
   return (
     <select
@@ -40,7 +51,8 @@ export function ModelSelect({
           {g.models.map((m) => (
             <option key={m.key} value={m.key}>
               {m.name}
-              {m.expensive ? " · cher" : ""}
+              {showCost && m.taskCost ? ` · ${perRequestText(m.taskCost.M)}` : ""}
+              {showCost && m.reserved ? " · réservé (très cher)" : m.expensive ? " · cher" : ""}
             </option>
           ))}
         </optgroup>

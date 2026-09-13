@@ -1,6 +1,7 @@
-// État global : données d'amorçage, projet courant, thème.
+// État global : données d'amorçage, projet courant, thème, mode d'affichage (Simple / Avancé).
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import type { Bootstrap, Category, ModelInfo, ProjectInfo } from "../lib/types.ts";
+import { api } from "../lib/api.ts";
+import type { Bootstrap, Category, ModelInfo, ProjectInfo, Settings, UiSettings } from "../lib/types.ts";
 
 export type ThemeChoice = "system" | "light" | "dark";
 
@@ -19,6 +20,28 @@ interface AppState {
   categories: Category[];
   categoryById: (id: string | null | undefined) => Category | undefined;
   modelByKey: (key: string | null | undefined) => ModelInfo | undefined;
+  /** Réglages d'affichage (mode, règles acceptées, notice vue). */
+  ui: UiSettings;
+  /** true en mode Avancé. */
+  advanced: boolean;
+  /** Reporte des paramètres enregistrés dans l'amorçage (settings, ui, ai). */
+  applySettings: (settings: Settings) => void;
+  /** Enregistre une partie de `ui` puis met l'amorçage à jour ; lève l'erreur de l'API en cas d'échec. */
+  saveUi: (patch: Partial<UiSettings>) => Promise<Settings>;
+}
+
+const DEFAULT_UI: UiSettings = Object.freeze({ mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null });
+
+/** Copie les sections 0.2.0 des paramètres dans les champs dérivés de l'amorçage. */
+export function withSettings(boot: Bootstrap, settings: Settings): Bootstrap {
+  return {
+    ...boot,
+    settings,
+    ui: settings.ui ?? boot.ui,
+    ai: boot.ai
+      ? { ...boot.ai, chatDefaultTier: settings.ai?.chatDefaultTier ?? boot.ai.chatDefaultTier, allowModelOverride: settings.ai?.allowModelOverride ?? boot.ai.allowModelOverride }
+      : boot.ai,
+  };
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -88,10 +111,23 @@ export function AppProvider({
     writeStorage("cockpit-directory", next);
   }, []);
 
+  const applySettings = useCallback((settings: Settings) => setBoot((current) => withSettings(current, settings)), []);
+
+  const saveUi = useCallback(
+    async (patch: Partial<UiSettings>) => {
+      const saved = await api.saveSettings({ ui: patch });
+      applySettings(saved);
+      return saved;
+    },
+    [applySettings],
+  );
+
   const value = useMemo<AppState>(() => {
     const categories = boot.settings.classifier.categories;
     const categoryMap = new Map(categories.map((c) => [c.id, c]));
     const modelMap = new Map(boot.models.map((m) => [m.key, m]));
+    // Serveur antérieur à 0.2.0 (amorçage sans « ui ») : valeurs sûres par défaut.
+    const ui = boot.ui ?? boot.settings.ui ?? DEFAULT_UI;
     return {
       boot,
       refresh,
@@ -105,8 +141,12 @@ export function AppProvider({
       categories,
       categoryById: (id) => (id ? categoryMap.get(id) : undefined),
       modelByKey: (key) => (key ? modelMap.get(key) : undefined),
+      ui,
+      advanced: ui.mode === "avance",
+      applySettings,
+      saveUi,
     };
-  }, [boot, refresh, directory, setDirectory, theme, setTheme, systemDark]);
+  }, [boot, refresh, directory, setDirectory, theme, setTheme, systemDark, applySettings, saveUi]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

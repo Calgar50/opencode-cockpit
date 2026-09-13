@@ -1,10 +1,13 @@
-// Champs d'un agent : description, mode, modèle, réglages et permissions.
+// Champs d'un agent : description, mode, IA (niveau ou IA précise), réglages et permissions.
 import { useId } from "react";
 import { Field, ToggleRow } from "../../components/ui.tsx";
 import type { ModelInfo } from "../../lib/types.ts";
+import type { LevelBinding, StudioAiData } from "./aiUsage.ts";
+import { AgentAiPanel } from "./AiUsagePanel.tsx";
+import { LevelField, VariantField } from "./LevelField.tsx";
 import { PermissionsEditor } from "./PermissionsEditor.tsx";
 import { type Draft, HEX_RE, str, THEME_COLORS } from "./shared.ts";
-import { ModelSelect, NumberInput } from "./widgets.tsx";
+import { NumberInput } from "./widgets.tsx";
 
 const COLOR_LABELS: Record<(typeof THEME_COLORS)[number], string> = {
   primary: "Principale",
@@ -16,55 +19,23 @@ const COLOR_LABELS: Record<(typeof THEME_COLORS)[number], string> = {
   info: "Info",
 };
 
-export function VariantField({
-  draft,
-  models,
-  setFm,
-}: {
-  draft: Draft;
-  models: ModelInfo[];
-  setFm: (patch: Record<string, unknown>) => void;
-}) {
-  const id = useId();
-  const model = models.find((m) => m.key === draft.frontmatter.model);
-  const variant = str(draft.frontmatter.variant);
-  if (!model || model.variants.length === 0) return null;
-  return (
-    <Field label="Variante" htmlFor={id} hint="Niveau de raisonnement ou déclinaison proposée par le modèle.">
-      <select id={id} className="select" value={variant} onChange={(e) => setFm({ variant: e.target.value || undefined })}>
-        <option value="">Par défaut</option>
-        {variant && !model.variants.includes(variant) ? <option value={variant}>{variant} (inconnue)</option> : null}
-        {model.variants.map((v) => (
-          <option key={v} value={v}>
-            {v}
-          </option>
-        ))}
-      </select>
-    </Field>
-  );
-}
-
-/** Retire la variante si le nouveau modèle ne la propose pas. */
-export function modelPatch(key: string | null, draft: Draft, models: ModelInfo[]): Record<string, unknown> {
-  const patch: Record<string, unknown> = { model: key ?? undefined };
-  const variant = str(draft.frontmatter.variant);
-  if (variant) {
-    const next = models.find((m) => m.key === key);
-    if (!next || !next.variants.includes(variant)) patch.variant = undefined;
-  }
-  return patch;
-}
-
 export function AgentFields({
   draft,
   models,
   setFm,
+  level,
+  ai,
+  savedName,
 }: {
   draft: Draft;
   models: ModelInfo[];
   setFm: (patch: Record<string, unknown>) => void;
+  level: LevelBinding;
+  ai: StudioAiData;
+  /** Nom du fichier enregistré (les raccourcis le désignent sous ce nom), sinon celui du brouillon. */
+  savedName: string;
 }) {
-  const ids = { description: useId(), mode: useId(), model: useId(), temperature: useId(), steps: useId(), color: useId() };
+  const ids = { description: useId(), mode: useId(), temperature: useId(), steps: useId(), color: useId() };
   const fm = draft.frontmatter;
   const description = str(fm.description);
   const color = str(fm.color);
@@ -95,9 +66,9 @@ export function AgentFields({
           htmlFor={ids.mode}
           hint={
             mode === "primary"
-              ? "Sélectionnable dans le chat (touche Tab)."
+              ? "Visible dans la liste des assistants du chat."
               : mode === "subagent"
-                ? "Appelé par un autre agent ou avec @nom."
+                ? "Invisible dans le chat : lancé par un raccourci /… ou par délégation d'un autre agent. Sa propre IA est toujours utilisée."
                 : "Utilisable comme agent principal et comme sous-agent."
           }
         >
@@ -107,10 +78,21 @@ export function AgentFields({
             <option value="all">Les deux</option>
           </select>
         </Field>
-        <Field label="Modèle" htmlFor={ids.model} hint="Vide : le modèle choisi dans le chat ou celui d'opencode.">
-          <ModelSelect id={ids.model} value={str(fm.model) || null} models={models} onChange={(key) => setFm(modelPatch(key, draft, models))} />
-        </Field>
-        <VariantField draft={draft} models={models} setFm={setFm} />
+        <LevelField
+          label="IA utilisée"
+          hint="Vide : l'IA choisie dans le chat. Remplie : cette IA est toujours utilisée pour cet agent (chat, raccourcis, délégation)."
+          draft={draft}
+          models={models}
+          setFm={setFm}
+          level={level}
+        />
+        <VariantField
+          draft={draft}
+          models={models}
+          setFm={setFm}
+          modelKey={str(fm.model) || null}
+          hint="Réflexion par défaut. Appliquée seulement quand l'IA ci-dessus est utilisée."
+        />
         <Field label="Température" htmlFor={ids.temperature} hint="Optionnelle, de 0 (précis) à 2 (créatif).">
           <NumberInput
             id={ids.temperature}
@@ -122,7 +104,7 @@ export function AgentFields({
             onChange={(n) => setFm({ temperature: n })}
           />
         </Field>
-        <Field label="Étapes maximum" htmlFor={ids.steps} hint="Optionnel : nombre d'itérations d'outils avant de rendre la main.">
+        <Field label="Étapes maximum" htmlFor={ids.steps} hint="Optionnel : nombre d'actions (appels d'outils) avant de rendre la main.">
           <NumberInput
             id={ids.steps}
             value={typeof fm.steps === "number" ? fm.steps : undefined}
@@ -177,7 +159,7 @@ export function AgentFields({
       <div>
         <ToggleRow
           title="Masqué"
-          description="N'apparaît pas dans l'autocomplétion @ (sous-agents uniquement) ; reste appelable par les autres agents."
+          description="Retire l'agent de la liste du chat. Il reste utilisable par un raccourci ou par délégation."
           checked={fm.hidden === true}
           onChange={(v) => setFm({ hidden: v ? true : undefined })}
         />
@@ -188,6 +170,8 @@ export function AgentFields({
           onChange={(v) => setFm({ disable: v ? true : undefined })}
         />
       </div>
+
+      <AgentAiPanel name={savedName} frontmatter={fm} ai={ai} />
 
       <h3 className="studio-section-title">Permissions</h3>
       <p className="small muted">
