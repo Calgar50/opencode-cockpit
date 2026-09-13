@@ -76,6 +76,7 @@ import {
   type TierDefs,
   type TierResolution,
   type Turn,
+  withTierAvailability,
 } from "./shared/assistant-rules.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
@@ -280,20 +281,30 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-export function modelFromBody(body: unknown): { providerID: string; modelID: string } | undefined {
-  if (!body || typeof body !== "object") return undefined;
-  const b = body as Record<string, unknown>;
-  const model = b.model;
-  if (model && typeof model === "object") {
-    const m = model as Record<string, unknown>;
-    if (typeof m.providerID === "string" && typeof m.modelID === "string") return { providerID: m.providerID, modelID: m.modelID };
+/**
+ * IA d'une demande facturée, lue dans la SEULE forme qu'opencode 1.18.30 lit pour cette route : `model` objet pour
+ * prompt_async (session/prompt.ts:1499-1511), `model` « fournisseur/modèle » pour command (1536-1543),
+ * providerID/modelID au premier niveau pour summarize (http_groups_session.ts:65-67). opencode ignore les autres clés
+ * sans erreur : un corps qui porte aussi une autre forme (leurre contrôlé à la place de l'IA réellement utilisée) ou
+ * aucune IA lisible donne undefined (400 modele-requis).
+ */
+export function turnModelFromBody(kind: ChatTurnKind, body: unknown): { providerID: string; modelID: string } | undefined {
+  if (!isRecord(body)) return undefined;
+  const topLevel = Object.hasOwn(body, "providerID") || Object.hasOwn(body, "modelID");
+  if (kind === "resume") {
+    if (Object.hasOwn(body, "model")) return undefined;
+    return typeof body.providerID === "string" && typeof body.modelID === "string" ? { providerID: body.providerID, modelID: body.modelID } : undefined;
   }
-  if (typeof model === "string" && model.includes("/")) {
-    const i = model.indexOf("/");
-    return { providerID: model.slice(0, i), modelID: model.slice(i + 1) };
+  if (topLevel) return undefined;
+  const model = body.model;
+  if (kind === "message") {
+    return isRecord(model) && typeof model.providerID === "string" && typeof model.modelID === "string"
+      ? { providerID: model.providerID, modelID: model.modelID }
+      : undefined;
   }
-  if (typeof b.providerID === "string" && typeof b.modelID === "string") return { providerID: b.providerID, modelID: b.modelID };
-  return undefined;
+  if (typeof model !== "string") return undefined;
+  const i = model.indexOf("/");
+  return i > 0 ? { providerID: model.slice(0, i), modelID: model.slice(i + 1) } : undefined;
 }
 
 // --- Validation des entrées ------------------------------------------------------------
@@ -695,8 +706,9 @@ export function createApp(deps: AppDeps): Hono {
     const kind: ChatTurnKind = action === "command" ? "raccourci" : action === "summarize" ? "resume" : "message";
     const record = isRecord(parsed) ? parsed : {};
 
-    // Toujours une IA explicite : sinon opencode prendrait celle de la session, hors de tout contrôle.
-    const bodyModel = modelFromBody(parsed);
+    // Toujours une IA explicite, dans la forme lue par opencode pour cette route : sinon opencode prendrait celle de
+    // l'agent ou de la session, hors de tout contrôle.
+    const bodyModel = turnModelFromBody(kind, parsed);
     if (!bodyModel?.providerID || !bodyModel.modelID || bodyModel.providerID.length > 100 || bodyModel.modelID.length > 200) {
       return fail(c, 400, "modele-requis", "Précisez l'IA de la demande.");
     }
@@ -855,6 +867,8 @@ export function createApp(deps: AppDeps): Hono {
       if (!command) return fail(c, 404, "not-found", "Raccourci introuvable.");
       turn = resolveCommandTurn({ command, agents: snapshot.agents, chatAgent: agent, chatTurn, catalog: lite });
     }
+    // Niveau « Indisponible » : l'IA prévue sert seulement à nommer le problème, rien ne part dessus.
+    turn = withTierAvailability(turn, res.status);
     const agentTitle = (name: string) => assistants.agentTitle(name);
     const display = describeTurn(turn, {
       catalog: lite,
@@ -1063,10 +1077,15 @@ export function createApp(deps: AppDeps): Hono {
     if (metaKind !== null && scope.type === "global") {
       try {
         if (input.previousName && input.previousName !== item.name) moveItemMeta(metaKind, input.previousName, item.name);
+        const model = typeof item.frontmatter.model === "string" ? item.frontmatter.model : null;
+        const variant = typeof item.frontmatter.variant === "string" ? item.frontmatter.variant : null;
         if (input.tier !== undefined) {
-          const model = typeof item.frontmatter.model === "string" ? item.frontmatter.model : null;
-          const variant = typeof item.frontmatter.variant === "string" ? item.frontmatter.variant : null;
           assistants.bindLevel(metaKind, item.name, input.tier, model, variant);
+        } else {
+          // Ligne sans niveau (IA précise) : l'IA écrite ici devient l'IA appliquée, sinon la modification faite dans le
+          // cockpit s'afficherait « Modifié hors du cockpit ». Une ligne liée à un niveau garde son IA appliquée.
+          const row = deps.db.prepare("SELECT tier FROM item_meta WHERE kind = ? AND name = ?").get(metaKind, item.name) as { tier: string | null } | undefined;
+          if (row?.tier === null) assistants.bindLevel(metaKind, item.name, null, model, variant);
         }
       } catch (err) {
         log.warn("métadonnées d'assistant non mises à jour pour cet élément", { kind, name: item.name, error: errorMessage(err) });

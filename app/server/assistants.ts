@@ -47,6 +47,7 @@ import {
   assistantPermission,
   BUILTIN_ASSISTANTS,
   buildAssistantFile,
+  builtinAssistantInfo,
   type CatalogLite,
   catalogEntry,
   chooseEstimate,
@@ -55,6 +56,7 @@ import {
   draftVariant,
   type Estimate,
   effectiveAgentRules,
+  effectiveBuiltinRules,
   effectiveTiers,
   estimateTaskCost,
   estimateText,
@@ -180,12 +182,6 @@ const GLOBAL: StudioScope = { type: "global" };
 
 /** Agents natifs d'opencode 1.18.30 : un fichier du même nom les remplacerait. */
 const NATIVE_AGENTS = ["build", "plan", "general", "explore", "compaction", "title", "summary"] as const;
-
-/** Règles approximatives des assistants intégrés quand GET /agent est injoignable (repli signalé effectiveRules: false). */
-const BUILTIN_FALLBACK_PERMISSION: Readonly<Record<"build" | "plan", Record<string, unknown>>> = {
-  build: {},
-  plan: { edit: { "*": "deny" } },
-};
 
 const USAGE_STATE_TEXT: Readonly<Record<UsageRowState, string>> = {
   "a-jour": "À jour",
@@ -351,6 +347,8 @@ interface ViewContext {
   commands: Map<string, StudioItem>;
   snapshot: OcLookupSnapshot | null;
   globalPermission: unknown;
+  /** Section `agent` de la configuration globale (règles propres des assistants intégrés, repli sans GET /agent). */
+  agentConfig: Record<string, unknown>;
   catalog: CatalogLite[];
   defs: TierDefs;
   resolved: Record<Tier, TierResolution>;
@@ -363,6 +361,7 @@ interface Prepared {
   previousName: string | null;
   agents: Map<string, StudioItem>;
   taken: Set<string>;
+  snapshot: OcLookupSnapshot | null;
   fiches: string[];
   steps: number;
 }
@@ -443,13 +442,17 @@ export class AssistantService {
     }
   }
 
-  async #globalPermission(): Promise<{ permission: unknown; ok: boolean }> {
+  async #globalPermission(): Promise<{ permission: unknown; agents: Record<string, unknown>; ok: boolean }> {
     try {
       const config = await this.#d.client.request<unknown>("GET", "/global/config", { timeoutMs: 10_000 });
-      return { permission: isRecord(config) ? (config.permission ?? {}) : {}, ok: true };
+      return {
+        permission: isRecord(config) ? (config.permission ?? {}) : {},
+        agents: isRecord(config) && isRecord(config.agent) ? config.agent : {},
+        ok: true,
+      };
     } catch (err) {
       this.#d.log.warn("configuration globale d'opencode indisponible", { error: errorMessage(err) });
-      return { permission: {}, ok: false };
+      return { permission: {}, agents: {}, ok: false };
     }
   }
 
@@ -458,7 +461,7 @@ export class AssistantService {
       this.#files("agents"),
       this.#files("commands"),
       options.snapshot === false ? Promise.resolve(null) : this.#snapshot(),
-      options.global === false ? Promise.resolve({ permission: {}, ok: false }) : this.#globalPermission(),
+      options.global === false ? Promise.resolve({ permission: {}, agents: {}, ok: false }) : this.#globalPermission(),
     ]);
     const { tiers } = this.#d;
     return {
@@ -467,6 +470,7 @@ export class AssistantService {
       commands,
       snapshot,
       globalPermission: global.permission,
+      agentConfig: global.agents,
       catalog: this.#d.catalog.lite(),
       defs: options.defs === undefined ? tiers.definitions() : effectiveTiers(options.defs),
       resolved: tiers.resolveAll(options.defs),
@@ -614,12 +618,17 @@ export class AssistantService {
       // Absent de GET /agent : assistant intégré désactivé (disable: true).
       if (ctx.snapshot && !oc) continue;
       const model = oc?.model ? modelKey(oc.model) : res.model;
-      const rules = oc ? oc.permission : effectiveAgentRules(ctx.globalPermission, BUILTIN_FALLBACK_PERMISSION[name]);
+      // Repli dans l'ordre d'opencode : les règles propres du Conseiller passent AVANT la configuration globale.
+      const ownConfig = ctx.agentConfig[name];
+      const rules = oc
+        ? oc.permission
+        : effectiveBuiltinRules(name, ctx.globalPermission, isRecord(ownConfig) ? ownConfig.permission : undefined);
+      const info = builtinAssistantInfo(name, rules);
       const estimate = model ? chooseEstimate(this.#observed(name, model), this.#d.tiers.priceOf(model), "M") : null;
       out.push({
         name,
-        title: BUILTIN_ASSISTANTS[name].title,
-        help: BUILTIN_ASSISTANTS[name].help,
+        title: info.title,
+        help: info.help,
         tier,
         model,
         modelName: model ? modelName(model, ctx.catalog) : null,
@@ -631,17 +640,30 @@ export class AssistantService {
     return out;
   }
 
+  /**
+   * Agent global qui peut devenir un assistant (« À compléter », adoption, « Compléter ») : ni l'agent de classement, ni
+   * un agent natif remplacé par un fichier (même sans GET /agent), ni un sous-agent, un agent masqué ou désactivé. Ces
+   * agents restent au Studio (mode Avancé) : le mode Simple ne peut ni les réécrire ni supprimer leur fichier.
+   */
+  #completable(name: string, file: StudioItem, snapshot: OcLookupSnapshot | null): boolean {
+    if (name === CLASSIFIER_AGENT || (NATIVE_AGENTS as readonly string[]).includes(name)) return false;
+    const fm = file.frontmatter;
+    const oc = snapshot?.agents.find((a) => a.name === name);
+    // Présent sur disque mais absent de GET /agent : désactivé ou refusé par opencode.
+    if (snapshot && !oc) return false;
+    const mode = oc ? oc.mode : fm.mode === "primary" || fm.mode === "subagent" ? fm.mode : "all";
+    return !(mode === "subagent" || (oc ? oc.hidden === true : fm.hidden === true) || oc?.native || fm.disable === true);
+  }
+
   #toComplete(ctx: ViewContext): ToCompleteItem[] {
     const titled = new Set(ctx.rows.filter((r) => r.kind === "agents" && r.title !== null).map((r) => r.name));
     const out: ToCompleteItem[] = [];
     for (const [name, file] of ctx.agents) {
-      if (titled.has(name) || name === CLASSIFIER_AGENT) continue;
+      if (titled.has(name) || !this.#completable(name, file, ctx.snapshot)) continue;
       const fm = file.frontmatter;
       const oc = ctx.snapshot?.agents.find((a) => a.name === name);
-      // Présent sur disque mais absent de GET /agent : désactivé ou refusé par opencode.
-      if (ctx.snapshot && !oc) continue;
       const mode = oc ? oc.mode : fm.mode === "primary" || fm.mode === "subagent" ? fm.mode : "all";
-      if (mode === "subagent" || (oc ? oc.hidden === true : fm.hidden === true) || oc?.native || fm.disable === true) continue;
+      if (mode === "subagent") continue;
       const model = oc?.model ? modelKey(oc.model) : text(fm.model);
       const detected = detectRights(fm.permission);
       const rules = oc ? oc.permission : effectiveAgentRules(ctx.globalPermission, fm.permission);
@@ -885,7 +907,7 @@ export class AssistantService {
       issues,
       warnings,
     };
-    return { preview, draft, previousName, agents, taken, fiches: draft.fiches, steps };
+    return { preview, draft, previousName, agents, taken, snapshot, fiches: draft.fiches, steps };
   }
 
   async preview(input: unknown): Promise<AssistantPreview> {
@@ -903,6 +925,13 @@ export class AssistantService {
       throw new AssistantServiceError(409, "name-taken", nameTakenMessage(name), { name });
     }
     const renaming = previousName !== null && previousName !== name;
+    // Seul un assistant se renomme ici, et seul un agent de « À compléter » devient assistant : un agent natif remplacé,
+    // un sous-agent, un agent masqué ou un autre agent du Studio n'est ni réécrit ni déplacé depuis cette route.
+    if (renaming && !this.#row("agents", previousName)?.title) throw notFound("Assistant introuvable.");
+    const current = prepared.agents.get(name);
+    if (current && !renaming && !this.#row("agents", name)?.title && !this.#completable(name, current, prepared.snapshot)) {
+      throw new AssistantServiceError(409, "name-taken", nameTakenMessage(name), { name });
+    }
     const existing = (renaming ? this.#row("agents", previousName) : undefined) ?? this.#row("agents", name);
 
     const item = await this.#d.studio.save("agents", GLOBAL, {
@@ -951,7 +980,9 @@ export class AssistantService {
     const body = adoptSchema.safeParse(input);
     if (!body.success) throw new AssistantServiceError(400, "validation", "Requête invalide.", { issues: issuesFrom(body.error) });
     const file = name === CLASSIFIER_AGENT ? null : await this.#d.studio.get("agents", name, GLOBAL);
-    if (!file) throw notFound("Agent introuvable.");
+    // Mêmes agents que « À compléter » : sinon DELETE /api/assistants/:name supprimerait en mode Simple le fichier
+    // d'un agent natif remplacé ou d'un sous-agent du Studio.
+    if (!file || !this.#completable(name, file, await this.#snapshot())) throw notFound("Agent introuvable.");
     const existing = this.#row("agents", name);
     if (existing?.title) throw new AssistantServiceError(409, "already-assistant", "Cet agent est déjà un assistant.");
     const model = text(file.frontmatter.model);
@@ -985,7 +1016,8 @@ export class AssistantService {
     assertName(name);
     // Seuls les assistants passent par cette route (utilisable en mode Simple) : les autres agents restent au Studio.
     const row = this.#row("agents", name);
-    const file = row?.title ? await this.#d.studio.get("agents", name, GLOBAL) : null;
+    const reserved = name === CLASSIFIER_AGENT || (NATIVE_AGENTS as readonly string[]).includes(name);
+    const file = row?.title && !reserved ? await this.#d.studio.get("agents", name, GLOBAL) : null;
     if (!row?.title || !file) throw notFound("Assistant introuvable.");
     const commands = await this.#commandsUsing(name);
     if (commands.length > 0 && !force) throw new AssistantServiceError(409, "used-by", usedByMessage(commands), { commands });
@@ -1043,10 +1075,11 @@ export class AssistantService {
       if (text(file.frontmatter.model) !== row.applied_model || text(file.frontmatter.variant) !== row.applied_variant) return "modifie-hors-cockpit";
       return this.#updateFor(row, file, ctx) ? "mise-a-jour" : "a-jour";
     };
-    const row = (r: Omit<UsageRow, "typeLabel" | "stateText">): UsageRow => ({
+    const row = (r: Omit<UsageRow, "typeLabel" | "stateText" | "completable"> & { completable?: boolean }): UsageRow => ({
       ...r,
       typeLabel: USAGE_TYPE_LABELS[r.type],
       stateText: USAGE_STATE_TEXT[r.state],
+      completable: r.completable ?? false,
     });
 
     const assistants: UsageRow[] = [];
@@ -1060,7 +1093,8 @@ export class AssistantService {
       } else if (m && tier) {
         agents.push(row({ kind: "agents", name, label: name, type: "agent", tier, model, levelText: levelText(tier, model), state: stateOf(m, file) }));
       } else if (model) {
-        agents.push(row({ kind: "agents", name, label: name, type: "agent", tier: null, model, levelText: levelText(null, model), state: "a-ranger" }));
+        const completable = this.#completable(name, file, ctx.snapshot);
+        agents.push(row({ kind: "agents", name, label: name, type: "agent", tier: null, model, levelText: levelText(null, model), state: "a-ranger", completable }));
       }
     }
 
@@ -1147,7 +1181,13 @@ export class AssistantService {
         seen.add(key);
         const row = ctx.rows.find((r) => r.kind === item.kind && r.name === item.name);
         const file = (item.kind === "agents" ? ctx.agents : ctx.commands).get(item.name);
-        if (!row || !file || !isTier(row.tier)) throw notFound(`Élément introuvable : ${item.kind}/${item.name}.`);
+        if (!row || !file) throw notFound(`Élément introuvable : ${item.kind}/${item.name}.`);
+        if (!isTier(row.tier)) {
+          throw new AssistantServiceError(422, "sans-niveau", "Cet élément ne suit aucun niveau : choisissez un niveau ou gardez cette IA précise.", {
+            kind: item.kind,
+            name: item.name,
+          });
+        }
         const res = ctx.resolved[row.tier];
         if (res.status === "indisponible" || !res.model) {
           throw new AssistantServiceError(422, "ia-indisponible", tierUnavailableMessage(row.tier), { tier: row.tier });

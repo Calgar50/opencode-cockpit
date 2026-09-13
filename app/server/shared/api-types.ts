@@ -293,6 +293,8 @@ export interface UsageRow {
   state: UsageRowState;
   /** « À jour », « Mise à jour disponible », « Modifié hors du cockpit », « À ranger », « Fichier introuvable », « — ». */
   stateText: string;
+  /** true : agent listé dans « À compléter » de la page Assistants (seul endroit où le mode Simple peut le ranger). */
+  completable: boolean;
 }
 
 export interface AiView {

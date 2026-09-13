@@ -305,8 +305,9 @@ export const oc = {
    */
   promptAsync: (id: string, directory: string, body: unknown, confirm = false, modelOverride = false) =>
     http.post<void>(`/api/oc/session/${enc(id)}/prompt_async${query({ directory })}`, body, { confirm, modelOverride }),
-  command: (id: string, directory: string, body: unknown, confirm = false) =>
-    http.post<unknown>(`/api/oc/session/${enc(id)}/command${query({ directory })}`, body, { confirm }),
+  /** `modelOverride` : même règle que promptAsync (autre IA que celle de l'assistant de la conversation). */
+  command: (id: string, directory: string, body: unknown, confirm = false, modelOverride = false) =>
+    http.post<unknown>(`/api/oc/session/${enc(id)}/command${query({ directory })}`, body, { confirm, modelOverride }),
   abort: (id: string, directory: string) => http.post<boolean>(`/api/oc/session/${enc(id)}/abort${query({ directory })}`),
   summarize: (id: string, directory: string, model: { providerID: string; modelID: string }, confirm = false) =>
     http.post<boolean>(`/api/oc/session/${enc(id)}/summarize${query({ directory })}`, model, { confirm }),

@@ -330,18 +330,24 @@ export function TiersTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =>
                           ) : null}
                           {row.state === "modifie-hors-cockpit" ? (
                             <>
-                              <Button size="sm" disabled={busy} onClick={() => void realignRow(row, update)}>
-                                Réaligner
-                              </Button>
+                              {/* Sans niveau (IA précise), il n'y a rien à réaligner : seule « Garder cette IA précise » s'applique. */}
+                              {row.tier !== null || update ? (
+                                <Button size="sm" disabled={busy} onClick={() => void realignRow(row, update)}>
+                                  Réaligner
+                                </Button>
+                              ) : null}
                               <Button size="sm" variant="ghost" disabled={busy} loading={rowBusy === key} onClick={() => void keepPrecise(row)}>
                                 Garder cette IA précise
                               </Button>
                             </>
                           ) : null}
-                          {row.state === "a-ranger" ? (
+                          {row.state === "a-ranger" && (advanced || row.completable) ? (
                             <Button size="sm" onClick={() => chooseLevel(row)}>
                               Choisir un niveau
                             </Button>
+                          ) : null}
+                          {row.state === "a-ranger" && !advanced && !row.completable ? (
+                            <span className="small muted">Réglable en mode Avancé (Paramètres › Affichage)</span>
                           ) : null}
                           {row.state === "introuvable" ? (
                             <Button size="sm" variant="ghost" loading={rowBusy === key} onClick={() => void removeRow(row)}>

@@ -146,17 +146,17 @@ export function ItemEditor({
 
   /**
    * Niveau à envoyer (item_meta) : un niveau choisi quand il est nouveau ou que l'IA du fichier change, null pour
-   * délier un élément qui était lié ; undefined = liaison inchangée (jamais de ligne créée pour une simple IA précise).
+   * délier un élément qui était lié, ou pour qu'un élément sans niveau (IA précise) retienne l'IA qu'il vient d'écrire ;
+   * undefined = liaison inchangée (jamais de ligne créée pour une simple IA précise : le serveur l'ignore sans ligne).
    */
   const tierToSend = (frontmatter: Record<string, unknown>, previousName: string | null): Tier | null | undefined => {
     if (!level.bindable) return undefined;
     const { tier, baseline: bound } = tierState;
     const model = str(frontmatter.model);
-    if (tier && model) {
-      const fileChanged = !item || str(item.frontmatter.model) !== model || str(item.frontmatter.variant) !== str(frontmatter.variant);
-      return isNew || tier !== bound || fileChanged || previousName !== null ? tier : undefined;
-    }
-    return bound ? null : undefined;
+    const fileChanged = !item || str(item.frontmatter.model) !== model || str(item.frontmatter.variant) !== str(frontmatter.variant);
+    if (tier && model) return isNew || tier !== bound || fileChanged || previousName !== null ? tier : undefined;
+    // bound === null exactement : undefined tant que GET /api/ai n'a pas répondu (null délierait un élément lié).
+    return bound || (bound === null && fileChanged) ? null : undefined;
   };
 
   const save = async () => {
@@ -182,6 +182,8 @@ export function ItemEditor({
       setBaseline(stableStringify(fresh));
       setSyncedAt(saved.updatedAt);
       if (tier !== undefined) setTierState({ tier, baseline: tier });
+      // Portée projet : le niveau n'est pas mémorisé, le choix enregistré (IA écrite dans le fichier) devient la référence.
+      else if (!level.bindable) setTierState((s) => ({ tier: s.tier, baseline: s.tier }));
       // Niveau choisi sans IA écrite (niveau indisponible) : rien n'a été lié, le formulaire revient à la liaison enregistrée.
       else if (!str(saved.frontmatter.model)) setTierState((s) => ({ tier: s.baseline ?? null, baseline: s.baseline }));
       toast.success(`${KIND_LABELS[kind].one.charAt(0).toUpperCase()}${KIND_LABELS[kind].one.slice(1)} enregistré${kind === "commands" ? "e" : ""}`, `${saved.name} est actif dans opencode.`);

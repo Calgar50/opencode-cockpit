@@ -5,14 +5,14 @@ import { describe, it } from "node:test";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import { buildDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
-import { catalogLite } from "./catalog.ts";
+import { catalogLite, ModelCatalog } from "./catalog.ts";
 import { extractJson, parseClassifierOutput } from "./classifier.ts";
 import { openMemoryDb } from "./db.ts";
 import { EnvError, parseAllowedProviders } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { safeSegment, slugify } from "./fsutil.ts";
 import { classifyHeuristic } from "./heuristic.ts";
-import type { OcMessageWithParts, OcSession } from "./opencode.ts";
+import type { OcMessageWithParts, OcSession, OpencodeClient } from "./opencode.ts";
 import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
 import { hostnameOf, safeEqual, sessionValue } from "./security.ts";
@@ -30,6 +30,7 @@ import {
   type AssistantDraft,
   assistantPermission,
   buildAssistantFile,
+  builtinAssistantInfo,
   type CatalogLite,
   COMMON_RULES_BLOCK,
   COMMON_RULES_START,
@@ -39,11 +40,13 @@ import {
   describeTurn,
   detectPermissionPreset,
   detectRights,
+  PERMISSION_PRESET_IDS,
   PERMISSION_PRESETS,
   presetPermission,
   toCatalogLite,
   draftVariant,
   effectiveAgentRules,
+  effectiveBuiltinRules,
   estimateTaskCost,
   evaluate,
   isDefaultProviders,
@@ -57,6 +60,7 @@ import {
   resolveChatTurn,
   resolveCommandTurn,
   resolveTier,
+  type Rule,
   rightLines,
   rulesFromConfig,
   budgetShareText,
@@ -68,6 +72,7 @@ import {
   uniqueName,
   variantLabel,
   wildcardMatch,
+  withTierAvailability,
 } from "./shared/assistant-rules.ts";
 import { agentFrontmatterSchema, commandFrontmatterSchema, skillFrontmatterSchema } from "./studio-schema.ts";
 
@@ -480,6 +485,45 @@ describe("résolution de l'IA (opencode 1.18.30)", () => {
     assert.deepEqual(missing.runs, []);
     assert.deepEqual(codes(commandTurn({ name: "cher", model: "github-copilot/gpt-9", source: "command" }, build)), ["ia-indisponible!"]);
   });
+
+  it("raccourci délégué dont l'IA propre est absente du compte : bloquant, opencode la charge avant de déléguer (prompt.ts:1421, 267)", () => {
+    const t = commandTurn({ name: "audit", agent: "revue-securite", model: "github-copilot/gpt-9", subtask: true, source: "command" }, build);
+    assert.deepEqual(
+      t.runs.map((r) => [r.role, r.model]),
+      [
+        ["delegue", OPUS],
+        ["reprise", MINI],
+      ],
+    );
+    assert.deepEqual(codes(t), ["ia-du-raccourci-ignoree", "ia-indisponible!"]);
+    assert.equal(t.problems.at(-1)?.model, "github-copilot/gpt-9");
+    // Catalogue non chargé : rien n'est vérifié.
+    const unverified = resolveCommandTurn({
+      command: { name: "audit", agent: "revue-securite", model: "github-copilot/gpt-9", subtask: true, source: "command" },
+      agents: AGENTS,
+      chatAgent: build,
+      chatTurn: chatTurn(build, { catalog: [] }),
+      catalog: [],
+    });
+    assert.deepEqual(codes(unverified), ["ia-du-raccourci-ignoree"]);
+  });
+
+  it("niveau « Indisponible » : chaque appel sur l'IA du niveau bloque, sans repli silencieux sur l'IA prévue", () => {
+    const chat = chatTurn(build);
+    assert.deepEqual(codes(withTierAvailability(chat, "indisponible")), ["ia-indisponible!"]);
+    assert.equal(withTierAvailability(chat, "indisponible").problems[0]?.model, MINI);
+    assert.equal(withTierAvailability(chat, "secours"), chat);
+    assert.equal(withTierAvailability(chat, null), chat);
+    // IA de l'assistant ou du raccourci : le niveau ne sert pas.
+    assert.deepEqual(codes(withTierAvailability(chatTurn(relire), "indisponible")), []);
+    assert.deepEqual(codes(withTierAvailability(commandTurn({ name: "revue-change", model: OPUS, source: "command" }, build), "indisponible")), []);
+    // Travail délégué : la reprise tourne sur l'IA du niveau.
+    const delegated = withTierAvailability(commandTurn({ name: "revue", agent: "revue-securite", source: "command" }, build), "indisponible");
+    assert.deepEqual(codes(delegated), ["ia-indisponible!"]);
+    // Déjà signalée (absente du catalogue) : pas de doublon.
+    const absent = chatTurn(build, { tierModel: ref("github-copilot/gpt-9") });
+    assert.deepEqual(codes(withTierAvailability(absent, "indisponible")), ["ia-indisponible!"]);
+  });
 });
 
 describe("droits effectifs", () => {
@@ -541,6 +585,32 @@ describe("droits effectifs", () => {
     assert.equal(evaluate(rules, "external_directory", "/tmp/opencode/x"), "allow");
     assert.equal(evaluate(rules, "external_directory", "/tmp/x"), "ask");
     assert.equal(evaluate(rules, "question", "*"), "deny");
+  });
+
+  it("Conseiller (plan) : ses règles passent avant la configuration globale ; « lecture seule » seulement si garantie (agent/agent.ts:156-178, 293)", () => {
+    const lines = (rules: Rule[]) =>
+      rightLines(rules)
+        .filter((l) => l.id === "modification" || l.id === "commande")
+        .map((l) => `${l.id}:${l.kind}`);
+    const plan = (preset: (typeof PERMISSION_PRESET_IDS)[number], agent?: unknown) => effectiveBuiltinRules("plan", PERMISSION_PRESETS[preset].permission, agent);
+    assert.deepEqual(lines(plan("prudent")), ["modification:demande", "commande:demande"]);
+    assert.deepEqual(lines(plan("equilibre")), ["modification:oui", "commande:demande"]);
+    assert.deepEqual(lines(plan("autonome")), ["modification:oui", "commande:oui"]);
+    for (const preset of PERMISSION_PRESET_IDS) assert.equal(builtinAssistantInfo("plan", plan(preset)).title, "Conseiller", preset);
+    // agent.plan.permission dans la configuration : appliquée après le global, elle rend la promesse vraie.
+    const locked = plan("autonome", { edit: "deny", bash: "deny" });
+    assert.deepEqual(lines(locked), ["modification:non", "commande:non"]);
+    assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Réfléchit et propose un plan, sans rien modifier." });
+    // Sans configuration globale : refus propre du Conseiller, dossier des plans modifiable, aucune règle de commande.
+    const bare = effectiveBuiltinRules("plan", {});
+    assert.equal(evaluate(bare, "edit", "scripts/x.ps1"), "deny");
+    assert.equal(evaluate(bare, "edit", ".opencode/plans/plan.md"), "allow");
+    assert.equal(evaluate(bare, "bash", "Get-ChildItem"), "allow");
+    assert.equal(evaluate(bare, "task", "general"), "deny");
+    assert.deepEqual(bare.at(-1), { permission: "external_directory", pattern: "/home/node/.local/share/opencode/tool-output/*", action: "allow" });
+    assert.equal(builtinAssistantInfo("plan", null).title, "Conseiller");
+    assert.equal(builtinAssistantInfo("build", locked).title, "Assistant général");
+    assert.deepEqual(lines(effectiveBuiltinRules("build", PERMISSION_PRESETS.prudent.permission)), ["modification:demande", "commande:demande"]);
   });
 
   it("« Lecture seule » : lignes de la carte d'identité (§9.4)", () => {
@@ -771,18 +841,24 @@ describe("niveaux d'IA", () => {
     assert.equal(unverified.model, SONNET);
   });
 
-  it("candidats ignorés : fin de vie, sans outils, prix promotionnel, fournisseur non autorisé", () => {
-    const def = { candidates: ["opencode/big-pickle", "github-copilot/gemini-3.8-flash", "github-copilot/vieux", "github-copilot/sans-outils"], variant: null };
+  it("candidats ignorés : fin de vie, sans outils, fournisseur non autorisé ; IA à prix promotionnel retenue si choisie (§6)", () => {
+    const def = { candidates: ["opencode/big-pickle", "github-copilot/vieux", "github-copilot/sans-outils"], variant: null };
     const catalog = [
       cat("opencode/big-pickle"),
       cat("github-copilot/gemini-3.8-flash"),
       cat("github-copilot/vieux", [], { status: "deprecated" }),
       cat("github-copilot/sans-outils", [], { toolcall: false }),
+      cat(MINI),
     ];
     const refused = resolveTier(def, catalog, COPILOT_ONLY);
     assert.equal(refused.status, "indisponible");
-    assert.equal(refused.warnings.length, 4);
+    assert.equal(refused.warnings.length, 3);
     assert.equal(resolveTier(def, catalog, ["github-copilot", "opencode"]).model, "opencode/big-pickle");
+    // Groupe « Réservé » du mode Avancé : jamais dans la recommandation livrée, mais utilisé quand l'administrateur le place en tête.
+    const promo = { candidates: ["github-copilot/gemini-3.8-flash", MINI], variant: null };
+    assert.deepEqual(resolveTier(promo, catalog, COPILOT_ONLY), { model: "github-copilot/gemini-3.8-flash", status: "ok", variant: null, warnings: [] });
+    assert.equal(resolveTier({ candidates: ["github-copilot/gemini-3.8-flash"], variant: null }, catalog, COPILOT_ONLY).status, "ok");
+    assert.equal(resolveTier(promo, [], COPILOT_ONLY).model, "github-copilot/gemini-3.8-flash");
   });
 
   it("réflexion retirée avec un avertissement si l'IA ne la propose pas", () => {
@@ -906,12 +982,41 @@ describe("paramètres 0.2.0", () => {
     assert.deepEqual(settingsPathsOutsideSimple(current, { budget: { monthlyUsd: 200, alertThresholds: [80] } }), []);
     assert.deepEqual(settingsPathsOutsideSimple(current, { budget: current.budget, ui: { mode: "avance" }, ai: { chatDefaultTier: "rapide" } }), []);
     assert.deepEqual(settingsPathsOutsideSimple(current, { ai: { tiers: null } }), []);
-    assert.deepEqual(settingsPathsOutsideSimple(current, { ai: { tiers: { rapide: { candidates: [MINI], variant: null } } } }), [
-      "ai.tiers.rapide.candidates",
-      "ai.tiers.rapide.variant",
-    ]);
+    // Réglages remplacés en bloc (mergeSettings) : comparés en entier, jamais clé par clé.
+    assert.deepEqual(settingsPathsOutsideSimple(current, { ai: { tiers: { rapide: { candidates: [MINI], variant: null } } } }), ["ai.tiers"]);
+    const rates = { input: 3, cachedInput: 0.3, cacheWrite: null, output: 20 };
+    const priced = { ...current, pricing: { ...current.pricing, overrides: { [SONNET]: { rates }, [OPUS]: { rates } } } };
+    assert.deepEqual(settingsPathsOutsideSimple(priced, { pricing: { overrides: {} } }), ["pricing.overrides"]);
+    assert.deepEqual(settingsPathsOutsideSimple(priced, { pricing: { overrides: { [SONNET]: { rates } } } }), ["pricing.overrides"]);
+    assert.deepEqual(settingsPathsOutsideSimple(priced, { pricing: priced.pricing }), []);
+    assert.deepEqual(settingsPathsOutsideSimple(current, { classifier: { categories: [] } }), ["classifier.categories"]);
     assert.deepEqual(settingsPathsOutsideSimple(current, { budget: { guard: { ...current.budget.guard, enabled: false } } }), ["budget.guard.enabled"]);
     assert.deepEqual(settingsPathsOutsideSimple(current, { ai: { allowModelOverride: true } }), ["ai.allowModelOverride"]);
+  });
+
+  it("catalogue jamais lu : nouvel essai rapide après un échec, un seul en attente, puis tours normaux", async () => {
+    let calls = 0;
+    const client = {
+      request: async () => {
+        calls++;
+        if (calls <= 2) throw new Error("opencode démarre");
+        return { providers: [{ id: "github-copilot", models: { "gpt-5-mini": { id: "gpt-5-mini" } } }], default: {} };
+      },
+    } as unknown as OpencodeClient;
+    const catalog = new ModelCatalog(client);
+    const errors: string[] = [];
+    catalog.startAutoRefresh(60 * 60_000, (err) => errors.push(err.message), 5);
+    try {
+      for (let i = 0; i < 400 && !catalog.loaded; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(catalog.loaded, true);
+      assert.equal(calls, 3);
+      assert.deepEqual(errors, ["opencode démarre", "opencode démarre"]);
+      assert.equal(catalog.list()[0]?.key, "github-copilot/gpt-5-mini");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(calls, 3);
+    } finally {
+      catalog.stop();
+    }
   });
 
   it("COCKPIT_ALLOWED_PROVIDERS : github-copilot par défaut, identifiant invalide refusé", () => {

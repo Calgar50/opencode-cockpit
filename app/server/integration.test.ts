@@ -15,7 +15,7 @@ import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
-import { createApp, forbiddenAttachment, forbiddenProxyBody, PROXY_RULES } from "./http.ts";
+import { createApp, forbiddenAttachment, forbiddenProxyBody, PROXY_RULES, turnModelFromBody } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { csvCell, Ledger, monthBounds, monthKey } from "./ledger.ts";
 import { createLogger, type Logger } from "./log.ts";
@@ -735,6 +735,44 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.equal(forwarded("/session/ses_prov/").length, posts + 1);
   });
 
+  it("IA d'une demande facturée : seule la forme lue par opencode pour la route compte, les leurres sont refusés", async () => {
+    const opus = ref("claude-opus-5");
+    assert.deepEqual(turnModelFromBody("message", { model: opus }), opus);
+    assert.deepEqual(turnModelFromBody("raccourci", { model: "github-copilot/claude-opus-5" }), opus);
+    assert.deepEqual(turnModelFromBody("resume", { ...opus, auto: false }), opus);
+    assert.equal(turnModelFromBody("message", { model: "github-copilot/claude-opus-5" }), undefined);
+    assert.equal(turnModelFromBody("message", { ...opus }), undefined);
+    assert.equal(turnModelFromBody("message", { model: ref("gpt-5-mini"), ...opus }), undefined);
+    assert.equal(turnModelFromBody("raccourci", { model: opus }), undefined);
+    assert.equal(turnModelFromBody("raccourci", { model: "github-copilot/gpt-5-mini", ...opus }), undefined);
+    assert.equal(turnModelFromBody("raccourci", { model: "/gpt-5-mini" }), undefined);
+    assert.equal(turnModelFromBody("resume", { model: ref("gpt-5-mini"), ...opus }), undefined);
+    assert.equal(turnModelFromBody("resume", { model: "github-copilot/gpt-5-mini" }), undefined);
+    assert.equal(turnModelFromBody("resume", []), undefined);
+
+    const posts = forwarded("/session/ses_leurre/").length;
+    const refusedWith = async (res: { status: number; body: string }) => {
+      assert.equal(res.status, 400, res.body);
+      assert.equal(JSON.parse(res.body).error, "modele-requis");
+    };
+    // Résumer : opencode compacte avec providerID/modelID du premier niveau ; `model` serait contrôlé à sa place.
+    const decoy = { model: ref("gpt-5-mini"), ...ref("big-pickle", "opencode") };
+    await refusedWith(await call("POST", `/api/oc/session/ses_leurre/summarize?directory=${APP}`, confirmedHeaders, JSON.stringify(decoy)));
+    // Message sans `model` objet : opencode prendrait l'IA de l'agent ou de la session.
+    await refusedWith(await prompt("ses_leurre", { agent: "build", ...ref("gpt-5-mini"), parts: text("x") }, confirmedHeaders));
+    await refusedWith(await prompt("ses_leurre", { agent: "build", model: "github-copilot/gpt-5-mini", parts: text("x") }, confirmedHeaders));
+    await refusedWith(await prompt("ses_leurre", { agent: "build", model: ref("gpt-5-mini"), ...opus, parts: text("x") }, confirmedHeaders));
+    // Raccourci : opencode lit `model` en « fournisseur/modèle » seulement.
+    await refusedWith(await command("ses_leurre", { command: "revue", arguments: "x", agent: "build", model: ref("gpt-5-mini") }, confirmedHeaders));
+    await refusedWith(await command("ses_leurre", { command: "revue", arguments: "x", agent: "build", model: "github-copilot/gpt-5-mini", ...opus }, confirmedHeaders));
+    assert.equal(forwarded("/session/ses_leurre/").length, posts);
+    assert.equal(turnsOf("ses_leurre").length, 0);
+    // Formes attendues : relayées.
+    assert.equal((await prompt("ses_leurre", { agent: "build", model: ref("gpt-5-mini"), parts: text("x") }, confirmedHeaders)).status, 204);
+    assert.equal((await call("POST", `/api/oc/session/ses_leurre/summarize?directory=${APP}`, confirmedHeaders, JSON.stringify(ref("gpt-5-mini")))).status, 204);
+    assert.equal(forwarded("/session/ses_leurre/").length, posts + 2);
+  });
+
   it("impose l'IA d'un assistant : 409 avec son modèle, renvoi accepté et tracé, choix avancé pour un message", async () => {
     const other = { agent: "relire-script", model: ref("gpt-5-mini"), parts: text("relis") };
     const locked = await prompt("ses_lock", other, confirmedHeaders);
@@ -769,6 +807,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.equal((await prompt("ses_lock", other, confirmedHeaders)).status, 409);
       assert.equal((await prompt("ses_lock", other, { ...confirmedHeaders, "x-cockpit-model-override": "1" })).status, 204);
       assert.deepEqual(JSON.parse(forwarded("/session/ses_lock/").at(-1)?.body ?? "{}").model, ref("gpt-5-mini"));
+      // Raccourci : même règle, l'en-tête doit aussi accompagner /command (oc.command côté interface).
+      const shortcut = { command: "revue", arguments: "x", agent: "relire-script", model: "github-copilot/gpt-5-mini" };
+      assert.equal(JSON.parse((await command("ses_lock_cmd", shortcut, confirmedHeaders)).body).error, "assistant-model-changed");
+      assert.equal((await command("ses_lock_cmd", shortcut, { ...confirmedHeaders, "x-cockpit-model-override": "1" })).status, 204);
+      assert.equal(JSON.parse(forwarded("/session/ses_lock_cmd/command").at(-1)?.body ?? "{}").model, "github-copilot/gpt-5-mini");
     } finally {
       settings.update({ ui: { mode: "simple" }, ai: { allowModelOverride: false } });
     }
@@ -913,6 +956,27 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.equal(missing.tierStatus, "ok");
     assert.deepEqual(missing.send, { model: ref("claude-sonnet-5"), variant: "high" });
 
+    // Niveau « Indisponible » (IA prévue d'un fournisseur non autorisé) : bloquant, rien ne part sur l'IA prévue.
+    settings.update({
+      ai: {
+        tiers: {
+          rapide: { candidates: ["opencode/big-pickle"], variant: null },
+          equilibre: { candidates: ["github-copilot/claude-sonnet-5"], variant: null },
+          expert: { candidates: ["github-copilot/claude-opus-5"], variant: null },
+        },
+      },
+    });
+    try {
+      const blocked = JSON.parse((await resolve({ directory: "/workspace/app", agent: "build", tier: "rapide" })).body);
+      assert.equal(blocked.tierStatus, "indisponible");
+      assert.deepEqual(blocked.problems, [{ code: "ia-indisponible", blocking: true, model: "opencode/big-pickle" }]);
+      assert.equal(blocked.display.problems[0]?.blocking, true);
+      // Assistant à IA fixée : le niveau ne sert pas.
+      assert.deepEqual(JSON.parse((await resolve({ directory: "/workspace/app", agent: "relire-script", tier: "rapide" })).body).problems, []);
+    } finally {
+      settings.update({ ai: { tiers: null } });
+    }
+
     assert.equal((await resolve({ directory: "/etc", agent: "build" })).status, 403);
     assert.equal((await resolve({ directory: "/workspace/app", agent: "build", command: "nope" })).status, 404);
     assert.equal((await resolve({ directory: "/workspace/app", agent: "build", extra: 1 })).status, 400);
@@ -1005,7 +1069,23 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.equal(meta("projet"), undefined);
       assert.equal((await call("DELETE", "/api/studio/agents/analyse-incident", mutating)).status, 200);
       assert.equal(meta("analyse-incident"), undefined);
+
+      // Ligne sans niveau (IA précise) : l'IA écrite depuis le Studio devient l'IA appliquée, sans champ tier.
+      db.prepare(
+        "INSERT INTO item_meta (kind, name, title, task_size, origin, tier, applied_model, applied_variant, created_at, updated_at) VALUES ('agents', 'precise', 'IA précise', 'M', 'assistant', NULL, 'github-copilot/claude-sonnet-5', NULL, ?, ?)",
+      ).run(T, T);
+      const precise = { ...frontmatter, model: "github-copilot/gpt-5-mini", variant: "low" };
+      assert.equal((await save("precise", { frontmatter: precise, body: "x" })).status, 200);
+      assert.deepEqual(meta("precise"), { tier: null, origin: "assistant", applied_model: "github-copilot/gpt-5-mini", applied_variant: "low" });
+      // Ligne liée à un niveau : une modification sans champ tier ne change pas l'IA appliquée.
+      assert.equal((await save("lie", { frontmatter, body: "x", tier: "expert" })).status, 200);
+      assert.equal((await save("lie", { frontmatter: precise, body: "y" })).status, 200);
+      assert.deepEqual(meta("lie"), { tier: "expert", origin: "studio", applied_model: "github-copilot/claude-opus-5", applied_variant: "high" });
+      // Aucune ligne : aucune créée.
+      assert.equal((await save("sans-ligne", { frontmatter: precise, body: "x" })).status, 200);
+      assert.equal(meta("sans-ligne"), undefined);
     } finally {
+      db.prepare("DELETE FROM item_meta WHERE kind = 'agents' AND name IN ('precise', 'lie')").run();
       settings.update({ ui: { mode: "simple" } });
     }
   });

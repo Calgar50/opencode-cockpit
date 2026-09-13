@@ -46,6 +46,9 @@ export class ModelCatalog {
   #prices = new Map<string, ModelPrice>();
   #loadedAt = 0;
   #timer: NodeJS.Timeout | undefined;
+  /** Nouvel essai rapide tant que la liste n'a jamais été lue. */
+  #retry: NodeJS.Timeout | undefined;
+  #stopped = false;
   /** Empreinte de ce qui change la résolution des niveaux (IA, statut, outils, réflexions, prix). */
   #signature = "";
   readonly #listeners = new Set<() => void>();
@@ -145,15 +148,32 @@ export class ModelCatalog {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Rafraîchit maintenant puis toutes les `intervalMs` ; les échecs sont signalés sans arrêter la boucle. */
-  startAutoRefresh(intervalMs: number, onError: (err: Error) => void): void {
-    const tick = () => this.refresh().catch(onError);
+  /**
+   * Rafraîchit maintenant puis toutes les `intervalMs` ; les échecs sont signalés sans arrêter la boucle. Tant que la
+   * liste n'a jamais été lue, un échec est retenté après `retryMs` (un seul essai en attente) : sans elle, les
+   * enregistrements, installations et réalignements qui l'exigent resteraient refusés jusqu'au tour suivant.
+   */
+  startAutoRefresh(intervalMs: number, onError: (err: Error) => void, retryMs = 20_000): void {
+    const tick = (): Promise<void> =>
+      this.refresh().catch((err: Error) => {
+        onError(err);
+        if (this.loaded || this.#retry !== undefined || this.#stopped) return;
+        this.#retry = setTimeout(() => {
+          this.#retry = undefined;
+          void tick();
+        }, retryMs);
+        this.#retry.unref();
+      });
+    this.#stopped = false;
     void tick();
     this.#timer = setInterval(tick, intervalMs);
     this.#timer.unref();
   }
 
   stop(): void {
+    this.#stopped = true;
     clearInterval(this.#timer);
+    clearTimeout(this.#retry);
+    this.#retry = undefined;
   }
 }

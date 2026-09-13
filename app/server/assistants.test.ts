@@ -28,6 +28,7 @@ import {
   type CatalogLite,
   DEFAULT_TIERS,
   effectiveAgentRules,
+  effectiveBuiltinRules,
   MESSAGES,
   parseModelKey,
   unknownAgentKeyMessage,
@@ -118,11 +119,15 @@ function harness(options: { mode?: "simple" | "avance"; models?: CatalogLite[] }
     restarts: 0,
     loaded: true,
     models: options.models ?? ALL_MODELS,
+    /** GET /agent injoignable (repli sur les fichiers). */
+    lookupFails: false,
+    globalConfig: { permission: PRUDENT } as Record<string, unknown>,
   };
 
+  // Assistants intégrés dans l'ordre d'opencode 1.18.30 : règles propres, puis configuration globale.
   const agents = () => [
-    { name: "build", mode: "primary", native: true, permission: effectiveAgentRules(PRUDENT, {}) },
-    { name: "plan", mode: "primary", native: true, permission: effectiveAgentRules(PRUDENT, { edit: { "*": "deny" } }) },
+    { name: "build", mode: "primary", native: true, permission: effectiveBuiltinRules("build", PRUDENT) },
+    { name: "plan", mode: "primary", native: true, permission: effectiveBuiltinRules("plan", PRUDENT) },
     ...mdFiles(path.join(config, "agents")).map(({ name, data }) => ({
       name,
       mode: data.mode === "primary" || data.mode === "subagent" ? data.mode : "all",
@@ -143,7 +148,7 @@ function harness(options: { mode?: "simple" | "avance"; models?: CatalogLite[] }
       if (method === "POST") return true;
       switch (pathname) {
         case "/global/config":
-          return { permission: PRUDENT };
+          return state.globalConfig;
         case "/session/status":
           return state.statuses;
         case "/skill": {
@@ -168,6 +173,7 @@ function harness(options: { mode?: "simple" | "avance"; models?: CatalogLite[] }
 
   const lookup = {
     async get() {
+      if (state.lookupFails) throw new Error("opencode injoignable");
       return { directory: null, agents: agents(), commands: [], loadedAt: Date.now() };
     },
     invalidate() {},
@@ -429,7 +435,8 @@ describe("assistants", () => {
       list.builtins.map((b: Json) => [b.name, b.title]),
       [
         ["build", "Assistant général"],
-        ["plan", "Conseiller (lecture seule)"],
+        // Profil Prudent : la configuration globale passe après le refus propre du Conseiller, il demande avant de modifier.
+        ["plan", "Conseiller"],
       ],
     );
     const adopted = await h.call("POST", "/api/assistants/architecte/adopt", { title: "Concevoir avant de coder", useCase: "autre", taskSize: "L" });
@@ -441,6 +448,48 @@ describe("assistants", () => {
     assert.equal((await h.call("POST", "/api/assistants/architecte/adopt", { title: "Encore", useCase: "autre", taskSize: "M" })).body.error, "already-assistant");
     assert.equal((await h.call("POST", "/api/assistants/inconnu/adopt", { title: "Inconnu", useCase: "autre", taskSize: "M" })).status, 404);
     assert.equal((await h.call("GET", "/api/assistants")).body.toComplete.length, 0);
+  });
+
+  it("agent natif remplacé, sous-agent ou agent masqué : ni adopté, ni complété, ni renommé, ni supprimé depuis les assistants", async () => {
+    const h = harness();
+    const dir = path.join(h.config, "agents");
+    fs.mkdirSync(dir, { recursive: true });
+    const files: Record<string, string> = {
+      build: "---\ndescription: Assistant général restreint par l'administrateur.\npermission:\n  bash: deny\n  edit: deny\n---\nRestreint.\n",
+      aide: `---\ndescription: Sous-agent d'aide.\nmode: subagent\nmodel: ${SONNET}\n---\nAide.\n`,
+      cache: "---\ndescription: Agent masqué.\nmode: primary\nhidden: true\n---\nMasqué.\n",
+    };
+    for (const [name, raw] of Object.entries(files)) fs.writeFileSync(path.join(dir, `${name}.md`), raw);
+    const adopt = { title: "Assistant adopté", useCase: "autre", taskSize: "M" };
+    for (const name of Object.keys(files)) {
+      const res = await h.call("POST", `/api/assistants/${name}/adopt`, adopt);
+      assert.equal(res.status, 404, name);
+      assert.equal(h.meta("agents", name), undefined, name);
+    }
+    assert.deepEqual((await h.call("GET", "/api/assistants")).body.toComplete, []);
+    // opencode injoignable : un agent natif remplacé reste hors de « À compléter ».
+    h.state.lookupFails = true;
+    assert.deepEqual((await h.call("GET", "/api/assistants")).body.toComplete, []);
+    assert.equal((await h.call("POST", "/api/assistants/build/adopt", adopt)).status, 404);
+    h.state.lookupFails = false;
+
+    // « Compléter » un agent natif remplacé, renommer un agent qui n'est pas un assistant : refusés, fichiers intacts.
+    const complete = await h.call("PUT", "/api/assistants/build", { ...DRAFT, previousName: "build" });
+    assert.equal(complete.status, 409);
+    assert.equal(complete.body.error, "name-taken");
+    assert.equal((await h.call("PUT", "/api/assistants/relire", { ...DRAFT, previousName: "aide" })).status, 404);
+    assert.equal(fs.existsSync(path.join(dir, "relire.md")), false);
+    for (const [name, raw] of Object.entries(files)) assert.equal(fs.readFileSync(path.join(dir, `${name}.md`), "utf8"), raw, name);
+
+    // Suppression refusée même si une ligne titrée existait déjà (adoption antérieure au correctif).
+    h.db.prepare("INSERT INTO item_meta (kind, name, title, task_size, origin, created_at, updated_at) VALUES ('agents', 'build', 'Ancien', 'M', 'adopte', 0, 0)").run();
+    assert.equal((await h.call("DELETE", "/api/assistants/build")).status, 404);
+    assert.equal(fs.readFileSync(path.join(dir, "build.md"), "utf8"), files.build);
+
+    // Un agent ordinaire se complète toujours.
+    fs.writeFileSync(path.join(dir, "architecte.md"), "---\ndescription: Conçoit avant de coder.\nmode: primary\n---\nTu es architecte.\n");
+    const completed = await h.call("PUT", "/api/assistants/architecte", { ...DRAFT, previousName: "architecte" });
+    assert.equal(completed.status, 200, JSON.stringify(completed.body));
   });
 
   it("fichier disparu : « Fichier introuvable », ligne conservée jusqu'au retrait", async () => {
@@ -646,6 +695,15 @@ describe("modes Simple et Avancé", () => {
     assert.equal((await h.call("PUT", "/api/settings", { budget: { monthlyUsd: 200, guard: { fromPercent: 80 } } })).status, 200);
     assert.equal((await h.call("PUT", "/api/settings", { budget: { guard: { fromPercent: 10 } } })).status, 403);
     assert.equal((await h.call("PUT", "/api/settings", "{pas du json")).status, 400);
+    // Tarifs remplacés en bloc : un dictionnaire vide ou partiel effacerait les tarifs personnalisés.
+    const rates = { input: 3, cachedInput: 0.3, cacheWrite: null, output: 20 };
+    h.settings.update({ pricing: { overrides: { [SONNET]: { rates }, [CODEX]: { rates } } } });
+    for (const overrides of [{}, { [SONNET]: { rates } }]) {
+      const wiped = await h.call("PUT", "/api/settings", { pricing: { overrides } });
+      assert.equal(wiped.status, 403);
+      assert.deepEqual(wiped.body.paths, ["pricing.overrides"]);
+    }
+    assert.deepEqual(Object.keys(h.settings.get().pricing.overrides).sort(), [SONNET, CODEX].sort());
     assert.equal((await h.call("POST", "/api/settings/reset", { section: "chat" })).status, 403);
     assert.equal((await h.call("POST", "/api/settings/reset", { section: "budget" })).status, 200);
     h.settings.update({ ui: { mode: "avance" } });
@@ -678,6 +736,44 @@ describe("modes Simple et Avancé", () => {
     assert.equal((await h.call("PUT", "/api/ai/tiers", { tiers: null })).status, 409);
   });
 
+  it("« À ranger » : seuls les agents de « À compléter » se rangent en mode Simple ; Conseiller en repli dans l'ordre d'opencode", async () => {
+    const h = harness();
+    const dir = path.join(h.config, "agents");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "principal.md"), `---\ndescription: Agent principal.\nmode: primary\nmodel: ${SONNET}\n---\nx\n`);
+    fs.writeFileSync(path.join(dir, "aide.md"), `---\ndescription: Sous-agent.\nmode: subagent\nmodel: ${SONNET}\n---\nx\n`);
+    fs.mkdirSync(path.join(h.config, "commands"), { recursive: true });
+    fs.writeFileSync(path.join(h.config, "commands", "verifier.md"), `---\ndescription: Vérifier\nmodel: ${SONNET}\n---\nx\n`);
+    const usage = (await h.call("GET", "/api/ai")).body.usage as Json[];
+    assert.deepEqual(
+      usage
+        .filter((u) => u.state === "a-ranger")
+        .map((u) => [u.name, u.completable])
+        .sort((a, b) => a[0].localeCompare(b[0])),
+      [
+        ["aide", false],
+        ["principal", true],
+        ["verifier", false],
+      ],
+    );
+    assert.ok(usage.every((u) => typeof u.completable === "boolean"));
+
+    // GET /agent injoignable : règles du Conseiller dans l'ordre d'opencode (Prudent : il demande avant de modifier).
+    h.state.lookupFails = true;
+    const planOf = async () => ((await h.call("GET", "/api/assistants")).body.builtins as Json[]).find((b) => b.name === "plan");
+    const decisions = (plan: Json) => (plan.rightLines as Json[]).filter((l) => l.id === "modification" || l.id === "commande").map((l) => l.kind);
+    const fallback = await planOf();
+    assert.equal(fallback.effectiveRules, false);
+    assert.equal(fallback.title, "Conseiller");
+    assert.deepEqual(decisions(fallback), ["demande", "demande"]);
+    // agent.plan.permission dans la configuration : la lecture seule est garantie, le titre le dit.
+    h.state.globalConfig = { permission: PRUDENT, agent: { plan: { permission: { edit: "deny", bash: "deny" } } } };
+    const locked = await planOf();
+    assert.equal(locked.title, "Conseiller (lecture seule)");
+    assert.equal(locked.help, "Réfléchit et propose un plan, sans rien modifier.");
+    assert.deepEqual(decisions(locked), ["non", "non"]);
+  });
+
   it("« Garder cette IA précise » (mode Simple) : liaison retirée, fichier intact, IA du fichier retenue", async () => {
     const h = harness();
     assert.equal((await h.call("PUT", "/api/assistants/relire", DRAFT)).status, 200);
@@ -697,6 +793,17 @@ describe("modes Simple et Avancé", () => {
     assert.equal(row?.title, DRAFT.title);
     assert.equal((await usageOf()).state, "a-jour");
     assert.deepEqual(h.cockpitEvent("ai.changed")?.data, { reason: "keep-model" });
+
+    // Sans niveau et de nouveau modifié hors du cockpit : rien à réaligner, 422 explicite (pas « introuvable »).
+    fs.writeFileSync(file, changed.replace(CODEX, SONNET));
+    const drifted = await usageOf();
+    assert.equal(drifted.state, "modifie-hors-cockpit");
+    assert.equal(drifted.tier, null);
+    const realign = await h.call("POST", "/api/ai/realign", { items: [{ kind: "agents", name: "relire" }] }, { "x-cockpit-confirm": "1" });
+    assert.equal(realign.status, 422);
+    assert.equal(realign.body.error, "sans-niveau");
+    assert.equal(realign.body.message, "Cet élément ne suit aucun niveau : choisissez un niveau ou gardez cette IA précise.");
+    fs.writeFileSync(file, changed);
 
     assert.equal((await h.call("POST", "/api/ai/keep-model", { kind: "agents", name: "absent" })).status, 404);
     assert.equal((await h.call("POST", "/api/ai/keep-model", { kind: "skills", name: "relire" })).status, 400);

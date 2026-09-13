@@ -654,6 +654,7 @@ export function ChatPage() {
                 ...(fileParts.length > 0 ? { parts: fileParts } : {}),
               },
               confirmed,
+              params.modelOverride,
             ),
           )
         : await sendTurn(initial, (params, confirmed) =>
@@ -924,7 +925,11 @@ export function ChatPage() {
       .filter((a) => isChatAgent(a) && !a.hidden)
       .map((a) => {
         const view = assistantByName.get(a.name);
-        return { name: a.name, title: view?.title ?? builtinTitle(a.name) ?? a.name, help: view?.description ?? builtinHelp(a.name) ?? a.description ?? null };
+        return {
+          name: a.name,
+          title: view?.title ?? builtinTitle(a.name, a.permission) ?? a.name,
+          help: view?.description ?? builtinHelp(a.name, a.permission) ?? a.description ?? null,
+        };
       })
       .sort((x, y) => rank(x.name) - rank(y.name) || x.title.localeCompare(y.title, "fr"));
   }, [agents, assistantByName]);

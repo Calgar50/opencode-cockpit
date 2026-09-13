@@ -2,7 +2,7 @@
 // choix de l'assistant et lignes du menu « / ».
 import { useEffect, useState } from "react";
 import {
-  BUILTIN_ASSISTANTS,
+  builtinAssistantInfo,
   DEFAULT_TIERS,
   describeTurn,
   formatUsd,
@@ -10,10 +10,12 @@ import {
   modelKey,
   modelName,
   parseModelKey,
+  type Rule,
   resolveChatTurn,
   resolveCommandTurn,
   TIER_LABELS,
   toCatalogLite,
+  withTierAvailability,
 } from "../../../server/shared/assistant-rules.ts";
 import { api } from "../../lib/api.ts";
 import type {
@@ -50,12 +52,13 @@ export function defaultAgentName(configured: string | null | undefined, agents: 
   return "build";
 }
 
-export function builtinTitle(name: string): string | null {
-  return name === "build" || name === "plan" ? BUILTIN_ASSISTANTS[name].title : null;
+/** Titre d'un assistant intégré ; `permission` (règles de GET /agent) : « lecture seule » seulement si elles la garantissent. */
+export function builtinTitle(name: string, permission?: readonly Rule[] | null): string | null {
+  return name === "build" || name === "plan" ? builtinAssistantInfo(name, permission).title : null;
 }
 
-export function builtinHelp(name: string): string | null {
-  return name === "build" || name === "plan" ? BUILTIN_ASSISTANTS[name].help : null;
+export function builtinHelp(name: string, permission?: readonly Rule[] | null): string | null {
+  return name === "build" || name === "plan" ? builtinAssistantInfo(name, permission).help : null;
 }
 
 export function toAgentLite(agent: OcAgent): AgentLite {
@@ -119,9 +122,11 @@ export function localResolve(req: ResolveRequest, ctx: ResolveContext): ResolveR
   });
 
   const command = req.command ? ctx.commands.find((c) => c.name === req.command) : undefined;
-  const turn: Turn = command
+  const resolved: Turn = command
     ? resolveCommandTurn({ command: toCommandLite(command), agents: ctx.agents.map(toAgentLite), chatAgent: agent, chatTurn, catalog })
     : chatTurn;
+  // Même règle que POST /api/chat/resolve : niveau « Indisponible », rien ne part sur l'IA prévue.
+  const turn = withTierAvailability(resolved, view?.status);
   const tierOfModel = tierOfModelIn(boot);
   const display = describeTurn(turn, {
     catalog,

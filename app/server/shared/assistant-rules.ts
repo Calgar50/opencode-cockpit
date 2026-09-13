@@ -272,14 +272,57 @@ export function opencodeDefaultPermission(paths: OpencodePaths = OPENCODE_PATHS)
  * (agent/agent.ts:119-138, 293), puis Truncate.GLOB réautorisé sauf refus explicite (296-310).
  */
 export function effectiveAgentRules(globalPermission: unknown, agentPermission: unknown, paths: OpencodePaths = OPENCODE_PATHS): Rule[] {
-  const rules = [
-    ...rulesFromConfig(opencodeDefaultPermission(paths), paths.home),
-    ...rulesFromConfig(globalPermission ?? {}, paths.home),
-    ...rulesFromConfig(agentPermission ?? {}, paths.home),
-  ];
+  return withTruncateAllowed(
+    [
+      ...rulesFromConfig(opencodeDefaultPermission(paths), paths.home),
+      ...rulesFromConfig(globalPermission ?? {}, paths.home),
+      ...rulesFromConfig(agentPermission ?? {}, paths.home),
+    ],
+    paths,
+  );
+}
+
+function withTruncateAllowed(rules: Rule[], paths: OpencodePaths): Rule[] {
   const glob = truncateGlob(paths);
   const explicit = rules.some((r) => r.permission === "external_directory" && r.action === "deny" && r.pattern === glob);
   return explicit ? rules : [...rules, { permission: "external_directory", pattern: glob, action: "allow" }];
+}
+
+/**
+ * Règles propres des assistants intégrés (agent/agent.ts:141-178), placées AVANT la configuration globale : le refus
+ * de modification du Conseiller (plan) ne tient donc que si la configuration ne le réautorise pas, et il n'a aucune
+ * règle de commande. Le motif d'édition relatif au worktree n'est pas reproduit (il dépend du dossier).
+ */
+export function builtinAgentPermission(name: "build" | "plan", paths: OpencodePaths = OPENCODE_PATHS): Record<string, unknown> {
+  if (name === "build") return { question: "allow", plan_enter: "allow" };
+  return {
+    question: "allow",
+    plan_exit: "allow",
+    task: { general: "deny" },
+    external_directory: { [`${paths.data.replace(/\/+$/, "")}/plans/*`]: "allow" },
+    edit: { "*": "deny", ".opencode/plans/*.md": "allow" },
+  };
+}
+
+/**
+ * Règles effectives d'un assistant intégré quand GET /agent ne répond pas, dans l'ordre d'opencode : défauts, règles
+ * propres, configuration globale, section agent.<nom>.permission (agent/agent.ts:293), puis Truncate.
+ */
+export function effectiveBuiltinRules(
+  name: "build" | "plan",
+  globalPermission: unknown,
+  agentConfigPermission: unknown = {},
+  paths: OpencodePaths = OPENCODE_PATHS,
+): Rule[] {
+  return withTruncateAllowed(
+    [
+      ...rulesFromConfig(opencodeDefaultPermission(paths), paths.home),
+      ...rulesFromConfig(builtinAgentPermission(name, paths), paths.home),
+      ...rulesFromConfig(globalPermission ?? {}, paths.home),
+      ...rulesFromConfig(agentConfigPermission ?? {}, paths.home),
+    ],
+    paths,
+  );
 }
 
 // --- Réflexion (variantes) --------------------------------------------------------------
@@ -509,7 +552,11 @@ export function resolveCommandTurn(i: CommandTurnInput): Turn {
   }
 
   if (loaded(catalog)) {
-    for (const key of new Set(runs.map((r) => r.model))) {
+    const loadedModels = new Set(runs.map((r) => r.model));
+    // opencode charge l'IA du raccourci avant tout appel, même quand l'assistant délégué impose la sienne
+    // (prompt.ts:1421 puis 267) : absente du compte, la demande échouerait après l'envoi.
+    if (cmd.model) loadedModels.add(modelKey(parseModelKey(cmd.model)));
+    for (const key of loadedModels) {
       if (!catalogEntry(catalog, key)) problems.push({ code: "ia-indisponible", blocking: true, model: key, command: cmd.name });
     }
   }
@@ -662,24 +709,22 @@ export function effectiveTiers(custom: TierDefs | null | undefined): TierDefs {
 }
 
 /**
- * Premier candidat présent au catalogue, d'un fournisseur autorisé, capable d'utiliser les outils, ni en fin de vie
- * (status « deprecated ») ni à prix promotionnel. Catalogue non chargé : « non-verifie » avec le premier candidat
- * autorisé (non vérifié). La réflexion est retirée, avec un avertissement, si l'IA retenue ne la propose pas.
+ * Premier candidat présent au catalogue, d'un fournisseur autorisé, capable d'utiliser les outils et pas en fin de vie
+ * (status « deprecated »), conception §6. Un modèle à prix promotionnel n'est jamais dans la recommandation livrée,
+ * mais un candidat choisi dans le groupe « Réservé » du mode Avancé est utilisé. Catalogue non chargé : « non-verifie »
+ * avec le premier candidat autorisé (non vérifié). La réflexion est retirée, avec un avertissement, si l'IA retenue ne
+ * la propose pas.
  */
 export function resolveTier(def: TierDef, catalog: readonly CatalogLite[], allowed: readonly string[]): TierResolution {
   const warnings: string[] = [];
   const name = (candidate: string) => modelName(candidate, catalog);
   if (!loaded(catalog)) {
-    const first = def.candidates.find((c) => allowed.includes(providerOf(c)) && !isPromoModel(c)) ?? null;
+    const first = def.candidates.find((c) => allowed.includes(providerOf(c))) ?? null;
     return { model: first, status: "non-verifie", variant: first ? def.variant : null, warnings: [TIER_STATUS_HELP["non-verifie"] ?? ""] };
   }
   for (const [index, candidate] of def.candidates.entries()) {
     if (!allowed.includes(providerOf(candidate))) {
       warnings.push(`${name(candidate)} : fournisseur non autorisé dans ce cockpit.`);
-      continue;
-    }
-    if (isPromoModel(candidate)) {
-      warnings.push(`${name(candidate)} : prix promotionnel temporaire, ignorée.`);
       continue;
     }
     const entry = catalogEntry(catalog, candidate);
@@ -703,6 +748,22 @@ export function resolveTier(def: TierDef, catalog: readonly CatalogLite[], allow
     return { model: candidate, status: index === 0 ? "ok" : "secours", variant, warnings };
   }
   return { model: null, status: "indisponible", variant: null, warnings };
+}
+
+/**
+ * Niveau de la conversation « Indisponible » : l'IA prévue qui sert de repli a été écartée par resolveTier (absente,
+ * sans outils, en fin de vie ou d'un fournisseur non autorisé). Chaque appel sur l'IA du niveau devient bloquant au
+ * lieu de partir en silence sur ce candidat.
+ */
+export function withTierAvailability(turn: Turn, status: TierStatus | null | undefined): Turn {
+  if (status !== "indisponible") return turn;
+  const problems = [...turn.problems];
+  for (const run of turn.runs) {
+    if (run.source !== "niveau") continue;
+    if (problems.some((p) => p.code === "ia-indisponible" && p.model === run.model)) continue;
+    problems.push({ code: "ia-indisponible", blocking: true, model: run.model });
+  }
+  return problems.length === turn.problems.length ? turn : { ...turn, problems };
 }
 
 /** Niveau dont l'IA résolue est ce modèle (premier trouvé dans l'ordre Rapide, Équilibré, Expert). */
@@ -884,14 +945,34 @@ export const RIGHTS_INFO: Readonly<Record<RightsLabel, { label: string; help: st
   personnalise: { label: "Personnalisé", help: "Droits réglés à la main dans le Studio : vérifiez ce qu'il peut faire." },
 });
 
-/** Assistants intégrés d'opencode, tels qu'affichés. */
+/**
+ * Assistants intégrés d'opencode, tels qu'affichés quand leurs règles effectives sont inconnues. opencode 1.18.30
+ * n'impose pas la lecture seule au Conseiller (plan) : la configuration globale passe après son refus de modification
+ * et il n'a aucune règle de commande (agent/agent.ts:156-178). Voir builtinAssistantInfo.
+ */
 export const BUILTIN_ASSISTANTS: Readonly<Record<"build" | "plan", { title: string; help: string }>> = Object.freeze({
   build: {
     title: "Assistant général",
     help: "Pour les demandes qui ne correspondent à aucun assistant. Demande avant de modifier ou d'exécuter.",
   },
-  plan: { title: "Conseiller (lecture seule)", help: "Réfléchit et propose un plan, sans rien modifier." },
+  plan: { title: "Conseiller", help: "Réfléchit et propose un plan. Ses droits suivent vos réglages : vérifiez ce qu'il peut faire." },
 });
+
+/** Conseiller dont les règles effectives refusent toute modification et toute commande. */
+export const PLAN_READ_ONLY: Readonly<{ title: string; help: string }> = Object.freeze({
+  title: "Conseiller (lecture seule)",
+  help: "Réfléchit et propose un plan, sans rien modifier.",
+});
+
+/** true si ces règles refusent la modification de fichiers et les commandes (entrées d'exemple de la carte d'identité). */
+export function isReadOnlyRules(rules: readonly Rule[]): boolean {
+  return evaluate(rules, "edit", RIGHT_SAMPLES.edit) === "deny" && evaluate(rules, "bash", RIGHT_SAMPLES.bash) === "deny";
+}
+
+/** Titre et aide d'un assistant intégré : « lecture seule » seulement quand ses règles effectives le garantissent. */
+export function builtinAssistantInfo(name: "build" | "plan", rules?: readonly Rule[] | null): { title: string; help: string } {
+  return name === "plan" && rules && isReadOnlyRules(rules) ? PLAN_READ_ONLY : BUILTIN_ASSISTANTS[name];
+}
 
 export const DRAFT_LIMITS = Object.freeze({
   titleMin: 3,
@@ -1328,9 +1409,16 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
-/** Chemins « a.b.c » réellement modifiés par un correctif (objets parcourus ; tableaux et valeurs simples = feuilles). */
+/** Réglages remplacés en bloc par la fusion des paramètres (settings.ts mergeSettings) : jamais fusionnés clé par clé. */
+export const SETTINGS_REPLACED_PATHS: ReadonlySet<string> = new Set(["pricing.overrides", "classifier.categories", "budget.alertThresholds", "ai.tiers"]);
+
+/**
+ * Chemins « a.b.c » réellement modifiés par un correctif (objets parcourus ; tableaux et valeurs simples = feuilles).
+ * Un réglage remplacé en bloc est une feuille : l'envoyer partiel ou vide efface les clés absentes.
+ */
 export function changedSettingsPaths(current: unknown, patch: unknown, at = ""): string[] {
   if (patch === undefined) return [];
+  if (at && SETTINGS_REPLACED_PATHS.has(at)) return deepEqual(current, patch) ? [] : [at];
   if (isPlainObject(patch)) {
     const base = isPlainObject(current) ? current : {};
     return Object.entries(patch).flatMap(([key, value]) =>

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { DEFAULT_TIERS, TIER_IDS, UI_MODES } from "./shared/assistant-rules.ts";
+import { DEFAULT_TIERS, SETTINGS_REPLACED_PATHS, TIER_IDS, UI_MODES } from "./shared/assistant-rules.ts";
 
 export {
   changedSettingsPaths,
@@ -230,8 +230,6 @@ export const DEFAULT_SETTINGS: Settings = {
   ui: { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null },
 };
 
-const REPLACED_PATHS = new Set(["pricing.overrides", "classifier.categories", "budget.alertThresholds", "ai.tiers"]);
-
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -250,7 +248,7 @@ export function seedLegacySettings(stored: unknown): unknown {
 
 /** Fusion récursive : les objets se fusionnent, tableaux et dictionnaires listés sont remplacés. */
 export function mergeSettings(base: unknown, patch: unknown, at = ""): unknown {
-  if (!isPlainObject(base) || !isPlainObject(patch) || REPLACED_PATHS.has(at)) return patch === undefined ? base : patch;
+  if (!isPlainObject(base) || !isPlainObject(patch) || SETTINGS_REPLACED_PATHS.has(at)) return patch === undefined ? base : patch;
   const out: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(patch)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
