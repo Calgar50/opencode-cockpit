@@ -453,7 +453,9 @@ export class ArchiveService {
       title_manual: patch.title !== undefined ? 1 : row.title_manual,
       summary: patch.summary ?? row.summary,
       pinned: patch.pinned === undefined ? row.pinned : patch.pinned ? 1 : 0,
-      classified_by: patch.category !== undefined || patch.tags !== undefined ? "manual" : row.classified_by,
+      // Toute correction de catégorie, d'étiquettes ou de résumé protège la conversation du reclassement automatique.
+      classified_by:
+        patch.category !== undefined || patch.tags !== undefined || patch.summary !== undefined ? "manual" : row.classified_by,
     };
     this.#d.db
       .prepare(

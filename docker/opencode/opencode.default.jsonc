@@ -17,20 +17,19 @@
   "lsp": false,
   "formatter": false,
 
-  // Mode prudent : confirmation avant toute modification de fichier ou commande shell,
-  // sauf quelques commandes en lecture seule. La dernière règle correspondante l'emporte.
+  // Permissions posées à l'installation : profil « Prudent » de Paramètres > opencode. Appliquer un autre
+  // profil remplace le bloc ci-dessous sans toucher à ce commentaire : seules les règles qui suivent font foi.
+  // Pourquoi aucune commande « de consultation » (git status, git diff...) n'est autorisée d'office :
+  // opencode ne vérifie pas les affectations de variables (export GIT_CONFIG_...), qui suffisent à en
+  // détourner une pour exécuter du code. Sous-agents (task) sur confirmation : leur consigne peut désigner
+  // un fichier (@chemin) qu'opencode lit sans autre contrôle.
   "permission": {
     "edit": "ask",
     "bash": {
       "*": "ask",
-      "git status*": "allow",
-      "git diff*": "allow",
-      "git log*": "allow",
-      "git branch*": "allow",
-      "git show*": "allow",
-      "ls*": "allow",
       "pwd": "allow"
     },
+    "task": "ask",
     "webfetch": "ask",
     "websearch": "ask"
   }

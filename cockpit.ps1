@@ -3,23 +3,25 @@
     Pilotage quotidien d'opencode-cockpit.
 
 .DESCRIPTION
-    .\cockpit.ps1 open                Ouvre l'interface (connexion automatique)
-    .\cockpit.ps1 start | stop | restart
-    .\cockpit.ps1 status              Etat des conteneurs et du cockpit
+    .\cockpit.ps1 open                  Ouvre l'interface (connexion automatique)
+    .\cockpit.ps1 start | stop          Demarre (en appliquant .env) ou arrete les conteneurs
+    .\cockpit.ps1 restart               Recree les conteneurs (relit .env et certs\)
+    .\cockpit.ps1 status                Etat des conteneurs et du cockpit
     .\cockpit.ps1 logs [opencode|cockpit]
-    .\cockpit.ps1 certs               Reexporte les certificats Windows puis redemarre
-    .\cockpit.ps1 update              Met a jour (git pull) puis reinstalle
-    .\cockpit.ps1 backup              Sauvegarde reglages, archives SQLite et configuration opencode
-    .\cockpit.ps1 uninstall [-Purge]  Arrete et supprime les conteneurs (-Purge : donnees comprises)
+    .\cockpit.ps1 certs                 Reexporte les certificats Windows puis recree les conteneurs
+    .\cockpit.ps1 update                git pull puis relance install.ps1 (meme mode d'installation)
+    .\cockpit.ps1 backup                Sauvegarde reglages, couts, archives et configuration opencode
+    .\cockpit.ps1 restore <fichier>     Restaure une sauvegarde (remplace les donnees actuelles)
+    .\cockpit.ps1 uninstall [-Purge]    Supprime les conteneurs (-Purge : donnees et images comprises)
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('open', 'start', 'stop', 'restart', 'status', 'logs', 'certs', 'update', 'backup', 'uninstall', 'help')]
+    [ValidateSet('open', 'start', 'stop', 'restart', 'status', 'logs', 'certs', 'update', 'backup', 'restore', 'uninstall', 'help')]
     [string]$Command = 'help',
+    # Service pour 'logs' (opencode ou cockpit), ou fichier de sauvegarde pour 'restore'.
     [Parameter(Position = 1)]
-    [ValidateSet('', 'opencode', 'cockpit')]
-    [string]$Service = '',
+    [string]$Target = '',
     [switch]$Purge
 )
 
@@ -33,12 +35,34 @@ $Project = 'opencode-cockpit'
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Attention([string]$Message) { Write-Host "[!] $Message" -ForegroundColor Yellow }
 
+$ProxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY')
+
+# docker compose donne priorite aux variables du shell sur .env : elles sont masquees le temps de l'appel.
+function Clear-ShellProxy {
+    $saved = @{}
+    # Nom reel conserve : une variable http_proxy en minuscules est restauree telle quelle.
+    $names = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $ProxyVariables -contains $_ })
+    foreach ($name in $names) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    return $saved
+}
+
+function Restore-ShellProxy {
+    param($Saved)
+    foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
+}
+
+# Fonction simple, sans bloc param : un attribut [Parameter()] ajouterait les parametres communs de
+# PowerShell, et des options docker comme -v ou -d seraient prises pour -Verbose ou -Debug.
 function Invoke-Docker {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    $dockerArgs = @($args)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { & docker @Arguments } finally { $ErrorActionPreference = $previous }
-    if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($Arguments -join ' '), $LASTEXITCODE) }
+    $savedProxy = Clear-ShellProxy
+    try { & docker @dockerArgs } finally { $ErrorActionPreference = $previous; Restore-ShellProxy $savedProxy }
+    if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($dockerArgs -join ' '), $LASTEXITCODE) }
 }
 
 function Get-EnvValue([string]$Key) {
@@ -55,6 +79,28 @@ function Get-Port {
     return 7777
 }
 
+function Get-ArchiveDir {
+    # Dossier reellement monte sur /archives, tel que compose le resout (guillemets, ~, chemin relatif).
+    # La configuration contient des secrets : elle reste en memoire et n'est jamais affichee.
+    $json = $null
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $savedProxy = Clear-ShellProxy
+    # docker ecrit du JSON en UTF-8 ; PowerShell 5.1 le lirait avec la page de code de la console (850 en francais).
+    $savedEncoding = $null
+    try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { $savedEncoding = $null }
+    try { $json = (& docker compose config --format json 2>$null) -join "`n" } finally {
+        $ErrorActionPreference = $previous
+        Restore-ShellProxy $savedProxy
+        if ($null -ne $savedEncoding) { try { [Console]::OutputEncoding = $savedEncoding } catch { } }
+    }
+    if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Lecture de la configuration impossible (docker compose config).' }
+    $mount = @((ConvertFrom-Json $json).services.cockpit.volumes | Where-Object { $_.target -eq '/archives' }) | Select-Object -First 1
+    if ($null -eq $mount) { throw 'Montage /archives introuvable dans docker-compose.yml.' }
+    New-Item -ItemType Directory -Path $mount.source -Force | Out-Null
+    return (Resolve-Path -LiteralPath $mount.source).Path
+}
+
 function Test-Health {
     [System.Net.WebRequest]::DefaultWebProxy = $null
     try {
@@ -63,6 +109,11 @@ function Test-Health {
     } catch {
         return $false
     }
+}
+
+# Un chemin de sauvegarde relatif se lit depuis le dossier courant de l'utilisateur, pas depuis $Root.
+if ($Command -eq 'restore' -and $Target) {
+    $Target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Target)
 }
 
 Push-Location $Root
@@ -81,8 +132,9 @@ try {
             Invoke-Docker compose stop
         }
         'restart' {
-            Write-Step 'Redemarrage'
-            Invoke-Docker compose restart
+            # 'compose restart' garderait l'ancienne configuration : on recree les conteneurs pour relire .env.
+            Write-Step 'Redemarrage (configuration .env relue)'
+            Invoke-Docker compose up -d --force-recreate
         }
         'status' {
             Invoke-Docker compose ps
@@ -93,7 +145,8 @@ try {
             }
         }
         'logs' {
-            if ($Service) { Invoke-Docker compose logs --tail 200 -f $Service }
+            if ($Target -and @('opencode', 'cockpit') -notcontains $Target) { throw 'Service inconnu : utilisez "logs opencode" ou "logs cockpit".' }
+            if ($Target) { Invoke-Docker compose logs --tail 200 -f $Target }
             else { Invoke-Docker compose logs --tail 200 -f }
         }
         'certs' {
@@ -114,8 +167,8 @@ try {
             New-Item -ItemType Directory -Path $certsDir -Force | Out-Null
             [System.IO.File]::WriteAllText((Join-Path $certsDir 'windows-trust.pem'), $builder.ToString(), (New-Object System.Text.UTF8Encoding $false))
             Write-Host ("{0} certificats exportes." -f $seen.Count)
-            Write-Step 'Redemarrage pour prise en compte'
-            Invoke-Docker compose restart
+            Write-Step 'Recreation des conteneurs pour prise en compte'
+            Invoke-Docker compose up -d --force-recreate
         }
         'update' {
             if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
@@ -123,7 +176,8 @@ try {
                 & git -C $Root pull --ff-only
                 if ($LASTEXITCODE -ne 0) { throw 'git pull a echoue : resolvez le conflit puis relancez.' }
             } else {
-                Write-Attention 'Pas de depot git : telechargez la nouvelle version dans ce dossier puis relancez .\install.ps1'
+                Write-Attention 'Pas de depot git : remplacez les fichiers par ceux de la nouvelle version (sans toucher a .env, certs\, archives\ ni backups\), puis lancez .\install.ps1'
+                return
             }
             & (Join-Path $Root 'install.ps1') -NoBrowser
         }
@@ -132,6 +186,7 @@ try {
             $backupDir = Join-Path $Root 'backups'
             New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
             $image = Get-EnvValue 'COCKPIT_APP_IMAGE'
+            $archiveDir = Get-ArchiveDir
             Write-Step 'Arret temporaire pour une sauvegarde coherente'
             Invoke-Docker compose stop
             try {
@@ -140,20 +195,58 @@ try {
                     -v "${Project}_cockpit-data:/src/cockpit-data:ro" `
                     -v "${Project}_oc-config:/src/oc-config:ro" `
                     -v "${Project}_oc-data:/src/oc-data:ro" `
+                    -v "${archiveDir}:/src/archives:ro" `
                     -v "${backupDir}:/backup" `
                     $image czf "/backup/cockpit-$stamp.tar.gz" --exclude=oc-data/auth.json --exclude=oc-config/node_modules -C /src .
             } finally {
                 Invoke-Docker compose start
             }
-            Write-Host 'Sauvegarde terminee. Le jeton GitHub Copilot (auth.json) est volontairement exclu.' -ForegroundColor Green
+            Write-Host 'Sauvegarde terminee. Exclus volontairement : jeton GitHub Copilot (auth.json), fichier .env et dossier certs\.' -ForegroundColor Green
+        }
+        'restore' {
+            if (-not $Target -or -not (Test-Path -LiteralPath $Target -PathType Leaf)) {
+                throw 'Indiquez une sauvegarde existante : .\cockpit.ps1 restore .\backups\cockpit-AAAAMMJJ-HHMMSS.tar.gz'
+            }
+            $backup = Get-Item -LiteralPath $Target
+            if ($backup.Name -notmatch '^[A-Za-z0-9._-]+\.tar\.gz$') { throw 'Nom de sauvegarde inattendu : lettres, chiffres, point, tiret, souligne et extension .tar.gz uniquement.' }
+            $image = Get-EnvValue 'COCKPIT_APP_IMAGE'
+            $archiveDir = Get-ArchiveDir
+            # Verification AVANT tout arret : une archive illisible ne coupe pas le cockpit.
+            Write-Step "Verification de $($backup.Name)"
+            Invoke-Docker run --rm --entrypoint tar -v "$($backup.DirectoryName):/backup:ro" $image tzf "/backup/$($backup.Name)" | Out-Null
+            Write-Attention 'La restauration REMPLACE les reglages, couts, archives indexees et la configuration opencode actuels.'
+            Write-Attention 'Le dossier archives\ est complete : les fichiers absents de la sauvegarde restent, ceux de meme nom sont remplaces. La connexion GitHub Copilot est conservee.'
+            $answer = Read-Host 'Tapez RESTAURER pour confirmer'
+            if ($answer -cne 'RESTAURER') { Write-Host 'Annule.'; return }
+            Invoke-Docker compose up --no-start
+            Invoke-Docker compose stop
+            try {
+                Write-Step "Restauration de $($backup.Name)"
+                $script = "set -e; " +
+                    "for d in cockpit-data oc-config oc-data; do find /dst/`$d -mindepth 1 -maxdepth 1 ! -name auth.json -exec rm -rf {} +; done; " +
+                    "tar xzf /backup/$($backup.Name) --no-same-owner -C /dst; chown -R 1000:1000 /dst/cockpit-data /dst/oc-config /dst/oc-data"
+                Invoke-Docker run --rm --user 0 --entrypoint sh `
+                    -v "${Project}_cockpit-data:/dst/cockpit-data" `
+                    -v "${Project}_oc-config:/dst/oc-config" `
+                    -v "${Project}_oc-data:/dst/oc-data" `
+                    -v "${archiveDir}:/dst/archives" `
+                    -v "$($backup.DirectoryName):/backup:ro" `
+                    $image -c $script
+            } finally {
+                # Redemarrage dans tous les cas, meme si la restauration a echoue.
+                Write-Step 'Redemarrage des conteneurs'
+                Invoke-Docker compose up -d --force-recreate
+            }
+            Write-Host 'Restauration terminee.' -ForegroundColor Green
         }
         'uninstall' {
             if ($Purge) {
-                Write-Attention 'Suppression DEFINITIVE des conteneurs, images locales et donnees (reglages, couts, connexion Copilot).'
-                Write-Attention 'Le dossier archives\ (exports Markdown) et le fichier .env sont conserves.'
+                Write-Attention 'Suppression DEFINITIVE des conteneurs, des volumes (reglages, couts, connexion Copilot) et des images designees dans .env.'
+                Write-Attention 'Conserves : archives\, backups\, certs\ et .env. Images d anciennes versions : docker image ls, puis docker image rm.'
                 $answer = Read-Host 'Tapez SUPPRIMER pour confirmer'
                 if ($answer -cne 'SUPPRIMER') { Write-Host 'Annule.'; return }
-                Invoke-Docker compose down --volumes --rmi local
+                # --rmi all : aussi les images telechargees (-Mode Pull) ou chargees depuis l'archive (-Mode Load).
+                Invoke-Docker compose down --volumes --rmi all
             } else {
                 Invoke-Docker compose down
                 Write-Host 'Conteneurs supprimes. Les donnees restent dans les volumes Docker (-Purge pour tout effacer).'

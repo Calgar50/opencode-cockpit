@@ -65,7 +65,7 @@ function rowErrors(row: CategoryRow, all: CategoryRow[]): string[] {
 const MODE_HELP: Record<Classifier["mode"], string> = {
   llm: "Un modèle économique lit un résumé de la conversation et choisit la catégorie, des mots-clés et un résumé (environ 0,001 $ par conversation). En cas d'échec, l'heuristique prend le relais.",
   heuristic: "Classement gratuit par mots-clés, sans appel de modèle. Moins précis, sans résumé.",
-  off: "Aucun classement automatique : les conversations sont archivées dans « Autre » et se classent à la main.",
+  off: "Aucun classement par modèle ni reclassement : au premier archivage, une catégorie gratuite par mots-clés est posée (« Autre » faute d'indice), puis se corrige à la main.",
 };
 
 export function ClassifierTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {

@@ -21,17 +21,25 @@
     Load           : charge une archive d'images (docker save) telechargee depuis la page Releases.
 
 .PARAMETER Proxy
-    URL du proxy HTTP(S) d'entreprise. Par defaut, le proxy systeme Windows est detecte.
+    URL du proxy HTTP(S) d'entreprise. Sans ce parametre : valeur deja dans .env, sinon variable
+    HTTPS_PROXY, sinon proxy systeme Windows detecte. -Proxy '' force une connexion directe ; ce choix
+    est memorise (plus aucune detection) jusqu'a un nouveau -Proxy <url> ou un proxy saisi dans .env.
 
 .PARAMETER InsecureTls
     Desactive la verification des certificats TLS dans les conteneurs. Solution de secours
-    uniquement, si l'export des certificats ne suffit pas.
+    uniquement, si l'export des certificats ne suffit pas. Reglage memorise dans .env.
+
+.PARAMETER SecureTls
+    Reactive la verification TLS apres un -InsecureTls.
+
+    Le mode d'installation (-Mode) est memorise dans .env, ainsi que le registre s'il a ete passe
+    avec -ImageRegistry : une relance sans -Mode (ou cockpit.ps1 update) reutilise le meme mode.
 
 .EXAMPLE
     .\install.ps1 -WorkspaceDir C:\dev
 
 .EXAMPLE
-    .\install.ps1 -Mode Load -ImagesArchive .\opencode-cockpit-images-0.1.0.tar.gz
+    .\install.ps1 -Mode Load -ImagesArchive .\opencode-cockpit-images-0.1.1.tar.gz
 #>
 [CmdletBinding()]
 param(
@@ -45,6 +53,7 @@ param(
     [string]$NoProxy,
     [switch]$SkipCertificates,
     [switch]$InsecureTls,
+    [switch]$SecureTls,
     [switch]$NoStart,
     [switch]$NoBrowser
 )
@@ -64,19 +73,42 @@ function Write-Info([string]$Message) { Write-Host "    $Message" }
 function Write-Good([string]$Message) { Write-Host "    [OK] $Message" -ForegroundColor Green }
 function Write-Attention([string]$Message) { Write-Host "    [!] $Message" -ForegroundColor Yellow }
 
+$ProxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY')
+
+# docker compose donne priorite aux variables du shell sur .env : elles sont masquees le temps de l'appel.
+function Clear-ShellProxy {
+    $saved = @{}
+    # Nom reel conserve : une variable http_proxy en minuscules est restauree telle quelle.
+    $names = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $ProxyVariables -contains $_ })
+    foreach ($name in $names) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    return $saved
+}
+
+function Restore-ShellProxy {
+    param($Saved)
+    foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
+}
+
+# Fonctions simples, sans bloc param : un attribut [Parameter()] ajouterait les parametres communs de
+# PowerShell, et des options docker comme -v ou -d seraient prises pour -Verbose ou -Debug.
 function Invoke-Docker {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    $dockerArgs = @($args)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { & docker @Arguments } finally { $ErrorActionPreference = $previous }
-    if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($Arguments -join ' '), $LASTEXITCODE) }
+    $savedProxy = Clear-ShellProxy
+    try { & docker @dockerArgs } finally { $ErrorActionPreference = $previous; Restore-ShellProxy $savedProxy }
+    if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($dockerArgs -join ' '), $LASTEXITCODE) }
 }
 
 function Get-DockerOutput {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    $dockerArgs = @($args)
+    $output = $null
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $output = & docker @Arguments 2>&1 } finally { $ErrorActionPreference = $previous }
+    try { $output = & docker @dockerArgs 2>&1 } finally { $ErrorActionPreference = $previous }
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String).Trim() }
 }
 
@@ -180,6 +212,22 @@ Write-Step 'Configuration'
 $config = Read-EnvFile $EnvFile
 $isNew = $config.Count -eq 0
 
+# Mode d'installation memorise : une relance (ou cockpit.ps1 update) garde le mode choisi la premiere fois.
+$modeInferred = $false
+if (-not $PSBoundParameters.ContainsKey('Mode') -and $config.Contains('COCKPIT_INSTALL_MODE') -and (@('Build', 'Pull', 'Load') -contains $config['COCKPIT_INSTALL_MODE'])) {
+    $Mode = $config['COCKPIT_INSTALL_MODE']
+    Write-Info "Mode d'installation repris de .env : $Mode"
+} elseif (-not $PSBoundParameters.ContainsKey('Mode') -and $config.Contains('COCKPIT_OPENCODE_IMAGE') -and $config['COCKPIT_OPENCODE_IMAGE'] -and $config['COCKPIT_OPENCODE_IMAGE'] -notmatch ':local$') {
+    # .env d'une version anterieure (mode non memorise) avec des images publiees : reutilisation sans construction.
+    # Mode deduit, jamais memorise : une installation Pull ne doit pas devenir Load pour de bon.
+    $Mode = 'Load'
+    $modeInferred = $true
+    Write-Attention 'Mode d installation non memorise (.env d une version anterieure) : images deja presentes reutilisees. Pour les mettre a jour : .\install.ps1 -Mode Pull, ou .\install.ps1 -Mode Load -ImagesArchive <archive>.'
+}
+if (-not $PSBoundParameters.ContainsKey('ImageRegistry') -and $config.Contains('COCKPIT_IMAGE_REGISTRY') -and $config['COCKPIT_IMAGE_REGISTRY']) {
+    $ImageRegistry = $config['COCKPIT_IMAGE_REGISTRY']
+}
+
 if (-not $WorkspaceDir -and $config.Contains('WORKSPACE_DIR')) { $WorkspaceDir = $config['WORKSPACE_DIR'] }
 if (-not $WorkspaceDir) {
     $suggestion = Join-Path $env:USERPROFILE 'source\repos'
@@ -212,9 +260,17 @@ if (-not $config.Contains('OPENCODE_SERVER_PASSWORD') -or $config['OPENCODE_SERV
 }
 Write-Good 'Secrets presents (generes aleatoirement si absents)'
 
-# Proxy d'entreprise
-if ($PSBoundParameters.ContainsKey('Proxy')) { $detectedProxy = $Proxy }
-elseif ($config.Contains('HTTPS_PROXY') -and $config['HTTPS_PROXY']) { $detectedProxy = $config['HTTPS_PROXY'] }
+# Proxy d'entreprise. -Proxy '' est memorise (COCKPIT_PROXY_MODE=direct) : plus de detection aux relances.
+if ($PSBoundParameters.ContainsKey('Proxy')) {
+    if ($Proxy) { $config['COCKPIT_PROXY_MODE'] = 'manual' } else { $config['COCKPIT_PROXY_MODE'] = 'direct' }
+    $detectedProxy = $Proxy
+}
+elseif ($config.Contains('HTTPS_PROXY') -and $config['HTTPS_PROXY']) {
+    $detectedProxy = $config['HTTPS_PROXY']
+    # Proxy saisi dans .env apres un -Proxy '' : il l'emporte sur la connexion directe memorisee.
+    if ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $config['COCKPIT_PROXY_MODE'] = 'manual' }
+}
+elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $detectedProxy = '' }
 elseif ($env:HTTPS_PROXY) { $detectedProxy = $env:HTTPS_PROXY }
 else { $detectedProxy = Get-SystemProxy }
 if ($detectedProxy) {
@@ -222,6 +278,10 @@ if ($detectedProxy) {
     $config['HTTPS_PROXY'] = $detectedProxy
     Write-Good "Proxy : $detectedProxy"
     if ($detectedProxy -match '@') { Write-Attention "L'URL du proxy contient des identifiants : ils sont stockes dans .env (acces restreint)." }
+} elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') {
+    $config['HTTP_PROXY'] = ''
+    $config['HTTPS_PROXY'] = ''
+    Write-Info "Connexion directe, sans proxy (choix memorise ; -Proxy <url> pour utiliser un proxy)."
 } else {
     if (-not $config.Contains('HTTP_PROXY')) { $config['HTTP_PROXY'] = '' }
     if (-not $config.Contains('HTTPS_PROXY')) { $config['HTTPS_PROXY'] = '' }
@@ -230,7 +290,9 @@ if ($detectedProxy) {
 if ($PSBoundParameters.ContainsKey('NoProxy')) { $config['NO_PROXY'] = $NoProxy }
 elseif (-not $config.Contains('NO_PROXY')) { $config['NO_PROXY'] = '' }
 
+if ($InsecureTls -and $SecureTls) { throw '-InsecureTls et -SecureTls sont incompatibles.' }
 if ($InsecureTls) { $config['COCKPIT_TLS_INSECURE'] = '1' }
+elseif ($SecureTls) { $config['COCKPIT_TLS_INSECURE'] = '0' }
 elseif (-not $config.Contains('COCKPIT_TLS_INSECURE')) { $config['COCKPIT_TLS_INSECURE'] = '0' }
 if ($config['COCKPIT_TLS_INSECURE'] -eq '1') {
     Write-Attention 'Verification TLS DESACTIVEE (COCKPIT_TLS_INSECURE=1). A n utiliser qu en dernier recours.'
@@ -250,7 +312,10 @@ if ($SkipCertificates) {
     Write-Good "$certCount autorites de certification Windows exportees vers certs\windows-trust.pem"
 }
 
-# Images
+# Images (valeurs precedentes gardees pour les remettre dans .env si la construction ou le telechargement echoue)
+$imageKeys = @('COCKPIT_OPENCODE_IMAGE', 'COCKPIT_APP_IMAGE', 'COCKPIT_INSTALL_MODE')
+$previousImages = @{}
+foreach ($key in $imageKeys) { if ($config.Contains($key)) { $previousImages[$key] = $config[$key] } }
 switch ($Mode) {
     'Build' {
         $config['COCKPIT_OPENCODE_IMAGE'] = 'opencode-cockpit/opencode:local'
@@ -261,7 +326,24 @@ switch ($Mode) {
         $config['COCKPIT_APP_IMAGE'] = "$ImageRegistry/opencode-cockpit-app:$Version"
     }
     'Load' {
-        if (-not $ImagesArchive -or -not (Test-Path -LiteralPath $ImagesArchive)) { throw 'Mode Load : indiquez -ImagesArchive <fichier .tar.gz>.' }
+        if ($ImagesArchive) {
+            # Chemin relatif lu depuis le dossier courant : docker load s'execute ensuite depuis le dossier du projet.
+            $ImagesArchive = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ImagesArchive)
+            if (-not (Test-Path -LiteralPath $ImagesArchive -PathType Leaf)) { throw "Archive d'images introuvable : $ImagesArchive" }
+        } else {
+            # Relance sans archive : on garde les images deja chargees si elles sont toujours presentes.
+            $loadedImages = @(@($config['COCKPIT_OPENCODE_IMAGE'], $config['COCKPIT_APP_IMAGE']) | Where-Object { $_ })
+            $missingImages = @($loadedImages | Where-Object { (Get-DockerOutput image inspect --format '{{.Id}}' $_).ExitCode -ne 0 })
+            if ($loadedImages.Count -lt 2 -or $missingImages.Count -gt 0) {
+                throw "Mode Load : images absentes. Telechargez opencode-cockpit-images-$Version.tar.gz depuis la page Releases, puis : .\install.ps1 -Mode Load -ImagesArchive <fichier>"
+            }
+            foreach ($image in $loadedImages) {
+                if ($image -notmatch (':' + [regex]::Escape($Version) + '$')) {
+                    Write-Attention "Image $image : version differente de $Version. Mise a jour : .\install.ps1 -Mode Pull, ou .\install.ps1 -Mode Load -ImagesArchive <archive $Version>."
+                }
+            }
+            Write-Good 'Images deja chargees reutilisees'
+        }
     }
 }
 
@@ -270,7 +352,7 @@ New-Item -ItemType Directory -Path (Join-Path $Root 'archives') -Force | Out-Nul
 # --- 3. Images ---------------------------------------------------------------------------
 Push-Location $Root
 try {
-    if ($Mode -eq 'Load') {
+    if ($Mode -eq 'Load' -and $ImagesArchive) {
         Write-Step "Chargement des images depuis $ImagesArchive"
         $loaded = Get-DockerOutput load --input $ImagesArchive
         if ($loaded.ExitCode -ne 0) { throw "docker load a echoue : $($loaded.Output)" }
@@ -282,15 +364,31 @@ try {
         Write-Good ("Images : {0}, {1}" -f $config['COCKPIT_OPENCODE_IMAGE'], $config['COCKPIT_APP_IMAGE'])
     }
 
+    if (-not $modeInferred) { $config['COCKPIT_INSTALL_MODE'] = $Mode }
+    # Registre memorise seulement s'il a ete choisi : sinon, le defaut de la version installee s'applique.
+    if ($PSBoundParameters.ContainsKey('ImageRegistry')) { $config['COCKPIT_IMAGE_REGISTRY'] = $ImageRegistry }
     Write-EnvFile $EnvFile $config
     if ($isNew) { Write-Good 'Fichier .env cree' } else { Write-Good 'Fichier .env mis a jour (secrets conserves)' }
 
-    if ($Mode -eq 'Build') {
-        Write-Step 'Construction des images (quelques minutes la premiere fois)'
-        Invoke-Docker compose build
-    } elseif ($Mode -eq 'Pull') {
-        Write-Step 'Telechargement des images'
-        Invoke-Docker compose pull
+    try {
+        if ($Mode -eq 'Build') {
+            Write-Step 'Construction des images (quelques minutes la premiere fois)'
+            Invoke-Docker compose build
+        } elseif ($Mode -eq 'Pull') {
+            Write-Step 'Telechargement des images'
+            Invoke-Docker compose pull
+        }
+    } catch {
+        # .env retrouve les images precedentes : start et restart continuent de fonctionner.
+        if (-not $isNew) {
+            foreach ($key in $imageKeys) {
+                if ($previousImages.ContainsKey($key)) { $config[$key] = $previousImages[$key] }
+                elseif ($config.Contains($key)) { $config.Remove($key) }
+            }
+            Write-EnvFile $EnvFile $config
+            Write-Attention 'Echec : les images precedentes restent configurees dans .env.'
+        }
+        throw
     }
 
     if ($NoStart) {

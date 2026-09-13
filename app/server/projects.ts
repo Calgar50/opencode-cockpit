@@ -57,6 +57,21 @@ export class ProjectsService {
     return opencodePath.length < 4_096 && !opencodePath.includes("\0") && this.toLocalPath(opencodePath) !== null;
   }
 
+  /**
+   * Dossier git qu'opencode associe à un répertoire : le plus proche parent (dans le workspace) qui contient
+   * `.git`, sinon « / ». opencode résout les @chemins relatifs depuis ce dossier.
+   */
+  async opencodeWorktree(opencodePath: string): Promise<string> {
+    let local = this.toLocalPath(opencodePath);
+    while (local !== null) {
+      if (await exists(path.join(local, ".git"))) return this.toOpencodePath(local);
+      const parent = path.dirname(local);
+      if (path.resolve(local) === this.#localRoot || parent === local) break;
+      local = parent;
+    }
+    return "/";
+  }
+
   async #describe(name: string, localDir: string, isRoot: boolean): Promise<ProjectInfo> {
     const stat = await fs.stat(localDir);
     const [git, opencodeConfig, agentsMd] = await Promise.all([

@@ -35,3 +35,6 @@ Thumbs.db
 
 # Sauvegardes locales
 backups/
+
+# Exports Markdown des conversations (peuvent contenir du code ou des secrets)
+/archives/

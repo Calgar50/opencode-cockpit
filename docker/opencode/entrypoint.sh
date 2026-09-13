@@ -10,16 +10,23 @@ PORT="${OPENCODE_PORT:-4096}"
 
 log() {
   line="$(date -u +%Y-%m-%dT%H:%M:%SZ) [superviseur] $*"
-  printf '%s\n' "$line"
-  printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
+  # Écrit dans le journal, recopié sur la sortie du conteneur par « tail -F » ; à défaut, sortie directe.
+  printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || printf '%s\n' "$line"
 }
 
 mkdir -p "$CONTROL_DIR" "$CONFIG_DIR" "${HOME}/.cockpit"
 
 if [ "${#OPENCODE_SERVER_PASSWORD}" -lt 16 ] 2>/dev/null || [ -z "${OPENCODE_SERVER_PASSWORD:-}" ]; then
-  log "ERREUR : OPENCODE_SERVER_PASSWORD absent ou trop court (16 caractères minimum). Relancez install.ps1."
+  echo "ERREUR : OPENCODE_SERVER_PASSWORD absent ou trop court (16 caractères minimum). Relancez install.ps1." >&2
   exit 1
 fi
+
+# Journal complet d'opencode recopié sur la sortie du conteneur (docker logs, cockpit.ps1 logs opencode),
+# depuis la fin actuelle du fichier : les démarrages précédents ne sont pas rejoués.
+touch "$LOG_FILE"
+start=$(( $(wc -c < "$LOG_FILE") + 1 ))
+# --pid : tail s'arrête de lui-même après le superviseur, une fois les dernières lignes recopiées.
+tail --pid=$$ -c +"$start" -F "$LOG_FILE" 2>/dev/null &
 
 # --- Certificats d'entreprise ---------------------------------------------------
 # Magasin système + certs/*.pem|*.crt montés en lecture seule : la vérification TLS reste active.
@@ -112,3 +119,5 @@ while [ "$stopping" -eq 0 ]; do
   if [ "$stopping" -eq 0 ]; then log "opencode s'est arrêté, relance dans 2 s"; sleep 2; fi
 done
 log "arrêt du superviseur"
+# Laisse tail recopier les dernières lignes : la fin du superviseur arrête tout le conteneur.
+sleep 1

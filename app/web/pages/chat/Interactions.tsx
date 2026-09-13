@@ -23,10 +23,13 @@ const str = (value: unknown) => (typeof value === "string" ? value : null);
 export function PermissionPrompt({
   request,
   sessionTitle,
+  taskPrompt,
   onReply,
 }: {
   request: PermissionRequest;
   sessionTitle?: string | undefined;
+  /** Consigne du sous-agent demandé (opencode ne la joint pas à la demande d'autorisation). */
+  taskPrompt?: string | undefined;
   onReply: (reply: "once" | "always" | "reject", message?: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -36,6 +39,9 @@ export function PermissionPrompt({
   const diff = str(metadata.diff);
   const command = str(metadata.command);
   const file = str(metadata.filepath) ?? str(metadata.filePath);
+  const isTask = request.permission === "task";
+  // Pour un sous-agent, « Toujours » (motif *) autoriserait tous les sous-agents suivants du projet sans voir leur consigne.
+  const allowAlways = request.always.length > 0 && !isTask;
 
   const act = async (reply: "once" | "always" | "reject", note?: string) => {
     setBusy(reply);
@@ -68,6 +74,16 @@ export function PermissionPrompt({
           ))}
         </div>
       ) : null}
+      {isTask ? (
+        <div className="stack tight">
+          {str(metadata.description) ? <span className="small">{str(metadata.description)}</span> : null}
+          {taskPrompt ? (
+            <pre className="terminal">{taskPrompt}</pre>
+          ) : (
+            <span className="tiny muted">Consigne du sous-agent indisponible : vérifiez-la dans la réponse avant d'autoriser.</span>
+          )}
+        </div>
+      ) : null}
       {refusing ? (
         <div className="row">
           <input
@@ -93,12 +109,12 @@ export function PermissionPrompt({
           <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
             Autoriser une fois
           </Button>
-          {request.always.length > 0 ? (
+          {allowAlways ? (
             <Button
               size="sm"
               loading={busy === "always"}
               disabled={busy !== null}
-              title={`Ne plus demander pour : ${request.always.join(", ")}`}
+              title={`Ne plus demander pour : ${request.always.join(", ")} (toutes les conversations de ce projet, jusqu'au redémarrage d'opencode)`}
               onClick={() => void act("always")}
             >
               Toujours autoriser
@@ -107,8 +123,8 @@ export function PermissionPrompt({
           <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setRefusing(true)}>
             Refuser…
           </Button>
-          {request.always.length > 0 ? (
-            <span className="tiny muted ellipsis">« Toujours » couvre : {request.always.join(", ")}</span>
+          {allowAlways ? (
+            <span className="tiny muted ellipsis">« Toujours » couvre, pour tout le projet : {request.always.join(", ")}</span>
           ) : null}
         </div>
       )}

@@ -12,6 +12,13 @@ x-network-env: &network-env
   COCKPIT_GITHUB_ENTERPRISE_DOMAIN: ${COCKPIT_GITHUB_ENTERPRISE_DOMAIN:-}
   TZ: ${TZ:-Europe/Paris}
 
+# Journaux des conteneurs plafonnés (le journal d'opencode y est recopié en continu).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-build-args: &build-args
   HTTP_PROXY: ${HTTP_PROXY:-}
   HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -26,6 +33,7 @@ services:
       dockerfile: docker/opencode/Dockerfile
       args: *build-args
     restart: unless-stopped
+    logging: *logging
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     environment:
@@ -49,6 +57,7 @@ services:
       dockerfile: app/Dockerfile
       args: *build-args
     restart: unless-stopped
+    logging: *logging
     init: true
     read_only: true
     tmpfs: ["/tmp:size=64m"]

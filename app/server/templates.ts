@@ -18,7 +18,8 @@ export const TEMPLATES: StudioTemplate[] = [
       description: "Relit le code à la recherche de failles de sécurité (OWASP, secrets, injections) sans rien modifier.",
       mode: "subagent",
       color: "#dc3e42",
-      permission: { edit: "deny", bash: { "*": "ask", "git diff*": "allow", "git log*": "allow", "git show*": "allow" }, webfetch: "deny" },
+      // Aucune commande autorisée d'office : une affectation de variable (export) suffit à détourner git.
+      permission: { edit: "deny", bash: "ask", webfetch: "deny" },
     },
     body: `Tu es un relecteur sécurité senior. Tu analyses le code indiqué ou les changements récents et tu produis un rapport priorisé.
 
@@ -41,7 +42,9 @@ export const TEMPLATES: StudioTemplate[] = [
       description: "Conçoit et planifie avant de coder : options, compromis, plan d'implémentation. Ne modifie aucun fichier.",
       mode: "primary",
       color: "#6e56cf",
-      permission: { edit: "deny", bash: { "*": "deny", "git log*": "allow", "git diff*": "allow", "ls*": "allow" } },
+      // Lecture du code par les outils read/grep/glob d'opencode ; ni commande shell ni sous-agent
+      // (un sous-agent suit les permissions globales, pas celles de l'agent qui le lance).
+      permission: { edit: "deny", bash: "deny", task: "deny" },
     },
     body: `Tu es un architecte logiciel pragmatique. Tu aides à décider avant d'écrire du code.
 
@@ -100,7 +103,7 @@ Tu ne modifies aucun fichier.
       description: "Explique le code et les concepts pas à pas, avec des exemples, sans rien modifier.",
       mode: "primary",
       color: "#ffb224",
-      permission: { edit: "deny", bash: "deny" },
+      permission: { edit: "deny", bash: "deny", task: "deny" },
     },
     body: `Tu expliques clairement, du général au particulier.
 

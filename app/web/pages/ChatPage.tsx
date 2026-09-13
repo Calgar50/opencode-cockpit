@@ -516,6 +516,14 @@ export function ChatPage() {
 
   const relatedIds = new Set([sessionId, ...children.map((c) => c.id)].filter((id): id is string => Boolean(id)));
   const localPermissions = permissions.filter((r) => relatedIds.has(r.sessionID));
+  // Consigne d'un sous-agent en attente d'autorisation : opencode ne la joint pas à la demande.
+  const taskPromptFor = (request: (typeof permissions)[number]): string | undefined => {
+    if (request.permission !== "task" || !request.tool) return undefined;
+    const { messageID, callID } = request.tool;
+    const part = transcript.byId.get(messageID)?.parts.find((p) => p.type === "tool" && p.callID === callID);
+    const input = part && part.type === "tool" ? (part.state as { input?: Record<string, unknown> }).input : undefined;
+    return typeof input?.prompt === "string" ? input.prompt : undefined;
+  };
   const localQuestions = questions.filter((q) => relatedIds.has(q.sessionID));
   const otherPending = permissions.length + questions.length - localPermissions.length - localQuestions.length;
   const pendingBySession = useMemo(() => {
@@ -655,6 +663,7 @@ export function ChatPage() {
                 key={request.id}
                 request={request}
                 sessionTitle={request.sessionID !== sessionId ? children.find((c) => c.id === request.sessionID)?.title : undefined}
+                taskPrompt={taskPromptFor(request)}
                 onReply={(reply, message) => replyPermission(request, reply, message)}
               />
             ))}

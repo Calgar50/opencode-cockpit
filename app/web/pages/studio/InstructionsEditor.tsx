@@ -15,7 +15,8 @@ export function InstructionsEditor({
   project: string | null;
   onDirtyChange: (dirty: boolean) => void;
 }) {
-  const { dark } = useApp();
+  const { dark, boot } = useApp();
+  const projectConfig = boot.security.projectConfig;
   const toast = useToast();
   const confirm = useConfirm();
   const [state, setState] = useState<{ loading: boolean; error: string | null; exists: boolean; baseline: string }>({
@@ -57,7 +58,12 @@ export function InstructionsEditor({
     try {
       await api.saveInstructions(content, project);
       setState((s) => ({ ...s, exists: true, baseline: content }));
-      toast.success("Instructions enregistrées", "opencode les applique dès la prochaine requête.");
+      toast.success(
+        "Instructions enregistrées",
+        project && !projectConfig
+          ? "opencode ne charge pas ce fichier d'office : la configuration par projet est désactivée."
+          : "opencode les applique dès la prochaine requête.",
+      );
     } catch (err) {
       toast.error("Enregistrement impossible", err);
     } finally {
@@ -85,8 +91,12 @@ export function InstructionsEditor({
           <strong>{project ? `AGENTS.md du projet ${project}` : "AGENTS.md global"}</strong>
           <span>
             {project
-              ? "Fichier à la racine du projet : consignes propres à ce dépôt (architecture, commandes de build, conventions). Il peut être versionné et partagé avec l'équipe ; il s'ajoute aux instructions globales."
-              : "Consignes appliquées à toutes les conversations, dans tous les projets (langue des réponses, style, règles de sécurité). Les AGENTS.md des projets viennent s'y ajouter."}
+              ? projectConfig
+                ? "Fichier à la racine du projet : consignes propres à ce dépôt (architecture, commandes de build, conventions). Il peut être versionné et partagé avec l'équipe ; il s'ajoute aux instructions globales."
+                : "Configuration par projet désactivée (COCKPIT_PROJECT_CONFIG=0) : opencode ne charge pas ce fichier d'office. Placez vos consignes dans le AGENTS.md global, ou passez COCKPIT_PROJECT_CONFIG=1 dans .env (dépôts de confiance uniquement) puis redémarrez."
+              : projectConfig
+                ? "Consignes appliquées à toutes les conversations, dans tous les projets (langue des réponses, style, règles de sécurité). Les AGENTS.md des projets viennent s'y ajouter."
+                : "Consignes appliquées à toutes les conversations, dans tous les projets (langue des réponses, style, règles de sécurité, conventions des dépôts). Les AGENTS.md des projets ne sont pas chargés d'office (COCKPIT_PROJECT_CONFIG=0)."}
           </span>
         </div>
       </div>

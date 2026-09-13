@@ -185,6 +185,8 @@ export const api = {
 
   opencodeConfig: () => http.get<Record<string, unknown>>("/api/opencode/config"),
   patchOpencodeConfig: (patch: Record<string, unknown>) => http.patch<Record<string, unknown>>("/api/opencode/config", patch),
+  /** Remplace d'un bloc les permissions globales (la fusion de PATCH garderait d'anciennes règles). */
+  putOpencodePermission: (permission: Record<string, unknown>) => http.put<{ ok: boolean }>("/api/opencode/config/permission", { permission }),
   opencodeConfigRaw: () => http.get<{ file: string; content: string }>("/api/opencode/config/raw"),
   saveOpencodeConfigRaw: (content: string) => http.put<{ ok: boolean }>("/api/opencode/config/raw", { content }),
 

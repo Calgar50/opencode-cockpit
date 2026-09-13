@@ -17,19 +17,12 @@ const PRESETS: Array<{ id: string; title: string; summary: string; points: strin
     id: "prudent",
     title: "Prudent",
     summary: "Confirmation avant toute modification ou commande (configuration d'origine).",
-    points: ["Fichiers : demander", "Shell : demander, sauf git status/diff/log/branch/show, ls et pwd", "Web : demander"],
+    points: ["Fichiers : demander", "Shell : demander (seul pwd est autorisé d'office)", "Sous-agents : demander", "Web : demander"],
+    // Mêmes règles que docker/opencode/opencode.default.jsonc.
     permission: {
       edit: "ask",
-      bash: {
-        "*": "ask",
-        "git status*": "allow",
-        "git diff*": "allow",
-        "git log*": "allow",
-        "git branch*": "allow",
-        "git show*": "allow",
-        "ls*": "allow",
-        pwd: "allow",
-      },
+      bash: { "*": "ask", pwd: "allow" },
+      task: "ask",
       webfetch: "ask",
       websearch: "ask",
     },
@@ -37,17 +30,17 @@ const PRESETS: Array<{ id: string; title: string; summary: string; points: strin
   {
     id: "equilibre",
     title: "Équilibré",
-    summary: "Modifications de fichiers libres, commandes et web sur confirmation.",
-    points: ["Fichiers : autoriser", "Shell : demander", "Web : demander"],
-    permission: { edit: "allow", bash: "ask", webfetch: "ask", websearch: "ask" },
+    summary: "Modifications de fichiers libres ; commandes, sous-agents et web sur confirmation.",
+    points: ["Fichiers : autoriser", "Shell : demander", "Sous-agents : demander", "Web : demander"],
+    permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" },
   },
   {
     id: "autonome",
     title: "Autonome",
     summary: "Aucune confirmation : l'agent agit seul.",
-    points: ["Fichiers : autoriser", "Shell : autoriser", "Web : autoriser"],
+    points: ["Fichiers : autoriser", "Shell : autoriser", "Sous-agents : autoriser", "Web : autoriser"],
     danger: true,
-    permission: { edit: "allow", bash: "allow", webfetch: "allow", websearch: "allow" },
+    permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
   },
 ];
 
@@ -193,10 +186,15 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
   useEffect(() => onDirtyChange(models.dirty || providers.dirty || rawDirty), [models.dirty, providers.dirty, rawDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
-  const patch = async (section: string, body: Record<string, unknown>, title: string): Promise<boolean> => {
+  const patch = async (
+    section: string,
+    body: Record<string, unknown>,
+    title: string,
+    send: (body: Record<string, unknown>) => Promise<unknown> = api.patchOpencodeConfig,
+  ): Promise<boolean> => {
     setPatching(section);
     try {
-      await api.patchOpencodeConfig(body);
+      await send(body);
       toast.success(title, "opencode a rechargé sa configuration.");
       config.reload();
       setRawReload((n) => n + 1);
@@ -245,7 +243,8 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
       danger: preset.danger ?? false,
     });
     if (!ok) return;
-    await patch(`preset-${preset.id}`, { permission: preset.permission }, `Profil « ${preset.title} » appliqué`);
+    // Remplacement complet : aucune ancienne règle du fichier ne survit au profil choisi.
+    await patch(`preset-${preset.id}`, preset.permission, `Profil « ${preset.title} » appliqué`, api.putOpencodePermission);
   };
 
   if (config.loading && !config.data) {
@@ -413,8 +412,8 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
             ))}
           </div>
           <p className="small muted">
-            Dans les règles par motif, la dernière règle correspondante l'emporte. Des règles supplémentaires déjà présentes dans le fichier peuvent
-            être conservées lors de la fusion : le fichier brut permet un contrôle total.
+            Dans les règles par motif, la dernière règle correspondante l'emporte. Appliquer un profil remplace toutes les permissions globales du
+            fichier ; le fichier brut permet un contrôle total.
           </p>
           <div className="stack tight">
             <span className="field-label">Permissions actuelles{activePreset ? "" : " (personnalisées)"}</span>

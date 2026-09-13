@@ -7,13 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { serve } from "@hono/node-server";
-import type { ArchiveService } from "./archive.ts";
+import { ArchiveService } from "./archive.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
-import { createApp, PROXY_RULES } from "./http.ts";
+import { createApp, forbiddenAttachment, PROXY_RULES } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { csvCell, Ledger, monthBounds, monthKey } from "./ledger.ts";
 import { createLogger } from "./log.ts";
@@ -142,6 +142,37 @@ describe("registre des coûts", () => {
   });
 });
 
+describe("archives : corrections manuelles", () => {
+  it("protège un résumé corrigé à la main du reclassement automatique", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-archive-"));
+    try {
+      const { db, settings, ledger, sessions } = setup();
+      const archive = new ArchiveService({
+        db,
+        client: {} as OpencodeClient,
+        settings,
+        ledger,
+        sessions,
+        archiveDir: tmp,
+        opencodeWorkspaceDir: "/workspace",
+        log: createLogger("error"),
+      });
+      db.prepare("INSERT INTO conversations (session_id, directory, title, classified_by, created_at, updated_at) VALUES (?, ?, ?, 'llm', ?, ?)").run(
+        "ses_resume",
+        "/workspace/app",
+        "Titre",
+        T,
+        T,
+      );
+      const updated = await archive.update("ses_resume", { summary: "Résumé corrigé à la main" });
+      assert.equal(updated?.classifiedBy, "manual");
+      assert.equal(updated?.summary, "Résumé corrigé à la main");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("studio : confinement des chemins (régression revue de sécurité)", () => {
   it("refuse un ancien nom, un nom de skill ou une portée projet qui sortiraient du cadre autorisé", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-studio-"));
@@ -242,6 +273,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       version: "test",
     };
     const { db, settings, catalog, ledger, sessions } = setup();
+    // Les routes de configuration rechargent le catalogue après écriture.
+    Object.assign(catalog, { refresh: async () => undefined });
     const root = sessions.upsert(session("ses_budget"));
     ledger.recordAssistant({ ...assistant("msg_b", "ses_budget", 500, 1, 1), time: { created: Date.now(), completed: Date.now() } }, root);
     const app = createApp({
@@ -350,6 +383,65 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     }
     const good = await call("GET", `/auth?t=${token}`, { "sec-fetch-site": "none", "sec-fetch-dest": "document" });
     assert.equal(good.status, 303);
+  });
+
+  it("n'expose que les routes opencode utilisées par l'interface", async () => {
+    assert.equal((await call("POST", "/api/oc/session/ses_1/shell", mutating, '{"agent":"build","command":"id"}')).status, 404);
+    assert.equal((await call("GET", "/api/oc/file/content?path=%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode%2Fauth.json", authed)).status, 404);
+    assert.equal((await call("POST", "/api/oc/session/ses_1/message", mutating, "{}")).status, 404);
+  });
+
+  it("refuse la syntaxe !`commande`, les @chemins hors du workspace et les parties subtask", async () => {
+    const confirmed = { ...mutating, "x-cockpit-confirm": "1" };
+    const command = (args: unknown, directory = "/workspace/app") =>
+      call("POST", `/api/oc/session/ses_1/command?directory=${encodeURIComponent(directory)}`, confirmed, JSON.stringify({ command: "revue", arguments: args }));
+    fs.mkdirSync(path.join(tmp, "app", ".git"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "notes"), { recursive: true });
+    assert.equal((await command("regarde !`cat ~/.local/share/opencode/auth.json`")).status, 403);
+    assert.equal((await command("@~/.local/share/opencode/auth.json")).status, 403);
+    assert.equal((await command("@/home/node/.local/share/opencode/auth.json")).status, 403);
+    assert.equal((await command("@../../etc/passwd")).status, 403);
+    assert.equal((await command(42)).status, 403);
+    assert.equal((await command("revois @src/app.ts et @/workspace/app/README.md")).status, 204);
+    // Hors dépôt git, opencode résout un @chemin relatif depuis « / » : le jeton Copilot serait lisible.
+    assert.equal((await command("@home/node/.local/share/opencode/auth.json", "/workspace/notes")).status, 403);
+    assert.equal((await command("revois @src/app.ts", "/workspace/notes")).status, 403);
+    const subtask = JSON.stringify({ parts: [{ type: "subtask", agent: "general", description: "x", prompt: "@/home/node/.local/share/opencode/auth.json" }] });
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, subtask)).status, 403);
+  });
+
+  it("remplace les permissions globales d'un bloc en gardant les commentaires", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    fs.writeFileSync(file, '{\n  // commentaire conservé\n  "share": "disabled",\n  "permission": { "edit": "ask", "bash": { "*": "ask", "git branch*": "allow" } }\n}\n');
+    try {
+      const permission = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask" };
+      const res = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission }));
+      assert.equal(res.status, 200, res.body);
+      const written = fs.readFileSync(file, "utf8");
+      assert.match(written, /commentaire conservé/);
+      assert.doesNotMatch(written, /git branch/);
+      assert.deepEqual(JSON.parse(written.replace(/^\s*\/\/.*$/gm, "")).permission, permission);
+      assert.equal((await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { bash: "sudo" } }))).status, 400);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("refuse les pièces jointes hors du workspace", async () => {
+    const body = (url: string) =>
+      JSON.stringify({ model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: [{ type: "file", mime: "text/plain", url }] });
+    const confirmed = { ...mutating, "x-cockpit-confirm": "1" };
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, body("file:///home/node/.local/share/opencode/auth.json"))).status, 403);
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, body("file:///workspace/../etc/passwd"))).status, 403);
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, body("https://exemple.test/a.txt"))).status, 403);
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, body("file:///workspace/app/src/x.ts"))).status, 204);
+    assert.equal((await call("POST", "/api/oc/session/ses_1/prompt_async", confirmed, body("file:///workspace/..%2Fetc%2Fpasswd"))).status, 403);
+    const seen: string[] = [];
+    const allow = (file: string) => (seen.push(file), file.startsWith("/workspace/"));
+    assert.equal(forbiddenAttachment({ parts: [{ type: "text", text: "x" }, { url: "data:image/png;base64,AA" }, { url: "file:///workspace/a%20b.txt" }] }, allow), undefined);
+    assert.deepEqual(seen, ["/workspace/a b.txt"]);
+    assert.equal(forbiddenAttachment({ parts: [{ url: 42 }] }, allow), "number");
+    assert.equal(forbiddenAttachment({ parts: [{ url: "data:text/plain;base64,AA" }] }, allow), "data:text/plain;base64,AA");
   });
 
   it("refuse un dossier hors du workspace", async () => {

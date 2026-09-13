@@ -13,6 +13,7 @@ import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, writeFileAtomic } from "./fsutil.ts";
+import { applyEdits, modify } from "jsonc-parser";
 import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
@@ -74,22 +75,17 @@ const rule = (method: string, route: string, guarded = false): ProxyRule => ({
 });
 
 /**
- * Seules ces routes sont joignables depuis le navigateur. Exclues volontairement :
- * partage public (/share), mise à jour (/global/upgrade), injection d'identifiants (PUT /auth),
- * terminal (/pty), TUI, synchronisation distante et configuration brute (passe par /api/opencode).
+ * Moindre privilège : uniquement les routes dont l'interface a besoin. Exclues notamment :
+ * exécution shell directe sans permission (/session/:id/shell), lecture de fichiers arbitraires (/file*),
+ * partage public (/share), mise à jour (/global/upgrade), injection d'identifiants (PUT /auth), terminal (/pty).
  */
 export const PROXY_RULES: ProxyRule[] = [
-  rule("GET", "/global/health"),
-  rule("GET", "/config"),
-  rule("GET", "/config/providers"),
-  rule("GET", "/provider"),
   rule("GET", "/provider/auth"),
   rule("POST", `/provider/${ID}/oauth/authorize`),
   rule("POST", `/provider/${ID}/oauth/callback`),
   rule("DELETE", `/auth/${ID}`),
   rule("GET", "/agent"),
   rule("GET", "/command"),
-  rule("GET", "/skill"),
   rule("GET", "/session"),
   rule("POST", "/session"),
   rule("GET", "/session/status"),
@@ -100,44 +96,83 @@ export const PROXY_RULES: ProxyRule[] = [
   rule("GET", `/session/${ID}/todo`),
   rule("GET", `/session/${ID}/diff`),
   rule("GET", `/session/${ID}/message`),
-  rule("GET", `/session/${ID}/message/${ID}`),
-  rule("POST", `/session/${ID}/message`, true),
   rule("POST", `/session/${ID}/prompt_async`, true),
   rule("POST", `/session/${ID}/command`, true),
   rule("POST", `/session/${ID}/summarize`, true),
-  rule("POST", `/session/${ID}/shell`),
   rule("POST", `/session/${ID}/abort`),
-  rule("POST", `/session/${ID}/fork`),
-  rule("POST", `/session/${ID}/revert`),
-  rule("POST", `/session/${ID}/unrevert`),
   rule("GET", "/permission"),
   rule("POST", `/permission/${ID}/reply`),
   rule("GET", "/question"),
   rule("POST", `/question/${ID}/reply`),
   rule("POST", `/question/${ID}/reject`),
-  rule("GET", "/find"),
   rule("GET", "/find/file"),
-  rule("GET", "/find/symbol"),
-  rule("GET", "/file"),
-  rule("GET", "/file/content"),
-  rule("GET", "/file/status"),
-  rule("GET", "/vcs"),
-  rule("GET", "/vcs/status"),
-  rule("GET", "/vcs/diff"),
-  rule("GET", "/mcp"),
-  rule("POST", `/mcp/${ID}/connect`),
-  rule("POST", `/mcp/${ID}/disconnect`),
-  rule("GET", "/lsp"),
-  rule("GET", "/project"),
-  rule("GET", "/project/current"),
-  rule("GET", "/path"),
-  rule("GET", "/experimental/session"),
 ];
 
-const ALLOWED_QUERY = new Set([
-  "directory", "limit", "before", "roots", "search", "start", "path", "query", "type", "dirs",
-  "pattern", "messageID", "mode", "context", "cursor", "archived", "scope",
-]);
+const ALLOWED_QUERY = new Set(["directory", "roots", "limit", "query"]);
+
+/**
+ * Première pièce jointe refusée d'un corps de prompt (parts[].url) : opencode lit lui-même les fichiers
+ * désignés par une URL file:, qui doit donc rester dans le workspace. Seules les images en data: et les
+ * URL file: sont admises.
+ */
+export function forbiddenAttachment(body: unknown, isAllowed: (file: string) => boolean): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const parts = (body as { parts?: unknown }).parts;
+  if (!Array.isArray(parts)) return undefined;
+  for (const part of parts) {
+    if (!part || typeof part !== "object" || !("url" in part)) continue;
+    const url = (part as { url: unknown }).url;
+    if (typeof url === "string" && /^data:image\//i.test(url)) continue;
+    if (typeof url !== "string") return typeof url;
+    if (!/^file:/i.test(url)) return url;
+    let file: string;
+    try {
+      file = decodeURIComponent(new URL(url).pathname);
+    } catch {
+      return url;
+    }
+    if (/^\/[A-Za-z]:\//.test(file)) file = file.slice(1);
+    if (!isAllowed(file)) return url;
+  }
+  return undefined;
+}
+
+/** Types de parties acceptés dans un corps de prompt : l'interface n'envoie que du texte et des fichiers. */
+export function forbiddenPartType(body: unknown): string | undefined {
+  if (!body || typeof body !== "object" || !("parts" in body)) return undefined;
+  const parts = (body as { parts: unknown }).parts;
+  if (!Array.isArray(parts)) return typeof parts;
+  for (const part of parts) {
+    const type = part && typeof part === "object" ? (part as { type?: unknown }).type : undefined;
+    // Une partie « subtask » ou « agent » ferait lire par opencode les @chemins de sa consigne, sans contrôle.
+    if (type !== "text" && type !== "file") return typeof type === "string" ? type.slice(0, 40) : typeof type;
+  }
+  return undefined;
+}
+
+/** Références @chemin résolues côté serveur par opencode (motif FILE_REGEX d'opencode 1.18.30). */
+const FILE_REFERENCE = /(?<![\w`])@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)/g;
+
+/**
+ * Arguments de commande refusés :
+ * - la syntaxe !`commande`, qu'opencode exécute sans demander d'autorisation (tout « ! » accompagné d'un
+ *   accent grave est refusé, car les arguments peuvent être recollés par le modèle de commande) ;
+ * - les références @chemin qui sortiraient du workspace : ~, segment « .. », ou chemin qui, résolu comme le fait
+ *   opencode (depuis la racine du dépôt git, ou depuis « / » hors dépôt), n'est pas dans le workspace.
+ */
+export function forbiddenCommandArguments(body: unknown, isAllowed: (file: string) => boolean, worktree: string): string | undefined {
+  if (!body || typeof body !== "object" || !("arguments" in body)) return undefined;
+  const args = (body as { arguments: unknown }).arguments;
+  if (typeof args !== "string") return typeof args;
+  if (args.includes("!") && args.includes("`")) return "!`commande`";
+  for (const match of args.matchAll(FILE_REFERENCE)) {
+    const ref = match[1] ?? "";
+    if (ref.startsWith("~") || ref.split(/[\\/]/).includes("..")) return ref;
+    const target = ref.startsWith("/") ? ref : path.posix.resolve(worktree, ref);
+    if (!isAllowed(target)) return ref;
+  }
+  return undefined;
+}
 
 export function modelFromBody(body: unknown): { providerID: string; modelID: string } | undefined {
   if (!body || typeof body !== "object") return undefined;
@@ -423,6 +458,25 @@ export function createApp(deps: AppDeps): Hono {
         } catch {
           return fail(c, 400, "invalid-json", "Corps JSON invalide.");
         }
+        const isAllowed = (file: string) => projects.isAllowedDirectory(file);
+        const partType = forbiddenPartType(parsed);
+        if (partType !== undefined) {
+          return fail(c, 403, "forbidden-part", `Type de contenu refusé : ${partType} (texte et fichiers uniquement).`);
+        }
+        if (forbiddenAttachment(parsed, isAllowed) !== undefined) {
+          return fail(c, 403, "forbidden-attachment", "Pièce jointe refusée : fichier hors du workspace monté ou type d'URL non pris en charge.");
+        }
+        if (sub.endsWith("/command")) {
+          const worktree = await projects.opencodeWorktree(directory ?? projects.opencodeRoot);
+          if (forbiddenCommandArguments(parsed, isAllowed, worktree) !== undefined) {
+            return fail(
+              c,
+              403,
+              "forbidden-command-arguments",
+              "Arguments refusés : un « ! » et un accent grave dans le même texte (opencode pourrait les exécuter comme !`commande`), ou une référence @fichier qui sortirait du workspace (~, .., chemin hors du projet). Retirez-les, ou envoyez le texte sans /commande.",
+            );
+          }
+        }
         const decision = ledger.guard(modelFromBody(parsed), c.req.header(CONFIRM_HEADER) === "1");
         if (!decision.allowed) return c.json({ error: "budget-guard", ...decision }, 409);
       }
@@ -628,10 +682,8 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ file: path.basename(file), content: (await readIfExists(file)) ?? "" });
   });
 
-  app.put("/api/opencode/config/raw", bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
-    const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
-    const file = await assertInside(env.opencodeConfigDir, await configFile());
-    const backup = await readIfExists(file);
+  /** Écrit la configuration, la fait relire par opencode et revient à la version précédente s'il la refuse. */
+  const writeConfigChecked = async (file: string, content: string, backup: string | null, reason: string) => {
     await writeFileAtomic(file, content);
     await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
     try {
@@ -641,11 +693,38 @@ export function createApp(deps: AppDeps): Hono {
       if (backup !== null) await writeFileAtomic(file, backup);
       await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
       const stillBroken = await client.request("GET", "/agent", { timeoutMs: 20_000 }).then(() => false, () => true);
-      const restarted = stillBroken ? (await control.restartOpencode("configuration brute invalide annulée")).ok : false;
-      return fail(c, 422, "rejected-by-opencode", `opencode a refusé ce fichier : ${errorMessage(err)}`, { restarted });
+      const restarted = stillBroken ? (await control.restartOpencode(reason)).ok : false;
+      return { ok: false as const, error: errorMessage(err), restarted };
     }
     await catalog.refresh().catch(() => undefined);
     hub.cockpit("opencode.config.changed", {});
+    return { ok: true as const };
+  };
+
+  app.put("/api/opencode/config/raw", bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
+    const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
+    const file = await assertInside(env.opencodeConfigDir, await configFile());
+    const result = await writeConfigChecked(file, content, await readIfExists(file), "configuration brute invalide annulée");
+    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ce fichier : ${result.error}`, { restarted: result.restarted });
+    return c.json({ ok: true });
+  });
+
+  const permissionAction = z.enum(["ask", "allow", "deny"]);
+  const permissionSchema = z.record(
+    z.string().min(1).max(64),
+    z.union([permissionAction, z.record(z.string().min(1).max(512), permissionAction)]),
+  );
+
+  // Remplace le bloc « permission » d'un seul tenant (commentaires du fichier conservés). Le PATCH d'opencode
+  // fusionne clé par clé : il garderait d'anciennes règles et échoue quand une valeur texte devient un objet.
+  app.put("/api/opencode/config/permission", bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
+    const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
+    const file = await assertInside(env.opencodeConfigDir, await configFile());
+    const backup = await readIfExists(file);
+    const source = backup ?? "{}\n";
+    const content = applyEdits(source, modify(source, ["permission"], permission, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+    const result = await writeConfigChecked(file, content, backup, "permissions invalides annulées");
+    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
     return c.json({ ok: true });
   });
 

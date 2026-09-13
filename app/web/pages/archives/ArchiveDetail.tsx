@@ -325,7 +325,7 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
           summary={c.summary}
           disabled={busyAny}
           saving={busy === "summary"}
-          onSave={(summary) => patch("summary", { summary }, "Résumé enregistré")}
+          onSave={(summary) => patch("summary", { summary }, "Résumé enregistré", "Ce classement manuel sera conservé.")}
         />
 
         <aside className="area-side" aria-label="Détails de la conversation">
@@ -352,7 +352,7 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
                 <span className="field-hint">
                   {manual
                     ? "Classement manuel : l'analyse automatique le conserve (seul « Reclasser avec l'IA » le remplace)."
-                    : "Changer la catégorie ou les tags fixe un classement manuel, conservé ensuite."}
+                    : "Changer la catégorie, les tags ou le résumé fixe un classement manuel, conservé ensuite."}
                 </span>
               </div>
               <div className="field">
