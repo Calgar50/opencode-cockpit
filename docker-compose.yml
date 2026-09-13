@@ -55,7 +55,10 @@ services:
     build:
       context: .
       dockerfile: app/Dockerfile
-      args: *build-args
+      args:
+        <<: *build-args
+        # Numéro affiché dans l'interface (fichier VERSION, écrit dans .env par install.ps1).
+        COCKPIT_VERSION: ${COCKPIT_VERSION:-dev}
     restart: unless-stopped
     logging: *logging
     init: true

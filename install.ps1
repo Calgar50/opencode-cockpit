@@ -365,6 +365,8 @@ try {
     }
 
     if (-not $modeInferred) { $config['COCKPIT_INSTALL_MODE'] = $Mode }
+    # Version de production affichee dans l'interface pour les images construites sur le poste.
+    $config['COCKPIT_VERSION'] = $Version
     # Registre memorise seulement s'il a ete choisi : sinon, le defaut de la version installee s'applique.
     if ($PSBoundParameters.ContainsKey('ImageRegistry')) { $config['COCKPIT_IMAGE_REGISTRY'] = $ImageRegistry }
     Write-EnvFile $EnvFile $config
