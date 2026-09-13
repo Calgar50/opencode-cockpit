@@ -1,0 +1,8 @@
+# Fins de ligne maîtrisées : un script shell en CRLF casse l'image Docker
+# (« /bin/sh^M: not found ») quand le dépôt est cloné sous Windows.
+* text=auto eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary

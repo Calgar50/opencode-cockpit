@@ -1,0 +1,37 @@
+# --- Secrets (jamais dans git) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+id_*
+secrets/
+certs/*
+!certs/README.md
+auth.json
+credentials*.json
+
+# --- Données locales de l'outil ---
+data/
+workspace/
+
+# --- Build / dépendances ---
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# --- Divers ---
+__pycache__/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+
+# Sauvegardes locales
+backups/

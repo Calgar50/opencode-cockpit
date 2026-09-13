@@ -1,0 +1,238 @@
+/* Paramètres : connexion Copilot, budget, tarifs, classement, opencode, chat. */
+
+.settings-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 14px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.settings-form .input[type="number"] {
+  max-width: 180px;
+}
+.settings-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.input-suffix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.input-suffix .input {
+  max-width: 160px;
+}
+
+/* --- Connexion ------------------------------------------------------------------ */
+
+.connect-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.connect-status .dot {
+  width: 10px;
+  height: 10px;
+}
+.connect-code-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+  text-align: center;
+}
+.connect-code {
+  font-family: var(--font-mono);
+  font-size: clamp(28px, 6vw, 42px);
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  line-height: 1.1;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.connect-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-2);
+}
+.connect-steps li + li {
+  margin-top: 4px;
+}
+
+/* --- Budget --------------------------------------------------------------------- */
+
+.threshold-chip {
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+/* --- Tarifs --------------------------------------------------------------------- */
+
+.pricing-table td .model-name {
+  font-weight: 600;
+}
+.pricing-table td .model-key {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.pricing-table .tiers {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.pricing-table tr.overridden td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.rates-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 520px) {
+  .rates-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.rates-grid .input[type="number"] {
+  max-width: none;
+}
+
+/* --- Classement ----------------------------------------------------------------- */
+
+.cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cat-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr) 44px auto;
+  grid-template-areas:
+    "emoji label id color actions"
+    "desc desc keywords keywords keywords";
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  border-left: 4px solid var(--cat-color, var(--border-strong));
+}
+.cat-row .cat-emoji {
+  grid-area: emoji;
+  text-align: center;
+  font-size: 16px;
+}
+.cat-row .cat-label {
+  grid-area: label;
+}
+.cat-row .cat-id {
+  grid-area: id;
+}
+.cat-row .cat-color {
+  grid-area: color;
+}
+.cat-row .cat-actions {
+  grid-area: actions;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding-top: 18px;
+}
+.cat-row .cat-desc {
+  grid-area: desc;
+}
+.cat-row .cat-keywords {
+  grid-area: keywords;
+}
+@media (max-width: 820px) {
+  .cat-row {
+    grid-template-columns: 64px minmax(0, 1fr) 44px;
+    grid-template-areas:
+      "emoji label color"
+      "id id id"
+      "desc desc desc"
+      "keywords keywords keywords"
+      "actions actions actions";
+  }
+  .cat-row .cat-actions {
+    padding-top: 0;
+    justify-content: flex-end;
+  }
+}
+.cat-row .field > label {
+  font-size: 11px;
+}
+
+/* --- opencode ------------------------------------------------------------------- */
+
+.json-preview {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .preset-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.preset-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.preset-card.danger {
+  border-color: color-mix(in srgb, var(--critical) 35%, transparent);
+}
+.preset-card ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-2);
+}

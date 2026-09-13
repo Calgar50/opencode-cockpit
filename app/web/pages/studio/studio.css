@@ -1,0 +1,222 @@
+/* Studio : liste + éditeur d'agents, skills, commandes et instructions. */
+
+.studio-toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.studio-toolbar .tabs {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.studio-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+}
+.studio-scope .select {
+  width: auto;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.studio-layout {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .studio-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.studio-list {
+  position: sticky;
+  top: 0;
+}
+.studio-list .list {
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+}
+@media (max-width: 900px) {
+  .studio-list {
+    position: static;
+  }
+  .studio-list .list {
+    max-height: 300px;
+  }
+}
+.studio-list-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.studio-list .list-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.studio-list .list-item:last-child {
+  border-bottom: none;
+}
+.studio-list .item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 600;
+}
+.studio-list .item-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.studio-list .item-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+}
+
+.studio-editor-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.studio-editor-head h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin: 6px 0 -2px;
+}
+
+.perm-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.perm-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.perm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.perm-rules {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.perm-rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px auto;
+  gap: 6px;
+  align-items: center;
+}
+.perm-rule-error {
+  grid-column: 1 / -1;
+}
+.flip-up .icon {
+  transform: rotate(180deg);
+}
+
+.color-field {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.color-field input[type="color"],
+.color-input {
+  flex: none;
+  width: 40px;
+  height: 34px;
+  padding: 2px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+
+.token-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.token-remove:hover {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.template-card details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.template-preview {
+  margin: 6px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.skill-files .list-item {
+  padding: 7px 10px;
+}
+.skill-files .list-item:last-child {
+  border-bottom: none;
+}

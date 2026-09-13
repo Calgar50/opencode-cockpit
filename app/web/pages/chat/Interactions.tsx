@@ -1,0 +1,203 @@
+// Demandes d'autorisation et questions posées par l'agent pendant une réponse.
+import { useState } from "react";
+import { DiffView } from "../../components/DiffView.tsx";
+import { Icon } from "../../components/Icon.tsx";
+import { Badge, Button } from "../../components/ui.tsx";
+import type { PermissionRequest, QuestionRequest } from "../../lib/types.ts";
+
+const PERMISSION_LABELS: Record<string, string> = {
+  edit: "modifier un fichier",
+  write: "écrire un fichier",
+  bash: "exécuter une commande",
+  webfetch: "consulter une page web",
+  websearch: "faire une recherche sur le web",
+  external_directory: "accéder à un dossier hors du projet",
+  doom_loop: "poursuivre une action répétée en boucle",
+  read: "lire un fichier",
+  task: "lancer un sous-agent",
+  skill: "charger un skill",
+};
+
+const str = (value: unknown) => (typeof value === "string" ? value : null);
+
+export function PermissionPrompt({
+  request,
+  sessionTitle,
+  onReply,
+}: {
+  request: PermissionRequest;
+  sessionTitle?: string | undefined;
+  onReply: (reply: "once" | "always" | "reject", message?: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refusing, setRefusing] = useState(false);
+  const [message, setMessage] = useState("");
+  const metadata = request.metadata ?? {};
+  const diff = str(metadata.diff);
+  const command = str(metadata.command);
+  const file = str(metadata.filepath) ?? str(metadata.filePath);
+
+  const act = async (reply: "once" | "always" | "reject", note?: string) => {
+    setBusy(reply);
+    try {
+      await onReply(reply, note);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="interaction" role="alertdialog" aria-label="Demande d'autorisation">
+      <div className="row">
+        <Icon name="shield" size={18} />
+        <strong className="spacer">L'agent demande l'autorisation de {PERMISSION_LABELS[request.permission] ?? request.permission}</strong>
+        {sessionTitle ? <span className="small muted ellipsis">{sessionTitle}</span> : null}
+      </div>
+      {command ? (
+        <pre className="terminal">
+          <span className="prompt">$ </span>
+          {command}
+        </pre>
+      ) : null}
+      {file && !diff ? <code>{file}</code> : null}
+      {diff ? <DiffView patch={diff} maxLines={120} /> : null}
+      {!command && !diff && request.patterns.length > 0 ? (
+        <div className="row wrap">
+          {request.patterns.map((pattern) => (
+            <code key={pattern}>{pattern}</code>
+          ))}
+        </div>
+      ) : null}
+      {refusing ? (
+        <div className="row">
+          <input
+            className="input sm"
+            placeholder="Consigne pour l'agent (facultatif)"
+            aria-label="Consigne pour l'agent"
+            value={message}
+            autoFocus
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void act("reject", message.trim() || undefined);
+            }}
+          />
+          <Button size="sm" variant="danger" loading={busy === "reject"} onClick={() => void act("reject", message.trim() || undefined)}>
+            Refuser
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setRefusing(false)}>
+            Annuler
+          </Button>
+        </div>
+      ) : (
+        <div className="row wrap">
+          <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
+            Autoriser une fois
+          </Button>
+          {request.always.length > 0 ? (
+            <Button
+              size="sm"
+              loading={busy === "always"}
+              disabled={busy !== null}
+              title={`Ne plus demander pour : ${request.always.join(", ")}`}
+              onClick={() => void act("always")}
+            >
+              Toujours autoriser
+            </Button>
+          ) : null}
+          <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setRefusing(true)}>
+            Refuser…
+          </Button>
+          {request.always.length > 0 ? (
+            <span className="tiny muted ellipsis">« Toujours » couvre : {request.always.join(", ")}</span>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function QuestionPrompt({
+  request,
+  onReply,
+  onReject,
+}: {
+  request: QuestionRequest;
+  onReply: (answers: string[][]) => Promise<void>;
+  onReject: () => Promise<void>;
+}) {
+  const [answers, setAnswers] = useState<string[][]>(() => request.questions.map(() => []));
+  const [custom, setCustom] = useState<string[]>(() => request.questions.map(() => ""));
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (index: number, label: string, multiple: boolean) =>
+    setAnswers((current) =>
+      current.map((selected, i) => {
+        if (i !== index) return selected;
+        if (selected.includes(label)) return selected.filter((l) => l !== label);
+        return multiple ? [...selected, label] : [label];
+      }),
+    );
+
+  const final = answers.map((selected, i) => {
+    const extra = (custom[i] ?? "").trim();
+    return extra ? [...selected, extra] : selected;
+  });
+  const complete = final.every((a) => a.length > 0);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="interaction question" role="dialog" aria-label="Question de l'agent">
+      <div className="row">
+        <Icon name="question" size={18} />
+        <strong>L'agent a besoin d'une précision</strong>
+      </div>
+      {request.questions.map((question, index) => (
+        <div key={index} className="stack tight">
+          <div className="row wrap">
+            {question.header ? <Badge tone="accent">{question.header}</Badge> : null}
+            <span>{question.question}</span>
+          </div>
+          <div className="option-grid">
+            {question.options.map((option) => (
+              <button
+                key={option.label}
+                type="button"
+                className="btn"
+                aria-pressed={answers[index]?.includes(option.label) ?? false}
+                onClick={() => toggle(index, option.label, Boolean(question.multiple))}
+              >
+                <strong>{option.label}</strong>
+                {option.description ? <span className="tiny muted">{option.description}</span> : null}
+              </button>
+            ))}
+          </div>
+          {question.custom !== false ? (
+            <input
+              className="input sm"
+              placeholder="Autre réponse (facultatif)"
+              aria-label="Autre réponse"
+              value={custom[index] ?? ""}
+              onChange={(e) => setCustom((c) => c.map((v, i) => (i === index ? e.target.value : v)))}
+            />
+          ) : null}
+        </div>
+      ))}
+      <div className="row">
+        <Button size="sm" variant="primary" disabled={!complete || busy} loading={busy} onClick={() => void run(() => onReply(final))}>
+          Répondre
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(onReject)}>
+          Ignorer la question
+        </Button>
+      </div>
+    </div>
+  );
+}
