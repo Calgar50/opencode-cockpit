@@ -91,6 +91,30 @@ describe("adresse de l'API GitHub Copilot", () => {
       ["provider.github-copilot.options.baseURL"],
     );
     assert.deepEqual(configProviderIssues(withUrl("https://copilot-api.entreprise.ghe.com"), COPILOT, "entreprise.ghe.com"), []);
+    // Autres clés qu'opencode lit pour l'adresse (provider.ts:1515) et module d'accès qui reçoit le jeton.
+    const gateway = {
+      ...base,
+      provider: {
+        "github-copilot": {
+          options: { baseURL: "" },
+          api: "https://llm-gateway.example",
+          npm: "@exemple/sdk",
+          models: {
+            "gpt-5-mini": { provider: { api: "https://llm-gateway.example", npm: "@exemple/sdk" } },
+            "gpt-5.4": { provider: { api: "https://api.business.githubcopilot.com" } },
+          },
+        },
+      },
+    };
+    assert.deepEqual(
+      configProviderIssues(gateway, COPILOT).map((i) => i.path),
+      [
+        "provider.github-copilot.api",
+        "provider.github-copilot.npm",
+        "provider.github-copilot.models.gpt-5-mini.provider.api",
+        "provider.github-copilot.models.gpt-5-mini.provider.npm",
+      ],
+    );
   });
 });
 
@@ -190,6 +214,13 @@ describe("API GitHub Copilot", () => {
     // Page de blocage du proxy (réponse sans marque GitHub) : même repli.
     const page = api(async (url, init) => (url === "https://api.githubcopilot.com/models" ? new Response("Site bloqué", { status: 403 }) : fetch(url, init)));
     assert.equal((await page.listModels())?.endpoint.source, "github");
+    // Page de blocage servie en 200 : même repli, pas une erreur de lecture.
+    const html = api(async (url, init) =>
+      url === "https://api.githubcopilot.com/models"
+        ? new Response("<!DOCTYPE html><title>Bloqué</title>", { status: 200, headers: { "content-type": "text/html" } })
+        : fetch(url, init),
+    );
+    assert.equal((await html.listModels())?.endpoint.source, "github");
 
     // Adresse annoncée hors des hôtes GitHub Copilot : ignorée (le jeton n'y part jamais), l'échec d'origine est rapporté.
     announced = "https://copilot.evil.example";
@@ -210,6 +241,31 @@ describe("API GitHub Copilot", () => {
       calls.some((c) => c.url === "https://api.githubcopilot.com/models"),
       false,
     );
+  });
+
+  it("adresse de l'abonnement illisible : échec jamais présenté comme l'adresse utilisée ; « Tester la connexion » repart de zéro", async () => {
+    let userCalls = 0;
+    let down = true;
+    const client = api(async (url) => {
+      if (url === "https://api.githubcopilot.com/models") throw proxyRefusal();
+      if (url.endsWith("/copilot_internal/user")) {
+        userCalls++;
+        if (down) throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+        return json(200, { endpoints: { api: "https://api.business.githubcopilot.com" } });
+      }
+      return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "E" });
+    });
+    await assert.rejects(client.listModels());
+    assert.equal(client.status.endpoint, null);
+    assert.equal(client.status.lastTried?.url, "https://api.githubcopilot.com");
+    assert.match(client.status.discoveryError ?? "", /injoignable/);
+    down = false;
+    client.resetDiscovery();
+    const result = await client.listModels();
+    assert.equal(result?.endpoint.url, "https://api.business.githubcopilot.com");
+    const recovered = client.status;
+    assert.equal(recovered.endpoint?.url, "https://api.business.githubcopilot.com");
+    assert.equal(userCalls, 2);
   });
 
   it("non connecté : null ; refus de GitHub et pannes réseau : messages lisibles, sans jeton", async () => {
@@ -372,7 +428,7 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
           refreshes++;
         },
       } as unknown as ModelCatalog,
-      copilot: { status: { connected: true, endpoint: null, modelsAt: 0, models: 0, error: null, discoveryError: null } },
+      copilot: { status: { connected: true, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null } },
       hub: { cockpit: () => undefined },
       log: quiet,
       busy: async () => busy,
@@ -403,6 +459,51 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
     assert.equal((await sync.sync()).state, "inactif");
   });
 
+  it("lecture de la liste en échec : rien n'est écrit dans opencode, sauf l'adresse imposée par .env", async () => {
+    let config: Record<string, unknown> = { provider: { "github-copilot": { options: { baseURL: "https://api.business.githubcopilot.com" } } } };
+    const requests: string[] = [];
+    let status = {
+      connected: true,
+      endpoint: ep("https://api.business.githubcopilot.com") as CopilotEndpoint | null,
+      lastTried: ep("https://api.githubcopilot.com", "defaut") as CopilotEndpoint | null,
+      modelsAt: 0,
+      models: 0,
+      error: "api.githubcopilot.com : injoignable",
+      discoveryError: null,
+    };
+    const client = {
+      request: async (method: string, pathname: string, options?: { body?: unknown }) => {
+        requests.push(`${method} ${pathname}`);
+        if (method === "GET") return structuredClone(config);
+        if (method === "PATCH") config = { provider: (options?.body as { provider: unknown }).provider };
+        return true;
+      },
+    } as unknown as OpencodeClient;
+    const sync = new CopilotConfigSync({
+      client,
+      catalog: {
+        sources: { opencodeError: null, copilotVerified: false, copilotError: status.error, endpoint: null, unavailable: [] },
+        refresh: async () => undefined,
+      } as unknown as ModelCatalog,
+      copilot: {
+        get status() {
+          return status;
+        },
+      },
+      hub: { cockpit: () => undefined },
+      log: quiet,
+      busy: async () => false,
+    });
+    assert.equal((await sync.sync()).state, "inactif");
+    assert.deepEqual(requests, []);
+    assert.equal(currentCopilotBaseUrl(config), "https://api.business.githubcopilot.com");
+
+    status = { ...status, endpoint: { url: "https://api.enterprise.githubcopilot.com", source: "env", plan: null, opencodeDefault: "https://api.githubcopilot.com" } };
+    assert.equal((await sync.sync()).state, "applique");
+    assert.equal(currentCopilotBaseUrl(config), "https://api.enterprise.githubcopilot.com");
+    sync.stop();
+  });
+
   it("« en-attente » : nouvelle tentative automatique, sans nouvel appel", async () => {
     let config: Record<string, unknown> = {};
     let busy = true;
@@ -419,7 +520,7 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
         sources: { opencodeError: null, copilotVerified: true, copilotError: null, endpoint: ep("https://api.business.githubcopilot.com"), unavailable: [] },
         refresh: async () => undefined,
       } as unknown as ModelCatalog,
-      copilot: { status: { connected: true, endpoint: null, modelsAt: 0, models: 0, error: null, discoveryError: null } },
+      copilot: { status: { connected: true, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null } },
       hub: { cockpit: () => undefined },
       log: quiet,
       busy: async () => busy,
@@ -444,10 +545,16 @@ describe("certificats d'entreprise", () => {
     const blocks = certificateBlocks(text);
     assert.equal(blocks.valid.length, 1);
     assert.equal(blocks.rejected, 1);
-    assert.deepEqual(trustCorporateCertificates(path.join(os.tmpdir(), "cockpit-certs-absent-xyz")), { files: 0, certificates: 0, rejected: 0, error: null });
+    assert.deepEqual(trustCorporateCertificates(path.join(os.tmpdir(), "cockpit-certs-absent-xyz")), { files: 0, certificates: 0, rejected: 0, errors: [] });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-certs-"));
+    // Une entrée qui n'est pas un fichier, triée avant le vrai certificat, n'écarte pas les autres.
+    fs.mkdirSync(path.join(dir, "a-dossier.pem"));
     fs.writeFileSync(path.join(dir, "entreprise.pem"), text);
     fs.writeFileSync(path.join(dir, "notes.txt"), valid);
-    assert.deepEqual(trustCorporateCertificates(dir), { files: 1, certificates: 1, rejected: 1, error: null });
+    const result = trustCorporateCertificates(dir);
+    assert.equal(result.files, 1);
+    assert.equal(result.certificates, 1);
+    assert.equal(result.rejected, 1);
+    assert.deepEqual(result.errors, ["a-dossier.pem : n'est pas un fichier"]);
   });
 });

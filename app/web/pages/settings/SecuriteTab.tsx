@@ -37,7 +37,9 @@ export function SecuriteTab() {
   const preset = config.data ? detectPermissionPreset(config.data.permission) : null;
   const providers = boot.allowedProviders ?? ["github-copilot"];
   // Verrou réellement appliqué par opencode (enabled_providers, IA par défaut), pas seulement COCKPIT_ALLOWED_PROVIDERS.
-  const lockIssues = config.data ? configProviderIssues(config.data, providers) : (boot.security.providerIssues ?? []);
+  const lockIssues = config.data
+    ? configProviderIssues(config.data, providers, boot.copilot?.enterpriseDomain ?? null)
+    : (boot.security.providerIssues ?? []);
   const copilotOnly = isDefaultProviders(providers) && lockIssues.length === 0;
 
   const restore = async () => {

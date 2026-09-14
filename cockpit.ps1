@@ -72,7 +72,8 @@ function Invoke-DockerTimeout {
     $seconds = [int]$args[0]
     $dockerArgs = @($args | Select-Object -Skip 1)
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = 'docker'
+    # Chemin absolu resolu par PowerShell : Windows chercherait sinon d'abord un docker.exe dans le dossier courant.
+    $startInfo.FileName = (Get-Command docker.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $startInfo.Arguments = (@($dockerArgs | ForEach-Object { if ([string]$_ -match '[\s"]') { '"' + ([string]$_).Replace('"', '\"') + '"' } else { [string]$_ } })) -join ' '
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
@@ -86,6 +87,15 @@ function Invoke-DockerTimeout {
         return [pscustomobject]@{ TimedOut = $true; ExitCode = -1; Output = '' }
     }
     return [pscustomobject]@{ TimedOut = $false; ExitCode = $process.ExitCode; Output = ($stdout.Result + $stderr.Result).Trim() }
+}
+
+# Masque les formes de secrets les plus courantes avant affichage (identifiants dans une URL, jetons GitHub, mots de passe).
+function Hide-Secrets([string]$Text) {
+    $masked = $Text -replace '(?i)([a-z][a-z0-9+.-]*://[^:\s/@]+:)[^@\s]+@', '$1****@'
+    $masked = $masked -replace '(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}', '$1****'
+    $masked = $masked -replace '(?i)(authorization\s*[:=]\s*(bearer|basic|token)\s+)\S+', '$1****'
+    $masked = $masked -replace '(?i)((pass(word|wd)?|pwd|secret|token|api[_-]?key)\s*[:=]\s*)\S+', '$1****'
+    return $masked
 }
 
 function Get-EnvValue([string]$Key) {
@@ -196,7 +206,7 @@ try {
             else { Invoke-Docker compose logs --tail 200 -f }
         }
         'diag' {
-            Write-Step 'Diagnostic (lecture seule, aucun secret affiche)'
+            Write-Step 'Diagnostic (lecture seule)'
             $oc = "$Project-opencode-1"
             Write-Host ''
             Write-Host '--- Conteneurs ---'
@@ -234,11 +244,15 @@ try {
                 Write-Host ('{0,-34} {1}  {2}' -f $probeHost, $code, $verdict)
             }
             Write-Host ''
-            Write-Host '--- Dernieres lignes du journal d opencode ---'
-            $journal = Invoke-DockerTimeout 20 logs --tail 40 $oc
+            Write-Host '--- Journal d opencode : lignes d erreur recentes (secrets courants masques ; journal complet : page Diagnostic) ---'
+            $journal = Invoke-DockerTimeout 20 logs --tail 300 $oc
             if ($journal.TimedOut) { Write-Attention 'Journal illisible en 20 s.' }
-            elseif ($journal.Output) { Write-Host $journal.Output }
-            else { Write-Attention 'Journal vide : opencode n a jamais demarre (voir l etat du conteneur ci-dessus).' }
+            elseif (-not $journal.Output) { Write-Attention 'Journal vide : opencode n a jamais demarre (voir l etat du conteneur ci-dessus).' }
+            else {
+                $problems = @($journal.Output -split "`r?`n" | Where-Object { $_ -match 'level=(ERROR|WARN)|ERREUR|Error|EACCES|denied' } | Select-Object -Last 20)
+                if ($problems.Count -eq 0) { Write-Host 'Aucune ligne d erreur dans les 300 dernieres lignes.' }
+                foreach ($line in $problems) { Write-Host (Hide-Secrets $line) }
+            }
             Write-Host ''
             Write-Host 'Pare-feu qui n ouvre que l adresse de votre abonnement (api.business ou api.enterprise joignable, api.githubcopilot.com bloquee) :'
             Write-Host '  .\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser'

@@ -15,6 +15,8 @@ export const COPILOT_API_VERSION = "2026-06-01";
 
 /** Adresse annoncée par GitHub, et choix de cette adresse quand l'adresse d'office est bloquée, gardés une heure. */
 const DISCOVERY_TTL_MS = 60 * 60_000;
+/** Échec de lecture de l'adresse annoncée : nouvel essai possible après 30 s (jamais gardé une heure). */
+const DISCOVERY_FAILURE_TTL_MS = 30_000;
 
 export interface CopilotAuth {
   type?: string;
@@ -50,7 +52,10 @@ export interface CopilotModel extends CatalogModel {
 
 export interface CopilotStatus {
   connected: boolean;
+  /** Adresse de la dernière lecture réussie, ou adresse imposée par .env ; jamais une adresse restée en échec. */
   endpoint: CopilotEndpoint | null;
+  /** Adresse de la dernière tentative, réussie ou non (Diagnostic). */
+  lastTried: CopilotEndpoint | null;
   /** Dernière lecture réussie de la liste des IA (ms), 0 si jamais. */
   modelsAt: number;
   models: number;
@@ -197,10 +202,10 @@ export interface CopilotApiDeps {
 export class CopilotApi {
   readonly #d: CopilotApiDeps;
   readonly #fetch: FetchLike;
-  #discovered: { url: string | null; plan: string | null; at: number; token: string } | null = null;
+  #discovered: { url: string | null; plan: string | null; until: number; token: string } | null = null;
   /** Adresse de l'abonnement retenue parce que l'adresse d'office était bloquée (jusqu'à `until`). */
   #preferred: { url: string; token: string; until: number } | null = null;
-  #status: CopilotStatus = { connected: false, endpoint: null, modelsAt: 0, models: 0, error: null, discoveryError: null };
+  #status: CopilotStatus = { connected: false, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null };
 
   constructor(deps: CopilotApiDeps) {
     this.#d = deps;
@@ -209,6 +214,12 @@ export class CopilotApi {
 
   get status(): CopilotStatus {
     return this.#status;
+  }
+
+  /** Oublie l'adresse annoncée et l'adresse retenue : la lecture suivante repart de l'adresse d'office (test de connexion). */
+  resetDiscovery(): void {
+    this.#discovered = null;
+    this.#preferred = null;
   }
 
   /** Connexion Copilot d'opencode (auth.json, lecture seule) ; null si absente ou illisible. */
@@ -235,9 +246,10 @@ export class CopilotApi {
   /** Adresse de l'abonnement annoncée par GitHub (copilot_internal/user), relue au plus toutes les heures. */
   async #discover(auth: CopilotAuth, token: string): Promise<{ url: string | null; plan: string | null }> {
     const print = fingerprint(token);
-    if (this.#discovered && this.#discovered.token === print && Date.now() - this.#discovered.at < DISCOVERY_TTL_MS) return this.#discovered;
+    if (this.#discovered && this.#discovered.token === print && Date.now() < this.#discovered.until) return this.#discovered;
     const host = apiHostFor(auth.enterpriseUrl, this.#d.githubEnterpriseDomain);
     let found: { url: string | null; plan: string | null } = { url: null, plan: null };
+    let ok = false;
     try {
       const res = await this.#fetch(`https://${host}/copilot_internal/user`, {
         headers: this.#headers({ authorization: `token ${token}` }),
@@ -246,6 +258,7 @@ export class CopilotApi {
       });
       if (res.ok) {
         const data = rec(await res.json());
+        ok = true;
         const api = str(rec(data?.endpoints)?.api);
         found = { url: api ? normalizeCopilotApiUrl(api, this.#d.githubEnterpriseDomain) : null, plan: str(data?.copilot_plan) ?? null };
         this.#status = { ...this.#status, discoveryError: api && !found.url ? `${host} : adresse d'API inattendue ignorée.` : null };
@@ -256,7 +269,7 @@ export class CopilotApi {
     } catch (err) {
       this.#status = { ...this.#status, discoveryError: describeNetworkError(err, host) };
     }
-    this.#discovered = { ...found, at: Date.now(), token: print };
+    this.#discovered = { ...found, until: Date.now() + (ok ? DISCOVERY_TTL_MS : DISCOVERY_FAILURE_TTL_MS), token: print };
     return found;
   }
 
@@ -273,9 +286,18 @@ export class CopilotApi {
     } catch (err) {
       return { blocked: describeNetworkError(err, host) };
     }
-    if (res.ok) return { models: copilotModelsFromApi(await res.json()) };
+    const marked = res.headers.has("x-github-request-id");
+    if (res.ok) {
+      try {
+        return { models: copilotModelsFromApi(await res.json()) };
+      } catch (err) {
+        // Page de blocage servie en 200 par un proxy : blocage réseau, pas une erreur de GitHub.
+        if (!marked) return { blocked: `${host} : réponse ${res.status} illisible sans marque GitHub (page de blocage du proxy ?).` };
+        throw new Error(`${host} : réponse illisible de l'API Copilot (${redactSecrets(errorMessage(err)).slice(0, 120)}).`);
+      }
+    }
     await res.body?.cancel().catch(() => undefined);
-    if (!res.headers.has("x-github-request-id")) return { blocked: `${host} : réponse ${res.status} sans marque GitHub (page de blocage du proxy ?).` };
+    if (!marked) return { blocked: `${host} : réponse ${res.status} sans marque GitHub (page de blocage du proxy ?).` };
     throw new Error(describeStatus(res.status, host));
   }
 
@@ -287,14 +309,14 @@ export class CopilotApi {
   async listModels(): Promise<{ models: CopilotModel[]; endpoint: CopilotEndpoint } | null> {
     const auth = await this.auth();
     if (!auth) {
-      this.#status = { connected: false, endpoint: null, modelsAt: 0, models: 0, error: null, discoveryError: null };
+      this.#status = { connected: false, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null };
       return null;
     }
     const token = auth.refresh || auth.access || "";
     const print = fingerprint(token);
     let endpoint: CopilotEndpoint | null = null;
     const done = (models: CopilotModel[], chosen: CopilotEndpoint) => {
-      this.#status = { ...this.#status, connected: true, endpoint: chosen, modelsAt: Date.now(), models: models.length, error: null };
+      this.#status = { ...this.#status, connected: true, endpoint: chosen, lastTried: chosen, modelsAt: Date.now(), models: models.length, error: null };
       return { models, endpoint: chosen };
     };
     try {
@@ -328,7 +350,9 @@ export class CopilotApi {
       this.#preferred = { url: discovered.url, token: print, until: Date.now() + DISCOVERY_TTL_MS };
       return done(second.models, endpoint);
     } catch (err) {
-      this.#status = { ...this.#status, connected: true, endpoint, error: errorMessage(err) };
+      // Adresse en échec : jamais présentée comme l'adresse utilisée (ni imposée à opencode), sauf celle de .env.
+      const kept = endpoint?.source === "env" ? endpoint : this.#status.endpoint;
+      this.#status = { ...this.#status, connected: true, endpoint: kept, lastTried: endpoint, error: errorMessage(err) };
       throw err;
     }
   }

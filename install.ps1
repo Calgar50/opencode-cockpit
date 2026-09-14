@@ -335,8 +335,15 @@ if (-not $config.Contains('COCKPIT_GITHUB_ENTERPRISE_DOMAIN')) { $config['COCKPI
 # une erreur ici evite un conteneur qui refuse de demarrer.
 if ($PSBoundParameters.ContainsKey('CopilotApiUrl')) { $config['COCKPIT_COPILOT_API_URL'] = $CopilotApiUrl.Trim() }
 elseif (-not $config.Contains('COCKPIT_COPILOT_API_URL')) { $config['COCKPIT_COPILOT_API_URL'] = '' }
-if ($config['COCKPIT_COPILOT_API_URL'] -and $config['COCKPIT_COPILOT_API_URL'] -notmatch '^https://(api\.githubcopilot\.com|api\.(business|enterprise|individual)\.githubcopilot\.com|copilot-api\.[a-z0-9.-]+)/?$') {
-    throw "COCKPIT_COPILOT_API_URL refusee : utilisez https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com ou https://api.githubcopilot.com."
+$copilotUrl = [string]$config['COCKPIT_COPILOT_API_URL']
+if ($copilotUrl) {
+    $allowedHosts = @('api.githubcopilot.com', 'api.business.githubcopilot.com', 'api.enterprise.githubcopilot.com', 'api.individual.githubcopilot.com')
+    $gheDomain = ([string]$config['COCKPIT_GITHUB_ENTERPRISE_DOMAIN']).Trim().ToLowerInvariant()
+    if ($gheDomain) { $allowedHosts += "copilot-api.$gheDomain" }
+    $urlPattern = '^https://(' + (($allowedHosts | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')/?$'
+    if ($copilotUrl -notmatch $urlPattern) {
+        throw "COCKPIT_COPILOT_API_URL refusee : utilisez https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com, https://api.githubcopilot.com (ou copilot-api.<COCKPIT_GITHUB_ENTERPRISE_DOMAIN> declare dans .env)."
+    }
 }
 if ($config['COCKPIT_COPILOT_API_URL']) { Write-Good ("Adresse d'API Copilot imposee : {0}" -f $config['COCKPIT_COPILOT_API_URL']) }
 

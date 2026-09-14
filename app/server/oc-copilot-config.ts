@@ -34,7 +34,7 @@ export function currentCopilotBaseUrl(effective: unknown): string {
 export interface CopilotConfigSyncDeps {
   client: Pick<OpencodeClient, "request">;
   catalog: Pick<ModelCatalog, "sources" | "refresh">;
-  /** Adresse retenue même quand la dernière lecture de la liste des IA a échoué. */
+  /** Adresse imposée par .env, appliquée même quand la dernière lecture de la liste des IA a échoué. */
   copilot: Pick<CopilotApi, "status">;
   hub: Pick<EventHub, "cockpit">;
   log: Logger;
@@ -97,7 +97,10 @@ export class CopilotConfigSync {
 
   async #sync(): Promise<CopilotSyncStatus> {
     const { client, catalog, log } = this.#d;
-    const target = copilotBaseUrlTarget(catalog.sources.endpoint ?? this.#d.copilot.status.endpoint);
+    // Seule une adresse confirmée par une lecture réussie est écrite, ou celle imposée par .env : une lecture en échec
+    // (coupure réseau, jeton refusé) ne déplace jamais opencode.
+    const last = this.#d.copilot.status.endpoint;
+    const target = copilotBaseUrlTarget(catalog.sources.endpoint ?? (last?.source === "env" ? last : null));
     if (target === undefined) return this.#set("inactif", null);
 
     let effective: unknown;

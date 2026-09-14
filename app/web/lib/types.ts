@@ -226,6 +226,8 @@ export interface UnavailableModel {
 
 export interface CopilotView {
   endpoint: { url: string; source: "env" | "github" | "defaut"; plan: string | null; opencodeDefault: string } | null;
+  /** Adresse de la dernière tentative en échec, quand aucune adresse n'est confirmée. */
+  lastTried: CopilotView["endpoint"];
   /** Liste des IA Copilot lue directement auprès de GitHub. */
   verified: boolean;
   error: string | null;

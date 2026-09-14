@@ -13,7 +13,8 @@ export interface TrustResult {
   certificates: number;
   /** Blocs illisibles ignorés (certificat mal formé). */
   rejected: number;
-  error: string | null;
+  /** Entrées ignorées ou chargement refusé, sans aucun contenu de certificat. */
+  errors: string[];
 }
 
 /** Blocs CERTIFICATE valides d'un fichier PEM (jamais une clé privée). */
@@ -31,7 +32,10 @@ export function certificateBlocks(text: string): { valid: string[]; rejected: nu
   return { valid, rejected };
 }
 
-/** Ajoute les certificats du dossier aux autorités par défaut de Node (fetch et https compris). Dossier absent : rien. */
+/**
+ * Ajoute les certificats du dossier aux autorités par défaut de Node (fetch et https compris). Dossier absent : rien. Une
+ * entrée illisible est signalée sans écarter les autres certificats.
+ */
 export function trustCorporateCertificates(dir: string): TrustResult {
   let names: string[];
   try {
@@ -39,31 +43,36 @@ export function trustCorporateCertificates(dir: string): TrustResult {
       .readdirSync(dir)
       .filter((name) => /\.(pem|crt)$/i.test(name))
       .sort();
-  } catch {
-    return { files: 0, certificates: 0, rejected: 0, error: null };
+  } catch (err) {
+    const missing = (err as { code?: unknown }).code === "ENOENT";
+    return { files: 0, certificates: 0, rejected: 0, errors: missing ? [] : [`dossier des certificats illisible : ${errorMessage(err)}`] };
   }
   const extra: string[] = [];
+  const errors: string[] = [];
   let files = 0;
   let rejected = 0;
   for (const name of names) {
-    let text: string;
+    const file = path.join(dir, name);
     try {
-      text = fs.readFileSync(path.join(dir, name), "utf8");
+      if (!fs.statSync(file).isFile()) {
+        errors.push(`${name} : n'est pas un fichier`);
+        continue;
+      }
+      const blocks = certificateBlocks(fs.readFileSync(file, "utf8"));
+      rejected += blocks.rejected;
+      if (blocks.valid.length > 0) {
+        files++;
+        extra.push(...blocks.valid);
+      }
     } catch (err) {
-      return { files, certificates: 0, rejected, error: `${name} illisible : ${errorMessage(err)}` };
-    }
-    const blocks = certificateBlocks(text);
-    rejected += blocks.rejected;
-    if (blocks.valid.length > 0) {
-      files++;
-      extra.push(...blocks.valid);
+      errors.push(`${name} illisible : ${errorMessage(err)}`);
     }
   }
-  if (extra.length === 0) return { files, certificates: 0, rejected, error: null };
+  if (extra.length === 0) return { files, certificates: 0, rejected, errors };
   try {
     tls.setDefaultCACertificates([...new Set([...tls.getCACertificates("default"), ...extra])]);
-    return { files, certificates: extra.length, rejected, error: null };
+    return { files, certificates: extra.length, rejected, errors };
   } catch (err) {
-    return { files, certificates: 0, rejected, error: errorMessage(err) };
+    return { files, certificates: 0, rejected, errors: [...errors, `chargement refusé par Node : ${errorMessage(err)}`] };
   }
 }

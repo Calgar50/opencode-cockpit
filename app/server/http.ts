@@ -129,7 +129,7 @@ export interface AppDeps {
   /** Titres, tailles et liaisons de niveau des assistants (AssistantService). */
   assistants: AssistantsPort;
   /** Accès direct à GitHub Copilot : adresse de l'API, état de la liste des IA, joignabilité à travers le proxy. */
-  copilot: Pick<CopilotApi, "status" | "probeHosts">;
+  copilot: Pick<CopilotApi, "status" | "probeHosts" | "resetDiscovery">;
   /** Adresse de l'API Copilot imposée à opencode. */
   copilotConfig: Pick<CopilotConfigSync, "status" | "sync">;
   /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
@@ -483,7 +483,9 @@ export function createApp(deps: AppDeps): Hono {
     const sources = catalog.sources;
     const status = deps.copilot.status;
     return {
-      endpoint: sources.endpoint ?? status.endpoint,
+      // Adresse confirmée par la dernière lecture, ou imposée par .env ; une adresse en échec n'est montrée que comme tentative.
+      endpoint: sources.endpoint ?? (status.endpoint?.source === "env" ? status.endpoint : null),
+      lastTried: sources.endpoint ? null : status.lastTried,
       verified: sources.copilotVerified,
       error: sources.copilotError ?? status.error,
       discoveryError: status.discoveryError,
@@ -1764,6 +1766,7 @@ export function createApp(deps: AppDeps): Hono {
   // Test de la connexion Copilot (page Diagnostic) : joignabilité des adresses GitHub et Copilot à travers le proxy, sans
   // jeton, puis nouvelle lecture de la liste des IA (jeton envoyé seulement aux adresses officielles) et réalignement d'opencode.
   app.post("/api/system/copilot-check", bodyLimit({ maxSize: 4_096 }), async (c) => {
+    deps.copilot.resetDiscovery();
     const hosts = await deps.copilot.probeHosts();
     const catalogError = await catalog.refresh().then(
       () => null,

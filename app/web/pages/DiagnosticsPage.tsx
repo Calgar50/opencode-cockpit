@@ -389,6 +389,8 @@ export function DiagnosticsPage() {
                           {s.copilot.endpoint.plan ? ` Abonnement : ${s.copilot.endpoint.plan}.` : ""}
                           {s.copilot.discoveryError ? ` ${s.copilot.discoveryError}` : ""}
                         </>
+                      ) : s.copilot.lastTried ? (
+                        `Dernière adresse essayée, en échec : ${s.copilot.lastTried.url}.${s.copilot.discoveryError ? ` ${s.copilot.discoveryError}` : ""}`
                       ) : (
                         "Connue après la connexion de GitHub Copilot."
                       )

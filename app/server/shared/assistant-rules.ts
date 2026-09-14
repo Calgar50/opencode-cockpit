@@ -610,6 +610,7 @@ export function hasBlockingProblem(turn: Pick<Turn, "problems">): boolean {
 export const MESSAGES = Object.freeze({
   fournisseurRefuse: "Seules les IA GitHub Copilot sont autorisées dans ce cockpit.",
   adresseCopilotRefusee: "Adresse de l'API Copilot refusée : seules les adresses officielles de GitHub Copilot sont acceptées.",
+  paquetCopilotRefuse: "Remplacement du module d'accès à GitHub Copilot refusé : il recevrait le jeton Copilot.",
   modeAvance: "Action réservée au mode Avancé (Paramètres › Affichage).",
   sessionsBusy: "Attendez la fin des réponses en cours.",
   rejectedByOpencode: "La configuration n'a pas été acceptée : rien n'a été modifié.",
@@ -1553,13 +1554,34 @@ export function configProviderIssues(
       if (isPlainObject(def)) checkModel(own(def, "model"), `${section}.${name.slice(0, 64)}.model`);
     }
   }
-  // Le jeton Copilot part vers options.baseURL (prioritaire sur l'adresse des modèles, provider.ts:1761) : adresse officielle seulement.
+  // Adresses où partent le jeton Copilot et les demandes : options.baseURL quand il n'est pas vide (provider.ts:1761),
+  // sinon provider.api et models.<id>.provider.api (provider.ts:1515). Adresse officielle seulement ; le paquet d'accès
+  // (npm) du fournisseur, qui reçoit le jeton, n'est jamais remplacé.
   const providerSection = own(cfg, "provider");
   const copilot = isPlainObject(providerSection) ? own(providerSection, "github-copilot") : undefined;
-  const options = isPlainObject(copilot) ? own(copilot, "options") : undefined;
-  const baseURL = isPlainObject(options) ? own(options, "baseURL") : undefined;
-  if (baseURL !== undefined && (typeof baseURL !== "string" || (baseURL !== "" && normalizeCopilotApiUrl(baseURL, enterpriseDomain) === null))) {
-    issues.push({ path: "provider.github-copilot.options.baseURL", message: MESSAGES.adresseCopilotRefusee });
+  if (isPlainObject(copilot)) {
+    const checkUrl = (value: unknown, path: string, emptyAllowed: boolean) => {
+      if (value === undefined) return;
+      if (typeof value === "string" && ((emptyAllowed && value === "") || normalizeCopilotApiUrl(value, enterpriseDomain) !== null)) return;
+      issues.push({ path, message: MESSAGES.adresseCopilotRefusee });
+    };
+    const checkPackage = (value: unknown, path: string) => {
+      if (value !== undefined) issues.push({ path, message: MESSAGES.paquetCopilotRefuse });
+    };
+    const options = own(copilot, "options");
+    if (isPlainObject(options)) checkUrl(own(options, "baseURL"), "provider.github-copilot.options.baseURL", true);
+    checkUrl(own(copilot, "api"), "provider.github-copilot.api", false);
+    checkPackage(own(copilot, "npm"), "provider.github-copilot.npm");
+    const models = own(copilot, "models");
+    if (isPlainObject(models)) {
+      for (const [id, model] of Object.entries(models)) {
+        const provider = isPlainObject(model) ? own(model, "provider") : undefined;
+        if (!isPlainObject(provider)) continue;
+        const at = `provider.github-copilot.models.${id.slice(0, 64)}.provider`;
+        checkUrl(own(provider, "api"), `${at}.api`, false);
+        checkPackage(own(provider, "npm"), `${at}.npm`);
+      }
+    }
   }
   return issues;
 }

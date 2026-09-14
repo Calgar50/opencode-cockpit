@@ -37,8 +37,10 @@ try {
 
 // Appels sortants du cockpit (GitHub, Copilot) derrière un proxy qui inspecte le HTTPS : autorités de certs/ ajoutées.
 const trust = trustCorporateCertificates(env.certsDir);
-if (trust.error) log.warn("certificats d'entreprise non chargés", { error: trust.error });
-else if (trust.certificates > 0) log.info("certificats d'entreprise chargés", { files: trust.files, certificates: trust.certificates, rejected: trust.rejected });
+if (trust.certificates > 0) log.info("certificats d'entreprise chargés", { files: trust.files, certificates: trust.certificates });
+if (trust.errors.length > 0 || trust.rejected > 0) {
+  log.warn("certificats d'entreprise en partie ignorés", { certificates: trust.certificates, rejected: trust.rejected, errors: trust.errors.slice(0, 10) });
+}
 // Même secours que le superviseur d'opencode (exactement « 1 ») : bandeau rouge dans l'interface.
 if (env.tlsInsecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
