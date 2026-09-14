@@ -95,19 +95,34 @@ export interface GuardRunsContext {
   size: TaskSize;
 }
 
-/** Coût moyen observé par prompt de chat (sous-agents compris) : `where` est un fragment SQL interne, jamais une entrée. */
+/**
+ * Coût moyen observé par prompt de chat (sous-agents compris) : `where` est un fragment SQL interne, jamais une entrée.
+ * 1.1 : seules les vraies demandes (kind = 'message') sont comptées, mais toute ligne de `prompts` borne une fenêtre : le coût
+ * d'une équipe reste dans la fenêtre de sa demande injectée, jamais dans celle de la vraie demande qui la précède.
+ */
 const PROMPT_COST_SQL = `SELECT COUNT(DISTINCT p.message_id) AS prompts, COALESCE(SUM(u.cost), 0) AS cost
   FROM prompts p
   JOIN sessions s ON s.id = p.session_id AND s.purpose = 'chat' AND s.parent_id IS NULL
   LEFT JOIN usage u ON u.root_id = p.root_id AND u.created_at >= p.created_at
     AND u.created_at < COALESCE((SELECT MIN(p2.created_at) FROM prompts p2 WHERE p2.root_id = p.root_id AND p2.created_at > p.created_at), 9e15)
-  WHERE p.created_at >= ?`;
+  WHERE p.kind = 'message' AND p.created_at >= ?`;
+
+/** Genre d'une ligne de `prompts` (migration 4) : vraie demande, ou message recopié par le cockpit pour une équipe. */
+export type PromptKind = "message" | "equipe-demande" | "equipe-resultat";
+
+/** Usage facturé d'un appel selon sa session. */
+function usagePurpose(session: SessionRow): string {
+  if (session.purpose !== "chat") return session.purpose;
+  return session.parent_id ? "subagent" : "chat";
+}
 
 export class Ledger {
   readonly #db: DatabaseSync;
   readonly #settings: SettingsStore;
   readonly #catalog: ModelCatalog;
   #monthCache: { key: string; total: number } | null = null;
+  /** Genres annoncés par le cockpit avant l'arrivée du message (événement traité plus tard), 500 au plus. */
+  readonly #pendingKinds = new Map<string, PromptKind>();
 
   constructor(deps: { db: DatabaseSync; settings: SettingsStore; catalog: ModelCatalog }) {
     this.#db = deps.db;
@@ -133,18 +148,19 @@ export class Ledger {
       { providerID: msg.providerID, modelID: msg.modelID, reportedCost: msg.cost, usage },
       this.pricingContext(),
     );
-    const purpose = session.purpose === "classifier" ? "classifier" : session.parent_id ? "subagent" : "chat";
+    const purpose = usagePurpose(session);
     const previous = this.#db.prepare("SELECT cost FROM usage WHERE message_id = ?").get(msg.id) as { cost: number } | undefined;
     this.#db
       .prepare(
-        `INSERT INTO usage (message_id, session_id, root_id, directory, provider_id, model_id, agent, purpose, parent_message_id,
+        `INSERT INTO usage (message_id, session_id, root_id, directory, provider_id, model_id, variant, agent, purpose, parent_message_id,
            created_at, completed_at, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
            cost_reported, cost_estimated, cost, cost_source, error)
-         VALUES (:message_id, :session_id, :root_id, :directory, :provider_id, :model_id, :agent, :purpose, :parent_message_id,
+         VALUES (:message_id, :session_id, :root_id, :directory, :provider_id, :model_id, :variant, :agent, :purpose, :parent_message_id,
            :created_at, :completed_at, :tokens_input, :tokens_output, :tokens_reasoning, :tokens_cache_read, :tokens_cache_write,
            :cost_reported, :cost_estimated, :cost, :cost_source, :error)
          ON CONFLICT(message_id) DO UPDATE SET
            root_id = excluded.root_id, completed_at = excluded.completed_at, agent = excluded.agent, purpose = excluded.purpose,
+           variant = COALESCE(excluded.variant, usage.variant),
            tokens_input = excluded.tokens_input, tokens_output = excluded.tokens_output, tokens_reasoning = excluded.tokens_reasoning,
            tokens_cache_read = excluded.tokens_cache_read, tokens_cache_write = excluded.tokens_cache_write,
            cost_reported = excluded.cost_reported, cost_estimated = excluded.cost_estimated, cost = excluded.cost,
@@ -158,6 +174,7 @@ export class Ledger {
           directory: session.directory,
           provider_id: msg.providerID,
           model_id: msg.modelID,
+          variant: typeof msg.variant === "string" && msg.variant ? msg.variant : null,
           agent: msg.agent ?? "",
           purpose,
           parent_message_id: msg.parentID,
@@ -181,10 +198,13 @@ export class Ledger {
   }
 
   recordUser(msg: OcUserMessage, session: SessionRow): void {
+    // Le genre n'est jamais remplacé en conflit : un message recopié par le cockpit ne redevient pas une vraie demande.
+    const kind = this.#pendingKinds.get(msg.id) ?? "message";
+    this.#pendingKinds.delete(msg.id);
     this.#db
       .prepare(
-        `INSERT INTO prompts (message_id, session_id, root_id, directory, provider_id, model_id, agent, created_at)
-         VALUES (:message_id, :session_id, :root_id, :directory, :provider_id, :model_id, :agent, :created_at)
+        `INSERT INTO prompts (message_id, session_id, root_id, directory, provider_id, model_id, agent, created_at, kind)
+         VALUES (:message_id, :session_id, :root_id, :directory, :provider_id, :model_id, :agent, :created_at, :kind)
          ON CONFLICT(message_id) DO UPDATE SET root_id = excluded.root_id`,
       )
       .run(
@@ -197,8 +217,20 @@ export class Ledger {
           model_id: msg.model?.modelID ?? "",
           agent: msg.agent ?? "",
           created_at: msg.time.created,
+          kind,
         }),
       );
+  }
+
+  /**
+   * Annonce le genre d'un message que le cockpit envoie lui-même (demande ou résultat d'équipe) : appliqué tout de suite si
+   * le message est déjà enregistré, sinon à son arrivée par le flux d'événements.
+   */
+  markPromptKind(messageId: string, kind: PromptKind): void {
+    const updated = this.#db.prepare("UPDATE prompts SET kind = ? WHERE message_id = ?").run(kind, messageId);
+    if (Number(updated.changes) > 0) return;
+    if (this.#pendingKinds.size >= 500) this.#pendingKinds.delete(this.#pendingKinds.keys().next().value as string);
+    this.#pendingKinds.set(messageId, kind);
   }
 
   /** Réapplique la tarification (après modification de la grille) sur un mois donné. */
@@ -459,7 +491,7 @@ export class Ledger {
     );
     const prompts = one<{ n: number }>(
       `SELECT COUNT(*) n FROM prompts p JOIN sessions s ON s.id = p.session_id
-       WHERE s.purpose = 'chat' AND s.parent_id IS NULL AND p.created_at >= :start AND p.created_at < :end`,
+       WHERE s.purpose = 'chat' AND s.parent_id IS NULL AND p.kind = 'message' AND p.created_at >= :start AND p.created_at < :end`,
     ).n;
 
     const dayRows = q<{ day: string; cost: number; calls: number }>(

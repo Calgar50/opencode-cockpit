@@ -1309,9 +1309,9 @@ describe("profils de droits et catalogue partagés", () => {
 });
 
 describe("base", () => {
-  it("openMemoryDb atteint user_version 3 avec item_meta et chat_turns", () => {
+  it("openMemoryDb atteint user_version 4 avec item_meta et chat_turns", () => {
     const db = openMemoryDb();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
     const names = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE name IN ('item_meta', 'chat_turns', 'idx_chat_turns_session') ORDER BY name")
@@ -1331,12 +1331,17 @@ describe("base", () => {
     try {
       const old = openDb(dir);
       old.prepare("INSERT INTO prompts (message_id, session_id, root_id, created_at, preview) VALUES (?, ?, ?, ?, ?)").run("msg_1", "ses_1", "ses_1", 1, "DB_PASSWORD=Prod!2026");
-      // Base d'une version antérieure : migrations 1 et 2 seulement.
+      // Base d'une version antérieure : migrations 1 et 2 seulement (ajouts de la migration 4 retirés, comme avant la 1.1).
+      old.exec(`DROP TABLE team_run_events; DROP TABLE team_run_steps; DROP TABLE team_runs; DROP TABLE teams;
+        DROP TABLE delegations; DROP TABLE permission_waits; DROP TABLE conversation_autonomy; DROP TABLE autonomy_requests;
+        DROP TABLE autonomy_decisions; ALTER TABLE sessions DROP COLUMN agent; ALTER TABLE sessions DROP COLUMN plancher;
+        ALTER TABLE usage DROP COLUMN variant; ALTER TABLE prompts DROP COLUMN kind; ALTER TABLE item_meta DROP COLUMN methods;
+        ALTER TABLE item_meta DROP COLUMN role;`);
       old.exec("PRAGMA user_version = 2");
       old.close();
       const db = openDb(dir);
       try {
-        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
         assert.deepEqual({ ...(db.prepare("SELECT preview FROM prompts WHERE message_id = 'msg_1'").get() as object) }, { preview: "" });
         assert.equal((db.prepare("PRAGMA secure_delete").get() as { secure_delete: number }).secure_delete, 1);
       } finally {

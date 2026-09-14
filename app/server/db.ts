@@ -166,6 +166,187 @@ const MIGRATIONS: readonly string[] = [
   `
   UPDATE prompts SET preview = '' WHERE preview != '';
   `,
+  // 1.1 : équipes, travail délégué, attentes d'accord, autonomie à la demande ; IA et réflexion par appel, genre de demande.
+  // Ajouts seulement : une version antérieure rouvre cette base (sa boucle de migration s'arrête à son propre nombre).
+  `
+  CREATE TABLE teams (
+    id TEXT PRIMARY KEY,
+    titre TEXT NOT NULL,
+    description TEXT NOT NULL,
+    flow TEXT NOT NULL,                      -- JSON Flow v1
+    origine TEXT NOT NULL,                   -- exemple|creee|dupliquee
+    exemple_id TEXT,
+    exemple_version INTEGER,
+    avance INTEGER NOT NULL DEFAULT 0,       -- 1 = hors de la grammaire du mode Simple
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE team_runs (
+    id TEXT PRIMARY KEY,
+    team_id TEXT,
+    team_titre TEXT NOT NULL,
+    flow TEXT NOT NULL,
+    flow_sha256 TEXT NOT NULL,
+    estimate_sha256 TEXT,
+    mode_ui TEXT,                            -- simple|avance au lancement
+    root_session_id TEXT NOT NULL,
+    directory TEXT NOT NULL,
+    request_message_id TEXT,
+    result_message_id TEXT,
+    state TEXT NOT NULL,                     -- preparation|en-cours|attente-verification|attente-choix|attente-budget|terminee|arretee|echec|interrompue|plafond
+    cause TEXT,
+    facultatifs TEXT NOT NULL DEFAULT '[]',
+    estimate_typique REAL,
+    estimate_max REAL,
+    plafond REAL,
+    cost REAL NOT NULL DEFAULT 0,
+    confirmations TEXT NOT NULL DEFAULT '{}',
+    precisions TEXT NOT NULL DEFAULT '[]',   -- vidé à la suppression de la conversation
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    ended_at INTEGER
+  );
+  CREATE INDEX idx_team_runs_root ON team_runs(root_session_id, created_at);
+  CREATE INDEX idx_team_runs_state ON team_runs(state);
+
+  CREATE TABLE team_run_steps (
+    run_id TEXT NOT NULL REFERENCES team_runs(id) ON DELETE CASCADE,
+    step_id TEXT NOT NULL,
+    tour INTEGER NOT NULL DEFAULT 1,
+    tentative INTEGER NOT NULL DEFAULT 1,
+    ordre INTEGER NOT NULL,
+    bloc_index INTEGER NOT NULL,
+    titre TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    agent_file_sha256 TEXT,
+    rules_sha256 TEXT,
+    floor_sha256 TEXT,
+    rights TEXT,
+    right_lines TEXT,
+    model TEXT,
+    variant TEXT,
+    steps INTEGER,
+    session_id TEXT,
+    state TEXT NOT NULL,
+    cause TEXT,
+    tronquee INTEGER NOT NULL DEFAULT 0,
+    message_sha256 TEXT,
+    message_text TEXT,                       -- texte exact envoyé ; vidé à la suppression de la conversation
+    correction_sha256 TEXT,
+    result_excerpt TEXT,                     -- vidé à la suppression de la conversation
+    verdict TEXT,
+    choix TEXT,
+    queued_at INTEGER,
+    started_at INTEGER,
+    ended_at INTEGER,
+    cost REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, step_id, tour, tentative)
+  );
+  CREATE INDEX idx_team_run_steps_session ON team_run_steps(session_id);
+  CREATE INDEX idx_team_run_steps_agent ON team_run_steps(agent, model, ended_at);
+
+  CREATE TABLE team_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES team_runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    par TEXT NOT NULL,                       -- vous|cockpit
+    data TEXT NOT NULL DEFAULT '{}',
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_team_run_events_run ON team_run_events(run_id, at);
+
+  CREATE TABLE delegations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id TEXT NOT NULL,
+    parent_session_id TEXT NOT NULL,
+    child_session_id TEXT,
+    call_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    command TEXT,
+    source TEXT NOT NULL,                    -- ia|raccourci
+    sans_confirmation INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,                     -- prepare|attente-accord|autorisee|travaille|terminee|arretee|jamais-demarree|refusee|expiree
+    permission_id TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    ended_at INTEGER,
+    UNIQUE (parent_session_id, call_id)
+  );
+  CREATE INDEX idx_delegations_root ON delegations(root_id, created_at);
+
+  CREATE TABLE permission_waits (
+    permission_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    root_id TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    target TEXT,
+    asked_at INTEGER NOT NULL,
+    replied_at INTEGER,
+    reply TEXT,                              -- once|reject|expiree
+    replied_by TEXT                          -- vous|cockpit|controle
+  );
+  CREATE INDEX idx_permission_waits_root ON permission_waits(root_id, asked_at);
+
+  CREATE TABLE conversation_autonomy (
+    root_id TEXT PRIMARY KEY,
+    choix TEXT NOT NULL,                     -- demander|modifications|plan|autonome
+    plafonds TEXT NOT NULL DEFAULT '{}',
+    depuis INTEGER NOT NULL,
+    retour_cause TEXT,
+    plan_source_id TEXT,
+    execution_de_plan_id TEXT
+  );
+
+  CREATE TABLE autonomy_requests (
+    id TEXT PRIMARY KEY,
+    root_id TEXT NOT NULL,
+    prompt_message_id TEXT,
+    choix TEXT NOT NULL,
+    plafonds TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    spent REAL NOT NULL DEFAULT 0,
+    auto INTEGER NOT NULL DEFAULT 0,
+    attentes INTEGER NOT NULL DEFAULT 0,
+    refus INTEGER NOT NULL DEFAULT 0,
+    controles INTEGER NOT NULL DEFAULT 0,
+    fichiers INTEGER NOT NULL DEFAULT 0,
+    delegations INTEGER NOT NULL DEFAULT 0,
+    fin TEXT                                 -- terminee|plafond-cout|plafond-actions|plafond-duree|plafond-fichiers|vous|non-controle|rechargement|redemarrage-cockpit
+  );
+  CREATE INDEX idx_autonomy_requests_root ON autonomy_requests(root_id, started_at);
+
+  CREATE TABLE autonomy_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT,
+    root_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    permission_id TEXT,
+    permission TEXT NOT NULL,
+    resume TEXT NOT NULL DEFAULT '',         -- vidé à la suppression de la conversation
+    choix TEXT NOT NULL,
+    regle TEXT NOT NULL,
+    rules_version INTEGER NOT NULL,
+    verdict TEXT NOT NULL,                   -- auto|attente|refus-auto|non-controle
+    par TEXT NOT NULL,                       -- regles|ia-controle|vous|cockpit
+    raison TEXT NOT NULL DEFAULT '',         -- vidé à la suppression de la conversation
+    ia_model TEXT,
+    ia_cost REAL,
+    ia_ms INTEGER,
+    relais TEXT,                             -- ok|deja-repondu|expiree|echec
+    asked_at INTEGER NOT NULL,
+    decided_at INTEGER
+  );
+  CREATE INDEX idx_autonomy_decisions_root ON autonomy_decisions(root_id, asked_at);
+
+  ALTER TABLE sessions ADD COLUMN agent TEXT;
+  ALTER TABLE sessions ADD COLUMN plancher TEXT;
+  ALTER TABLE usage ADD COLUMN variant TEXT;
+  ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'message';  -- message|equipe-demande|equipe-resultat
+  ALTER TABLE item_meta ADD COLUMN methods TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE item_meta ADD COLUMN role TEXT NOT NULL DEFAULT 'assistant';
+  `,
 ];
 
 /** Ligne de la table item_meta (migration 2). */

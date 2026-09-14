@@ -69,6 +69,96 @@ function setup() {
 }
 
 describe("registre des coûts", () => {
+  it("1.1 (migration 4) : tables d'équipes et d'autonomie, IA et réflexion par appel, agent de session, usages equipe et controle", () => {
+    const { db, ledger, sessions } = setup();
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
+    const tables = (
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('teams', 'team_runs', 'team_run_steps', 'team_run_events',
+             'delegations', 'permission_waits', 'conversation_autonomy', 'autonomy_requests', 'autonomy_decisions') ORDER BY name`,
+        )
+        .all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    assert.deepEqual(tables, [
+      "autonomy_decisions",
+      "autonomy_requests",
+      "conversation_autonomy",
+      "delegations",
+      "permission_waits",
+      "team_run_events",
+      "team_run_steps",
+      "team_runs",
+      "teams",
+    ]);
+    // Étapes et événements disparaissent avec leur exécution.
+    db.prepare("INSERT INTO team_runs (id, team_titre, flow, flow_sha256, root_session_id, directory, state, created_at) VALUES ('run_1', 'Revue', '{}', 'x', 'ses_r', '/workspace', 'en-cours', 1)").run();
+    db.prepare("INSERT INTO team_run_steps (run_id, step_id, ordre, bloc_index, titre, agent, state) VALUES ('run_1', 'e1', 1, 0, 'Lecture', 'relire-script', 'en-cours')").run();
+    db.prepare("INSERT INTO team_run_events (run_id, kind, par, at) VALUES ('run_1', 'lancement', 'vous', 1)").run();
+    db.prepare("DELETE FROM team_runs WHERE id = 'run_1'").run();
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM team_run_steps").get() as { n: number }).n, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM team_run_events").get() as { n: number }).n, 0);
+
+    const root = sessions.upsert({ ...session("ses_m4"), agent: "build" });
+    assert.equal(root.agent, "build");
+    assert.equal(root.purpose, "chat");
+    // Un événement sans agent ne l'efface pas.
+    assert.equal(sessions.upsert(session("ses_m4")).agent, "build");
+    const step = sessions.upsert({ ...session("ses_m4_etape", "ses_m4"), metadata: { cockpit: "equipe" } });
+    const control = sessions.upsert({ ...session("ses_m4_controle", "ses_m4"), metadata: { cockpit: "controle" } });
+    assert.equal(step.purpose, "equipe");
+    assert.equal(control.purpose, "controle");
+    // Hérité par une session enfant, jamais remis en « chat » par une mise à jour sans métadonnées.
+    assert.equal(sessions.upsert(session("ses_m4_sous", "ses_m4_etape")).purpose, "equipe");
+    assert.equal(sessions.upsert(session("ses_m4_etape", "ses_m4")).purpose, "equipe");
+
+    ledger.recordAssistant({ ...assistant("msg_m4_a", "ses_m4", 0.5, 10, 5, "gpt-5.4-mini"), variant: "high" }, root);
+    ledger.recordAssistant(assistant("msg_m4_b", "ses_m4_etape", 0.2, 10, 5), step);
+    ledger.recordAssistant(assistant("msg_m4_c", "ses_m4_controle", 0.01, 10, 5), control);
+    // Une mise à jour sans réflexion ne l'efface pas.
+    ledger.recordAssistant(assistant("msg_m4_a", "ses_m4", 0.5, 10, 5, "gpt-5.4-mini"), root);
+    const rows = db.prepare("SELECT message_id, variant, purpose FROM usage WHERE message_id LIKE 'msg_m4_%' ORDER BY message_id").all() as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      rows.map((r) => ({ ...r })),
+      [
+        { message_id: "msg_m4_a", variant: "high", purpose: "chat" },
+        { message_id: "msg_m4_b", variant: null, purpose: "equipe" },
+        { message_id: "msg_m4_c", variant: null, purpose: "controle" },
+      ],
+    );
+  });
+
+  it("1.1 : un message recopié pour une équipe borne la fenêtre de coût sans compter comme vraie demande", () => {
+    const { db, ledger, sessions } = setup();
+    const root = sessions.upsert(session("ses_kind"));
+    const now = Date.now();
+    const user = (id: string, created: number): OcUserMessage => ({
+      id,
+      sessionID: "ses_kind",
+      role: "user",
+      time: { created },
+      agent: "build",
+      model: { providerID: "github-copilot", modelID: "claude-sonnet-5" },
+    });
+    const kindOf = (id: string) => (db.prepare("SELECT kind FROM prompts WHERE message_id = ?").get(id) as { kind: string }).kind;
+    ledger.recordUser(user("msg_k_vraie", now - 10_000), root);
+    ledger.recordAssistant({ ...assistant("msg_k_1", "ses_kind", 1, 10, 5), time: { created: now - 9_000, completed: now - 8_500 } }, root);
+    // Annonce avant l'événement : cas réel, le message du cockpit arrive plus tard par le flux.
+    ledger.markPromptKind("msg_k_equipe", "equipe-demande");
+    ledger.recordUser(user("msg_k_equipe", now - 5_000), root);
+    ledger.recordAssistant({ ...assistant("msg_k_2", "ses_kind", 7, 10, 5), time: { created: now - 4_000, completed: now - 3_000 } }, root);
+    assert.equal(kindOf("msg_k_equipe"), "equipe-demande");
+    const firstCost = (db.prepare("SELECT cost FROM usage WHERE message_id = 'msg_k_1'").get() as { cost: number }).cost;
+    const estimate = ledger.estimate("github-copilot", "claude-sonnet-5", now);
+    assert.equal(estimate.samples, 1);
+    assert.equal(estimate.avgUsd, firstCost);
+    // Annonce après l'enregistrement : appliquée tout de suite ; un nouvel événement ne la remet pas en « message ».
+    ledger.markPromptKind("msg_k_vraie", "equipe-resultat");
+    ledger.recordUser(user("msg_k_vraie", now - 10_000), root);
+    assert.equal(kindOf("msg_k_vraie"), "equipe-resultat");
+    assert.equal(ledger.estimate("github-copilot", "claude-sonnet-5", now).samples, 0);
+  });
+
   it("agrège par mois, usage, modèle et conversation (sous-agents rattachés)", () => {
     const { ledger, sessions } = setup();
     const root = sessions.upsert(session("ses_root"));

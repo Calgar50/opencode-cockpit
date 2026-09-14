@@ -3,7 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { params } from "./db.ts";
 import type { OcSession, OpencodeClient } from "./opencode.ts";
 
-export type SessionPurpose = "chat" | "classifier";
+/** chat : conversations ; classifier : classement ; equipe / controle (1.1) : étapes d'équipe et contrôles de sécurité. */
+export type SessionPurpose = "chat" | "classifier" | "equipe" | "controle";
 
 export interface SessionRow {
   id: string;
@@ -13,6 +14,10 @@ export interface SessionRow {
   project_id: string | null;
   title: string;
   purpose: SessionPurpose;
+  /** 1.1 : agent de la session tel qu'opencode le rapporte (null s'il ne l'a pas fourni). */
+  agent: string | null;
+  /** 1.1 : plancher de règles de session posé et vérifié par le cockpit (empreinte), null sinon. */
+  plancher: string | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -20,8 +25,14 @@ export interface SessionRow {
 
 export const CLASSIFIER_TITLE_PREFIX = "[cockpit] ";
 
+/** Usages dont une session enfant hérite et qu'une mise à jour ne remplace jamais. */
+const STICKY_PURPOSES: readonly SessionPurpose[] = ["classifier", "equipe", "controle"];
+
 export function purposeOf(info: Pick<OcSession, "title" | "metadata">): SessionPurpose {
-  if (info.metadata?.cockpit === "classifier" || info.title.startsWith(CLASSIFIER_TITLE_PREFIX)) return "classifier";
+  const cockpit = info.metadata?.cockpit;
+  if (cockpit === "classifier" || info.title.startsWith(CLASSIFIER_TITLE_PREFIX)) return "classifier";
+  // metadata.cockpit n'est posé que par le serveur du cockpit : le proxy le refuse dans les créations de session.
+  if (cockpit === "equipe" || cockpit === "controle") return cockpit;
   return "chat";
 }
 
@@ -49,16 +60,18 @@ export class SessionTracker {
   upsert(info: OcSession, forcedPurpose?: SessionPurpose): SessionRow {
     const parent = info.parentID ? this.get(info.parentID) : undefined;
     const rootId = info.parentID ? (parent?.root_id ?? info.parentID) : info.id;
-    const purpose = forcedPurpose ?? (parent?.purpose === "classifier" ? "classifier" : purposeOf(info));
+    const inherited = parent && STICKY_PURPOSES.includes(parent.purpose) ? parent.purpose : null;
+    const purpose = forcedPurpose ?? inherited ?? purposeOf(info);
     const previous = this.get(info.id);
     this.#db
       .prepare(
-        `INSERT INTO sessions (id, parent_id, root_id, directory, project_id, title, purpose, created_at, updated_at)
-         VALUES (:id, :parent_id, :root_id, :directory, :project_id, :title, :purpose, :created_at, :updated_at)
+        `INSERT INTO sessions (id, parent_id, root_id, directory, project_id, title, purpose, agent, created_at, updated_at)
+         VALUES (:id, :parent_id, :root_id, :directory, :project_id, :title, :purpose, :agent, :created_at, :updated_at)
          ON CONFLICT(id) DO UPDATE SET
            parent_id = excluded.parent_id, root_id = excluded.root_id, directory = excluded.directory,
            project_id = excluded.project_id, title = excluded.title,
-           purpose = CASE WHEN sessions.purpose = 'classifier' THEN 'classifier' ELSE excluded.purpose END,
+           purpose = CASE WHEN sessions.purpose IN ('classifier', 'equipe', 'controle') THEN sessions.purpose ELSE excluded.purpose END,
+           agent = COALESCE(excluded.agent, sessions.agent),
            updated_at = MAX(sessions.updated_at, excluded.updated_at)`,
       )
       .run(
@@ -70,6 +83,7 @@ export class SessionTracker {
           project_id: info.projectID,
           title: info.title ?? "",
           purpose,
+          agent: typeof info.agent === "string" && info.agent ? info.agent : null,
           created_at: info.time?.created ?? Date.now(),
           updated_at: info.time?.updated ?? Date.now(),
         }),
