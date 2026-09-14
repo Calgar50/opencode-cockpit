@@ -1,5 +1,13 @@
 // Types partagés par l'interface : API du cockpit et objets opencode relayés.
-import type { AiSettings, EstimateView, TierView, UiSettings } from "../../server/shared/api-types.ts";
+import type {
+  AiSettings,
+  AutonomieSettings,
+  DelegationSettings,
+  EstimateView,
+  TeamsSettings,
+  TierView,
+  UiSettings,
+} from "../../server/shared/api-types.ts";
 import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
 
 // 0.2.0 « Assistants et niveaux d'IA » : types définis une seule fois dans server/shared (serveur et interface).
@@ -132,6 +140,8 @@ export interface Settings {
     monthlyUsd: number;
     alertThresholds: number[];
     guard: { enabled: boolean; fromPercent: number; maxOutputPricePerM: number; blockAtLimit: boolean };
+    delegation: DelegationSettings;
+    autonomie: AutonomieSettings;
   };
   pricing: { preferTable: boolean; overrides: Record<string, ModelPrice> };
   classifier: {
@@ -146,6 +156,7 @@ export interface Settings {
   chat: { defaultModel: string | null; defaultAgent: string | null; defaultDirectory: string | null };
   ai: AiSettings;
   ui: UiSettings;
+  teams: TeamsSettings;
 }
 
 export interface ProjectInfo {

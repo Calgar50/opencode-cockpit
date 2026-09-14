@@ -1440,6 +1440,9 @@ export type UiMode = (typeof UI_MODES)[number];
 export const SIMPLE_SETTINGS_PATHS: readonly string[] = Object.freeze([
   "budget.monthlyUsd",
   "budget.alertThresholds",
+  // 1.1 : plafonds du travail délégué et de l'autonomie, réglables dans les deux modes (bornés par le schéma).
+  "budget.delegation",
+  "budget.autonomie",
   "ui.*",
   "ai.chatDefaultTier",
   "chat.defaultDirectory",

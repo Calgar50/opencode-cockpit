@@ -41,6 +41,8 @@ export interface AppEnv {
    * adresse d'office d'opencode, ou celle de l'abonnement annoncée par GitHub si le réseau bloque la première.
    */
   copilotApiUrl: string | null;
+  /** COCKPIT_AUTONOMY (1.1) : false coupe « Modifications automatiques » et « Autonome avec contrôle ». */
+  autonomy: boolean;
   version: string;
 }
 
@@ -79,6 +81,14 @@ export function parseCopilotApiUrl(value: string | undefined, enterpriseDomain: 
     );
   }
   return url;
+}
+
+/** COCKPIT_AUTONOMY : vide ou « on » = choix automatiques proposés, « off » = coupés ; autre valeur = refus de démarrer. */
+export function parseAutonomy(value: string | undefined): boolean {
+  const raw = value?.trim().toLowerCase() ?? "";
+  if (raw === "" || raw === "on") return true;
+  if (raw === "off") return false;
+  throw new EnvError("COCKPIT_AUTONOMY : valeur refusée (on ou off).");
 }
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength: number): string {
@@ -125,6 +135,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     githubEnterpriseDomain,
     allowedProviders: parseAllowedProviders(env.COCKPIT_ALLOWED_PROVIDERS),
     copilotApiUrl: parseCopilotApiUrl(env.COCKPIT_COPILOT_API_URL, githubEnterpriseDomain),
+    autonomy: parseAutonomy(env.COCKPIT_AUTONOMY),
     version: env.COCKPIT_VERSION?.trim() || "dev",
   };
 }

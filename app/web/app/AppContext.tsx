@@ -30,7 +30,13 @@ interface AppState {
   saveUi: (patch: Partial<UiSettings>) => Promise<Settings>;
 }
 
-const DEFAULT_UI: UiSettings = Object.freeze({ mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null });
+const DEFAULT_UI: UiSettings = Object.freeze({
+  mode: "simple",
+  rulesAcceptedVersion: 0,
+  noticeSeen: null,
+  activityAnnouncements: true,
+  seenOnboarding: [],
+});
 
 /** Copie les sections 0.2.0 des paramètres dans les champs dérivés de l'amorçage. */
 export function withSettings(boot: Bootstrap, settings: Settings): Bootstrap {

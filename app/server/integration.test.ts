@@ -672,6 +672,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       githubEnterpriseDomain: null,
       allowedProviders: ["github-copilot"],
       copilotApiUrl: null,
+      autonomy: true,
       version: "test",
     };
     const base = setup();

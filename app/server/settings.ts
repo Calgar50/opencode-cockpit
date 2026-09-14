@@ -63,6 +63,24 @@ export const settingsSchema = z
         /** Budget atteint : tout modèle payant demande confirmation. */
         blockAtLimit: z.boolean(),
       }),
+      /** 1.1 : travail délégué par l'IA (hors équipes), plafonds par demande. */
+      delegation: z.object({
+        maxUsdPerRequest: z.number().min(0).max(100),
+        maxPerRequest: z.number().int().min(0).max(50),
+      }),
+      /** 1.1 : plafonds d'une demande en « Autonome avec contrôle » (spécification §4.8). */
+      autonomie: z.object({
+        /** Plafond d'arrêt par défaut (USD), modifiable à l'activation jusqu'à plafondMaxUsd. */
+        plafondUsd: z.number().min(0.01).max(50),
+        plafondMaxUsd: z.number().min(0.01).max(50),
+        actionsMax: z.number().int().min(1).max(500),
+        delegationsMax: z.number().int().min(0).max(50),
+        dureeMinutes: z.number().int().min(1).max(240),
+        fichiersMax: z.number().int().min(1).max(500),
+        controlesIaMax: z.number().int().min(0).max(200),
+        /** Contrôle des commandes inconnues par l'IA Rapide ; false : elles attendent votre accord. */
+        controleIa: z.boolean(),
+      }),
     }),
     pricing: z.object({
       preferTable: z.boolean(),
@@ -101,9 +119,23 @@ export const settingsSchema = z
       rulesAcceptedVersion: z.number().int().min(0).max(1_000_000),
       /** Version dont la notice unique « Nouveau : mode Simple » a été vue. */
       noticeSeen: z.string().max(20).nullable(),
+      /** 1.1 : annonces du lecteur d'écran pour « Qui travaille ? ». */
+      activityAnnouncements: z.boolean(),
+      /** 1.1 : textes d'accueil déjà vus (identifiants). */
+      seenOnboarding: z.array(z.string().regex(/^[a-z0-9-]{1,40}$/)).max(20),
+    }),
+    /** 1.1 : équipes d'assistants (mode Avancé). */
+    teams: z.object({
+      /** Plafond d'arrêt maximal d'une équipe (USD) ; null : 5 % du budget mensuel. */
+      maxCapUsd: z.number().min(0).max(1_000).nullable(),
+      concurrentSteps: z.number().int().min(1).max(3),
+      maxActiveRuns: z.number().int().min(1).max(5),
     }),
   })
   .superRefine((s, ctx) => {
+    if (s.budget.autonomie.plafondUsd > s.budget.autonomie.plafondMaxUsd) {
+      ctx.addIssue({ code: "custom", path: ["budget", "autonomie", "plafondUsd"], message: "Le plafond par défaut dépasse le plafond maximal." });
+    }
     const ids = s.classifier.categories.map((c) => c.id);
     if (new Set(ids).size !== ids.length) {
       ctx.addIssue({ code: "custom", path: ["classifier", "categories"], message: "Identifiants de catégories en double." });
@@ -220,6 +252,17 @@ export const DEFAULT_SETTINGS: Settings = {
     monthlyUsd: 150,
     alertThresholds: [50, 75, 90, 100],
     guard: { enabled: true, fromPercent: 80, maxOutputPricePerM: 15, blockAtLimit: true },
+    delegation: { maxUsdPerRequest: 1, maxPerRequest: 5 },
+    autonomie: {
+      plafondUsd: 1,
+      plafondMaxUsd: 5,
+      actionsMax: 60,
+      delegationsMax: 5,
+      dureeMinutes: 30,
+      fichiersMax: 25,
+      controlesIaMax: 20,
+      controleIa: true,
+    },
   },
   pricing: { preferTable: false, overrides: {} },
   classifier: { mode: "llm", model: null, idleMinutes: 2, reclassifyAfterPrompts: 3, categories: DEFAULT_CATEGORIES },
@@ -227,7 +270,8 @@ export const DEFAULT_SETTINGS: Settings = {
   chat: { defaultModel: null, defaultAgent: null, defaultDirectory: null },
   ai: { tiers: null, chatDefaultTier: "equilibre", allowModelOverride: false },
   // Mode Simple pour toute installation, y compris celles qui viennent de 0.1.x.
-  ui: { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null },
+  ui: { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null, activityAnnouncements: true, seenOnboarding: [] },
+  teams: { maxCapUsd: null, concurrentSteps: 3, maxActiveRuns: 2 },
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

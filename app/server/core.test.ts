@@ -395,6 +395,36 @@ describe("sécurité et utilitaires", () => {
     assert.equal(loadEnv(base).tlsInsecure, false);
   });
 
+  it("COCKPIT_AUTONOMY (1.1) : vide ou on = choix automatiques proposés, off = coupés, autre valeur = refus de démarrer", () => {
+    const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
+    assert.equal(loadEnv(base).autonomy, true);
+    for (const value of ["on", "ON", " on ", ""]) assert.equal(loadEnv({ ...base, COCKPIT_AUTONOMY: value }).autonomy, true, value);
+    assert.equal(loadEnv({ ...base, COCKPIT_AUTONOMY: "off" }).autonomy, false);
+    for (const value of ["0", "false", "non"]) assert.throws(() => loadEnv({ ...base, COCKPIT_AUTONOMY: value }), EnvError, value);
+  });
+
+  it("réglages 1.1 : plafonds d'autonomie, de délégation et d'équipes par défaut, bornés ; plafonds modifiables en mode Simple", () => {
+    const store = new SettingsStore(openMemoryDb());
+    assert.deepEqual(store.get().budget.autonomie, {
+      plafondUsd: 1,
+      plafondMaxUsd: 5,
+      actionsMax: 60,
+      delegationsMax: 5,
+      dureeMinutes: 30,
+      fichiersMax: 25,
+      controlesIaMax: 20,
+      controleIa: true,
+    });
+    assert.deepEqual(store.get().budget.delegation, { maxUsdPerRequest: 1, maxPerRequest: 5 });
+    assert.deepEqual(store.get().teams, { maxCapUsd: null, concurrentSteps: 3, maxActiveRuns: 2 });
+    assert.equal(store.get().ui.activityAnnouncements, true);
+    assert.throws(() => store.update({ budget: { autonomie: { plafondUsd: 6 } } }), SettingsError);
+    assert.throws(() => store.update({ teams: { concurrentSteps: 9 } }), SettingsError);
+    assert.equal(store.update({ budget: { autonomie: { plafondUsd: 2 } } }).budget.autonomie.plafondUsd, 2);
+    assert.deepEqual(settingsPathsOutsideSimple(store.get(), { budget: { autonomie: { actionsMax: 10 }, delegation: { maxPerRequest: 2 } } }), []);
+    assert.notDeepEqual(settingsPathsOutsideSimple(store.get(), { teams: { concurrentSteps: 2 } }), []);
+  });
+
   it("verrou « fournisseurs » d'une configuration d'opencode : enabled_providers, IA par défaut et IA des agents", () => {
     const allowed = ["github-copilot"];
     assert.deepEqual(configProviderIssues({ enabled_providers: ["github-copilot"], small_model: "github-copilot/gpt-5-mini" }, allowed), []);
@@ -1190,7 +1220,7 @@ describe("paramètres 0.2.0", () => {
       return new SettingsStore(db).get();
     };
     const plain = legacyRow(null);
-    assert.deepEqual(plain.ui, { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null });
+    assert.deepEqual(plain.ui, { mode: "simple", rulesAcceptedVersion: 0, noticeSeen: null, activityAnnouncements: true, seenOnboarding: [] });
     assert.deepEqual(plain.ai, { tiers: null, chatDefaultTier: "equilibre", allowModelOverride: false });
     assert.equal(legacyRow(OPUS).ai.chatDefaultTier, "expert");
     assert.equal(legacyRow("github-copilot/gpt-5-mini").ai.chatDefaultTier, "rapide");

@@ -52,6 +52,35 @@ export interface UiSettings {
   rulesAcceptedVersion: number;
   /** Version (ex. « 0.2.0 ») dont la notice unique a été vue, sinon null. */
   noticeSeen: string | null;
+  /** 1.1 : annonces du lecteur d'écran pour « Qui travaille ? ». */
+  activityAnnouncements: boolean;
+  /** 1.1 : textes d'accueil déjà vus (identifiants). */
+  seenOnboarding: string[];
+}
+
+/** 1.1 : plafonds par demande du travail délégué par l'IA (hors équipes). */
+export interface DelegationSettings {
+  maxUsdPerRequest: number;
+  maxPerRequest: number;
+}
+
+/** 1.1 : plafonds d'une demande en « Autonome avec contrôle ». */
+export interface AutonomieSettings {
+  plafondUsd: number;
+  plafondMaxUsd: number;
+  actionsMax: number;
+  delegationsMax: number;
+  dureeMinutes: number;
+  fichiersMax: number;
+  controlesIaMax: number;
+  controleIa: boolean;
+}
+
+/** 1.1 : équipes d'assistants. `maxCapUsd` null : 5 % du budget mensuel. */
+export interface TeamsSettings {
+  maxCapUsd: number | null;
+  concurrentSteps: number;
+  maxActiveRuns: number;
 }
 
 // --- Assistants --------------------------------------------------------------------------
