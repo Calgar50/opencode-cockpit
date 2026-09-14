@@ -613,6 +613,11 @@ export const MESSAGES = Object.freeze({
   paquetCopilotRefuse: "Remplacement du module d'accès à GitHub Copilot refusé : il recevrait le jeton Copilot.",
   modeAvance: "Action réservée au mode Avancé (Paramètres › Affichage).",
   sessionsBusy: "Attendez la fin des réponses en cours.",
+  configRestartBusy: "Attendez la fin des réponses en cours : ce changement redémarre opencode, ce qui les couperait.",
+  restartEnCours: "opencode redémarre déjà : réessayez dans une minute.",
+  configRemise: "La version précédente du fichier a été remise.",
+  redemarrerDepuisDiagnostic: "Redémarrez opencode depuis la page Diagnostic.",
+  configNonConfirmee: "opencode a redémarré avec ce fichier mais n'a pas confirmé la configuration : rechargez la page pour vérifier.",
   rejectedByOpencode: "La configuration n'a pas été acceptée : rien n'a été modifié.",
   opencodeInjoignable:
     "Le moteur de l'assistant ne répond pas. Réessayez dans une minute ; si cela continue, ouvrez la page Diagnostic.",

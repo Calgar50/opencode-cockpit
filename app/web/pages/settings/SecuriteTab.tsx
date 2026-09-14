@@ -13,7 +13,7 @@ import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Button, Card, Spinner, useAsync, useConfirm } from "../../components/ui.tsx";
-import { api, errorText } from "../../lib/api.ts";
+import { ApiError, api, errorText } from "../../lib/api.ts";
 import { cockpitEvent, useEvents } from "../../lib/events.ts";
 
 export function SecuriteTab() {
@@ -46,17 +46,19 @@ export function SecuriteTab() {
     const ok = await confirm({
       title: "Revenir au profil Prudent ?",
       message:
-        "Les permissions globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier, lancer une commande, consulter le web ou déléguer.",
+        "Les permissions globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier, lancer une commande, consulter le web ou déléguer. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
       confirmLabel: SECURITY_TEXTS.restorePrudent,
     });
     if (!ok) return;
     setRestoring(true);
     try {
-      await api.restorePrudent();
-      toast.success("Profil Prudent rétabli", "L'assistant demande de nouveau avant chaque action sensible.");
+      const result = await api.restorePrudent();
+      const detail = "L'assistant demande de nouveau avant chaque action sensible.";
+      toast.success("Profil Prudent rétabli", result.restarted ? `opencode a redémarré pour l'appliquer. ${detail}` : detail);
       config.reload();
     } catch (err) {
-      toast.error("Profil non appliqué", err);
+      if (err instanceof ApiError && err.status === 409) toast.warning("Profil non appliqué", err.message);
+      else toast.error("Profil non appliqué", err);
     } finally {
       setRestoring(false);
     }

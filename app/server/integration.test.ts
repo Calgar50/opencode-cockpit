@@ -13,7 +13,7 @@ import { ArchiveService } from "./archive.ts";
 import { AssistantService } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
-import type { ControlService } from "./control.ts";
+import type { ControlService, RestartResult } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { createApp, forbiddenAttachment, forbiddenProxyBody, mergeConfigPatch, parsePermissionReply, PROXY_RULES, turnModelFromBody } from "./http.ts";
@@ -411,6 +411,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let tmp = "";
   /** Interrupteur : GET /agent répond 400 (configuration refusée par opencode). */
   let agentFails = false;
+  /** Nombre de prochains GET /agent qui répondent 500 (panne passagère). */
+  let agentTransientFailures = 0;
   /** Faux opencode : demandes en attente (GET /permission), états (GET /session/status), sous-agents (GET /session/:id/children). */
   let ocPermissions: Array<Record<string, unknown>> = [];
   let ocStatuses: unknown = {};
@@ -428,6 +430,14 @@ describe("serveur HTTP (sécurité et proxy)", () => {
    * GET /session/:id/message/:messageID répond 500 (« message »).
    */
   let permissionLookupFailure: "socket" | "status" | "message" | null = null;
+  /** GET /global/config servi tel quel jusqu'au prochain redémarrage réussi (opencode 1.18.30 garde sa configuration en mémoire) ; undefined : fichiers relus. */
+  let staleGlobalConfig: unknown;
+  /** Faux ControlService : raisons des redémarrages demandés, résultats servis dans l'ordre (sinon restartResult), redémarrage déjà en cours. */
+  const restarts: string[] = [];
+  const RESTART_OK: RestartResult = { ok: true, durationMs: 0, message: "opencode a redémarré." };
+  let restartResult = RESTART_OK;
+  const restartQueue: Array<RestartResult | Error> = [];
+  let restartingNow = false;
   let env: AppEnv;
   let db: DatabaseSync;
   let settings: SettingsStore;
@@ -461,7 +471,13 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         if (pathname === "/global/health") {
           json(200, { healthy: true, version: "test" });
         } else if (req.method === "GET" && pathname === "/agent") {
-          if (agentFails) json(400, { name: "ConfigInvalidError", data: { path: "/oc-config/agents/x.md", issues: [] } });
+          // Fichier de configuration marqué : refusé, comme une configuration invalide relue au démarrage.
+          const configFile = path.join(tmp, "opencode.jsonc");
+          const refusedConfig = fs.existsSync(configFile) && fs.readFileSync(configFile, "utf8").includes("x-refuse-par-opencode");
+          if (agentTransientFailures > 0) {
+            agentTransientFailures--;
+            json(500, { name: "UnknownError", data: { message: "panne passagère simulée" } });
+          } else if (agentFails || refusedConfig) json(400, { name: "ConfigInvalidError", data: { path: "/oc-config/agents/x.md", issues: [] } });
           else json(200, FIXTURE_AGENTS);
         } else if (req.method === "GET" && pathname === "/command") {
           json(200, FIXTURE_COMMANDS);
@@ -470,7 +486,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         } else if (req.method === "GET" && pathname === "/skill") {
           json(200, FIXTURE_SKILLS);
         } else if (req.method === "GET" && pathname === "/global/config") {
-          json(200, globalConfig());
+          json(200, staleGlobalConfig === undefined ? globalConfig() : staleGlobalConfig);
         } else if (req.method === "GET" && pathname === "/permission") {
           const snapshot = ocPermissions;
           if (permissionLookupFailure === "socket") req.socket.destroy();
@@ -589,7 +605,21 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       archive: {} as ArchiveService,
       classifier: {} as Classifier,
       studio,
-      control: { caFilesCount: async () => 0, supervisorPresent: async () => false, restarting: false } as unknown as ControlService,
+      control: {
+        caFilesCount: async () => 0,
+        supervisorPresent: async () => false,
+        get restarting() {
+          return restartingNow;
+        },
+        restartOpencode: async (reason: string) => {
+          restarts.push(reason);
+          const result = restartQueue.shift() ?? restartResult;
+          if (result instanceof Error) throw result;
+          // Un redémarrage réussi relit les fichiers de configuration.
+          if (result.ok) staleGlobalConfig = undefined;
+          return result;
+        },
+      } as unknown as ControlService,
       quota: { copilotConnected: async () => true, latest: () => null } as unknown as QuotaSync,
       processor: { status: { connected: true } } as unknown as EventProcessor,
       copilot: {
@@ -757,13 +787,17 @@ describe("serveur HTTP (sécurité et proxy)", () => {
 
   it("remplace les permissions globales d'un bloc en gardant les commentaires", async () => {
     const file = path.join(tmp, "opencode.jsonc");
-    fs.writeFileSync(file, '{\n  // commentaire conservé\n  "share": "disabled",\n  "permission": { "edit": "ask", "bash": { "*": "ask", "git branch*": "allow" } }\n}\n');
+    fs.writeFileSync(
+      file,
+      '{\n  "enabled_providers": ["github-copilot"],\n  // commentaire conservé\n  "share": "disabled",\n  "permission": { "edit": "ask", "bash": { "*": "ask", "git branch*": "allow" } }\n}\n',
+    );
     // 0.2.0 : écriture réservée au mode Avancé.
     settings.update({ ui: { mode: "avance" } });
     try {
       const permission = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask" };
       const res = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission }));
       assert.equal(res.status, 200, res.body);
+      assert.deepEqual(JSON.parse(res.body), { ok: true, restarted: true });
       const written = fs.readFileSync(file, "utf8");
       assert.match(written, /commentaire conservé/);
       assert.doesNotMatch(written, /git branch/);
@@ -1216,11 +1250,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
 
   it("revient au profil Prudent (mode Simple compris) avec l'écriture vérifiée", async () => {
     const file = path.join(tmp, "opencode.jsonc");
-    fs.writeFileSync(file, '{\n  // commentaire conservé\n  "permission": { "edit": "allow", "bash": "allow" }\n}\n');
+    fs.writeFileSync(file, '{\n  "enabled_providers": ["github-copilot"],\n  // commentaire conservé\n  "permission": { "edit": "allow", "bash": "allow" }\n}\n');
     try {
       const res = await call("POST", "/api/security/restore-prudent", mutating, "{}");
       assert.equal(res.status, 200, res.body);
-      assert.deepEqual(JSON.parse(res.body), { ok: true, permission: PRUDENT });
+      assert.deepEqual(JSON.parse(res.body), { ok: true, permission: PRUDENT, restarted: true });
       const written = fs.readFileSync(file, "utf8");
       assert.match(written, /commentaire conservé/);
       assert.deepEqual(JSON.parse(written.replace(/^\s*\/\/.*$/gm, "")).permission, PRUDENT);
@@ -1234,7 +1268,10 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     const file = path.join(tmp, "opencode.jsonc");
     const other = path.join(tmp, "config.json");
     // jsonc-parser (comme opencode) garde la DERNIÈRE clé en double : c'est elle qui fait foi.
-    fs.writeFileSync(file, '{\n  "permission": { "edit": "ask" },\n  // doublon\n  "permission": { "edit": "allow", "bash": "allow", "task": "allow" }\n}\n');
+    fs.writeFileSync(
+      file,
+      '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" },\n  // doublon\n  "permission": { "edit": "allow", "bash": "allow", "task": "allow" }\n}\n',
+    );
     try {
       const res = await call("POST", "/api/security/restore-prudent", mutating, "{}");
       assert.equal(res.status, 200, res.body);
@@ -1253,6 +1290,135 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       settings.update({ ui: { mode: "simple" } });
       fs.rmSync(file, { force: true });
       fs.rmSync(other, { force: true });
+    }
+  });
+
+  it("configuration gardée en mémoire par opencode : appliquée par un redémarrage, jamais pendant une réponse, version précédente remise en cas d'échec", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const autonome = '{\n  "enabled_providers": ["github-copilot"],\n  // commentaire conservé\n  "permission": { "edit": "allow", "bash": "allow" }\n}\n';
+    fs.writeFileSync(file, autonome);
+    // opencode 1.18.30 ne relit pas une écriture directe du fichier (mesuré) : il sert l'ancienne configuration jusqu'au redémarrage.
+    staleGlobalConfig = globalConfig();
+    const from = restarts.length;
+    try {
+      // Réponse en cours ou redémarrage déjà lancé : rien d'écrit, aucun redémarrage.
+      ocStatuses = { ses_actif: { type: "busy" } };
+      const busy = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(busy.status, 409, busy.body);
+      assert.equal(JSON.parse(busy.body).error, "sessions-busy");
+      ocStatuses = {};
+      restartingNow = true;
+      const restarting = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(restarting.status, 409, restarting.body);
+      assert.equal(JSON.parse(restarting.body).error, "redemarrage-en-cours");
+      // Pendant un redémarrage, une demande facturée est refusée avant d'être relayée.
+      const refusedPrompt = await prompt("ses_1", { parts: text("x") }, confirmedHeaders);
+      assert.equal(refusedPrompt.status, 409, refusedPrompt.body);
+      assert.equal(JSON.parse(refusedPrompt.body).error, "redemarrage-en-cours");
+      restartingNow = false;
+      assert.equal(fs.readFileSync(file, "utf8"), autonome);
+      assert.equal(restarts.length, from);
+
+      // Écrit, appliqué par un redémarrage, puis relu.
+      const applied = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(applied.status, 200, applied.body);
+      assert.deepEqual(JSON.parse(applied.body), { ok: true, permission: PRUDENT, restarted: true });
+      assert.deepEqual(restarts.slice(from), ["application : profil Prudent"]);
+      assert.match(fs.readFileSync(file, "utf8"), /commentaire conservé/);
+
+      // Règles déjà appliquées : aucun redémarrage.
+      const again = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.deepEqual(JSON.parse(again.body), { ok: true, permission: PRUDENT, restarted: false });
+      assert.equal(restarts.length, from + 1);
+
+      // Fichier modifié hors du cockpit, sans verrou « fournisseurs » : refusé (il serait appliqué tel quel), rien d'écrit.
+      const prudentApplied = fs.readFileSync(file, "utf8");
+      const unlocked = '{\n  "permission": { "edit": "allow" }\n}\n';
+      fs.writeFileSync(file, unlocked);
+      const locked = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(locked.status, 422, locked.body);
+      assert.equal(JSON.parse(locked.body).error, "fournisseur-refuse");
+      assert.equal(fs.readFileSync(file, "utf8"), unlocked);
+      assert.equal(restarts.length, from + 1);
+      fs.writeFileSync(file, prudentApplied);
+
+      // opencode ne repart pas : version précédente remise dans le fichier.
+      settings.update({ ui: { mode: "avance" } });
+      const prudentFile = fs.readFileSync(file, "utf8");
+      restartResult = { ok: false, durationMs: 120_000, message: "opencode ne répond pas après 2 minutes : consultez le journal.", failure: "delai-depasse" };
+      const down = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "allow" } }));
+      assert.equal(down.status, 503, down.body);
+      assert.equal(JSON.parse(down.body).error, "redemarrage-echoue");
+      assert.match(JSON.parse(down.body).message, /version précédente du fichier a été remise\. Redémarrez opencode depuis la page Diagnostic/);
+      assert.equal(fs.readFileSync(file, "utf8"), prudentFile);
+
+      // opencode s'arrête à chaque démarrage avec le nouveau fichier : refus, version précédente remise et relue.
+      const beforeLoop = restarts.length;
+      restartResult = RESTART_OK;
+      // Le retour arrière relance opencode avec la version précédente : ce second redémarrage réussit.
+      restartQueue.push({ ok: false, durationMs: 9_000, message: "opencode s'arrête à chaque démarrage : consultez le journal (page Diagnostic).", failure: "arrets-repetes" });
+      const crashed = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "allow" } }));
+      assert.equal(crashed.status, 422, crashed.body);
+      assert.equal(JSON.parse(crashed.body).error, "rejected-by-opencode");
+      assert.equal(JSON.parse(crashed.body).restarted, true);
+      assert.deepEqual(restarts.slice(beforeLoop), ["application : permissions globales", "retour arrière : permissions globales"]);
+      assert.equal(fs.readFileSync(file, "utf8"), prudentFile);
+
+      // Exception pendant le redémarrage (dossier de contrôle non inscriptible…) : version précédente remise, 503.
+      restartQueue.push(new Error("EACCES: permission denied, open '/control/restart-request'"));
+      const thrown = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "allow" } }));
+      assert.equal(thrown.status, 503, thrown.body);
+      assert.equal(JSON.parse(thrown.body).error, "redemarrage-echoue");
+      assert.equal(fs.readFileSync(file, "utf8"), prudentFile);
+
+      // Fichier brut refusé au redémarrage : version précédente remise, relue par un second redémarrage.
+      const beforeRaw = restarts.length;
+      const refused = await call(
+        "PUT",
+        "/api/opencode/config/raw",
+        mutating,
+        JSON.stringify({ content: '{\n  "enabled_providers": ["github-copilot"],\n  "x-refuse-par-opencode": true\n}\n' }),
+      );
+      assert.equal(refused.status, 422, refused.body);
+      assert.equal(JSON.parse(refused.body).error, "rejected-by-opencode");
+      assert.equal(JSON.parse(refused.body).restarted, true);
+      assert.deepEqual(restarts.slice(beforeRaw), ["application : fichier de configuration brut", "retour arrière : fichier de configuration brut"]);
+      assert.equal(fs.readFileSync(file, "utf8"), prudentFile);
+
+      // Fichier brut inchangé : rien à appliquer.
+      const unchanged = await call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content: prudentFile }));
+      assert.deepEqual(JSON.parse(unchanged.body), { ok: true, restarted: false });
+      assert.equal(restarts.length, beforeRaw + 2);
+
+      // Refusé, mais le redémarrage du retour arrière échoue : 503 qui le dit, jamais « restaurée » seul.
+      restartQueue.push(RESTART_OK, { ok: false, durationMs: 120_000, message: "opencode ne répond pas après 2 minutes : consultez le journal.", failure: "delai-depasse" });
+      const stuck = await call(
+        "PUT",
+        "/api/opencode/config/raw",
+        mutating,
+        JSON.stringify({ content: '{\n  "enabled_providers": ["github-copilot"],\n  "x-refuse-par-opencode": true\n}\n' }),
+      );
+      assert.equal(stuck.status, 503, stuck.body);
+      assert.equal(JSON.parse(stuck.body).error, "redemarrage-echoue");
+      assert.match(JSON.parse(stuck.body).message, /ne redémarre pas/);
+      assert.equal(fs.readFileSync(file, "utf8"), prudentFile);
+
+      // Panne passagère juste après le redémarrage : nouvel essai, rien n'est annulé.
+      agentTransientFailures = 1;
+      const transient = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "allow" } }));
+      assert.equal(transient.status, 200, transient.body);
+      assert.deepEqual(JSON.parse(transient.body), { ok: true, restarted: true });
+      assert.equal(agentTransientFailures, 0);
+      assert.deepEqual(parseJsonc(fs.readFileSync(file, "utf8")).permission, { edit: "allow" });
+    } finally {
+      agentTransientFailures = 0;
+      ocStatuses = {};
+      staleGlobalConfig = undefined;
+      restartResult = RESTART_OK;
+      restartQueue.length = 0;
+      restartingNow = false;
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
     }
   });
 

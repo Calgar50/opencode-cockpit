@@ -8,7 +8,7 @@ import { CLASSIFIER_AGENT, CLASSIFIER_AGENT_FILE } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
-import { assertInside, readIfExists, writeFileAtomic } from "./fsutil.ts";
+import { assertInside, readBytesInside, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import type { ProjectsService } from "./projects.ts";
@@ -344,7 +344,8 @@ export class StudioService {
       if (!renaming) {
         const target = existing ?? this.#fileFor(kind, base, DIRS[kind][0], input.name);
         await assertInside(base, target);
-        const backup = existing ? await readIfExists(existing) : null;
+        // Sans suivre de lien (dossier partagé avec opencode) : la sauvegarde est réécrite lors d'un retour arrière.
+        const backup = existing ? await readInside(base, existing) : null;
         await writeFileAtomic(target, content);
         await this.#verifyOrRollback(kind, scope, async () => {
           if (backup !== null) await writeFileAtomic(target, backup);
@@ -417,8 +418,12 @@ export class StudioService {
           issues.push({ path: where, message: "Élément introuvable." });
           continue;
         }
-        await assertInside(base, file);
-        const backup = await fs.readFile(file);
+        // Sans suivre de lien (dossier partagé avec opencode) : la sauvegarde est réécrite telle quelle en cas de refus.
+        const backup = await readBytesInside(base, file);
+        if (backup === null) {
+          issues.push({ path: where, message: "Élément introuvable." });
+          continue;
+        }
         let doc: { data: Record<string, unknown>; body: string };
         try {
           doc = parseFrontmatter(backup.toString("utf8"));

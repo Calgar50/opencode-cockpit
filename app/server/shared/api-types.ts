@@ -407,4 +407,6 @@ export interface BudgetGuardError {
 export interface RestorePrudentResponse {
   ok: true;
   permission: Record<string, unknown>;
+  /** opencode redémarré pour appliquer les règles (false : elles l'étaient déjà). */
+  restarted: boolean;
 }

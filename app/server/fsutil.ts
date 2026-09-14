@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -46,6 +47,45 @@ export async function writeFileAtomic(file: string, content: string): Promise<vo
     await fs.rm(tmp, { force: true });
     throw err;
   }
+}
+
+/**
+ * Lit un fichier ordinaire situé sous `root` sans suivre de lien symbolique, null s'il n'existe pas. Pour les dossiers partagés
+ * avec le conteneur opencode : un lien posé après le contrôle ferait lire au cockpit un de ses propres fichiers
+ * (ex. /proc/self/environ), puis le réécrire dans le dossier partagé (sauvegarde remise lors d'un retour arrière).
+ */
+export async function readBytesInside(root: string, file: string): Promise<Buffer | null> {
+  const target = await assertInside(root, file);
+  let handle: fs.FileHandle;
+  try {
+    const info = await fs.lstat(target);
+    if (info.isSymbolicLink()) throw new PathError("Lien symbolique refusé.");
+    if (!info.isFile()) throw new PathError("Ce chemin n'est pas un fichier ordinaire.");
+    // O_NOFOLLOW (Linux) : le lien est refusé au moment même de l'ouverture, pas seulement au contrôle précédent.
+    handle = await fs.open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    if (err instanceof PathError) throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    if (code === "ELOOP") throw new PathError("Lien symbolique refusé.");
+    throw err;
+  }
+  try {
+    if (!(await handle.stat()).isFile()) throw new PathError("Ce chemin n'est pas un fichier ordinaire.");
+    // Chemin réel du fichier ouvert (Linux) : un dossier parent remplacé par un lien après le contrôle est refusé aussi.
+    const real = await fs.realpath(`/proc/self/fd/${handle.fd}`).catch(() => null);
+    const realRoot = await fs.realpath(root).catch(() => path.resolve(root));
+    if (real !== null && !isInside(realRoot, real)) throw new PathError("Chemin hors du dossier autorisé (lien symbolique).");
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** readBytesInside en texte UTF-8. */
+export async function readInside(root: string, file: string): Promise<string | null> {
+  const bytes = await readBytesInside(root, file);
+  return bytes === null ? null : bytes.toString("utf8");
 }
 
 export async function readIfExists(file: string): Promise<string | null> {

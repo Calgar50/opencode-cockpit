@@ -8,11 +8,13 @@ import { z } from "zod";
 import { buildDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
 import { catalogLite, ModelCatalog } from "./catalog.ts";
 import { extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
+import { ControlService } from "./control.ts";
 import { openDb, openMemoryDb } from "./db.ts";
-import { EnvError, loadEnv, parseAllowedProviders } from "./env.ts";
+import { type AppEnv, EnvError, loadEnv, parseAllowedProviders } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
-import { safeSegment, slugify } from "./fsutil.ts";
+import { PathError, readInside, safeSegment, slugify } from "./fsutil.ts";
 import { classifyHeuristic } from "./heuristic.ts";
+import { createLogger } from "./log.ts";
 import type { OcMessageWithParts, OcSession, OpencodeClient } from "./opencode.ts";
 import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
@@ -1249,6 +1251,112 @@ describe("base", () => {
       }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("redémarrage d'opencode par le superviseur", () => {
+  /** Faux superviseur (docker/opencode/entrypoint.sh) : consomme restart-request et réécrit le marqueur de lancement. */
+  const harness = (options: { healthyAfterRestart: boolean; supervisor?: boolean; relaunchEveryMs?: number }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-control-"));
+    const marker = path.join(dir, "opencode.started");
+    const request = path.join(dir, "restart-request");
+    let launches = 0;
+    let healthy = false;
+    if (options.supervisor !== false) fs.writeFileSync(marker, "1000\n");
+    const timer = setInterval(() => {
+      if (options.supervisor === false) return;
+      if (fs.existsSync(request)) {
+        fs.rmSync(request, { force: true });
+        launches++;
+        fs.writeFileSync(marker, `${1000 + launches}\n`);
+        healthy = options.healthyAfterRestart;
+      } else if (options.relaunchEveryMs && launches > 0) {
+        // opencode qui s'arrête aussitôt lancé : le superviseur le relance en boucle.
+        launches++;
+        fs.writeFileSync(marker, `${1000 + launches}\n`);
+      }
+    }, options.relaunchEveryMs ?? 10);
+    const client = { health: async () => (healthy ? { healthy: true, version: "test" } : null) } as unknown as OpencodeClient;
+    const env = { controlDir: dir } as unknown as AppEnv;
+    const control = new ControlService({ env, client, log: createLogger("error"), pollMs: 5, timeoutMs: 600 });
+    const close = () => {
+      clearInterval(timer);
+      fs.rmSync(dir, { recursive: true, force: true });
+    };
+    return { control, close, request };
+  };
+
+  it("relancé puis joignable : succès", async () => {
+    const h = harness({ healthyAfterRestart: true });
+    try {
+      const result = await h.control.restartOpencode("essai");
+      assert.equal(result.ok, true, result.message);
+      assert.equal(result.failure, undefined);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("opencode qui s'arrête à chaque démarrage : échec « arrets-repetes » sans attendre la fin du délai", async () => {
+    const h = harness({ healthyAfterRestart: false, relaunchEveryMs: 15 });
+    try {
+      const result = await h.control.restartOpencode("configuration invalide");
+      assert.equal(result.ok, false);
+      assert.equal(result.failure, "arrets-repetes");
+      assert.ok(result.durationMs < 500, `${result.durationMs} ms`);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("relancé une fois mais jamais joignable : échec « delai-depasse »", async () => {
+    const h = harness({ healthyAfterRestart: false });
+    try {
+      const result = await h.control.restartOpencode("lent");
+      assert.equal(result.ok, false);
+      assert.equal(result.failure, "delai-depasse");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("sans superviseur : échec immédiat, aucune demande écrite", async () => {
+    const h = harness({ healthyAfterRestart: true, supervisor: false });
+    try {
+      const result = await h.control.restartOpencode("absent");
+      assert.equal(result.failure, "superviseur-absent");
+      assert.equal(fs.existsSync(h.request), false);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe("lecture sans lien symbolique (dossiers partagés avec opencode)", () => {
+  it("lit un fichier ordinaire, null s'il manque ; refuse un dossier, un chemin hors du dossier et un lien", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-inside-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-outside-"));
+    try {
+      fs.writeFileSync(path.join(root, "opencode.jsonc"), "{}\n");
+      fs.writeFileSync(path.join(outside, "hors.txt"), "contenu hors du dossier\n");
+      fs.mkdirSync(path.join(root, "dossier"));
+      assert.equal(await readInside(root, path.join(root, "opencode.jsonc")), "{}\n");
+      assert.equal(await readInside(root, path.join(root, "absent.jsonc")), null);
+      await assert.rejects(readInside(root, path.join(root, "dossier")), PathError);
+      await assert.rejects(readInside(root, path.join(outside, "hors.txt")), PathError);
+      const link = path.join(root, "lien.jsonc");
+      let linked = true;
+      try {
+        fs.symlinkSync(path.join(outside, "hors.txt"), link);
+      } catch {
+        // Windows sans le droit de créer des liens : le cas est couvert sous Linux (conteneur, CI).
+        linked = false;
+      }
+      if (linked) await assert.rejects(readInside(root, link), PathError);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

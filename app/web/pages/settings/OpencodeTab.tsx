@@ -81,15 +81,17 @@ function RawConfigEditor({ reloadToken, onDirty, onSaved }: { reloadToken: numbe
     setSaving(true);
     setRejected(null);
     try {
-      await api.saveOpencodeConfigRaw(content);
+      const result = await api.saveOpencodeConfigRaw(content);
       baselineRef.current = content;
       setState((s) => ({ ...s, baseline: content }));
-      toast.success("Fichier enregistré", "opencode a rechargé sa configuration.");
+      toast.success("Fichier enregistré", result.restarted ? "opencode a redémarré pour l'appliquer." : "opencode utilisait déjà ce fichier.");
       onSaved();
     } catch (err) {
       if (err instanceof ApiError && err.status === 422) {
         const data = (err.data ?? {}) as { restarted?: unknown };
         setRejected({ message: err.message, restarted: data.restarted === true });
+      } else if (err instanceof ApiError && err.status === 409) {
+        toast.warning("Fichier non enregistré", err.message);
       } else {
         toast.error("Enregistrement impossible", err);
       }
@@ -112,7 +114,7 @@ function RawConfigEditor({ reloadToken, onDirty, onSaved }: { reloadToken: numbe
           <DirtyBadge dirty={dirty} />
         </span>
       }
-      subtitle="JSON avec commentaires (JSONC). Un fichier refusé par opencode est restauré automatiquement."
+      subtitle="JSON avec commentaires (JSONC). Enregistrer redémarre opencode quelques secondes pour appliquer le fichier, jamais pendant une réponse ; un fichier refusé par opencode est restauré automatiquement."
       actions={
         <>
           <Button size="sm" variant="ghost" icon="refresh" onClick={() => void reload()} disabled={state.loading}>
@@ -184,16 +186,17 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
     body: Record<string, unknown>,
     title: string,
     send: (body: Record<string, unknown>) => Promise<unknown> = api.patchOpencodeConfig,
+    detail: (result: unknown) => string = () => "opencode a rechargé sa configuration.",
   ): Promise<boolean> => {
     setPatching(section);
     try {
-      await send(body);
-      toast.success(title, "opencode a rechargé sa configuration.");
+      toast.success(title, detail(await send(body)));
       config.reload();
       setRawReload((n) => n + 1);
       return true;
     } catch (err) {
-      toast.error("opencode a refusé la modification", err);
+      if (err instanceof ApiError && err.status === 409) toast.warning("Modification non appliquée", err.message);
+      else toast.error(err instanceof ApiError && err.status === 503 ? "Modification non appliquée" : "opencode a refusé la modification", err);
       return false;
     } finally {
       setPatching(null);
@@ -232,15 +235,19 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
   const applyPreset = async (preset: (typeof PRESETS)[number]) => {
     const ok = await confirm({
       title: `Appliquer le profil « ${preset.title} » ?`,
-      message: preset.danger
-        ? "L'agent pourra modifier des fichiers, lancer n'importe quelle commande et accéder au web sans rien vous demander. À réserver à des projets jetables ou entièrement versionnés."
-        : "Les permissions globales d'opencode seront remplacées pour tous les agents qui n'ont pas leurs propres règles.",
+      message: `${
+        preset.danger
+          ? "L'agent pourra modifier des fichiers, lancer n'importe quelle commande et accéder au web sans rien vous demander. À réserver à des projets jetables ou entièrement versionnés."
+          : "Les permissions globales d'opencode seront remplacées pour tous les agents qui n'ont pas leurs propres règles."
+      } opencode redémarre quelques secondes pour les appliquer, jamais pendant une réponse.`,
       confirmLabel: "Appliquer",
       danger: preset.danger ?? false,
     });
     if (!ok) return;
     // Remplacement complet : aucune ancienne règle du fichier ne survit au profil choisi.
-    await patch(`preset-${preset.id}`, presetPermission(preset.id), `Profil « ${preset.title} » appliqué`, api.putOpencodePermission);
+    await patch(`preset-${preset.id}`, presetPermission(preset.id), `Profil « ${preset.title} » appliqué`, api.putOpencodePermission, (result) =>
+      (result as { restarted?: unknown }).restarted === true ? "opencode a redémarré pour appliquer ces règles." : "Ces règles étaient déjà appliquées.",
+    );
   };
 
   if (config.loading && !config.data) {
@@ -418,7 +425,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
           </div>
           <p className="small muted">
             Dans les règles par motif, la dernière règle correspondante l'emporte. Appliquer un profil remplace toutes les permissions globales du
-            fichier ; le fichier brut permet un contrôle total.
+            fichier, puis redémarre opencode pour les appliquer ; le fichier brut permet un contrôle total.
           </p>
           <div className="stack tight">
             <span className="field-label">Permissions actuelles{activePreset ? "" : " (personnalisées)"}</span>

@@ -9,13 +9,14 @@ import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { ArchiveService } from "./archive.ts";
+import { probeSessionsBusy } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
-import { assertInside, PathError, readIfExists, writeFileAtomic } from "./fsutil.ts";
+import { assertInside, PathError, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { applyEdits, modify, parse as parseJsonc, parseTree } from "jsonc-parser";
 import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
@@ -1154,6 +1155,8 @@ export function createApp(deps: AppDeps): Hono {
     const method = c.req.method.toUpperCase();
     const matched = PROXY_RULES.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
+    // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée.
+    if (matched.guarded && (configApplying || control.restarting)) return fail(c, 409, "redemarrage-en-cours", MESSAGES.restartEnCours);
 
     const incoming = new URL(c.req.url);
     const target = client.url(sub);
@@ -1541,7 +1544,7 @@ export function createApp(deps: AppDeps): Hono {
   const configFile = async () => {
     for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
       const file = path.join(env.opencodeConfigDir, name);
-      if ((await readIfExists(file)) !== null) return file;
+      if ((await readInside(env.opencodeConfigDir, file)) !== null) return file;
     }
     return path.join(env.opencodeConfigDir, "opencode.jsonc");
   };
@@ -1566,36 +1569,165 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/opencode/config/raw", async (c) => {
     const file = await configFile();
-    return c.json({ file: path.basename(file), content: (await readIfExists(file)) ?? "" });
+    return c.json({ file: path.basename(file), content: (await readInside(env.opencodeConfigDir, file)) ?? "" });
   });
 
-  /** Écrit la configuration, la fait relire par opencode et revient à la version précédente s'il la refuse. */
-  const writeConfigChecked = async (file: string, content: string, backup: string | null, reason: string) => {
-    await writeFileAtomic(file, content);
-    await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
-    try {
-      await client.request("GET", "/global/config", { timeoutMs: 20_000 });
-      await client.request("GET", "/agent", { timeoutMs: 20_000 });
-    } catch (err) {
-      if (backup !== null) await writeFileAtomic(file, backup);
-      await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
-      const stillBroken = await client.request("GET", "/agent", { timeoutMs: 20_000 }).then(() => false, () => true);
-      const restarted = stillBroken ? (await control.restartOpencode(reason)).ok : false;
-      return { ok: false as const, error: errorMessage(err), restarted };
+  /** Conversation en cours : un redémarrage d'opencode la couperait. */
+  const sessionsBusy = () => probeSessionsBusy({ client, projects, db: deps.db });
+
+  // Une application de configuration à la fois : chacune peut redémarrer opencode.
+  let configQueue: Promise<unknown> = Promise.resolve();
+  const oneConfigWrite = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = configQueue.then(task, task);
+    configQueue = run.catch(() => undefined);
+    return run;
+  };
+
+  type ConfigFailure =
+    | "sessions-busy"
+    | "redemarrage-en-cours"
+    | "opencode-injoignable"
+    | "redemarrage-echoue"
+    | "configuration-non-confirmee"
+    | "rejected-by-opencode";
+  type ConfigApply = { ok: true; restarted: boolean } | { ok: false; error: ConfigFailure; message: string; restarted: boolean };
+
+  const restartInProgress = (): Extract<ConfigApply, { ok: false }> => ({
+    ok: false,
+    error: "redemarrage-en-cours",
+    message: MESSAGES.restartEnCours,
+    restarted: false,
+  });
+  const opencodeUnreachable = (): Extract<ConfigApply, { ok: false }> => ({
+    ok: false,
+    error: "opencode-injoignable",
+    message: MESSAGES.opencodeInjoignable,
+    restarted: false,
+  });
+
+  /**
+   * Verdict d'opencode sur la configuration relue après un redémarrage : null si elle est acceptée, `refus` pour un 400
+   * (ConfigInvalidError, comme la vérification du Studio), `incertain` si opencode répond mal trois fois de suite.
+   */
+  const configVerdict = async (): Promise<{ refus: string } | { incertain: string } | null> => {
+    let last = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 3_000));
+      try {
+        await client.request("GET", "/global/config", { timeoutMs: 30_000 });
+        await client.request("GET", "/agent", { timeoutMs: 30_000 });
+        return null;
+      } catch (err) {
+        if (err instanceof OpencodeError && err.status === 400) return { refus: errorMessage(err) };
+        last = errorMessage(err);
+      }
     }
-    await catalog.refresh().catch(() => undefined);
-    hub.cockpit("opencode.config.changed", {});
-    return { ok: true as const };
+    return { incertain: last };
+  };
+
+  /** Remet la version précédente du fichier (supprimé s'il n'existait pas). */
+  const restoreConfig = (file: string, backup: string | null) => (backup === null ? fs.rm(file, { force: true }) : writeFileAtomic(file, backup));
+
+  /** Redémarrage qui applique le fichier déjà écrit, puis verdict ; version précédente remise sur refus ou échec. */
+  const restartOnConfig = async (file: string, backup: string | null, what: string): Promise<ConfigApply> => {
+    let refusal: string;
+    try {
+      const restart = await control.restartOpencode(`application : ${what}`);
+      if (restart.ok) {
+        const verdict = await configVerdict();
+        if (verdict === null) {
+          await catalog.refresh().catch(() => undefined);
+          return { ok: true, restarted: true };
+        }
+        // opencode tourne avec ce fichier sans le confirmer : il est gardé (un fichier invalide l'arrête au démarrage ou donne un 400).
+        if ("incertain" in verdict) {
+          return { ok: false, error: "configuration-non-confirmee", message: `${MESSAGES.configNonConfirmee} (${verdict.incertain})`, restarted: true };
+        }
+        refusal = verdict.refus;
+      } else if (restart.failure === "arrets-repetes") {
+        // opencode répondait juste avant l'écriture (sondage des réponses en cours) : ses arrêts répétés viennent du fichier.
+        refusal = restart.message;
+      } else {
+        await restoreConfig(file, backup);
+        const hint = restart.failure === "delai-depasse" ? ` ${MESSAGES.redemarrerDepuisDiagnostic}` : "";
+        return { ok: false, error: "redemarrage-echoue", message: `${restart.message} ${MESSAGES.configRemise}${hint}`, restarted: false };
+      }
+    } catch (err) {
+      await restoreConfig(file, backup);
+      return {
+        ok: false,
+        error: "redemarrage-echoue",
+        message: `${errorMessage(err)} ${MESSAGES.configRemise} ${MESSAGES.redemarrerDepuisDiagnostic}`,
+        restarted: false,
+      };
+    }
+    await restoreConfig(file, backup);
+    const back = await control.restartOpencode(`retour arrière : ${what}`).catch((err: unknown) => ({ ok: false, message: errorMessage(err) }));
+    if (!back.ok) {
+      return {
+        ok: false,
+        error: "redemarrage-echoue",
+        message: `opencode a refusé ce fichier (${refusal}). ${MESSAGES.configRemise} Mais opencode ne redémarre pas : ${back.message}`,
+        restarted: false,
+      };
+    }
+    return { ok: false, error: "rejected-by-opencode", message: refusal, restarted: true };
+  };
+
+  /** Application de configuration en cours : les demandes facturées sont refusées (le redémarrage les couperait). */
+  let configApplying = false;
+
+  /**
+   * Écrit la configuration globale puis redémarre opencode pour l'appliquer : opencode 1.18.30 la garde en mémoire et ne relit
+   * pas une écriture directe du fichier, même après /global/dispose (mesuré). Jamais pendant une réponse ni un redémarrage.
+   */
+  const applyConfigFile = async (file: string, content: string, backup: string | null, what: string): Promise<ConfigApply> => {
+    if (control.restarting) return restartInProgress();
+    configApplying = true;
+    try {
+      let busy: boolean;
+      try {
+        busy = await sessionsBusy();
+      } catch {
+        return opencodeUnreachable();
+      }
+      if (busy) return { ok: false, error: "sessions-busy", message: MESSAGES.configRestartBusy, restarted: false };
+      await writeFileAtomic(file, content);
+      const outcome = await restartOnConfig(file, backup, what);
+      // Après le dernier redémarrage : l'interface relit la configuration qui tourne vraiment.
+      hub.cockpit("opencode.config.changed", {});
+      return outcome;
+    } finally {
+      configApplying = false;
+    }
+  };
+
+  const configFailure = (c: Context, result: Extract<ConfigApply, { ok: false }>, refused: string) => {
+    switch (result.error) {
+      case "sessions-busy":
+      case "redemarrage-en-cours":
+        return fail(c, 409, result.error, result.message);
+      case "rejected-by-opencode":
+        return fail(c, 422, result.error, `${refused} : ${result.message}`, { restarted: result.restarted });
+      default:
+        return fail(c, 503, result.error, result.message);
+    }
   };
 
   app.put("/api/opencode/config/raw", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders, env.githubEnterpriseDomain);
     if (issues.length > 0) return refuseProviders(c, issues);
-    const file = await assertInside(env.opencodeConfigDir, await configFile());
-    const result = await writeConfigChecked(file, content, await readIfExists(file), "configuration brute invalide annulée");
-    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ce fichier : ${result.error}`, { restarted: result.restarted });
-    return c.json({ ok: true });
+    const root = env.opencodeConfigDir;
+    const file = await assertInside(root, await configFile());
+    const result = await oneConfigWrite(async (): Promise<ConfigApply> => {
+      if (control.restarting) return restartInProgress();
+      // Relue dans la file, sans suivre de lien : c'est la version remise en cas de refus.
+      const backup = await readInside(root, file);
+      return backup === content ? { ok: true, restarted: false } : applyConfigFile(file, content, backup, "fichier de configuration brut");
+    });
+    if (!result.ok) return configFailure(c, result, "opencode a refusé ce fichier");
+    return c.json({ ok: true, restarted: result.restarted });
   });
 
   const permissionAction = z.enum(["ask", "allow", "deny"]);
@@ -1604,58 +1736,81 @@ export function createApp(deps: AppDeps): Hono {
     z.union([permissionAction, z.record(z.string().min(1).max(512), permissionAction)]),
   );
 
-  type PermissionWrite = { ok: true } | { ok: false; error: string; restarted: boolean; notApplied?: boolean };
+  type PermissionWrite =
+    | ConfigApply
+    | { ok: false; error: "permissions-non-appliquees"; message: string; restarted: boolean }
+    | { ok: false; error: "fournisseur-refuse"; message: string; restarted: false; issues: IssueLite[] };
 
   // Remplace le bloc « permission » d'un seul tenant (commentaires du fichier conservés). Le PATCH d'opencode
   // fusionne clé par clé : il garderait d'anciennes règles et échoue quand une valeur texte devient un objet.
-  const replacePermission = async (permission: Record<string, unknown>, reason: string): Promise<PermissionWrite> => {
-    const file = await assertInside(env.opencodeConfigDir, await configFile());
-    const backup = await readIfExists(file);
-    const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
-    let source = backup ?? "{}\n";
-    // Clés « permission » en double : modify() changerait la première, opencode lit la dernière. Les premières sont retirées.
-    for (let count = permissionKeyCount(source); count > 1; count--) source = applyEdits(source, modify(source, ["permission"], undefined, format));
-    const content = applyEdits(source, modify(source, ["permission"], permission, format));
-    const result = await writeConfigChecked(file, content, backup, reason);
-    if (!result.ok) return result;
-    // Règles réellement appliquées (opencode fusionne config.json, opencode.json puis opencode.jsonc) : jamais de faux succès.
-    const effective = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => null);
-    if (isRecord(effective) && isDeepStrictEqual(effective.permission, permission)) return result;
-    if (!isRecord(effective)) {
-      return { ok: false, notApplied: true, restarted: false, error: "Permissions écrites, mais opencode n'a pas pu confirmer les règles appliquées. Rechargez la page pour vérifier." };
-    }
-    const others: string[] = [];
-    for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
-      if (name !== path.basename(file) && (await readIfExists(path.join(env.opencodeConfigDir, name))) !== null) others.push(name);
-    }
-    const cause = others.length > 0 ? ` : ${others.join(", ")} y ajoute ou y change des règles` : "";
-    return {
-      ok: false,
-      notApplied: true,
-      restarted: false,
-      error: `Permissions écrites dans ${path.basename(file)}, mais opencode en applique d'autres${cause}. Corrigez la configuration (Paramètres › opencode) puis réessayez.`,
-    };
-  };
+  const replacePermission = (permission: Record<string, unknown>, what: string): Promise<PermissionWrite> =>
+    oneConfigWrite(async (): Promise<PermissionWrite> => {
+      if (control.restarting) return restartInProgress();
+      const root = env.opencodeConfigDir;
+      const file = await assertInside(root, await configFile());
+      // Sans suivre de lien : ce texte est réécrit dans le dossier partagé avec opencode.
+      const backup = await readInside(root, file);
+      const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+      let source = backup ?? "{}\n";
+      // Clés « permission » en double : modify() changerait la première, opencode lit la dernière. Les premières sont retirées.
+      for (let count = permissionKeyCount(source); count > 1; count--) source = applyEdits(source, modify(source, ["permission"], undefined, format));
+      const content = applyEdits(source, modify(source, ["permission"], permission, format));
+      // Le fichier obtenu est appliqué tel quel au redémarrage : il doit garder le verrou « fournisseurs », comme le fichier brut.
+      const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders, env.githubEnterpriseDomain);
+      if (issues.length > 0) return { ok: false, error: "fournisseur-refuse", message: MESSAGES.providerLockRefused, restarted: false, issues };
+      // Règles déjà appliquées par opencode : fichier mis au propre, sans redémarrage.
+      const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => undefined);
+      if (current === undefined) return opencodeUnreachable();
+      if (isRecord(current) && isDeepStrictEqual(current.permission, permission)) {
+        if (content !== backup) await writeFileAtomic(file, content);
+        return { ok: true, restarted: false };
+      }
+      const result = await applyConfigFile(file, content, backup, what);
+      if (!result.ok) return result;
+      // Règles réellement appliquées (opencode fusionne config.json, opencode.json puis opencode.jsonc) : jamais de faux succès.
+      const effective = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => null);
+      if (isRecord(effective) && isDeepStrictEqual(effective.permission, permission)) return result;
+      if (!isRecord(effective)) {
+        return {
+          ok: false,
+          error: "permissions-non-appliquees",
+          restarted: true,
+          message: "Permissions écrites et opencode redémarré, mais les règles appliquées n'ont pas pu être relues. Rechargez la page pour vérifier.",
+        };
+      }
+      const others: string[] = [];
+      for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
+        if (name !== path.basename(file) && (await readInside(root, path.join(root, name)).catch(() => "")) !== null) others.push(name);
+      }
+      const cause = others.length > 0 ? ` : ${others.join(", ")} y ajoute ou y change des règles` : "";
+      return {
+        ok: false,
+        error: "permissions-non-appliquees",
+        restarted: true,
+        message: `Permissions écrites dans ${path.basename(file)}, mais opencode en applique d'autres${cause}. Corrigez la configuration (Paramètres › opencode) puis réessayez.`,
+      };
+    });
 
-  const permissionFailure = (c: Context, result: Extract<PermissionWrite, { ok: false }>) =>
-    result.notApplied
-      ? fail(c, 422, "permissions-non-appliquees", result.error)
-      : fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
+  const permissionFailure = (c: Context, result: Extract<PermissionWrite, { ok: false }>) => {
+    if (result.error === "fournisseur-refuse") return refuseProviders(c, result.issues);
+    if (result.error === "permissions-non-appliquees") return fail(c, 422, result.error, result.message);
+    return configFailure(c, result, "opencode a refusé ces permissions");
+  };
 
   app.put("/api/opencode/config/permission", advanced, bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
     const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
-    const result = await replacePermission(permission, "permissions invalides annulées");
+    const result = await replacePermission(permission, "permissions globales");
     if (!result.ok) return permissionFailure(c, result);
-    return c.json({ ok: true });
+    return c.json({ ok: true, restarted: result.restarted });
   });
 
   // Paramètres › Sécurité (les deux modes) : revenir au profil Prudent, avec la même écriture vérifiée.
   app.post("/api/security/restore-prudent", bodyLimit({ maxSize: 4_096 }), async (c) => {
     z.strictObject({}).parse(await c.req.json().catch(() => null));
     const permission = presetPermission("prudent");
-    const result = await replacePermission(permission, "profil Prudent refusé, configuration précédente rétablie");
+    const result = await replacePermission(permission, "profil Prudent");
     if (!result.ok) return permissionFailure(c, result);
-    const response: RestorePrudentResponse = { ok: true, permission };
+    const response: RestorePrudentResponse = { ok: true, permission, restarted: result.restarted };
     return c.json(response);
   });
 
