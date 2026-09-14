@@ -750,11 +750,23 @@ export function ChatPage() {
     }
   };
 
-  const replyPermission = async (request: PermissionRequest, reply: "once" | "always" | "reject", message?: string) => {
+  const replyPermission = async (request: PermissionRequest, reply: "once" | "reject", message?: string) => {
+    const drop = () => setPermissions((list) => list.filter((r) => r.id !== request.id));
     try {
       await oc.replyPermission(request.id, sessionDirectory, reply, message);
-      setPermissions((list) => list.filter((r) => r.id !== request.id));
+      drop();
     } catch (err) {
+      // Réponse arrêtée entre-temps : le serveur n'a rien relayé, la demande ne peut plus être autorisée.
+      if (err instanceof ApiError && err.status === 409 && err.code === "demande-expiree") {
+        drop();
+        toast.warning("Demande expirée", err.message);
+        return;
+      }
+      // Refus d'une demande d'une réponse arrêtée pendant que la conversation retravaille : rien n'a été relayé, la carte reste.
+      if (err instanceof ApiError && err.status === 409 && err.code === "demande-orpheline") {
+        toast.warning("Refus différé", err.message);
+        return;
+      }
       toast.error("Réponse impossible", err);
     }
   };
@@ -898,6 +910,26 @@ export function ChatPage() {
 
   const relatedIds = new Set([sessionId, ...children.map((c) => c.id)].filter((id): id is string => Boolean(id)));
   const localPermissions = permissions.filter((r) => relatedIds.has(r.sessionID));
+  /** Conversation qui travaille (en cours ou nouvelle tentative) : seules ses demandes peuvent encore être autorisées. */
+  const isWorking = (sid: string) => {
+    const type = statuses[sid]?.type;
+    return type === "busy" || type === "retry";
+  };
+  /**
+   * La demande peut encore être autorisée : sa conversation travaille ET l'appel d'outil qui l'a posée est toujours en cours.
+   * Après un arrêt, opencode garde la demande même quand un nouveau message fait retravailler la conversation : sa partie
+   * « tool » est alors en erreur (« Tool execution aborted »). Appel absent du fil (sous-agent, fil en chargement) : le
+   * serveur vérifie lui-même l'appel avant de relayer.
+   */
+  const canAllow = (request: PermissionRequest) => {
+    if (!isWorking(request.sessionID)) return false;
+    if (!request.tool) return true;
+    const { messageID, callID } = request.tool;
+    const entry = transcript.byId.get(messageID);
+    if (entry?.info.role === "assistant" && entry.info.error) return false;
+    const part = entry?.parts.find((p) => p.type === "tool" && p.callID === callID);
+    return !part || (part.type === "tool" && part.state.status === "running");
+  };
   // Consigne d'un travail délégué en attente d'autorisation : opencode ne la joint pas à la demande.
   const taskPromptFor = (request: (typeof permissions)[number]): string | undefined => {
     if (request.permission !== "task" || !request.tool) return undefined;
@@ -1071,7 +1103,7 @@ export function ChatPage() {
               <PermissionPrompt
                 key={request.id}
                 request={request}
-                simpleMode={!advanced}
+                active={canAllow(request)}
                 sessionTitle={request.sessionID !== sessionId ? children.find((c) => c.id === request.sessionID)?.title : undefined}
                 taskPrompt={taskPromptFor(request)}
                 onReply={(reply, message) => replyPermission(request, reply, message)}

@@ -61,6 +61,7 @@ const classifier = new Classifier({
   hub,
   log,
   opencodeWorkspaceDir: env.opencodeWorkspaceDir,
+  allowedProviders: env.allowedProviders,
 });
 // Avec le catalogue : une IA absente du compte Copilot (ou catalogue jamais lu) est refusée à l'enregistrement.
 const studio = new StudioService({ env, client, projects, control, log, catalog });

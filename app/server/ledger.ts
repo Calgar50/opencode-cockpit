@@ -4,6 +4,7 @@ import type { ModelCatalog } from "./catalog.ts";
 import { type ChatTurnRow, params } from "./db.ts";
 import type { OcAssistantMessage, OcUserMessage } from "./opencode.ts";
 import { type ModelPrice, type PricingContext, resolveMessageCost, resolvePrice, roundUsd, usdToCredits } from "./pricing.ts";
+import { redactSecrets } from "./redact.ts";
 import type { SessionRow } from "./sessions.ts";
 import type { SettingsStore } from "./settings.ts";
 import type { BudgetGuardError, ChoicesResponse } from "./shared/api-types.ts";
@@ -198,12 +199,6 @@ export class Ledger {
           created_at: msg.time.created,
         }),
       );
-  }
-
-  setPromptPreview(messageId: string, text: string): void {
-    const preview = text.replace(/\s+/g, " ").trim().slice(0, 280);
-    if (!preview) return;
-    this.#db.prepare("UPDATE prompts SET preview = ? WHERE message_id = ? AND preview = ''").run(preview, messageId);
   }
 
   /** Réapplique la tarification (après modification de la grille) sur un mois donné. */
@@ -556,7 +551,7 @@ export class Ledger {
     ];
     const lines = rows.map((r) =>
       [
-        new Date(Number(r.created_at)).toISOString(), r.root_id, r.title, r.category, r.session_id, r.directory, r.agent, r.purpose,
+        new Date(Number(r.created_at)).toISOString(), r.root_id, redactSecrets(String(r.title ?? "")), r.category, r.session_id, r.directory, r.agent, r.purpose,
         r.provider_id, r.model_id, r.tokens_input, r.tokens_output, r.tokens_reasoning, r.tokens_cache_read, r.tokens_cache_write,
         Number(r.cost).toFixed(6), usdToCredits(Number(r.cost)), r.cost_source,
       ]
@@ -570,6 +565,9 @@ export class Ledger {
 /** Cellule CSV sûre : guillemets échappés et neutralisation des formules (injection CSV dans Excel). */
 export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? "" : String(value);
+  // Excel en français sépare les colonnes par « ; » : une formule qui suit un « ; », une tabulation ou un retour à la ligne
+  // (éventuellement derrière des espaces ou des guillemets) deviendrait une cellule évaluée à l'ouverture du fichier.
+  text = text.replace(/([;\t\r\n][ "]*)([=+\-@])/g, "$1'$2");
   if (/^[=+\-@\t\r]/.test(text) && !/^-?\d+(\.\d+)?$/.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }

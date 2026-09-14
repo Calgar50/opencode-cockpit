@@ -48,8 +48,9 @@ export SSL_CERT_FILE="$BUNDLE" CURL_CA_BUNDLE="$BUNDLE" GIT_SSL_CAINFO="$BUNDLE"
 printf '%s\n' "$count" > "$CONTROL_DIR/ca-files.count"
 log "certificats d'entreprise chargés : $count fichier(s)"
 
+# Exactement « 1 », comme le cockpit (bandeau rouge) et les Dockerfiles : aucune autre valeur ne coupe la vérification.
 case "${COCKPIT_TLS_INSECURE:-0}" in
-  1|true|TRUE|yes)
+  1)
     export NODE_TLS_REJECT_UNAUTHORIZED=0 GIT_SSL_NO_VERIFY=1 npm_config_strict_ssl=false
     log "ATTENTION : vérification TLS DÉSACTIVÉE (COCKPIT_TLS_INSECURE=1)"
     ;;
@@ -66,9 +67,12 @@ if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}" ]; then log "proxy sortant configuré"
 # --- Configuration par projet -------------------------------------------------------
 # Désactivée par défaut : un dépôt pourrait livrer dans .opencode/ des plugins exécutés
 # sans confirmation dès l'ouverture du projet. COCKPIT_PROJECT_CONFIG=1 pour l'autoriser.
+# Les fiches des dépôts (.agents/skills, .claude/skills) sont lues même sans configuration par projet
+# (skill/index.ts) et une fiche du dépôt peut remplacer une fiche globale du même nom : désactivées aussi.
+# Les fiches globales (~/.config/opencode/skills, gérées par le cockpit) restent chargées.
 if [ "${COCKPIT_PROJECT_CONFIG:-0}" != "1" ]; then
-  export OPENCODE_DISABLE_PROJECT_CONFIG=1
-  log "configuration par projet (.opencode/ des dépôts) désactivée"
+  export OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+  log "configuration et fiches par projet (.opencode/, .agents/skills des dépôts) désactivées"
 else
   log "ATTENTION : configuration par projet autorisée (COCKPIT_PROJECT_CONFIG=1)"
 fi

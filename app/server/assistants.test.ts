@@ -766,8 +766,14 @@ describe("modes Simple et Avancé", () => {
     assert.equal(fallback.effectiveRules, false);
     assert.equal(fallback.title, "Conseiller");
     assert.deepEqual(decisions(fallback), ["demande", "demande"]);
-    // agent.plan.permission dans la configuration : la lecture seule est garantie, le titre le dit.
+    // agent.plan.permission { edit: deny, bash: deny } : il peut encore déléguer à un sous-agent qui, lui, modifie ou exécute.
     h.state.globalConfig = { permission: PRUDENT, agent: { plan: { permission: { edit: "deny", bash: "deny" } } } };
+    const delegating = await planOf();
+    assert.equal(delegating.title, "Conseiller");
+    assert.deepEqual(decisions(delegating), ["non", "non"]);
+    assert.equal((delegating.rightLines as Json[]).find((l) => l.id === "delegation")?.kind, "demande");
+    // Délégation refusée aussi : la lecture seule est garantie, le titre le dit.
+    h.state.globalConfig = { permission: PRUDENT, agent: { plan: { permission: { edit: "deny", bash: "deny", task: "deny" } } } };
     const locked = await planOf();
     assert.equal(locked.title, "Conseiller (lecture seule)");
     assert.equal(locked.help, "Réfléchit et propose un plan, sans rien modifier.");

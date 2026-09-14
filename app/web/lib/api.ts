@@ -312,7 +312,13 @@ export const oc = {
   summarize: (id: string, directory: string, model: { providerID: string; modelID: string }, confirm = false) =>
     http.post<boolean>(`/api/oc/session/${enc(id)}/summarize${query({ directory })}`, model, { confirm }),
   permissions: (directory?: string) => http.get<PermissionRequest[]>(`/api/oc/permission${query({ directory })}`),
-  replyPermission: (requestID: string, directory: string | undefined, reply: "once" | "always" | "reject", message?: string) =>
+  /**
+   * Jamais « always » (refusé par le serveur, 403 toujours-refuse). « once » : 409 demande-expiree si la demande n'est plus
+   * active (conversation arrêtée, ou appel d'outil arrêté alors que la conversation retravaille), rien n'est relayé.
+   * « reject » : 409 demande-orpheline si la demande vient d'une réponse arrêtée alors que la conversation retravaille
+   * (opencode refuserait aussi les demandes de la réponse en cours), rien n'est relayé.
+   */
+  replyPermission: (requestID: string, directory: string | undefined, reply: "once" | "reject", message?: string) =>
     http.post<boolean>(`/api/oc/permission/${enc(requestID)}/reply${query({ directory })}`, message ? { reply, message } : { reply }),
   questions: (directory?: string) => http.get<QuestionRequest[]>(`/api/oc/question${query({ directory })}`),
   replyQuestion: (requestID: string, directory: string | undefined, answers: string[][]) =>

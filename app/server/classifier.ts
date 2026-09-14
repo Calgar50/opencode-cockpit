@@ -9,6 +9,7 @@ import { errorMessage, type Logger } from "./log.ts";
 import type { OcAssistantMessage, OcPart, OcSession, OpencodeClient } from "./opencode.ts";
 import { CLASSIFIER_TITLE_PREFIX, type SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
+import { providerOf } from "./shared/assistant-rules.ts";
 
 export const CLASSIFIER_AGENT = "cockpit-classifier";
 
@@ -32,14 +33,19 @@ const PREFERRED_MODELS = [
   "github-copilot/claude-haiku-4.5",
 ];
 
-export function pickClassifierModel(configured: string | null, catalog: ModelCatalog): string | null {
-  if (configured) return configured;
+/**
+ * IA de classement. Le classificateur appelle opencode directement, sans le proxy : une IA configurée d'un fournisseur hors de
+ * COCKPIT_ALLOWED_PROVIDERS est ignorée (choix automatique), sinon chaque conversation lui serait envoyée.
+ */
+export function pickClassifierModel(configured: string | null, catalog: ModelCatalog, allowedProviders: readonly string[]): string | null {
+  const allowed = (key: string) => allowedProviders.includes(providerOf(key));
+  if (configured && allowed(configured)) return configured;
   const models = catalog.list();
   const available = new Set(models.map((m) => m.key));
-  for (const key of PREFERRED_MODELS) if (available.has(key)) return key;
+  for (const key of PREFERRED_MODELS) if (available.has(key) && allowed(key)) return key;
   // Repli limité à GitHub Copilot : le classement n'envoie jamais de conversation à un autre fournisseur.
   const cheapest = models
-    .filter((m) => m.price !== null && m.key.startsWith("github-copilot/"))
+    .filter((m) => m.price !== null && m.key.startsWith("github-copilot/") && allowed(m.key))
     .sort((a, b) => (a.price?.rates.output ?? 0) + (a.price?.rates.input ?? 0) - ((b.price?.rates.output ?? 0) + (b.price?.rates.input ?? 0)));
   return cheapest[0]?.key ?? null;
 }
@@ -136,6 +142,8 @@ export interface ClassifierDeps {
   hub: EventHub;
   log: Logger;
   opencodeWorkspaceDir: string;
+  /** COCKPIT_ALLOWED_PROVIDERS : seuls fournisseurs qui peuvent recevoir une conversation à classer. */
+  allowedProviders: readonly string[];
 }
 
 export class Classifier {
@@ -198,7 +206,10 @@ export class Classifier {
       }
       let result = classifyHeuristic(refreshed.digest, settings.categories);
       if (settings.mode === "llm" || (options.force && settings.mode !== "heuristic")) {
-        const model = pickClassifierModel(settings.model, this.#d.catalog);
+        if (settings.model && !this.#d.allowedProviders.includes(providerOf(settings.model))) {
+          this.#d.log.warn("IA de classement d'un fournisseur non autorisé ignorée : choix automatique", { model: settings.model.slice(0, 200) });
+        }
+        const model = pickClassifierModel(settings.model, this.#d.catalog, this.#d.allowedProviders);
         if (model) {
           try {
             result = (await this.#classifyWithModel(refreshed.digest, settings.categories, refreshed.conversation.project, model)) ?? result;

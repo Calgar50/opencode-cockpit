@@ -3,9 +3,8 @@
 ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 
 FROM ${NODE_IMAGE} AS build
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
+# Proxy d'entreprise : HTTP_PROXY, HTTPS_PROXY et NO_PROXY sont des arguments prédéfinis de Docker, transmis aux étapes
+# RUN sans être déclarés ; les déclarer (ARG) inscrirait leur valeur, identifiants compris, dans l'historique.
 ARG COCKPIT_TLS_INSECURE=0
 WORKDIR /src
 

@@ -81,7 +81,7 @@ export function AdoptDialog({ item, onClose, onDone }: { item: ToCompleteItem | 
       {item ? (
         <div className="stack">
           <p className="secondary">
-            « {item.name} » a été créé avant la version 0.2. Donnez-lui un titre pour le retrouver parmi vos assistants. Son fichier n'est pas
+            « {item.name} » a été créé avant la version 1.0. Donnez-lui un titre pour le retrouver parmi vos assistants. Son fichier n'est pas
             modifié : son IA et ses droits restent ceux d'aujourd'hui.
           </p>
           <Field label="Nom de l'assistant" htmlFor={ids.title} hint="Un verbe et une tâche. C'est ce que vous verrez dans le chat." error={attempted ? titleError : null}>

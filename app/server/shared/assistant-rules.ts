@@ -591,6 +591,8 @@ export const MESSAGES = Object.freeze({
   agentMissingTitle: "Assistant introuvable",
   delegatedHelp: "Après le travail délégué, l'IA de la conversation reprend la main pour résumer le résultat et peut poursuivre.",
   testProviderBanner: "Mode test : un fournisseur autre que GitHub Copilot est autorisé.",
+  providerLockBanner: "Configuration d'opencode : un fournisseur d'IA non autorisé peut recevoir du code.",
+  providerLockRefused: "Configuration refusée : elle ouvrirait opencode à un fournisseur d'IA non autorisé.",
   confidentialityBanner:
     "Avant d'envoyer : aucune donnée client, aucun mot de passe, aucune clé. Relisez toujours la réponse : l'IA peut se tromper.",
   catalogueReview: "Exemple à relire avec votre équipe",
@@ -948,7 +950,7 @@ export const RIGHTS_INFO: Readonly<Record<RightsLabel, { label: string; help: st
 /**
  * Assistants intégrés d'opencode, tels qu'affichés quand leurs règles effectives sont inconnues. opencode 1.18.30
  * n'impose pas la lecture seule au Conseiller (plan) : la configuration globale passe après son refus de modification
- * et il n'a aucune règle de commande (agent/agent.ts:156-178). Voir builtinAssistantInfo.
+ * et de délégation à general, et il n'a aucune règle de commande (agent/agent.ts:156-178). Voir builtinAssistantInfo.
  */
 export const BUILTIN_ASSISTANTS: Readonly<Record<"build" | "plan", { title: string; help: string }>> = Object.freeze({
   build: {
@@ -958,15 +960,26 @@ export const BUILTIN_ASSISTANTS: Readonly<Record<"build" | "plan", { title: stri
   plan: { title: "Conseiller", help: "Réfléchit et propose un plan. Ses droits suivent vos réglages : vérifiez ce qu'il peut faire." },
 });
 
-/** Conseiller dont les règles effectives refusent toute modification et toute commande. */
+/** Conseiller dont les règles effectives refusent toute modification, toute commande et toute délégation. */
 export const PLAN_READ_ONLY: Readonly<{ title: string; help: string }> = Object.freeze({
   title: "Conseiller (lecture seule)",
   help: "Réfléchit et propose un plan, sans rien modifier.",
 });
 
-/** true si ces règles refusent la modification de fichiers et les commandes (entrées d'exemple de la carte d'identité). */
+/** true si `permission` est refusée pour toute entrée : un refus « * » qu'aucune règle non refusante ne suit (findLast). */
+function deniedForAll(rules: readonly Rule[], permission: string): boolean {
+  const last = rules.findLastIndex((r) => r.pattern === "*" && r.action === "deny" && wildcardMatch(permission, r.permission));
+  return last >= 0 && !rules.slice(last + 1).some((r) => r.action !== "deny" && wildcardMatch(permission, r.permission));
+}
+
+/**
+ * true si ces règles refusent, quelle que soit l'entrée, la modification de fichiers, les commandes ET la délégation. Un
+ * sous-agent (general, explore…) n'hérite pas des refus de l'agent qui délègue : il tourne sur ses propres règles et la
+ * configuration globale (agent/subagent-permissions.ts, tool/task.ts:139-170). Sans `task` refusé, un Conseiller qui ne
+ * modifie rien lui-même peut donc faire modifier des fichiers ou lancer des commandes par un sous-agent.
+ */
 export function isReadOnlyRules(rules: readonly Rule[]): boolean {
-  return evaluate(rules, "edit", RIGHT_SAMPLES.edit) === "deny" && evaluate(rules, "bash", RIGHT_SAMPLES.bash) === "deny";
+  return deniedForAll(rules, "edit") && deniedForAll(rules, "bash") && deniedForAll(rules, "task");
 }
 
 /** Titre et aide d'un assistant intégré : « lecture seule » seulement quand ses règles effectives le garantissent. */
@@ -1467,6 +1480,43 @@ export const PERMISSION_PRESETS: Readonly<Record<PermissionPresetId, { label: st
   equilibre: { label: "Équilibré", permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" } },
   autonome: { label: "Autonome", permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" } },
 });
+
+/**
+ * Verrou « fournisseurs » d'une configuration globale d'opencode (COCKPIT_ALLOWED_PROVIDERS) : `enabled_providers` présent et
+ * limité aux fournisseurs autorisés (sans lui, opencode active tous les fournisseurs, dont OpenCode Zen sans clé :
+ * provider.ts:194), et aucune IA par défaut d'un autre fournisseur (model, small_model, agent.<nom>.model, mode.<nom>.model) :
+ * titres, compaction et sous-agents l'utiliseraient sans passer par le proxy du cockpit. Liste vide = verrou en place.
+ */
+export function configProviderIssues(config: unknown, allowed: readonly string[]): Array<{ path: string; message: string }> {
+  const issues: Array<{ path: string; message: string }> = [];
+  const cfg: Record<string, unknown> = isPlainObject(config) ? config : {};
+  const enabled = own(cfg, "enabled_providers");
+  if (!Array.isArray(enabled)) {
+    issues.push({
+      path: "enabled_providers",
+      message: `liste absente : opencode activerait tous les fournisseurs. Valeur attendue : ${JSON.stringify(allowed)}.`,
+    });
+  } else {
+    enabled.forEach((provider, index) => {
+      if (typeof provider !== "string" || !allowed.includes(provider)) {
+        issues.push({ path: `enabled_providers.${index}`, message: `fournisseur non autorisé (${String(provider).slice(0, 64)}).` });
+      }
+    });
+  }
+  const checkModel = (value: unknown, path: string) => {
+    if (typeof value === "string" && !allowed.includes(providerOf(value))) issues.push({ path, message: MESSAGES.fournisseurRefuse });
+  };
+  checkModel(own(cfg, "model"), "model");
+  checkModel(own(cfg, "small_model"), "small_model");
+  for (const section of ["agent", "mode"]) {
+    const agents = own(cfg, section);
+    if (!isPlainObject(agents)) continue;
+    for (const [name, def] of Object.entries(agents)) {
+      if (isPlainObject(def)) checkModel(own(def, "model"), `${section}.${name.slice(0, 64)}.model`);
+    }
+  }
+  return issues;
+}
 
 /** Copie modifiable de la permission d'un profil (à écrire dans la configuration globale). */
 export function presetPermission(id: PermissionPresetId): Record<string, unknown> {

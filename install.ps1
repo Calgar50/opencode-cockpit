@@ -13,7 +13,8 @@
 
 .PARAMETER WorkspaceDir
     Dossier contenant vos projets. Il est monte dans les conteneurs sous /workspace :
-    l'agent ne voit que ce dossier.
+    l'agent ne voit que ce dossier. Il ne doit ni contenir le dossier du cockpit, ni etre contenu
+    dedans : clonez ou extrayez le cockpit a part (l'agent pourrait sinon modifier ses scripts et .env).
 
 .PARAMETER Mode
     Build (defaut) : construit les images localement (acces a Docker Hub et au registre npm requis).
@@ -72,6 +73,21 @@ function Write-Step([string]$Message) { Write-Host ''; Write-Host "==> $Message"
 function Write-Info([string]$Message) { Write-Host "    $Message" }
 function Write-Good([string]$Message) { Write-Host "    [OK] $Message" -ForegroundColor Green }
 function Write-Attention([string]$Message) { Write-Host "    [!] $Message" -ForegroundColor Yellow }
+
+# Chemin absolu normalise, sans barre finale ('C:' designe la racine du lecteur, pas son dossier courant).
+function Get-NormalizedPath([string]$Path) {
+    $candidate = $Path.Trim().Trim('"').Replace('/', '\')
+    if ($candidate -match '^[A-Za-z]:$') { $candidate += '\' }
+    return [System.IO.Path]::GetFullPath($candidate).TrimEnd('\')
+}
+
+# Vrai si les deux dossiers sont identiques ou si l'un contient l'autre (insensible a la casse).
+function Test-PathOverlap([string]$First, [string]$Second) {
+    $a = Get-NormalizedPath $First
+    $b = Get-NormalizedPath $Second
+    $ignoreCase = [System.StringComparison]::OrdinalIgnoreCase
+    return ($a -ieq $b) -or $a.StartsWith($b + '\', $ignoreCase) -or $b.StartsWith($a + '\', $ignoreCase)
+}
 
 $ProxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY')
 
@@ -240,6 +256,11 @@ if (-not (Test-Path -LiteralPath $WorkspaceDir -PathType Container)) {
     New-Item -ItemType Directory -Path $WorkspaceDir -Force | Out-Null
 }
 $resolvedWorkspace = (Resolve-Path -LiteralPath $WorkspaceDir).Path.TrimEnd('\')
+# Le dossier du cockpit (scripts, docker-compose.yml, .env, certs\) ne doit jamais etre monte dans le conteneur de l'agent :
+# une modification approuvee ou une injection de consigne y deviendrait du code execute sur le poste Windows.
+if (Test-PathOverlap $Root $resolvedWorkspace) {
+    throw ("Le dossier du cockpit ({0}) et le dossier des projets ({1}) se chevauchent : l'agent pourrait modifier cockpit.ps1, install.ps1, docker-compose.yml, .env ou certs. Deplacez le dossier du cockpit hors du dossier des projets (avec .env, certs, archives et backups), ou choisissez un autre -WorkspaceDir." -f $Root, $resolvedWorkspace)
+}
 $tooBroad = @($env:USERPROFILE, $env:SystemDrive, "$($env:SystemDrive)\", $env:SystemRoot) | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $resolvedWorkspace) }
 if ($resolvedWorkspace -match '^[A-Za-z]:$' -or $tooBroad) {
     Write-Attention "Le dossier '$resolvedWorkspace' est tres large : l'agent pourra lire tout son contenu."
@@ -276,7 +297,9 @@ else { $detectedProxy = Get-SystemProxy }
 if ($detectedProxy) {
     $config['HTTP_PROXY'] = $detectedProxy
     $config['HTTPS_PROXY'] = $detectedProxy
-    Write-Good "Proxy : $detectedProxy"
+    # Identifiants jamais affiches : la console peut etre journalisee (transcription PowerShell) ou copiee dans un ticket.
+    $shownProxy = $detectedProxy -replace '^((?:[A-Za-z][A-Za-z0-9+.-]*://)?)[^/]*@', '$1****@'
+    Write-Good "Proxy : $shownProxy"
     if ($detectedProxy -match '@') { Write-Attention "L'URL du proxy contient des identifiants : ils sont stockes dans .env (acces restreint)." }
 } elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') {
     $config['HTTP_PROXY'] = ''

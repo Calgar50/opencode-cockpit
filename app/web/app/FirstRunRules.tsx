@@ -15,7 +15,7 @@ import { api, errorText } from "../lib/api.ts";
 import { useApp } from "./AppContext.tsx";
 
 /** Version dont la notice « Nouveau » est enregistrée dans ui.noticeSeen. */
-export const UPGRADE_NOTICE_VERSION = "0.2.0";
+export const UPGRADE_NOTICE_VERSION = "1.0.0";
 
 /** true tant que les règles de cette version n'ont pas été acceptées (serveur antérieur à 0.2.0 : jamais). */
 export function needsRules(acceptedVersion: number, rulesVersion: number | undefined): boolean {
@@ -118,7 +118,7 @@ interface AgentWithModel {
 
 /**
  * Notice unique (§8, §13) : mode Simple par défaut et IA des assistants réellement utilisée, avec la liste des agents
- * créés avant 0.2 qui imposent une IA. [Passer en mode Avancé] [Compris] enregistrent ui.noticeSeen.
+ * créés avant 1.0 qui imposent une IA. [Passer en mode Avancé] [Compris] enregistrent ui.noticeSeen.
  */
 export function UpgradeNotice() {
   const { advanced, saveUi, modelByKey } = useApp();
@@ -163,12 +163,12 @@ export function UpgradeNotice() {
   const list = agents.map((a) => `${a.name} → ${a.modelName}${a.cost ? ` (${a.cost})` : ""}`).join(", ");
 
   return (
-    <section className="notice-panel" aria-label="Nouveautés de la version 0.2">
+    <section className="notice-panel" aria-label="Nouveautés de la version 1.0">
       <Icon name="sparkle" size={18} />
       <div className="stack tight spacer">
         <strong>Nouveau : le cockpit s'ouvre en mode Simple. Vos réglages, agents et conversations sont intacts.</strong>
         <div className="stack tight">
-          <strong>Nouveau en 0.2 : l'IA d'un assistant est vraiment utilisée</strong>
+          <strong>Nouveau en 1.0 : l'IA d'un assistant est vraiment utilisée</strong>
           <p className="secondary">
             Jusqu'ici, le chat utilisait l'IA choisie en bas de l'écran, même pour un agent réglé sur une autre IA. C'est corrigé.
             {list ? ` Vérifiez ces agents : ${list}.` : ""} La réflexion des raccourcis non délégués est aussi appliquée désormais.

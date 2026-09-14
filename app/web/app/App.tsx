@@ -222,6 +222,7 @@ function Shell() {
   const rulesOpen = needsRules(ui.rulesAcceptedVersion, boot.rulesVersion);
   const providers = boot.allowedProviders ?? [];
   const testProviders = providers.length > 0 && !isDefaultProviders(providers);
+  const providerIssues = boot.security.providerIssues ?? [];
   const nav = NAV.filter((item) => advanced || !item.advancedOnly);
 
   return (
@@ -274,6 +275,18 @@ function Shell() {
                 {" "}
                 <span className="small">Fournisseurs autorisés : {providers.join(", ")}.</span>
               </span>
+            </div>
+          ) : null}
+          {providerIssues.length > 0 ? (
+            <div className="banner critical" role="alert">
+              <Icon name="alert" />
+              <span className="spacer">
+                <strong>{MESSAGES.providerLockBanner}</strong>{" "}
+                <span className="small">{providerIssues.map((i) => `${i.path} : ${i.message}`).join(" · ")}</span>
+              </span>
+              <Button size="sm" onClick={() => navigate("parametres", "securite")}>
+                Sécurité
+              </Button>
             </div>
           ) : null}
           {boot.security.tlsInsecure ? (

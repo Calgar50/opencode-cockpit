@@ -162,6 +162,10 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX idx_chat_turns_session ON chat_turns(session_id, created_at);
   `,
+  // 1.0.0 : début des demandes (280 caractères, non masqué) jamais relu ni supprimé avec la conversation : effacé.
+  `
+  UPDATE prompts SET preview = '' WHERE preview != '';
+  `,
 ];
 
 /** Ligne de la table item_meta (migration 2). */
@@ -201,7 +205,8 @@ export interface ChatTurnRow {
 }
 
 function configure(db: DatabaseSync): DatabaseSync {
-  db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  // secure_delete : le contenu effacé (conversations supprimées, anciens débuts de demandes) est écrasé dans le fichier.
+  db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA secure_delete = ON;");
   migrate(db);
   return db;
 }

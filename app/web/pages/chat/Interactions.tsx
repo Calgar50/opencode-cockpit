@@ -18,25 +18,30 @@ const PERMISSION_LABELS: Record<string, string> = {
   skill: "consulter une fiche",
 };
 
-/** Mode Simple : pas de « Toujours autoriser » pour les commandes et les dossiers hors du projet. */
-const ONCE_ONLY_IN_SIMPLE = new Set(["bash", "external_directory"]);
-
 const str = (value: unknown) => (typeof value === "string" ? value : null);
 
+/**
+ * Pas de « Toujours autoriser » : opencode ajouterait une autorisation évaluée après les règles de chaque assistant, pour
+ * tout le projet jusqu'à son redémarrage, et lèverait ainsi les refus des autres assistants (le serveur la refuse aussi).
+ */
 export function PermissionPrompt({
   request,
   sessionTitle,
   taskPrompt,
-  simpleMode = true,
+  active,
   onReply,
 }: {
   request: PermissionRequest;
   sessionTitle?: string | undefined;
   /** Consigne du travail délégué demandé (opencode ne la joint pas à la demande d'autorisation). */
   taskPrompt?: string | undefined;
-  /** Mode d'affichage Simple (défaut prudent). */
-  simpleMode?: boolean;
-  onReply: (reply: "once" | "always" | "reject", message?: string) => Promise<void>;
+  /**
+   * La conversation qui demande travaille encore (en cours ou nouvelle tentative) et l'appel d'outil qui a posé la demande
+   * est toujours en cours. Sinon (réponse arrêtée), la demande ne peut plus qu'être refusée : l'autoriser lancerait un
+   * travail détaché, facturé, dont le résultat serait perdu.
+   */
+  active: boolean;
+  onReply: (reply: "once" | "reject", message?: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [refusing, setRefusing] = useState(false);
@@ -46,11 +51,8 @@ export function PermissionPrompt({
   const command = str(metadata.command);
   const file = str(metadata.filepath) ?? str(metadata.filePath);
   const isTask = request.permission === "task";
-  // Pour une délégation, « Toujours » (motif *) autoriserait toutes les délégations suivantes du projet sans voir leur consigne.
-  // En mode Simple, une commande ou un dossier hors du projet s'autorise une fois à la fois.
-  const allowAlways = request.always.length > 0 && !isTask && !(simpleMode && ONCE_ONLY_IN_SIMPLE.has(request.permission));
 
-  const act = async (reply: "once" | "always" | "reject", note?: string) => {
+  const act = async (reply: "once" | "reject", note?: string) => {
     setBusy(reply);
     try {
       await onReply(reply, note);
@@ -113,26 +115,15 @@ export function PermissionPrompt({
         </div>
       ) : (
         <div className="row wrap">
-          <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
-            Autoriser une fois
-          </Button>
-          {allowAlways ? (
-            <Button
-              size="sm"
-              loading={busy === "always"}
-              disabled={busy !== null}
-              title={`Ne plus demander pour : ${request.always.join(", ")} (toutes les conversations de ce projet, jusqu'au redémarrage d'opencode)`}
-              onClick={() => void act("always")}
-            >
-              Toujours autoriser
+          {active ? (
+            <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
+              Autoriser une fois
             </Button>
           ) : null}
           <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setRefusing(true)}>
             Refuser…
           </Button>
-          {allowAlways ? (
-            <span className="tiny muted ellipsis">« Toujours » couvre, pour tout le projet : {request.always.join(", ")}</span>
-          ) : null}
+          {active ? null : <span className="tiny muted">La réponse est arrêtée : cette demande ne peut plus être autorisée, seulement refusée.</span>}
         </div>
       )}
     </div>

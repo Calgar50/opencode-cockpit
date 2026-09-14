@@ -1,6 +1,7 @@
 // Paramètres › Sécurité (§8) : profil de droits global d'opencode, retour au profil Prudent, fournisseur d'IA autorisé.
 import { useEffect, useRef, useState } from "react";
 import {
+  configProviderIssues,
   detectPermissionPreset,
   isDefaultProviders,
   MESSAGES,
@@ -35,6 +36,9 @@ export function SecuriteTab() {
 
   const preset = config.data ? detectPermissionPreset(config.data.permission) : null;
   const providers = boot.allowedProviders ?? ["github-copilot"];
+  // Verrou réellement appliqué par opencode (enabled_providers, IA par défaut), pas seulement COCKPIT_ALLOWED_PROVIDERS.
+  const lockIssues = config.data ? configProviderIssues(config.data, providers) : (boot.security.providerIssues ?? []);
+  const copilotOnly = isDefaultProviders(providers) && lockIssues.length === 0;
 
   const restore = async () => {
     const ok = await confirm({
@@ -90,7 +94,7 @@ export function SecuriteTab() {
       </Card>
 
       <Card title="Fournisseur d'IA">
-        {isDefaultProviders(providers) ? (
+        {copilotOnly ? (
           <div className="callout good">
             <Icon name="check" size={18} />
             <span>{SECURITY_TEXTS.provider}</span>
@@ -98,8 +102,18 @@ export function SecuriteTab() {
         ) : (
           <div className="callout critical" role="alert">
             <Icon name="alert" size={18} />
-            <span>
-              <strong>{MESSAGES.testProviderBanner}</strong> Fournisseurs autorisés : {providers.join(", ")}.
+            <span className="stack tight">
+              {!isDefaultProviders(providers) ? (
+                <span>
+                  <strong>{MESSAGES.testProviderBanner}</strong> Fournisseurs autorisés : {providers.join(", ")}.
+                </span>
+              ) : null}
+              {lockIssues.length > 0 ? (
+                <span>
+                  <strong>{MESSAGES.providerLockBanner}</strong> {lockIssues.map((i) => `${i.path} : ${i.message}`).join(" · ")} Corrigez la
+                  configuration dans Paramètres › opencode (mode Avancé).
+                </span>
+              ) : null}
             </span>
           </div>
         )}

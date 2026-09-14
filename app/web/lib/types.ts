@@ -187,7 +187,14 @@ export interface UsageLite {
 export interface Bootstrap {
   version: string;
   opencode: { reachable: boolean; version: string | null; events: EventsStatus; restarting: boolean; supervisor: boolean };
-  security: { tlsInsecure: boolean; caFiles: number | null; proxy: boolean; projectConfig: boolean };
+  security: {
+    tlsInsecure: boolean;
+    caFiles: number | null;
+    proxy: boolean;
+    projectConfig: boolean;
+    /** Verrou « fournisseurs » de la configuration globale d'opencode (configProviderIssues) ; null : opencode injoignable. */
+    providerIssues: Array<{ path: string; message: string }> | null;
+  };
   workspace: { hostDir: string | null; root: string };
   projects: ProjectInfo[];
   settings: Settings;

@@ -21,9 +21,38 @@ export const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-/** Valeur du cookie dérivée du jeton : le jeton lui-même n'est jamais stocké dans le navigateur. */
-export function sessionValue(token: string): string {
-  return crypto.createHmac("sha256", token).update("opencode-cockpit/session/v1").digest("base64url");
+/**
+ * Réponses de l'API (JSON, flux, téléchargements) : jamais un document. Une réponse relayée d'opencode ouverte dans un
+ * onglet ne peut ni exécuter de script, ni charger de ressource, ni être encadrée.
+ */
+export const API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 'none'; sandbox";
+
+/** Durée de vie d'une session, vérifiée par le serveur (le max-age du cookie n'est qu'une consigne au navigateur). */
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+
+/**
+ * Valeur du cookie : date d'émission et HMAC du jeton sur le secret de session et cette date. Le jeton lui-même n'est jamais
+ * stocké dans le navigateur ; changer le jeton ou le secret (déconnexion) révoque toutes les sessions.
+ */
+export function sessionValue(token: string, secret: string, issuedAt: number = Math.floor(Date.now() / 1000)): string {
+  const mac = crypto.createHmac("sha256", token).update(`opencode-cockpit/session/v2\n${secret}\n${issuedAt}`).digest("base64url");
+  return `${issuedAt}.${mac}`;
+}
+
+/** Cookie de session valide : signature correcte et émis il y a moins de SESSION_MAX_AGE_SECONDS. */
+export function isValidSession(cookie: string | undefined, token: string, secret: string, now: number = Date.now()): boolean {
+  if (typeof cookie !== "string") return false;
+  const match = /^(\d{1,12})\.[A-Za-z0-9_-]{43}$/.exec(cookie);
+  if (!match) return false;
+  const issuedAt = Number(match[1]);
+  const age = Math.floor(now / 1000) - issuedAt;
+  if (age < -300 || age > SESSION_MAX_AGE_SECONDS) return false;
+  return safeEqual(cookie, sessionValue(token, secret, issuedAt));
+}
+
+/** Secret de session aléatoire (renouvelé à chaque déconnexion). */
+export function newSessionSecret(): string {
+  return crypto.randomBytes(32).toString("base64url");
 }
 
 export function safeEqual(a: string, b: string): boolean {
@@ -36,7 +65,7 @@ export function securityHeaders(): MiddlewareHandler {
   return async (c, next) => {
     await next();
     const h = c.res.headers;
-    h.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+    h.set("Content-Security-Policy", c.req.path.startsWith("/api/") ? API_CONTENT_SECURITY_POLICY : CONTENT_SECURITY_POLICY);
     h.set("X-Content-Type-Options", "nosniff");
     h.set("X-Frame-Options", "DENY");
     h.set("Referrer-Policy", "no-referrer");
@@ -63,9 +92,9 @@ export function hostGuard(allowedHosts: string[]): MiddlewareHandler {
   };
 }
 
-export function isAuthenticated(c: Context, expected: string): boolean {
-  const cookie = getCookie(c, SESSION_COOKIE);
-  return typeof cookie === "string" && safeEqual(cookie, expected);
+/** Vérifie le cookie de session de la requête (`isValid` connaît le jeton et le secret courant). */
+export function isAuthenticated(c: Context, isValid: (cookie: string | undefined) => boolean): boolean {
+  return isValid(getCookie(c, SESSION_COOKIE));
 }
 
 export function setSessionCookie(c: Context, value: string): void {
@@ -75,7 +104,7 @@ export function setSessionCookie(c: Context, value: string): void {
     secure: true,
     sameSite: "Strict",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: SESSION_MAX_AGE_SECONDS,
   });
 }
 
@@ -85,9 +114,9 @@ export function clearSessionCookie(c: Context): void {
 
 const PUBLIC_API = new Set(["/api/health", "/api/login"]);
 
-export function authGuard(expected: string): MiddlewareHandler {
+export function authGuard(isValid: (cookie: string | undefined) => boolean): MiddlewareHandler {
   return async (c, next) => {
-    if (c.req.path.startsWith("/api/") && !PUBLIC_API.has(c.req.path) && !isAuthenticated(c, expected)) {
+    if (c.req.path.startsWith("/api/") && !PUBLIC_API.has(c.req.path) && !isAuthenticated(c, isValid)) {
       return c.json({ error: "unauthorized", message: "Session expirée : reconnectez-vous." }, 401);
     }
     await next();
@@ -139,4 +168,19 @@ export class LoginLimiter {
   fail(now = Date.now()): void {
     this.#failures.push(now);
   }
+}
+
+export type LoginOutcome = "ok" | "refused" | "blocked";
+
+/**
+ * Tentative de connexion. Le jeton est comparé AVANT le limiteur : un client qui épuise le limiteur (le conteneur opencode
+ * peut joindre le cockpit sur le réseau Docker) bloque ses propres échecs, jamais la connexion avec le bon jeton. Le jeton
+ * aléatoire de 32 octets rend l'essai exhaustif impossible ; chaque échec compté reste ralenti.
+ */
+export async function attemptLogin(limiter: LoginLimiter, candidate: string, token: string, failureDelayMs = 400): Promise<LoginOutcome> {
+  if (safeEqual(candidate, token)) return "ok";
+  if (limiter.blocked()) return "blocked";
+  limiter.fail();
+  await new Promise((resolve) => setTimeout(resolve, failureDelayMs));
+  return "refused";
 }

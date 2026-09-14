@@ -199,7 +199,7 @@ function AssistantsList({ detail }: { detail: string | null }) {
                 <div key={item.name} className="ast-row">
                   <Icon name="edit" size={16} />
                   <div className="spacer stack tight" style={{ gap: 2 }}>
-                    <span>« {item.name} » a été créé avant la version 0.2.</span>
+                    <span>« {item.name} » a été créé avant la version 1.0.</span>
                     <span className="small muted">
                       IA : {item.modelName ?? item.model ?? "celle choisie dans le chat"}
                       {item.description ? ` · ${item.description}` : ""}

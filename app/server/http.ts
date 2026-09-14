@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
@@ -14,7 +15,7 @@ import type { ControlService } from "./control.ts";
 import { transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, writeFileAtomic } from "./fsutil.ts";
-import { applyEdits, modify } from "jsonc-parser";
+import { applyEdits, modify, parse as parseJsonc, parseTree } from "jsonc-parser";
 import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
@@ -26,13 +27,15 @@ import type { EventProcessor } from "./processor.ts";
 import type { ProjectsService } from "./projects.ts";
 import type { QuotaSync } from "./quota.ts";
 import {
+  attemptLogin,
   authGuard,
   CONFIRM_HEADER,
   clearSessionCookie,
   csrfGuard,
   hostGuard,
+  isValidSession,
   LoginLimiter,
-  safeEqual,
+  newSessionSecret,
   securityHeaders,
   sessionValue,
   setSessionCookie,
@@ -52,6 +55,7 @@ import {
   catalogEntry,
   changedSettingsPaths,
   chooseEstimate,
+  configProviderIssues,
   describeTurn,
   estimateText,
   isReservedModel,
@@ -252,6 +256,8 @@ const normalizeDomain = (url: string) => url.trim().toLowerCase().replace(/^http
  * - création ou renommage de conversation avec autre chose qu'un titre : une règle « permission » de session
  *   passerait avant les permissions globales ;
  * - demande de modèle portant « tools » ou « permission », pour la même raison ;
+ * - « Résumer » avec autre chose que providerID/modelID : `auto: true` ferait enchaîner par opencode un tour d'agent avec
+ *   outils (« Continue if you have next steps », compaction.ts:468-548), hors de tout contrôle ;
  * - connexion GitHub Enterprise vers un domaine autre que COCKPIT_GITHUB_ENTERPRISE_DOMAIN : opencode y
  *   enverrait toutes les demandes et le jeton sous l'identité « github-copilot ».
  */
@@ -260,6 +266,10 @@ export function forbiddenProxyBody(method: string, sub: string, body: unknown, e
   if ((method === "POST" && sub === "/session") || (method === "PATCH" && /^\/session\/[^/]+$/.test(sub))) {
     const extra = Object.keys(record).filter((key) => key !== "title");
     if (extra.length > 0) return `Champ non accepté pour une conversation : ${extra.join(", ").slice(0, 80)}.`;
+  }
+  if (method === "POST" && /^\/session\/[^/]+\/summarize$/.test(sub)) {
+    const extra = Object.keys(record).filter((key) => key !== "providerID" && key !== "modelID");
+    if (extra.length > 0) return `Champ non accepté pour « Résumer » : ${extra.join(", ").slice(0, 80)}.`;
   }
   if (/^\/session\/[^/]+\/(prompt_async|command|summarize)$/.test(sub) && ("tools" in record || "permission" in record)) {
     return "Les champs « tools » et « permission » ne sont pas acceptés : les permissions se règlent dans Paramètres › opencode.";
@@ -279,6 +289,71 @@ export function forbiddenProxyBody(method: string, sub: string, body: unknown, e
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// --- Demandes d'autorisation -------------------------------------------------------------
+
+/** Réponse à une demande d'autorisation et arrêt d'une conversation, relayés par le proxy. */
+const PERMISSION_REPLY_ROUTE = new RegExp(`^/permission/(${ID})/reply$`);
+const SESSION_ABORT_ROUTE = new RegExp(`^/session/(${ID})/abort$`);
+const ID_RE = new RegExp(`^${ID}$`);
+
+export const PERMISSION_MESSAGES = Object.freeze({
+  toujoursRefuse:
+    "« Toujours autoriser » est désactivé : opencode l'appliquerait à tous les assistants du projet, y compris ceux qui refusent cette action, jusqu'à son redémarrage.",
+  reponseInvalide: "Réponse invalide : « once » ou « reject » uniquement, avec une consigne facultative de 2 000 caractères au plus.",
+  demandeExpiree: "Cette demande n'est plus active : la réponse a été arrêtée. Rien n'a été lancé.",
+  demandeOrpheline:
+    "Cette demande vient d'une réponse arrêtée. La refuser maintenant refuserait aussi les demandes de la réponse en cours : rien n'a été envoyé, réessayez quand celle-ci sera terminée.",
+  verificationImpossible:
+    "opencode ne répond pas : impossible de vérifier que cette demande est encore active. Rien n'a été envoyé, réessayez dans un instant.",
+});
+
+export interface PermissionReply {
+  reply: "once" | "reject";
+  message?: string;
+}
+
+const permissionReplySchema = z.strictObject({ reply: z.enum(["once", "reject"]), message: z.string().max(2_000).optional() });
+
+/**
+ * Corps accepté pour répondre à une demande d'autorisation : exactement { reply: "once" | "reject", message? }.
+ * « always » est refusé (403) : opencode 1.18.30 ajoute alors { permission, pattern "*", allow } à une liste propre à
+ * l'instance, évaluée APRÈS les règles de chaque agent (permission/index.ts:28-38, 145-150). Mesuré : un « Toujours » sur
+ * la lecture d'un .env a levé le refus « *.pfx » d'un autre assistant, dans une autre conversation, jusqu'au redémarrage.
+ */
+export function parsePermissionReply(
+  body: unknown,
+): { ok: true; value: PermissionReply } | { ok: false; status: 400 | 403; error: string; message: string } {
+  const reply = isRecord(body) ? body.reply : undefined;
+  if (typeof reply === "string" && reply.trim().toLowerCase() === "always") {
+    return { ok: false, status: 403, error: "toujours-refuse", message: PERMISSION_MESSAGES.toujoursRefuse };
+  }
+  const parsed = permissionReplySchema.safeParse(body);
+  if (!parsed.success) return { ok: false, status: 400, error: "reponse-invalide", message: PERMISSION_MESSAGES.reponseInvalide };
+  const { reply: value, message } = parsed.data;
+  return { ok: true, value: message === undefined ? { reply: value } : { reply: value, message } };
+}
+
+/** Types de contenu relayés depuis opencode ; tout autre (text/html, JavaScript…) est servi en application/json. */
+const PROXY_CONTENT_TYPE = /^(?:application\/json|text\/event-stream)\s*(?:;|$)/i;
+
+/**
+ * Configuration après un PATCH d'opencode (objets fusionnés clé par clé, autres valeurs remplacées). Objets sans prototype :
+ * une clé « __proto__ » reste une donnée et ne peut pas masquer une clé contrôlée.
+ */
+export function mergeConfigPatch(base: unknown, patch: unknown): unknown {
+  if (!isRecord(base) || !isRecord(patch)) return patch;
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(base)) out[key] = value;
+  for (const [key, value] of Object.entries(patch)) out[key] = mergeConfigPatch(Object.hasOwn(base, key) ? base[key] : undefined, value);
+  return out;
+}
+
+/** Nombre de propriétés « permission » au premier niveau (jsonc-parser comme opencode : la dernière l'emporte). */
+function permissionKeyCount(source: string): number {
+  const root = parseTree(source);
+  return root?.type === "object" ? (root.children ?? []).filter((prop) => prop.children?.[0]?.value === "permission").length : 0;
 }
 
 /**
@@ -373,14 +448,25 @@ const MIME: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export function createApp(deps: AppDeps): Hono {
   const { env, log, client, catalog, ledger, archive, classifier, studio, projects, control, quota, processor, settings, hub, lookup, tiers, assistants } =
     deps;
   const advanced = advancedOnly(settings);
   const app = new Hono();
-  const expectedSession = sessionValue(env.token);
+  // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
+  const SESSION_SECRET_KEY = "session.secret";
+  const storeSessionSecret = (): string => {
+    const secret = newSessionSecret();
+    deps.db
+      .prepare(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      )
+      .run(SESSION_SECRET_KEY, secret, Date.now());
+    return secret;
+  };
+  const storedSecret = deps.db.prepare("SELECT value FROM settings WHERE key = ?").get(SESSION_SECRET_KEY) as { value: string } | undefined;
+  let sessionSecret = storedSecret && storedSecret.value.length >= 32 ? storedSecret.value : storeSessionSecret();
+  const validSession = (cookie: string | undefined) => isValidSession(cookie, env.token, sessionSecret);
   const limiter = new LoginLimiter();
 
   const fail = (c: Context, status: number, error: string, message: string, extra: Record<string, unknown> = {}) =>
@@ -425,7 +511,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.use("*", securityHeaders());
   app.use("*", hostGuard(env.allowedHosts));
-  app.use("*", authGuard(expectedSession));
+  app.use("*", authGuard(validSession));
   app.use("*", csrfGuard());
 
   app.onError((err, c) => {
@@ -462,29 +548,25 @@ export function createApp(deps: AppDeps): Hono {
     if ((site && site !== "none" && site !== "same-origin") || (dest && dest !== "document")) {
       return c.text("Ouvrez ce lien directement dans la barre d'adresse du navigateur.", 403);
     }
-    if (limiter.blocked()) return c.text("Trop de tentatives, réessayez dans quelques minutes.", 429);
-    if (!safeEqual(c.req.query("t") ?? "", env.token)) {
-      limiter.fail();
-      await sleep(400);
-      return c.redirect("/?auth=failed", 303);
-    }
-    setSessionCookie(c, expectedSession);
+    const outcome = await attemptLogin(limiter, c.req.query("t") ?? "", env.token);
+    if (outcome === "blocked") return c.text("Trop de tentatives, réessayez dans quelques minutes.", 429);
+    if (outcome === "refused") return c.redirect("/?auth=failed", 303);
+    setSessionCookie(c, sessionValue(env.token, sessionSecret));
     return c.redirect("/", 303);
   });
 
   app.post("/api/login", bodyLimit({ maxSize: 4_096 }), async (c) => {
-    if (limiter.blocked()) return fail(c, 429, "rate-limited", "Trop de tentatives, réessayez dans quelques minutes.");
     const { token } = z.object({ token: z.string().max(512) }).parse(await c.req.json());
-    if (!safeEqual(token.trim(), env.token)) {
-      limiter.fail();
-      await sleep(400);
-      return fail(c, 401, "unauthorized", "Jeton incorrect.");
-    }
-    setSessionCookie(c, expectedSession);
+    const outcome = await attemptLogin(limiter, token.trim(), env.token);
+    if (outcome === "blocked") return fail(c, 429, "rate-limited", "Trop de tentatives, réessayez dans quelques minutes.");
+    if (outcome === "refused") return fail(c, 401, "unauthorized", "Jeton incorrect.");
+    setSessionCookie(c, sessionValue(env.token, sessionSecret));
     return c.json({ ok: true });
   });
 
   app.post("/api/logout", (c) => {
+    // Nouveau secret : ce cookie et toutes ses copies (autre navigateur, service local qui l'aurait reçu) sont révoqués.
+    sessionSecret = storeSessionSecret();
     clearSessionCookie(c);
     return c.json({ ok: true });
   });
@@ -493,12 +575,16 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/bootstrap", async (c) => {
     const s = settings.get();
-    const [health, projectList, copilotConnected, caFiles, supervisor] = await Promise.all([
+    const [health, projectList, copilotConnected, caFiles, supervisor, providerIssues] = await Promise.all([
       client.health(),
       projects.list(),
       quota.copilotConnected(),
       control.caFilesCount(),
       control.supervisorPresent(),
+      // Verrou réel d'opencode (enabled_providers, IA par défaut) : null si opencode ne répond pas.
+      client
+        .request<unknown>("GET", "/global/config", { timeoutMs: 3_000 })
+        .then((config) => configProviderIssues(config, env.allowedProviders), () => null),
     ]);
     const usage = ledger.summary();
     return c.json({
@@ -515,6 +601,7 @@ export function createApp(deps: AppDeps): Hono {
         caFiles,
         proxy: Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY),
         projectConfig: env.projectConfig,
+        providerIssues,
       },
       workspace: { hostDir: process.env.COCKPIT_HOST_WORKSPACE_DIR ?? null, root: projects.opencodeRoot },
       projects: projectList,
@@ -632,11 +719,19 @@ export function createApp(deps: AppDeps): Hono {
 
   /** Résout les appels facturés d'une demande relayée ; renvoie une réponse de refus le cas échéant. */
   const resolveProxyTurn = async (c: Context, r: TurnRequest): Promise<Response | ProxyTurn> => {
-    const bodyKey = modelKey(r.bodyModel);
     if (r.kind === "resume") {
-      // Résumer : un appel sur l'IA du corps, sans réflexion (compaction.ts:358-361).
+      // Résumer : opencode facture l'IA de l'agent caché « compaction » s'il en a une, sinon celle de la demande
+      // (compaction.ts:358-361). Sans GET /agent, contrôle limité à l'IA de la demande (comme pour un message).
+      let compaction: OcAgentInfo | undefined;
+      try {
+        compaction = (await lookup.get(r.directory)).agents.find((a) => a.name === "compaction");
+      } catch (err) {
+        log.warn("agents d'opencode illisibles : contrôle limité à l'IA de la demande", { error: errorMessage(err) });
+      }
       const turn = bodyTurn(r, "message", "", undefined);
-      if (r.lite.length > 0 && !catalogEntry(r.lite, bodyKey)) turn.problems.push({ code: "ia-indisponible", blocking: true, model: bodyKey });
+      if (compaction?.model) turn.runs = [{ role: "message", model: modelKey(compaction.model), variant: null, source: "assistant", agent: "compaction" }];
+      const billedKey = turn.runs[0]?.model ?? modelKey(r.bodyModel);
+      if (r.lite.length > 0 && !catalogEntry(r.lite, billedKey)) turn.problems.push({ code: "ia-indisponible", blocking: true, model: billedKey });
       return { turn, agent: "", command: null, authoritative: false, record: true };
     }
     const requestedCommand = r.kind === "raccourci" && typeof r.record.command === "string" ? r.record.command : null;
@@ -765,6 +860,268 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(next);
   };
 
+  // --- Demandes d'autorisation : vérification avant de relayer une réponse, nettoyage après un arrêt ----------
+
+  const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
+  /** Bornes du nettoyage après un arrêt : profondeur de sous-agents, sessions suivies, appels à opencode, refus envoyés. */
+  const CLEANUP_MAX_DEPTH = 8;
+  const CLEANUP_MAX_SESSIONS = 200;
+  const CLEANUP_MAX_CHILDREN_CALLS = 50;
+  const CLEANUP_MAX_REJECTS = 100;
+  const CALL_ID_MAX_LENGTH = 512;
+
+  /** Appel d'outil qui a posé une demande (tool.messageID, tool.callID). */
+  interface PermissionTool {
+    messageID: string;
+    callID: string;
+  }
+
+  interface PendingPermission {
+    id: string;
+    sessionID: string;
+    /** null : demande posée hors d'un appel d'outil ; « invalid » : champ présent mais illisible (rien n'est vérifiable). */
+    tool: PermissionTool | "invalid" | null;
+  }
+
+  const permissionTool = (value: unknown): PendingPermission["tool"] => {
+    if (value === undefined || value === null) return null;
+    if (!isRecord(value)) return "invalid";
+    const { messageID, callID } = value;
+    return typeof messageID === "string" && ID_RE.test(messageID) && typeof callID === "string" && callID.length > 0 && callID.length <= CALL_ID_MAX_LENGTH
+      ? { messageID, callID }
+      : "invalid";
+  };
+
+  /** Demandes en attente (GET /permission, même dossier) ; erreur si opencode ne répond pas ou répond autre chose qu'une liste. */
+  const pendingPermissions = async (directory: string | null): Promise<PendingPermission[]> => {
+    const list = await client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
+    if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
+    return list.flatMap((item) =>
+      isRecord(item) && typeof item.id === "string" && typeof item.sessionID === "string"
+        ? [{ id: item.id, sessionID: item.sessionID, tool: permissionTool(item.tool) }]
+        : [],
+    );
+  };
+
+  /** Conversations qui travaillent (busy ou retry) : GET /session/status ne liste que les sessions qui ne sont pas au repos. */
+  const workingSessions = async (directory: string | null): Promise<Set<string>> => {
+    const statuses = await client.request<unknown>("GET", "/session/status", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
+    if (!isRecord(statuses)) throw new Error("états des conversations illisibles");
+    return new Set(Object.entries(statuses).filter(([, s]) => isRecord(s) && (s.type === "busy" || s.type === "retry")).map(([id]) => id));
+  };
+
+  /**
+   * L'appel d'outil qui a posé la demande est-il encore en cours ? Son message (GET /session/:id/message/:messageID) ne porte
+   * pas d'erreur et sa partie « tool » (même callID) est « running ». Après un arrêt, opencode 1.18.30 passe cette partie en
+   * « error » (« Tool execution aborted », metadata.interrupted, processor.ts:591-605) mais garde la demande en attente
+   * jusqu'à une réponse ou un redémarrage, même quand un nouveau message fait retravailler la conversation.
+   * Message introuvable (404) : false. opencode injoignable ou réponse illisible : erreur.
+   */
+  const toolCallRunning = async (sessionID: string, tool: PermissionTool, directory: string | null): Promise<boolean> => {
+    if (!ID_RE.test(sessionID)) throw new Error("identifiant de conversation de la demande illisible");
+    let message: unknown;
+    try {
+      message = await client.request<unknown>("GET", `/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(tool.messageID)}`, {
+        query: { directory },
+        timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
+      });
+    } catch (err) {
+      if (err instanceof OpencodeError && err.status === 404) return false;
+      throw err;
+    }
+    if (!isRecord(message) || !isRecord(message.info) || !Array.isArray(message.parts)) throw new Error("message de la demande illisible");
+    if (message.info.error !== undefined && message.info.error !== null) return false;
+    const part = message.parts.find((p) => isRecord(p) && p.type === "tool" && p.callID === tool.callID);
+    return isRecord(part) && isRecord(part.state) && part.state.status === "running";
+  };
+
+  /**
+   * File d'attente commune au « once » (vérification puis relais) et à l'arrêt (relais puis liste des demandes du nettoyage).
+   * Sans elle, un arrêt relayé entre la vérification et le relais d'un « once » laisserait ce « once » arriver après
+   * l'arrêt (sous-agent détaché, facturé, résultat perdu), et le nettoyage ne le verrait pas.
+   */
+  let replyGateTail: Promise<void> = Promise.resolve();
+  const REPLY_GATE_MAX_HOLD_MS = 30_000;
+  /** Attend son tour ; renvoie la fonction qui libère la place (sans effet au second appel). */
+  const acquireReplyGate = async (): Promise<() => void> => {
+    const previous = replyGateTail;
+    let resolveTail: () => void = () => undefined;
+    replyGateTail = new Promise<void>((resolve) => {
+      resolveTail = () => resolve();
+    });
+    await previous;
+    // Borne : un relais qu'opencode laisse sans réponse ne bloque pas indéfiniment les réponses et les arrêts suivants.
+    const timer = setTimeout(() => {
+      log.warn("file d'attente des réponses libérée : relais sans réponse d'opencode", { holdMs: REPLY_GATE_MAX_HOLD_MS });
+      resolveTail();
+    }, REPLY_GATE_MAX_HOLD_MS);
+    timer.unref();
+    return () => {
+      clearTimeout(timer);
+      resolveTail();
+    };
+  };
+
+  type OnceVerdict = { ok: true } | { ok: false; status: 409 | 503; request: PendingPermission | null; orphan: boolean };
+
+  /**
+   * « once » n'est relayé que si la demande est encore en attente, que sa conversation travaille ET que l'appel d'outil qui
+   * l'a posée est toujours en cours. Après un arrêt, un « once » tardif a lancé un sous-agent détaché, facturé, dont le
+   * résultat a été perdu (la conversation ne reprend pas). `orphan` : demande d'une conversation au repos, à refuser pour
+   * qu'elle ne revienne pas. Vérification impossible : 503, rien n'est relayé. Ne lève jamais.
+   */
+  const checkOnceReply = async (requestId: string, directory: string | null): Promise<OnceVerdict> => {
+    try {
+      const [pending, working] = await Promise.all([pendingPermissions(directory), workingSessions(directory)]);
+      const request = pending.find((p) => p.id === requestId) ?? null;
+      if (request === null) return { ok: false, status: 409, request, orphan: false };
+      if (!working.has(request.sessionID)) return { ok: false, status: 409, request, orphan: true };
+      if (request.tool === null) return { ok: true };
+      if (request.tool === "invalid") throw new Error("appel d'outil de la demande illisible");
+      // Conversation qui retravaille (nouveau message) : la demande doit venir d'un appel encore en cours.
+      if (await toolCallRunning(request.sessionID, request.tool, directory)) return { ok: true };
+      return { ok: false, status: 409, request, orphan: false };
+    } catch (err) {
+      log.warn("demande d'autorisation non vérifiable : réponse non relayée", { requestId, error: errorMessage(err) });
+      return { ok: false, status: 503, request: null, orphan: false };
+    }
+  };
+
+  /**
+   * « Refuser » d'une demande orpheline (appel d'outil qui n'est plus en cours) alors que sa conversation retravaille :
+   * opencode refuserait aussi toutes les demandes en attente de cette conversation (permission/index.ts:129-138), donc celles
+   * de la réponse en cours, qui échouerait sans explication. Vérification impossible : false (le refus n'autorise rien).
+   */
+  const isOrphanOfWorkingSession = async (requestId: string, directory: string | null): Promise<boolean> => {
+    try {
+      const [pending, working] = await Promise.all([pendingPermissions(directory), workingSessions(directory)]);
+      const request = pending.find((p) => p.id === requestId);
+      if (!request || !working.has(request.sessionID) || request.tool === null || request.tool === "invalid") return false;
+      return !(await toolCallRunning(request.sessionID, request.tool, directory));
+    } catch (err) {
+      log.warn("refus relayé sans vérification : opencode ne répond pas", { requestId, error: errorMessage(err) });
+      return false;
+    }
+  };
+
+  /** Descendants d'une conversation d'après le suivi du cockpit (table sessions, lue par root_id indexé), bornés. */
+  const trackedDescendants = (sessionId: string, tree: Set<string>): void => {
+    const known = deps.db.prepare("SELECT root_id FROM sessions WHERE id = ?").get(sessionId) as { root_id: string } | undefined;
+    const rows = deps.db
+      .prepare("SELECT id, parent_id FROM sessions WHERE root_id = ? AND parent_id IS NOT NULL LIMIT ?")
+      .all(known?.root_id ?? sessionId, CLEANUP_MAX_SESSIONS * 10) as Array<{ id: string; parent_id: string }>;
+    const childrenOf = new Map<string, string[]>();
+    for (const row of rows) {
+      const list = childrenOf.get(row.parent_id);
+      if (list) list.push(row.id);
+      else childrenOf.set(row.parent_id, [row.id]);
+    }
+    let frontier = [sessionId];
+    for (let depth = 0; depth < CLEANUP_MAX_DEPTH && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const child of childrenOf.get(id) ?? []) {
+          if (tree.has(child) || tree.size >= CLEANUP_MAX_SESSIONS) continue;
+          tree.add(child);
+          next.push(child);
+        }
+      }
+      frontier = next;
+    }
+  };
+
+  /** Complète avec GET /session/:id/children (sous-agent pas encore enregistré par le cockpit), borné. */
+  const opencodeDescendants = async (sessionId: string, directory: string | null, tree: Set<string>): Promise<void> => {
+    const visited = new Set<string>();
+    let frontier = [sessionId];
+    let calls = 0;
+    for (let depth = 0; depth < CLEANUP_MAX_DEPTH && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        if (visited.has(id)) continue;
+        if (calls >= CLEANUP_MAX_CHILDREN_CALLS || tree.size >= CLEANUP_MAX_SESSIONS) return;
+        visited.add(id);
+        calls++;
+        let children: unknown;
+        try {
+          children = await client.request<unknown>("GET", `/session/${encodeURIComponent(id)}/children`, {
+            query: { directory },
+            timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
+          });
+        } catch (err) {
+          log.warn("arrêt : sous-agents d'une conversation illisibles", { sessionId: id, error: errorMessage(err) });
+          continue;
+        }
+        if (!Array.isArray(children)) continue;
+        for (const child of children) {
+          const childId = isRecord(child) && typeof child.id === "string" && ID_RE.test(child.id) ? child.id : null;
+          if (childId === null || visited.has(childId)) continue;
+          tree.add(childId);
+          next.push(childId);
+        }
+      }
+      frontier = next;
+    }
+  };
+
+  /**
+   * Refuse (« reject ») des demandes orphelines. opencode 1.18.30 applique un refus à TOUTES les demandes en attente de la
+   * même conversation (permission/index.ts:129-138) : l'état des conversations est relu juste avant l'envoi, et celles qui
+   * travaillent de nouveau sont laissées de côté (la demande d'une nouvelle réponse échouerait sinon). États illisibles :
+   * rien n'est envoyé. Au mieux : les erreurs sont journalisées.
+   */
+  const rejectOrphans = async (requests: PendingPermission[], directory: string | null, context: Record<string, unknown>): Promise<void> => {
+    const candidates = requests.filter((p) => ID_RE.test(p.id));
+    if (candidates.length === 0) return;
+    let working: Set<string>;
+    try {
+      working = await workingSessions(directory);
+    } catch (err) {
+      log.warn("demandes d'autorisation orphelines non refusées : états des conversations illisibles", { ...context, error: errorMessage(err) });
+      return;
+    }
+    let rejected = 0;
+    let skipped = 0;
+    for (const request of candidates) {
+      if (working.has(request.sessionID)) {
+        skipped++;
+        continue;
+      }
+      try {
+        await client.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, {
+          query: { directory },
+          body: { reply: "reject" },
+          timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
+        });
+        rejected++;
+      } catch (err) {
+        log.warn("demande d'autorisation orpheline non refusée", { ...context, requestId: request.id, error: errorMessage(err) });
+      }
+    }
+    log.info("demandes d'autorisation orphelines refusées", { ...context, rejected, skipped, pending: candidates.length });
+  };
+
+  /**
+   * Après un arrêt réussi : refuse (« reject ») les demandes d'autorisation restées en attente dans la conversation arrêtée
+   * et dans ses sous-agents, pour qu'aucun « once » tardif ne lance un travail détaché. `releaseGate` libère la file
+   * d'attente des réponses dès la liste lue. Au mieux : les erreurs sont journalisées et la réponse de l'arrêt ne change pas.
+   */
+  const rejectAbortedPermissions = async (sessionId: string, directory: string | null, releaseGate: () => void): Promise<void> => {
+    let pending: PendingPermission[];
+    try {
+      pending = await pendingPermissions(directory);
+    } finally {
+      // Liste lue : un « once » qui attendait son tour verra la conversation arrêtée.
+      releaseGate();
+    }
+    if (pending.length === 0) return;
+    const tree = new Set([sessionId]);
+    trackedDescendants(sessionId, tree);
+    if (pending.some((p) => !tree.has(p.sessionID))) await opencodeDescendants(sessionId, directory, tree);
+    const stale = pending.filter((p) => tree.has(p.sessionID)).slice(0, CLEANUP_MAX_REJECTS);
+    await rejectOrphans(stale, directory, { cause: "arrêt", sessionId });
+  };
+
   // --- Proxy vers opencode --------------------------------------------------------------
 
   app.all("/api/oc/*", bodyLimit({ maxSize: 25 * 1024 * 1024 }), async (c) => {
@@ -781,55 +1138,96 @@ export function createApp(deps: AppDeps): Hono {
       return fail(c, 403, "forbidden-directory", "Ce dossier est hors du workspace monté.");
     }
 
-    let body: string | null = null;
-    if (method !== "GET" && method !== "HEAD") {
-      body = await c.req.text();
-      let parsed: unknown = {};
-      try {
-        parsed = body ? JSON.parse(body) : {};
-      } catch {
-        return fail(c, 400, "invalid-json", "Corps JSON invalide.");
-      }
-      const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain);
-      if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
-      if (matched.guarded) {
-        const isAllowed = (file: string) => projects.isAllowedDirectory(file);
-        const partType = forbiddenPartType(parsed);
-        if (partType !== undefined) {
-          return fail(c, 403, "forbidden-part", `Type de contenu refusé : ${partType} (texte et fichiers uniquement).`);
+    // Place dans la file d'attente des réponses (« once » vérifié, arrêt) : libérée au plus tard en sortant.
+    let releaseGate: (() => void) | undefined;
+    try {
+      let body: string | null = null;
+      if (method !== "GET" && method !== "HEAD") {
+        body = await c.req.text();
+        let parsed: unknown = {};
+        try {
+          parsed = body ? JSON.parse(body) : {};
+        } catch {
+          return fail(c, 400, "invalid-json", "Corps JSON invalide.");
         }
-        if (forbiddenAttachment(parsed, isAllowed) !== undefined) {
-          return fail(c, 403, "forbidden-attachment", "Pièce jointe refusée : fichier hors du workspace monté ou type d'URL non pris en charge.");
-        }
-        if (sub.endsWith("/command")) {
-          const worktree = await projects.opencodeWorktree(directory ?? projects.opencodeRoot);
-          if (forbiddenCommandArguments(parsed, isAllowed, worktree) !== undefined) {
-            return fail(
-              c,
-              403,
-              "forbidden-command-arguments",
-              "Arguments refusés : un « ! » et un accent grave dans le même texte (opencode pourrait les exécuter comme !`commande`), ou une référence @fichier qui sortirait du workspace (~, .., chemin hors du projet). Retirez-les, ou envoyez le texte sans /commande.",
-            );
+        const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain);
+        if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
+        const replyTo = method === "POST" ? PERMISSION_REPLY_ROUTE.exec(sub)?.[1] : undefined;
+        if (replyTo !== undefined) {
+          const reply = parsePermissionReply(parsed);
+          if (!reply.ok) return fail(c, reply.status, reply.error, reply.message);
+          if (reply.value.reply === "once") {
+            // Gardée jusqu'au relais : aucun arrêt ne peut s'intercaler entre la vérification et le « once ».
+            releaseGate = await acquireReplyGate();
+            const verdict = await checkOnceReply(replyTo, directory);
+            if (!verdict.ok) {
+              releaseGate();
+              if (verdict.status === 503) return fail(c, 503, "verification-impossible", PERMISSION_MESSAGES.verificationImpossible);
+              log.info("demande d'autorisation qui n'est plus active : « once » non relayé", { requestId: replyTo, found: verdict.request !== null });
+              // Demande orpheline d'une conversation au repos : refusée, pour qu'elle ne redevienne pas autorisable plus tard.
+              if (verdict.orphan && verdict.request) await rejectOrphans([verdict.request], directory, { cause: "réponse tardive", requestId: replyTo });
+              return fail(c, 409, "demande-expiree", PERMISSION_MESSAGES.demandeExpiree);
+            }
+          } else if (await isOrphanOfWorkingSession(replyTo, directory)) {
+            log.info("refus d'une demande orpheline non relayé : la conversation retravaille", { requestId: replyTo });
+            return fail(c, 409, "demande-orpheline", PERMISSION_MESSAGES.demandeOrpheline);
           }
+          // Corps réécrit : opencode reçoit exactement ce qui a été contrôlé (ni clé en double, ni champ ignoré).
+          body = JSON.stringify(reply.value);
         }
-        const enforced = await enforceTurn(c, sub, directory, body, parsed);
-        if (enforced instanceof Response) return enforced;
-        body = enforced;
+        if (matched.guarded) {
+          const isAllowed = (file: string) => projects.isAllowedDirectory(file);
+          const partType = forbiddenPartType(parsed);
+          if (partType !== undefined) {
+            return fail(c, 403, "forbidden-part", `Type de contenu refusé : ${partType} (texte et fichiers uniquement).`);
+          }
+          if (forbiddenAttachment(parsed, isAllowed) !== undefined) {
+            return fail(c, 403, "forbidden-attachment", "Pièce jointe refusée : fichier hors du workspace monté ou type d'URL non pris en charge.");
+          }
+          if (sub.endsWith("/command")) {
+            const worktree = await projects.opencodeWorktree(directory ?? projects.opencodeRoot);
+            if (forbiddenCommandArguments(parsed, isAllowed, worktree) !== undefined) {
+              return fail(
+                c,
+                403,
+                "forbidden-command-arguments",
+                "Arguments refusés : un « ! » et un accent grave dans le même texte (opencode pourrait les exécuter comme !`commande`), ou une référence @fichier qui sortirait du workspace (~, .., chemin hors du projet). Retirez-les, ou envoyez le texte sans /commande.",
+              );
+            }
+          }
+          const enforced = await enforceTurn(c, sub, directory, body, parsed);
+          if (enforced instanceof Response) return enforced;
+          body = enforced;
+        }
       }
-    }
 
-    const upstream = await client.raw(method, target, {
-      headers: {
-        accept: c.req.header("accept") ?? "application/json",
-        ...(body !== null ? { "content-type": "application/json" } : {}),
-      },
-      body: body === null || body === "" ? null : body,
-      signal: c.req.raw.signal,
-    });
-    const headers = new Headers();
-    const contentType = upstream.headers.get("content-type");
-    if (contentType) headers.set("content-type", contentType);
-    return new Response(upstream.body, { status: upstream.status, headers });
+      const abortId = method === "POST" ? SESSION_ABORT_ROUTE.exec(sub)?.[1] : undefined;
+      // Arrêt : attend qu'un « once » en cours de vérification soit relayé, puis garde la file jusqu'à la liste du nettoyage.
+      const abortGate = abortId !== undefined ? await acquireReplyGate() : undefined;
+      if (abortGate !== undefined) releaseGate = abortGate;
+      const upstream = await client.raw(method, target, {
+        headers: {
+          accept: c.req.header("accept") ?? "application/json",
+          ...(body !== null ? { "content-type": "application/json" } : {}),
+        },
+        body: body === null || body === "" ? null : body,
+        signal: c.req.raw.signal,
+      });
+      if (abortId !== undefined && abortGate !== undefined && upstream.ok) {
+        // Sans attendre : la réponse de l'arrêt part tout de suite et reste celle d'opencode ; le nettoyage libère la file.
+        releaseGate = undefined;
+        void rejectAbortedPermissions(abortId, directory, abortGate).catch((err: unknown) =>
+          log.warn("arrêt : demandes d'autorisation en attente non vérifiées", { sessionId: abortId, error: errorMessage(err) }),
+        );
+      }
+      const headers = new Headers();
+      const contentType = upstream.headers.get("content-type");
+      // Jamais de document ni de script servi sous l'origine du cockpit, même si opencode (ou un faux serveur) le demandait.
+      if (contentType) headers.set("content-type", PROXY_CONTENT_TYPE.test(contentType) ? contentType : "application/json");
+      return new Response(upstream.body, { status: upstream.status, headers });
+    } finally {
+      releaseGate?.();
+    }
   });
 
   // --- Chat : IA réellement utilisée (même résolution que le proxy) ------------------------
@@ -1125,8 +1523,15 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/opencode/config", async (c) => c.json(await client.request("GET", "/global/config", { timeoutMs: 15_000 })));
 
+  /** Écriture qui retirerait le verrou « fournisseurs » d'opencode (enabled_providers, IA par défaut ou d'un agent). */
+  const refuseProviders = (c: Context, issues: IssueLite[]) => fail(c, 422, "fournisseur-refuse", MESSAGES.providerLockRefused, { issues });
+
   app.patch("/api/opencode/config", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
+    // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
+    const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 15_000 });
+    const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders);
+    if (issues.length > 0) return refuseProviders(c, issues);
     const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
     await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
     await catalog.refresh().catch(() => undefined);
@@ -1160,6 +1565,8 @@ export function createApp(deps: AppDeps): Hono {
 
   app.put("/api/opencode/config/raw", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
+    const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders);
+    if (issues.length > 0) return refuseProviders(c, issues);
     const file = await assertInside(env.opencodeConfigDir, await configFile());
     const result = await writeConfigChecked(file, content, await readIfExists(file), "configuration brute invalide annulée");
     if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ce fichier : ${result.error}`, { restarted: result.restarted });
@@ -1172,20 +1579,48 @@ export function createApp(deps: AppDeps): Hono {
     z.union([permissionAction, z.record(z.string().min(1).max(512), permissionAction)]),
   );
 
+  type PermissionWrite = { ok: true } | { ok: false; error: string; restarted: boolean; notApplied?: boolean };
+
   // Remplace le bloc « permission » d'un seul tenant (commentaires du fichier conservés). Le PATCH d'opencode
   // fusionne clé par clé : il garderait d'anciennes règles et échoue quand une valeur texte devient un objet.
-  const replacePermission = async (permission: Record<string, unknown>, reason: string) => {
+  const replacePermission = async (permission: Record<string, unknown>, reason: string): Promise<PermissionWrite> => {
     const file = await assertInside(env.opencodeConfigDir, await configFile());
     const backup = await readIfExists(file);
-    const source = backup ?? "{}\n";
-    const content = applyEdits(source, modify(source, ["permission"], permission, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-    return writeConfigChecked(file, content, backup, reason);
+    const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+    let source = backup ?? "{}\n";
+    // Clés « permission » en double : modify() changerait la première, opencode lit la dernière. Les premières sont retirées.
+    for (let count = permissionKeyCount(source); count > 1; count--) source = applyEdits(source, modify(source, ["permission"], undefined, format));
+    const content = applyEdits(source, modify(source, ["permission"], permission, format));
+    const result = await writeConfigChecked(file, content, backup, reason);
+    if (!result.ok) return result;
+    // Règles réellement appliquées (opencode fusionne config.json, opencode.json puis opencode.jsonc) : jamais de faux succès.
+    const effective = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => null);
+    if (isRecord(effective) && isDeepStrictEqual(effective.permission, permission)) return result;
+    if (!isRecord(effective)) {
+      return { ok: false, notApplied: true, restarted: false, error: "Permissions écrites, mais opencode n'a pas pu confirmer les règles appliquées. Rechargez la page pour vérifier." };
+    }
+    const others: string[] = [];
+    for (const name of ["opencode.jsonc", "opencode.json", "config.json"]) {
+      if (name !== path.basename(file) && (await readIfExists(path.join(env.opencodeConfigDir, name))) !== null) others.push(name);
+    }
+    const cause = others.length > 0 ? ` : ${others.join(", ")} y ajoute ou y change des règles` : "";
+    return {
+      ok: false,
+      notApplied: true,
+      restarted: false,
+      error: `Permissions écrites dans ${path.basename(file)}, mais opencode en applique d'autres${cause}. Corrigez la configuration (Paramètres › opencode) puis réessayez.`,
+    };
   };
+
+  const permissionFailure = (c: Context, result: Extract<PermissionWrite, { ok: false }>) =>
+    result.notApplied
+      ? fail(c, 422, "permissions-non-appliquees", result.error)
+      : fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
 
   app.put("/api/opencode/config/permission", advanced, bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
     const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
     const result = await replacePermission(permission, "permissions invalides annulées");
-    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
+    if (!result.ok) return permissionFailure(c, result);
     return c.json({ ok: true });
   });
 
@@ -1194,7 +1629,7 @@ export function createApp(deps: AppDeps): Hono {
     z.strictObject({}).parse(await c.req.json().catch(() => null));
     const permission = presetPermission("prudent");
     const result = await replacePermission(permission, "profil Prudent refusé, configuration précédente rétablie");
-    if (!result.ok) return fail(c, 422, "rejected-by-opencode", `opencode a refusé ces permissions : ${result.error}`, { restarted: result.restarted });
+    if (!result.ok) return permissionFailure(c, result);
     const response: RestorePrudentResponse = { ok: true, permission };
     return c.json(response);
   });
@@ -1220,14 +1655,25 @@ export function createApp(deps: AppDeps): Hono {
     return issues;
   };
 
+  /** Réglages d'une seule IA hors niveaux (IA de classement, ancienne IA du chat) : même verrou que les niveaux. */
+  const SINGLE_MODEL_SETTINGS = [
+    ["classifier", "model"],
+    ["chat", "defaultModel"],
+  ] as const;
+
   // Mode Simple : seuls les chemins de SIMPLE_SETTINGS_PATHS peuvent changer (settingsPatchGuard, 403 mode-avance).
   app.put("/api/settings", bodyLimit({ maxSize: 256 * 1024 }), settingsPatchGuard(settings), async (c) => {
     const patch: unknown = await c.req.json();
     const changed = changedSettingsPaths(settings.get(), patch);
-    if (changed.some((p) => p === "ai.tiers" || p.startsWith("ai.tiers."))) {
-      const issues = tierProviderIssues(patch);
-      if (issues.length > 0) return fail(c, 422, "validation", MESSAGES.fournisseurRefuse, { issues });
+    const issues = changed.some((p) => p === "ai.tiers" || p.startsWith("ai.tiers.")) ? tierProviderIssues(patch) : [];
+    for (const [section, key] of SINGLE_MODEL_SETTINGS) {
+      const at = `${section}.${key}`;
+      if (!changed.includes(at)) continue;
+      const group = isRecord(patch) ? patch[section] : undefined;
+      const value = isRecord(group) ? group[key] : undefined;
+      if (typeof value === "string" && !env.allowedProviders.includes(providerOf(value))) issues.push({ path: at, message: MESSAGES.fournisseurRefuse });
     }
+    if (issues.length > 0) return fail(c, 422, "validation", MESSAGES.fournisseurRefuse, { issues });
     const next = settings.update(patch);
     if (changed.some((p) => p === "ai" || p.startsWith("ai."))) hub.cockpit("ai.changed", { reason: "settings" });
     return c.json(next);

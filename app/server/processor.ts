@@ -10,7 +10,6 @@ import type {
   OcGlobalEvent,
   OcMessage,
   OcMessageWithParts,
-  OcPart,
   OcSession,
   OpencodeClient,
 } from "./opencode.ts";
@@ -135,11 +134,6 @@ export class EventProcessor {
         }
         return;
       }
-      case "message.part.updated": {
-        const part = p.part as OcPart;
-        if (part.type === "text" && !part.synthetic && typeof part.text === "string") ledger.setPromptPreview(part.messageID, part.text);
-        return;
-      }
       case "session.idle": {
         const id = p.sessionID as string;
         const row = await sessions.ensure(id, global.directory);
@@ -189,11 +183,9 @@ export class EventProcessor {
         });
         const session = sessions.get(info.id);
         if (!session) continue;
-        for (const { info: message, parts } of messages) {
+        for (const { info: message } of messages) {
           if (message.role === "user") {
             ledger.recordUser(message, session);
-            const text = parts.find((part) => part.type === "text" && !part.synthetic)?.text;
-            if (typeof text === "string") ledger.setPromptPreview(message.id, text);
           } else {
             ledger.recordAssistant(message, session);
           }

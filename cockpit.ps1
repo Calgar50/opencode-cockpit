@@ -73,6 +73,27 @@ function Get-EnvValue([string]$Key) {
     return ''
 }
 
+# Chemin absolu normalise, sans barre finale ('C:' designe la racine du lecteur, pas son dossier courant).
+function Get-NormalizedPath([string]$Path) {
+    $candidate = $Path.Trim().Trim('"').Replace('/', '\')
+    if ($candidate -match '^[A-Za-z]:$') { $candidate += '\' }
+    # Chemin relatif de .env : docker compose le lit depuis le dossier du cockpit.
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path $Root $candidate }
+    return [System.IO.Path]::GetFullPath($candidate).TrimEnd('\')
+}
+
+# Le dossier du cockpit (scripts, docker-compose.yml, .env, certs\) ne doit jamais etre monte dans le conteneur de l'agent.
+function Assert-CockpitOutsideWorkspace {
+    $workspace = Get-EnvValue 'WORKSPACE_DIR'
+    if (-not $workspace) { return }
+    $a = Get-NormalizedPath $Root
+    $b = Get-NormalizedPath $workspace
+    $ignoreCase = [System.StringComparison]::OrdinalIgnoreCase
+    if (($a -ieq $b) -or $a.StartsWith($b + '\', $ignoreCase) -or $b.StartsWith($a + '\', $ignoreCase)) {
+        throw ("Le dossier du cockpit ({0}) et le dossier des projets ({1}, WORKSPACE_DIR) se chevauchent : l'agent pourrait modifier cockpit.ps1, install.ps1, docker-compose.yml, .env ou certs. Deplacez le dossier du cockpit hors du dossier des projets (avec .env, certs, archives et backups), puis relancez .\install.ps1." -f $a, $b)
+    }
+}
+
 function Get-Port {
     $value = Get-EnvValue 'COCKPIT_PORT'
     if ($value) { return [int]$value }
@@ -124,6 +145,7 @@ try {
             Start-Process $url
         }
         'start' {
+            Assert-CockpitOutsideWorkspace
             Write-Step 'Demarrage'
             Invoke-Docker compose up -d
         }
@@ -132,6 +154,7 @@ try {
             Invoke-Docker compose stop
         }
         'restart' {
+            Assert-CockpitOutsideWorkspace
             # 'compose restart' garderait l'ancienne configuration : on recree les conteneurs pour relire .env.
             Write-Step 'Redemarrage (configuration .env relue)'
             Invoke-Docker compose up -d --force-recreate
@@ -150,6 +173,7 @@ try {
             else { Invoke-Docker compose logs --tail 200 -f }
         }
         'certs' {
+            Assert-CockpitOutsideWorkspace
             Write-Step 'Reexport des certificats de confiance Windows vers certs\windows-trust.pem'
             $builder = New-Object System.Text.StringBuilder
             $seen = @{}
@@ -171,6 +195,7 @@ try {
             Invoke-Docker compose up -d --force-recreate
         }
         'update' {
+            Assert-CockpitOutsideWorkspace
             if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
                 Write-Step 'Recuperation de la derniere version (git pull)'
                 & git -C $Root pull --ff-only

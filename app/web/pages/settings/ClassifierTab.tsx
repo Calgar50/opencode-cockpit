@@ -156,7 +156,7 @@ export function ClassifierTab({ onDirtyChange }: { onDirtyChange: (dirty: boolea
             <ModelSelect
               id={ids.model}
               value={draft.model}
-              models={boot.models}
+              models={boot.models.filter((m) => (boot.allowedProviders ?? ["github-copilot"]).includes(m.providerID))}
               emptyLabel="Automatique : une IA économique (GPT-5 mini en priorité)"
               disabled={draft.mode !== "llm"}
               onChange={(model) => setDraft((d) => ({ ...d, model }))}

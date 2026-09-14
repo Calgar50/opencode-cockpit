@@ -97,7 +97,8 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     opencodeUrl: opencodeUrl.replace(/\/+$/, ""),
     opencodeUsername: env.OPENCODE_SERVER_USERNAME?.trim() || "opencode",
     opencodePassword: required(env, "OPENCODE_SERVER_PASSWORD", 16),
-    tlsInsecure: env.COCKPIT_TLS_INSECURE === "1" || env.COCKPIT_TLS_INSECURE === "true",
+    // Exactement « 1 », comme le superviseur d'opencode et les Dockerfiles : le bandeau rouge suit l'état réel.
+    tlsInsecure: env.COCKPIT_TLS_INSECURE === "1",
     projectConfig: env.COCKPIT_PROJECT_CONFIG === "1",
     githubEnterpriseDomain: env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null,
     allowedProviders: parseAllowedProviders(env.COCKPIT_ALLOWED_PROVIDERS),

@@ -202,7 +202,8 @@ export function buildDigest(session: OcSession, messages: OcMessageWithParts[], 
         const d = describeTool(part, workspaceDir);
         tools[d.name] = (tools[d.name] ?? 0) + 1;
         if (EDIT_TOOLS.has(d.name) && d.file) files.add(d.file);
-        if (d.command) commands.push(redactSecrets(d.command.slice(0, 300)));
+        // Masquage AVANT la coupe : un jeton coupé à la limite ne serait plus reconnu.
+        if (d.command) commands.push(redactSecrets(d.command).slice(0, 300));
         toolLines.push(`> 🔧 \`${d.name}\` ${redactSecrets(d.label).replace(/\s+/g, " ").slice(0, 200)}`);
       } else if (part.type === "patch" && Array.isArray(part.files)) {
         for (const f of part.files) if (typeof f === "string") files.add(relativeToWorkspace(f, workspaceDir));
@@ -220,7 +221,8 @@ export function buildDigest(session: OcSession, messages: OcMessageWithParts[], 
   return {
     sessionId: session.id,
     directory: session.directory,
-    title: session.title,
+    // Titre d'opencode tiré du premier message (« Keep exact: technical terms, numbers ») : il peut reprendre un secret collé.
+    title: redactSecrets(session.title),
     createdAt: session.time.created,
     updatedAt: session.time.updated,
     prompts,
@@ -274,7 +276,8 @@ export class ArchiveService {
       sessionId: row.session_id,
       directory: row.directory,
       project: projectOf(row.directory, this.#d.opencodeWorkspaceDir),
-      title: row.title,
+      // Masqué aussi à la lecture : titres enregistrés avant 1.0.0 (API, export Markdown, nom du fichier d'archive).
+      title: redactSecrets(row.title),
       titleManual: row.title_manual === 1,
       category: row.category,
       tags: parseJson<string[]>(row.tags, []),
@@ -359,7 +362,7 @@ export class ArchiveService {
           params({
             session_id: sessionId,
             directory: info.directory,
-            title: info.title,
+            title: redactSecrets(info.title),
             category: h.category,
             tags: JSON.stringify(h.tags),
             summary: h.summary,
@@ -389,7 +392,7 @@ export class ArchiveService {
           params({
             session_id: sessionId,
             directory: info.directory,
-            title: isDefaultTitle(info.title) && !isDefaultTitle(existing.title) ? existing.title : info.title,
+            title: redactSecrets(isDefaultTitle(info.title) && !isDefaultTitle(existing.title) ? existing.title : info.title),
             updated_at: info.time.updated,
             prompt_count: digest.promptCount,
             message_count: digest.messageCount,
@@ -414,7 +417,7 @@ export class ArchiveService {
     this.#d.db.prepare("DELETE FROM conversations_fts WHERE session_id = ?").run(sessionId);
     this.#d.db
       .prepare("INSERT INTO conversations_fts (session_id, title, summary, tags, transcript) VALUES (?, ?, ?, ?, ?)")
-      .run(sessionId, row.title, row.summary, parseJson<string[]>(row.tags, []).join(" "), text);
+      .run(sessionId, redactSecrets(row.title), row.summary, parseJson<string[]>(row.tags, []).join(" "), text);
   }
 
   applyClassification(sessionId: string, result: ClassificationResult): Conversation | null {
@@ -429,7 +432,7 @@ export class ArchiveService {
       )
       .run(category, JSON.stringify(result.tags.slice(0, 8)), result.summary.slice(0, 600), result.by, result.confidence, Date.now(), sessionId);
     if (result.title && row.title_manual === 0 && isDefaultTitle(row.title)) {
-      this.#d.db.prepare("UPDATE conversations SET title = ? WHERE session_id = ?").run(result.title, sessionId);
+      this.#d.db.prepare("UPDATE conversations SET title = ? WHERE session_id = ?").run(redactSecrets(result.title), sessionId);
     }
     this.#index(sessionId);
     void this.#writeMarkdown(sessionId).catch((err: Error) =>
@@ -449,7 +452,7 @@ export class ArchiveService {
     const next = {
       category: patch.category ?? row.category,
       tags: patch.tags ? JSON.stringify(patch.tags) : row.tags,
-      title: patch.title ?? row.title,
+      title: patch.title !== undefined ? redactSecrets(patch.title) : row.title,
       title_manual: patch.title !== undefined ? 1 : row.title_manual,
       summary: patch.summary ?? row.summary,
       pinned: patch.pinned === undefined ? row.pinned : patch.pinned ? 1 : 0,
@@ -471,8 +474,9 @@ export class ArchiveService {
   /** Reprend le titre définitif d'opencode si l'utilisateur ne l'a pas modifié. Renvoie true si l'archive a changé. */
   async syncTitle(sessionId: string, title: string): Promise<boolean> {
     const row = this.#row(sessionId);
-    if (!row || row.title_manual === 1 || isDefaultTitle(title) || row.title === title) return false;
-    this.#d.db.prepare("UPDATE conversations SET title = ? WHERE session_id = ?").run(title, sessionId);
+    const safe = redactSecrets(title);
+    if (!row || row.title_manual === 1 || isDefaultTitle(title) || row.title === safe) return false;
+    this.#d.db.prepare("UPDATE conversations SET title = ? WHERE session_id = ?").run(safe, sessionId);
     this.#index(sessionId);
     await this.#writeMarkdown(sessionId);
     return true;

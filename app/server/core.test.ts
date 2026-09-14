@@ -1,21 +1,31 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import { buildDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
 import { catalogLite, ModelCatalog } from "./catalog.ts";
-import { extractJson, parseClassifierOutput } from "./classifier.ts";
-import { openMemoryDb } from "./db.ts";
-import { EnvError, parseAllowedProviders } from "./env.ts";
+import { extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
+import { openDb, openMemoryDb } from "./db.ts";
+import { EnvError, loadEnv, parseAllowedProviders } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { safeSegment, slugify } from "./fsutil.ts";
 import { classifyHeuristic } from "./heuristic.ts";
 import type { OcMessageWithParts, OcSession, OpencodeClient } from "./opencode.ts";
 import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
-import { hostnameOf, safeEqual, sessionValue } from "./security.ts";
+import {
+  attemptLogin,
+  hostnameOf,
+  isValidSession,
+  LoginLimiter,
+  newSessionSecret,
+  SESSION_MAX_AGE_SECONDS,
+  safeEqual,
+  sessionValue,
+} from "./security.ts";
 import {
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
@@ -36,6 +46,8 @@ import {
   COMMON_RULES_START,
   type CommandLite,
   chooseEstimate,
+  configProviderIssues,
+  PLAN_READ_ONLY,
   DEFAULT_TIERS,
   describeTurn,
   detectPermissionPreset,
@@ -200,6 +212,32 @@ describe("masquage des secrets", () => {
   it("laisse le texte ordinaire intact", () => {
     const text = "Corrige la fonction getToken() du fichier auth.ts";
     assert.equal(redactSecrets(text), text);
+    for (const ordinary of ["mkdir -p src/app && git log -p", "Voir https://exemple.com/a@b et psql -U postgres", "sqlplus / as sysdba"]) {
+      assert.equal(redactSecrets(ordinary), ordinary);
+    }
+  });
+
+  it("masque aussi les secrets des commandes shell, chaînes de connexion et fichiers de configuration courants", () => {
+    const cases: Array<[string, string]> = [
+      ["curl -u svc_deploy:Winter2026! https://nexus.intra/x", "Winter2026!"],
+      ["curl --user admin:SuperSecret123 https://intranet", "SuperSecret123"],
+      ["mysql -uroot -pSecretPass db", "SecretPass"],
+      ["sshpass -p 'Hunter22' ssh hote", "Hunter22"],
+      ["DB_PASS=hunter2hunter2", "hunter2hunter2"],
+      ["Server=x;Pwd=ab12c;", "ab12c"],
+      ["jdbc:oracle:thin:scott/tiger123@db", "tiger123"],
+      ["sqlplus scott/tiger456@orcl", "tiger456"],
+      ["https://compte.blob.core.windows.net/c?sv=2024&sig=AbCdEf123%2B%3D&se=2026", "AbCdEf123"],
+      [`client-key-data: LS0t${"A".repeat(40)}`, "A".repeat(40)],
+      ["-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGSecret\n-----END PGP PRIVATE KEY BLOCK-----", "lQOYBGSecret"],
+      ["-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAtronque", "b3BlbnNzaC1rZXktdjEAAAAtronque"],
+      [`tid=abc123;exp=1760000000;sku=x;8kp=1:${"f".repeat(64)}`, "f".repeat(64)],
+      ["http://jdoe:p@ssw0rd!2026@proxy.corp:8080", "ssw0rd!2026"],
+      ["http://jdoe:pa/ss2026@proxy.corp:8080", "ss2026"],
+    ];
+    for (const [text, secret] of cases) assert.ok(!redactSecrets(text).includes(secret), `${text} -> ${redactSecrets(text)}`);
+    assert.equal(redactSecrets("http://jdoe:p@ssw0rd!2026@proxy.corp:8080"), "http://jdoe:****@proxy.corp:8080");
+    assert.equal(redactSecrets(redactSecrets("password = hunter22")), redactSecrets("password = hunter22"));
   });
 });
 
@@ -287,6 +325,8 @@ describe("archives", () => {
       },
     ] as OcMessageWithParts[];
     const d = buildDigest(session, messages, "/workspace");
+    // Titre d'opencode (tiré du premier message) masqué lui aussi.
+    assert.equal(buildDigest({ ...session, title: "Login SQL Password=Sup3rS3cret!" }, messages, "/workspace").title.includes("Sup3rS3cret"), false);
     assert.equal(d.promptCount, 1);
     assert.deepEqual(d.files, ["app/src/x.ts"]);
     assert.deepEqual(d.tools, { edit: 1 });
@@ -303,12 +343,96 @@ describe("sécurité et utilitaires", () => {
     assert.equal(hostnameOf(undefined), "");
   });
 
-  it("dérive une valeur de session stable et compare en temps constant", () => {
-    assert.equal(sessionValue("x".repeat(40)), sessionValue("x".repeat(40)));
-    assert.notEqual(sessionValue("x".repeat(40)), sessionValue("y".repeat(40)));
+  it("dérive une valeur de session signée, datée et révocable, et compare en temps constant", () => {
+    const token = "x".repeat(40);
+    const secret = newSessionSecret();
+    const now = Date.UTC(2026, 8, 14, 12, 0, 0);
+    const issued = Math.floor(now / 1000);
+    assert.equal(sessionValue(token, secret, issued), sessionValue(token, secret, issued));
+    assert.notEqual(sessionValue(token, secret, issued), sessionValue("y".repeat(40), secret, issued));
+    assert.notEqual(sessionValue(token, secret, issued), sessionValue(token, newSessionSecret(), issued));
+    assert.notEqual(newSessionSecret(), secret);
+    const cookie = sessionValue(token, secret, issued);
+    assert.ok(!cookie.includes(token));
+    assert.equal(isValidSession(cookie, token, secret, now), true);
+    // Déconnexion (nouveau secret) ou jeton changé : toute copie du cookie est révoquée.
+    assert.equal(isValidSession(cookie, token, newSessionSecret(), now), false);
+    assert.equal(isValidSession(cookie, "y".repeat(40), secret, now), false);
+    // Expiration vérifiée par le serveur, pas seulement par le max-age du navigateur.
+    assert.equal(isValidSession(cookie, token, secret, now + (SESSION_MAX_AGE_SECONDS - 60) * 1000), true);
+    assert.equal(isValidSession(cookie, token, secret, now + (SESSION_MAX_AGE_SECONDS + 1) * 1000), false);
+    // Date falsifiée (signature d'une autre date), format inattendu, cookie absent.
+    const [, mac] = cookie.split(".");
+    assert.equal(isValidSession(`${issued + 3600}.${mac}`, token, secret, now), false);
+    assert.equal(isValidSession(`${issued}.${mac}x`, token, secret, now), false);
+    assert.equal(isValidSession(undefined, token, secret, now), false);
     assert.equal(safeEqual("abc", "abc"), true);
     assert.equal(safeEqual("abc", "abd"), false);
     assert.equal(safeEqual("abc", "abcd"), false);
+  });
+
+  it("connexion : le bon jeton passe même limiteur épuisé, les échecs restent limités", async () => {
+    const token = "t".repeat(48);
+    const limiter = new LoginLimiter(2);
+    assert.equal(await attemptLogin(limiter, "mauvais", token, 0), "refused");
+    assert.equal(await attemptLogin(limiter, "mauvais", token, 0), "refused");
+    // Limiteur épuisé (par exemple depuis le conteneur opencode) : les échecs sont bloqués…
+    assert.equal(await attemptLogin(limiter, "mauvais", token, 0), "blocked");
+    assert.equal(limiter.blocked(), true);
+    // … mais pas la connexion légitime.
+    assert.equal(await attemptLogin(limiter, token, token, 0), "ok");
+  });
+
+  it("COCKPIT_TLS_INSECURE : seule la valeur 1 coupe la vérification (même règle que le superviseur d'opencode)", () => {
+    const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
+    assert.equal(loadEnv({ ...base, COCKPIT_TLS_INSECURE: "1" }).tlsInsecure, true);
+    for (const value of ["0", "true", "TRUE", "yes", ""]) assert.equal(loadEnv({ ...base, COCKPIT_TLS_INSECURE: value }).tlsInsecure, false, value);
+    assert.equal(loadEnv(base).tlsInsecure, false);
+  });
+
+  it("verrou « fournisseurs » d'une configuration d'opencode : enabled_providers, IA par défaut et IA des agents", () => {
+    const allowed = ["github-copilot"];
+    assert.deepEqual(configProviderIssues({ enabled_providers: ["github-copilot"], small_model: "github-copilot/gpt-5-mini" }, allowed), []);
+    assert.deepEqual(
+      configProviderIssues({}, allowed).map((i) => i.path),
+      ["enabled_providers"],
+    );
+    assert.deepEqual(
+      configProviderIssues(
+        {
+          enabled_providers: ["github-copilot", "opencode"],
+          model: "openai/gpt-5",
+          small_model: "opencode/big-pickle",
+          agent: { general: { model: "anthropic/claude" }, plan: { model: "github-copilot/claude-sonnet-5" } },
+          mode: { ancien: { model: "openai/o3" } },
+        },
+        allowed,
+      ).map((i) => i.path),
+      ["enabled_providers.1", "model", "small_model", "agent.general.model", "mode.ancien.model"],
+    );
+    // Une clé « __proto__ » (JSON.parse) ne peut pas fournir la liste à la place d'une vraie clé.
+    assert.deepEqual(configProviderIssues(JSON.parse('{"__proto__": {"enabled_providers": ["github-copilot"]}}'), allowed).map((i) => i.path), [
+      "enabled_providers",
+    ]);
+    assert.deepEqual(configProviderIssues(null, allowed).map((i) => i.path), ["enabled_providers"]);
+    // Mode test (COCKPIT_ALLOWED_PROVIDERS élargi) : accepté.
+    assert.deepEqual(configProviderIssues({ enabled_providers: ["github-copilot", "opencode"], small_model: "opencode/big-pickle" }, ["github-copilot", "opencode"]), []);
+  });
+
+  it("IA de classement : une IA d'un fournisseur non autorisé est ignorée au profit du choix automatique Copilot", () => {
+    const catalog = {
+      list: () => [
+        { key: "opencode/big-pickle", providerID: "opencode", price: { rates: { input: 0, output: 0 } } },
+        { key: "github-copilot/gpt-5-mini", providerID: "github-copilot", price: { rates: { input: 0.25, output: 2 } } },
+      ],
+    } as unknown as ModelCatalog;
+    const copilot = ["github-copilot"];
+    assert.equal(pickClassifierModel("github-copilot/claude-sonnet-5", catalog, copilot), "github-copilot/claude-sonnet-5");
+    assert.equal(pickClassifierModel("opencode/big-pickle", catalog, copilot), "github-copilot/gpt-5-mini");
+    assert.equal(pickClassifierModel("openai/gpt-5", catalog, copilot), "github-copilot/gpt-5-mini");
+    assert.equal(pickClassifierModel(null, catalog, copilot), "github-copilot/gpt-5-mini");
+    assert.equal(pickClassifierModel(null, catalog, ["opencode"]), null);
+    assert.equal(pickClassifierModel("opencode/big-pickle", catalog, ["github-copilot", "opencode"]), "opencode/big-pickle");
   });
 
   it("produit des noms de fichiers sûrs", () => {
@@ -597,8 +721,26 @@ describe("droits effectifs", () => {
     assert.deepEqual(lines(plan("equilibre")), ["modification:oui", "commande:demande"]);
     assert.deepEqual(lines(plan("autonome")), ["modification:oui", "commande:oui"]);
     for (const preset of PERMISSION_PRESET_IDS) assert.equal(builtinAssistantInfo("plan", plan(preset)).title, "Conseiller", preset);
-    // agent.plan.permission dans la configuration : appliquée après le global, elle rend la promesse vraie.
-    const locked = plan("autonome", { edit: "deny", bash: "deny" });
+    for (const preset of PERMISSION_PRESET_IDS) {
+      // { edit: deny, bash: deny } seul : le task global (ask ou allow) passe après le refus de general du Conseiller, et un
+      // sous-agent (general, explore) tourne sur ses propres règles : il pourrait modifier ou exécuter. Pas « lecture seule ».
+      const partial = plan(preset, { edit: "deny", bash: "deny" });
+      assert.deepEqual(lines(partial), ["modification:non", "commande:non"], preset);
+      assert.notEqual(evaluate(partial, "task", "general"), "deny", preset);
+      assert.notEqual(evaluate(partial, "task", "explore"), "deny", preset);
+      assert.equal(builtinAssistantInfo("plan", partial).title, "Conseiller", preset);
+      // agent.plan.permission avec task refusé : appliquée après le global, elle rend la promesse vraie.
+      const readOnly = plan(preset, { edit: "deny", bash: "deny", task: "deny" });
+      assert.equal(evaluate(readOnly, "task", "sous-agent-personnalise"), "deny", preset);
+      assert.deepEqual(builtinAssistantInfo("plan", readOnly), PLAN_READ_ONLY, preset);
+    }
+    // Refus « * » suivi d'une exception : plus de promesse (sous-agent nommé, commande précise, dossier précis).
+    const readOnlyWith = (permission: Record<string, unknown>) => builtinAssistantInfo("plan", plan("prudent", { edit: "deny", bash: "deny", task: "deny", ...permission })).title;
+    assert.equal(readOnlyWith({ task: { "*": "deny", explore: "ask" } }), "Conseiller");
+    assert.equal(readOnlyWith({ bash: { "*": "deny", "git *": "allow" } }), "Conseiller");
+    assert.equal(readOnlyWith({ edit: { "*": "deny", "docs/*": "allow" } }), "Conseiller");
+    assert.equal(readOnlyWith({ "*": "allow" }), "Conseiller");
+    const locked = plan("autonome", { edit: "deny", bash: "deny", task: "deny" });
     assert.deepEqual(lines(locked), ["modification:non", "commande:non"]);
     assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Réfléchit et propose un plan, sans rien modifier." });
     // Sans configuration globale : refus propre du Conseiller, dossier des plans modifiable, aucune règle de commande.
@@ -1072,9 +1214,9 @@ describe("profils de droits et catalogue partagés", () => {
 });
 
 describe("base", () => {
-  it("openMemoryDb atteint user_version 2 avec item_meta et chat_turns", () => {
+  it("openMemoryDb atteint user_version 3 avec item_meta et chat_turns", () => {
     const db = openMemoryDb();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 2);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
     const names = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE name IN ('item_meta', 'chat_turns', 'idx_chat_turns_session') ORDER BY name")
@@ -1087,5 +1229,26 @@ describe("base", () => {
     assert.deepEqual({ ...(db.prepare("SELECT examples, rights FROM item_meta").get() as object) }, { examples: "[]", rights: null });
     db.prepare("INSERT INTO chat_turns (session_id, created_at, kind) VALUES (?, ?, ?)").run("ses_1", 1, "message");
     assert.deepEqual({ ...(db.prepare("SELECT agent, runs FROM chat_turns").get() as object) }, { agent: "", runs: "[]" });
+  });
+
+  it("1.0.0 : les débuts de demandes enregistrés en clair (prompts.preview) sont effacés à la mise à jour", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-db-"));
+    try {
+      const old = openDb(dir);
+      old.prepare("INSERT INTO prompts (message_id, session_id, root_id, created_at, preview) VALUES (?, ?, ?, ?, ?)").run("msg_1", "ses_1", "ses_1", 1, "DB_PASSWORD=Prod!2026");
+      // Base d'une version antérieure : migrations 1 et 2 seulement.
+      old.exec("PRAGMA user_version = 2");
+      old.close();
+      const db = openDb(dir);
+      try {
+        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+        assert.deepEqual({ ...(db.prepare("SELECT preview FROM prompts WHERE message_id = 'msg_1'").get() as object) }, { preview: "" });
+        assert.equal((db.prepare("PRAGMA secure_delete").get() as { secure_delete: number }).secure_delete, 1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

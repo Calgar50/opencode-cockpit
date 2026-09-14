@@ -160,6 +160,8 @@ function RawConfigEditor({ reloadToken, onDirty, onSaved }: { reloadToken: numbe
 
 export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const { boot } = useApp();
+  // Le serveur refuse une IA par défaut d'un fournisseur non autorisé (verrou COCKPIT_ALLOWED_PROVIDERS).
+  const allowedModels = boot.models.filter((m) => (boot.allowedProviders ?? [COPILOT]).includes(m.providerID));
   const toast = useToast();
   const confirm = useConfirm();
   const ids = { model: useId(), small: useId() };
@@ -280,7 +282,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
               <ModelSelect
                 id={ids.model}
                 value={models.draft.model}
-                models={boot.models}
+                models={allowedModels}
                 emptyLabel="Non défini (choix d'opencode)"
                 onChange={(model) => models.setDraft((d) => ({ ...d, model }))}
               />
@@ -289,7 +291,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
               <ModelSelect
                 id={ids.small}
                 value={models.draft.small_model}
-                models={boot.models}
+                models={allowedModels}
                 emptyLabel="Non défini (choix d'opencode)"
                 onChange={(small_model) => models.setDraft((d) => ({ ...d, small_model }))}
               />

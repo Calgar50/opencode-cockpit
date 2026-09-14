@@ -8,6 +8,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
 import { serve } from "@hono/node-server";
+import { parse as parseJsonc } from "jsonc-parser";
 import { ArchiveService } from "./archive.ts";
 import { AssistantService } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
@@ -15,7 +16,7 @@ import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
-import { createApp, forbiddenAttachment, forbiddenProxyBody, PROXY_RULES, turnModelFromBody } from "./http.ts";
+import { createApp, forbiddenAttachment, forbiddenProxyBody, mergeConfigPatch, parsePermissionReply, PROXY_RULES, turnModelFromBody } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { csvCell, Ledger, monthBounds, monthKey } from "./ledger.ts";
 import { createLogger, type Logger } from "./log.ts";
@@ -201,6 +202,16 @@ describe("registre des coûts", () => {
     assert.equal(csvCell("=HYPERLINK(1)"), "'=HYPERLINK(1)");
     assert.equal(csvCell("-12.5"), "-12.5");
     assert.equal(csvCell('a,"b"'), '"a,""b"""');
+    // Excel en français (séparateur « ; ») : une formule après un séparateur ou un retour à la ligne est neutralisée aussi.
+    assert.equal(csvCell("Revue;=LIEN_HYPERTEXTE(CAR(104)&A3);fin"), "Revue;'=LIEN_HYPERTEXTE(CAR(104)&A3);fin");
+    assert.equal(csvCell("a;=1+1;b"), "a;'=1+1;b");
+    assert.equal(csvCell("a;  +1;b"), "a;  '+1;b");
+    assert.equal(csvCell('a;"=1+1";b'), `"a;""'=1+1"";b"`);
+    const newline = String.fromCharCode(10);
+    const tab = String.fromCharCode(9);
+    assert.equal(csvCell(`a${newline}=1+1;b`), `"a${newline}'=1+1;b"`);
+    assert.equal(csvCell(`a${tab}@SOMME(1)`), `a${tab}'@SOMME(1)`);
+    assert.equal(csvCell("Revue F;-12"), "Revue F;'-12");
   });
 });
 
@@ -229,6 +240,47 @@ describe("archives : corrections manuelles", () => {
       const updated = await archive.update("ses_resume", { summary: "Résumé corrigé à la main" });
       assert.equal(updated?.classifiedBy, "manual");
       assert.equal(updated?.summary, "Résumé corrigé à la main");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("masque les secrets des titres : enregistrés, relus (titres antérieurs), exportés en Markdown et dans le nom du fichier", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-archive-"));
+    try {
+      const { db, settings, ledger, sessions } = setup();
+      const archive = new ArchiveService({
+        db,
+        client: {} as OpencodeClient,
+        settings,
+        ledger,
+        sessions,
+        archiveDir: tmp,
+        opencodeWorkspaceDir: "/workspace",
+        log: createLogger("error"),
+      });
+      // Ligne enregistrée avant 1.0.0, titre en clair.
+      db.prepare("INSERT INTO conversations (session_id, directory, title, classified_by, created_at, updated_at) VALUES (?, ?, ?, 'llm', ?, ?)").run(
+        "ses_titre",
+        "/workspace/app",
+        "Login SQL Password=Sup3rS3cret!",
+        T,
+        T,
+      );
+      assert.equal(archive.get("ses_titre")?.title.includes("Sup3rS3cret"), false);
+      assert.equal(archive.markdown("ses_titre")?.includes("Sup3rS3cret"), false);
+      const stored = () => (db.prepare("SELECT title FROM conversations WHERE session_id = 'ses_titre'").get() as { title: string }).title;
+      assert.equal(await archive.syncTitle("ses_titre", `Jeton ghp_${"c".repeat(36)} refusé`), true);
+      assert.equal(stored().includes("c".repeat(36)), false);
+      await archive.update("ses_titre", { title: "Connexion postgres://admin:MotDePasse42@db/app" });
+      assert.equal(stored().includes("MotDePasse42"), false);
+      const files = fs.readdirSync(tmp, { recursive: true }).map(String);
+      assert.ok(files.length > 0);
+      for (const name of files) {
+        assert.equal(name.includes("MotDePasse42") || name.includes("Sup3rS3cret"), false, name);
+        const full = path.join(tmp, name);
+        if (fs.statSync(full).isFile()) assert.equal(/MotDePasse42|Sup3rS3cret|c{36}/.test(fs.readFileSync(full, "utf8")), false, name);
+      }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -348,7 +400,9 @@ const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", 
 
 describe("serveur HTTP (sécurité et proxy)", () => {
   const token = "t".repeat(48);
-  const cookie = `cockpit_session=${sessionValue(token)}`;
+  // Secret de session posé dans la base avant createApp (sinon un secret aléatoire y est créé au démarrage).
+  const sessionSecret = "s".repeat(43);
+  const cookie = `cockpit_session=${sessionValue(token, sessionSecret)}`;
   const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
   const warnings: string[] = [];
   let upstream: http.Server;
@@ -357,11 +411,44 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let tmp = "";
   /** Interrupteur : GET /agent répond 400 (configuration refusée par opencode). */
   let agentFails = false;
+  /** Faux opencode : demandes en attente (GET /permission), états (GET /session/status), sous-agents (GET /session/:id/children). */
+  let ocPermissions: Array<Record<string, unknown>> = [];
+  let ocStatuses: unknown = {};
+  let ocChildren: Record<string, Array<{ id: string }>> = {};
+  /** Messages (GET /session/:id/message/:messageID), par « session/message » ; absent : 404. */
+  let ocMessages: Record<string, unknown> = {};
+  /** États servis tour à tour par GET /session/status avant de revenir à ocStatuses. */
+  let ocStatusSequence: unknown[] = [];
+  /** Délai de réponse de GET /permission et GET /session/status (valeur lue à la réception, servie après le délai). */
+  let lookupDelayMs = 0;
+  /** Appelé à la réception de POST /session/:id/abort. */
+  let onAbort: ((sessionId: string) => void) | null = null;
+  /**
+   * Interrupteur : GET /permission coupe la connexion (« socket »), GET /session/status répond 500 (« status ») ou
+   * GET /session/:id/message/:messageID répond 500 (« message »).
+   */
+  let permissionLookupFailure: "socket" | "status" | "message" | null = null;
   let env: AppEnv;
   let db: DatabaseSync;
   let settings: SettingsStore;
   let hub: EventHub;
   let lookup: OcLookup;
+
+  /** GET /global/config : fusion de config.json, opencode.json puis opencode.jsonc (config.ts:272-274), sinon configuration livrée. */
+  const globalConfig = (): unknown => {
+    const merge = (base: unknown, next: unknown): unknown => {
+      if (!base || typeof base !== "object" || Array.isArray(base) || !next || typeof next !== "object" || Array.isArray(next)) return next;
+      const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+      for (const [key, value] of Object.entries(next)) out[key] = merge(out[key], value);
+      return out;
+    };
+    let merged: unknown = null;
+    for (const name of ["config.json", "opencode.json", "opencode.jsonc"]) {
+      const file = path.join(tmp, name);
+      if (fs.existsSync(file)) merged = merge(merged ?? {}, parseJsonc(fs.readFileSync(file, "utf8")));
+    }
+    return merged ?? { enabled_providers: [COPILOT], permission: PRUDENT };
+  };
 
   before(async () => {
     upstream = http.createServer((req, res) => {
@@ -383,7 +470,29 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         } else if (req.method === "GET" && pathname === "/skill") {
           json(200, FIXTURE_SKILLS);
         } else if (req.method === "GET" && pathname === "/global/config") {
-          json(200, { permission: PRUDENT });
+          json(200, globalConfig());
+        } else if (req.method === "GET" && pathname === "/permission") {
+          const snapshot = ocPermissions;
+          if (permissionLookupFailure === "socket") req.socket.destroy();
+          else setTimeout(() => json(200, snapshot), lookupDelayMs);
+        } else if (req.method === "GET" && pathname === "/session/status") {
+          const snapshot = ocStatusSequence.length > 0 ? ocStatusSequence.shift() : ocStatuses;
+          if (permissionLookupFailure === "status") json(500, { name: "UnknownError", data: { message: "panne simulée" } });
+          else setTimeout(() => json(200, snapshot), lookupDelayMs);
+        } else if (req.method === "GET" && /^\/session\/[^/]+\/children$/.test(pathname)) {
+          json(200, ocChildren[pathname.split("/")[2] ?? ""] ?? []);
+        } else if (req.method === "GET" && /^\/session\/[^/]+\/message\/[^/]+$/.test(pathname)) {
+          const [, , sid = "", , mid = ""] = pathname.split("/");
+          const message = ocMessages[`${sid}/${mid}`];
+          if (permissionLookupFailure === "message") json(500, { name: "UnknownError", data: { message: "panne simulée" } });
+          else if (message === undefined) json(404, { name: "NotFoundError", data: { message: `Message not found: ${mid}` } });
+          else json(200, message);
+        } else if (req.method === "POST" && /^\/session\/[^/]+\/abort$/.test(pathname)) {
+          onAbort?.(pathname.split("/")[2] ?? "");
+          res.writeHead(204).end();
+        } else if (req.method === "GET" && pathname === "/session/ses_html/todo") {
+          // Faux serveur (conteneur opencode compromis) qui répond un document : jamais servi tel quel par le cockpit.
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<script src=/api/oc/session/x/message></script>");
         } else if (req.method === "POST") {
           res.writeHead(204).end();
         } else {
@@ -424,6 +533,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     };
     const base = setup();
     db = base.db;
+    db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('session.secret', ?, ?)").run(sessionSecret, T);
     settings = base.settings;
     const client = new OpencodeClient(env);
     const catalog = new ModelCatalog(client);
@@ -541,6 +651,18 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     const res = await call("GET", "/");
     assert.match(String(res.headers["content-security-policy"]), /script-src 'self'/);
     assert.equal(res.headers["x-frame-options"], "DENY");
+    // API : jamais un document (aucun script, même de la même origine).
+    assert.equal((await call("GET", "/api/health")).headers["content-security-policy"], "default-src 'none'; frame-ancestors 'none'; sandbox");
+  });
+
+  it("ne sert jamais un document ou un script relayé d'opencode : type JSON forcé et CSP bac à sable", async () => {
+    const res = await call("GET", "/api/oc/session/ses_html/todo", authed);
+    assert.equal(res.status, 200);
+    assert.match(String(res.headers["content-type"]), /^application\/json/);
+    assert.equal(res.headers["content-security-policy"], "default-src 'none'; frame-ancestors 'none'; sandbox");
+    assert.equal(res.headers["x-content-type-options"], "nosniff");
+    const list = await call("GET", "/api/oc/session?directory=%2Fworkspace%2Fapp", authed);
+    assert.match(String(list.headers["content-type"]), /^application\/json/);
   });
 
   it("exige la session sur l'API", async () => {
@@ -756,8 +878,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.equal(JSON.parse(res.body).error, "modele-requis");
     };
     // Résumer : opencode compacte avec providerID/modelID du premier niveau ; `model` serait contrôlé à sa place.
+    // Tout autre champ que providerID/modelID est refusé dès le filtre de contenu.
     const decoy = { model: ref("gpt-5-mini"), ...ref("big-pickle", "opencode") };
-    await refusedWith(await call("POST", `/api/oc/session/ses_leurre/summarize?directory=${APP}`, confirmedHeaders, JSON.stringify(decoy)));
+    const decoySummary = await call("POST", `/api/oc/session/ses_leurre/summarize?directory=${APP}`, confirmedHeaders, JSON.stringify(decoy));
+    assert.equal(decoySummary.status, 403, decoySummary.body);
+    assert.equal(JSON.parse(decoySummary.body).error, "forbidden-body");
     // Message sans `model` objet : opencode prendrait l'IA de l'agent ou de la session.
     await refusedWith(await prompt("ses_leurre", { agent: "build", ...ref("gpt-5-mini"), parts: text("x") }, confirmedHeaders));
     await refusedWith(await prompt("ses_leurre", { agent: "build", model: "github-copilot/gpt-5-mini", parts: text("x") }, confirmedHeaders));
@@ -771,6 +896,48 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.equal((await prompt("ses_leurre", { agent: "build", model: ref("gpt-5-mini"), parts: text("x") }, confirmedHeaders)).status, 204);
     assert.equal((await call("POST", `/api/oc/session/ses_leurre/summarize?directory=${APP}`, confirmedHeaders, JSON.stringify(ref("gpt-5-mini")))).status, 204);
     assert.equal(forwarded("/session/ses_leurre/").length, posts + 2);
+  });
+
+  it("Résumer : garde-fou et trace sur l'IA de l'agent « compaction » qu'opencode facture, `auto` refusé", async () => {
+    const url = `/api/oc/session/ses_compact/summarize?directory=${APP}`;
+    const auto = await call("POST", url, confirmedHeaders, JSON.stringify({ ...ref("gpt-5-mini"), auto: true }));
+    assert.equal(auto.status, 403, auto.body);
+    assert.equal(JSON.parse(auto.body).error, "forbidden-body");
+    assert.notEqual(forbiddenProxyBody("POST", "/session/ses_compact/summarize", { ...ref("gpt-5-mini"), auto: false }, null), undefined);
+    assert.equal(forbiddenProxyBody("POST", "/session/ses_compact/summarize", ref("gpt-5-mini"), null), undefined);
+    assert.equal(forwarded("/session/ses_compact/").length, 0);
+
+    const compaction = { name: "compaction", mode: "primary", native: true, hidden: true, options: {}, permission: [], model: ref("claude-opus-5") };
+    const fixture = compaction as unknown as (typeof FIXTURE_AGENTS)[number];
+    FIXTURE_AGENTS.push(fixture);
+    lookup.invalidate();
+    try {
+      // Budget atteint : le refus nomme l'IA de compaction, pas celle de la demande.
+      const blocked = await call("POST", url, mutating, JSON.stringify(ref("gpt-5-mini")));
+      assert.equal(blocked.status, 409, blocked.body);
+      assert.equal(JSON.parse(blocked.body).run.model, "github-copilot/claude-opus-5");
+      assert.equal((await call("POST", url, confirmedHeaders, JSON.stringify(ref("gpt-5-mini")))).status, 204);
+      const [row] = turnsOf("ses_compact");
+      assert.equal(row?.kind, "resume");
+      assert.deepEqual(JSON.parse(row?.runs ?? "[]"), [{ role: "message", model: "github-copilot/claude-opus-5", variant: null, source: "assistant", agent: "compaction" }]);
+
+      // IA de compaction d'un fournisseur non autorisé, ou absente du compte : rien n'est relayé.
+      const posts = forwarded("/session/ses_compact/").length;
+      compaction.model = ref("big-pickle", "opencode");
+      lookup.invalidate();
+      const foreign = await call("POST", url, confirmedHeaders, JSON.stringify(ref("gpt-5-mini")));
+      assert.equal(foreign.status, 403, foreign.body);
+      assert.equal(JSON.parse(foreign.body).error, "fournisseur-refuse");
+      compaction.model = ref("claude-inconnu");
+      lookup.invalidate();
+      const missing = await call("POST", url, confirmedHeaders, JSON.stringify(ref("gpt-5-mini")));
+      assert.equal(missing.status, 409, missing.body);
+      assert.equal(JSON.parse(missing.body).error, "ia-indisponible");
+      assert.equal(forwarded("/session/ses_compact/").length, posts);
+    } finally {
+      FIXTURE_AGENTS.splice(FIXTURE_AGENTS.indexOf(fixture), 1);
+      lookup.invalidate();
+    }
   });
 
   it("impose l'IA d'un assistant : 409 avec son modèle, renvoi accepté et tracé, choix avancé pour un message", async () => {
@@ -1010,6 +1177,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.equal(data.ui.mode, "simple");
     assert.equal(data.rulesVersion, 1);
     assert.deepEqual(data.allowedProviders, ["github-copilot"]);
+    // Verrou réel d'opencode lu dans sa configuration (configuration livrée : en place).
+    assert.deepEqual(data.security.providerIssues, []);
     assert.equal(data.ai.chatDefaultTier, "equilibre");
     assert.equal(data.ai.allowModelOverride, false);
     assert.deepEqual(
@@ -1046,6 +1215,80 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.deepEqual(JSON.parse(written.replace(/^\s*\/\/.*$/gm, "")).permission, PRUDENT);
       assert.equal((await call("POST", "/api/security/restore-prudent", mutating, '{"permission":{"bash":"allow"}}')).status, 400);
     } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("« Revenir au profil Prudent » : doublons de « permission » retirés, jamais de faux succès si opencode applique d'autres règles", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const other = path.join(tmp, "config.json");
+    // jsonc-parser (comme opencode) garde la DERNIÈRE clé en double : c'est elle qui fait foi.
+    fs.writeFileSync(file, '{\n  "permission": { "edit": "ask" },\n  // doublon\n  "permission": { "edit": "allow", "bash": "allow", "task": "allow" }\n}\n');
+    try {
+      const res = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(res.status, 200, res.body);
+      const written = fs.readFileSync(file, "utf8");
+      assert.equal((written.match(/"permission"/g) ?? []).length, 1);
+      assert.deepEqual(parseJsonc(written).permission, PRUDENT);
+      // Fichier de configuration de moindre priorité qui ajoute des règles : elles survivent à la fusion d'opencode.
+      fs.writeFileSync(other, JSON.stringify({ permission: { "*": "allow", external_directory: "allow" } }));
+      const shadowed = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(shadowed.status, 422, shadowed.body);
+      assert.equal(JSON.parse(shadowed.body).error, "permissions-non-appliquees");
+      assert.match(JSON.parse(shadowed.body).message, /config\.json/);
+      settings.update({ ui: { mode: "avance" } });
+      assert.equal((await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: PRUDENT }))).status, 422);
+    } finally {
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+      fs.rmSync(other, { force: true });
+    }
+  });
+
+  it("verrou « fournisseurs » : configuration d'opencode, IA de classement et ancienne IA du chat limitées aux fournisseurs autorisés", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const patches = () => upstreamRequests.filter((r) => r.method === "PATCH" && r.url.startsWith("/global/config")).length;
+    const patch = (body: string) => call("PATCH", "/api/opencode/config", mutating, body);
+    const raw = (content: string) => call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content }));
+    const paths = (res: { body: string }) => (JSON.parse(res.body).issues as Array<{ path: string }>).map((i) => i.path);
+    const merged = mergeConfigPatch({ a: { b: 1, c: 2 }, l: [1, 2], enabled_providers: ["github-copilot"] }, { a: { b: 3 }, l: [3] });
+    assert.deepEqual(JSON.parse(JSON.stringify(merged)), { a: { b: 3, c: 2 }, l: [3], enabled_providers: ["github-copilot"] });
+    settings.update({ ui: { mode: "avance" } });
+    try {
+      const before = patches();
+      const small = await patch(JSON.stringify({ small_model: "opencode/big-pickle" }));
+      assert.equal(small.status, 422, small.body);
+      assert.equal(JSON.parse(small.body).error, "fournisseur-refuse");
+      assert.deepEqual(paths(small), ["small_model"]);
+      assert.deepEqual(paths(await patch(JSON.stringify({ enabled_providers: ["github-copilot", "opencode"] }))), ["enabled_providers.1"]);
+      assert.deepEqual(paths(await patch(JSON.stringify({ agent: { general: { model: "opencode/big-pickle" } } }))), ["agent.general.model"]);
+      assert.equal(patches(), before);
+      assert.equal((await patch(JSON.stringify({ small_model: "github-copilot/gpt-5-mini" }))).status, 200);
+      assert.equal(patches(), before + 1);
+
+      // Fichier brut : verrou obligatoire, IA par défaut d'un autre fournisseur refusée, rien d'écrit.
+      assert.deepEqual(paths(await raw("{}")), ["enabled_providers"]);
+      assert.deepEqual(paths(await raw('{\n  // commentaire\n  "enabled_providers": ["github-copilot"],\n  "small_model": "opencode/big-pickle",\n}')), ["small_model"]);
+      assert.equal(fs.existsSync(file), false);
+      const accepted = await raw('{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" }\n}\n');
+      assert.equal(accepted.status, 200, accepted.body);
+      // Configuration existante sans verrou : tout correctif est refusé tant qu'il ne le rétablit pas (« __proto__ » compris).
+      fs.writeFileSync(file, '{ "permission": { "edit": "ask" } }\n');
+      assert.deepEqual(paths(await patch(JSON.stringify({ small_model: "github-copilot/gpt-5-mini" }))), ["enabled_providers"]);
+      assert.deepEqual(paths(await patch('{"__proto__": {"enabled_providers": ["github-copilot"]}}')), ["enabled_providers"]);
+      const bootstrap = JSON.parse((await call("GET", "/api/bootstrap", authed)).body);
+      assert.deepEqual(bootstrap.security.providerIssues.map((i: { path: string }) => i.path), ["enabled_providers"]);
+
+      // Paramètres : IA de classement et ancienne IA du chat.
+      const classifier = await call("PUT", "/api/settings", mutating, JSON.stringify({ classifier: { model: "opencode/big-pickle" } }));
+      assert.equal(classifier.status, 422, classifier.body);
+      assert.deepEqual(JSON.parse(classifier.body).issues, [{ path: "classifier.model", message: "Seules les IA GitHub Copilot sont autorisées dans ce cockpit." }]);
+      assert.deepEqual(paths(await call("PUT", "/api/settings", mutating, JSON.stringify({ chat: { defaultModel: "openai/gpt-5" } }))), ["chat.defaultModel"]);
+      assert.equal(settings.get().classifier.model, null);
+      assert.equal((await call("PUT", "/api/settings", mutating, JSON.stringify({ classifier: { model: "github-copilot/gpt-5-mini" } }))).status, 200);
+      assert.equal(settings.get().classifier.model, "github-copilot/gpt-5-mini");
+    } finally {
+      settings.update({ ui: { mode: "simple" }, classifier: { model: null } });
       fs.rmSync(file, { force: true });
     }
   });
@@ -1128,5 +1371,376 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       off();
       settings.update({ ai: { tiers: null }, ui: { mode: "simple" } });
     }
+  });
+
+  // --- 1.0.0 : réponses aux demandes d'autorisation (« Toujours » jamais relayé, demandes orphelines) ---------------
+
+  const permissionRequest = (id: string, sessionID: string, tool?: { messageID: string; callID: string }) => ({
+    id,
+    sessionID,
+    permission: tool ? "task" : "read",
+    patterns: tool ? ["analyste-changements"] : ["app/secret.env"],
+    metadata: {},
+    always: ["*"],
+    ...(tool ? { tool } : {}),
+  });
+  /** Message d'assistant (GET /session/:id/message/:messageID) portant l'appel d'outil `callID` dans l'état `status`. */
+  const toolMessage = (sessionID: string, messageID: string, callID: string, status: string, error?: unknown) => {
+    const state =
+      status === "error"
+        ? { status, input: {}, error: "Tool execution aborted", metadata: { interrupted: true }, time: { start: T, end: T } }
+        : { status, input: { subagent_type: "analyste-changements" }, time: { start: T } };
+    const info = { id: messageID, sessionID, role: "assistant", time: { created: T }, ...(error === undefined ? {} : { error }) };
+    return { info, parts: [{ id: `prt_${callID}`, sessionID, messageID, type: "tool", callID, tool: "task", state }] };
+  };
+  const ABORTED = { name: "MessageAbortedError", data: { message: "Aborted" } };
+  const replyPermission = (requestId: string, body: unknown) =>
+    call("POST", `/api/oc/permission/${requestId}/reply?directory=${APP}`, mutating, typeof body === "string" ? body : JSON.stringify(body));
+  /** Attend une condition remplie en tâche de fond (nettoyage après un arrêt), 3 s au plus. */
+  const waitFor = async (condition: () => boolean, timeoutMs = 3_000): Promise<boolean> => {
+    const start = Date.now();
+    while (!condition()) {
+      if (Date.now() - start > timeoutMs) return false;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return true;
+  };
+  const resetPermissionFixtures = () => {
+    ocPermissions = [];
+    ocStatuses = {};
+    ocChildren = {};
+    ocMessages = {};
+    ocStatusSequence = [];
+    lookupDelayMs = 0;
+    onAbort = null;
+    permissionLookupFailure = null;
+  };
+  /** Requêtes reçues par le faux opencode depuis l'indice `from`, « MÉTHODE url », triées. */
+  const upstreamSince = (from: number) => upstreamRequests.slice(from).map((r) => `${r.method} ${r.url}`).sort();
+  const TOUJOURS_REFUSE =
+    "« Toujours autoriser » est désactivé : opencode l'appliquerait à tous les assistants du projet, y compris ceux qui refusent cette action, jusqu'à son redémarrage.";
+  const DEMANDE_EXPIREE = "Cette demande n'est plus active : la réponse a été arrêtée. Rien n'a été lancé.";
+
+  it("« Toujours autoriser » n'est jamais relayé (403) ; tout autre corps que {reply: once|reject, message?} est refusé (400)", async () => {
+    ocPermissions = [permissionRequest("per_toujours", "ses_perm")];
+    ocStatuses = { ses_perm: { type: "busy" } };
+    try {
+      for (const body of [{ reply: "always" }, { reply: "ALWAYS" }, { reply: " Always " }, { reply: "always", message: "ok" }, '{"reply":"once","reply":"always"}']) {
+        const res = await replyPermission("per_toujours", body);
+        assert.equal(res.status, 403, res.body);
+        assert.deepEqual(JSON.parse(res.body), { error: "toujours-refuse", message: TOUJOURS_REFUSE });
+      }
+      const invalid: unknown[] = [
+        {},
+        { reply: "Once" },
+        { reply: "accept" },
+        { reply: 1 },
+        { reply: "once", always: ["*"] },
+        { reply: "reject", message: 42 },
+        { reply: "reject", message: "x".repeat(2_001) },
+        [],
+        "null",
+        '"once"',
+      ];
+      for (const body of invalid) {
+        const res = await replyPermission("per_toujours", body);
+        assert.equal(res.status, 400, `${JSON.stringify(body)} : ${res.body}`);
+        assert.equal(JSON.parse(res.body).error, "reponse-invalide");
+      }
+      assert.equal((await replyPermission("per_toujours", "{reply")).status, 400);
+      assert.equal(forwarded("/permission/per_toujours/").length, 0);
+      assert.deepEqual(parsePermissionReply({ reply: "once" }), { ok: true, value: { reply: "once" } });
+      assert.deepEqual(parsePermissionReply({ reply: "reject", message: "x".repeat(2_000) }), { ok: true, value: { reply: "reject", message: "x".repeat(2_000) } });
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("« Autoriser une fois » : relayé seulement si la demande est en attente et que sa conversation travaille, 409 sinon", async () => {
+    ocPermissions = [permissionRequest("per_actif", "ses_actif"), permissionRequest("per_orpheline", "ses_arretee"), permissionRequest("per_retry", "ses_retry")];
+    const retry = { type: "retry", attempt: 2, message: "limite atteinte", next: T };
+    ocStatuses = { ses_actif: { type: "busy" }, ses_retry: retry, ses_arretee: { type: "idle" } };
+    try {
+      const before = upstreamRequests.length;
+      const idle = await replyPermission("per_orpheline", { reply: "once" });
+      assert.equal(idle.status, 409, idle.body);
+      assert.deepEqual(JSON.parse(idle.body), { error: "demande-expiree", message: DEMANDE_EXPIREE });
+      // Vérifications sur le même dossier que la demande entrante ; demande orpheline d'une conversation au repos : refusée
+      // (« reject ») après une nouvelle lecture des états, pour qu'elle ne redevienne pas autorisable.
+      assert.deepEqual(upstreamSince(before), [
+        "GET /permission?directory=%2Fworkspace%2Fapp",
+        "GET /session/status?directory=%2Fworkspace%2Fapp",
+        "GET /session/status?directory=%2Fworkspace%2Fapp",
+        "POST /permission/per_orpheline/reply?directory=%2Fworkspace%2Fapp",
+      ]);
+      // GET /session/status ne liste que les sessions qui ne sont pas au repos : une session absente est arrêtée.
+      ocStatuses = { ses_actif: { type: "busy" }, ses_retry: retry };
+      assert.equal((await replyPermission("per_orpheline", { reply: "once", message: "vas-y" })).status, 409);
+      const unknown = await replyPermission("per_inconnue", { reply: "once" });
+      assert.equal(unknown.status, 409, unknown.body);
+      assert.deepEqual(JSON.parse(unknown.body), { error: "demande-expiree", message: DEMANDE_EXPIREE });
+      assert.deepEqual(
+        forwarded("/permission/per_orpheline/").map((r) => r.body),
+        ['{"reply":"reject"}', '{"reply":"reject"}'],
+      );
+      assert.equal(forwarded("/permission/per_inconnue/").length, 0);
+
+      // La conversation retravaille entre la vérification et le refus de l'orpheline : aucun refus (il toucherait la nouvelle réponse).
+      ocStatusSequence = [{}, { ses_arretee: { type: "busy" } }];
+      assert.equal((await replyPermission("per_orpheline", { reply: "once" })).status, 409);
+      assert.equal(forwarded("/permission/per_orpheline/").length, 2);
+      assert.equal(ocStatusSequence.length, 0);
+
+      // Conversation au travail : relayé, corps réécrit tel que contrôlé (clé en double : la dernière, lue comme opencode).
+      const busy = await replyPermission("per_actif", '{"reply":"always","reply":"once"}');
+      assert.equal(busy.status, 204, busy.body);
+      const sent = forwarded("/permission/per_actif/reply");
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0]?.body, '{"reply":"once"}');
+      assert.match(sent[0]?.url ?? "", /directory=%2Fworkspace%2Fapp/);
+      assert.equal((await replyPermission("per_retry", { reply: "once" })).status, 204);
+      assert.equal(forwarded("/permission/per_retry/reply").length, 1);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("« Refuser » est relayé avec sa consigne, même quand la vérification est impossible", async () => {
+    // Vérifications impossibles : sans effet sur un refus, qui n'autorise rien et ferme la demande.
+    permissionLookupFailure = "socket";
+    try {
+      const body = { reply: "reject", message: "Non : lis plutôt README.md" };
+      const res = await replyPermission("per_refus", body);
+      assert.equal(res.status, 204, res.body);
+      assert.equal(forwarded("/permission/per_refus/reply").at(-1)?.body, JSON.stringify(body));
+      assert.equal((await replyPermission("per_refus_bis", { reply: "reject" })).status, 204);
+      assert.equal(forwarded("/permission/per_refus_bis/reply").at(-1)?.body, '{"reply":"reject"}');
+      assert.ok(warnings.some((w) => w.includes("refus relayé sans vérification")));
+      ocPermissions = [permissionRequest("per_refus_ter", "ses_refus", { messageID: "msg_refus", callID: "call_refus" })];
+      ocStatuses = { ses_refus: { type: "busy" } };
+      permissionLookupFailure = "message";
+      assert.equal((await replyPermission("per_refus_ter", { reply: "reject" })).status, 204);
+      assert.equal(forwarded("/permission/per_refus_ter/reply").length, 1);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("« Refuser » une demande d'une réponse arrêtée pendant que la conversation retravaille : 409, rien relayé (opencode refuserait aussi la réponse en cours)", async () => {
+    const stale = { messageID: "msg_arrete", callID: "call_arrete" };
+    const live = { messageID: "msg_relance", callID: "call_relance" };
+    ocPermissions = [
+      permissionRequest("per_ancienne", "ses_relance", stale),
+      permissionRequest("per_nouvelle", "ses_relance", live),
+      permissionRequest("per_sans_outil", "ses_relance"),
+      permissionRequest("per_repos", "ses_repos", { messageID: "msg_repos", callID: "call_repos" }),
+    ];
+    ocStatuses = { ses_relance: { type: "busy" } };
+    ocMessages = {
+      "ses_relance/msg_arrete": toolMessage("ses_relance", "msg_arrete", "call_arrete", "error", ABORTED),
+      "ses_relance/msg_relance": toolMessage("ses_relance", "msg_relance", "call_relance", "running"),
+      "ses_repos/msg_repos": toolMessage("ses_repos", "msg_repos", "call_repos", "error", ABORTED),
+    };
+    try {
+      const before = upstreamRequests.length;
+      const res = await replyPermission("per_ancienne", { reply: "reject", message: "non" });
+      assert.equal(res.status, 409, res.body);
+      assert.deepEqual(JSON.parse(res.body), {
+        error: "demande-orpheline",
+        message:
+          "Cette demande vient d'une réponse arrêtée. La refuser maintenant refuserait aussi les demandes de la réponse en cours : rien n'a été envoyé, réessayez quand celle-ci sera terminée.",
+      });
+      assert.ok(upstreamSince(before).includes("GET /session/ses_relance/message/msg_arrete?directory=%2Fworkspace%2Fapp"));
+      assert.equal(forwarded("/permission/per_ancienne/").length, 0);
+      // Témoins : demande de l'appel en cours, demande sans appel d'outil, orpheline d'une conversation au repos : relayées.
+      for (const id of ["per_nouvelle", "per_sans_outil", "per_repos"]) {
+        assert.equal((await replyPermission(id, { reply: "reject" })).status, 204, id);
+        assert.equal(forwarded(`/permission/${id}/reply`).at(-1)?.body, '{"reply":"reject"}');
+      }
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("« Autoriser une fois » : conversation qui retravaille mais appel d'outil arrêté (erreur, interrompu, introuvable) : 409, rien relayé", async () => {
+    const tool = { messageID: "msg_arrete", callID: "call_arrete" };
+    ocPermissions = [permissionRequest("per_arretee", "ses_relance", tool)];
+    // Nouveau message dans la même conversation : elle travaille de nouveau, la demande de la réponse arrêtée reste listée.
+    ocStatuses = { ses_relance: { type: "busy" } };
+    try {
+      const stale: Array<[string, unknown]> = [
+        ["partie interrompue, message arrêté", toolMessage("ses_relance", "msg_arrete", "call_arrete", "error", ABORTED)],
+        ["partie en erreur", toolMessage("ses_relance", "msg_arrete", "call_arrete", "error")],
+        ["message arrêté", toolMessage("ses_relance", "msg_arrete", "call_arrete", "running", ABORTED)],
+        ["appel terminé", toolMessage("ses_relance", "msg_arrete", "call_arrete", "completed")],
+        ["appel pas encore lancé", toolMessage("ses_relance", "msg_arrete", "call_arrete", "pending")],
+        ["autre appel", toolMessage("ses_relance", "msg_arrete", "call_autre", "running")],
+        ["message introuvable (404)", undefined],
+      ];
+      for (const [label, message] of stale) {
+        ocMessages = message === undefined ? {} : { "ses_relance/msg_arrete": message };
+        const before = upstreamRequests.length;
+        const res = await replyPermission("per_arretee", { reply: "once" });
+        assert.equal(res.status, 409, `${label} : ${res.body}`);
+        assert.deepEqual(JSON.parse(res.body), { error: "demande-expiree", message: DEMANDE_EXPIREE });
+        assert.deepEqual(upstreamSince(before), [
+          "GET /permission?directory=%2Fworkspace%2Fapp",
+          "GET /session/ses_relance/message/msg_arrete?directory=%2Fworkspace%2Fapp",
+          "GET /session/status?directory=%2Fworkspace%2Fapp",
+        ], label);
+      }
+      // Ni « once », ni refus : un « reject » refuserait aussi les demandes de la réponse en cours.
+      assert.equal(forwarded("/permission/per_arretee/").length, 0);
+
+      // Message illisible, appel d'outil illisible ou panne : 503, rien relayé.
+      ocMessages = { "ses_relance/msg_arrete": [] };
+      assert.equal((await replyPermission("per_arretee", { reply: "once" })).status, 503);
+      ocMessages = { "ses_relance/msg_arrete": toolMessage("ses_relance", "msg_arrete", "call_arrete", "running") };
+      permissionLookupFailure = "message";
+      assert.equal((await replyPermission("per_arretee", { reply: "once" })).status, 503);
+      permissionLookupFailure = null;
+      ocPermissions = [{ ...permissionRequest("per_arretee", "ses_relance"), tool: { messageID: "../msg", callID: "call_arrete" } }];
+      assert.equal((await replyPermission("per_arretee", { reply: "once" })).status, 503);
+      assert.equal(forwarded("/permission/per_arretee/").length, 0);
+
+      // Témoin : appel en cours dans un message sans erreur, relayé.
+      ocPermissions = [permissionRequest("per_arretee", "ses_relance", tool)];
+      const res = await replyPermission("per_arretee", { reply: "once" });
+      assert.equal(res.status, 204, res.body);
+      assert.deepEqual(forwarded("/permission/per_arretee/").map((r) => r.body), ['{"reply":"once"}']);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("arrêt pendant la vérification d'un « once » : l'arrêt n'est relayé qu'après le « once », jamais entre la vérification et le relais", async () => {
+    const tool = { messageID: "msg_course", callID: "call_course" };
+    ocPermissions = [permissionRequest("per_course", "ses_course", tool)];
+    ocStatuses = { ses_course: { type: "busy" } };
+    ocMessages = { "ses_course/msg_course": toolMessage("ses_course", "msg_course", "call_course", "running") };
+    // opencode lent : la vérification dure ; l'arrêt met la conversation au repos et l'appel en erreur, comme opencode.
+    lookupDelayMs = 250;
+    onAbort = (sessionId) => {
+      if (sessionId !== "ses_course") return;
+      ocStatuses = {};
+      ocMessages = { "ses_course/msg_course": toolMessage("ses_course", "msg_course", "call_course", "error", ABORTED) };
+    };
+    try {
+      const before = upstreamRequests.length;
+      const once = replyPermission("per_course", { reply: "once" });
+      assert.ok(await waitFor(() => upstreamRequests.slice(before).some((r) => r.url.startsWith("/session/status"))), "vérification commencée");
+      const abort = call("POST", `/api/oc/session/ses_course/abort?directory=${APP}`, mutating, "{}");
+      const [onceRes, abortRes] = await Promise.all([once, abort]);
+      assert.equal(onceRes.status, 204, onceRes.body);
+      assert.equal(abortRes.status, 204, abortRes.body);
+      const posts = upstreamRequests.slice(before).filter((r) => r.method === "POST");
+      const onceAt = posts.findIndex((r) => r.url.startsWith("/permission/per_course/reply") && r.body === '{"reply":"once"}');
+      const abortAt = posts.findIndex((r) => r.url.startsWith("/session/ses_course/abort"));
+      assert.ok(onceAt >= 0 && abortAt > onceAt, `ordre relayé : ${posts.map((r) => r.url).join(", ")}`);
+      // Le nettoyage de l'arrêt voit ensuite la demande (le faux opencode la garde) et la refuse.
+      assert.ok(await waitFor(() => forwarded("/permission/per_course/reply").some((r) => r.body === '{"reply":"reject"}')), "refus après l'arrêt");
+
+      // Arrêt d'abord : un « once » envoyé pendant la liste du nettoyage attend son tour, puis voit la conversation arrêtée.
+      ocStatuses = { ses_course: { type: "busy" } };
+      ocMessages = { "ses_course/msg_course": toolMessage("ses_course", "msg_course", "call_course", "running") };
+      const onceCount = forwarded("/permission/per_course/reply").filter((r) => r.body === '{"reply":"once"}').length;
+      const abortFirst = await call("POST", `/api/oc/session/ses_course/abort?directory=${APP}`, mutating, "{}");
+      assert.equal(abortFirst.status, 204, abortFirst.body);
+      const late = await replyPermission("per_course", { reply: "once" });
+      assert.equal(late.status, 409, late.body);
+      assert.equal(forwarded("/permission/per_course/reply").filter((r) => r.body === '{"reply":"once"}').length, onceCount);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("opencode injoignable ou réponse illisible pendant la vérification : 503, « Autoriser une fois » jamais relayé", async () => {
+    ocPermissions = [permissionRequest("per_panne", "ses_panne")];
+    ocStatuses = { ses_panne: { type: "busy" } };
+    try {
+      for (const failure of ["socket", "status"] as const) {
+        permissionLookupFailure = failure;
+        const res = await replyPermission("per_panne", { reply: "once" });
+        assert.equal(res.status, 503, `${failure} : ${res.body}`);
+        const data = JSON.parse(res.body);
+        assert.equal(data.error, "verification-impossible");
+        assert.match(data.message, /Rien n'a été envoyé/);
+      }
+      permissionLookupFailure = null;
+      ocStatuses = [];
+      assert.equal((await replyPermission("per_panne", { reply: "once" })).status, 503);
+      assert.equal(forwarded("/permission/per_panne/").length, 0);
+      assert.ok(warnings.some((w) => w.includes("demande d'autorisation non vérifiable")));
+      // Témoin : opencode rétabli, la même demande est relayée.
+      ocStatuses = { ses_panne: { type: "busy" } };
+      assert.equal((await replyPermission("per_panne", { reply: "once" })).status, 204);
+      assert.equal(forwarded("/permission/per_panne/").length, 1);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  it("arrêt : refuse les demandes en attente de la conversation et de ses sous-agents, jamais celles d'une autre conversation", async () => {
+    const tracker = new SessionTracker(db, {} as OpencodeClient);
+    tracker.upsert(session("ses_stop"));
+    tracker.upsert(session("ses_stop_enfant", "ses_stop"));
+    tracker.upsert(session("ses_voisine"));
+    // Sous-agent pas encore enregistré par le cockpit : connu d'opencode seulement (GET /session/:id/children).
+    ocChildren = { ses_stop: [{ id: "ses_stop_enfant" }, { id: "ses_stop_nouveau" }] };
+    // L'autre conversation en premier : si elle était visée, son refus partirait avant les autres.
+    ocPermissions = [
+      permissionRequest("per_voisine", "ses_voisine"),
+      permissionRequest("per_stop", "ses_stop"),
+      permissionRequest("per_stop_enfant", "ses_stop_enfant"),
+      permissionRequest("per_stop_nouveau", "ses_stop_nouveau"),
+    ];
+    try {
+      const res = await call("POST", `/api/oc/session/ses_stop/abort?directory=${APP}`, mutating, "{}");
+      assert.equal(res.status, 204, res.body);
+      const expected = ["per_stop", "per_stop_enfant", "per_stop_nouveau"];
+      assert.ok(await waitFor(() => expected.every((id) => forwarded(`/permission/${id}/reply`).length === 1)), "refus envoyés après l'arrêt");
+      for (const id of expected) {
+        const [sent] = forwarded(`/permission/${id}/reply`);
+        assert.equal(sent?.body, '{"reply":"reject"}');
+        assert.match(sent?.url ?? "", /directory=%2Fworkspace%2Fapp/);
+      }
+      assert.equal(forwarded("/permission/per_voisine/").length, 0);
+      assert.ok(upstreamRequests.some((r) => r.method === "GET" && r.url === "/session/ses_stop/children?directory=%2Fworkspace%2Fapp"));
+
+      // États relus juste avant les refus : une conversation qui travaille de nouveau (nouveau message) est laissée de côté,
+      // car opencode refuserait aussi toutes ses demandes en attente, dont celles de la nouvelle réponse.
+      ocStatuses = { ses_stop: { type: "busy" } };
+      assert.equal((await call("POST", `/api/oc/session/ses_stop/abort?directory=${APP}`, mutating, "{}")).status, 204);
+      assert.ok(
+        await waitFor(() => ["per_stop_enfant", "per_stop_nouveau"].every((id) => forwarded(`/permission/${id}/reply`).length === 2)),
+        "refus des sous-agents au repos",
+      );
+      assert.equal(forwarded("/permission/per_stop/reply").length, 1);
+      ocStatuses = {};
+
+      // Nettoyage impossible (opencode ne répond plus) : l'arrêt garde la réponse d'opencode, l'échec est journalisé.
+      permissionLookupFailure = "socket";
+      const warned = warnings.length;
+      const again = await call("POST", `/api/oc/session/ses_stop/abort?directory=${APP}`, mutating, "{}");
+      assert.equal(again.status, 204, again.body);
+      assert.ok(await waitFor(() => warnings.slice(warned).some((w) => w.includes("demandes d'autorisation en attente non vérifiées"))));
+      assert.equal(forwarded("/permission/per_voisine/").length, 0);
+    } finally {
+      resetPermissionFixtures();
+    }
+  });
+
+  // Dernier test de la série : la déconnexion révoque le cookie partagé par les tests précédents.
+  it("déconnexion : le cookie et toutes ses copies sont révoqués, une nouvelle connexion en délivre un autre", async () => {
+    assert.equal((await call("GET", "/api/settings", authed)).status, 200);
+    assert.equal((await call("POST", "/api/logout", mutating, "{}")).status, 200);
+    assert.equal((await call("GET", "/api/settings", authed)).status, 401);
+    const login = await call("POST", "/api/login", { "x-cockpit-csrf": "1", "content-type": "application/json" }, JSON.stringify({ token }));
+    assert.equal(login.status, 200, login.body);
+    const fresh = String(login.headers["set-cookie"]).split(";")[0] ?? "";
+    assert.match(fresh, /^cockpit_session=\d+\.[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(fresh, cookie);
+    assert.equal((await call("GET", "/api/settings", { cookie: fresh })).status, 200);
+    assert.equal((await call("GET", "/api/settings", authed)).status, 401);
   });
 });
