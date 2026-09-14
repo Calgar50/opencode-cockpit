@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
-import { Button, Card, Field, Spinner, useAsync, useConfirm } from "../../components/ui.tsx";
+import { Badge, Button, Card, Field, Spinner, useAsync, useConfirm } from "../../components/ui.tsx";
 import { api, errorText, oc } from "../../lib/api.ts";
 import type { ProviderAuthPrompt } from "../../lib/types.ts";
 import { isHttpsUrl } from "../studio/widgets.tsx";
@@ -309,6 +309,8 @@ export function ConnectionTab() {
         </div>
       </Card>
 
+      {connected ? <CopilotModelsCard /> : null}
+
       <div className="callout accent">
         <Icon name="shield" size={18} />
         <div className="stack tight">
@@ -320,5 +322,52 @@ export function ConnectionTab() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** IA de GitHub Copilot du compte connecté : disponibles, puis non disponibles avec la raison (lues chez GitHub). */
+function CopilotModelsCard() {
+  const { boot } = useApp();
+  const copilot = boot.copilot;
+  const verified = copilot?.verified ?? false;
+  const available = boot.models.filter((m) => m.providerID === PROVIDER).sort((a, b) => a.name.localeCompare(b.name));
+  const unavailable = copilot?.unavailable ?? [];
+
+  return (
+    <Card
+      title="IA de votre compte GitHub Copilot"
+      subtitle={
+        verified
+          ? "Liste lue auprès de GitHub pour votre compte."
+          : "Liste non vérifiée auprès de GitHub : elle peut contenir des IA que votre compte ne propose pas."
+      }
+    >
+      <div className="stack">
+        {!verified && copilot?.error ? (
+          <div className="callout warning" role="status">
+            <Icon name="alert" size={18} />
+            <span className="spacer">{copilot.error} Détails dans la page Diagnostic.</span>
+          </div>
+        ) : null}
+        <ul className="stack tight" style={{ listStyle: "none", margin: 0, padding: 0 }} aria-label="IA de votre compte GitHub Copilot">
+          {available.map((m) => (
+            <li key={m.key} className="row between">
+              <span>{m.name}</span>
+              <Badge tone="good">Disponible</Badge>
+            </li>
+          ))}
+          {unavailable.map((m) => (
+            <li key={m.key} className="row between">
+              <span className="stack tight" style={{ gap: 0 }}>
+                <span>{m.name}</span>
+                <span className="small muted">{m.reason}</span>
+              </span>
+              <Badge tone="neutral">Pas disponible</Badge>
+            </li>
+          ))}
+        </ul>
+        {available.length === 0 && unavailable.length === 0 ? <p className="small muted">Aucune IA lue pour le moment.</p> : null}
+      </div>
+    </Card>
   );
 }

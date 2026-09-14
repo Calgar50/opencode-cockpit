@@ -157,6 +157,39 @@ export function sameModel(a: ModelRef | undefined, b: ModelRef | undefined): boo
   return Boolean(a && b && a.providerID === b.providerID && a.modelID === b.modelID);
 }
 
+// --- Adresse de l'API GitHub Copilot ----------------------------------------------------------
+
+/** Adresse générale de l'API Copilot, utilisée d'office par opencode. */
+export const DEFAULT_COPILOT_API_URL = "https://api.githubcopilot.com";
+
+/**
+ * Hôtes de l'API Copilot : adresse générale puis routage par abonnement (Business, Enterprise, individuel), que les
+ * pare-feu d'entreprise sont invités à filtrer (docs GitHub « Managing GitHub Copilot access to your network »).
+ */
+export const COPILOT_API_HOSTS: readonly string[] = Object.freeze([
+  "api.githubcopilot.com",
+  "api.business.githubcopilot.com",
+  "api.enterprise.githubcopilot.com",
+  "api.individual.githubcopilot.com",
+]);
+
+/**
+ * Adresse d'API Copilot normalisée (« https://hôte »), ou null si elle est refusée. Le jeton Copilot part vers cette
+ * adresse : seuls les hôtes GitHub Copilot connus et copilot-api.<domaine GitHub Enterprise déclaré> sont acceptés.
+ */
+export function normalizeCopilotApiUrl(value: string, enterpriseDomain: string | null = null): string | null {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash || url.pathname !== "/") return null;
+  const host = url.hostname.toLowerCase();
+  const known = COPILOT_API_HOSTS.includes(host) || (enterpriseDomain !== null && host === `copilot-api.${enterpriseDomain}`);
+  return known ? `https://${host}` : null;
+}
+
 export function catalogEntry(catalog: readonly CatalogLite[], model: string): CatalogLite | undefined {
   return catalog.find((m) => m.key === model);
 }
@@ -576,6 +609,7 @@ export function hasBlockingProblem(turn: Pick<Turn, "problems">): boolean {
 
 export const MESSAGES = Object.freeze({
   fournisseurRefuse: "Seules les IA GitHub Copilot sont autorisées dans ce cockpit.",
+  adresseCopilotRefusee: "Adresse de l'API Copilot refusée : seules les adresses officielles de GitHub Copilot sont acceptées.",
   modeAvance: "Action réservée au mode Avancé (Paramètres › Affichage).",
   sessionsBusy: "Attendez la fin des réponses en cours.",
   rejectedByOpencode: "La configuration n'a pas été acceptée : rien n'a été modifié.",
@@ -1487,7 +1521,11 @@ export const PERMISSION_PRESETS: Readonly<Record<PermissionPresetId, { label: st
  * provider.ts:194), et aucune IA par défaut d'un autre fournisseur (model, small_model, agent.<nom>.model, mode.<nom>.model) :
  * titres, compaction et sous-agents l'utiliseraient sans passer par le proxy du cockpit. Liste vide = verrou en place.
  */
-export function configProviderIssues(config: unknown, allowed: readonly string[]): Array<{ path: string; message: string }> {
+export function configProviderIssues(
+  config: unknown,
+  allowed: readonly string[],
+  enterpriseDomain: string | null = null,
+): Array<{ path: string; message: string }> {
   const issues: Array<{ path: string; message: string }> = [];
   const cfg: Record<string, unknown> = isPlainObject(config) ? config : {};
   const enabled = own(cfg, "enabled_providers");
@@ -1514,6 +1552,14 @@ export function configProviderIssues(config: unknown, allowed: readonly string[]
     for (const [name, def] of Object.entries(agents)) {
       if (isPlainObject(def)) checkModel(own(def, "model"), `${section}.${name.slice(0, 64)}.model`);
     }
+  }
+  // Le jeton Copilot part vers options.baseURL (prioritaire sur l'adresse des modèles, provider.ts:1761) : adresse officielle seulement.
+  const providerSection = own(cfg, "provider");
+  const copilot = isPlainObject(providerSection) ? own(providerSection, "github-copilot") : undefined;
+  const options = isPlainObject(copilot) ? own(copilot, "options") : undefined;
+  const baseURL = isPlainObject(options) ? own(options, "baseURL") : undefined;
+  if (baseURL !== undefined && (typeof baseURL !== "string" || (baseURL !== "" && normalizeCopilotApiUrl(baseURL, enterpriseDomain) === null))) {
+    issues.push({ path: "provider.github-copilot.options.baseURL", message: MESSAGES.adresseCopilotRefusee });
   }
   return issues;
 }

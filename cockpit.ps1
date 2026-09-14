@@ -8,6 +8,7 @@
     .\cockpit.ps1 restart               Recree les conteneurs (relit .env et certs\)
     .\cockpit.ps1 status                Etat des conteneurs et du cockpit
     .\cockpit.ps1 logs [opencode|cockpit]
+    .\cockpit.ps1 diag                  Diagnostic en lecture seule : conteneurs, acces reseau a Copilot, journal
     .\cockpit.ps1 certs                 Reexporte les certificats Windows puis recree les conteneurs
     .\cockpit.ps1 update                git pull puis relance install.ps1 (meme mode d'installation)
     .\cockpit.ps1 backup                Sauvegarde reglages, couts, archives et configuration opencode
@@ -17,7 +18,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('open', 'start', 'stop', 'restart', 'status', 'logs', 'certs', 'update', 'backup', 'restore', 'uninstall', 'help')]
+    [ValidateSet('open', 'start', 'stop', 'restart', 'status', 'logs', 'diag', 'certs', 'update', 'backup', 'restore', 'uninstall', 'help')]
     [string]$Command = 'help',
     # Service pour 'logs' (opencode ou cockpit), ou fichier de sauvegarde pour 'restore'.
     [Parameter(Position = 1)]
@@ -63,6 +64,28 @@ function Invoke-Docker {
     $savedProxy = Clear-ShellProxy
     try { & docker @dockerArgs } finally { $ErrorActionPreference = $previous; Restore-ShellProxy $savedProxy }
     if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($dockerArgs -join ' '), $LASTEXITCODE) }
+}
+
+# Commande docker avec delai maximal : un conteneur bloque au demarrage ne doit pas figer le diagnostic.
+# Premier argument : delai en secondes ; les suivants sont passes a docker.
+function Invoke-DockerTimeout {
+    $seconds = [int]$args[0]
+    $dockerArgs = @($args | Select-Object -Skip 1)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = 'docker'
+    $startInfo.Arguments = (@($dockerArgs | ForEach-Object { if ([string]$_ -match '[\s"]') { '"' + ([string]$_).Replace('"', '\"') + '"' } else { [string]$_ } })) -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $savedProxy = Clear-ShellProxy
+    try { $process = [System.Diagnostics.Process]::Start($startInfo) } finally { Restore-ShellProxy $savedProxy }
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($seconds * 1000)) {
+        try { $process.Kill() } catch { }
+        return [pscustomobject]@{ TimedOut = $true; ExitCode = -1; Output = '' }
+    }
+    return [pscustomobject]@{ TimedOut = $false; ExitCode = $process.ExitCode; Output = ($stdout.Result + $stderr.Result).Trim() }
 }
 
 function Get-EnvValue([string]$Key) {
@@ -171,6 +194,54 @@ try {
             if ($Target -and @('opencode', 'cockpit') -notcontains $Target) { throw 'Service inconnu : utilisez "logs opencode" ou "logs cockpit".' }
             if ($Target) { Invoke-Docker compose logs --tail 200 -f $Target }
             else { Invoke-Docker compose logs --tail 200 -f }
+        }
+        'diag' {
+            Write-Step 'Diagnostic (lecture seule, aucun secret affiche)'
+            $oc = "$Project-opencode-1"
+            Write-Host ''
+            Write-Host '--- Conteneurs ---'
+            $containers = Invoke-DockerTimeout 20 ps -a --filter "name=$Project-" --format '{{.Names}} | {{.Status}} | {{.Image}}'
+            if ($containers.TimedOut) {
+                Write-Attention 'docker ps ne repond pas en 20 s : Docker Desktop est bloque. Redemarrez-le (wsl --shutdown, puis relancez Docker Desktop).'
+                return
+            }
+            Write-Host $containers.Output
+            if ($containers.Output -match ([regex]::Escape($oc) + ' \| Created')) {
+                Write-Attention 'opencode est reste a l etat Created : Docker n arrive pas a le lancer. Placez WORKSPACE_DIR sur un disque local (ni lecteur reseau, ni OneDrive), puis redemarrez Docker Desktop.'
+            }
+            Write-Host ''
+            Write-Host '--- Cockpit ---'
+            if (-not (Test-Path -LiteralPath $EnvFile)) {
+                Write-Attention 'Fichier .env introuvable : lancez diag depuis le dossier du cockpit installe.'
+            } elseif (Test-Health) {
+                Write-Host ('Cockpit : repond sur http://127.0.0.1:{0} (page Diagnostic > Tester la connexion Copilot)' -f (Get-Port))
+            } else {
+                Write-Attention 'Cockpit : ne repond pas'
+            }
+            Write-Host ''
+            Write-Host '--- Acces reseau depuis le conteneur opencode (proxy et certificats du cockpit, sans jeton) ---'
+            $hostsToProbe = @('api.githubcopilot.com', 'api.business.githubcopilot.com', 'api.enterprise.githubcopilot.com', 'api.github.com', 'github.com', 'models.opencode.ai', 'registry.npmjs.org')
+            foreach ($probeHost in $hostsToProbe) {
+                $probe = Invoke-DockerTimeout 25 exec $oc curl -s -m 15 --cacert /home/node/.cockpit/ca-bundle.pem -o /dev/null -D - -w 'code=%{http_code}' "https://$probeHost/"
+                $code = '---'
+                if ($probe.Output -match 'code=(\d{3})') { $code = $Matches[1] }
+                if ($probe.TimedOut) { $verdict = 'pas de reponse (conteneur bloque ?)' }
+                elseif ($code -eq '---') { $verdict = 'test impossible (conteneur arrete ?)' }
+                elseif ($code -eq '000') { $verdict = 'INJOIGNABLE (proxy, pare-feu ou certificat)' }
+                elseif ($probe.Output -match '(?im)^x-github-request-id:') { $verdict = 'joignable' }
+                elseif ($probeHost -like '*github*') { $verdict = 'reponse sans marque GitHub : page de blocage du proxy ?' }
+                else { $verdict = 'joignable' }
+                Write-Host ('{0,-34} {1}  {2}' -f $probeHost, $code, $verdict)
+            }
+            Write-Host ''
+            Write-Host '--- Dernieres lignes du journal d opencode ---'
+            $journal = Invoke-DockerTimeout 20 logs --tail 40 $oc
+            if ($journal.TimedOut) { Write-Attention 'Journal illisible en 20 s.' }
+            elseif ($journal.Output) { Write-Host $journal.Output }
+            else { Write-Attention 'Journal vide : opencode n a jamais demarre (voir l etat du conteneur ci-dessus).' }
+            Write-Host ''
+            Write-Host 'Pare-feu qui n ouvre que l adresse de votre abonnement (api.business ou api.enterprise joignable, api.githubcopilot.com bloquee) :'
+            Write-Host '  .\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser'
         }
         'certs' {
             Assert-CockpitOutsideWorkspace

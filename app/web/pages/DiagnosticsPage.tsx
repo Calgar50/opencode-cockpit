@@ -7,7 +7,7 @@ import { Badge, Button, Card, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, errorText } from "../lib/api.ts";
 import { formatDateTime, formatDuration, formatInt, formatPercent, formatTime, relativeTime } from "../lib/format.ts";
 import { routeHref } from "../lib/router.ts";
-import type { SystemStatus } from "../lib/types.ts";
+import type { CopilotCheckResult, CopilotView, SystemStatus } from "../lib/types.ts";
 import { LogsViewer } from "./diagnostics/LogsViewer.tsx";
 import "./diagnostics/diagnostics.css";
 
@@ -39,6 +39,20 @@ function Line({ tone, label, value, hint, hintTone }: { tone: Tone; label: strin
   );
 }
 
+const ENDPOINT_SOURCE: Readonly<Record<"env" | "github" | "defaut", string>> = {
+  env: "Imposée par COCKPIT_COPILOT_API_URL (.env).",
+  github: "Adresse de votre abonnement annoncée par GitHub, utilisée parce que le réseau bloque l'adresse générale.",
+  defaut: "Adresse générale, utilisée d'office par opencode.",
+};
+
+const SYNC_LABEL: Readonly<Record<CopilotView["configSync"]["state"], string>> = {
+  inactif: "rien à imposer",
+  "a-jour": "à jour",
+  applique: "appliqués",
+  "en-attente": "en attente",
+  echec: "échec",
+};
+
 function problemsOf(s: SystemStatus, quotaEnabled: boolean): Array<{ tone: "critical" | "warning"; text: string }> {
   const out: Array<{ tone: "critical" | "warning"; text: string }> = [];
   if (s.opencode.restarting) out.push({ tone: "warning", text: "opencode est en cours de redémarrage." });
@@ -50,6 +64,10 @@ function problemsOf(s: SystemStatus, quotaEnabled: boolean): Array<{ tone: "crit
   }
   if (!s.copilotConnected) out.push({ tone: "warning", text: "GitHub Copilot n'est pas connecté." });
   else if (s.catalog.models === 0) out.push({ tone: "warning", text: "Le catalogue de modèles est vide." });
+  if (s.copilot.error) out.push({ tone: "warning", text: `Liste des IA GitHub Copilot illisible : ${s.copilot.error}` });
+  if (s.copilot.configSync.state === "echec") {
+    out.push({ tone: "warning", text: `Réglages Copilot d'opencode non appliqués : ${s.copilot.configSync.message ?? "erreur inconnue"}` });
+  }
   if (quotaEnabled && s.quota.lastError) out.push({ tone: "warning", text: "La synchronisation du solde GitHub échoue." });
   return out;
 }
@@ -66,6 +84,8 @@ export function DiagnosticsPage() {
   const [restartResult, setRestartResult] = useState<{ ok: boolean; message: string; durationMs: number } | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [reloadingModels, setReloadingModels] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [check, setCheck] = useState<CopilotCheckResult | null>(null);
   const request = useRef(0);
 
   const load = useCallback(async () => {
@@ -141,6 +161,19 @@ export function DiagnosticsPage() {
       toast.error("Rechargement impossible", err);
     } finally {
       setReloadingModels(false);
+      void load();
+    }
+  };
+
+  const runCopilotCheck = async () => {
+    setChecking(true);
+    try {
+      setCheck(await api.copilotCheck());
+      await refresh().catch(() => undefined);
+    } catch (err) {
+      toast.error("Test de connexion impossible", err);
+    } finally {
+      setChecking(false);
       void load();
     }
   };
@@ -346,6 +379,43 @@ export function DiagnosticsPage() {
                     hint={s.copilotConnected ? undefined : <a href={routeHref("parametres", "connexion")}>Connecter GitHub Copilot</a>}
                   />
                   <Line
+                    tone={s.copilot.endpoint ? "neutral" : "warning"}
+                    label="Adresse de l'API Copilot"
+                    value={s.copilot.endpoint ? <span className="mono small">{s.copilot.endpoint.url}</span> : "inconnue"}
+                    hint={
+                      s.copilot.endpoint ? (
+                        <>
+                          {ENDPOINT_SOURCE[s.copilot.endpoint.source]}
+                          {s.copilot.endpoint.plan ? ` Abonnement : ${s.copilot.endpoint.plan}.` : ""}
+                          {s.copilot.discoveryError ? ` ${s.copilot.discoveryError}` : ""}
+                        </>
+                      ) : (
+                        "Connue après la connexion de GitHub Copilot."
+                      )
+                    }
+                  />
+                  <Line
+                    tone={s.copilot.verified ? "good" : s.copilotConnected ? "warning" : "neutral"}
+                    label="Liste des IA de votre compte"
+                    value={s.copilot.verified ? "vérifiée auprès de GitHub" : "non vérifiée"}
+                    hint={s.copilot.error ?? (s.copilot.opencodeError ? `opencode : ${s.copilot.opencodeError}` : undefined)}
+                    hintTone={s.copilot.error ? "critical" : undefined}
+                  />
+                  {s.copilot.unavailable.length > 0 ? (
+                    <Line
+                      tone="neutral"
+                      label="IA non disponibles sur votre compte"
+                      value={formatInt(s.copilot.unavailable.length)}
+                      hint={s.copilot.unavailable.map((m) => `${m.name} : ${m.reason}`).join(" ")}
+                    />
+                  ) : null}
+                  <Line
+                    tone={s.copilot.configSync.state === "echec" ? "critical" : s.copilot.configSync.state === "en-attente" ? "warning" : "neutral"}
+                    label="Adresse imposée à opencode"
+                    value={SYNC_LABEL[s.copilot.configSync.state]}
+                    hint={s.copilot.configSync.message ?? "Adresse de l'API Copilot écrite dans la configuration d'opencode quand elle diffère de son adresse d'office."}
+                  />
+                  <Line
                     tone={s.catalog.models > 0 ? "good" : "warning"}
                     label="Catalogue"
                     value={`${formatInt(s.catalog.models)} modèle${s.catalog.models > 1 ? "s" : ""}`}
@@ -380,10 +450,21 @@ export function DiagnosticsPage() {
                   />
                 </div>
                 <div className="diag-actions">
-                  <Button icon="refresh" loading={reloadingModels} disabled={!s.opencode.reachable} onClick={() => void reloadModels()}>
+                  <Button icon="plug" loading={checking} onClick={() => void runCopilotCheck()}>
+                    Tester la connexion Copilot
+                  </Button>
+                  <Button icon="refresh" loading={reloadingModels} onClick={() => void reloadModels()}>
                     Recharger le catalogue
                   </Button>
                 </div>
+                {check ? (
+                  <div className="diag-lines" style={{ marginTop: 10 }} role="status">
+                    {check.hosts.map((h) => (
+                      <Line key={h.host} tone={h.reachable ? "good" : "critical"} label={h.host} hint={h.detail} hintTone={h.reachable ? undefined : "critical"} />
+                    ))}
+                    {check.catalogError ? <Line tone="critical" label="Liste des IA" hint={check.catalogError} hintTone="critical" /> : null}
+                  </div>
+                ) : null}
               </Card>
 
               <Card title="Base de données">

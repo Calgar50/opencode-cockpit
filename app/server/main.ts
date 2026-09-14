@@ -1,15 +1,17 @@
 import { serve } from "@hono/node-server";
 import { ArchiveService } from "./archive.ts";
-import { AssistantService } from "./assistants.ts";
+import { AssistantService, probeSessionsBusy } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
 import { ControlService } from "./control.ts";
+import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
 import { type AppEnv, loadEnv } from "./env.ts";
 import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
+import { CopilotConfigSync } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { OpencodeClient } from "./opencode.ts";
 import { EventProcessor } from "./processor.ts";
@@ -20,6 +22,7 @@ import { SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import { StudioService } from "./studio.ts";
 import { TierService } from "./tiers.ts";
+import { trustCorporateCertificates } from "./tls-trust.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const log = createLogger();
@@ -32,10 +35,23 @@ try {
   process.exit(1);
 }
 
+// Appels sortants du cockpit (GitHub, Copilot) derrière un proxy qui inspecte le HTTPS : autorités de certs/ ajoutées.
+const trust = trustCorporateCertificates(env.certsDir);
+if (trust.error) log.warn("certificats d'entreprise non chargés", { error: trust.error });
+else if (trust.certificates > 0) log.info("certificats d'entreprise chargés", { files: trust.files, certificates: trust.certificates, rejected: trust.rejected });
+// Même secours que le superviseur d'opencode (exactement « 1 ») : bandeau rouge dans l'interface.
+if (env.tlsInsecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const db = openDb(env.dataDir);
 const settings = new SettingsStore(db);
 const client = new OpencodeClient(env);
-const catalog = new ModelCatalog(client);
+const copilot = new CopilotApi({
+  opencodeDataDir: env.opencodeDataDir,
+  githubEnterpriseDomain: env.githubEnterpriseDomain,
+  copilotApiUrl: env.copilotApiUrl,
+  version: env.version,
+});
+const catalog = new ModelCatalog(client, { copilot });
 const sessions = new SessionTracker(db, client);
 const ledger = new Ledger({ db, settings, catalog });
 const hub = new EventHub();
@@ -78,6 +94,7 @@ const quota = new QuotaSync({
   githubEnterpriseDomain: env.githubEnterpriseDomain,
 });
 const processor = new EventProcessor({ db, client, sessions, ledger, archive, classifier, hub, log });
+const copilotConfig = new CopilotConfigSync({ client, catalog, copilot, hub, log, busy: () => probeSessionsBusy({ client, projects, db }) });
 
 let pricingSignature = JSON.stringify(settings.get().pricing);
 settings.onChange((next) => {
@@ -90,8 +107,14 @@ settings.onChange((next) => {
   hub.cockpit("settings.updated", next);
 });
 
-// Les niveaux d'IA se résolvent sur le catalogue : une liste des IA qui change les fait recalculer côté interface.
-catalog.onChange(() => hub.cockpit("ai.changed", { reason: "catalog" }));
+// Les niveaux d'IA se résolvent sur le catalogue : une liste des IA qui change les fait recalculer côté interface,
+// et l'adresse de l'API Copilot imposée à opencode est réalignée.
+catalog.onChange(() => {
+  hub.cockpit("ai.changed", { reason: "catalog" });
+  void copilotConfig.sync().then((status) => {
+    if (status.state === "echec") log.warn("réglages Copilot d'opencode non alignés", { error: status.message });
+  });
+});
 
 const routeDeps = { assistants, tiers, settings, hub, log };
 const app = createApp({
@@ -113,12 +136,18 @@ const app = createApp({
   lookup,
   tiers,
   assistants,
+  copilot,
+  copilotConfig,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 
 const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port }, (info) => {
   log.info("cockpit à l'écoute", { host: env.host, port: info.port, version: env.version, tlsInsecure: env.tlsInsecure });
 });
+
+// La liste des IA et le solde Copilot ne dépendent pas d'opencode : lus dès le démarrage, même s'il ne répond pas.
+catalog.startAutoRefresh(15 * 60_000, (err) => log.warn("catalogue des modèles indisponible", { error: err.message }));
+quota.start();
 
 // Démarrage progressif : opencode peut mettre plusieurs secondes à répondre.
 void (async () => {
@@ -128,10 +157,10 @@ void (async () => {
     await sleep(3_000);
   }
   log.info("opencode joignable");
-  catalog.startAutoRefresh(15 * 60_000, (err) => log.warn("catalogue des modèles indisponible", { error: err.message }));
+  await catalog.refresh().catch((err) => log.warn("catalogue des modèles indisponible", { error: errorMessage(err) }));
+  await copilotConfig.sync();
   await studio.ensureClassifierAgent().catch((err) => log.warn("agent de classement non installé", { error: errorMessage(err) }));
   processor.start();
-  quota.start();
 })();
 
 let stopping = false;
@@ -141,6 +170,7 @@ const shutdown = (signal: string) => {
   log.info("arrêt du cockpit", { signal });
   processor.stop();
   catalog.stop();
+  copilotConfig.stop();
   lookup.close();
   quota.stop();
   // Les flux SSE ouverts retiennent le serveur : arrêt forcé après 5 s.

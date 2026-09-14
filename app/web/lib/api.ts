@@ -16,6 +16,7 @@ import type {
   CatalogueItem,
   ChoicesResponse,
   Conversation,
+  CopilotCheckResult,
   FicheInfo,
   FileDiff,
   ItemKind,
@@ -225,6 +226,7 @@ export const api = {
   pricing: () => http.get<PricingInfo>("/api/pricing"),
 
   systemStatus: () => http.get<SystemStatus>("/api/system/status"),
+  copilotCheck: () => http.post<CopilotCheckResult>("/api/system/copilot-check", {}),
   restartOpencode: () => http.post<{ ok: boolean; durationMs: number; message: string }>("/api/system/restart-opencode"),
   logs: (lines = 400) => http.get<{ content: string }>(`/api/system/logs${query({ lines })}`),
   backfill: () => http.post<{ ok: boolean }>("/api/system/backfill"),

@@ -527,8 +527,10 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       opencodePassword: "p".repeat(24),
       tlsInsecure: false,
       projectConfig: false,
+      certsDir: tmp,
       githubEnterpriseDomain: null,
       allowedProviders: ["github-copilot"],
+      copilotApiUrl: null,
       version: "test",
     };
     const base = setup();
@@ -590,6 +592,14 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       control: { caFilesCount: async () => 0, supervisorPresent: async () => false, restarting: false } as unknown as ControlService,
       quota: { copilotConnected: async () => true, latest: () => null } as unknown as QuotaSync,
       processor: { status: { connected: true } } as unknown as EventProcessor,
+      copilot: {
+        status: { connected: false, endpoint: null, modelsAt: 0, models: 0, error: null, discoveryError: null },
+        probeHosts: async () => [],
+      },
+      copilotConfig: {
+        status: { state: "inactif", message: null, at: 0 },
+        sync: async () => ({ state: "inactif", message: null, at: 0 }),
+      },
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));

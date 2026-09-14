@@ -213,6 +213,35 @@ export interface Bootstrap {
   rulesVersion: number;
   /** COCKPIT_ALLOWED_PROVIDERS ; toute valeur autre que ["github-copilot"] affiche le bandeau « Mode test ». */
   allowedProviders: string[];
+  /** 1.0.1 : accès direct à GitHub Copilot (adresse de l'API, IA disponibles ou non, adresse imposée à opencode). */
+  copilot: CopilotView;
+}
+
+/** IA de votre compte GitHub Copilot que vous ne pouvez pas utiliser, avec la raison. */
+export interface UnavailableModel {
+  key: string;
+  name: string;
+  reason: string;
+}
+
+export interface CopilotView {
+  endpoint: { url: string; source: "env" | "github" | "defaut"; plan: string | null; opencodeDefault: string } | null;
+  /** Liste des IA Copilot lue directement auprès de GitHub. */
+  verified: boolean;
+  error: string | null;
+  discoveryError: string | null;
+  opencodeError: string | null;
+  unavailable: UnavailableModel[];
+  configSync: { state: "inactif" | "a-jour" | "applique" | "en-attente" | "echec"; message: string | null; at: number };
+  enterpriseDomain: string | null;
+}
+
+/** POST /api/system/copilot-check */
+export interface CopilotCheckResult {
+  hosts: Array<{ host: string; reachable: boolean; detail: string }>;
+  catalogError: string | null;
+  sync: CopilotView["configSync"];
+  copilot: CopilotView;
 }
 
 /** GET /api/usage/estimate (avec `agent` et `size` facultatifs depuis 0.2.0). */
@@ -375,6 +404,7 @@ export interface SystemStatus {
   };
   copilotConnected: boolean;
   catalog: { models: number; providers: string[]; loadedAt: number };
+  copilot: CopilotView;
   quota: { latest: QuotaSnapshot | null; lastError: string | null };
   database: { sessions: number; usage: number; prompts: number; conversations: number };
   paths: { workspace: string; archives: string };

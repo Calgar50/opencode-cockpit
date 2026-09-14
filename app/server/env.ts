@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DEFAULT_ALLOWED_PROVIDERS } from "./shared/assistant-rules.ts";
+import { DEFAULT_ALLOWED_PROVIDERS, normalizeCopilotApiUrl } from "./shared/assistant-rules.ts";
 
 export interface AppEnv {
   host: string;
@@ -20,6 +20,8 @@ export interface AppEnv {
   opencodeDataDir: string;
   /** Dossier partagé avec le superviseur d'opencode (demande de redémarrage, journal). */
   controlDir: string;
+  /** Autorités de certification d'entreprise (certs/*.pem|*.crt) ajoutées à celles de Node pour les appels sortants. */
+  certsDir: string;
   webDir: string;
   opencodeUrl: string;
   opencodeUsername: string;
@@ -34,6 +36,11 @@ export interface AppEnv {
    * Défaut : github-copilot seul ; toute autre valeur affiche le bandeau rouge « Mode test ».
    */
   allowedProviders: string[];
+  /**
+   * COCKPIT_COPILOT_API_URL : adresse d'API Copilot imposée (pare-feu d'entreprise à routage par abonnement). null :
+   * adresse d'office d'opencode, ou celle de l'abonnement annoncée par GitHub si le réseau bloque la première.
+   */
+  copilotApiUrl: string | null;
   version: string;
 }
 
@@ -61,6 +68,19 @@ export function parseAllowedProviders(value: string | undefined): string[] {
   return list;
 }
 
+/** Adresse d'API Copilot imposée : vide = automatique ; adresse inconnue = refus de démarrer (le jeton y serait envoyé). */
+export function parseCopilotApiUrl(value: string | undefined, enterpriseDomain: string | null): string | null {
+  const raw = value?.trim() ?? "";
+  if (!raw) return null;
+  const url = normalizeCopilotApiUrl(raw, enterpriseDomain);
+  if (url === null) {
+    throw new EnvError(
+      "COCKPIT_COPILOT_API_URL : adresse refusée. Valeurs acceptées : https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com, https://api.githubcopilot.com (ou copilot-api.<domaine GitHub Enterprise déclaré>).",
+    );
+  }
+  return url;
+}
+
 function required(env: NodeJS.ProcessEnv, key: string, minLength: number): string {
   const value = env[key]?.trim() ?? "";
   if (value.length < minLength) {
@@ -78,6 +98,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EnvError("OPENCODE_URL doit être http(s).");
 
   const workspaceDir = path.resolve(env.COCKPIT_WORKSPACE_DIR ?? "/workspace");
+  const githubEnterpriseDomain = env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null;
   return {
     host: env.COCKPIT_HOST?.trim() || "127.0.0.1",
     port,
@@ -93,6 +114,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     opencodeConfigDir: path.resolve(env.COCKPIT_OC_CONFIG_DIR ?? "/oc-config"),
     opencodeDataDir: path.resolve(env.COCKPIT_OC_DATA_DIR ?? "/oc-data"),
     controlDir: path.resolve(env.COCKPIT_CONTROL_DIR ?? "/control"),
+    certsDir: path.resolve(env.COCKPIT_CERTS_DIR ?? "/certs"),
     webDir: path.resolve(env.COCKPIT_WEB_DIR ?? path.join(import.meta.dirname, "..", "dist", "web")),
     opencodeUrl: opencodeUrl.replace(/\/+$/, ""),
     opencodeUsername: env.OPENCODE_SERVER_USERNAME?.trim() || "opencode",
@@ -100,8 +122,9 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     // Exactement « 1 », comme le superviseur d'opencode et les Dockerfiles : le bandeau rouge suit l'état réel.
     tlsInsecure: env.COCKPIT_TLS_INSECURE === "1",
     projectConfig: env.COCKPIT_PROJECT_CONFIG === "1",
-    githubEnterpriseDomain: env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null,
+    githubEnterpriseDomain,
     allowedProviders: parseAllowedProviders(env.COCKPIT_ALLOWED_PROVIDERS),
+    copilotApiUrl: parseCopilotApiUrl(env.COCKPIT_COPILOT_API_URL, githubEnterpriseDomain),
     version: env.COCKPIT_VERSION?.trim() || "dev",
   };
 }

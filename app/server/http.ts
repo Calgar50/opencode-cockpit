@@ -12,6 +12,7 @@ import type { ArchiveService } from "./archive.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import type { ControlService } from "./control.ts";
+import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, writeFileAtomic } from "./fsutil.ts";
@@ -20,6 +21,7 @@ import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
+import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import { COPILOT_PRICES, type ModelPrice, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
@@ -126,6 +128,10 @@ export interface AppDeps {
   tiers: TierPort;
   /** Titres, tailles et liaisons de niveau des assistants (AssistantService). */
   assistants: AssistantsPort;
+  /** Accès direct à GitHub Copilot : adresse de l'API, état de la liste des IA, joignabilité à travers le proxy. */
+  copilot: Pick<CopilotApi, "status" | "probeHosts">;
+  /** Adresse de l'API Copilot imposée à opencode. */
+  copilotConfig: Pick<CopilotConfigSync, "status" | "sync">;
   /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
   routes?: Array<(app: Hono) => void>;
 }
@@ -472,6 +478,22 @@ export function createApp(deps: AppDeps): Hono {
   const fail = (c: Context, status: number, error: string, message: string, extra: Record<string, unknown> = {}) =>
     c.json({ error, message, ...extra }, status as ContentfulStatusCode);
 
+  /** IA de GitHub Copilot et accès à son API, tels que lus à la dernière vérification. */
+  const copilotView = () => {
+    const sources = catalog.sources;
+    const status = deps.copilot.status;
+    return {
+      endpoint: sources.endpoint ?? status.endpoint,
+      verified: sources.copilotVerified,
+      error: sources.copilotError ?? status.error,
+      discoveryError: status.discoveryError,
+      opencodeError: sources.opencodeError,
+      unavailable: sources.unavailable,
+      configSync: deps.copilotConfig.status,
+      enterpriseDomain: env.githubEnterpriseDomain,
+    };
+  };
+
   const scopeOf = (c: Context): StudioScope => {
     const project = c.req.query("project");
     return project ? { type: "project", project } : { type: "global" };
@@ -584,7 +606,7 @@ export function createApp(deps: AppDeps): Hono {
       // Verrou réel d'opencode (enabled_providers, IA par défaut) : null si opencode ne répond pas.
       client
         .request<unknown>("GET", "/global/config", { timeoutMs: 3_000 })
-        .then((config) => configProviderIssues(config, env.allowedProviders), () => null),
+        .then((config) => configProviderIssues(config, env.allowedProviders, env.githubEnterpriseDomain), () => null),
     ]);
     const usage = ledger.summary();
     return c.json({
@@ -624,6 +646,7 @@ export function createApp(deps: AppDeps): Hono {
       ai: { tiers: tiers.views(), chatDefaultTier: s.ai.chatDefaultTier, allowModelOverride: s.ai.allowModelOverride },
       rulesVersion: RULES_VERSION,
       allowedProviders: env.allowedProviders,
+      copilot: copilotView(),
     });
   });
 
@@ -1530,7 +1553,7 @@ export function createApp(deps: AppDeps): Hono {
     const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
     // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
     const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 15_000 });
-    const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders);
+    const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders, env.githubEnterpriseDomain);
     if (issues.length > 0) return refuseProviders(c, issues);
     const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
     await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
@@ -1565,7 +1588,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.put("/api/opencode/config/raw", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
-    const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders);
+    const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders, env.githubEnterpriseDomain);
     if (issues.length > 0) return refuseProviders(c, issues);
     const file = await assertInside(env.opencodeConfigDir, await configFile());
     const result = await writeConfigChecked(file, content, await readIfExists(file), "configuration brute invalide annulée");
@@ -1726,6 +1749,7 @@ export function createApp(deps: AppDeps): Hono {
       },
       copilotConnected,
       catalog: { models: catalog.list().length, providers: catalog.providers(), loadedAt: catalog.loadedAt },
+      copilot: copilotView(),
       quota: { latest: quota.latest(), lastError: quota.lastError },
       database: {
         sessions: count("sessions"),
@@ -1735,6 +1759,18 @@ export function createApp(deps: AppDeps): Hono {
       },
       paths: { workspace: process.env.COCKPIT_HOST_WORKSPACE_DIR ?? env.workspaceDir, archives: env.archiveDir },
     });
+  });
+
+  // Test de la connexion Copilot (page Diagnostic) : joignabilité des adresses GitHub et Copilot à travers le proxy, sans
+  // jeton, puis nouvelle lecture de la liste des IA (jeton envoyé seulement aux adresses officielles) et réalignement d'opencode.
+  app.post("/api/system/copilot-check", bodyLimit({ maxSize: 4_096 }), async (c) => {
+    const hosts = await deps.copilot.probeHosts();
+    const catalogError = await catalog.refresh().then(
+      () => null,
+      (err: unknown) => errorMessage(err),
+    );
+    const sync = await deps.copilotConfig.sync();
+    return c.json({ hosts, catalogError, sync, copilot: copilotView() });
   });
 
   app.post("/api/system/restart-opencode", async (c) => {

@@ -26,6 +26,11 @@
     HTTPS_PROXY, sinon proxy systeme Windows detecte. -Proxy '' force une connexion directe ; ce choix
     est memorise (plus aucune detection) jusqu'a un nouveau -Proxy <url> ou un proxy saisi dans .env.
 
+.PARAMETER CopilotApiUrl
+    Adresse d'API Copilot imposee quand le pare-feu de l'entreprise n'ouvre que celle de l'abonnement, par exemple
+    https://api.business.githubcopilot.com. Vide : adresse d'office, ou celle de l'abonnement annoncee par GitHub
+    quand le reseau bloque la premiere. Reglage memorise dans .env (COCKPIT_COPILOT_API_URL).
+
 .PARAMETER InsecureTls
     Desactive la verification des certificats TLS dans les conteneurs. Solution de secours
     uniquement, si l'export des certificats ne suffit pas. Reglage memorise dans .env.
@@ -52,6 +57,7 @@ param(
     [string]$ImageRegistry = 'ghcr.io/calgar50',
     [string]$Proxy,
     [string]$NoProxy,
+    [string]$CopilotApiUrl,
     [switch]$SkipCertificates,
     [switch]$InsecureTls,
     [switch]$SecureTls,
@@ -324,6 +330,15 @@ if (-not $config.Contains('TZ')) { $config['TZ'] = 'Europe/Paris' }
 # Dossier .opencode/ des depots ignore par defaut (un depot pourrait y executer du code sans confirmation).
 if (-not $config.Contains('COCKPIT_PROJECT_CONFIG')) { $config['COCKPIT_PROJECT_CONFIG'] = '0' }
 if (-not $config.Contains('COCKPIT_GITHUB_ENTERPRISE_DOMAIN')) { $config['COCKPIT_GITHUB_ENTERPRISE_DOMAIN'] = '' }
+
+# Adresse d'API Copilot imposee (memorisee ; vide = automatique). Meme controle que le cockpit au demarrage :
+# une erreur ici evite un conteneur qui refuse de demarrer.
+if ($PSBoundParameters.ContainsKey('CopilotApiUrl')) { $config['COCKPIT_COPILOT_API_URL'] = $CopilotApiUrl.Trim() }
+elseif (-not $config.Contains('COCKPIT_COPILOT_API_URL')) { $config['COCKPIT_COPILOT_API_URL'] = '' }
+if ($config['COCKPIT_COPILOT_API_URL'] -and $config['COCKPIT_COPILOT_API_URL'] -notmatch '^https://(api\.githubcopilot\.com|api\.(business|enterprise|individual)\.githubcopilot\.com|copilot-api\.[a-z0-9.-]+)/?$') {
+    throw "COCKPIT_COPILOT_API_URL refusee : utilisez https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com ou https://api.githubcopilot.com."
+}
+if ($config['COCKPIT_COPILOT_API_URL']) { Write-Good ("Adresse d'API Copilot imposee : {0}" -f $config['COCKPIT_COPILOT_API_URL']) }
 
 # Certificats
 $certsDir = Join-Path $Root 'certs'
