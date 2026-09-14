@@ -614,7 +614,10 @@ export const MESSAGES = Object.freeze({
   modeAvance: "Action réservée au mode Avancé (Paramètres › Affichage).",
   sessionsBusy: "Attendez la fin des réponses en cours.",
   configRestartBusy: "Attendez la fin des réponses en cours : ce changement redémarre opencode, ce qui les couperait.",
+  configReloadBusy: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
   restartEnCours: "opencode redémarre déjà : réessayez dans une minute.",
+  adresseCopilotEnVerification:
+    "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.",
   configRemise: "La version précédente du fichier a été remise.",
   redemarrerDepuisDiagnostic: "Redémarrez opencode depuis la page Diagnostic.",
   configNonConfirmee: "opencode a redémarré avec ce fichier mais n'a pas confirmé la configuration : rechargez la page pour vérifier.",

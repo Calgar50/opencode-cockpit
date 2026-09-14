@@ -234,7 +234,22 @@ export interface CopilotView {
   discoveryError: string | null;
   opencodeError: string | null;
   unavailable: UnavailableModel[];
-  configSync: { state: "inactif" | "a-jour" | "applique" | "en-attente" | "echec"; message: string | null; at: number };
+  configSync: {
+    state: "inactif" | "a-jour" | "applique" | "en-attente" | "redemarrage-requis" | "echec";
+    message: string | null;
+    at: number;
+    /**
+     * checked : adresse relue dans chaque dossier après la dernière écriture ("" = adresse d'office ; directory null = instance
+     * par défaut), vide si rien n'a pu être relu depuis. disposeOk : libération des instances confirmée (absent sans libération).
+     * restartHelps : échec qu'un redémarrage d'opencode règle.
+     */
+    details: {
+      checked: Array<{ directory: string | null; baseURL: string }>;
+      disposeMs?: number;
+      disposeOk?: boolean;
+      restartHelps?: boolean;
+    };
+  };
   enterpriseDomain: string | null;
 }
 

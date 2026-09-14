@@ -1,8 +1,9 @@
 import { serve } from "@hono/node-server";
 import { ArchiveService } from "./archive.ts";
-import { AssistantService, probeSessionsBusy } from "./assistants.ts";
+import { AssistantService, knownDirectories, probeSessionsBusy } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
+import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
@@ -11,7 +12,7 @@ import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
-import { CopilotConfigSync } from "./oc-copilot-config.ts";
+import { CopilotConfigSync, resyncOnReconnect } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { OpencodeClient } from "./opencode.ts";
 import { EventProcessor } from "./processor.ts";
@@ -59,6 +60,21 @@ const ledger = new Ledger({ db, settings, catalog });
 const hub = new EventHub();
 const projects = new ProjectsService(env);
 const control = new ControlService({ env, client, log });
+// Une seule file d'écriture de la configuration d'opencode : API (profils de permissions, fichier brut, correctif du mode Avancé,
+// redémarrage depuis Diagnostic), Studio et adresse Copilot. Pendant une application ou un redémarrage, puis jusqu'à la synchro
+// qui revérifie l'adresse de l'API Copilot (« synchro due »), aucune demande facturée ne part.
+const configQueue = new ConfigWriteQueue();
+const copilotConfig = new CopilotConfigSync({
+  client,
+  catalog,
+  copilot,
+  hub,
+  log,
+  queue: configQueue,
+  control,
+  directories: () => knownDirectories({ projects, db }),
+  busy: () => probeSessionsBusy({ client, projects, db }),
+});
 const archive = new ArchiveService({
   db,
   client,
@@ -80,9 +96,12 @@ const classifier = new Classifier({
   log,
   opencodeWorkspaceDir: env.opencodeWorkspaceDir,
   allowedProviders: env.allowedProviders,
+  // Classement automatique reporté pendant une application de configuration, un redémarrage d'opencode ou une synchro due.
+  canBill: () => canBill({ queue: configQueue, control, copilotConfig }),
 });
-// Avec le catalogue : une IA absente du compte Copilot (ou catalogue jamais lu) est refusée à l'enregistrement.
-const studio = new StudioService({ env, client, projects, control, log, catalog });
+// Avec le catalogue : une IA absente du compte Copilot (ou catalogue jamais lu) est refusée à l'enregistrement. Libérations et
+// redémarrages dans la file partagée, adresse de l'API Copilot revérifiée après chacun.
+const studio = new StudioService({ env, client, projects, control, log, catalog, queue: configQueue, copilotConfig });
 // Agents et raccourcis vus par opencode (cache 15 s, invalidé par studio.changed, opencode.config.changed, ai.changed).
 const lookup = new OcLookup({ client, env, hub, log });
 const tiers = new TierService({ settings, catalog, ledger, env });
@@ -96,7 +115,6 @@ const quota = new QuotaSync({
   githubEnterpriseDomain: env.githubEnterpriseDomain,
 });
 const processor = new EventProcessor({ db, client, sessions, ledger, archive, classifier, hub, log });
-const copilotConfig = new CopilotConfigSync({ client, catalog, copilot, hub, log, busy: () => probeSessionsBusy({ client, projects, db }) });
 
 let pricingSignature = JSON.stringify(settings.get().pricing);
 settings.onChange((next) => {
@@ -117,6 +135,11 @@ catalog.onChange(() => {
     if (status.state === "echec") log.warn("réglages Copilot d'opencode non alignés", { error: status.message });
   });
 });
+
+// Tout redémarrage d'opencode (page Diagnostic, fichier brut, profils de permissions, retours arrière, Studio, relance par le
+// superviseur) coupe son flux d'événements : « synchro due » dès la coupure, adresse de l'API Copilot revérifiée dans chaque
+// dossier à la reconnexion.
+resyncOnReconnect(hub, copilotConfig);
 
 const routeDeps = { assistants, tiers, settings, hub, log };
 const app = createApp({
@@ -140,6 +163,7 @@ const app = createApp({
   assistants,
   copilot,
   copilotConfig,
+  configQueue,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 

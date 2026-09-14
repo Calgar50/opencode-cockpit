@@ -50,11 +50,15 @@ const SYNC_LABEL: Readonly<Record<CopilotView["configSync"]["state"], string>> =
   "a-jour": "à jour",
   applique: "appliqués",
   "en-attente": "en attente",
+  "redemarrage-requis": "redémarrage requis",
   echec: "échec",
 };
 
-function problemsOf(s: SystemStatus, quotaEnabled: boolean): Array<{ tone: "critical" | "warning"; text: string }> {
-  const out: Array<{ tone: "critical" | "warning"; text: string }> = [];
+/** Point à vérifier, avec l'action qui le règle. */
+type Problem = { tone: "critical" | "warning"; text: string; action?: "restart-opencode" };
+
+function problemsOf(s: SystemStatus, quotaEnabled: boolean): Problem[] {
+  const out: Problem[] = [];
   if (s.opencode.restarting) out.push({ tone: "warning", text: "opencode est en cours de redémarrage." });
   else if (!s.opencode.reachable) out.push({ tone: "critical", text: "opencode ne répond pas." });
   if (!s.events.connected && !s.opencode.restarting) out.push({ tone: "critical", text: "Le flux d'événements d'opencode est coupé : les coûts et archives ne se mettent plus à jour." });
@@ -66,7 +70,19 @@ function problemsOf(s: SystemStatus, quotaEnabled: boolean): Array<{ tone: "crit
   else if (s.catalog.models === 0) out.push({ tone: "warning", text: "Le catalogue de modèles est vide." });
   if (s.copilot.error) out.push({ tone: "warning", text: `Liste des IA GitHub Copilot illisible : ${s.copilot.error}` });
   if (s.copilot.configSync.state === "echec") {
-    out.push({ tone: "warning", text: `Réglages Copilot d'opencode non appliqués : ${s.copilot.configSync.message ?? "erreur inconnue"}` });
+    out.push({
+      tone: "warning",
+      text: `Réglages Copilot d'opencode non appliqués : ${s.copilot.configSync.message ?? "erreur inconnue"}`,
+      // Libération des instances ratée : un redémarrage la règle. Jamais proposé pour un PATCH refusé par opencode.
+      ...(s.copilot.configSync.details.restartHelps ? { action: "restart-opencode" as const } : {}),
+    });
+  }
+  if (s.copilot.configSync.state === "redemarrage-requis") {
+    out.push({
+      tone: "warning",
+      text: s.copilot.configSync.message ?? "Adresse de l'API Copilot écrite, mais opencode ne l'utilise pas encore : redémarrez opencode.",
+      action: "restart-opencode",
+    });
   }
   if (quotaEnabled && s.quota.lastError) out.push({ tone: "warning", text: "La synchronisation du solde GitHub échoue." });
   return out;
@@ -231,7 +247,23 @@ export function DiagnosticsPage() {
                   </strong>
                   <ul>
                     {problems.map((p) => (
-                      <li key={p.text}>{p.text}</li>
+                      <li key={p.text}>
+                        {p.text}
+                        {p.action === "restart-opencode" ? (
+                          <div style={{ marginTop: 6 }}>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              icon="refresh"
+                              loading={restarting}
+                              disabled={!s.opencode.supervisor || s.opencode.restarting}
+                              onClick={() => void restart()}
+                            >
+                              Redémarrer opencode
+                            </Button>
+                          </div>
+                        ) : null}
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -412,11 +444,37 @@ export function DiagnosticsPage() {
                     />
                   ) : null}
                   <Line
-                    tone={s.copilot.configSync.state === "echec" ? "critical" : s.copilot.configSync.state === "en-attente" ? "warning" : "neutral"}
+                    tone={
+                      s.copilot.configSync.state === "echec" || s.copilot.configSync.state === "redemarrage-requis"
+                        ? "critical"
+                        : s.copilot.configSync.state === "en-attente"
+                          ? "warning"
+                          : "neutral"
+                    }
                     label="Adresse imposée à opencode"
                     value={SYNC_LABEL[s.copilot.configSync.state]}
                     hint={s.copilot.configSync.message ?? "Adresse de l'API Copilot écrite dans la configuration d'opencode quand elle diffère de son adresse d'office."}
                   />
+                  {s.copilot.configSync.details.checked.length > 0 ? (
+                    <Line
+                      tone="neutral"
+                      label="Adresse utilisée par opencode"
+                      value={`${formatInt(s.copilot.configSync.details.checked.length)} dossier${s.copilot.configSync.details.checked.length > 1 ? "s" : ""} vérifié${s.copilot.configSync.details.checked.length > 1 ? "s" : ""}`}
+                      hint={
+                        <>
+                          {s.copilot.configSync.details.checked.map((c, i) => (
+                            <span key={c.directory ?? "(instance par défaut)"}>
+                              {i > 0 ? " · " : ""}
+                              {c.directory ?? "instance par défaut"} : <span className="mono">{c.baseURL || "adresse d'office"}</span>
+                            </span>
+                          ))}
+                          {s.copilot.configSync.details.disposeOk === true && s.copilot.configSync.details.disposeMs !== undefined
+                            ? ` · instances libérées en ${formatDuration(s.copilot.configSync.details.disposeMs)}`
+                            : ""}
+                        </>
+                      }
+                    />
+                  ) : null}
                   <Line
                     tone={s.catalog.models > 0 ? "good" : "warning"}
                     label="Catalogue"

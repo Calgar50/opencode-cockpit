@@ -13,6 +13,7 @@ import { ArchiveService } from "./archive.ts";
 import { AssistantService } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
+import { ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService, RestartResult } from "./control.ts";
 import { openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
@@ -405,6 +406,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   const cookie = `cockpit_session=${sessionValue(token, sessionSecret)}`;
   const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
   const warnings: string[] = [];
+  /** Lignes info et warn du journal, avec leurs champs : aucune valeur de configuration ne doit y partir. */
+  const logLines: Array<{ level: "info" | "warn"; message: string; fields: Record<string, unknown> | undefined }> = [];
   let upstream: http.Server;
   let cockpit: ReturnType<typeof serve>;
   let port = 0;
@@ -438,6 +441,24 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let restartResult = RESTART_OK;
   const restartQueue: Array<RestartResult | Error> = [];
   let restartingNow = false;
+  /** File d'écriture de la configuration passée à createApp ; appels à la synchro de l'adresse Copilot, synchro en échec. */
+  const configQueue = new ConfigWriteQueue();
+  let copilotSyncCalls = 0;
+  let copilotSyncFails = false;
+  /**
+   * Faux CopilotConfigSync, « synchro due » : adresse cible retenue (sinon jamais posée), indicateur, poses demandées (avec
+   * l'indicateur d'application du cockpit au moment de la pose), synchro retenue jusqu'à la résolution de copilotSyncHold.
+   */
+  let copilotTarget = false;
+  let copilotDue = false;
+  const copilotMarks: Array<{ cause: string; applying: boolean }> = [];
+  let copilotSyncHold: Promise<void> | null = null;
+  /** Interrupteur : POST /global/dispose répond 500 (libération des instances en échec). */
+  let disposeFails = false;
+  /** Réponse de POST /session/:id/prompt_async retenue jusqu'à la résolution de cette promesse (demande facturée en vol). */
+  let promptHold: Promise<void> | null = null;
+  /** Demandes reçues par le faux opencode (« MÉTHODE chemin »), avec l'indicateur d'application du cockpit à la réception. */
+  const applyingSeen: Array<[string, boolean]> = [];
   let env: AppEnv;
   let db: DatabaseSync;
   let settings: SettingsStore;
@@ -467,6 +488,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       req.on("end", () => {
         upstreamRequests.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body });
         const pathname = new URL(req.url ?? "/", "http://opencode.test").pathname;
+        applyingSeen.push([`${req.method ?? ""} ${pathname}`, configQueue.applying]);
         const json = (status: number, data: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
         if (pathname === "/global/health") {
           json(200, { healthy: true, version: "test" });
@@ -509,6 +531,10 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         } else if (req.method === "GET" && pathname === "/session/ses_html/todo") {
           // Faux serveur (conteneur opencode compromis) qui répond un document : jamais servi tel quel par le cockpit.
           res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<script src=/api/oc/session/x/message></script>");
+        } else if (req.method === "POST" && pathname === "/global/dispose" && disposeFails) {
+          json(500, { name: "UnknownError", data: { message: "libération des instances simulée en échec" } });
+        } else if (req.method === "POST" && promptHold !== null && pathname.endsWith("/prompt_async")) {
+          void promptHold.then(() => res.writeHead(204).end());
         } else if (req.method === "POST") {
           res.writeHead(204).end();
         } else {
@@ -566,7 +592,14 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       T,
     );
     const quiet = createLogger("error");
-    const log: Logger = { ...quiet, warn: (message) => warnings.push(message) };
+    const log: Logger = {
+      ...quiet,
+      info: (message, fields) => void logLines.push({ level: "info", message, fields }),
+      warn: (message, fields) => {
+        warnings.push(message);
+        logLines.push({ level: "warn", message, fields });
+      },
+    };
     hub = new EventHub();
     lookup = new OcLookup({ client, env, hub, log });
     // Studio simulé : les écritures réelles sont couvertes par les tests du lot assistants.
@@ -584,6 +617,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         updatedAt: T,
       }),
       remove: async () => true,
+      ensureClassifierAgent: async () => undefined,
     } as unknown as StudioService;
     const projects = new ProjectsService(env);
     // Services réels (même implémentation que main.ts) : niveaux d'IA et métadonnées d'assistants.
@@ -628,9 +662,28 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         resetDiscovery: () => undefined,
       },
       copilotConfig: {
-        status: { state: "inactif", message: null, at: 0 },
-        sync: async () => ({ state: "inactif", message: null, at: 0 }),
+        status: { state: "inactif", message: null, at: 0, details: { checked: [] } },
+        get syncDue() {
+          return copilotDue;
+        },
+        markDue: (cause: string) => {
+          copilotMarks.push({ cause, applying: configQueue.applying });
+          if (copilotTarget) copilotDue = true;
+          return copilotTarget;
+        },
+        sync: async () => {
+          copilotSyncCalls++;
+          try {
+            if (copilotSyncHold) await copilotSyncHold;
+            if (copilotSyncFails) throw new Error("synchro de l'adresse Copilot en échec (simulée)");
+            return { state: "inactif", message: null, at: 0, details: { checked: [] } };
+          } finally {
+            // Levée à la fin de la synchro, quel que soit son état, erreur comprise.
+            copilotDue = false;
+          }
+        },
       },
+      configQueue,
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));
@@ -1904,6 +1957,401 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.equal(forwarded("/permission/per_voisine/").length, 0);
     } finally {
       resetPermissionFixtures();
+    }
+  });
+
+  it("application de configuration en cours dans la file partagée : demande facturée refusée avant d'être relayée", async () => {
+    let release!: () => void;
+    const holding = configQueue.applyingWhile(() => new Promise<void>((resolve) => (release = resolve)));
+    const relayed = forwarded("/prompt_async").length;
+    try {
+      const refused = await prompt("ses_1", { parts: text("x") }, confirmedHeaders);
+      assert.equal(refused.status, 409, refused.body);
+      assert.equal(JSON.parse(refused.body).error, "redemarrage-en-cours");
+      assert.equal(forwarded("/prompt_async").length, relayed);
+    } finally {
+      release();
+      await holding;
+    }
+    assert.equal(configQueue.applying, false);
+  });
+
+  it("redémarrage d'opencode depuis Diagnostic : adresse Copilot resynchronisée après un redémarrage réussi seulement", async () => {
+    const calls = copilotSyncCalls;
+    const from = restarts.length;
+    const ok = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(restarts.slice(from), ["demande depuis l'interface"]);
+    assert.equal(copilotSyncCalls, calls + 1);
+    // Synchro en échec : avalée par la route, le redémarrage reste un succès.
+    copilotSyncFails = true;
+    try {
+      const swallowed = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(swallowed.status, 200, swallowed.body);
+      assert.equal(JSON.parse(swallowed.body).ok, true);
+      assert.equal(copilotSyncCalls, calls + 2);
+    } finally {
+      copilotSyncFails = false;
+    }
+    // Redémarrage en échec : aucune synchro.
+    restartQueue.push({ ok: false, durationMs: 0, message: "opencode ne répond pas après 2 minutes : consultez le journal.", failure: "delai-depasse" });
+    const failed = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+    assert.equal(failed.status, 503, failed.body);
+    assert.equal(copilotSyncCalls, calls + 2);
+  });
+
+  it("demande facturée admise : comptée en vol jusqu'à la réponse d'opencode (refus avant relais compris) ; une application qui commence d'ici là attend", async () => {
+    let open!: () => void;
+    promptHold = new Promise<void>((resolve) => (open = resolve));
+    settings.update({ ui: { mode: "avance" } });
+    const body = { agent: "build", model: ref("gpt-5-mini"), parts: text("x") };
+    const patchCount = () => upstreamRequests.filter((r) => r.method === "PATCH").length;
+    const patches = patchCount();
+    const file = path.join(tmp, "opencode.jsonc");
+    try {
+      const pending = prompt("ses_vol", body, confirmedHeaders);
+      assert.ok(await waitFor(() => forwarded("/session/ses_vol/prompt_async").length === 1), "demande relayée à opencode");
+      assert.equal(configQueue.billedInFlight, 1);
+      // Application qui commence pendant la réponse, sonde des conversations au repos : refusée, rien d'écrit.
+      const refused = await call("PATCH", "/api/opencode/config", mutating, JSON.stringify({ small_model: "github-copilot/gpt-5-mini" }));
+      assert.equal(refused.status, 409, refused.body);
+      assert.equal(JSON.parse(refused.body).error, "sessions-busy");
+      assert.equal(patchCount(), patches);
+      // Fichier brut et permissions (redémarrage) : même garde, rien d'écrit, aucun redémarrage, aucune synchro.
+      const base = '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" }\n}\n';
+      fs.writeFileSync(file, base);
+      const restartsBefore = restarts.length;
+      const syncsBefore = copilotSyncCalls;
+      const raw = await call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content: base.replace('"ask"', '"allow"') }));
+      assert.equal(raw.status, 409, raw.body);
+      assert.equal(JSON.parse(raw.body).error, "sessions-busy");
+      const permission = await call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "allow" } }));
+      assert.equal(permission.status, 409, permission.body);
+      assert.equal(JSON.parse(permission.body).error, "sessions-busy");
+      assert.equal(restarts.length, restartsBefore);
+      assert.equal(fs.readFileSync(file, "utf8"), base);
+      assert.equal(copilotSyncCalls, syncsBefore);
+      assert.equal(configQueue.billedInFlight, 1);
+      open();
+      assert.equal((await pending).status, 204);
+      assert.equal(configQueue.billedInFlight, 0);
+      // Refusée avant le relais (dossier hors du workspace) : retirée aussitôt.
+      const outside = await call("POST", `/api/oc/session/ses_vol/prompt_async?directory=${encodeURIComponent("/etc")}`, confirmedHeaders, JSON.stringify(body));
+      assert.equal(outside.status, 403, outside.body);
+      assert.equal(configQueue.billedInFlight, 0);
+    } finally {
+      open();
+      promptHold = null;
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("correctif de configuration (mode Avancé) : dans la file partagée, jamais pendant une réponse, libération en échec signalée (503), adresse Copilot resynchronisée", async () => {
+    const patchCount = () => upstreamRequests.filter((r) => r.method === "PATCH" && r.url.startsWith("/global/config")).length;
+    const disposeCount = () => upstreamRequests.filter((r) => r.method === "POST" && r.url.startsWith("/global/dispose")).length;
+    // Valeurs repérables : jamais dans le journal (seules les clés de premier niveau y figurent).
+    const body = JSON.stringify({ small_model: "github-copilot/gpt-5-mini", instructions: ["consignes-confidentielles.md"] });
+    const patch = () => call("PATCH", "/api/opencode/config", mutating, body);
+    const routeLines = (from: number) => logLines.slice(from).filter((l) => l.message.includes("(mode Avancé)"));
+    const noValues = (lines: typeof logLines) => {
+      for (const line of lines) assert.doesNotMatch(JSON.stringify(line), /gpt-5-mini|consignes-confidentielles/, line.message);
+    };
+    settings.update({ ui: { mode: "avance" } });
+    const calls = copilotSyncCalls;
+    try {
+      // Application en cours dans la file : le correctif attend son tour, rien n'est relu ni écrit d'ici là.
+      let finish!: () => void;
+      const holding = configQueue.run(() => new Promise<void>((resolve) => (finish = resolve)));
+      const from = upstreamRequests.length;
+      const seenFrom = applyingSeen.length;
+      const logFrom = logLines.length;
+      const queued = patch();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(upstreamRequests.slice(from).filter((r) => r.url.startsWith("/global/")), []);
+      finish();
+      await holding;
+      const ok = await queued;
+      assert.equal(ok.status, 200, ok.body);
+      // Journal : une ligne info après l'écriture et la libération, clés de premier niveau seulement.
+      assert.deepEqual(routeLines(logFrom), [
+        { level: "info", message: "configuration d'opencode corrigée (mode Avancé) : écrite, instances libérées", fields: { keys: ["instructions", "small_model"] } },
+      ]);
+      // PATCH et libération pendant l'application : les demandes facturées sont refusées d'ici là.
+      const writes = applyingSeen.slice(seenFrom).filter(([route]) => route === "PATCH /global/config" || route === "POST /global/dispose");
+      assert.deepEqual(writes, [
+        ["PATCH /global/config", true],
+        ["POST /global/dispose", true],
+      ]);
+      assert.equal(configQueue.applying, false);
+      assert.equal(copilotSyncCalls, calls + 1);
+      const written = patchCount();
+
+      // Réponse en cours (sonde des conversations) : 409 avec le message adapté, rien d'écrit, aucune synchro.
+      ocStatuses = { ses_actif: { type: "busy" } };
+      const busy = await patch();
+      assert.equal(busy.status, 409, busy.body);
+      assert.deepEqual(JSON.parse(busy.body), {
+        error: "sessions-busy",
+        message: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
+      });
+      ocStatuses = {};
+      // Demande facturée admise juste avant (en vol) : 409 aussi.
+      const endBilled = configQueue.beginBilled();
+      try {
+        const inFlight = await patch();
+        assert.equal(inFlight.status, 409, inFlight.body);
+        assert.equal(JSON.parse(inFlight.body).error, "sessions-busy");
+      } finally {
+        endBilled();
+      }
+      assert.equal(patchCount(), written);
+      assert.equal(copilotSyncCalls, calls + 1);
+      const disposes = disposeCount();
+
+      // Redémarrage déjà en cours : 409 avant toute lecture, rien d'écrit ni libéré, aucune synchro.
+      restartingNow = true;
+      try {
+        const from = upstreamRequests.length;
+        const restarting = await patch();
+        assert.equal(restarting.status, 409, restarting.body);
+        assert.deepEqual(JSON.parse(restarting.body), { error: "redemarrage-en-cours", message: "opencode redémarre déjà : réessayez dans une minute." });
+        assert.deepEqual(upstreamSince(from).filter((r) => r.includes("/global/") || r.includes("/session/status")), []);
+      } finally {
+        restartingNow = false;
+      }
+      // Redémarrage lancé pendant la sonde des conversations : 409 après la sonde, rien d'écrit ni libéré.
+      lookupDelayMs = 150;
+      try {
+        const from = upstreamRequests.length;
+        const pending = patch();
+        assert.ok(await waitFor(() => upstreamRequests.slice(from).some((r) => r.url.startsWith("/session/status"))), "sonde commencée");
+        restartingNow = true;
+        const late = await pending;
+        assert.equal(late.status, 409, late.body);
+        assert.equal(JSON.parse(late.body).error, "redemarrage-en-cours");
+      } finally {
+        restartingNow = false;
+        lookupDelayMs = 0;
+      }
+      assert.equal(configQueue.applying, false);
+      // Sonde des conversations en échec : 503 opencode injoignable (warn sans valeur), rien d'écrit ni libéré, applying levé.
+      permissionLookupFailure = "status";
+      const unreachableFrom = logLines.length;
+      try {
+        const unreachable = await patch();
+        assert.equal(unreachable.status, 503, unreachable.body);
+        assert.equal(JSON.parse(unreachable.body).error, "opencode-injoignable");
+      } finally {
+        permissionLookupFailure = null;
+      }
+      assert.deepEqual(
+        routeLines(unreachableFrom).map((l) => [l.level, l.message, l.fields?.keys, l.fields?.error]),
+        [["warn", "configuration d'opencode non corrigée (mode Avancé) : opencode injoignable", ["instructions", "small_model"], "opencode-injoignable"]],
+      );
+      assert.equal(configQueue.applying, false);
+      assert.equal(patchCount(), written);
+      assert.equal(disposeCount(), disposes);
+      assert.equal(copilotSyncCalls, calls + 1);
+
+      // Libération des instances en échec : 503 qui le dit (plus avalée), configuration écrite, synchro relancée.
+      disposeFails = true;
+      const failedFrom = logLines.length;
+      const failed = await patch();
+      assert.equal(failed.status, 503, failed.body);
+      assert.equal(JSON.parse(failed.body).error, "liberation-echouee");
+      assert.match(JSON.parse(failed.body).message, /^Configuration écrite, mais opencode n'a pas libéré ses instances \(.+\) : .*Redémarrez opencode depuis la page Diagnostic\.$/);
+      assert.equal(patchCount(), written + 1);
+      assert.equal(copilotSyncCalls, calls + 2);
+      assert.equal(configQueue.applying, false);
+      const failedLines = routeLines(failedFrom);
+      assert.deepEqual(
+        failedLines.map((l) => [l.level, l.message, l.fields?.keys, l.fields?.error]),
+        [["warn", "configuration d'opencode corrigée (mode Avancé) : écrite, mais instances non libérées", ["instructions", "small_model"], "liberation-echouee"]],
+      );
+      assert.match(String(failedLines[0]?.fields?.cause), /libération des instances simulée en échec|500/);
+      noValues(routeLines(0));
+    } finally {
+      disposeFails = false;
+      ocStatuses = {};
+      restartingNow = false;
+      lookupDelayMs = 0;
+      permissionLookupFailure = null;
+      settings.update({ ui: { mode: "simple" } });
+    }
+  });
+
+  it("fichier brut, permissions et profil Prudent : adresse Copilot resynchronisée après la tâche de la file dès qu'opencode a redémarré, jamais sans redémarrage", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const base = '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" }\n}\n';
+    const raw = (content: string) => call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content }));
+    const permission = (value: Record<string, unknown>) => call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: value }));
+    fs.writeFileSync(file, base);
+    settings.update({ ui: { mode: "avance" } });
+    const calls = copilotSyncCalls;
+    try {
+      // Fichier inchangé : rien d'appliqué, aucune synchro.
+      assert.deepEqual(JSON.parse((await raw(base)).body), { ok: true, restarted: false });
+      assert.equal(copilotSyncCalls, calls);
+      // Adresse vidée à la main dans le fichier brut (répétition S9) : opencode redémarre dessus, la synchro la rétablira.
+      const cleared = '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" },\n  "provider": { "github-copilot": { "options": { "baseURL": "" } } }\n}\n';
+      const applied = await raw(cleared);
+      assert.equal(applied.status, 200, applied.body);
+      assert.deepEqual(JSON.parse(applied.body), { ok: true, restarted: true });
+      assert.equal(copilotSyncCalls, calls + 1);
+      assert.equal(configQueue.applying, false);
+      // Permissions puis profil Prudent, appliqués par un redémarrage.
+      const allowed = await permission({ edit: "allow" });
+      assert.equal(allowed.status, 200, allowed.body);
+      assert.deepEqual(JSON.parse(allowed.body), { ok: true, restarted: true });
+      assert.equal(copilotSyncCalls, calls + 2);
+      const prudent = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+      assert.equal(prudent.status, 200, prudent.body);
+      assert.equal(JSON.parse(prudent.body).restarted, true);
+      assert.equal(copilotSyncCalls, calls + 3);
+      // Règles déjà appliquées : aucun redémarrage, aucune synchro.
+      assert.equal(JSON.parse((await call("POST", "/api/security/restore-prudent", mutating, "{}")).body).restarted, false);
+      assert.equal(copilotSyncCalls, calls + 3);
+      // Refusé au redémarrage : retour arrière par un second redémarrage, synchro relancée quand même.
+      const refused = await raw('{\n  "enabled_providers": ["github-copilot"],\n  "x-refuse-par-opencode": true\n}\n');
+      assert.equal(refused.status, 422, refused.body);
+      assert.equal(JSON.parse(refused.body).restarted, true);
+      assert.equal(copilotSyncCalls, calls + 4);
+      // Synchro en échec : avalée, la réponse reste celle de l'application.
+      copilotSyncFails = true;
+      const swallowed = await permission({ edit: "deny" });
+      assert.equal(swallowed.status, 200, swallowed.body);
+      assert.equal(copilotSyncCalls, calls + 5);
+      copilotSyncFails = false;
+      // opencode ne repart pas (fichier remis, aucun redémarrage abouti) : aucune synchro.
+      restartResult = { ok: false, durationMs: 120_000, message: "opencode ne répond pas après 2 minutes : consultez le journal.", failure: "delai-depasse" };
+      const down = await permission({ edit: "ask" });
+      assert.equal(down.status, 503, down.body);
+      assert.equal(copilotSyncCalls, calls + 5);
+    } finally {
+      copilotSyncFails = false;
+      restartResult = RESTART_OK;
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("« synchro due » : posée par chaque route qui écrit la configuration ou redémarre opencode, avant la libération d'applying ; demande facturée refusée dès la réponse, admise après la synchro ; jamais sans écriture ni redémarrage", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const base = '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" }\n}\n';
+    const body = { agent: "build", model: ref("gpt-5-mini"), parts: text("x") };
+    const relayed = () => forwarded("/session/ses_due/prompt_async").length;
+    const raw = (content: string) => call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content }));
+    const advancedPatch = () => call("PATCH", "/api/opencode/config", mutating, JSON.stringify({ small_model: "github-copilot/gpt-5-mini" }));
+    const restart = () => call("POST", "/api/system/restart-opencode", mutating, "{}");
+    type Res = { status: number; body: string };
+
+    /**
+     * Synchro relancée retenue : l'indicateur est posé une fois, pendant l'application ; une demande facturée envoyée dès la
+     * réponse (ou dès la fin de la tâche pour la route qui attend la synchro) est refusée sans être relayée, puis admise une fois
+     * la synchro finie.
+     */
+    const posted = async (label: string, send: () => Promise<Res>, expected: number, awaitsSync = false) => {
+      let open!: () => void;
+      copilotSyncHold = new Promise<void>((resolve) => (open = resolve));
+      const marks = copilotMarks.length;
+      const calls = copilotSyncCalls;
+      const sent = relayed();
+      try {
+        const pending = send();
+        if (awaitsSync) assert.ok(await waitFor(() => copilotSyncCalls > calls), `${label} : synchro lancée`);
+        else {
+          const res = await pending;
+          assert.equal(res.status, expected, `${label} : ${res.body}`);
+        }
+        assert.equal(configQueue.applying, false, label);
+        assert.deepEqual(
+          copilotMarks.slice(marks).map((m) => m.applying),
+          [true],
+          label,
+        );
+        const refused = await prompt("ses_due", body, confirmedHeaders);
+        assert.equal(refused.status, 409, `${label} : ${refused.body}`);
+        assert.deepEqual(JSON.parse(refused.body), {
+          error: "redemarrage-en-cours",
+          message:
+            "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.",
+        });
+        assert.equal(relayed(), sent, label);
+        assert.ok(await waitFor(() => copilotSyncCalls === calls + 1), `${label} : synchro relancée`);
+        open();
+        if (awaitsSync) {
+          const res = await pending;
+          assert.equal(res.status, expected, `${label} : ${res.body}`);
+        }
+        assert.ok(await waitFor(() => !copilotDue), `${label} : indicateur levé`);
+        const admitted = await prompt("ses_due", body, confirmedHeaders);
+        assert.equal(admitted.status, 204, `${label} : ${admitted.body}`);
+        assert.equal(relayed(), sent + 1, label);
+      } finally {
+        open();
+        copilotSyncHold = null;
+      }
+    };
+    /** Sans écriture ni redémarrage réels : aucune pose, aucune synchro, demande facturée admise dès la réponse. */
+    const notPosted = async (label: string, send: () => Promise<Res>, expected: number) => {
+      const marks = copilotMarks.length;
+      const calls = copilotSyncCalls;
+      const sent = relayed();
+      const res = await send();
+      assert.equal(res.status, expected, `${label} : ${res.body}`);
+      assert.equal(copilotMarks.length, marks, label);
+      assert.equal(copilotSyncCalls, calls, label);
+      assert.equal(copilotDue, false, label);
+      const admitted = await prompt("ses_due", body, confirmedHeaders);
+      assert.equal(admitted.status, 204, `${label} : ${admitted.body}`);
+      assert.equal(relayed(), sent + 1, label);
+    };
+
+    fs.writeFileSync(file, base);
+    settings.update({ ui: { mode: "avance" } });
+    copilotTarget = true;
+    try {
+      const allowed = base.replace('"ask"', '"allow"');
+      await posted("fichier brut", () => raw(allowed), 200);
+      await notPosted("fichier brut inchangé", () => raw(allowed), 200);
+      await posted("permissions globales", () => call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission: { edit: "deny" } })), 200);
+      await posted("profil Prudent", () => call("POST", "/api/security/restore-prudent", mutating, "{}"), 200);
+      await notPosted("profil Prudent déjà appliqué", () => call("POST", "/api/security/restore-prudent", mutating, "{}"), 200);
+      await posted("correctif (mode Avancé)", advancedPatch, 200);
+      disposeFails = true;
+      await posted("correctif écrit, libération en échec", advancedPatch, 503);
+      disposeFails = false;
+      await notPosted(
+        "correctif refusé (réponse en cours)",
+        async () => {
+          ocStatuses = { ses_actif: { type: "busy" } };
+          try {
+            return await advancedPatch();
+          } finally {
+            ocStatuses = {};
+          }
+        },
+        409,
+      );
+      await posted("redémarrage depuis Diagnostic", restart, 200, true);
+      restartQueue.push({ ok: false, durationMs: 0, message: "opencode ne répond pas après 2 minutes : consultez le journal.", failure: "delai-depasse" });
+      await notPosted("redémarrage en échec", restart, 503);
+      // Refusé au redémarrage puis retour arrière réussi : opencode a redémarré deux fois, une seule pose.
+      await posted("fichier brut refusé, retour arrière", () => raw('{\n  "enabled_providers": ["github-copilot"],\n  "x-refuse-par-opencode": true\n}\n'), 422);
+      assert.deepEqual(
+        copilotMarks.slice(-2).map((m) => m.cause),
+        ["redémarrage d'opencode (page Diagnostic)", "redémarrage d'opencode (fichier de configuration brut)"],
+      );
+    } finally {
+      copilotTarget = false;
+      copilotDue = false;
+      copilotSyncHold = null;
+      disposeFails = false;
+      ocStatuses = {};
+      restartQueue.length = 0;
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
     }
   });
 

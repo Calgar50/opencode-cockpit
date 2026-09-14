@@ -5,11 +5,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ModelCatalog } from "./catalog.ts";
 import { CLASSIFIER_AGENT, CLASSIFIER_AGENT_FILE } from "./classifier.ts";
-import type { ControlService } from "./control.ts";
+import type { ConfigWriteQueue } from "./config-queue.ts";
+import type { ControlService, RestartResult } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { assertInside, readBytesInside, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { errorMessage, type Logger } from "./log.ts";
+import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import type { ProjectsService } from "./projects.ts";
 import {
@@ -98,6 +100,14 @@ export interface StudioDeps {
   log: Logger;
   /** Catalogue des IA : sans lui, le contrôle « IA présente sur le compte » est ignoré (seul le fournisseur est vérifié). */
   catalog?: Pick<ModelCatalog, "loaded" | "lite">;
+  /**
+   * File d'écriture de la configuration d'opencode, partagée avec l'API et la synchro de l'adresse Copilot : chaque libération des
+   * instances et chaque redémarrage y passent, indicateur `applying` posé (demandes facturées refusées). Aucune tâche de la file
+   * n'appelle le Studio : l'attendre ici ne bloque jamais. Sans elle (tests), exécution directe.
+   */
+  queue?: Pick<ConfigWriteQueue, "run" | "applyingWhile">;
+  /** Adresse de l'API Copilot : « synchro due » posée dans la tâche de la file, synchro relancée après elle. */
+  copilotConfig?: Pick<CopilotConfigSync, "markDue" | "sync">;
 }
 
 function toleratedKeyWarning(key: string): string {
@@ -474,17 +484,50 @@ export class StudioService {
       let restarted = false;
       const still = await this.#verifyKinds(kinds, scope).catch(() => [{ path: "", message: "injoignable" }]);
       if (still.length > 0) {
-        const result = await this.#d.control.restartOpencode("mise à jour des IA annulée");
+        const result = await this.#restartOpencode("mise à jour des IA annulée");
         restarted = result.ok;
       }
       throw new StudioApplyError(refused, restarted);
     });
   }
 
+  /**
+   * Action qui libère ou redémarre opencode, dans la file partagée (applying posé). Quand opencode a vraiment été touché (`acted`),
+   * « synchro due » est posée avant la libération d'applying, puis la synchro de l'adresse Copilot est relancée après la tâche,
+   * sans l'attendre (elle passe par la même file).
+   */
+  async #touchOpencode<T>(cause: string, task: () => Promise<{ result: T; acted: boolean }>): Promise<T> {
+    const { queue, copilotConfig } = this.#d;
+    const marked = async () => {
+      const outcome = await task();
+      if (outcome.acted) copilotConfig?.markDue(cause);
+      return outcome;
+    };
+    const { result, acted } = queue ? await queue.run(() => queue.applyingWhile(marked)) : await marked();
+    if (acted) void copilotConfig?.sync().catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Libère les instances d'opencode (et celle du projet) pour relire agents, commandes, skills et instructions. La libération
+   * reconstruit aussi le fournisseur Copilot depuis le cache global : adresse revérifiée dès qu'une libération a abouti.
+   */
   async #reload(scope: StudioScope): Promise<void> {
-    await this.#d.client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
     const directory = await this.#opencodeDirectory(scope);
-    if (directory) await this.#d.client.request("POST", "/instance/dispose", { directory, timeoutMs: 20_000 }).catch(() => undefined);
+    const done = (request: Promise<unknown>) => request.then(() => true, () => false);
+    await this.#touchOpencode("rechargement du Studio", async () => {
+      const global = await done(this.#d.client.request("POST", "/global/dispose", { timeoutMs: 20_000 }));
+      const instance = directory ? await done(this.#d.client.request("POST", "/instance/dispose", { directory, timeoutMs: 20_000 })) : false;
+      return { result: undefined, acted: global || instance };
+    });
+  }
+
+  /** Redémarrage d'opencode demandé par le Studio (configuration refusée restée bloquante), dans la file partagée. */
+  #restartOpencode(reason: string): Promise<RestartResult> {
+    return this.#touchOpencode(`redémarrage d'opencode (${reason})`, async () => {
+      const result = await this.#d.control.restartOpencode(reason);
+      return { result, acted: result.ok };
+    });
   }
 
   async #verify(kind: StudioKind, scope: StudioScope, reload = true): Promise<ValidationIssue[] | null> {
@@ -523,7 +566,7 @@ export class StudioService {
     // opencode peut rester bloqué sur une configuration invalide même corrigée : redémarrage si nécessaire.
     let restarted = false;
     if ((await this.#verify(kind, scope).catch(() => [{ path: "", message: "injoignable" }])) !== null) {
-      const result = await this.#d.control.restartOpencode("configuration invalide annulée");
+      const result = await this.#restartOpencode("configuration invalide annulée");
       restarted = result.ok;
     }
     throw new StudioApplyError(issues, restarted);

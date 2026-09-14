@@ -315,10 +315,10 @@ function ficheSource(name: string): CatalogueFiche | null {
 }
 
 /**
- * true si une conversation n'est pas au repos (GET /session/status?directory=…). Avec `db`, seuls l'instance par défaut
- * et les dossiers de sessions récentes sont interrogés : chaque `directory` démarre une instance d'opencode.
+ * Dossiers où opencode a une instance à interroger : l'instance par défaut (null) et, avec `db`, les dossiers autorisés des
+ * sessions récentes ; sans `db`, les projets du workspace. Chaque `directory` interrogé démarre une instance d'opencode.
  */
-export async function probeSessionsBusy(deps: { client: OpencodeClient; projects: ProjectsService; db?: DatabaseSync }): Promise<boolean> {
+export async function knownDirectories(deps: { projects: Pick<ProjectsService, "isAllowedDirectory" | "list">; db?: DatabaseSync }): Promise<Array<string | null>> {
   const directories = new Set<string | null>([null]);
   if (deps.db) {
     const rows = deps.db
@@ -328,8 +328,14 @@ export async function probeSessionsBusy(deps: { client: OpencodeClient; projects
   } else {
     for (const project of await deps.projects.list()) directories.add(project.directory);
   }
+  return [...directories];
+}
+
+/** true si une conversation n'est pas au repos (GET /session/status?directory=…) dans l'un des dossiers connus. */
+export async function probeSessionsBusy(deps: { client: OpencodeClient; projects: ProjectsService; db?: DatabaseSync }): Promise<boolean> {
+  const directories = await knownDirectories(deps);
   const answers = await Promise.all(
-    [...directories].map((directory) =>
+    directories.map((directory) =>
       deps.client.request<unknown>("GET", "/session/status", { ...(directory ? { directory } : {}), timeoutMs: 10_000 }),
     ),
   );

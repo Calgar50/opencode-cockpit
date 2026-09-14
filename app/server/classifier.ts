@@ -144,6 +144,13 @@ export interface ClassifierDeps {
   opencodeWorkspaceDir: string;
   /** COCKPIT_ALLOWED_PROVIDERS : seuls fournisseurs qui peuvent recevoir une conversation à classer. */
   allowedProviders: readonly string[];
+  /**
+   * false pendant une application de la configuration d'opencode ou un redémarrage : la demande de classement, facturée et
+   * envoyée sans passer par le proxy, serait coupée sans erreur. Le classement automatique est alors reporté.
+   */
+  canBill: () => boolean;
+  /** Report du classement automatique quand canBill est faux (60 s par défaut). */
+  deferMs?: number;
 }
 
 export class Classifier {
@@ -182,16 +189,21 @@ export class Classifier {
       if (settings.mode !== "llm" || conv.classifiedBy === "manual") return;
       const due = conv.classifiedBy !== "llm" || conv.promptCount - conv.promptsAtClassification >= settings.reclassifyAfterPrompts;
       if (!due) return;
-      clearTimeout(this.#classifyTimers.get(rootId));
-      const timer = setTimeout(() => {
-        this.#classifyTimers.delete(rootId);
-        void this.run(rootId).catch((err) => this.#d.log.warn("classement impossible", { rootId, error: errorMessage(err) }));
-      }, settings.idleMinutes * 60_000);
-      timer.unref();
-      this.#classifyTimers.set(rootId, timer);
+      this.#schedule(rootId, settings.idleMinutes * 60_000);
     } catch (err) {
       this.#d.log.warn("archivage impossible", { rootId, error: errorMessage(err) });
     }
+  }
+
+  /** Classement automatique programmé (remplace celui déjà prévu) ; annulé si la conversation retravaille (onBusy). */
+  #schedule(rootId: string, delayMs: number): void {
+    clearTimeout(this.#classifyTimers.get(rootId));
+    const timer = setTimeout(() => {
+      this.#classifyTimers.delete(rootId);
+      void this.run(rootId).catch((err) => this.#d.log.warn("classement impossible", { rootId, error: errorMessage(err) }));
+    }, delayMs);
+    timer.unref();
+    this.#classifyTimers.set(rootId, timer);
   }
 
   async run(rootId: string, options: { force?: boolean } = {}): Promise<Conversation | null> {
@@ -210,8 +222,17 @@ export class Classifier {
           this.#d.log.warn("IA de classement d'un fournisseur non autorisé ignorée : choix automatique", { model: settings.model.slice(0, 200) });
         }
         const model = pickClassifierModel(settings.model, this.#d.catalog, this.#d.allowedProviders);
+        if (model && !options.force && !this.#d.canBill()) {
+          // Configuration d'opencode en cours d'application ou redémarrage : la demande serait coupée. Rien n'est classé ni envoyé.
+          const deferMs = this.#d.deferMs ?? 60_000;
+          this.#d.log.info("classement automatique reporté : configuration d'opencode en cours d'application", { rootId, deferMs });
+          this.#schedule(rootId, deferMs);
+          return refreshed.conversation;
+        }
         if (model) {
           try {
+            // Classement demandé depuis l'interface pendant une application : erreur signalée, heuristique conservée.
+            if (!this.#d.canBill()) throw new Error("opencode applique sa configuration ou redémarre : réessayez dans une minute.");
             result = (await this.#classifyWithModel(refreshed.digest, settings.categories, refreshed.conversation.project, model)) ?? result;
           } catch (err) {
             this.#d.log.warn("classement par modèle en échec, heuristique conservée", { rootId, model, error: errorMessage(err) });

@@ -5,15 +5,17 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
-import { buildDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
+import { type ArchiveService, buildDigest, type Conversation, type ConversationDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
 import { catalogLite, ModelCatalog } from "./catalog.ts";
-import { extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
+import { Classifier, extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
 import { ControlService } from "./control.ts";
 import { openDb, openMemoryDb } from "./db.ts";
 import { type AppEnv, EnvError, loadEnv, parseAllowedProviders } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { PathError, readInside, safeSegment, slugify } from "./fsutil.ts";
 import { classifyHeuristic } from "./heuristic.ts";
+import type { EventHub } from "./hub.ts";
+import type { Ledger } from "./ledger.ts";
 import { createLogger } from "./log.ts";
 import type { OcMessageWithParts, OcSession, OpencodeClient } from "./opencode.ts";
 import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } from "./pricing.ts";
@@ -28,6 +30,7 @@ import {
   safeEqual,
   sessionValue,
 } from "./security.ts";
+import type { SessionTracker } from "./sessions.ts";
 import {
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
@@ -435,6 +438,96 @@ describe("sécurité et utilitaires", () => {
     assert.equal(pickClassifierModel(null, catalog, copilot), "github-copilot/gpt-5-mini");
     assert.equal(pickClassifierModel(null, catalog, ["opencode"]), null);
     assert.equal(pickClassifierModel("opencode/big-pickle", catalog, ["github-copilot", "opencode"]), "opencode/big-pickle");
+  });
+
+  it("classement automatique reporté (rien d'envoyé ni de classé) pendant une application de configuration ou un redémarrage d'opencode", async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let billable = false;
+    const requests: string[] = [];
+    const applied: string[] = [];
+    const events: string[] = [];
+    const conversation = { sessionId: "ses_root", project: "app", classifiedBy: "heuristic" } as unknown as Conversation;
+    const digest: ConversationDigest = {
+      sessionId: "ses_root",
+      directory: "/workspace/app",
+      title: "Corriger un bug",
+      createdAt: 0,
+      updatedAt: 0,
+      prompts: ["Corrige ce bug"],
+      answers: [],
+      tools: {},
+      files: [],
+      commands: [],
+      models: [],
+      additions: 0,
+      deletions: 0,
+      messageCount: 2,
+      promptCount: 1,
+      transcript: "",
+    };
+    const classifier = new Classifier({
+      client: {
+        request: async (method: string, pathname: string) => {
+          requests.push(`${method} ${pathname}`);
+          if (method === "POST" && pathname === "/session") return { id: "ses_classement", directory: "/workspace" };
+          if (method === "POST") {
+            return {
+              info: { id: "msg_classement", role: "assistant" },
+              parts: [{ type: "text", text: '{"category":"debug","title":"Bug","tags":[],"summary":"Corrigé."}' }],
+            };
+          }
+          return true;
+        },
+      } as unknown as OpencodeClient,
+      settings: {
+        get: () => ({ ...DEFAULT_SETTINGS, classifier: { ...DEFAULT_SETTINGS.classifier, mode: "llm", model: "github-copilot/gpt-5-mini" } }),
+      } as unknown as SettingsStore,
+      catalog: { list: () => [] } as unknown as ModelCatalog,
+      archive: {
+        refresh: async () => ({ conversation, digest }),
+        get: () => conversation,
+        applyClassification: (_id: string, result: { by: string }) => {
+          applied.push(result.by);
+          return conversation;
+        },
+      } as unknown as ArchiveService,
+      sessions: { upsert: () => ({}) } as unknown as SessionTracker,
+      ledger: { recordAssistant: () => undefined } as unknown as Ledger,
+      hub: { cockpit: (type: string) => void events.push(type) } as unknown as EventHub,
+      log: createLogger("error"),
+      opencodeWorkspaceDir: "/workspace",
+      allowedProviders: ["github-copilot"],
+      canBill: () => billable,
+      deferMs: 5,
+    });
+
+    // Pendant l'application : rien n'est envoyé ni classé, le classement est reprogrammé tant que la garde reste fausse.
+    assert.equal(await classifier.run("ses_root"), conversation);
+    await sleep(30);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(applied, []);
+    // Application terminée : le classement reporté part tout seul.
+    billable = true;
+    for (let i = 0; i < 200 && applied.length === 0; i++) await sleep(5);
+    assert.deepEqual(applied, ["llm"]);
+    assert.deepEqual(requests.slice(0, 2), ["POST /session", "POST /session/ses_classement/message"]);
+
+    // Conversation qui retravaille pendant le report : classement annulé.
+    billable = false;
+    const sent = requests.length;
+    assert.equal(await classifier.run("ses_root"), conversation);
+    classifier.onBusy("ses_root");
+    billable = true;
+    await sleep(30);
+    assert.equal(requests.length, sent);
+    assert.deepEqual(applied, ["llm"]);
+
+    // Classement demandé depuis l'interface pendant une application : rien n'est envoyé, erreur signalée, heuristique conservée.
+    billable = false;
+    await classifier.run("ses_root", { force: true });
+    assert.equal(requests.length, sent);
+    assert.deepEqual(applied, ["llm", "heuristic"]);
+    assert.ok(events.includes("classifier.error"));
   });
 
   it("produit des noms de fichiers sûrs", () => {

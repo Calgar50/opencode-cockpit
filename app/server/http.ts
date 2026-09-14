@@ -12,6 +12,7 @@ import type { ArchiveService } from "./archive.ts";
 import { probeSessionsBusy } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
+import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
@@ -131,8 +132,10 @@ export interface AppDeps {
   assistants: AssistantsPort;
   /** Accès direct à GitHub Copilot : adresse de l'API, état de la liste des IA, joignabilité à travers le proxy. */
   copilot: Pick<CopilotApi, "status" | "probeHosts" | "resetDiscovery">;
-  /** Adresse de l'API Copilot imposée à opencode. */
-  copilotConfig: Pick<CopilotConfigSync, "status" | "sync">;
+  /** Adresse de l'API Copilot imposée à opencode ; « synchro due » posée par chaque écriture ou redémarrage, lue par le proxy. */
+  copilotConfig: Pick<CopilotConfigSync, "status" | "sync" | "syncDue" | "markDue">;
+  /** File d'écriture de la configuration d'opencode, partagée avec CopilotConfigSync (une instance propre si absente). */
+  configQueue?: ConfigWriteQueue;
   /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
   routes?: Array<(app: Hono) => void>;
 }
@@ -458,6 +461,8 @@ const MIME: Record<string, string> = {
 export function createApp(deps: AppDeps): Hono {
   const { env, log, client, catalog, ledger, archive, classifier, studio, projects, control, quota, processor, settings, hub, lookup, tiers, assistants } =
     deps;
+  // Une application de configuration à la fois (chacune peut libérer ou redémarrer opencode), synchro de l'adresse Copilot comprise.
+  const configQueue = deps.configQueue ?? new ConfigWriteQueue();
   const advanced = advancedOnly(settings);
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
@@ -1155,20 +1160,27 @@ export function createApp(deps: AppDeps): Hono {
     const method = c.req.method.toUpperCase();
     const matched = PROXY_RULES.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
-    // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée.
-    if (matched.guarded && (configApplying || control.restarting)) return fail(c, 409, "redemarrage-en-cours", MESSAGES.restartEnCours);
-
-    const incoming = new URL(c.req.url);
-    const target = client.url(sub);
-    for (const [key, value] of incoming.searchParams) if (ALLOWED_QUERY.has(key)) target.searchParams.set(key, value);
-    const directory = target.searchParams.get("directory");
-    if (directory !== null && !projects.isAllowedDirectory(directory)) {
-      return fail(c, 403, "forbidden-directory", "Ce dossier est hors du workspace monté.");
+    // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée. Adresse de l'API Copilot à
+    // revérifier (« synchro due ») : opencode peut tourner sur l'adresse d'office, que le réseau bloque peut-être.
+    if (matched.guarded && !canBill({ queue: configQueue, control, copilotConfig: deps.copilotConfig })) {
+      const message = configQueue.applying || control.restarting ? MESSAGES.restartEnCours : MESSAGES.adresseCopilotEnVerification;
+      return fail(c, 409, "redemarrage-en-cours", message);
     }
+    // Demande facturée admise (sans attente depuis la garde) : comptée en vol jusqu'à la réponse d'opencode. Une application qui
+    // commence d'ici là la traite comme une réponse en cours, que la sonde des conversations ne voit pas encore.
+    const endBilled = matched.guarded ? configQueue.beginBilled() : undefined;
 
     // Place dans la file d'attente des réponses (« once » vérifié, arrêt) : libérée au plus tard en sortant.
     let releaseGate: (() => void) | undefined;
     try {
+      const incoming = new URL(c.req.url);
+      const target = client.url(sub);
+      for (const [key, value] of incoming.searchParams) if (ALLOWED_QUERY.has(key)) target.searchParams.set(key, value);
+      const directory = target.searchParams.get("directory");
+      if (directory !== null && !projects.isAllowedDirectory(directory)) {
+        return fail(c, 403, "forbidden-directory", "Ce dossier est hors du workspace monté.");
+      }
+
       let body: string | null = null;
       if (method !== "GET" && method !== "HEAD") {
         body = await c.req.text();
@@ -1241,6 +1253,8 @@ export function createApp(deps: AppDeps): Hono {
         body: body === null || body === "" ? null : body,
         signal: c.req.raw.signal,
       });
+      // Réponse d'opencode reçue : la demande n'est plus comptée en vol.
+      endBilled?.();
       if (abortId !== undefined && abortGate !== undefined && upstream.ok) {
         // Sans attendre : la réponse de l'arrêt part tout de suite et reste celle d'opencode ; le nettoyage libère la file.
         releaseGate = undefined;
@@ -1254,6 +1268,8 @@ export function createApp(deps: AppDeps): Hono {
       if (contentType) headers.set("content-type", PROXY_CONTENT_TYPE.test(contentType) ? contentType : "application/json");
       return new Response(upstream.body, { status: upstream.status, headers });
     } finally {
+      // Refusée avant le relais ou en erreur : plus comptée en vol (sans effet si la réponse d'opencode l'a déjà retirée).
+      endBilled?.();
       releaseGate?.();
     }
   });
@@ -1554,19 +1570,6 @@ export function createApp(deps: AppDeps): Hono {
   /** Écriture qui retirerait le verrou « fournisseurs » d'opencode (enabled_providers, IA par défaut ou d'un agent). */
   const refuseProviders = (c: Context, issues: IssueLite[]) => fail(c, 422, "fournisseur-refuse", MESSAGES.providerLockRefused, { issues });
 
-  app.patch("/api/opencode/config", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
-    const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
-    // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
-    const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 15_000 });
-    const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders, env.githubEnterpriseDomain);
-    if (issues.length > 0) return refuseProviders(c, issues);
-    const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
-    await client.request("POST", "/global/dispose", { timeoutMs: 20_000 }).catch(() => undefined);
-    await catalog.refresh().catch(() => undefined);
-    hub.cockpit("opencode.config.changed", {});
-    return c.json(updated);
-  });
-
   app.get("/api/opencode/config/raw", async (c) => {
     const file = await configFile();
     return c.json({ file: path.basename(file), content: (await readInside(env.opencodeConfigDir, file)) ?? "" });
@@ -1574,14 +1577,6 @@ export function createApp(deps: AppDeps): Hono {
 
   /** Conversation en cours : un redémarrage d'opencode la couperait. */
   const sessionsBusy = () => probeSessionsBusy({ client, projects, db: deps.db });
-
-  // Une application de configuration à la fois : chacune peut redémarrer opencode.
-  let configQueue: Promise<unknown> = Promise.resolve();
-  const oneConfigWrite = <T>(task: () => Promise<T>): Promise<T> => {
-    const run = configQueue.then(task, task);
-    configQueue = run.catch(() => undefined);
-    return run;
-  };
 
   type ConfigFailure =
     | "sessions-busy"
@@ -1623,6 +1618,15 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
     return { incertain: last };
+  };
+
+  /**
+   * Écriture de la configuration d'opencode ou redémarrage faits : « synchro due » posée DANS la tâche de la file, avant la
+   * libération d'applying (aucun intervalle où le proxy admettrait une demande facturée vers une adresse non revérifiée). La synchro
+   * relancée après la tâche (resyncCopilot) la lève à sa fin. Jamais sans écriture ni redémarrage réels.
+   */
+  const copilotSyncDue = (cause: string): void => {
+    deps.copilotConfig.markDue(cause);
   };
 
   /** Remet la version précédente du fichier (supprimé s'il n'existait pas). */
@@ -1674,32 +1678,30 @@ export function createApp(deps: AppDeps): Hono {
     return { ok: false, error: "rejected-by-opencode", message: refusal, restarted: true };
   };
 
-  /** Application de configuration en cours : les demandes facturées sont refusées (le redémarrage les couperait). */
-  let configApplying = false;
-
   /**
    * Écrit la configuration globale puis redémarre opencode pour l'appliquer : opencode 1.18.30 la garde en mémoire et ne relit
    * pas une écriture directe du fichier, même après /global/dispose (mesuré). Jamais pendant une réponse ni un redémarrage.
+   * Pendant l'application, les demandes facturées sont refusées (le redémarrage les couperait).
    */
   const applyConfigFile = async (file: string, content: string, backup: string | null, what: string): Promise<ConfigApply> => {
     if (control.restarting) return restartInProgress();
-    configApplying = true;
-    try {
+    return configQueue.applyingWhile(async (): Promise<ConfigApply> => {
       let busy: boolean;
       try {
-        busy = await sessionsBusy();
+        // Demande facturée admise par le proxy juste avant l'indicateur : réponse en cours que la sonde ne voit pas encore.
+        busy = configQueue.billedInFlight > 0 || (await sessionsBusy());
       } catch {
         return opencodeUnreachable();
       }
       if (busy) return { ok: false, error: "sessions-busy", message: MESSAGES.configRestartBusy, restarted: false };
       await writeFileAtomic(file, content);
       const outcome = await restartOnConfig(file, backup, what);
+      // Redémarrage fait (fichier appliqué ou retour arrière) : nouveau processus, qui a pu perdre l'adresse imposée.
+      if (outcome.restarted) copilotSyncDue(`redémarrage d'opencode (${what})`);
       // Après le dernier redémarrage : l'interface relit la configuration qui tourne vraiment.
       hub.cockpit("opencode.config.changed", {});
       return outcome;
-    } finally {
-      configApplying = false;
-    }
+    });
   };
 
   const configFailure = (c: Context, result: Extract<ConfigApply, { ok: false }>, refused: string) => {
@@ -1714,18 +1716,92 @@ export function createApp(deps: AppDeps): Hono {
     }
   };
 
+  /**
+   * Adresse de l'API Copilot revérifiée dans chaque dossier (et réécrite s'il le faut) après un redémarrage d'opencode ou une
+   * écriture de sa configuration. Toujours APRÈS la tâche de la file et sans l'attendre : sync() passe par la même file, l'attendre
+   * depuis la tâche la bloquerait. Plusieurs appels rapprochés se fondent en une seule synchro relancée.
+   */
+  const resyncCopilot = (): void => {
+    void deps.copilotConfig.sync().catch(() => undefined);
+  };
+
+  /** Issue du correctif de configuration du mode Avancé ; `cause` : erreur d'opencode, journalisée seulement. */
+  type ConfigPatch =
+    | { ok: true; updated: unknown }
+    | { ok: false; issues: IssueLite[] }
+    | { ok: false; status: 409 | 503; error: string; message: string; wrote: boolean; cause?: string };
+
+  // Correctif de la configuration globale (mode Avancé) : écrit par opencode (PATCH, qui met aussi à jour son cache), puis instances
+  // libérées pour l'appliquer. Dans la file partagée et jamais pendant une réponse : la libération la couperait sans erreur.
+  app.patch("/api/opencode/config", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
+    const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
+    const result = await configQueue.run(async (): Promise<ConfigPatch> => {
+      if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
+      // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
+      const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 15_000 });
+      const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders, env.githubEnterpriseDomain);
+      if (issues.length > 0) return { ok: false, issues };
+      return configQueue.applyingWhile(async (): Promise<ConfigPatch> => {
+        let busy: boolean;
+        try {
+          // Demande facturée admise par le proxy juste avant l'indicateur : réponse en cours que la sonde ne voit pas encore.
+          busy = configQueue.billedInFlight > 0 || (await sessionsBusy());
+        } catch (err) {
+          return { ok: false, status: 503, error: "opencode-injoignable", message: MESSAGES.opencodeInjoignable, wrote: false, cause: errorMessage(err) };
+        }
+        if (busy) return { ok: false, status: 409, error: "sessions-busy", message: MESSAGES.configReloadBusy, wrote: false };
+        if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
+        const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
+        // Écrit : le PATCH libère déjà les instances en tâche de fond, l'adresse de l'API Copilot est à revérifier.
+        copilotSyncDue("correctif de configuration (mode Avancé)");
+        try {
+          await client.request("POST", "/global/dispose", { timeoutMs: 20_000 });
+        } catch (err) {
+          const message = `Configuration écrite, mais opencode n'a pas libéré ses instances (${errorMessage(err)}) : elle n'est peut-être pas encore appliquée. ${MESSAGES.redemarrerDepuisDiagnostic}`;
+          return { ok: false, status: 503, error: "liberation-echouee", message, wrote: true, cause: errorMessage(err) };
+        }
+        return { ok: true, updated };
+      });
+    });
+    // Journal : clés de premier niveau du correctif seulement, jamais leurs valeurs (adresses, consignes, règles).
+    const keys = Object.keys(patch)
+      .sort()
+      .slice(0, 50)
+      .map((key) => key.slice(0, 100));
+    if (result.ok) {
+      log.info("configuration d'opencode corrigée (mode Avancé) : écrite, instances libérées", { keys });
+    } else if ("error" in result && (result.error === "liberation-echouee" || result.error === "opencode-injoignable")) {
+      const title =
+        result.error === "liberation-echouee"
+          ? "configuration d'opencode corrigée (mode Avancé) : écrite, mais instances non libérées"
+          : "configuration d'opencode non corrigée (mode Avancé) : opencode injoignable";
+      log.warn(title, { keys, error: result.error, ...(result.cause ? { cause: result.cause } : {}) });
+    }
+    if (result.ok || ("wrote" in result && result.wrote)) {
+      await catalog.refresh().catch(() => undefined);
+      hub.cockpit("opencode.config.changed", {});
+      // Un correctif peut toucher l'adresse de l'API Copilot : la synchro la rétablit, lancée après la tâche de la file.
+      resyncCopilot();
+    }
+    if (result.ok) return c.json(result.updated);
+    if ("issues" in result) return refuseProviders(c, result.issues);
+    return fail(c, result.status, result.error, result.message);
+  });
+
   app.put("/api/opencode/config/raw", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     const issues = configProviderIssues(parseJsonc(content, [], { allowTrailingComma: true }), env.allowedProviders, env.githubEnterpriseDomain);
     if (issues.length > 0) return refuseProviders(c, issues);
     const root = env.opencodeConfigDir;
     const file = await assertInside(root, await configFile());
-    const result = await oneConfigWrite(async (): Promise<ConfigApply> => {
+    const result = await configQueue.run(async (): Promise<ConfigApply> => {
       if (control.restarting) return restartInProgress();
       // Relue dans la file, sans suivre de lien : c'est la version remise en cas de refus.
       const backup = await readInside(root, file);
       return backup === content ? { ok: true, restarted: false } : applyConfigFile(file, content, backup, "fichier de configuration brut");
     });
+    // Redémarrage fait (fichier appliqué ou retour arrière) : nouveau processus, qui a pu perdre l'adresse imposée.
+    if (result.restarted) resyncCopilot();
     if (!result.ok) return configFailure(c, result, "opencode a refusé ce fichier");
     return c.json({ ok: true, restarted: result.restarted });
   });
@@ -1744,7 +1820,7 @@ export function createApp(deps: AppDeps): Hono {
   // Remplace le bloc « permission » d'un seul tenant (commentaires du fichier conservés). Le PATCH d'opencode
   // fusionne clé par clé : il garderait d'anciennes règles et échoue quand une valeur texte devient un objet.
   const replacePermission = (permission: Record<string, unknown>, what: string): Promise<PermissionWrite> =>
-    oneConfigWrite(async (): Promise<PermissionWrite> => {
+    configQueue.run(async (): Promise<PermissionWrite> => {
       if (control.restarting) return restartInProgress();
       const root = env.opencodeConfigDir;
       const file = await assertInside(root, await configFile());
@@ -1800,6 +1876,8 @@ export function createApp(deps: AppDeps): Hono {
   app.put("/api/opencode/config/permission", advanced, bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
     const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
     const result = await replacePermission(permission, "permissions globales");
+    // Après la tâche de la file : un redémarrage fait (appliqué, refusé ou non confirmé) relance la synchro de l'adresse Copilot.
+    if (result.restarted) resyncCopilot();
     if (!result.ok) return permissionFailure(c, result);
     return c.json({ ok: true, restarted: result.restarted });
   });
@@ -1809,6 +1887,7 @@ export function createApp(deps: AppDeps): Hono {
     z.strictObject({}).parse(await c.req.json().catch(() => null));
     const permission = presetPermission("prudent");
     const result = await replacePermission(permission, "profil Prudent");
+    if (result.restarted) resyncCopilot();
     if (!result.ok) return permissionFailure(c, result);
     const response: RestorePrudentResponse = { ok: true, permission, restarted: result.restarted };
     return c.json(response);
@@ -1932,9 +2011,19 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post("/api/system/restart-opencode", async (c) => {
-    const result = await control.restartOpencode("demande depuis l'interface");
+    // Dans la file partagée : jamais pendant une application (PATCH, libération des instances) ; « synchro due » posée avant la
+    // libération d'applying, levée par la synchro lancée après la tâche.
+    const result = await configQueue.run(() =>
+      configQueue.applyingWhile(async () => {
+        const restart = await control.restartOpencode("demande depuis l'interface");
+        if (restart.ok) copilotSyncDue("redémarrage d'opencode (page Diagnostic)");
+        return restart;
+      }),
+    );
     if (result.ok) {
       await catalog.refresh().catch(() => undefined);
+      // Nouveau processus : l'adresse de l'API Copilot est revérifiée dans chaque dossier (et réécrite s'il le faut).
+      await deps.copilotConfig.sync().catch(() => undefined);
       await studio.ensureClassifierAgent().catch(() => undefined);
     }
     return c.json(result, result.ok ? 200 : 503);
