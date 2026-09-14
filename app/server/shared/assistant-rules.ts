@@ -618,6 +618,8 @@ export const MESSAGES = Object.freeze({
   restartEnCours: "opencode redémarre déjà : réessayez dans une minute.",
   adresseCopilotEnVerification:
     "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.",
+  opencodeReconnexion: "opencode est injoignable ou redémarre : reconnexion en cours. Réessayez dans un moment.",
+  adresseCopilotCorrectionDifferee: "L'adresse de l'API Copilot sera corrigée dès la fin de la réponse en cours : réessayez une fois cette réponse terminée.",
   configRemise: "La version précédente du fichier a été remise.",
   redemarrerDepuisDiagnostic: "Redémarrez opencode depuis la page Diagnostic.",
   configNonConfirmee: "opencode a redémarré avec ce fichier mais n'a pas confirmé la configuration : rechargez la page pour vérifier.",

@@ -12,7 +12,7 @@ import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
-import { CopilotConfigSync, resyncOnReconnect } from "./oc-copilot-config.ts";
+import { CopilotConfigSync, resyncOnIdle, resyncOnReconnect } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { OpencodeClient } from "./opencode.ts";
 import { EventProcessor } from "./processor.ts";
@@ -74,6 +74,9 @@ const copilotConfig = new CopilotConfigSync({
   control,
   directories: () => knownDirectories({ projects, db }),
   busy: () => probeSessionsBusy({ client, projects, db }),
+  // Adresse imposée par .env : « synchro due » posée dès maintenant, avant l'écoute du serveur HTTP, sans soupape tant qu'opencode n'a
+  // jamais répondu, levée par la première synchro qui vérifie ou corrige l'adresse (gardée tant qu'elles rendent « en-attente »).
+  targetImposed: env.copilotApiUrl !== null,
 });
 const archive = new ArchiveService({
   db,
@@ -140,6 +143,8 @@ catalog.onChange(() => {
 // superviseur) coupe son flux d'événements : « synchro due » dès la coupure, adresse de l'API Copilot revérifiée dans chaque
 // dossier à la reconnexion.
 resyncOnReconnect(hub, copilotConfig);
+// Adresse fausse relue pendant une réponse (« correction différée ») : synchro relancée dès qu'une conversation passe au repos.
+resyncOnIdle(hub, copilotConfig);
 
 const routeDeps = { assistants, tiers, settings, hub, log };
 const app = createApp({
@@ -183,6 +188,10 @@ void (async () => {
     await sleep(3_000);
   }
   log.info("opencode joignable");
+  // opencode répond : soupape de nouveau appliquée aux poses de démarrage (aucune pendant l'attente : opencode peut accepter une
+  // demande avant que cette boucle le voie). Adresse imposée par .env : « synchro due » de démarrage reposée, levée par la synchro de
+  // démarrage qui suit ; un seul appel, jamais dans la boucle d'attente.
+  copilotConfig.markStartup();
   await catalog.refresh().catch((err) => log.warn("catalogue des modèles indisponible", { error: errorMessage(err) }));
   await copilotConfig.sync();
   await studio.ensureClassifierAgent().catch((err) => log.warn("agent de classement non installé", { error: errorMessage(err) }));

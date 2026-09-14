@@ -12,7 +12,7 @@ import type { ArchiveService } from "./archive.ts";
 import { probeSessionsBusy } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
-import { canBill, ConfigWriteQueue } from "./config-queue.ts";
+import { type BillRefusal, billRefusal, ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
@@ -132,8 +132,8 @@ export interface AppDeps {
   assistants: AssistantsPort;
   /** Accès direct à GitHub Copilot : adresse de l'API, état de la liste des IA, joignabilité à travers le proxy. */
   copilot: Pick<CopilotApi, "status" | "probeHosts" | "resetDiscovery">;
-  /** Adresse de l'API Copilot imposée à opencode ; « synchro due » posée par chaque écriture ou redémarrage, lue par le proxy. */
-  copilotConfig: Pick<CopilotConfigSync, "status" | "sync" | "syncDue" | "markDue">;
+  /** Adresse de l'API Copilot imposée à opencode ; « synchro due » posée par chaque écriture ou redémarrage, lue par le proxy avec sa raison. */
+  copilotConfig: Pick<CopilotConfigSync, "status" | "sync" | "syncDue" | "dueReason" | "markDue">;
   /** File d'écriture de la configuration d'opencode, partagée avec CopilotConfigSync (une instance propre si absente). */
   configQueue?: ConfigWriteQueue;
   /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
@@ -193,6 +193,14 @@ export const PROXY_RULES: ProxyRule[] = [
 ];
 
 const ALLOWED_QUERY = new Set(["directory", "roots", "limit", "query"]);
+
+/** Message du refus (409 redemarrage-en-cours) d'une demande facturée, selon son motif. */
+const BILL_REFUSAL_MESSAGES: Readonly<Record<BillRefusal, string>> = {
+  redemarrage: MESSAGES.restartEnCours,
+  "adresse-en-verification": MESSAGES.adresseCopilotEnVerification,
+  reconnexion: MESSAGES.opencodeReconnexion,
+  "correction-differee": MESSAGES.adresseCopilotCorrectionDifferee,
+};
 
 /**
  * Première pièce jointe refusée d'un corps de prompt (parts[].url) : opencode lit lui-même les fichiers
@@ -1160,12 +1168,11 @@ export function createApp(deps: AppDeps): Hono {
     const method = c.req.method.toUpperCase();
     const matched = PROXY_RULES.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
-    // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée. Adresse de l'API Copilot à
-    // revérifier (« synchro due ») : opencode peut tourner sur l'adresse d'office, que le réseau bloque peut-être.
-    if (matched.guarded && !canBill({ queue: configQueue, control, copilotConfig: deps.copilotConfig })) {
-      const message = configQueue.applying || control.restarting ? MESSAGES.restartEnCours : MESSAGES.adresseCopilotEnVerification;
-      return fail(c, 409, "redemarrage-en-cours", message);
-    }
+    // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée. Adresse de l'API Copilot en
+    // cours d'écriture ou à revérifier (« synchro due », flux coupé compris) : opencode peut tourner sur l'adresse d'office, que le
+    // réseau bloque peut-être. Garde globale : le dossier d'une demande ne dit pas quelle adresse opencode y utilisera.
+    const refusal = matched.guarded ? billRefusal({ queue: configQueue, control, copilotConfig: deps.copilotConfig }) : null;
+    if (refusal !== null) return fail(c, 409, "redemarrage-en-cours", BILL_REFUSAL_MESSAGES[refusal]);
     // Demande facturée admise (sans attente depuis la garde) : comptée en vol jusqu'à la réponse d'opencode. Une application qui
     // commence d'ici là la traite comme une réponse en cours, que la sonde des conversations ne voit pas encore.
     const endBilled = matched.guarded ? configQueue.beginBilled() : undefined;
@@ -1735,6 +1742,20 @@ export function createApp(deps: AppDeps): Hono {
   // libérées pour l'appliquer. Dans la file partagée et jamais pendant une réponse : la libération la couperait sans erreur.
   app.patch("/api/opencode/config", advanced, bodyLimit({ maxSize: 512 * 1024 }), async (c) => {
     const patch = z.record(z.string(), z.unknown()).parse(await c.req.json());
+    // Journal : clés de premier niveau du correctif seulement, jamais leurs valeurs (adresses, consignes, règles).
+    const keys = Object.keys(patch)
+      .sort()
+      .slice(0, 50)
+      .map((key) => key.slice(0, 100));
+    /** Configuration écrite ou peut-être écrite : relue par l'interface, adresse de l'API Copilot revérifiée après la tâche de la file. */
+    const afterWrite = async () => {
+      await catalog.refresh().catch(() => undefined);
+      hub.cockpit("opencode.config.changed", {});
+      // Un correctif peut toucher l'adresse de l'API Copilot : la synchro la rétablit, lancée après la tâche de la file.
+      resyncCopilot();
+    };
+    // PATCH en erreur ou hors délai : opencode a pu écrire quand même (« synchro due » posée dans la tâche).
+    let uncertain = false;
     const result = await configQueue.run(async (): Promise<ConfigPatch> => {
       if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
       // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
@@ -1751,7 +1772,15 @@ export function createApp(deps: AppDeps): Hono {
         }
         if (busy) return { ok: false, status: 409, error: "sessions-busy", message: MESSAGES.configReloadBusy, wrote: false };
         if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
-        const updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
+        let updated: unknown;
+        try {
+          updated = await client.request("PATCH", "/global/config", { body: patch, timeoutMs: 30_000 });
+        } catch (err) {
+          // Refus, erreur ou délai dépassé : opencode a pu écrire quand même, l'adresse de l'API Copilot est à revérifier.
+          copilotSyncDue("correctif de configuration (mode Avancé) : écriture incertaine");
+          uncertain = true;
+          throw err;
+        }
         // Écrit : le PATCH libère déjà les instances en tâche de fond, l'adresse de l'API Copilot est à revérifier.
         copilotSyncDue("correctif de configuration (mode Avancé)");
         try {
@@ -1762,12 +1791,13 @@ export function createApp(deps: AppDeps): Hono {
         }
         return { ok: true, updated };
       });
+    }).catch(async (err: unknown) => {
+      if (uncertain) {
+        log.warn("configuration d'opencode peut-être corrigée (mode Avancé) : écriture en erreur ou hors délai, adresse de l'API Copilot revérifiée", { keys });
+        await afterWrite();
+      }
+      throw err;
     });
-    // Journal : clés de premier niveau du correctif seulement, jamais leurs valeurs (adresses, consignes, règles).
-    const keys = Object.keys(patch)
-      .sort()
-      .slice(0, 50)
-      .map((key) => key.slice(0, 100));
     if (result.ok) {
       log.info("configuration d'opencode corrigée (mode Avancé) : écrite, instances libérées", { keys });
     } else if ("error" in result && (result.error === "liberation-echouee" || result.error === "opencode-injoignable")) {
@@ -1777,12 +1807,7 @@ export function createApp(deps: AppDeps): Hono {
           : "configuration d'opencode non corrigée (mode Avancé) : opencode injoignable";
       log.warn(title, { keys, error: result.error, ...(result.cause ? { cause: result.cause } : {}) });
     }
-    if (result.ok || ("wrote" in result && result.wrote)) {
-      await catalog.refresh().catch(() => undefined);
-      hub.cockpit("opencode.config.changed", {});
-      // Un correctif peut toucher l'adresse de l'API Copilot : la synchro la rétablit, lancée après la tâche de la file.
-      resyncCopilot();
-    }
+    if (result.ok || ("wrote" in result && result.wrote)) await afterWrite();
     if (result.ok) return c.json(result.updated);
     if ("issues" in result) return refuseProviders(c, result.issues);
     return fail(c, result.status, result.error, result.message);

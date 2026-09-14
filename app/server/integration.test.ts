@@ -21,6 +21,7 @@ import { createApp, forbiddenAttachment, forbiddenProxyBody, mergeConfigPatch, p
 import { EventHub } from "./hub.ts";
 import { csvCell, Ledger, monthBounds, monthKey } from "./ledger.ts";
 import { createLogger, type Logger } from "./log.ts";
+import type { SyncDueReason } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { type OcAssistantMessage, type OcSession, OpencodeClient, type OcUserMessage } from "./opencode.ts";
 import type { EventProcessor } from "./processor.ts";
@@ -455,6 +456,12 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let copilotSyncHold: Promise<void> | null = null;
   /** Interrupteur : POST /global/dispose répond 500 (libération des instances en échec). */
   let disposeFails = false;
+  /** Raison de « synchro due » servie par le faux CopilotConfigSync (motif du refus des demandes facturées). */
+  let copilotDueReason: SyncDueReason = "verification";
+  /** Interrupteur : PATCH /global/config répond 500 (écriture en erreur). */
+  let patchConfigFails = false;
+  /** « MÉTHODE chemin » relayé à opencode puis en délai dépassé côté cockpit (TimeoutError, comme AbortSignal.timeout). */
+  let requestTimeout: string | null = null;
   /** Réponse de POST /session/:id/prompt_async retenue jusqu'à la résolution de cette promesse (demande facturée en vol). */
   let promptHold: Promise<void> | null = null;
   /** Demandes reçues par le faux opencode (« MÉTHODE chemin »), avec l'indicateur d'application du cockpit à la réception. */
@@ -531,6 +538,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         } else if (req.method === "GET" && pathname === "/session/ses_html/todo") {
           // Faux serveur (conteneur opencode compromis) qui répond un document : jamais servi tel quel par le cockpit.
           res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<script src=/api/oc/session/x/message></script>");
+        } else if (req.method === "PATCH" && pathname === "/global/config" && patchConfigFails) {
+          json(500, { name: "UnknownError", data: { message: "écriture de la configuration simulée en échec" } });
         } else if (req.method === "POST" && pathname === "/global/dispose" && disposeFails) {
           json(500, { name: "UnknownError", data: { message: "libération des instances simulée en échec" } });
         } else if (req.method === "POST" && promptHold !== null && pathname.endsWith("/prompt_async")) {
@@ -580,6 +589,13 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('session.secret', ?, ?)").run(sessionSecret, T);
     settings = base.settings;
     const client = new OpencodeClient(env);
+    // Délai dépassé simulé : demande relayée et traitée par opencode, puis TimeoutError côté cockpit (comme AbortSignal.timeout).
+    const request = client.request.bind(client);
+    client.request = (async (method: string, pathname: string, options?: Parameters<OpencodeClient["request"]>[2]) => {
+      const answer: unknown = await request(method, pathname, options);
+      if (requestTimeout === `${method} ${pathname}`) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      return answer;
+    }) as OpencodeClient["request"];
     const catalog = new ModelCatalog(client);
     await catalog.refresh();
     const ledger = new Ledger({ db, settings, catalog });
@@ -665,6 +681,9 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         status: { state: "inactif", message: null, at: 0, details: { checked: [] } },
         get syncDue() {
           return copilotDue;
+        },
+        get dueReason() {
+          return copilotDue ? copilotDueReason : null;
         },
         markDue: (cause: string) => {
           copilotMarks.push({ cause, applying: configQueue.applying });
@@ -2322,6 +2341,14 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       disposeFails = true;
       await posted("correctif écrit, libération en échec", advancedPatch, 503);
       disposeFails = false;
+      // PATCH en erreur ou hors délai (C4) : opencode a pu écrire quand même, pose dans la tâche puis synchro relancée après elle ;
+      // la réponse reste celle d'une erreur d'opencode (502) ou interne (500).
+      patchConfigFails = true;
+      await posted("correctif en erreur", advancedPatch, 502);
+      patchConfigFails = false;
+      requestTimeout = "PATCH /global/config";
+      await posted("correctif hors délai", advancedPatch, 500);
+      requestTimeout = null;
       await notPosted(
         "correctif refusé (réponse en cours)",
         async () => {
@@ -2348,8 +2375,79 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       copilotDue = false;
       copilotSyncHold = null;
       disposeFails = false;
+      patchConfigFails = false;
+      requestTimeout = null;
       ocStatuses = {};
       restartQueue.length = 0;
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("demande facturée refusée (409 redemarrage-en-cours) : message selon le motif — redémarrage ou application de la configuration, écriture de l'adresse par sa synchro, flux coupé, correction différée, revérification", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const base = '{\n  "enabled_providers": ["github-copilot"],\n  "permission": { "edit": "ask" }\n}\n';
+    const body = { agent: "build", model: ref("gpt-5-mini"), parts: text("x") };
+    const relayed = () => forwarded("/session/ses_motif/prompt_async").length;
+    const RESTART = "opencode redémarre déjà : réessayez dans une minute.";
+    const CHECKING =
+      "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.";
+    const refused = async (label: string, message: string) => {
+      const res = await prompt("ses_motif", body, confirmedHeaders);
+      assert.equal(res.status, 409, `${label} : ${res.body}`);
+      assert.deepEqual(JSON.parse(res.body), { error: "redemarrage-en-cours", message }, label);
+    };
+    fs.writeFileSync(file, base);
+    settings.update({ ui: { mode: "avance" } });
+    copilotTarget = true;
+    const sent = relayed();
+    let release: () => void = () => undefined;
+    try {
+      // Écriture de l'adresse par la synchro Copilot (C3) : rien ne redémarre, message « adresse en vérification ».
+      const syncWriting = configQueue.applyingWhile(() => new Promise<void>((resolve) => (release = resolve)), "adresse-copilot");
+      await refused("écriture de la synchro", CHECKING);
+      // Redémarrage lancé pendant cette écriture : son message l'emporte.
+      restartingNow = true;
+      await refused("redémarrage pendant l'écriture de la synchro", RESTART);
+      restartingNow = false;
+      release();
+      await syncWriting;
+
+      // Fichier brut en cours d'application (sonde des conversations retenue) : message du redémarrage, inchangé.
+      lookupDelayMs = 300;
+      const from = upstreamRequests.length;
+      const applying = call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content: base.replace('"ask"', '"allow"') }));
+      assert.ok(await waitFor(() => upstreamRequests.slice(from).some((r) => r.url.startsWith("/session/status"))), "application du fichier brut commencée");
+      assert.equal(configQueue.applyingOrigin, "configuration");
+      await refused("application du fichier brut", RESTART);
+      lookupDelayMs = 0;
+      const applied = await applying;
+      assert.equal(applied.status, 200, applied.body);
+      assert.ok(await waitFor(() => !copilotDue), "synchro relancée après le fichier brut");
+
+      // « Synchro due » selon sa raison.
+      copilotDue = true;
+      copilotDueReason = "coupure";
+      await refused("flux d'événements coupé", "opencode est injoignable ou redémarre : reconnexion en cours. Réessayez dans un moment.");
+      copilotDueReason = "correction-differee";
+      await refused(
+        "adresse fausse relue pendant une réponse",
+        "L'adresse de l'API Copilot sera corrigée dès la fin de la réponse en cours : réessayez une fois cette réponse terminée.",
+      );
+      copilotDueReason = "verification";
+      await refused("revérification due", CHECKING);
+      assert.equal(relayed(), sent);
+      copilotDue = false;
+      const admitted = await prompt("ses_motif", body, confirmedHeaders);
+      assert.equal(admitted.status, 204, admitted.body);
+      assert.equal(relayed(), sent + 1);
+    } finally {
+      release();
+      restartingNow = false;
+      lookupDelayMs = 0;
+      copilotTarget = false;
+      copilotDue = false;
+      copilotDueReason = "verification";
       settings.update({ ui: { mode: "simple" } });
       fs.rmSync(file, { force: true });
     }

@@ -1,6 +1,6 @@
 {
   "name": "opencode-cockpit",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Poste de pilotage web pour opencode : chat, agents, skills, archives classées et suivi des coûts GitHub Copilot.",
   "license": "MIT",

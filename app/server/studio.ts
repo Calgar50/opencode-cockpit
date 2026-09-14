@@ -492,7 +492,7 @@ export class StudioService {
   }
 
   /**
-   * Action qui libère ou redémarre opencode, dans la file partagée (applying posé). Quand opencode a vraiment été touché (`acted`),
+   * Action qui libère ou redémarre opencode, dans la file partagée (applying posé). Quand opencode a pu être touché (`acted`),
    * « synchro due » est posée avant la libération d'applying, puis la synchro de l'adresse Copilot est relancée après la tâche,
    * sans l'attendre (elle passe par la même file).
    */
@@ -510,15 +510,17 @@ export class StudioService {
 
   /**
    * Libère les instances d'opencode (et celle du projet) pour relire agents, commandes, skills et instructions. La libération
-   * reconstruit aussi le fournisseur Copilot depuis le cache global : adresse revérifiée dès qu'une libération a abouti.
+   * reconstruit aussi le fournisseur Copilot depuis le cache global : adresse revérifiée après chaque libération, même en erreur
+   * ou hors délai (opencode a pu libérer quand même).
    */
   async #reload(scope: StudioScope): Promise<void> {
     const directory = await this.#opencodeDirectory(scope);
-    const done = (request: Promise<unknown>) => request.then(() => true, () => false);
+    const attempt = (request: Promise<unknown>) => request.then(() => undefined, () => undefined);
     await this.#touchOpencode("rechargement du Studio", async () => {
-      const global = await done(this.#d.client.request("POST", "/global/dispose", { timeoutMs: 20_000 }));
-      const instance = directory ? await done(this.#d.client.request("POST", "/instance/dispose", { directory, timeoutMs: 20_000 })) : false;
-      return { result: undefined, acted: global || instance };
+      await attempt(this.#d.client.request("POST", "/global/dispose", { timeoutMs: 20_000 }));
+      if (directory) await attempt(this.#d.client.request("POST", "/instance/dispose", { directory, timeoutMs: 20_000 }));
+      // Réussie, en erreur ou hors délai : « synchro due » posée dans tous les cas (sous soupape), synchro relancée après la tâche.
+      return { result: undefined, acted: true };
     });
   }
 
