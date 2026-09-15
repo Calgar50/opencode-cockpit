@@ -1,0 +1,1167 @@
+{
+  "source": "Mesure MX1 du 2026-09-15 (chantier 1.1, execution/mesures/MX1.md, passe A ; passe B identique) : opencode 1.18.30 hors ligne, faux fournisseur compatible OpenAI (IA mock-1 et gpt-5-mock). Générée par le train it1 V0 (gen-mx1-fixture.mjs) ; identifiants aléatoires retirés sauf l'échantillon m14.ids.",
+  "opencode": "1.18.30",
+  "files": {
+    "existant.txt": "ligne 1\nligne 2\nligne 3\n",
+    "a-supprimer.txt": "ligne 1\nligne 2\nligne 3\n",
+    "a-deplacer.txt": "ligne 1\nligne 2\nligne 3\n"
+  },
+  "metadata": [
+    {
+      "name": "git",
+      "directory": "/workspace/meta-git",
+      "worktree": "/workspace/meta-git",
+      "cases": [
+        {
+          "marker": "META-EDIT",
+          "model": "mock-1",
+          "tool": "edit",
+          "input": {
+            "filePath": "/workspace/meta-git/existant.txt",
+            "oldString": "ligne 2",
+            "newString": "ligne deux"
+          },
+          "toolsOffered": [
+            "bash",
+            "edit",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch",
+            "write"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "existant.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "/workspace/meta-git/existant.txt",
+              "diff": "Index: /workspace/meta-git/existant.txt\n===================================================================\n--- /workspace/meta-git/existant.txt\n+++ /workspace/meta-git/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n"
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-WRITE",
+          "model": "mock-1",
+          "tool": "write",
+          "input": {
+            "filePath": "/workspace/meta-git/nouveau.txt",
+            "content": "nouveau fichier\n"
+          },
+          "toolsOffered": [
+            "bash",
+            "edit",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch",
+            "write"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "nouveau.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "/workspace/meta-git/nouveau.txt",
+              "diff": "Index: /workspace/meta-git/nouveau.txt\n===================================================================\n--- /workspace/meta-git/nouveau.txt\n+++ /workspace/meta-git/nouveau.txt\n@@ -0,0 +1,1 @@\n+nouveau fichier\n"
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PADD",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Add File: ajout.txt\n+ajout 1\n+ajout 2\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "ajout.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "ajout.txt",
+              "diff": "Index: /workspace/meta-git/ajout.txt\n===================================================================\n--- /workspace/meta-git/ajout.txt\n+++ /workspace/meta-git/ajout.txt\n@@ -0,0 +1,2 @@\n+ajout 1\n+ajout 2\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta-git/ajout.txt",
+                  "relativePath": "ajout.txt",
+                  "type": "add",
+                  "patch": "Index: /workspace/meta-git/ajout.txt\n===================================================================\n--- /workspace/meta-git/ajout.txt\n+++ /workspace/meta-git/ajout.txt\n@@ -0,0 +1,2 @@\n+ajout 1\n+ajout 2\n",
+                  "additions": 2,
+                  "deletions": 0
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PUPD",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Update File: existant.txt\n@@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "existant.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "existant.txt",
+              "diff": "Index: /workspace/meta-git/existant.txt\n===================================================================\n--- /workspace/meta-git/existant.txt\n+++ /workspace/meta-git/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta-git/existant.txt",
+                  "relativePath": "existant.txt",
+                  "type": "update",
+                  "patch": "Index: /workspace/meta-git/existant.txt\n===================================================================\n--- /workspace/meta-git/existant.txt\n+++ /workspace/meta-git/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PDEL",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Delete File: a-supprimer.txt\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "a-supprimer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "a-supprimer.txt",
+              "diff": "Index: /workspace/meta-git/a-supprimer.txt\n===================================================================\n--- /workspace/meta-git/a-supprimer.txt\n+++ /workspace/meta-git/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta-git/a-supprimer.txt",
+                  "relativePath": "a-supprimer.txt",
+                  "type": "delete",
+                  "patch": "Index: /workspace/meta-git/a-supprimer.txt\n===================================================================\n--- /workspace/meta-git/a-supprimer.txt\n+++ /workspace/meta-git/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n",
+                  "additions": 0,
+                  "deletions": 4
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PMOVE",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Update File: a-deplacer.txt\n*** Move to: sous/deplace.txt\n@@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "a-deplacer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "a-deplacer.txt",
+              "diff": "Index: /workspace/meta-git/a-deplacer.txt\n===================================================================\n--- /workspace/meta-git/a-deplacer.txt\n+++ /workspace/meta-git/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta-git/a-deplacer.txt",
+                  "relativePath": "sous/deplace.txt",
+                  "type": "move",
+                  "patch": "Index: /workspace/meta-git/a-deplacer.txt\n===================================================================\n--- /workspace/meta-git/a-deplacer.txt\n+++ /workspace/meta-git/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1,
+                  "movePath": "/workspace/meta-git/sous/deplace.txt"
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PMULTI",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Add File: ajout-multi.txt\n+ajout multi\n*** Update File: existant.txt\n@@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n*** Delete File: a-supprimer.txt\n*** Update File: a-deplacer.txt\n*** Move to: sous/deplace-multi.txt\n@@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "ajout-multi.txt",
+              "existant.txt",
+              "a-supprimer.txt",
+              "a-deplacer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "ajout-multi.txt, existant.txt, a-supprimer.txt, a-deplacer.txt",
+              "diff": "Index: /workspace/meta-git/ajout-multi.txt\n===================================================================\n--- /workspace/meta-git/ajout-multi.txt\n+++ /workspace/meta-git/ajout-multi.txt\n@@ -0,0 +1,1 @@\n+ajout multi\n\nIndex: /workspace/meta-git/existant.txt\n===================================================================\n--- /workspace/meta-git/existant.txt\n+++ /workspace/meta-git/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n\nIndex: /workspace/meta-git/a-supprimer.txt\n===================================================================\n--- /workspace/meta-git/a-supprimer.txt\n+++ /workspace/meta-git/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n\nIndex: /workspace/meta-git/a-deplacer.txt\n===================================================================\n--- /workspace/meta-git/a-deplacer.txt\n+++ /workspace/meta-git/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta-git/ajout-multi.txt",
+                  "relativePath": "ajout-multi.txt",
+                  "type": "add",
+                  "patch": "Index: /workspace/meta-git/ajout-multi.txt\n===================================================================\n--- /workspace/meta-git/ajout-multi.txt\n+++ /workspace/meta-git/ajout-multi.txt\n@@ -0,0 +1,1 @@\n+ajout multi\n",
+                  "additions": 1,
+                  "deletions": 0
+                },
+                {
+                  "filePath": "/workspace/meta-git/existant.txt",
+                  "relativePath": "existant.txt",
+                  "type": "update",
+                  "patch": "Index: /workspace/meta-git/existant.txt\n===================================================================\n--- /workspace/meta-git/existant.txt\n+++ /workspace/meta-git/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1
+                },
+                {
+                  "filePath": "/workspace/meta-git/a-supprimer.txt",
+                  "relativePath": "a-supprimer.txt",
+                  "type": "delete",
+                  "patch": "Index: /workspace/meta-git/a-supprimer.txt\n===================================================================\n--- /workspace/meta-git/a-supprimer.txt\n+++ /workspace/meta-git/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n",
+                  "additions": 0,
+                  "deletions": 4
+                },
+                {
+                  "filePath": "/workspace/meta-git/a-deplacer.txt",
+                  "relativePath": "sous/deplace-multi.txt",
+                  "type": "move",
+                  "patch": "Index: /workspace/meta-git/a-deplacer.txt\n===================================================================\n--- /workspace/meta-git/a-deplacer.txt\n+++ /workspace/meta-git/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1,
+                  "movePath": "/workspace/meta-git/sous/deplace-multi.txt"
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hors-git",
+      "directory": "/workspace/meta",
+      "worktree": "/",
+      "cases": [
+        {
+          "marker": "META-EDIT",
+          "model": "mock-1",
+          "tool": "edit",
+          "input": {
+            "filePath": "/workspace/meta/existant.txt",
+            "oldString": "ligne 2",
+            "newString": "ligne deux"
+          },
+          "toolsOffered": [
+            "bash",
+            "edit",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch",
+            "write"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/existant.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "/workspace/meta/existant.txt",
+              "diff": "Index: /workspace/meta/existant.txt\n===================================================================\n--- /workspace/meta/existant.txt\n+++ /workspace/meta/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n"
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-WRITE",
+          "model": "mock-1",
+          "tool": "write",
+          "input": {
+            "filePath": "/workspace/meta/nouveau.txt",
+            "content": "nouveau fichier\n"
+          },
+          "toolsOffered": [
+            "bash",
+            "edit",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch",
+            "write"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/nouveau.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "/workspace/meta/nouveau.txt",
+              "diff": "Index: /workspace/meta/nouveau.txt\n===================================================================\n--- /workspace/meta/nouveau.txt\n+++ /workspace/meta/nouveau.txt\n@@ -0,0 +1,1 @@\n+nouveau fichier\n"
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PADD",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Add File: ajout.txt\n+ajout 1\n+ajout 2\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/ajout.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "workspace/meta/ajout.txt",
+              "diff": "Index: /workspace/meta/ajout.txt\n===================================================================\n--- /workspace/meta/ajout.txt\n+++ /workspace/meta/ajout.txt\n@@ -0,0 +1,2 @@\n+ajout 1\n+ajout 2\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta/ajout.txt",
+                  "relativePath": "workspace/meta/ajout.txt",
+                  "type": "add",
+                  "patch": "Index: /workspace/meta/ajout.txt\n===================================================================\n--- /workspace/meta/ajout.txt\n+++ /workspace/meta/ajout.txt\n@@ -0,0 +1,2 @@\n+ajout 1\n+ajout 2\n",
+                  "additions": 2,
+                  "deletions": 0
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PUPD",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Update File: existant.txt\n@@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/existant.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "workspace/meta/existant.txt",
+              "diff": "Index: /workspace/meta/existant.txt\n===================================================================\n--- /workspace/meta/existant.txt\n+++ /workspace/meta/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta/existant.txt",
+                  "relativePath": "workspace/meta/existant.txt",
+                  "type": "update",
+                  "patch": "Index: /workspace/meta/existant.txt\n===================================================================\n--- /workspace/meta/existant.txt\n+++ /workspace/meta/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PDEL",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Delete File: a-supprimer.txt\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/a-supprimer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "workspace/meta/a-supprimer.txt",
+              "diff": "Index: /workspace/meta/a-supprimer.txt\n===================================================================\n--- /workspace/meta/a-supprimer.txt\n+++ /workspace/meta/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta/a-supprimer.txt",
+                  "relativePath": "workspace/meta/a-supprimer.txt",
+                  "type": "delete",
+                  "patch": "Index: /workspace/meta/a-supprimer.txt\n===================================================================\n--- /workspace/meta/a-supprimer.txt\n+++ /workspace/meta/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n",
+                  "additions": 0,
+                  "deletions": 4
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PMOVE",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Update File: a-deplacer.txt\n*** Move to: sous/deplace.txt\n@@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/a-deplacer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "workspace/meta/a-deplacer.txt",
+              "diff": "Index: /workspace/meta/a-deplacer.txt\n===================================================================\n--- /workspace/meta/a-deplacer.txt\n+++ /workspace/meta/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta/a-deplacer.txt",
+                  "relativePath": "workspace/meta/sous/deplace.txt",
+                  "type": "move",
+                  "patch": "Index: /workspace/meta/a-deplacer.txt\n===================================================================\n--- /workspace/meta/a-deplacer.txt\n+++ /workspace/meta/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1,
+                  "movePath": "/workspace/meta/sous/deplace.txt"
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        },
+        {
+          "marker": "META-PMULTI",
+          "model": "gpt-5-mock",
+          "tool": "apply_patch",
+          "input": {
+            "patchText": "*** Begin Patch\n*** Add File: ajout-multi.txt\n+ajout multi\n*** Update File: existant.txt\n@@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n*** Delete File: a-supprimer.txt\n*** Update File: a-deplacer.txt\n*** Move to: sous/deplace-multi.txt\n@@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n*** End Patch"
+          },
+          "toolsOffered": [
+            "apply_patch",
+            "bash",
+            "glob",
+            "grep",
+            "question",
+            "read",
+            "skill",
+            "task",
+            "todowrite",
+            "webfetch"
+          ],
+          "asked": {
+            "permission": "edit",
+            "patterns": [
+              "workspace/meta/ajout-multi.txt",
+              "workspace/meta/existant.txt",
+              "workspace/meta/a-supprimer.txt",
+              "workspace/meta/a-deplacer.txt"
+            ],
+            "always": [
+              "*"
+            ],
+            "metadata": {
+              "filepath": "workspace/meta/ajout-multi.txt, workspace/meta/existant.txt, workspace/meta/a-supprimer.txt, workspace/meta/a-deplacer.txt",
+              "diff": "Index: /workspace/meta/ajout-multi.txt\n===================================================================\n--- /workspace/meta/ajout-multi.txt\n+++ /workspace/meta/ajout-multi.txt\n@@ -0,0 +1,1 @@\n+ajout multi\n\nIndex: /workspace/meta/existant.txt\n===================================================================\n--- /workspace/meta/existant.txt\n+++ /workspace/meta/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n\nIndex: /workspace/meta/a-supprimer.txt\n===================================================================\n--- /workspace/meta/a-supprimer.txt\n+++ /workspace/meta/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n\nIndex: /workspace/meta/a-deplacer.txt\n===================================================================\n--- /workspace/meta/a-deplacer.txt\n+++ /workspace/meta/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n\n",
+              "files": [
+                {
+                  "filePath": "/workspace/meta/ajout-multi.txt",
+                  "relativePath": "workspace/meta/ajout-multi.txt",
+                  "type": "add",
+                  "patch": "Index: /workspace/meta/ajout-multi.txt\n===================================================================\n--- /workspace/meta/ajout-multi.txt\n+++ /workspace/meta/ajout-multi.txt\n@@ -0,0 +1,1 @@\n+ajout multi\n",
+                  "additions": 1,
+                  "deletions": 0
+                },
+                {
+                  "filePath": "/workspace/meta/existant.txt",
+                  "relativePath": "workspace/meta/existant.txt",
+                  "type": "update",
+                  "patch": "Index: /workspace/meta/existant.txt\n===================================================================\n--- /workspace/meta/existant.txt\n+++ /workspace/meta/existant.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deux\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1
+                },
+                {
+                  "filePath": "/workspace/meta/a-supprimer.txt",
+                  "relativePath": "workspace/meta/a-supprimer.txt",
+                  "type": "delete",
+                  "patch": "Index: /workspace/meta/a-supprimer.txt\n===================================================================\n--- /workspace/meta/a-supprimer.txt\n+++ /workspace/meta/a-supprimer.txt\n@@ -1,3 +0,0 @@\n-ligne 1\n-ligne 2\n-ligne 3\n",
+                  "additions": 0,
+                  "deletions": 4
+                },
+                {
+                  "filePath": "/workspace/meta/a-deplacer.txt",
+                  "relativePath": "workspace/meta/sous/deplace-multi.txt",
+                  "type": "move",
+                  "patch": "Index: /workspace/meta/a-deplacer.txt\n===================================================================\n--- /workspace/meta/a-deplacer.txt\n+++ /workspace/meta/a-deplacer.txt\n@@ -1,3 +1,3 @@\n ligne 1\n-ligne 2\n+ligne deplacee\n ligne 3\n",
+                  "additions": 1,
+                  "deletions": 1,
+                  "movePath": "/workspace/meta/sous/deplace-multi.txt"
+                }
+              ]
+            }
+          },
+          "toolKeys": [
+            "messageID",
+            "callID"
+          ]
+        }
+      ]
+    }
+  ],
+  "m14": {
+    "directory": "/workspace/m14",
+    "asked": {
+      "permission": "bash",
+      "patterns": [
+        "echo m14 > /workspace/m14/effet-m14.txt"
+      ],
+      "metadata": {
+        "command": "echo m14 > /workspace/m14/effet-m14.txt"
+      },
+      "always": [
+        "echo *"
+      ]
+    },
+    "before": {
+      "status": [
+        {
+          "type": "busy"
+        }
+      ]
+    },
+    "otherInstances": [
+      "server.instance.disposed"
+    ],
+    "order": [
+      "session.error:MessageAbortedError",
+      "session.status:idle",
+      "session.idle",
+      "message.part.updated:tool:error",
+      "message.updated:assistant:MessageAbortedError",
+      "session.status:idle",
+      "session.idle",
+      "server.instance.disposed",
+      "global.disposed"
+    ],
+    "response": {
+      "status": 200,
+      "body": true
+    },
+    "permissionReplied": 0,
+    "after": {
+      "permission": [],
+      "status": {},
+      "sessionKept": true,
+      "toolPart": {
+        "tool": "bash",
+        "status": "error",
+        "error": "Tool execution aborted",
+        "metadata": {
+          "interrupted": true
+        }
+      }
+    },
+    "lateOnce": {
+      "status": 404,
+      "body": {
+        "_tag": "PermissionNotFoundError",
+        "requestID": "<id>",
+        "message": "Permission request not found: <id>"
+      }
+    },
+    "effectFile": false,
+    "providerCallsAfterDispose": 0,
+    "ids": {
+      "session": "ses_f59bb2391ffehDNQJHYV7SXv65",
+      "message": "msg_0a644dd78001Z5OvGOAzIcB5cF",
+      "permission": "per_0a644ddfd0018NbvI95EWhxKNu",
+      "call": "call_22c9d8caf0bb"
+    }
+  },
+  "tools": {
+    "source": "config seed/occonfig/opencode.jsonc (edit, bash, task, webfetch, websearch : ask), agent build ; M3 avec un MCP local à ressources",
+    "configPermission": {
+      "edit": "ask",
+      "bash": "ask",
+      "task": "ask",
+      "webfetch": "ask",
+      "websearch": "ask"
+    },
+    "mcpResourceTools": [
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "read_mcp_resource"
+    ],
+    "floor": [
+      {
+        "permission": "read",
+        "pattern": "*.pfx",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.PFX",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.p12",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.P12",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.key",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.KEY",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.jks",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.JKS",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.keystore",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.kdbx",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*privkey*",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*-key.pem",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*_key.pem",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*id_rsa*",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*id_ecdsa*",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*id_ed25519*",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*kubeconfig*",
+        "action": "deny"
+      },
+      {
+        "permission": "read",
+        "pattern": "*.kube/config",
+        "action": "deny"
+      }
+    ],
+    "cases": [
+      {
+        "name": "meta-mock-1",
+        "model": "mock-1",
+        "permission": null,
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      },
+      {
+        "name": "meta-gpt-5-mock",
+        "model": "gpt-5-mock",
+        "permission": null,
+        "tools": [
+          "apply_patch",
+          "bash",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch"
+        ]
+      },
+      {
+        "name": "m16-plancher-creation",
+        "model": "mock-1",
+        "permission": "floor",
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      },
+      {
+        "name": "m16-plancher-patch",
+        "model": "mock-1",
+        "permission": "floor",
+        "patch": true,
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      },
+      {
+        "name": "m3-temoin",
+        "model": "mock-1",
+        "permission": null,
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "list_mcp_resource_templates",
+          "list_mcp_resources",
+          "question",
+          "read",
+          "read_mcp_resource",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      },
+      {
+        "name": "m3-read-mcp-deny",
+        "model": "mock-1",
+        "permission": [
+          {
+            "permission": "read",
+            "pattern": "mcp:*",
+            "action": "deny"
+          }
+        ],
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "list_mcp_resource_templates",
+          "list_mcp_resources",
+          "question",
+          "read",
+          "read_mcp_resource",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      },
+      {
+        "name": "m3-etape",
+        "model": "mock-1",
+        "permission": [
+          {
+            "permission": "*",
+            "pattern": "*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*",
+            "action": "allow"
+          },
+          {
+            "permission": "grep",
+            "pattern": "*",
+            "action": "allow"
+          },
+          {
+            "permission": "glob",
+            "pattern": "*",
+            "action": "allow"
+          },
+          {
+            "permission": "list",
+            "pattern": "*",
+            "action": "allow"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.pfx",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.PFX",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.p12",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.P12",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.key",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.KEY",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.jks",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.JKS",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.keystore",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.kdbx",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*privkey*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*-key.pem",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*_key.pem",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*id_rsa*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*id_ecdsa*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*id_ed25519*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*kubeconfig*",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "*.kube/config",
+            "action": "deny"
+          },
+          {
+            "permission": "read",
+            "pattern": "mcp:*",
+            "action": "deny"
+          }
+        ],
+        "tools": [
+          "glob",
+          "grep",
+          "list_mcp_resource_templates",
+          "list_mcp_resources",
+          "read",
+          "read_mcp_resource"
+        ]
+      },
+      {
+        "name": "m3-read-deny",
+        "model": "mock-1",
+        "permission": [
+          {
+            "permission": "read",
+            "pattern": "*",
+            "action": "deny"
+          }
+        ],
+        "tools": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "write"
+        ]
+      }
+    ]
+  }
+}

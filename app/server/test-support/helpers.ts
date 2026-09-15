@@ -2,6 +2,7 @@
 // au flux, traces lisibles, envois et outils scriptés, écoute sur un port accepté par fetch, diff de lignes.
 import assert from "node:assert/strict";
 import net, { type AddressInfo } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import type { TestContext } from "node:test";
 import { isFetchBlockedPort } from "../fetch-ports.ts";
@@ -89,6 +90,38 @@ export function trace(events: ReadonlyArray<{ payload: OcEvent | SyncPayload }>,
     out.push(`${event.payload.type}${detail}@${who}`);
   }
   return out;
+}
+
+/** Comptes génériques (CI, conteneurs) : leur nom figure dans des champs ordinaires des captures (`root`…), ce n'est pas une personne. */
+const GENERIC_ACCOUNTS = new Set(["root", "node", "runner", "admin", "user", "ubuntu", "vscode", "github", "docker"]);
+
+/** Nom de l'utilisateur qui lance les tests (4 caractères au moins, comptes génériques exclus) ; jamais écrit dans le dépôt. */
+export function localUsername(): string | null {
+  try {
+    const name = os.userInfo().username.toLowerCase();
+    return name.length >= 4 && !GENERIC_ACCOUNTS.has(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Recherche de fixtures/README.md (« Nettoyage ») : noms des motifs trouvés dans `text` (captures et fixtures de mesure). */
+export function leaks(text: string): string[] {
+  const patterns: Array<[string, RegExp]> = [
+    ["en-tête ou mot de passe", /authorization|\bbasic [A-Za-z0-9+/=]{8,}|\bbearer |password/i],
+    ["jeton GitHub", /gh[oprsu]_[A-Za-z0-9]{20}|github_pat_/i],
+    ["clé sk-", /\bsk-[A-Za-z0-9_-]{16,}/],
+    ["JWT", /\beyJ[A-Za-z0-9_-]{10,}\./],
+    ["clé privée", /-----BEGIN/],
+    ["adresse e-mail", /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/],
+    ["adresse IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/],
+    ["localhost", /localhost/],
+    ["chemin d'hôte", /\b[A-Za-z]:(\\\\|\/)|\/Users\/|AppData/],
+  ];
+  const found = patterns.filter(([, pattern]) => pattern.test(text)).map(([label]) => label);
+  const user = localUsername();
+  if (user && text.toLowerCase().includes(user)) found.push("nom d'utilisateur");
+  return found;
 }
 
 export function assertSubsequence(actual: string[], expected: string[]): void {
@@ -197,41 +230,47 @@ export function applyPatchText(changes: PatchChange[]): string {
   return lines.join("\n");
 }
 
-/** Motif d'une demande de modification : chemin relatif au dossier de la session (tool/edit.ts:104). */
-const editPattern = (filePath: string, directory: string): string =>
-  path.posix.isAbsolute(filePath) ? path.posix.relative(directory, filePath) : path.posix.normalize(filePath);
+/**
+ * Motif d'une demande de modification : chemin résolu depuis le dossier de la session, puis rendu relatif au worktree
+ * (tool/edit.ts:104). Worktree = dossier du dépôt git ; « / » hors git (mesure MX1 §3 : « workspace/meta/existant.txt »).
+ */
+const editPattern = (filePath: string, directory: string, worktree: string): string => path.posix.relative(worktree, path.posix.resolve(directory, filePath));
 
-/** Outil « edit » demandé ; métadonnées (filepath, diff) complétées par le faux. `directory` : dossier de la session. */
-export const editTool = (filePath: string, oldString: string, newString: string, options: { directory?: string } & Partial<FakeToolScript> = {}): FakeToolScript => {
-  const { directory = "/workspace", ...extra } = options;
+/** Dossier de la session (défaut /workspace) et worktree (défaut : ce dossier, comme un dépôt git ; « / » hors git). */
+type EditToolOptions = { directory?: string; worktree?: string } & Partial<FakeToolScript>;
+
+/** Outil « edit » demandé ; métadonnées (filepath, diff) complétées par le faux. */
+export const editTool = (filePath: string, oldString: string, newString: string, options: EditToolOptions = {}): FakeToolScript => {
+  const { directory = "/workspace", worktree = directory, ...extra } = options;
   return {
     tool: "edit",
     input: { filePath, oldString, newString },
-    ask: { permission: "edit", patterns: [editPattern(filePath, directory)], always: ["*"] },
+    ask: { permission: "edit", patterns: [editPattern(filePath, directory, worktree)], always: ["*"] },
     output: "Edit applied successfully.",
     ...extra,
   };
 };
 
 /** Outil « write » demandé ; métadonnées (filepath, diff) complétées par le faux. */
-export const writeTool = (filePath: string, content: string, options: { directory?: string } & Partial<FakeToolScript> = {}): FakeToolScript => {
-  const { directory = "/workspace", ...extra } = options;
+export const writeTool = (filePath: string, content: string, options: EditToolOptions = {}): FakeToolScript => {
+  const { directory = "/workspace", worktree = directory, ...extra } = options;
   return {
     tool: "write",
     input: { filePath, content },
-    ask: { permission: "edit", patterns: [editPattern(filePath, directory)], always: ["*"] },
+    ask: { permission: "edit", patterns: [editPattern(filePath, directory, worktree)], always: ["*"] },
     output: "Wrote file successfully.",
     ...extra,
   };
 };
 
 /** Outil « apply_patch » demandé ; métadonnées (filepath, diff, files[]) complétées par le faux (tool/apply_patch.ts:205-215). */
-export const applyPatchTool = (changes: PatchChange[], options: { directory?: string } & Partial<FakeToolScript> = {}): FakeToolScript => {
-  const { directory = "/workspace", ...extra } = options;
+export const applyPatchTool = (changes: PatchChange[], options: EditToolOptions = {}): FakeToolScript => {
+  const { directory = "/workspace", worktree = directory, ...extra } = options;
   return {
     tool: "apply_patch",
     input: { patchText: applyPatchText(changes) },
-    ask: { permission: "edit", patterns: changes.map((change) => editPattern(change.path, directory)), always: ["*"] },
+    // Déplacement : motif de la source seulement (mesure MX1 §3).
+    ask: { permission: "edit", patterns: changes.map((change) => editPattern(change.path, directory, worktree)), always: ["*"] },
     output: "Success.",
     ...extra,
   };

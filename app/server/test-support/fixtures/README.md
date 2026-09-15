@@ -17,6 +17,15 @@ Les fichiers du flux `/event` n'ont ni enveloppe `{directory, project}` ni jumea
 
 `m2-tools.json` : listes d'outils relevées le 2026-09-14 par la mesure M2 (opencode 1.18.30 hors ligne, faux fournisseur compatible OpenAI qui enregistre les outils de chaque requête), pour 5 cas : sans règle, racine avec `edit` et `bash` refusés, enfant `general` de cette racine, `* deny` avec lecture permise, `PATCH` d'un refus de `bash`. Chaque cas donne l'agent, les règles envoyées à la création ou par `PATCH`, les règles relues sur la session et la liste triée des outils ; `configPermission` reprend la clé `permission` de la configuration du banc. Généré depuis la sortie brute (`m2-result.json`) après vérification que chaque requête d'un même cas voit la même liste, puis la recherche du paragraphe « Nettoyage » : aucune occurrence. Rejoué par `fake.toolsFor()` dans `fake-opencode.test.ts`.
 
+## Mesures hors ligne MX1
+
+`mx1-mesures.json` : relevés du 2026-09-15 de la mesure MX1 (opencode 1.18.30 hors ligne, faux fournisseur compatible OpenAI, IA `mock-1` et `gpt-5-mock` ; compte rendu `execution/mesures/MX1.md` du chantier 1.1, passe A, passe B identique). Trois parties :
+- `metadata` : demandes `edit`, `write` et `apply_patch` (ajout, modification, suppression, déplacement, patch multiple), dans un dossier git et hors git (worktree `/`) ; pour chaque cas, l'entrée exacte de l'outil, la liste d'outils proposée et la demande relevée (`permission`, `patterns`, `always`, `metadata`) ; `files` donne le contenu des fichiers témoins ;
+- `m14` : `POST /global/dispose` pendant une demande `bash` en attente : suite des événements de la session occupée jusqu'à `global.disposed`, état d'après, `once` tardif (404, identifiant remplacé par `<id>`) ; `ids` garde un échantillon d'identifiants réels ;
+- `tools` : listes d'outils de M16 (plancher à la création et par `PATCH`) et de M3 (témoin, `read mcp:*`, ETAPE, `read *`), avec les règles envoyées.
+
+Générée par le train it1 V0 depuis les sorties brutes (`out/passe-a`, comparée à `out/passe-b`), après vérification des empreintes du banc (contenus, plancher, règles ETAPE) et la recherche du paragraphe « Nettoyage » : aucune occurrence. Rejouée par `croisements-it1-v0.test.ts` (métadonnées par défaut, suite d'arrêt et `toolsFor()` du faux, relais du proxy).
+
 ## Réductions
 
 - p1 et p2 : fenêtres extraites de la capture continue p1-p5, du début de la capture au repos de la racine (p1), puis de l'envoi à `command.executed` (p2).

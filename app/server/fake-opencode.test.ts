@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import os from "node:os";
 import { describe, it, type TestContext } from "node:test";
 import { ModelCatalog } from "./catalog.ts";
 import { type OcAssistantMessage, type OcEvent, type OcMessageWithParts, type OcPart, type OcUserMessage, OpencodeClient, OpencodeError } from "./opencode.ts";
@@ -26,7 +25,22 @@ import {
   type SyncPayload,
   unifiedDiff,
 } from "./test-support/fake-opencode.ts";
-import { applyPatchText, applyPatchTool, assertSubsequence, bash, editTool, promptAsync, props, subscribe, trace, until, within, writeTool } from "./test-support/helpers.ts";
+import {
+  applyPatchText,
+  applyPatchTool,
+  assertSubsequence,
+  bash,
+  editTool,
+  leaks,
+  localUsername,
+  promptAsync,
+  props,
+  subscribe,
+  trace,
+  until,
+  within,
+  writeTool,
+} from "./test-support/helpers.ts";
 
 const PASSWORD = "p".repeat(24);
 const FIXTURES = ["p1-delegation-parallele.jsonl", "p2-commande-subtask.jsonl", "p6-arret-global.jsonl", "p7-autorisation-orpheline.jsonl"];
@@ -49,6 +63,18 @@ const statusIs = (status: number) => (err: unknown) => err instanceof OpencodeEr
 
 const toolParts = (message: OcMessageWithParts) => message.parts.filter((p) => p.type === "tool") as Array<OcPart & { state: Record<string, unknown> }>;
 const assistants = (messages: OcMessageWithParts[]) => messages.filter((m) => m.info.role === "assistant").map((m) => m.info as OcAssistantMessage);
+
+/** Mesure M14 (MX1 §2) : suite publiée pour une session occupée dont l'instance est libérée pendant une demande (sans permission.replied). */
+const M14_TRACE = (who: string) =>
+  [
+    "session.error:MessageAbortedError",
+    "session.status:idle",
+    "session.idle",
+    "message.part.updated:tool:error",
+    "message.updated:assistant:MessageAbortedError",
+    "session.status:idle",
+    "session.idle",
+  ].map((kind) => `${kind}@${who}`);
 
 describe("faux opencode : transport", () => {
   it("santé et authentification Basic : 401 sans le bon mot de passe, accès par OpencodeClient", async (t) => {
@@ -151,18 +177,20 @@ describe("faux opencode : transport", () => {
     assert.match(beats[0]?.payload.id ?? "", /^evt_/);
   });
 
-  it("emitGlobalDisposed : global.disposed sur « global » ; resetInstances vide demandes et états", async (t) => {
+  it("emitGlobalDisposed : global.disposed sur « global » ; resetInstances coupe le tour avec la suite d'arrêt publiée (M14), rejette la demande sans événement, vide les états", async (t) => {
     const { fake, oc } = await startFake(t);
     const events = await subscribe(t, oc);
     const session = await newSession(oc);
     fake.script(session.id, { tools: [bash("ls")] });
     await promptAsync(oc, session.id, "Liste");
     await fake.waitForEvent("permission.asked");
+    const since = fake.emitted.length;
     fake.emitGlobalDisposed({ resetInstances: true });
     const disposed = await until(() => events.find((e) => e.payload.type === "global.disposed"));
     assert.equal(disposed.directory, "global");
     assert.equal(disposed.project, undefined);
     assert.deepEqual(disposed.payload.properties, {});
+    assert.deepEqual(trace(fake.emitted.slice(since), { [session.id]: "s" }), M14_TRACE("s"));
     assert.deepEqual(await oc.request("GET", "/permission"), []);
     assert.deepEqual(await oc.request("GET", "/session/status"), {});
   });
@@ -713,38 +741,6 @@ describe("faux opencode : arrêt", () => {
   });
 });
 
-/** Comptes génériques (CI, conteneurs) : leur nom figure dans des champs ordinaires des captures (`root`…), ce n'est pas une personne. */
-const GENERIC_ACCOUNTS = new Set(["root", "node", "runner", "admin", "user", "ubuntu", "vscode", "github", "docker"]);
-
-/** Nom de l'utilisateur qui lance les tests (4 caractères au moins, comptes génériques exclus) ; jamais écrit dans le dépôt. */
-function localUsername(): string | null {
-  try {
-    const name = os.userInfo().username.toLowerCase();
-    return name.length >= 4 && !GENERIC_ACCOUNTS.has(name) ? name : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Recherche de fixtures/README.md (« Nettoyage ») : noms des motifs trouvés dans `text`. */
-function leaks(text: string): string[] {
-  const patterns: Array<[string, RegExp]> = [
-    ["en-tête ou mot de passe", /authorization|\bbasic [A-Za-z0-9+/=]{8,}|\bbearer |password/i],
-    ["jeton GitHub", /gh[oprsu]_[A-Za-z0-9]{20}|github_pat_/i],
-    ["clé sk-", /\bsk-[A-Za-z0-9_-]{16,}/],
-    ["JWT", /\beyJ[A-Za-z0-9_-]{10,}\./],
-    ["clé privée", /-----BEGIN/],
-    ["adresse e-mail", /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/],
-    ["adresse IP", /\b(?:\d{1,3}\.){3}\d{1,3}\b/],
-    ["localhost", /localhost/],
-    ["chemin d'hôte", /\b[A-Za-z]:(\\\\|\/)|\/Users\/|AppData/],
-  ];
-  const found = patterns.filter(([, pattern]) => pattern.test(text)).map(([label]) => label);
-  const user = localUsername();
-  if (user && text.toLowerCase().includes(user)) found.push("nom d'utilisateur");
-  return found;
-}
-
 describe("faux opencode : captures réelles", () => {
   it("garde-fou des captures : chaque motif du README détecté sur un exemple planté (IP du réseau, sk-, JWT, ghr_, nom d'utilisateur)", () => {
     const planted: Array<[string, string]> = [
@@ -966,7 +962,7 @@ describe("faux opencode : demandes de l'agent", () => {
 });
 
 describe("faux opencode : rechargement", () => {
-  it("POST /instance/dispose : true, puis seule l'instance du dossier est libérée (tours coupés, demandes et états vidés) et server.instance.disposed {directory}", async (t) => {
+  it("POST /instance/dispose : true, puis seule l'instance du dossier est libérée (tours coupés avec la suite d'arrêt publiée, demandes et états vidés) et server.instance.disposed {directory} en dernier", async (t) => {
     const { fake, oc } = await startFake(t);
     const a = await newSession(oc, {}, "/workspace/a");
     const b = await newSession(oc, {}, "/workspace/b");
@@ -981,7 +977,9 @@ describe("faux opencode : rechargement", () => {
     assert.deepEqual(disposed.properties, { directory: "/workspace/a" });
     const wire = fake.emitted.find((w) => w.payload === disposed);
     assert.deepEqual([wire?.directory, wire?.project], ["/workspace/a", "global"]);
-    assert.deepEqual(fake.emitted.slice(since).map((w) => w.payload.type), ["server.instance.disposed"]);
+    // M14 : suite d'arrêt de la session occupée de a, puis server.instance.disposed ; aucun permission.replied, rien pour b.
+    assert.deepEqual(trace(fake.emitted.slice(since), { [a.id]: "a", [b.id]: "b" }), M14_TRACE("a"));
+    assert.deepEqual(fake.emitted.slice(since).filter((w) => w.payload.type !== "sync").at(-1)?.payload.type, "server.instance.disposed");
     assert.deepEqual(await oc.request("GET", "/permission", { directory: "/workspace/a" }), []);
     assert.deepEqual(await oc.request("GET", "/session/status", { directory: "/workspace/a" }), {});
     assert.deepEqual((await oc.request<FakePermissionRequest[]>("GET", "/permission", { directory: "/workspace/b" })).map((p) => p.sessionID), [b.id]);
@@ -1028,13 +1026,18 @@ describe("faux opencode : rechargement", () => {
     const kinds = (from: number) => fake.emitted.slice(from).map((w) => `${w.payload.type}@${w.directory}`);
     let since = fake.emitted.length;
     assert.equal(await oc.request("POST", "/global/dispose"), true);
-    const seen = kinds(since);
+    const seen = kinds(since).filter((kind) => kind.startsWith("server.") || kind.startsWith("global."));
     assert.equal(seen.at(-1), "global.disposed@global");
     assert.deepEqual(seen.slice(0, -1).sort(), [
       "server.instance.disposed@/workspace",
       "server.instance.disposed@/workspace/a",
       "server.instance.disposed@/workspace/b",
     ]);
+    // M14 : suite d'arrêt de la session occupée de b, publiée avant la libération de son instance ; aucun permission.replied.
+    const after = fake.emitted.slice(since);
+    assert.deepEqual(trace(after, { [b.id]: "b" }), M14_TRACE("b"));
+    const disposedB = after.findIndex((w) => w.payload.type === "server.instance.disposed" && w.directory === "/workspace/b");
+    assert.ok(after.findLastIndex((w) => props(w).sessionID === b.id) < disposedB, "suite d'arrêt avant server.instance.disposed");
     const received = await until(() => events.find((e) => e.payload.type === "server.instance.disposed" && e.directory === "/workspace/b"));
     assert.deepEqual([received.project, received.payload.properties], ["global", { directory: "/workspace/b" }]);
     assert.deepEqual(await oc.request("GET", "/permission", { directory: "/workspace/b" }), []);
@@ -1790,6 +1793,34 @@ describe("faux opencode : métadonnées des demandes de modification", () => {
       ],
     );
     assert.deepEqual(fake.failures, []);
+  });
+
+  it("worktree (MX1 §3) : GET /path ; hors git (« / »), motifs des aides, filepath et relativePath relatifs à « / », filePath et movePath absolus ; dossier git par défaut", async (t) => {
+    const { fake, oc } = await startFake(t);
+    assert.deepEqual(await oc.request("GET", "/path", { directory: "/workspace/depot" }), {
+      home: "/home/node",
+      state: "/home/node/.local/state/opencode",
+      config: "/home/node/.config/opencode",
+      worktree: "/workspace/depot",
+      directory: "/workspace/depot",
+    });
+    fake.worktrees.set("/workspace/libre", "/");
+    assert.equal((await oc.request<{ worktree: string }>("GET", "/path", { directory: "/workspace/libre" })).worktree, "/");
+    assert.equal(fake.worktreeOf("/workspace/depot"), "/workspace/depot");
+    const session = await newSession(oc, {}, "/workspace/libre");
+    const options = { directory: "/workspace/libre", worktree: "/" };
+    assert.deepEqual(editTool("a.txt", "x", "y", options).ask?.patterns, ["workspace/libre/a.txt"]);
+    assert.deepEqual(writeTool("/workspace/libre/b.txt", "z\n", options).ask?.patterns, ["workspace/libre/b.txt"]);
+    fake.script(session.id, { tools: [applyPatchTool([{ type: "update", path: "a.txt", from: "x\n", to: "y\n", movePath: "sous/b.txt" }], options)] });
+    await promptAsync(oc, session.id, "Patch");
+    const request = (await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id)).properties as unknown as FakePermissionRequest;
+    const metadata = request.metadata as { filepath: string; files: Array<Record<string, unknown>> };
+    assert.deepEqual(request.patterns, ["workspace/libre/a.txt"], "déplacement : source seulement");
+    assert.equal(metadata.filepath, "workspace/libre/a.txt");
+    assert.deepEqual(
+      metadata.files.map((f) => [f.filePath, f.relativePath, f.type, f.movePath]),
+      [["/workspace/libre/a.txt", "workspace/libre/sous/b.txt", "move", "/workspace/libre/sous/b.txt"]],
+    );
   });
 
   it("texte d'apply_patch relu à l'identique (ajout, mise à jour avec déplacement et contexte @@, suppression) ; texte illisible : aucune métadonnée par défaut", async (t) => {

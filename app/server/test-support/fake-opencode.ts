@@ -127,7 +127,7 @@ type ChildResult = { sessionID: string; text: string; part: OcPart | null; faile
 interface Run {
   sessionID: string;
   aborted: boolean;
-  /** Arrêt sans événement (fermeture, remise à zéro d'une instance). */
+  /** Arrêt sans événement (fermeture du faux). */
   quiet: boolean;
   /** Boucle terminée, repos publié (fin normale ou tour en erreur). */
   finished: boolean;
@@ -521,13 +521,14 @@ export function parseApplyPatch(text: string): PatchHunk[] | null {
 }
 
 /**
- * Métadonnées d'une demande de modification quand le script n'en donne pas. edit et write (tool/edit.ts:102-110, tool/write.ts:54-62) :
- * {filepath absolu, diff}. apply_patch (tool/apply_patch.ts:59-215) : {filepath (chemins relatifs joints par « , »), diff de tous les
- * fichiers, files[] {filePath, relativePath, type add|update|delete|move, patch, additions, deletions, movePath}} ; suppression :
- * deletions = lignes du contenu supprimé. Dossier de travail = dossier de la session. Mesure MX en parallèle : l'intégrateur
- * alignera cette forme sur execution/mesures/MX1.md.
+ * Métadonnées d'une demande de modification quand le script n'en donne pas, conformes à la mesure MX1 §3 (vérifiées par
+ * croisements-it1-v0.test.ts sur fixtures/mx1-mesures.json). edit et write (tool/edit.ts:102-110, tool/write.ts:54-62) :
+ * {filepath absolu, diff}. apply_patch (tool/apply_patch.ts:195-215) : {filepath (chemins sources relatifs au worktree, joints par
+ * « , »), diff (patch de chaque fichier suivi d'un saut de ligne), files[] {filePath, relativePath (destination d'un déplacement),
+ * type add|update|delete|move, patch (sur le chemin source), additions, deletions, movePath}} ; suppression : deletions = lignes + 1
+ * pour un contenu qui finit par un saut de ligne. `worktree` : dossier du dépôt git, « / » hors git.
  */
-export function editMetadata(tool: string, directory: string, changes: readonly EditChange[]): Record<string, unknown> {
+export function editMetadata(tool: string, worktree: string, changes: readonly EditChange[]): Record<string, unknown> {
   if (tool !== "apply_patch") {
     const [change] = changes;
     return change ? { filepath: change.filePath, diff: unifiedDiff(change.filePath, change.before, change.after) } : {};
@@ -536,7 +537,7 @@ export function editMetadata(tool: string, directory: string, changes: readonly 
     const ops = lineDiff(change.before, change.after);
     return {
       filePath: change.filePath,
-      relativePath: path.posix.relative(directory, change.movePath ?? change.filePath),
+      relativePath: path.posix.relative(worktree, change.movePath ?? change.filePath),
       type: change.type,
       patch: unifiedDiff(change.filePath, change.before, change.after),
       additions: change.type === "delete" ? 0 : ops.filter((op) => op.op === "+").length,
@@ -545,7 +546,7 @@ export function editMetadata(tool: string, directory: string, changes: readonly 
     };
   });
   return {
-    filepath: changes.map((change) => path.posix.relative(directory, change.filePath)).join(", "),
+    filepath: changes.map((change) => path.posix.relative(worktree, change.filePath)).join(", "),
     diff: files.map((file) => `${file.patch}\n`).join(""),
     files,
   };
@@ -633,6 +634,11 @@ export class FakeOpencode {
   defaultModels: Record<string, string> = { "github-copilot": "gpt-5-mini" };
   /** Contenus connus (chemins absolus) : état « avant » des métadonnées edit, write et apply_patch, mis à jour par chaque outil terminé. */
   readonly files = new Map<string, string>();
+  /**
+   * Worktree de chaque dossier (GET /path, métadonnées des demandes de modification) ; dossier absent : lui-même, comme un dépôt
+   * git. Hors git, opencode 1.18.30 prend « / » (mesure MX1 §3).
+   */
+  readonly worktrees = new Map<string, string>();
   #defaultAgents: FakeAgent[] | null = null;
   readonly #agents = new Map<string, FakeAgent[]>();
   #defaultCommands: FakeCommand[] = [];
@@ -669,7 +675,7 @@ export class FakeOpencode {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#resetInstances();
+    this.#resetInstances(undefined, { quiet: true });
     for (const waiter of this.#waiters) {
       clearTimeout(waiter.timer);
       waiter.reject(new Error("faux opencode fermé"));
@@ -716,6 +722,11 @@ export class FakeOpencode {
   /** Agents de GET /agent dans ce dossier : liste propre au dossier, sinon liste par défaut, sinon agents natifs de la configuration globale. */
   agents(directory: string = this.directory): FakeAgent[] {
     return this.#agents.get(directory) ?? this.#defaultAgents ?? nativeAgents(this.globalConfig.permission);
+  }
+
+  /** Worktree du dossier : `worktrees`, sinon le dossier lui-même (dépôt git). */
+  worktreeOf(directory: string = this.directory): string {
+    return this.worktrees.get(directory) ?? directory;
   }
 
   /** Agents servis dans `directory` ; sans dossier : dans tous les dossiers qui n'ont pas de liste propre. */
@@ -824,8 +835,9 @@ export class FakeOpencode {
   }
 
   /**
-   * disposeAll puis global.disposed (global-lifecycle.ts:16-25) : server.instance.disposed pour chaque instance chargée, puis
-   * global.disposed. `resetInstances` : demandes rejetées sans événement, tours coupés, états vidés.
+   * disposeAll puis global.disposed (global-lifecycle.ts:16-25) : pour chaque instance chargée, dans l'ordre de chargement, remise à
+   * zéro facultative puis server.instance.disposed ; global.disposed en dernier. `resetInstances` : tours coupés avec la suite
+   * d'arrêt publiée (mesure M14), demandes rejetées sans événement, états vidés.
    */
   emitGlobalDisposed(options: { resetInstances?: boolean } = {}): void {
     const reset = options.resetInstances === true;
@@ -974,6 +986,10 @@ export class FakeOpencode {
     }
     if (is("GET", "agent")) return json(200, this.agents(directory));
     if (is("GET", "command")) return json(200, this.commands(directory));
+    // Chemins de l'instance, forme relevée par MX1 (utilisateur node de l'image) ; worktree « / » hors git.
+    if (is("GET", "path")) {
+      return json(200, { home: "/home/node", state: "/home/node/.local/state/opencode", config: "/home/node/.config/opencode", worktree: this.worktreeOf(directory), directory });
+    }
     // IA refusée par la politique de l'organisation : absente de la réponse, comme le fait le plugin github-copilot d'opencode.
     if (is("GET", "config", "providers")) {
       const providers = this.providers.map((provider) => ({
@@ -1539,7 +1555,7 @@ export class FakeOpencode {
         sessionID: session.id,
         permission: ask.permission,
         patterns: [...ask.patterns],
-        metadata: ask.metadata ?? (changes ? editMetadata(tool.tool, session.directory, changes) : {}),
+        metadata: ask.metadata ?? (changes ? editMetadata(tool.tool, this.worktreeOf(session.directory), changes) : {}),
         always: ask.always ?? ["*"],
         ...(agentScope ? {} : { tool: { messageID: message.info.id, callID } }),
       };
@@ -1823,19 +1839,24 @@ export class FakeOpencode {
     }
   }
 
-  /** Libération d'une instance : remise à zéro facultative, puis server.instance.disposed. */
+  /** Libération d'une instance : remise à zéro facultative (suite d'arrêt publiée, mesure M14), puis server.instance.disposed. */
   #disposeInstance(directory: string, reset: boolean): void {
     if (reset) this.#resetInstances(directory);
     this.#instances.delete(directory);
     this.emitInstanceDisposed(directory);
   }
 
-  /** Remise à zéro silencieuse d'une instance (de toutes sans `directory`) : tours coupés, demandes et questions rejetées sans événement, états et accords vidés. */
-  #resetInstances(directory?: string): void {
+  /**
+   * Remise à zéro d'une instance (de toutes sans `directory`) : tours coupés, demandes et questions rejetées sans événement, états et
+   * accords vidés. Chaque tour coupé publie la suite d'un arrêt (#interrupt) : mesure M14 (MX1 §2) sur POST /global/dispose ; même
+   * finaliseur d'instance pour POST /instance/dispose et un PATCH /global/config qui change la configuration (source, non mesuré à
+   * part). `quiet` : fermeture du faux, sans aucun événement.
+   */
+  #resetInstances(directory?: string, options: { quiet?: boolean } = {}): void {
     const inside = (sessionID: string) => directory === undefined || this.#directoryOf(sessionID) === directory;
     for (const run of [...this.#runs.values()]) {
       if (!inside(run.sessionID)) continue;
-      run.quiet = true;
+      run.quiet = options.quiet === true;
       this.#interrupt(run);
     }
     for (const [id, entry] of [...this.#pending]) {
