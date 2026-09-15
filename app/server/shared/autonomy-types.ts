@@ -49,8 +49,9 @@ export type RepliedBy = "vous" | "cockpit" | "controle";
 export type AutonomyCaps = Pick<AutonomieSettings, "plafondUsd" | "actionsMax" | "delegationsMax" | "dureeMinutes" | "fichiersMax" | "controlesIaMax">;
 
 /**
- * Raison, en code, d'un choix indisponible ou d'une activation refusée (§4.11) ; phrase affichée : module de textes (L6a).
- * - a-venir : activation fermée par ACTIVATION_OUVERTE (porte I1), ou port d'activation neutre ;
+ * Raison, en code, d'un choix indisponible ou d'une activation refusée (§4.11) ; phrases : autonomy-texts.ts (L9b), section partout.
+ * - a-venir : activation fermée par ACTIVATION_OUVERTE (porte I1), ou port d'activation neutre ; raison de `disponibles` et du 409 ;
+ *   phrase affichée, reprise telle quelle par L9b et L10d : « Pas encore disponible dans cette version du cockpit. »
  * - autonomie-coupee : COCKPIT_AUTONOMY=off ;
  * - regle-allow : l'assistant agit déjà sans demander (edit, bash hors pwd, task, webfetch ou websearch sur allow) ;
  * - mcp-ou-extension : la configuration effective déclare mcp ou plugin ;
