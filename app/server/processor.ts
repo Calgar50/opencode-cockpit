@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ArchiveService } from "./archive.ts";
 import type { Classifier } from "./classifier.ts";
+import type { EventDerivation } from "./contracts-11.ts";
 import { type EventHub, FORWARDED_EVENTS } from "./hub.ts";
 import type { Ledger } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
@@ -48,9 +49,23 @@ export class EventProcessor {
   #lastEventAt = 0;
   #lastError: string | null = null;
   #backfilling: Promise<void> | null = null;
+  /** Dérivations 1.1 (app-factory), appelées dans l'ordre d'inscription. */
+  #derivations: EventDerivation[] = [];
 
   constructor(deps: ProcessorDeps) {
     this.#d = deps;
+  }
+
+  /**
+   * Dérivation 1.1 (spécification §3.10) : appelée de façon synchrone pour chaque événement typé, après la diffusion et avant la
+   * file, y compris hors des événements traités ici et pour une session cachée. Une exception est journalisée sans arrêter la
+   * diffusion, la file ni les autres dérivations. Rend la fonction qui la retire.
+   */
+  addDerivation(derivation: EventDerivation): () => void {
+    this.#derivations = [...this.#derivations, derivation];
+    return () => {
+      this.#derivations = this.#derivations.filter((d) => d !== derivation);
+    };
   }
 
   get status() {
@@ -84,6 +99,13 @@ export class EventProcessor {
     if (!event?.type) return;
     if (FORWARDED_EVENTS.has(event.type) && !this.#d.sessions.isHidden(sessionIdOf(event))) {
       this.#d.hub.publish({ kind: "opencode", ...(global.directory ? { directory: global.directory } : {}), event });
+    }
+    for (const derivation of this.#derivations) {
+      try {
+        derivation.onEvent(global);
+      } catch (err) {
+        this.#d.log.warn("dérivation d'événement en échec", { derivation: derivation.name, type: event.type, error: errorMessage(err) });
+      }
     }
     if (!PROCESSED.has(event.type)) return;
     this.#queue = this.#queue

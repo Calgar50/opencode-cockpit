@@ -13,7 +13,8 @@ import { probeSessionsBusy, probeSessionsBusyStrict } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import { type BillRefusal, billRefusal, ConfigWriteQueue } from "./config-queue.ts";
-import type { ControlService } from "./control.ts";
+import type { EmittedReply, InternalAgentsPort, PermissionGate, ProxyContext } from "./contracts-11.ts";
+import type { ControlService, RestartResult } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
@@ -23,7 +24,16 @@ import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
-import { forMethods, reloadGuard, type ReloadGuardDeps } from "./reload-guard.ts";
+import {
+  examining,
+  forMethods,
+  reloadGuard,
+  type ReloadGuardDeps,
+  type ReloadGuardOptions,
+  reloadOccupancy,
+  type ReloadRefusal,
+  reloadRefusal,
+} from "./reload-guard.ts";
 import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
@@ -46,6 +56,7 @@ import {
   sessionValue,
   setSessionCookie,
 } from "./security.ts";
+import { SessionTracker } from "./sessions.ts";
 import { type Settings, SettingsError, type SettingsStore } from "./settings.ts";
 import type {
   AssistantModelChangedError,
@@ -88,10 +99,12 @@ import {
   type Turn,
   withTierAvailability,
 } from "./shared/assistant-rules.ts";
+import type { BootstrapAutonomy } from "./shared/autonomy-types.ts";
 import { ID, SESSION_ID_RE } from "./shared/ids.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
+import { ACTIVATION_OUVERTE, type Cockpit11Wiring } from "./wiring-11.ts";
 
 /** Niveaux d'IA utilisés par l'API (TierService les fournit). */
 export interface TierPort {
@@ -139,9 +152,20 @@ export interface AppDeps {
   copilotConfig: Pick<CopilotConfigSync, "status" | "sync" | "syncDue" | "dueReason" | "markDue">;
   /** File d'écriture de la configuration d'opencode, partagée avec CopilotConfigSync (une instance propre si absente). */
   configQueue?: ConfigWriteQueue;
-  /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
+  /** Routes supplémentaires (assistants, niveaux d'IA, puis routes 1.1 d'app-factory), enregistrées juste avant le 404 de /api/*. */
   routes?: Array<(app: Hono) => void>;
+  /** 1.1 : portillon des accords partagé (app-factory) ; absent : une instance propre à cette application. */
+  gate?: PermissionGate;
+  /** 1.1 : crochets du proxy rangés par wiring-11 (app-factory) ; absents : comportement 1.0. */
+  proxyHooks?: ProxyHooks;
+  /** 1.1 : agents internes (ports.internalAgents), installés après un redémarrage réussi ; absent : agent de classement seul. */
+  internalAgents?: Pick<InternalAgentsPort, "ensureAll">;
+  /** 1.1 : décision en examen (Cockpit11.reloadBusy) : la garde de rechargement répond « busy » ; absent : jamais. */
+  reloadBusy?: () => boolean;
 }
+
+/** Crochets du proxy /api/oc/* : listes par étape et exécution dans l'ordre (la première Response l'emporte). */
+export type ProxyHooks = Pick<Cockpit11Wiring, "hooks" | "runHooks">;
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
 
@@ -278,9 +302,19 @@ const normalizeDomain = (url: string) => url.trim().toLowerCase().replace(/^http
  * - « Résumer » avec autre chose que providerID/modelID : `auto: true` ferait enchaîner par opencode un tour d'agent avec
  *   outils (« Continue if you have next steps », compaction.ts:468-548), hors de tout contrôle ;
  * - connexion GitHub Enterprise vers un domaine autre que COCKPIT_GITHUB_ENTERPRISE_DOMAIN : opencode y
- *   enverrait toutes les demandes et le jeton sous l'identité « github-copilot ».
+ *   enverrait toutes les demandes et le jeton sous l'identité « github-copilot » ;
+ * - 1.1 (F17, E6) : champ « system » d'une demande facturée, qui remplacerait les consignes de l'assistant ; référence @nom d'un
+ *   assistant dans les arguments d'un raccourci, qu'opencode transforme en travail confié à cet assistant
+ *   (session/prompt.ts:157-178). `agentNames` : assistants vus par opencode dans ce dossier (null : liste illisible, toute
+ *   référence @ refusée) ; absent : contrôle non demandé (autres routes).
  */
-export function forbiddenProxyBody(method: string, sub: string, body: unknown, enterpriseDomain: string | null): string | undefined {
+export function forbiddenProxyBody(
+  method: string,
+  sub: string,
+  body: unknown,
+  enterpriseDomain: string | null,
+  agentNames?: ReadonlySet<string> | null,
+): string | undefined {
   const record = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   if ((method === "POST" && sub === "/session") || (method === "PATCH" && /^\/session\/[^/]+$/.test(sub))) {
     const extra = Object.keys(record).filter((key) => key !== "title");
@@ -292,6 +326,21 @@ export function forbiddenProxyBody(method: string, sub: string, body: unknown, e
   }
   if (/^\/session\/[^/]+\/(prompt_async|command|summarize)$/.test(sub) && ("tools" in record || "permission" in record)) {
     return "Les champs « tools » et « permission » ne sont pas acceptés : les permissions se règlent dans Paramètres › opencode.";
+  }
+  if (/^\/session\/[^/]+\/(prompt_async|command|summarize)$/.test(sub) && Object.hasOwn(record, "system")) {
+    return "Le champ « system » n'est pas accepté : il remplacerait les consignes de l'assistant, hors du contrôle du cockpit.";
+  }
+  if (agentNames !== undefined && method === "POST" && /^\/session\/[^/]+\/command$/.test(sub) && typeof record.arguments === "string") {
+    for (const match of record.arguments.matchAll(FILE_REFERENCE)) {
+      const ref = match[1] ?? "";
+      if (!ref) continue;
+      if (agentNames === null) {
+        return "Références @ refusées pour le moment : la liste des assistants d'opencode est illisible, impossible de vérifier qu'elles ne désignent pas un assistant. Réessayez dans un instant.";
+      }
+      if (agentNames.has(ref)) {
+        return `Référence @${ref.slice(0, 64)} refusée : elle désigne un assistant, auquel opencode confierait le travail. Choisissez l'assistant dans la conversation, ou retirez le « @ ».`;
+      }
+    }
   }
   if (sub === "/provider/github-copilot/oauth/authorize") {
     const inputs = record.inputs && typeof record.inputs === "object" ? (record.inputs as Record<string, unknown>) : {};
@@ -315,6 +364,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** Réponse à une demande d'autorisation et arrêt d'une conversation, relayés par le proxy. */
 const PERMISSION_REPLY_ROUTE = new RegExp(`^/permission/(${ID})/reply$`);
 const SESSION_ABORT_ROUTE = new RegExp(`^/session/(${ID})/abort$`);
+/** Conversation désignée par le chemin relayé (contexte des crochets 1.1). */
+const SESSION_ROUTE = new RegExp(`^/session/(${ID})(?:/|$)`);
+const COMMAND_ROUTE = new RegExp(`^/session/${ID}/command$`);
 
 export const PERMISSION_MESSAGES = Object.freeze({
   toujoursRefuse:
@@ -474,17 +526,26 @@ export function createApp(deps: AppDeps): Hono {
   // facturée admise par le proxy mais pas encore visible dans /session/status : réponse en cours aussi (comme applyConfigFile).
   // Dossier illisible alors qu'opencode répond : réponses en cours non vérifiables, refus distinct ; seul opencode injoignable
   // laisse passer. Redémarrage d'opencode (le remède) : confirmation acceptée dans ce cas, même en mode Simple (§3.11).
+  // 1.1 : décision en examen (reloadBusy) → « busy », jamais « non vérifiable ».
   const reloadGuardDeps: ReloadGuardDeps = {
     settings,
     control,
-    occupancy: async () => (configQueue.billedInFlight > 0 ? "busy" : await probeSessionsBusyStrict({ client, projects, db: deps.db, log })),
+    occupancy: reloadOccupancy({
+      queue: configQueue,
+      reloadBusy: deps.reloadBusy,
+      probe: () => probeSessionsBusyStrict({ client, projects, db: deps.db, log }),
+    }),
     reachable: async () => (await client.health()) !== null,
     log,
   };
-  const guardReload = reloadGuard(reloadGuardDeps);
-  const guardRestart = reloadGuard(reloadGuardDeps, { confirmUnverifiable: true });
-  // Portillon des accords : « once » vérifié, file commune aux réponses et aux arrêts, nettoyage après un arrêt.
-  const gate = createPermissionGate({ client, db: deps.db, log });
+  // Studio et assistants : garde tenue (vérification refaite après l'attente dans la file, applying posé jusqu'au rechargement).
+  const guardReload = reloadGuard(reloadGuardDeps, { hold: configQueue });
+  const RESTART_GUARD: ReloadGuardOptions = { confirmUnverifiable: true };
+  const guardRestart = reloadGuard(reloadGuardDeps, RESTART_GUARD);
+  // Portillon des accords : « once » vérifié, file commune aux réponses et aux arrêts, nettoyage après un arrêt, registre des
+  // réponses émises. Partagé avec les modules 1.1 quand app-factory le fournit.
+  const gate = deps.gate ?? createPermissionGate({ client, db: deps.db, log, hub, sessions: new SessionTracker(deps.db, client) });
+  const proxyHooks = deps.proxyHooks;
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
   const SESSION_SECRET_KEY = "session.secret";
@@ -676,6 +737,8 @@ export function createApp(deps: AppDeps): Hono {
       rulesVersion: RULES_VERSION,
       allowedProviders: env.allowedProviders,
       copilot: copilotView(),
+      // 1.1 (E3) : interrupteur COCKPIT_AUTONOMY et porte I1.
+      autonomy: { interrupteur: env.autonomy, activationOuverte: ACTIVATION_OUVERTE } satisfies BootstrapAutonomy,
     });
   });
 
@@ -912,6 +975,16 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(next);
   };
 
+  /** Noms des assistants vus par opencode dans ce dossier (cache court) ; null si la liste est illisible. */
+  const agentNamesOf = (directory: string | null): Promise<ReadonlySet<string> | null> =>
+    lookup.get(directory).then(
+      (snapshot) => new Set(snapshot.agents.map((agent) => agent.name)),
+      (err: unknown) => {
+        log.warn("assistants d'opencode illisibles : références @ refusées dans les arguments d'un raccourci", { error: errorMessage(err) });
+        return null;
+      },
+    );
+
   // --- Proxy vers opencode --------------------------------------------------------------
 
   app.all("/api/oc/*", bodyLimit({ maxSize: 25 * 1024 * 1024 }), async (c) => {
@@ -940,6 +1013,18 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       let body: string | null = null;
+      /** Corps JSON lu (objet, {} sinon) : contexte des crochets 1.1. */
+      let record: Record<string, unknown> = {};
+      const hookContext = (bodyRecord: Record<string, unknown>): ProxyContext => ({
+        c,
+        method,
+        sub,
+        directory,
+        body: bodyRecord,
+        sessionId: SESSION_ROUTE.exec(sub)?.[1] ?? null,
+      });
+      /** Réponse du navigateur à inscrire au registre du portillon juste avant son relais (P9). */
+      let browserReply: Omit<EmittedReply, "at"> | null = null;
       if (method !== "GET" && method !== "HEAD") {
         body = await c.req.text();
         let parsed: unknown = {};
@@ -948,8 +1033,21 @@ export function createApp(deps: AppDeps): Hono {
         } catch {
           return fail(c, 400, "invalid-json", "Corps JSON invalide.");
         }
-        const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain);
+        record = isRecord(parsed) ? parsed : {};
+        // Raccourci dont les arguments portent une référence @ : assistants d'opencode lus (cache court) pour refuser @assistant.
+        const agentNames =
+          method === "POST" && COMMAND_ROUTE.test(sub) && typeof record.arguments === "string" && record.arguments.includes("@")
+            ? await agentNamesOf(directory)
+            : undefined;
+        const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain, agentNames);
         if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
+        if (method === "POST" && sub === "/session" && proxyHooks && proxyHooks.hooks.createSession.length > 0) {
+          // Création d'une conversation : un crochet peut compléter le corps (plancher) ; le proxy envoie le corps après les crochets.
+          const context = hookContext({ ...record });
+          const hooked = await proxyHooks.runHooks("createSession", context);
+          if (hooked) return hooked;
+          body = JSON.stringify(context.body);
+        }
         const replyTo = method === "POST" ? PERMISSION_REPLY_ROUTE.exec(sub)?.[1] : undefined;
         if (replyTo !== undefined) {
           const reply = parsePermissionReply(parsed);
@@ -966,12 +1064,18 @@ export function createApp(deps: AppDeps): Hono {
               if (verdict.orphan && verdict.request) await gate.rejectOrphans([verdict.request], directory, { cause: "réponse tardive", requestId: replyTo });
               return fail(c, 409, "demande-expiree", PERMISSION_MESSAGES.demandeExpiree);
             }
+            if (proxyHooks && proxyHooks.hooks.beforeOnceRelay.length > 0) {
+              // Garde du « task once » (§3.14), toujours dans la file : aucun arrêt ne s'intercale. Refus : place libérée en sortant.
+              const hooked = await proxyHooks.runHooks("beforeOnceRelay", hookContext(record), replyTo);
+              if (hooked) return hooked;
+            }
           } else if (await gate.isOrphanOfWorkingSession(replyTo, directory)) {
             log.info("refus d'une demande orpheline non relayé : la conversation retravaille", { requestId: replyTo });
             return fail(c, 409, "demande-orpheline", PERMISSION_MESSAGES.demandeOrpheline);
           }
           // Corps réécrit : opencode reçoit exactement ce qui a été contrôlé (ni clé en double, ni champ ignoré).
           body = JSON.stringify(reply.value);
+          browserReply = { requestId: replyTo, reply: reply.value.reply, by: "vous" };
         }
         if (matched.guarded) {
           const isAllowed = (file: string) => projects.isAllowedDirectory(file);
@@ -996,13 +1100,26 @@ export function createApp(deps: AppDeps): Hono {
           const enforced = await enforceTurn(c, sub, directory, body, parsed);
           if (enforced instanceof Response) return enforced;
           body = enforced;
+          if (proxyHooks && proxyHooks.hooks.beforeBilledSend.length > 0) {
+            // Après tous les contrôles 1.0 (IA, fournisseurs, garde-fou) : plancher, plan, activation, demande d'autonomie.
+            const sent: unknown = enforced === "" ? {} : JSON.parse(enforced);
+            const hooked = await proxyHooks.runHooks("beforeBilledSend", hookContext(isRecord(sent) ? sent : {}));
+            if (hooked) return hooked;
+          }
         }
       }
 
       const abortId = method === "POST" ? SESSION_ABORT_ROUTE.exec(sub)?.[1] : undefined;
+      if (abortId !== undefined && proxyHooks && proxyHooks.hooks.abort.length > 0) {
+        // Avant la file des réponses : l'arrêt de l'arbre (stopTree) la prend lui-même.
+        const hooked = await proxyHooks.runHooks("abort", hookContext(record), abortId);
+        if (hooked) return hooked;
+      }
       // Arrêt : attend qu'un « once » en cours de vérification soit relayé, puis garde la file jusqu'à la liste du nettoyage.
       const abortGate = abortId !== undefined ? await gate.acquire() : undefined;
       if (abortGate !== undefined) releaseGate = abortGate;
+      // P9 : réponse inscrite au registre avant son envoi.
+      if (browserReply !== null) gate.emitted.record({ ...browserReply, at: Date.now() });
       const upstream = await client.raw(method, target, {
         headers: {
           accept: c.req.header("accept") ?? "application/json",
@@ -1024,6 +1141,19 @@ export function createApp(deps: AppDeps): Hono {
       const contentType = upstream.headers.get("content-type");
       // Jamais de document ni de script servi sous l'origine du cockpit, même si opencode (ou un faux serveur) le demandait.
       if (contentType) headers.set("content-type", PROXY_CONTENT_TYPE.test(contentType) ? contentType : "application/json");
+      if (method === "POST" && sub === "/session" && upstream.ok && proxyHooks && proxyHooks.hooks.sessionCreated.length > 0) {
+        // Corps de la réponse lu seulement ici : vérification de la conversation créée (écart : supprimée, 502).
+        const text = await upstream.text();
+        let session: unknown = null;
+        try {
+          session = text ? JSON.parse(text) : null;
+        } catch {
+          session = null;
+        }
+        const hooked = await proxyHooks.runHooks("sessionCreated", hookContext(record), session);
+        if (hooked) return hooked;
+        return new Response(text, { status: upstream.status, headers });
+      }
       return new Response(upstream.body, { status: upstream.status, headers });
     } finally {
       // Refusée avant le relais ou en erreur : plus comptée en vol (sans effet si la réponse d'opencode l'a déjà retirée).
@@ -1340,6 +1470,11 @@ export function createApp(deps: AppDeps): Hono {
 
   /** Conversation en cours : un redémarrage d'opencode la couperait. */
   const sessionsBusy = () => probeSessionsBusy({ client, projects, db: deps.db });
+  /**
+   * Garde des routes de configuration, dans la file et applying posé, sans dérogation : demande facturée admise par le proxy juste
+   * avant l'indicateur (réponse en cours que la sonde ne voit pas encore), décision en examen (reloadBusy), ou réponse lue en cours.
+   */
+  const configBusy = async (): Promise<boolean> => configQueue.billedInFlight > 0 || examining(deps.reloadBusy) || (await sessionsBusy());
 
   type ConfigFailure =
     | "sessions-busy"
@@ -1451,12 +1586,11 @@ export function createApp(deps: AppDeps): Hono {
     return configQueue.applyingWhile(async (): Promise<ConfigApply> => {
       let busy: boolean;
       try {
-        // Demande facturée admise par le proxy juste avant l'indicateur : réponse en cours que la sonde ne voit pas encore.
-        busy = configQueue.billedInFlight > 0 || (await sessionsBusy());
+        busy = await configBusy();
       } catch {
         return opencodeUnreachable();
       }
-      if (busy) return { ok: false, error: "sessions-busy", message: MESSAGES.configRestartBusy, restarted: false };
+      if (busy) return { ok: false, error: "sessions-busy", message: MESSAGES.reloadBusy, restarted: false };
       await writeFileAtomic(file, content);
       const outcome = await restartOnConfig(file, backup, what);
       // Redémarrage fait (fichier appliqué ou retour arrière) : nouveau processus, qui a pu perdre l'adresse imposée.
@@ -1521,8 +1655,7 @@ export function createApp(deps: AppDeps): Hono {
       return configQueue.applyingWhile(async (): Promise<ConfigPatch> => {
         let busy: boolean;
         try {
-          // Demande facturée admise par le proxy juste avant l'indicateur : réponse en cours que la sonde ne voit pas encore.
-          busy = configQueue.billedInFlight > 0 || (await sessionsBusy());
+          busy = await configBusy();
         } catch (err) {
           return { ok: false, status: 503, error: "opencode-injoignable", message: MESSAGES.opencodeInjoignable, wrote: false, cause: errorMessage(err) };
         }
@@ -1792,20 +1925,26 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post("/api/system/restart-opencode", guardRestart, async (c) => {
+    const request = { confirmed: c.req.header(CONFIRM_HEADER) === "1", path: c.req.path };
     // Dans la file partagée : jamais pendant une application (PATCH, libération des instances) ; « synchro due » posée avant la
-    // libération d'applying, levée par la synchro lancée après la tâche.
+    // libération d'applying, levée par la synchro lancée après la tâche. Garde refaite une fois la place obtenue, applying posé,
+    // avec les mêmes règles (dérogation, décision du 15/09) : une réponse commencée pendant l'attente n'est jamais coupée.
     const result = await configQueue.run(() =>
-      configQueue.applyingWhile(async () => {
+      configQueue.applyingWhile(async (): Promise<RestartResult | { refused: ReloadRefusal }> => {
+        const refused = await reloadRefusal(reloadGuardDeps, RESTART_GUARD, request);
+        if (refused) return { refused };
         const restart = await control.restartOpencode("demande depuis l'interface");
         if (restart.ok) copilotSyncDue("redémarrage d'opencode (page Diagnostic)");
         return restart;
       }),
     );
+    if ("refused" in result) return c.json(result.refused, 409);
     if (result.ok) {
       await catalog.refresh().catch(() => undefined);
       // Nouveau processus : l'adresse de l'API Copilot est revérifiée dans chaque dossier (et réécrite s'il le faut).
       await deps.copilotConfig.sync().catch(() => undefined);
-      await studio.ensureClassifierAgent().catch(() => undefined);
+      // Agents internes réinstallés (ports.internalAgents d'app-factory ; sans lui, l'agent de classement comme en 1.0).
+      await (deps.internalAgents ? deps.internalAgents.ensureAll() : studio.ensureClassifierAgent()).catch(() => undefined);
     }
     return c.json(result, result.ok ? 200 : 503);
   });

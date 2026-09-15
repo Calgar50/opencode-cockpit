@@ -6,6 +6,7 @@ import { z } from "zod";
 import { CATALOGUE, CATALOGUE_FICHES, type CatalogueFiche, REVIEW_BANNER } from "./assistants-catalogue.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import { CLASSIFIER_AGENT } from "./classifier.ts";
+import type { ConfigWriteQueue } from "./config-queue.ts";
 import { type ItemMetaRow, params, transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { stringifyFrontmatter } from "./frontmatter.ts";
@@ -174,6 +175,13 @@ export interface AssistantServiceDeps {
   projects: ProjectsService;
   hub: EventHub;
   log: Logger;
+  /** 1.1 : décision en examen (Cockpit11.reloadBusy) : le réalignement est refusé comme pendant une réponse. */
+  reloadBusy?: () => boolean;
+  /**
+   * 1.1 : file d'écriture de la configuration, partagée : demandes facturées en vol comptées comme réponses en cours ; réalignement
+   * vérifié de nouveau après l'attente de la file, applying posé jusqu'au rechargement. Absente (tests) : sans attente.
+   */
+  queue?: Pick<ConfigWriteQueue, "run" | "applyingWhile" | "billedInFlight">;
 }
 
 // --- Constantes et petits utilitaires ----------------------------------------------------------
@@ -1203,10 +1211,22 @@ export class AssistantService {
     return [...assistants.sort(byLabel), ...commands.sort(byLabel), ...agents.sort(byLabel), ...builtins, ...missing.sort(byLabel)];
   }
 
+  /** Garde du réalignement (§3.11) : demande facturée en vol, décision en examen (un reloadBusy qui lève compte), réponse lue. */
+  async #reloadBusy(): Promise<boolean> {
+    const { queue, reloadBusy, client, projects, db } = this.#d;
+    if ((queue?.billedInFlight ?? 0) > 0) return true;
+    try {
+      if (reloadBusy?.() === true) return true;
+    } catch {
+      return true;
+    }
+    return probeSessionsBusy({ client, projects, db });
+  }
+
   async realign(items: RealignRequest["items"]): Promise<RealignResponse> {
-    const { catalog, studio, db, hub, lookup } = this.#d;
+    const { catalog, studio, db, hub, lookup, queue } = this.#d;
     if (!catalog.loaded) throw new AssistantServiceError(409, "catalogue-indisponible", MESSAGES.catalogueIndisponible);
-    const busy = () => probeSessionsBusy({ client: this.#d.client, projects: this.#d.projects, db });
+    const busy = () => this.#reloadBusy();
     if (await busy()) throw sessionsBusyError();
 
     const ctx = await this.#context({ snapshot: false, global: false });
@@ -1241,13 +1261,23 @@ export class AssistantService {
     }
     if (targets.length === 0) return { updated: [] };
 
-    try {
-      await studio.applyModels(
+    const apply = () =>
+      studio.applyModels(
         targets.map((t) => ({ kind: t.kind, name: t.name, model: t.to, variant: t.variant })),
         async () => {
           if (await busy()) throw sessionsBusyError();
         },
       );
+    try {
+      if (queue) {
+        // Application de la configuration en cours : attendue d'abord. Puis applying posé AVANT la nouvelle vérification (sous le
+        // verrou du Studio, avant toute écriture) et gardé jusqu'au rechargement : une réponse commencée pendant l'attente refuse le
+        // réalignement, et aucune demande facturée ne commence entre la vérification et le rechargement.
+        await queue.run(async () => undefined);
+        await queue.applyingWhile(apply);
+      } else {
+        await apply();
+      }
     } catch (err) {
       if (err instanceof StudioApplyError) {
         throw new AssistantServiceError(422, "rejected-by-opencode", MESSAGES.rejectedByOpencode, {

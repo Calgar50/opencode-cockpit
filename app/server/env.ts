@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isFetchBlockedPort } from "./fetch-ports.ts";
 import { DEFAULT_ALLOWED_PROVIDERS, normalizeCopilotApiUrl } from "./shared/assistant-rules.ts";
 
 export interface AppEnv {
@@ -106,6 +107,11 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
   const opencodeUrl = env.OPENCODE_URL?.trim() || "http://opencode:4096";
   const parsed = new URL(opencodeUrl);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EnvError("OPENCODE_URL doit être http(s).");
+  // Port effectif (explicite, sinon celui du schéma) refusé par fetch : aucune demande ne partirait (« fetch failed » sans fin).
+  const opencodePort = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+  if (isFetchBlockedPort(opencodePort)) {
+    throw new EnvError(`OPENCODE_URL : le port ${opencodePort} est refusé par fetch (Node), le cockpit ne pourrait jamais joindre opencode. Choisissez un autre port.`);
+  }
 
   const workspaceDir = path.resolve(env.COCKPIT_WORKSPACE_DIR ?? "/workspace");
   const githubEnterpriseDomain = env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null;

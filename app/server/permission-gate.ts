@@ -1,7 +1,9 @@
 // Portillon des accords (spécification 1.1 §3.8, P9) : vérification avant de relayer une réponse d'autorisation, file commune
 // aux réponses et aux arrêts, nettoyage des demandes restées en attente après un arrêt. Extrait de createApp (http.ts) à
 // comportement constant (L1a) : une seule instance, empruntée par le proxy puis par toute réponse envoyée par le serveur.
-import type { OnceVerdict, PendingPermission, PermissionGateDeps, PermissionTool } from "./contracts-11.ts";
+// Registre des réponses émises : chaque réponse (« once » ou « reject ») est inscrite AVANT son envoi à opencode.
+// relayOnce et rejectWhenAlone arrivent avec L1b.
+import type { EmittedReply, OnceVerdict, PendingPermission, PermissionGate, PermissionGateDeps, PermissionTool } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import { OpencodeError } from "./opencode.ts";
 import { ID_RE } from "./shared/ids.ts";
@@ -10,9 +12,31 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Portillon du proxy (fermetures de createApp jusqu'à la 1.0.4). */
-export function createPermissionGate(deps: Pick<PermissionGateDeps, "client" | "db" | "log">) {
+/** Borne du registre des réponses émises : les plus anciennes sortent en premier. */
+export const EMITTED_MAX = 2_000;
+
+/** Registre borné des réponses émises, par identifiant de demande (la dernière inscription l'emporte). */
+export function emittedRegistry(max = EMITTED_MAX): PermissionGate["emitted"] & { entries(): EmittedReply[] } {
+  const entries = new Map<string, EmittedReply>();
+  return {
+    record(entry) {
+      entries.delete(entry.requestId);
+      entries.set(entry.requestId, { ...entry });
+      while (entries.size > max) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) break;
+        entries.delete(oldest);
+      }
+    },
+    has: (requestId) => entries.has(requestId),
+    entries: () => [...entries.values()].map((entry) => ({ ...entry })),
+  };
+}
+
+/** Portillon des accords : proxy, puis autonomie et garde des délégations (P9). */
+export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
   const { client, log } = deps;
+  const emitted = emittedRegistry();
 
   const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
   /** Bornes du nettoyage après un arrêt : profondeur de sous-agents, sessions suivies, appels à opencode, refus envoyés. */
@@ -225,6 +249,8 @@ export function createPermissionGate(deps: Pick<PermissionGateDeps, "client" | "
         continue;
       }
       try {
+        // P9 : inscrite au registre avant l'envoi.
+        emitted.record({ requestId: request.id, reply: "reject", by: "cockpit", at: Date.now() });
         await client.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, {
           query: { directory },
           body: { reply: "reject" },
@@ -267,5 +293,8 @@ export function createPermissionGate(deps: Pick<PermissionGateDeps, "client" | "
     isOrphanOfWorkingSession,
     rejectOrphans,
     rejectAborted: rejectAbortedPermissions,
+    relayOnce: () => Promise.reject(new Error("portillon : relayOnce non disponible avant L1b")),
+    rejectWhenAlone: () => Promise.reject(new Error("portillon : rejectWhenAlone non disponible avant L1b")),
+    emitted: { record: (entry) => emitted.record(entry), has: (requestId) => emitted.has(requestId) },
   };
 }

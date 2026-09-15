@@ -1,0 +1,137 @@
+// Fabrique de l'application 1.1 (plan d'exécution §2.2, L1a) : portillon partagé, prédicat de la garde de rechargement,
+// câblage wiring-11, puis createApp. Seul endroit où les dérivations, les abonnements au hub, le démarrage et les routes 1.1 sont
+// branchés : createApp n'enregistre rien de 1.1 (integration.test.ts, qui monte createApp avec un faux processeur, reste valable).
+// Utilisée par main.ts (tous les modules) et par le harnais des tests (modules déclarés, surcharges de ports).
+import type { Hono } from "hono";
+import { probeSessionsBusyStrict } from "./assistants.ts";
+import type { ConfigWriteQueue } from "./config-queue.ts";
+import type { Cockpit11, Cockpit11Deps, HubEventMap, InternalAgentsPort, PermissionGate } from "./contracts-11.ts";
+import { type AppDeps, createApp } from "./http.ts";
+import { errorMessage } from "./log.ts";
+import { createPermissionGate } from "./permission-gate.ts";
+import { reloadOccupancy } from "./reload-guard.ts";
+import type { SessionTracker } from "./sessions.ts";
+import { type BuildCockpit11Options, buildCockpit11, type Cockpit11Wiring, STEP_ORDER } from "./wiring-11.ts";
+
+export interface CockpitAppDeps extends Omit<AppDeps, "gate" | "proxyHooks" | "internalAgents" | "reloadBusy" | "configQueue"> {
+  /** Suivi des sessions (arbre d'une conversation pour le portillon, modules 1.1). */
+  sessions: SessionTracker;
+  /** File d'écriture de la configuration, partagée par l'API, le Studio, la synchro de l'adresse Copilot et la garde. */
+  configQueue: ConfigWriteQueue;
+  /** Portillon remplacé (tests) ; absent : createPermissionGate. */
+  gate?: PermissionGate;
+}
+
+export interface CockpitAppOptions {
+  /** Absent : tous les modules (production). Tableau : seulement ceux-là, les autres gardent leur port neutre (tests). */
+  modules?: BuildCockpit11Options["modules"];
+  /** Surcharges de ports (tests), posées après l'installation des modules. */
+  ports?: BuildCockpit11Options["ports"];
+}
+
+export interface CockpitApp {
+  app: Hono;
+  wiring: Cockpit11Wiring;
+  c11: Cockpit11;
+  gate: PermissionGate;
+  /**
+   * Démarrage 1.1, une fois opencode joignable et l'adresse de l'API Copilot synchronisée, avant processor.start : inscriptions
+   * « startup » dans l'ordre de STEP_ORDER, ports.internalAgents.ensureAll() à sa place. Une étape en échec est journalisée et
+   * n'arrête pas les suivantes.
+   */
+  startup(): Promise<void>;
+  /** Retire les dérivations du processeur et les abonnements au hub. */
+  close(): void;
+}
+
+/**
+ * Construit le cockpit 1.1 sur des services déjà créés. Rend la décision « examen en cours » par une fonction lue à chaque appel :
+ * les services créés avant la fabrique (AssistantService) la reçoivent par `reloadBusy`.
+ */
+export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOptions = {}): CockpitApp {
+  const { env, log, db, client, hub, settings, sessions, ledger, archive, lookup, catalog, tiers, projects, control, configQueue, copilotConfig, studio } =
+    deps;
+  const gate = deps.gate ?? createPermissionGate({ client, db, log, hub, sessions });
+  // Lu à chaque appel : aucun module ne lit le prédicat pendant son installation.
+  let wiring: Cockpit11Wiring | null = null;
+  const reloadBusy = (): boolean => (wiring ? wiring.c11.reloadBusy() : false);
+  const occupancy = reloadOccupancy({ queue: configQueue, reloadBusy, probe: () => probeSessionsBusyStrict({ client, projects, db, log }) });
+  const c11Deps: Cockpit11Deps = {
+    env,
+    log,
+    db,
+    client,
+    hub,
+    settings,
+    sessions,
+    ledger,
+    archive,
+    lookup,
+    catalog,
+    tiers,
+    projects,
+    control,
+    configQueue,
+    copilotConfig,
+    studio,
+    gate,
+    occupancy,
+  };
+  const built = buildCockpit11(c11Deps, { modules: options.modules, ports: options.ports });
+  wiring = built;
+
+  // Dérivations (synchrones, avant la file du processeur) et abonnements aux événements du cockpit, dans l'ordre de STEP_ORDER.
+  // Un abonné qui lève n'arrête pas les autres : EventHub.publish isole chaque abonné.
+  const detach: Array<() => void> = [];
+  for (const derivation of built.derivations) detach.push(deps.processor.addDerivation(derivation));
+  for (const subscription of built.subscriptions) {
+    const fn = subscription.fn as (data: HubEventMap[typeof subscription.type]) => void;
+    detach.push(
+      hub.subscribe((event) => {
+        if (event.kind === "cockpit" && event.type === subscription.type) fn(event.data as HubEventMap[typeof subscription.type]);
+      }),
+    );
+  }
+
+  // Port lu au moment de l'appel (jamais en copie) : un module ou une surcharge qui le pose après reste pris en compte.
+  const internalAgents: Pick<InternalAgentsPort, "ensureAll"> = { ensureAll: () => built.c11.ports.internalAgents.ensureAll() };
+  const app = createApp({
+    ...deps,
+    gate,
+    proxyHooks: built,
+    internalAgents,
+    reloadBusy,
+    routes: [...(deps.routes ?? []), ...built.routes],
+  });
+
+  const startup = async (): Promise<void> => {
+    const steps = built.registrations.filter((r) => r.kind === "startup");
+    const ensureRank = STEP_ORDER.startup.indexOf("internalAgents");
+    let ensured = false;
+    const ensureAll = async () => {
+      ensured = true;
+      await internalAgents.ensureAll().catch((err: unknown) => log.warn("agents internes non installés", { error: errorMessage(err) }));
+    };
+    for (const [index, run] of built.startup.entries()) {
+      const module = steps[index]?.module;
+      if (!ensured && module !== undefined && (STEP_ORDER.startup as readonly string[]).indexOf(module) >= ensureRank) await ensureAll();
+      try {
+        await run();
+      } catch (err) {
+        log.warn("démarrage 1.1 : étape en échec", { module, error: errorMessage(err) });
+      }
+    }
+    if (!ensured) await ensureAll();
+  };
+
+  return {
+    app,
+    wiring: built,
+    c11: built.c11,
+    gate,
+    startup,
+    close: () => {
+      for (const undo of detach.splice(0)) undo();
+    },
+  };
+}
