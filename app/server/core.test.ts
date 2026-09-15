@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -1195,17 +1196,54 @@ describe("niveaux d'IA", () => {
 });
 
 describe("module partagé", () => {
-  it("server/shared est pur : ni « node: » ni process, api-types.ts sans code", () => {
+  // 1.1 (plan d'exécution §4.1) : tous les fichiers de server/shared, pas seulement ceux de la 0.2.0. Imports permis : un module
+  // voisin (./x.ts), ../pricing.ts et ../redact.ts (eux-mêmes purs et sans import) ; un fichier *-types.ts ne contient aucun code.
+  it("server/shared est pur : ni « node: » ni process, imports permis, fichiers *-types.ts sans code", () => {
     const read = (...parts: string[]) => fs.readFileSync(path.join(import.meta.dirname, ...parts), "utf8");
-    const rules = read("shared", "assistant-rules.ts");
-    const types = read("shared", "api-types.ts");
-    for (const [name, source] of [["assistant-rules.ts", rules], ["api-types.ts", types], ["pricing.ts (importé par le module)", read("pricing.ts")]]) {
-      assert.equal(source?.includes('from "node:'), false, name);
-      assert.equal(/\bprocess\./.test(source ?? ""), false, name);
+    const files = fs.readdirSync(path.join(import.meta.dirname, "shared")).filter((f) => f.endsWith(".ts")).sort();
+    for (const known of ["api-types.ts", "assistant-rules.ts"]) assert.ok(files.includes(known), known);
+    const importsOf = (source: string) => [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1] ?? "");
+    /** Texte sans commentaires, lu de gauche à droite (un « // » qui contient « /* » reste un commentaire de ligne). */
+    const withoutComments = (text: string) => {
+      let out = "";
+      for (let i = 0; i < text.length; ) {
+        if (text.startsWith("//", i)) {
+          const end = text.indexOf("\n", i);
+          i = end === -1 ? text.length : end;
+        } else if (text.startsWith("/*", i)) {
+          const end = text.indexOf("*/", i + 2);
+          i = end === -1 ? text.length : end + 2;
+        } else {
+          out += text[i];
+          i++;
+        }
+      }
+      return out;
+    };
+    const parents = new Set<string>();
+    for (const file of files) {
+      const source = read("shared", file);
+      assert.equal(source.includes('"node:'), false, `${file} : module node:`);
+      assert.equal(/\bprocess\./.test(source), false, `${file} : process`);
+      assert.equal(/\brequire\s*\(/.test(source), false, `${file} : require`);
+      for (const spec of importsOf(source)) {
+        const allowed = /^\.\/[\w.-]+\.ts$/.test(spec) || spec === "../pricing.ts" || spec === "../redact.ts";
+        assert.ok(allowed, `${file} : import refusé ${spec}`);
+        if (spec.startsWith("../")) parents.add(spec.slice(3));
+      }
+      if (file.endsWith("-types.ts")) {
+        // Types effacés : il ne reste que des blancs et des commentaires, sinon le fichier exécute du code.
+        assert.equal(withoutComments(stripTypeScriptTypes(source)).trim(), "", `${file} : code exécutable dans un fichier de types`);
+        assert.equal(/^\s*import (?!type\b)/m.test(source), false, `${file} : import de valeur`);
+      }
     }
-    assert.deepEqual([...rules.matchAll(/from "([^"]+)"/g)].map((m) => m[1]), ["../pricing.ts", "../pricing.ts"]);
-    assert.equal(/^export (const|function|class|let|var)\b/m.test(types), false);
-    assert.equal(/^import (?!type )/m.test(types), false);
+    for (const parent of parents) {
+      const source = read(parent);
+      assert.equal(source.includes('"node:'), false, `${parent} (importé par server/shared) : module node:`);
+      assert.equal(/\bprocess\./.test(source), false, `${parent} (importé par server/shared) : process`);
+      assert.deepEqual(importsOf(source), [], `${parent} (importé par server/shared) : aucun import`);
+    }
+    assert.ok(parents.has("pricing.ts"));
   });
 });
 
