@@ -16,7 +16,7 @@ export interface PermissionRule {
 
 export type PermissionReply = "once" | "always" | "reject";
 
-/** Demande d'autorisation (permission.asked, GET /permission). */
+/** Demande d'autorisation (permission.asked, GET /permission). `tool` absent pour doom_loop (processor.ts:372-379). */
 export interface FakePermissionRequest {
   id: string;
   sessionID: string;
@@ -62,13 +62,27 @@ export interface FakeToolScript {
   tool: string;
   callID?: string;
   input: Record<string, unknown>;
-  /** Demande posée par l'outil ; absente : l'outil s'exécute sans rien évaluer. */
-  ask?: { permission: string; patterns: string[]; metadata?: Record<string, unknown>; always?: string[] };
+  /**
+   * Demande posée par l'outil ; absente : l'outil s'exécute sans rien évaluer. `scope` « session » (défaut) : règles de l'agent
+   * puis de la session ; « agent » (défaut pour doom_loop, processor.ts:372-379, F-j) : règles de l'agent seules, demande sans `tool`.
+   */
+  ask?: { permission: string; patterns: string[]; metadata?: Record<string, unknown>; always?: string[]; scope?: "agent" | "session" };
   /** Règles de l'agent, évaluées avant celles de la session (F-d). */
   agentRules?: PermissionRule[];
   output?: string;
-  /** Outil « task » : sous-agent lancé après l'accord (tool/task.ts:139-215). */
-  child?: FakeUsage & { agent: string; text?: string; agentRules?: PermissionRule[]; workMs?: number };
+  /**
+   * Outil « task » : sous-agent lancé après l'accord (tool/task.ts:136-215). `input.task_id` d'une session existante : cette
+   * session est reprise, sans création. `model` : IA fixée par l'agent cible (aucune variante transmise). `turn` : tour complet
+   * joué par l'enfant (outils, demandes, coût à chaque étape) ; absent : un seul texte (`text`), coût à la fin, après `workMs`.
+   */
+  child?: FakeUsage & {
+    agent: string;
+    text?: string;
+    agentRules?: PermissionRule[];
+    workMs?: number;
+    model?: { providerID: string; modelID: string };
+    turn?: FakeTurnScript;
+  };
 }
 
 /** Tour d'assistant scripté : outils en parallèle dans un même message, puis reprise. */
@@ -99,13 +113,16 @@ export interface FakeOpencodeOptions {
 }
 
 type Outcome = { reply: PermissionReply; message?: string };
-type ModelRef = { providerID: string; modelID: string };
+type ModelRef = { providerID: string; modelID: string; variant?: string };
+type ChildResult = { sessionID: string; text: string; part: OcPart | null; failed?: string };
 
 interface Run {
   sessionID: string;
   aborted: boolean;
-  /** Arrêt sans événement (fermeture, remise à zéro, suppression). */
+  /** Arrêt sans événement (fermeture, remise à zéro d'une instance). */
   quiet: boolean;
+  /** Boucle terminée, repos publié (fin normale ou tour en erreur). */
+  finished: boolean;
   queue: Array<{ user: OcMessageWithParts; turn: FakeTurnScript }>;
   assistant: OcMessageWithParts | null;
   last: OcMessageWithParts | null;
@@ -133,6 +150,13 @@ interface Waiter {
   timer: NodeJS.Timeout;
 }
 
+/** Écriture d'un message ou d'une partie d'une session supprimée : refusée par la base (clé étrangère), rien n'est diffusé. */
+class ForeignKeyError extends Error {
+  constructor() {
+    super("FOREIGN KEY constraint failed");
+  }
+}
+
 const DURABLE_EVENTS = new Set(["session.created", "session.updated", "session.deleted", "message.updated", "message.removed", "message.part.updated", "message.part.removed"]);
 const ABORTED = { name: "MessageAbortedError", data: { message: "Aborted" } };
 const REJECTED = "The user rejected permission to use this specific tool call.";
@@ -147,6 +171,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const jsonClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const sameSecret = (given: string, expected: string): boolean =>
   timingSafeEqual(createHash("sha256").update(given).digest(), createHash("sha256").update(expected).digest());
+const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 export const isSync = (payload: OcEvent | SyncPayload): payload is SyncPayload => payload.type === "sync" && "syncEvent" in payload;
 
@@ -266,14 +291,19 @@ export class FakeOpencode {
   #closed = false;
   readonly #clients = new Map<http.ServerResponse, NodeJS.Timeout>();
   readonly #sessions = new Map<string, FakeSession>();
+  /** Dossier de chaque session, gardé après sa suppression (événements d'un tour qui continue). */
+  readonly #directories = new Map<string, string>();
   readonly #messages = new Map<string, OcMessageWithParts[]>();
   readonly #statuses = new Map<string, { type: string }>();
   readonly #pending = new Map<string, PendingEntry>();
-  readonly #approved: PermissionRule[] = [];
+  /** Accords « always », propres à chaque instance (permission/index.ts:46-51). */
+  readonly #approved = new Map<string, PermissionRule[]>();
   readonly #runs = new Map<string, Run>();
   readonly #scripts = new Map<string, FakeTurnScript[]>();
   readonly #seq = new Map<string, number>();
   readonly #waiters = new Set<Waiter>();
+  /** Instances chargées (instance-store.ts) : dossiers des requêtes d'instance et des sessions, retirés à leur libération. */
+  readonly #instances = new Set<string>();
 
   constructor(options: FakeOpencodeOptions = {}) {
     this.#username = options.username ?? "opencode";
@@ -335,6 +365,11 @@ export class FakeOpencode {
     return this.#statuses.get(sessionID) ?? { type: "idle" };
   }
 
+  /** Fin de la boucle de tours en cours de la session, repos compris (résolue aussitôt sans tour en cours). */
+  settled(sessionID: string): Promise<void> {
+    return this.#runs.get(sessionID)?.done ?? Promise.resolve();
+  }
+
   /** Diffuse un événement ; identifiant horodaté si absent ; jumeau « sync » pour un événement durable. */
   emit(event: { type: string; properties: Record<string, unknown>; id?: string }, directory: string = this.directory): OcEvent {
     const id = event.id ?? createId("evt");
@@ -358,8 +393,17 @@ export class FakeOpencode {
     this.emitted.push(wire);
     const line = `data: ${JSON.stringify(wire)}\n\n`;
     for (const res of this.#clients.keys()) res.write(line);
-    for (const waiter of this.#waiters) {
-      const hit = waiter.test(wire);
+    for (const waiter of [...this.#waiters]) {
+      let hit: OcEvent | null;
+      try {
+        hit = waiter.test(wire);
+      } catch (err) {
+        // Prédicat du test qui lève : cette attente échoue avec l'erreur, jamais le faux (#route, #turn, #reply).
+        this.#waiters.delete(waiter);
+        clearTimeout(waiter.timer);
+        waiter.reject(asError(err));
+        continue;
+      }
       if (!hit) continue;
       this.#waiters.delete(waiter);
       clearTimeout(waiter.timer);
@@ -367,9 +411,19 @@ export class FakeOpencode {
     }
   }
 
-  /** global.disposed (global-lifecycle.ts:6-15). `resetInstances` : demandes rejetées sans événement, tours coupés, états vidés. */
+  /** server.instance.disposed (instance-store.ts:79-98), sans jumeau sync. */
+  emitInstanceDisposed(directory: string): void {
+    this.emitRaw({ directory, project: this.project, payload: { id: createId("evt"), type: "server.instance.disposed", properties: { directory } } });
+  }
+
+  /**
+   * disposeAll puis global.disposed (global-lifecycle.ts:16-25) : server.instance.disposed pour chaque instance chargée, puis
+   * global.disposed. `resetInstances` : demandes rejetées sans événement, tours coupés, états vidés.
+   */
   emitGlobalDisposed(options: { resetInstances?: boolean } = {}): void {
-    if (options.resetInstances) this.#resetInstances();
+    const reset = options.resetInstances === true;
+    for (const directory of [...this.#instances]) this.#disposeInstance(directory, reset);
+    if (reset) this.#resetInstances();
     this.emitRaw({ directory: "global", payload: { id: createId("evt"), type: "global.disposed", properties: {} } });
   }
 
@@ -390,9 +444,13 @@ export class FakeOpencode {
   ): Promise<OcEvent> {
     const test = (wire: FakeWireEvent): OcEvent | null =>
       isSync(wire.payload) || wire.payload.type !== type || !match(wire.payload.properties) ? null : wire.payload;
-    for (const wire of this.emitted.slice(options.since ?? 0)) {
-      const hit = test(wire);
-      if (hit) return Promise.resolve(hit);
+    try {
+      for (const wire of this.emitted.slice(options.since ?? 0)) {
+        const hit = test(wire);
+        if (hit) return Promise.resolve(hit);
+      }
+    } catch (err) {
+      return Promise.reject(asError(err));
     }
     const timeoutMs = options.timeoutMs ?? 3000;
     return new Promise<OcEvent>((resolve, reject) => {
@@ -475,9 +533,22 @@ export class FakeOpencode {
     const is = (m: string, ...shape: string[]) => method === m && seg.length === shape.length && shape.every((p, i) => p === "*" || p === seg[i]);
     const id = seg[1] ?? "";
     const input = isRecord(body) ? body : {};
+    // Toute route hors /global/* charge l'instance du dossier demandé.
+    if (seg[0] !== "global") this.#instances.add(directory);
 
     if (is("GET", "global", "health")) return json(200, { healthy: true, version: this.version });
     if (is("GET", "global", "event")) return this.#openStream(res);
+    // Libération de toutes les instances avant la réponse (handlers/global.ts:84-87).
+    if (is("POST", "global", "dispose")) {
+      this.emitGlobalDisposed({ resetInstances: true });
+      return json(200, true);
+    }
+    // Réponse d'abord, libération de l'instance ensuite (handlers/instance.ts:24-27, lifecycle.ts:43-55).
+    if (is("POST", "instance", "dispose")) {
+      json(200, true);
+      this.#disposeInstance(directory, true);
+      return;
+    }
     // Demandes et états sont propres à l'instance du répertoire demandé (InstanceState).
     if (is("GET", "permission")) return json(200, [...this.#pending.values()].filter((e) => e.directory === directory).map((e) => e.info));
     if (is("POST", "permission", "*", "reply")) {
@@ -488,7 +559,7 @@ export class FakeOpencode {
       return json(404, { _tag: "PermissionNotFoundError", requestID: id, message: `Permission request not found: ${id}` });
     }
     if (is("GET", "session", "status")) {
-      const inInstance = ([sid]: [string, unknown]) => (this.#sessions.get(sid)?.directory ?? this.directory) === directory;
+      const inInstance = ([sid]: [string, unknown]) => this.#directoryOf(sid) === directory;
       return json(200, Object.fromEntries([...this.#statuses].filter(inInstance)));
     }
     if (is("POST", "session")) {
@@ -560,8 +631,21 @@ export class FakeOpencode {
     });
   }
 
+  #directoryOf(sessionID: string): string {
+    return this.#directories.get(sessionID) ?? this.directory;
+  }
+
+  #approvedIn(directory: string): PermissionRule[] {
+    let rules = this.#approved.get(directory);
+    if (!rules) {
+      rules = [];
+      this.#approved.set(directory, rules);
+    }
+    return rules;
+  }
+
   #emitFor(sessionID: string, type: string, properties: Record<string, unknown>): void {
-    this.emit({ type, properties }, this.#sessions.get(sessionID)?.directory ?? this.directory);
+    this.emit({ type, properties }, this.#directoryOf(sessionID));
   }
 
   #emitSessionInfo(type: string, session: FakeSession): void {
@@ -605,6 +689,8 @@ export class FakeOpencode {
       time: { created: now, updated: now },
     };
     this.#sessions.set(session.id, session);
+    this.#directories.set(session.id, session.directory);
+    this.#instances.add(session.directory);
     this.#messages.set(session.id, []);
     this.#emitSessionInfo("session.created", session);
     return session;
@@ -625,27 +711,46 @@ export class FakeOpencode {
     return true;
   }
 
-  /** Enfants d'abord, puis session.deleted (session.ts:606-627). Un tour en cours est coupé sans événement. */
+  /**
+   * DELETE (session.ts:606-627) : travail délégué par « task » annulé d'abord (arrêt visible, « Task cancelled » chez le parent
+   * qui reprend), enfants supprimés, puis session.deleted. Le tour de la session supprimée n'est JAMAIS arrêté : il continue et
+   * échoue à sa prochaine écriture (clé étrangère). Pour arrêter le travail : POST /session/:id/abort, attendre le repos, puis DELETE.
+   */
   #remove(session: FakeSession): void {
+    this.#cancelTaskJobs(session.id);
     for (const child of [...this.#sessions.values()].filter((s) => s.parentID === session.id)) this.#remove(child);
-    const run = this.#runs.get(session.id);
-    if (run) {
-      run.quiet = true;
-      this.#interrupt(run);
-    }
     this.#emitSessionInfo("session.deleted", session);
     this.#sessions.delete(session.id);
     this.#messages.delete(session.id);
-    this.#statuses.delete(session.id);
+  }
+
+  /**
+   * cancelBackgroundJobs (run-state.ts:111-143) : le tour de la session si c'est un sous-agent « task » en cours, sinon ceux de
+   * ses propres sous-agents « task », arrêtés avec leurs événements ; jamais le tour d'une session qui n'est pas un sous-agent.
+   */
+  #cancelTaskJobs(sessionID: string): void {
+    const own = this.#runs.get(sessionID);
+    const delegated = own !== undefined && [...this.#runs.values()].some((run) => run !== own && !run.aborted && run.children.has(sessionID));
+    if (own && delegated) {
+      // #interrupt arrête aussi ses propres sous-agents.
+      this.#interrupt(own);
+      return;
+    }
+    for (const id of own?.children ?? []) {
+      const child = this.#runs.get(id);
+      if (child) this.#interrupt(child);
+    }
   }
 
   #putMessage(message: OcMessageWithParts): void {
     const list = this.#messages.get(message.info.sessionID);
-    if (list && !list.includes(message)) list.push(message);
+    if (!list) throw new ForeignKeyError();
+    if (!list.includes(message)) list.push(message);
     this.#emitFor(message.info.sessionID, "message.updated", { sessionID: message.info.sessionID, info: message.info });
   }
 
   #putPart(message: OcMessageWithParts, fields: Record<string, unknown>): OcPart {
+    if (!this.#sessions.has(message.info.sessionID)) throw new ForeignKeyError();
     const id = typeof fields.id === "string" ? fields.id : createId("prt");
     const part = { ...fields, id, sessionID: message.info.sessionID, messageID: message.info.id } as OcPart;
     const index = message.parts.findIndex((p) => p.id === id);
@@ -655,19 +760,30 @@ export class FakeOpencode {
     return part;
   }
 
+  /** setAgentModel (prompt.ts:672-690) : assistant ou IA différents de ceux de la session → session.updated ; « default » vaut sans variante. */
+  #setAgentModel(session: FakeSession, agent: string, model: ModelRef, time: number): void {
+    const current = session.model;
+    const variant = current?.variant === "default" ? undefined : current?.variant;
+    if (session.agent === agent && current?.providerID === model.providerID && current?.id === model.modelID && variant === model.variant) return;
+    session.agent = agent;
+    session.model = { id: model.modelID, providerID: model.providerID, variant: model.variant ?? "default" };
+    session.time.updated = time;
+    this.#emitSessionInfo("session.updated", session);
+  }
+
   #prompt(session: FakeSession, input: Record<string, unknown>): { user: OcMessageWithParts; run: Run | null } {
     const now = Date.now();
-    const model = isRecord(input.model) && typeof input.model.providerID === "string" && typeof input.model.modelID === "string"
-      ? { providerID: input.model.providerID, modelID: input.model.modelID }
-      : DEFAULT_MODEL;
-    const info: OcUserMessage = {
-      id: createId("msg"),
-      sessionID: session.id,
-      role: "user",
-      time: { created: now },
-      agent: typeof input.agent === "string" ? input.agent : "build",
-      model,
-    };
+    const chosen =
+      isRecord(input.model) && typeof input.model.providerID === "string" && typeof input.model.modelID === "string"
+        ? { providerID: input.model.providerID, modelID: input.model.modelID }
+        : DEFAULT_MODEL;
+    // Variante demandée (prompt.ts:654) ; sans catalogue d'agents, le faux n'applique pas de variante propre à l'agent.
+    const variant = typeof input.variant === "string" && input.variant ? input.variant : undefined;
+    const model: ModelRef = { providerID: chosen.providerID, modelID: chosen.modelID, ...(variant ? { variant } : {}) };
+    const agent = typeof input.agent === "string" ? input.agent : "build";
+    const info: OcUserMessage = { id: createId("msg"), sessionID: session.id, role: "user", time: { created: now }, agent, model };
+    // Assistant et IA reportés sur la session avant le message (prompt.ts:672-690, capture p1).
+    this.#setAgentModel(session, agent, model, now);
     const user: OcMessageWithParts = { info, parts: [] };
     this.#putMessage(user);
     for (const part of input.parts as unknown[]) {
@@ -695,6 +811,7 @@ export class FakeOpencode {
       sessionID,
       aborted: false,
       quiet: false,
+      finished: false,
       queue: [],
       assistant: null,
       last: null,
@@ -716,15 +833,7 @@ export class FakeOpencode {
     }
     const run = this.#newRun(session.id);
     run.queue.push({ user, turn });
-    run.done = this.#drive(run, session).catch((err: unknown) => {
-      if (run.aborted) return;
-      this.failures.push(err);
-      // Échec d'un prompt_async publié en session.error (handlers/session.ts:316-325).
-      const message = err instanceof Error ? err.message : String(err);
-      this.#emitFor(session.id, "session.error", { sessionID: session.id, error: { name: "UnknownError", data: { message } } });
-      if (this.#runs.get(session.id) === run) this.#runs.delete(session.id);
-      this.#setStatus(session.id, { type: "idle" });
-    });
+    run.done = this.#drive(run, session).catch((err: unknown) => this.#runFailed(run, err));
     return run;
   }
 
@@ -732,9 +841,30 @@ export class FakeOpencode {
     for (let next = run.queue.shift(); next && !run.aborted; next = run.queue.shift()) {
       await this.#turn(run, session, next.user, next.turn);
     }
-    if (run.aborted) return;
+    if (!run.aborted) this.#settle(run);
+  }
+
+  /** Fin de boucle (run-state.ts:60-63) : run retiré, repos publié une seule fois. */
+  #settle(run: Run): void {
+    if (run.finished) return;
+    run.finished = true;
     if (this.#runs.get(run.sessionID) === run) this.#runs.delete(run.sessionID);
-    this.#setStatus(session.id, { type: "idle" });
+    this.#setStatus(run.sessionID, { type: "idle" });
+  }
+
+  /**
+   * Tour en échec, publié en session.error UnknownError puis repos (handlers/session.ts:316-325) ; le tour est arrêté. Clé
+   * étrangère (session supprimée pendant le tour) : comportement attendu, pas un échec du faux.
+   */
+  #runFailed(run: Run, err: unknown): void {
+    if (run.aborted || run.finished) return;
+    if (!(err instanceof ForeignKeyError)) this.failures.push(err);
+    run.aborted = true;
+    run.queue.length = 0;
+    run.stop();
+    this.#emitFor(run.sessionID, "session.error", { sessionID: run.sessionID, error: { name: "UnknownError", data: { message: asError(err).message } } });
+    if (this.#runs.get(run.sessionID) === run) this.#runs.delete(run.sessionID);
+    this.#setStatus(run.sessionID, { type: "idle" });
   }
 
   /** Pause interrompue par un arrêt ; false si le tour ne doit plus rien émettre. */
@@ -761,6 +891,8 @@ export class FakeOpencode {
       path: { cwd: session.directory, root: "/" },
       cost: 0,
       tokens: fullTokens(),
+      // Variante du message utilisateur (prompt.ts:1192), absente sans variante.
+      ...(userInfo.model.variant ? { variant: userInfo.model.variant } : {}),
     };
     const message: OcMessageWithParts = { info, parts: [] };
     this.#putMessage(message);
@@ -798,7 +930,8 @@ export class FakeOpencode {
     run.assistant = first;
     if (!(await this.#live(run, stepMs))) return;
     if (turn.error) {
-      // halt : erreur publiée, repos, puis message clos avec l'erreur (processor.ts:636-642).
+      // halt : erreur publiée, repos, puis message clos avec l'erreur (processor.ts:636-642). Fin de boucle et second repos
+      // (run-state.ts:60-63) dans le même bloc synchrone : une attente « since » relevée ensuite ne voit jamais ce repos.
       this.#emitFor(session.id, "session.error", { sessionID: session.id, error: turn.error });
       this.#setStatus(session.id, { type: "idle" });
       const info = first.info as OcAssistantMessage;
@@ -808,6 +941,7 @@ export class FakeOpencode {
       run.assistant = null;
       run.last = first;
       run.queue.length = 0;
+      this.#settle(run);
       return;
     }
     this.#putPart(first, { type: "step-start" });
@@ -848,8 +982,11 @@ export class FakeOpencode {
     if (!(await this.#live(run, stepMs))) return "blocked";
     const start = Date.now();
     const ask = tool.ask;
-    const rules = [...(tool.agentRules ?? []), ...(session.permission ?? [])];
-    const verdicts = ask ? ask.patterns.map((pattern) => evaluateRules(ask.permission, pattern, rules, this.#approved).action) : [];
+    // doom_loop : règles de l'agent seules, demande sans appel d'outil (processor.ts:372-379, F-j).
+    const agentScope = (ask?.scope ?? (ask?.permission === "doom_loop" ? "agent" : "session")) === "agent";
+    const rules = agentScope ? [...(tool.agentRules ?? [])] : [...(tool.agentRules ?? []), ...(session.permission ?? [])];
+    const approved = this.#approvedIn(session.directory);
+    const verdicts = ask ? ask.patterns.map((pattern) => evaluateRules(ask.permission, pattern, rules, approved).action) : [];
     const decision = verdicts.includes("deny") ? "deny" : verdicts.includes("ask") ? "ask" : "allow";
     let answer: Promise<Outcome | null> = Promise.resolve({ reply: "once" });
     if (ask && decision === "ask") {
@@ -861,16 +998,19 @@ export class FakeOpencode {
         patterns: [...ask.patterns],
         metadata: ask.metadata ?? {},
         always: ask.always ?? ["*"],
-        tool: { messageID: message.info.id, callID },
+        ...(agentScope ? {} : { tool: { messageID: message.info.id, callID } }),
       };
-      const { providerID, modelID } = message.info as OcAssistantMessage;
+      const { providerID, modelID, variant } = message.info as OcAssistantMessage;
+      const model: ModelRef = { providerID, modelID, ...(variant ? { variant } : {}) };
       // Enregistrée avant l'événement : une réponse immédiate est valable (permission/index.ts:98-100).
-      this.#pending.set(info.id, { info, directory: session.directory, settle: resolve, run, session, tool, model: { providerID, modelID }, stepMs });
+      this.#pending.set(info.id, { info, directory: session.directory, settle: resolve, run, session, tool, model, stepMs });
       this.#emitFor(session.id, "permission.asked", { ...info });
       answer = Promise.race([promise, run.stopped.then(() => null)]);
     }
-    part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });
-    const fail = (error: string) => this.#putPart(message, { ...part, state: { status: "error", input: tool.input, error, time: { start, end: Date.now() } } });
+    // Délégation autorisée d'office : aucun « running » sans metadata, l'enfant est créé d'abord (captures p1, p6).
+    if (!(tool.child && decision === "allow")) part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });
+    const fail = (error: string, metadata?: Record<string, unknown>) =>
+      this.#putPart(message, { ...part, state: { status: "error", input: tool.input, error, ...(metadata ? { metadata } : {}), time: { start, end: Date.now() } } });
     if (ask && decision === "deny") {
       // F-b : un deny lève DeniedError sans demande (permission/index.ts:72-80) ; la boucle continue.
       const relevant = rules.filter((rule) => wildcardMatch(ask.permission, rule.permission));
@@ -891,12 +1031,19 @@ export class FakeOpencode {
     let output = tool.output ?? "";
     let metadata: Record<string, unknown> = {};
     if (tool.child) {
-      const { providerID, modelID } = message.info as OcAssistantMessage;
-      const result = await this.#child(session, tool, stepMs, { providerID, modelID }, { run, message, part });
-      if (!result || run.aborted) return "blocked";
+      const { providerID, modelID, variant } = message.info as OcAssistantMessage;
+      const result = await this.#child(session, tool, stepMs, { providerID, modelID, ...(variant ? { variant } : {}) }, { run, message, part, start });
+      if (!result || run.aborted || this.#closed) return "blocked";
       part = result.part ?? part;
       const state = part.state as Record<string, unknown>;
-      metadata = { ...(isRecord(state.metadata) ? state.metadata : {}), truncated: false };
+      const kept = isRecord(state.metadata) ? state.metadata : undefined;
+      if (result.failed !== undefined) {
+        // Enfant arrêté seul ou en échec : outil en erreur, metadata gardée (processor.ts:186-199). Ce n'est pas une
+        // RejectedError : la boucle reprend, nouvel appel facturé compris (task.ts:337-340, prompt.ts:1318-1334).
+        fail(result.failed, kept);
+        return "continue";
+      }
+      metadata = { ...kept, truncated: false };
       output = `<task id="${result.sessionID}" state="completed">\n<task_result>\n${result.text}\n</task_result>\n</task>`;
     } else if (!(await this.#live(run, stepMs))) return "blocked";
     const title = typeof tool.input.description === "string" ? tool.input.description : tool.tool;
@@ -904,50 +1051,80 @@ export class FakeOpencode {
     return "ok";
   }
 
-  /** Sous-agent d'un « task ». `link` absent : sous-agent détaché d'un « once » tardif (p7), le parent n'est pas touché. */
+  /**
+   * Sous-agent d'un « task ». `link` absent : sous-agent détaché d'un « once » tardif (p7), le parent n'est pas touché.
+   * `failed` : enfant arrêté seul (« Task cancelled », task.ts:340) ou en échec (task.ts:222-235) ; null : parent arrêté.
+   */
   async #child(
     parent: FakeSession,
     tool: FakeToolScript,
     stepMs: number,
     model: ModelRef,
-    link: { run: Run; message: OcMessageWithParts; part: OcPart } | null,
-  ): Promise<{ sessionID: string; text: string; part: OcPart | null } | null> {
+    link: { run: Run; message: OcMessageWithParts; part: OcPart; start: number } | null,
+  ): Promise<ChildResult | null> {
     const spec = tool.child;
     if (!spec) return null;
     const description = typeof tool.input.description === "string" ? tool.input.description : tool.tool;
-    const child = this.#createSession({
-      directory: parent.directory,
-      parentID: parent.id,
-      title: `${description} (@${spec.agent} subagent)`,
-      agent: spec.agent,
-      permission: deriveChildRules(parent.permission ?? [], spec.agentRules ?? []),
-    });
+    // task_id d'une session existante : reprise sans création (tool/task.ts:136-172) ; inconnu : nouvel enfant.
+    const resumed = typeof tool.input.task_id === "string" ? this.#sessions.get(tool.input.task_id) : undefined;
+    const child =
+      resumed ??
+      this.#createSession({
+        directory: parent.directory,
+        parentID: parent.id,
+        title: `${description} (@${spec.agent} subagent)`,
+        agent: spec.agent,
+        permission: deriveChildRules(parent.permission ?? [], spec.agentRules ?? []),
+      });
+    // IA fixée par l'agent cible : sans variante ; sinon IA et variante du message qui délègue (task.ts:196-215).
+    const childModel: ModelRef = spec.model ? { providerID: spec.model.providerID, modelID: spec.model.modelID } : model;
     let part: OcPart | null = null;
     if (link) {
-      const state = link.part.state as Record<string, unknown>;
-      const metadata = { parentSessionId: parent.id, sessionId: child.id, model };
-      part = this.#putPart(link.message, { ...link.part, state: { ...state, title: description, metadata } });
+      const metadata = { parentSessionId: parent.id, sessionId: child.id, model: { providerID: childModel.providerID, modelID: childModel.modelID } };
+      part = this.#putPart(link.message, { ...link.part, state: { status: "running", input: tool.input, time: { start: link.start }, title: description, metadata } });
       link.run.children.add(child.id);
     }
     const run = this.#newRun(child.id);
-    const user: OcMessageWithParts = {
-      info: { id: createId("msg"), sessionID: child.id, role: "user", time: { created: Date.now() }, agent: spec.agent, model },
-      parts: [],
-    };
-    this.#putMessage(user);
-    this.#putPart(user, { type: "text", text: typeof tool.input.prompt === "string" ? tool.input.prompt : "" });
-    this.#setStatus(child.id, { type: "busy" });
-    const assistant = this.#newAssistant(child, user, { agent: spec.agent, ...model });
-    run.assistant = assistant;
-    if (!(await this.#live(run, spec.workMs ?? stepMs))) return null;
-    this.#putPart(assistant, { type: "step-start" });
-    const text = spec.text ?? "Résultat du sous-agent.";
-    this.#finishStep(child, assistant, spec, "stop", text);
-    run.assistant = null;
-    run.last = assistant;
-    if (this.#runs.get(child.id) === run) this.#runs.delete(child.id);
-    this.#setStatus(child.id, { type: "idle" });
-    return { sessionID: child.id, text, part };
+    const stopped = (): ChildResult | null =>
+      link && !link.run.aborted && !this.#closed ? { sessionID: child.id, text: "", part, failed: "Task cancelled" } : null;
+    try {
+      const now = Date.now();
+      this.#setAgentModel(child, spec.agent, childModel, now);
+      const user: OcMessageWithParts = {
+        info: { id: createId("msg"), sessionID: child.id, role: "user", time: { created: now }, agent: spec.agent, model: childModel },
+        parts: [],
+      };
+      this.#putMessage(user);
+      this.#putPart(user, { type: "text", text: typeof tool.input.prompt === "string" ? tool.input.prompt : "" });
+      if (spec.turn) {
+        await this.#turn(run, child, user, { ...spec.turn, agent: spec.turn.agent ?? spec.agent });
+        if (run.aborted || this.#closed) return stopped();
+      } else {
+        this.#setStatus(child.id, { type: "busy" });
+        const assistant = this.#newAssistant(child, user, { agent: spec.agent });
+        run.assistant = assistant;
+        if (!(await this.#live(run, spec.workMs ?? stepMs))) return stopped();
+        this.#putPart(assistant, { type: "step-start" });
+        this.#finishStep(child, assistant, spec, "stop", spec.text ?? "Résultat du sous-agent.");
+        run.assistant = null;
+        run.last = assistant;
+      }
+    } catch (err) {
+      // Sous-agent détaché dont la session a été supprimée : il échoue à sa prochaine écriture, comme un tour.
+      if (link || !(err instanceof ForeignKeyError)) throw err;
+      this.#runFailed(run, err);
+      return null;
+    }
+    this.#settle(run);
+    const last = run.last;
+    const info = last?.info as OcAssistantMessage | undefined;
+    const errored = last?.parts.findLast((p) => p.type === "tool" && isRecord(p.state) && p.state.status === "error");
+    let reason: string | undefined;
+    if (info?.error) reason = typeof info.error.data?.message === "string" ? info.error.data.message : info.error.name;
+    else if (errored && isRecord(errored.state)) reason = String(errored.state.error);
+    const lastText = last?.parts.findLast((p) => p.type === "text")?.text;
+    const text = spec.turn ? (typeof lastText === "string" ? lastText : "") : (spec.text ?? "Résultat du sous-agent.");
+    return { sessionID: child.id, text, part, ...(reason === undefined ? {} : { failed: `Subagent failed (task_id: ${child.id}): ${reason}` }) };
   }
 
   /** Sans tour : repos seulement (run-state.ts:77-86). Les sessions créées par POST /session ne sont pas arrêtées avec leur parent. */
@@ -959,8 +1136,9 @@ export class FakeOpencode {
 
   /**
    * Ordre mesuré (p6) : sous-agents du tour d'abord ; pour chaque session session.error MessageAbortedError, repos, parties
-   * d'outil ouvertes en « error » avec metadata.interrupted, message clos avec l'erreur, repos à nouveau. La demande
-   * d'autorisation en attente n'est PAS retirée (research-events §8, G9).
+   * d'outil ouvertes en « error » avec metadata.interrupted, message clos avec l'erreur, repos à nouveau. Arrêt avant le message
+   * d'assistant (juste après le 204, entre deux tours) : un seul repos, sans session.error (run-state.ts:77-86,
+   * runner.ts:171-183). La demande d'autorisation en attente n'est PAS retirée (research-events §8, G9).
    */
   #interrupt(run: Run): void {
     if (run.aborted) return;
@@ -982,21 +1160,24 @@ export class FakeOpencode {
       this.#statuses.delete(sessionID);
       return;
     }
-    this.#emitFor(sessionID, "session.error", { sessionID, error: ABORTED });
-    this.#setStatus(sessionID, { type: "idle" });
     if (message) {
-      const end = Date.now();
-      for (const part of message.parts) {
-        const state = isRecord(part.state) ? part.state : null;
-        if (part.type !== "tool" || !state || (state.status !== "pending" && state.status !== "running")) continue;
-        const metadata = { ...(isRecord(state.metadata) ? state.metadata : {}), interrupted: true };
-        const startedAt = isRecord(state.time) && typeof state.time.start === "number" ? state.time.start : end;
-        this.#putPart(message, { ...part, state: { ...state, status: "error", error: "Tool execution aborted", metadata, time: { start: startedAt, end } } });
+      this.#emitFor(sessionID, "session.error", { sessionID, error: ABORTED });
+      this.#setStatus(sessionID, { type: "idle" });
+      // Session supprimée : plus aucune écriture possible (clé étrangère).
+      if (this.#sessions.has(sessionID)) {
+        const end = Date.now();
+        for (const part of message.parts) {
+          const state = isRecord(part.state) ? part.state : null;
+          if (part.type !== "tool" || !state || (state.status !== "pending" && state.status !== "running")) continue;
+          const metadata = { ...(isRecord(state.metadata) ? state.metadata : {}), interrupted: true };
+          const startedAt = isRecord(state.time) && typeof state.time.start === "number" ? state.time.start : end;
+          this.#putPart(message, { ...part, state: { ...state, status: "error", error: "Tool execution aborted", metadata, time: { start: startedAt, end } } });
+        }
+        const info = message.info as OcAssistantMessage;
+        info.time.completed = end;
+        info.error = jsonClone(ABORTED);
+        this.#putMessage(message);
       }
-      const info = message.info as OcAssistantMessage;
-      info.time.completed = end;
-      info.error = jsonClone(ABORTED);
-      this.#putMessage(message);
     }
     this.#setStatus(sessionID, { type: "idle" });
   }
@@ -1021,10 +1202,11 @@ export class FakeOpencode {
     this.#accept(entry, reply);
     // F-c : « once » n'ajoute rien à `approved`.
     if (reply === "once") return true;
-    for (const pattern of entry.info.always) this.#approved.push({ permission: entry.info.permission, pattern, action: "allow" });
+    const approved = this.#approvedIn(entry.directory);
+    for (const pattern of entry.info.always) approved.push({ permission: entry.info.permission, pattern, action: "allow" });
     for (const [id, other] of this.#pending) {
       if (other.info.sessionID !== sessionID) continue;
-      if (!other.info.patterns.every((pattern) => evaluateRules(other.info.permission, pattern, this.#approved).action === "allow")) continue;
+      if (!other.info.patterns.every((pattern) => evaluateRules(other.info.permission, pattern, approved).action === "allow")) continue;
       this.#pending.delete(id);
       this.#emitFor(sessionID, "permission.replied", { sessionID, requestID: id, reply: "always" });
       this.#accept(other, "always");
@@ -1039,14 +1221,28 @@ export class FakeOpencode {
     this.#child(entry.session, entry.tool, entry.stepMs, entry.model, null).catch((err: unknown) => this.failures.push(err));
   }
 
-  #resetInstances(): void {
+  /** Libération d'une instance : remise à zéro facultative, puis server.instance.disposed. */
+  #disposeInstance(directory: string, reset: boolean): void {
+    if (reset) this.#resetInstances(directory);
+    this.#instances.delete(directory);
+    this.emitInstanceDisposed(directory);
+  }
+
+  /** Remise à zéro silencieuse d'une instance (de toutes sans `directory`) : tours coupés, demandes rejetées sans événement, états et accords vidés. */
+  #resetInstances(directory?: string): void {
+    const inside = (sessionID: string) => directory === undefined || this.#directoryOf(sessionID) === directory;
     for (const run of [...this.#runs.values()]) {
+      if (!inside(run.sessionID)) continue;
       run.quiet = true;
       this.#interrupt(run);
     }
-    for (const entry of this.#pending.values()) entry.settle({ reply: "reject" });
-    this.#pending.clear();
-    this.#statuses.clear();
-    this.#approved.length = 0;
+    for (const [id, entry] of [...this.#pending]) {
+      if (directory !== undefined && entry.directory !== directory) continue;
+      this.#pending.delete(id);
+      entry.settle({ reply: "reject" });
+    }
+    for (const sessionID of [...this.#statuses.keys()]) if (inside(sessionID)) this.#statuses.delete(sessionID);
+    if (directory === undefined) this.#approved.clear();
+    else this.#approved.delete(directory);
   }
 }

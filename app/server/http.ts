@@ -23,7 +23,7 @@ import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
-import { forMethods, reloadGuard } from "./reload-guard.ts";
+import { forMethods, reloadGuard, type ReloadGuardDeps } from "./reload-guard.ts";
 import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
@@ -475,14 +475,17 @@ export function createApp(deps: AppDeps): Hono {
   const advanced = advancedOnly(settings);
   // Garde « réponse en cours » avant tout rechargement ou redémarrage d'opencode (Studio, assistants, redémarrage). Demande
   // facturée admise par le proxy mais pas encore visible dans /session/status : réponse en cours aussi (comme applyConfigFile).
-  // Dossier illisible alors qu'opencode répond : réponse en cours possible, refus ; seul opencode injoignable laisse passer.
-  const guardReload = reloadGuard({
+  // Dossier illisible alors qu'opencode répond : réponses en cours non vérifiables, refus distinct ; seul opencode injoignable
+  // laisse passer. Redémarrage d'opencode (le remède) : confirmation acceptée dans ce cas, même en mode Simple (§3.11).
+  const reloadGuardDeps: ReloadGuardDeps = {
     settings,
     control,
-    busy: async () => configQueue.billedInFlight > 0 || (await probeSessionsBusyStrict({ client, projects, db: deps.db, log })),
+    occupancy: async () => (configQueue.billedInFlight > 0 ? "busy" : await probeSessionsBusyStrict({ client, projects, db: deps.db, log })),
     reachable: async () => (await client.health()) !== null,
     log,
-  });
+  };
+  const guardReload = reloadGuard(reloadGuardDeps);
+  const guardRestart = reloadGuard(reloadGuardDeps, { confirmUnverifiable: true });
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
   const SESSION_SECRET_KEY = "session.secret";
@@ -2051,7 +2054,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ hosts, catalogError, sync, copilot: copilotView() });
   });
 
-  app.post("/api/system/restart-opencode", guardReload, async (c) => {
+  app.post("/api/system/restart-opencode", guardRestart, async (c) => {
     // Dans la file partagée : jamais pendant une application (PATCH, libération des instances) ; « synchro due » posée avant la
     // libération d'applying, levée par la synchro lancée après la tâche.
     const result = await configQueue.run(() =>

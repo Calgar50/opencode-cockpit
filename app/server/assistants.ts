@@ -348,30 +348,34 @@ export async function probeSessionsBusy(deps: { client: OpencodeClient; projects
   return answers.some(statusBusy);
 }
 
+/** Occupation lue par la garde de rechargement : réponse en cours, tout au repos, ou absence de réponse en cours non vérifiable. */
+export type SessionsOccupancy = "busy" | "idle" | "unverifiable";
+
 /**
- * Sonde de la garde de rechargement : chaque dossier connu lu séparément. true dès qu'une réponse lue n'est pas au repos, et
- * aussi quand un dossier est illisible (délai dépassé, instance qui ne démarre pas) alors qu'un autre a répondu : l'absence de
- * réponse en cours n'y est pas prouvée. Rejetée seulement si aucun dossier n'a répondu (opencode peut-être injoignable).
+ * Sonde de la garde de rechargement : chaque dossier connu lu séparément. « busy » dès qu'une réponse lue n'est pas au repos ;
+ * « unverifiable » quand un dossier est illisible (délai dépassé, instance qui ne démarre pas) alors qu'un autre a répondu sans
+ * réponse en cours : l'absence de réponse en cours n'y est pas prouvée. Rejetée seulement si aucun dossier n'a répondu (opencode
+ * peut-être injoignable).
  */
 export async function probeSessionsBusyStrict(deps: {
   client: OpencodeClient;
   projects: ProjectsService;
   db?: DatabaseSync;
   log: Pick<Logger, "warn">;
-}): Promise<boolean> {
+}): Promise<SessionsOccupancy> {
   const directories = await knownDirectories(deps);
   const settled = await Promise.allSettled(directories.map((directory) => sessionStatus(deps.client, directory)));
   const answers = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
-  if (answers.some(statusBusy)) return true;
+  if (answers.some(statusBusy)) return "busy";
   const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-  if (failures.length === 0) return false;
+  if (failures.length === 0) return "idle";
   if (answers.length === 0) throw failures[0]?.reason;
   deps.log.warn("conversations illisibles dans un dossier : absence de réponse en cours non prouvée", {
     failed: failures.length,
     directories: directories.length,
     error: errorMessage(failures[0]?.reason),
   });
-  return true;
+  return "unverifiable";
 }
 
 // --- Service -----------------------------------------------------------------------------------

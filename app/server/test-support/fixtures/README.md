@@ -31,4 +31,4 @@ Résultat : **aucune occurrence**, rien n'a été remplacé. La capture passait 
 
 Les contenus factices (journaux `app.log`, `worker.log`, `changements.md`) et les identifiants `ses_`, `msg_`, `prt_`, `per_`, `evt_` sont gardés tels quels : ils ne donnent accès à rien, et leurs horodatages sont nécessaires aux tests.
 
-Le test `fake-opencode.test.ts` refait cette recherche à chaque exécution.
+Le test `fake-opencode.test.ts` refait cette recherche à chaque exécution, avec ces motifs : `Authorization`, `Basic`, `Bearer` et `password` ; jetons `gh[oprsu]_` et `github_pat_` ; clés `sk-` ; JWT (`eyJ…`) ; clés privées ; adresses e-mail ; adresses IPv4 ; `localhost` ; chemins d'hôte (`C:\`, `/Users/`, `AppData`) ; nom de l'utilisateur qui lance les tests. Ce nom est lu sur la machine, jamais écrit dans le dépôt, et ignoré s'il fait moins de 4 caractères ou si c'est un compte générique (`root`, `node`, `runner`…). Un second test vérifie que chaque motif détecte un exemple planté.

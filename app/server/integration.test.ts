@@ -1706,15 +1706,18 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       const install = await call("POST", "/api/assistants/catalogue/analyser-incident/install", confirmedHeaders, "{}");
       assert.equal(install.status, 409, install.body);
 
-      // Aucune réponse lue en cours mais un dossier illisible : absence de réponse non prouvée, refus aussi (journalisé).
+      // Aucune réponse lue en cours mais un dossier illisible : absence de réponse non prouvée, refus distinct (journalisé), jamais
+      // « des réponses sont en cours ».
       ocStatuses = {};
-      assert.equal((await call("POST", "/api/system/restart-opencode", mutating, "{}")).status, 409);
+      const oneUnreadable = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(oneUnreadable.status, 409, oneUnreadable.body);
+      assert.deepEqual(JSON.parse(oneUnreadable.body), { error: "reponses-non-verifiables", message: MESSAGES.restartUnverifiable, override: true });
       assert.ok(warnings.slice(warned).some((w) => w.includes("absence de réponse en cours non prouvée")));
-      // Aucun dossier lisible alors qu'opencode répond (/global/health) : refus.
+      // Aucun dossier lisible alors qu'opencode répond (/global/health) : même refus distinct.
       permissionLookupFailure = "status";
       const unreadable = await call("POST", "/api/system/restart-opencode", mutating, "{}");
       assert.equal(unreadable.status, 409, unreadable.body);
-      assert.equal(JSON.parse(unreadable.body).error, "sessions-busy");
+      assert.deepEqual(JSON.parse(unreadable.body), { error: "reponses-non-verifiables", message: MESSAGES.restartUnverifiable, override: true });
       assert.ok(warnings.slice(warned).some((w) => w.includes("rechargement refusé")));
       assert.equal(restarts.length, before);
       assert.equal(copilotSyncCalls, calls);
@@ -1724,7 +1727,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       settings.update({ ui: { mode: "avance" } });
       const save = await call("PUT", "/api/studio/agents/essai-sonde", mutating, JSON.stringify({ frontmatter: { description: "x", mode: "subagent" }, body: "x" }));
       assert.equal(save.status, 409, save.body);
-      assert.equal(JSON.parse(save.body).override, true);
+      assert.deepEqual(JSON.parse(save.body), { error: "reponses-non-verifiables", message: MESSAGES.reloadUnverifiable, override: true });
       assert.equal(restarts.length, before);
       const forced = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
       assert.equal(forced.status, 200, forced.body);
@@ -1746,6 +1749,81 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       ocStatuses = {};
       settings.update({ ui: { mode: "simple" } });
       db.prepare("UPDATE sessions SET deleted_at = ? WHERE id = 'ses_lent'").run(Date.now());
+    }
+  });
+
+  it("garde « réponse en cours » : occupation non vérifiable (opencode répond, conversations illisibles) : code et message vrais ; redémarrage d'opencode permis après confirmation même en Simple, jamais pendant une réponse lue ou une demande facturée en vol ; Studio et installation refusés avec le recours", async () => {
+    const LENT = "/workspace/lent-2";
+    const now = Date.now();
+    new SessionTracker(db, {} as OpencodeClient).upsert({ ...session("ses_lent_2"), directory: LENT, time: { created: now, updated: now } });
+    const before = restarts.length;
+    const calls = copilotSyncCalls;
+    const marks = copilotMarks.length;
+    const warned = warnings.length;
+    const unverifiable = (message: string, override: boolean) => ({ error: "reponses-non-verifiables", message, override });
+    permissionLookupFailure = "status";
+    try {
+      // Mode Simple, aucun dossier lisible alors qu'opencode répond : le redémarrage (le remède) est refusé à chaque essai sans
+      // confirmation, avec un message vrai qui propose de confirmer ; jamais « Des réponses sont en cours ».
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const refused = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+        assert.equal(refused.status, 409, refused.body);
+        assert.deepEqual(JSON.parse(refused.body), unverifiable(MESSAGES.restartUnverifiable, true));
+      }
+      assert.match(MESSAGES.restartUnverifiable, /^Impossible de vérifier s'il reste des réponses en cours/);
+      assert.match(MESSAGES.reloadUnverifiable, /^Impossible de vérifier s'il reste des réponses en cours.*mode Avancé \(Paramètres › Affichage\)/);
+      // Installation d'assistant : refus, même confirmée, avec le recours (mode Avancé).
+      const install = await call("POST", "/api/assistants/catalogue/analyser-incident/install", confirmedHeaders, "{}");
+      assert.equal(install.status, 409, install.body);
+      assert.deepEqual(JSON.parse(install.body), unverifiable(MESSAGES.reloadUnverifiable, false));
+      assert.equal(restarts.length, before);
+
+      // Demande facturée en vol : réponse en cours, refus sessions-busy inchangé, confirmation sans effet en Simple.
+      const endBilled = configQueue.beginBilled();
+      try {
+        const billed = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+        assert.equal(billed.status, 409, billed.body);
+        assert.deepEqual(JSON.parse(billed.body), { error: "sessions-busy", message: MESSAGES.reloadBusy, override: false });
+      } finally {
+        endBilled();
+      }
+      // Réponse lue en cours dans le dossier par défaut, second dossier illisible : sessions-busy, confirmation sans effet.
+      permissionLookupFailure = null;
+      statusFailDirectory = LENT;
+      ocStatuses = { ses_actif: { type: "busy" } };
+      const read = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(read.status, 409, read.body);
+      assert.deepEqual(JSON.parse(read.body), { error: "sessions-busy", message: MESSAGES.reloadBusy, override: false });
+      // Un dossier illisible, les autres au repos : même refus distinct.
+      ocStatuses = {};
+      const partial = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(partial.status, 409, partial.body);
+      assert.deepEqual(JSON.parse(partial.body), unverifiable(MESSAGES.restartUnverifiable, true));
+      assert.equal(restarts.length, before);
+      assert.equal(copilotSyncCalls, calls);
+      assert.deepEqual(copilotMarks.slice(marks), []);
+
+      // Confirmé en mode Simple : redémarrage dans la file, « synchro due » posée avec applying, synchro relancée, journalisé.
+      const confirmed = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(confirmed.status, 200, confirmed.body);
+      assert.deepEqual(restarts.slice(before), ["demande depuis l'interface"]);
+      assert.deepEqual(copilotMarks.slice(marks), [{ cause: "redémarrage d'opencode (page Diagnostic)", applying: true }]);
+      assert.equal(copilotSyncCalls, calls + 1);
+      assert.equal(configQueue.applying, false);
+      assert.ok(warnings.slice(warned).some((w) => w.includes("redémarrage confirmé")));
+
+      // Mode Avancé : Studio refusé sans en-tête avec le même code, dérogation proposée.
+      settings.update({ ui: { mode: "avance" } });
+      const save = await call("PUT", "/api/studio/agents/essai-non-verifiable", mutating, JSON.stringify({ frontmatter: { description: "x", mode: "subagent" }, body: "x" }));
+      assert.equal(save.status, 409, save.body);
+      assert.deepEqual(JSON.parse(save.body), unverifiable(MESSAGES.reloadUnverifiable, true));
+      assert.equal(restarts.length, before + 1);
+    } finally {
+      permissionLookupFailure = null;
+      statusFailDirectory = null;
+      ocStatuses = {};
+      settings.update({ ui: { mode: "simple" } });
+      db.prepare("UPDATE sessions SET deleted_at = ? WHERE id = 'ses_lent_2'").run(Date.now());
     }
   });
 

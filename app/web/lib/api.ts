@@ -230,7 +230,10 @@ export const api = {
 
   systemStatus: () => http.get<SystemStatus>("/api/system/status"),
   copilotCheck: () => http.post<CopilotCheckResult>("/api/system/copilot-check", {}),
-  /** 409 sessions-busy pendant une réponse ; `{ confirm: true }` force en mode Avancé (réponses interrompues). */
+  /**
+   * 409 sessions-busy pendant une réponse ; `{ confirm: true }` force en mode Avancé (réponses interrompues). 409
+   * reponses-non-verifiables (conversations illisibles alors qu'opencode répond) : `{ confirm: true }` redémarre, dans les deux modes.
+   */
   restartOpencode: (options?: RequestOptions) =>
     http.post<{ ok: boolean; durationMs: number; message: string }>("/api/system/restart-opencode", undefined, options),
   logs: (lines = 400) => http.get<{ content: string }>(`/api/system/logs${query({ lines })}`),

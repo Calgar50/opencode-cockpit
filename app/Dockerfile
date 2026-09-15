@@ -22,7 +22,10 @@ RUN set -eu; \
     npm ci --ignore-scripts --no-audit --no-fund
 
 COPY app/ ./
-RUN npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+# Tests, faux opencode et captures retirés ici, avant la copie vers l'image finale : une suppression dans l'image finale les
+# laisserait dans la couche copiée.
+RUN npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
+ && rm -rf server/test-support && find server -name '*.test.ts' -delete
 
 FROM ${NODE_IMAGE}
 ARG COCKPIT_VERSION=dev
@@ -42,8 +45,7 @@ COPY --from=build --chown=node:node /src/server ./server
 COPY --from=build --chown=node:node /src/dist ./dist
 # Les points de montage partagés avec opencode doivent appartenir à l'utilisateur non-root (uid 1000) :
 # Docker initialise un volume nommé avec le propriétaire du dossier de la PREMIÈRE image qui le monte.
-RUN rm -f server/*.test.ts \
- && mkdir -p /data /archives /oc-config /oc-data /control /workspace /certs \
+RUN mkdir -p /data /archives /oc-config /oc-data /control /workspace /certs \
  && chown node:node /data /archives /oc-config /oc-data /control
 USER node
 EXPOSE 7777

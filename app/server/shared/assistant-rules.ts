@@ -616,6 +616,10 @@ export const MESSAGES = Object.freeze({
   configRestartBusy: "Attendez la fin des réponses en cours : ce changement redémarre opencode, ce qui les couperait.",
   configReloadBusy: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
   reloadBusy: "Des réponses sont en cours : ce changement recharge opencode et les couperait. Attendez qu'elles se terminent.",
+  reloadUnverifiable:
+    "Impossible de vérifier s'il reste des réponses en cours : opencode répond, mais ses conversations sont illisibles. Ce changement recharge opencode et couperait une réponse en cours. Pour forcer, confirmez en mode Avancé (Paramètres › Affichage).",
+  restartUnverifiable:
+    "Impossible de vérifier s'il reste des réponses en cours : opencode répond, mais ses conversations sont illisibles. Le redémarrer est souvent le remède : confirmez pour redémarrer quand même (une réponse en cours serait coupée).",
   restartEnCours: "opencode redémarre déjà : réessayez dans une minute.",
   adresseCopilotEnVerification:
     "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.",
