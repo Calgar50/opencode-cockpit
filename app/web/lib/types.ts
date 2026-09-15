@@ -9,6 +9,7 @@ import type {
   UiSettings,
 } from "../../server/shared/api-types.ts";
 import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
+import type { BootstrapAutonomy } from "../../server/shared/autonomy-types.ts";
 
 // 0.2.0 « Assistants et niveaux d'IA » : types définis une seule fois dans server/shared (serveur et interface).
 export type {
@@ -85,6 +86,11 @@ export type {
   UsageRowType,
   UsedByError,
 } from "../../server/shared/api-types.ts";
+
+// 1.1 : autonomie, activité, arrêt et événements du cockpit (types définis une seule fois dans server/shared).
+export type * from "../../server/shared/activity-types.ts";
+export type * from "../../server/shared/autonomy-types.ts";
+export type * from "../../server/shared/cockpit-event-types.ts";
 
 export interface PriceRates {
   input: number;
@@ -226,6 +232,8 @@ export interface Bootstrap {
   allowedProviders: string[];
   /** 1.0.1 : accès direct à GitHub Copilot (adresse de l'API, IA disponibles ou non, adresse imposée à opencode). */
   copilot: CopilotView;
+  /** 1.1 : interrupteur COCKPIT_AUTONOMY et porte I1 (ACTIVATION_OUVERTE) ; envoyé par le serveur à partir de L1a. */
+  autonomy?: BootstrapAutonomy;
 }
 
 /** IA de votre compte GitHub Copilot que vous ne pouvez pas utiliser, avec la raison. */
