@@ -3,6 +3,7 @@ import { type CSSProperties, useCallback, useEffect, useId, useState } from "rea
 import { NAME_RE, RIGHTS_INFO, TIER_LABELS, USE_CASE_INFO } from "../../../server/shared/assistant-rules.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
+import { useReloadGuard } from "../../components/reloadGuard.ts";
 import { Badge, Button, Field, Modal } from "../../components/ui.tsx";
 import { ApiError, api } from "../../lib/api.ts";
 import { openChatWithAssistant } from "../../lib/router.ts";
@@ -85,6 +86,7 @@ export function InstallAssistantDialog({
   onInstalled?: (view: AssistantView) => void;
 }) {
   const toast = useToast();
+  const guardReload = useReloadGuard();
   const nameId = useId();
   const [busy, setBusy] = useState(false);
   const [installed, setInstalled] = useState<AssistantView | null>(null);
@@ -110,7 +112,7 @@ export function InstallAssistantDialog({
     setBusy(true);
     setError(null);
     try {
-      const view = await api.installCatalogueAssistant(item.id, nameTaken ? name : undefined);
+      const view = await guardReload((options) => api.installCatalogueAssistant(item.id, nameTaken ? name : undefined, options));
       setInstalled(view);
       toast.success("Assistant installé", "Il apparaît maintenant dans le chat.", {
         label: "Essayer",

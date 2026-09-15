@@ -18,6 +18,7 @@ import {
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
+import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Button, IconButton, Meter, Modal, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, assistantModelChanged, budgetGuard, oc } from "../lib/api.ts";
 import { useEvents } from "../lib/events.ts";
@@ -112,6 +113,7 @@ export function ChatPage() {
   const { boot, directory, setDirectory, categoryById, modelByKey } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const advanced = boot.ui.mode === "avance";
   const allowOverride = advanced && boot.ai.allowModelOverride;
 
@@ -854,7 +856,7 @@ export function ChatPage() {
     if (!ok) return;
     setInstalling(item.id);
     try {
-      const view = await api.installCatalogueAssistant(item.id);
+      const view = await guardReload((options) => api.installCatalogueAssistant(item.id, undefined, options));
       await refreshAgents();
       await loadAssistants();
       applyAgent(view.name);

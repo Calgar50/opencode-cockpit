@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
+import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Badge, Button, Card, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, errorText } from "../lib/api.ts";
 import { formatDateTime, formatDuration, formatInt, formatPercent, formatTime, relativeTime } from "../lib/format.ts";
@@ -92,6 +93,7 @@ export function DiagnosticsPage() {
   const { boot, refresh } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,7 +141,7 @@ export function DiagnosticsPage() {
     setRestarting(true);
     setRestartResult(null);
     try {
-      const result = await api.restartOpencode();
+      const result = await guardReload((options) => api.restartOpencode(options));
       setRestartResult(result);
       toast.success("opencode a redémarré", `En ${formatDuration(result.durationMs)}.`);
       await refresh().catch(() => undefined);

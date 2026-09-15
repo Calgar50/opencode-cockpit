@@ -30,7 +30,7 @@ import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
 import { SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
-import type { Run } from "./shared/assistant-rules.ts";
+import { MESSAGES, type Run } from "./shared/assistant-rules.ts";
 import { StudioService, StudioValidationError } from "./studio.ts";
 import { TierService } from "./tiers.ts";
 
@@ -1492,6 +1492,88 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       settings.update({ ui: { mode: "simple" } });
       fs.rmSync(file, { force: true });
     }
+  });
+
+  it("garde « réponse en cours » : redémarrage, Studio et assistants refusés pendant une réponse, dérogation en mode Avancé seulement", async () => {
+    ocStatuses = { ses_actif: { type: "busy" } };
+    const before = restarts.length;
+    try {
+      const restart = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(restart.status, 409, restart.body);
+      assert.deepEqual(JSON.parse(restart.body), { error: "sessions-busy", message: MESSAGES.reloadBusy, override: false });
+      // Mode Simple : la confirmation ne force rien.
+      assert.equal((await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}")).status, 409);
+      const install = await call("POST", "/api/assistants/catalogue/analyser-incident/install", confirmedHeaders, "{}");
+      assert.equal(install.status, 409, install.body);
+      assert.equal((await call("DELETE", "/api/assistants/relire-script", confirmedHeaders)).status, 409);
+      assert.equal(restarts.length, before);
+
+      settings.update({ ui: { mode: "avance" } });
+      const save = await call("PUT", "/api/studio/agents/essai-garde", mutating, JSON.stringify({ frontmatter: { description: "x", mode: "subagent" }, body: "x" }));
+      assert.equal(save.status, 409, save.body);
+      assert.equal(JSON.parse(save.body).override, true);
+      assert.equal((await call("PUT", "/api/studio/instructions", mutating, JSON.stringify({ content: "x" }))).status, 409);
+      assert.equal((await call("DELETE", "/api/studio/agents/essai-garde", mutating)).status, 409);
+      // Lecture jamais gardée (routes des assistants non montées dans ce banc : 404, jamais 409) ; dérogation explicite en Avancé.
+      assert.equal((await call("GET", "/api/assistants", authed)).status, 404);
+      const forced = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(forced.status, 200, forced.body);
+      assert.deepEqual(restarts.slice(before), ["demande depuis l'interface"]);
+
+      // Redémarrage déjà lancé : refusé, même confirmé.
+      restartingNow = true;
+      const again = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(again.status, 409, again.body);
+      assert.equal(JSON.parse(again.body).error, "redemarrage-en-cours");
+      restartingNow = false;
+
+      // Au repos : rien n'est refusé.
+      ocStatuses = {};
+      assert.equal((await call("POST", "/api/system/restart-opencode", mutating, "{}")).status, 200);
+    } finally {
+      ocStatuses = {};
+      restartingNow = false;
+      settings.update({ ui: { mode: "simple" } });
+    }
+  });
+
+  it("garde « réponse en cours » : demande facturée en vol (pas encore visible dans /session/status) comptée comme une réponse ; la dérogation en mode Avancé reste dans la file avec « synchro due »", async () => {
+    ocStatuses = {};
+    const before = restarts.length;
+    const calls = copilotSyncCalls;
+    const marks = copilotMarks.length;
+    const endBilled = configQueue.beginBilled();
+    try {
+      // Sonde des conversations au repos : seule la demande admise par le proxy est en cours.
+      const restart = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(restart.status, 409, restart.body);
+      assert.deepEqual(JSON.parse(restart.body), { error: "sessions-busy", message: MESSAGES.reloadBusy, override: false });
+      assert.equal((await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}")).status, 409);
+      assert.equal((await call("POST", "/api/assistants/catalogue/analyser-incident/install", confirmedHeaders, "{}")).status, 409);
+
+      settings.update({ ui: { mode: "avance" } });
+      const save = await call("PUT", "/api/studio/agents/essai-vol", mutating, JSON.stringify({ frontmatter: { description: "x", mode: "subagent" }, body: "x" }));
+      assert.equal(save.status, 409, save.body);
+      assert.equal(JSON.parse(save.body).override, true);
+      assert.equal((await call("PUT", "/api/studio/instructions", mutating, JSON.stringify({ content: "x" }))).status, 409);
+      assert.equal(restarts.length, before);
+      assert.equal(copilotSyncCalls, calls);
+      assert.deepEqual(copilotMarks.slice(marks), []);
+
+      // Dérogation explicite en Avancé : la réponse peut être coupée, mais le redémarrage passe par la file (applying posé),
+      // pose « synchro due » avant la libération d'applying et relance la synchro, comme sans dérogation.
+      const forced = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(forced.status, 200, forced.body);
+      assert.deepEqual(restarts.slice(before), ["demande depuis l'interface"]);
+      assert.deepEqual(copilotMarks.slice(marks), [{ cause: "redémarrage d'opencode (page Diagnostic)", applying: true }]);
+      assert.equal(copilotSyncCalls, calls + 1);
+      assert.equal(configQueue.applying, false);
+      assert.equal(configQueue.billedInFlight, 1);
+    } finally {
+      endBilled();
+      settings.update({ ui: { mode: "simple" } });
+    }
+    assert.equal(configQueue.billedInFlight, 0);
   });
 
   it("verrou « fournisseurs » : configuration d'opencode, IA de classement et ancienne IA du chat limitées aux fournisseurs autorisés", async () => {

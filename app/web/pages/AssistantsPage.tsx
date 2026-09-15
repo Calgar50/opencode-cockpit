@@ -5,6 +5,7 @@ import { MESSAGES } from "../../server/shared/assistant-rules.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
+import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Badge, Button, EmptyState, Modal, Spinner, useAsync, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, errorText } from "../lib/api.ts";
 import { cockpitEvent, useEvents } from "../lib/events.ts";
@@ -57,6 +58,7 @@ function AssistantsList({ detail }: { detail: string | null }) {
   const { advanced } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const data = useAsync(() => api.assistants(), []);
   const catalogue = useAsync(() => api.assistantsCatalogue(), []);
   const reloadRef = useRef<() => void>(() => undefined);
@@ -101,13 +103,13 @@ function AssistantsList({ detail }: { detail: string | null }) {
     setBusyKey(view.name);
     try {
       try {
-        await api.deleteAssistant(view.name, view.usedBy.length > 0);
+        await guardReload((options) => api.deleteAssistant(view.name, view.usedBy.length > 0, options));
       } catch (err) {
         // Un raccourci s'est mis à l'utiliser entre-temps : redemander avec le message du serveur.
         const used = err instanceof ApiError && err.code === "used-by" ? (err.data as UsedByError | null) : null;
         if (!used) throw err;
         if (!(await ask([used.message]))) return;
-        await api.deleteAssistant(view.name, true);
+        await guardReload((options) => api.deleteAssistant(view.name, true, options));
       }
       toast.success("Assistant supprimé", `« ${view.title} » n'apparaît plus dans le chat.`);
       if (detail === view.name) openAssistants();

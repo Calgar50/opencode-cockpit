@@ -4,6 +4,7 @@ import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
+import { useReloadGuard } from "../../components/reloadGuard.ts";
 import { Button, Card, Spinner, useConfirm } from "../../components/ui.tsx";
 import { api, errorText } from "../../lib/api.ts";
 import { DirtyBadge } from "./widgets.tsx";
@@ -19,6 +20,7 @@ export function InstructionsEditor({
   const projectConfig = boot.security.projectConfig;
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const [state, setState] = useState<{ loading: boolean; error: string | null; exists: boolean; baseline: string }>({
     loading: true,
     error: null,
@@ -56,7 +58,7 @@ export function InstructionsEditor({
   const save = async () => {
     setSaving(true);
     try {
-      await api.saveInstructions(content, project);
+      await guardReload((options) => api.saveInstructions(content, project, options));
       setState((s) => ({ ...s, exists: true, baseline: content }));
       toast.success(
         "Instructions enregistrées",

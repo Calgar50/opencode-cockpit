@@ -19,6 +19,7 @@ import {
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
+import { useReloadGuard } from "../../components/reloadGuard.ts";
 import { Button, EmptyState, IconButton, Spinner, useAsync, useConfirm } from "../../components/ui.tsx";
 import { ApiError, api, oc } from "../../lib/api.ts";
 import { openAssistants, openChatWithAssistant, setNavigationGuard } from "../../lib/router.ts";
@@ -245,6 +246,7 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
   const { boot, advanced, modelByKey } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const ids = { title: useId(), description: useId(), instructions: useId(), model: useId(), radios: useId() };
   const pageRef = useRef<HTMLDivElement>(null);
   const tiers = boot.ai?.tiers ?? [];
@@ -441,7 +443,7 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
         scrollTop();
         return;
       }
-      const result = await api.saveAssistant(source.previousName ?? fresh.name, body);
+      const result = await guardReload((options) => api.saveAssistant(source.previousName ?? fresh.name, body, options));
       setSaved(result);
       if (creating) {
         toast.success("Assistant créé", `« ${result.title} » est prêt.`, {

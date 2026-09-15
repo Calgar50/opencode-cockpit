@@ -128,9 +128,9 @@ async function request<T>(method: string, url: string, body?: unknown, options: 
 export const http = {
   get: <T>(url: string, signal?: AbortSignal) => request<T>("GET", url, undefined, signal ? { signal } : {}),
   post: <T>(url: string, body?: unknown, options?: RequestOptions) => request<T>("POST", url, body ?? {}, options),
-  put: <T>(url: string, body?: unknown) => request<T>("PUT", url, body ?? {}),
+  put: <T>(url: string, body?: unknown, options?: RequestOptions) => request<T>("PUT", url, body ?? {}, options),
   patch: <T>(url: string, body?: unknown) => request<T>("PATCH", url, body ?? {}),
-  del: <T>(url: string) => request<T>("DELETE", url),
+  del: <T>(url: string, options?: RequestOptions) => request<T>("DELETE", url, undefined, options),
 };
 
 type QueryValue = string | number | boolean | undefined | null;
@@ -200,12 +200,13 @@ export const api = {
     name: string,
     input: { frontmatter: Record<string, unknown>; body: string; previousName?: string | null; tier?: Tier | null },
     project?: string | null,
-  ) => http.put<StudioItem>(`/api/studio/${kind}/${enc(name)}${query({ project })}`, input),
-  studioDelete: (kind: StudioKind, name: string, project?: string | null) =>
-    http.del<{ deleted: boolean }>(`/api/studio/${kind}/${enc(name)}${query({ project })}`),
+    options?: RequestOptions,
+  ) => http.put<StudioItem>(`/api/studio/${kind}/${enc(name)}${query({ project })}`, input, options),
+  studioDelete: (kind: StudioKind, name: string, project?: string | null, options?: RequestOptions) =>
+    http.del<{ deleted: boolean }>(`/api/studio/${kind}/${enc(name)}${query({ project })}`, options),
   instructions: (project?: string | null) => http.get<{ content: string; exists: boolean }>(`/api/studio/instructions${query({ project })}`),
-  saveInstructions: (content: string, project?: string | null) =>
-    http.put<{ ok: boolean }>(`/api/studio/instructions${query({ project })}`, { content }),
+  saveInstructions: (content: string, project?: string | null, options?: RequestOptions) =>
+    http.put<{ ok: boolean }>(`/api/studio/instructions${query({ project })}`, { content }, options),
   skillFile: (name: string, file: string, project?: string | null) =>
     http.get<{ content: string }>(`/api/studio/skills/${enc(name)}/file${query({ file, project })}`),
   saveSkillFile: (name: string, file: string, content: string, project?: string | null) =>
@@ -229,7 +230,9 @@ export const api = {
 
   systemStatus: () => http.get<SystemStatus>("/api/system/status"),
   copilotCheck: () => http.post<CopilotCheckResult>("/api/system/copilot-check", {}),
-  restartOpencode: () => http.post<{ ok: boolean; durationMs: number; message: string }>("/api/system/restart-opencode"),
+  /** 409 sessions-busy pendant une réponse ; `{ confirm: true }` force en mode Avancé (réponses interrompues). */
+  restartOpencode: (options?: RequestOptions) =>
+    http.post<{ ok: boolean; durationMs: number; message: string }>("/api/system/restart-opencode", undefined, options),
   logs: (lines = 400) => http.get<{ content: string }>(`/api/system/logs${query({ lines })}`),
   backfill: () => http.post<{ ok: boolean }>("/api/system/backfill"),
 
@@ -237,16 +240,18 @@ export const api = {
   assistants: () => http.get<AssistantsResponse>("/api/assistants"),
   assistantsCatalogue: () => http.get<CatalogueItem[]>("/api/assistants/catalogue"),
   /** Idempotent : renvoie l'assistant déjà installé depuis cette entrée. 409 name-taken si `name` est pris. */
-  installCatalogueAssistant: (id: string, name?: string) =>
-    http.post<AssistantView>(`/api/assistants/catalogue/${enc(id)}/install`, name ? { name } : {}),
+  installCatalogueAssistant: (id: string, name?: string, options?: RequestOptions) =>
+    http.post<AssistantView>(`/api/assistants/catalogue/${enc(id)}/install`, name ? { name } : {}, options),
   /** N'écrit rien. À appeler avec un délai (300 ms) et un AbortSignal pour ignorer les réponses dépassées. */
   previewAssistant: (draft: AssistantSaveRequest, signal?: AbortSignal) =>
     http.post<AssistantPreview>("/api/assistants/preview", draft, signal ? { signal } : {}),
-  saveAssistant: (name: string, input: AssistantSaveRequest) => http.put<SavedAssistant>(`/api/assistants/${enc(name)}`, input),
-  adoptAssistant: (name: string, input: AdoptRequest) => http.post<AssistantView>(`/api/assistants/${enc(name)}/adopt`, input),
+  saveAssistant: (name: string, input: AssistantSaveRequest, options?: RequestOptions) =>
+    http.put<SavedAssistant>(`/api/assistants/${enc(name)}`, input, options),
+  adoptAssistant: (name: string, input: AdoptRequest, options?: RequestOptions) =>
+    http.post<AssistantView>(`/api/assistants/${enc(name)}/adopt`, input, options),
   /** 409 used-by (data: UsedByError) si un raccourci l'utilise, sauf `force`. */
-  deleteAssistant: (name: string, force = false) =>
-    http.del<{ deleted: boolean }>(`/api/assistants/${enc(name)}${query({ force: force ? 1 : undefined })}`),
+  deleteAssistant: (name: string, force = false, options?: RequestOptions) =>
+    http.del<{ deleted: boolean }>(`/api/assistants/${enc(name)}${query({ force: force ? 1 : undefined })}`, options),
   /** Retire une ligne « Fichier introuvable ». */
   deleteAssistantMeta: (name: string, kind: ItemKind = "agents") =>
     http.del<{ deleted: boolean }>(`/api/assistants/${enc(name)}/meta${query({ kind })}`),

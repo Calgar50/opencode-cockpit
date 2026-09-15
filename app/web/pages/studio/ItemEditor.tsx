@@ -5,6 +5,7 @@ import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
+import { useReloadGuard } from "../../components/reloadGuard.ts";
 import { Badge, Button, Card, Field, useAsync, useConfirm } from "../../components/ui.tsx";
 import { ApiError, api, oc } from "../../lib/api.ts";
 import { cockpitEvent, useEvents } from "../../lib/events.ts";
@@ -73,6 +74,7 @@ export function ItemEditor({
   const { boot, dark } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
+  const guardReload = useReloadGuard();
   const nameId = useId();
 
   const [draft, setDraft] = useState<Draft>(seed);
@@ -176,7 +178,7 @@ export function ItemEditor({
     const tier = tierToSend(frontmatter, previousName);
     try {
       const input = tier === undefined ? { frontmatter, body: draft.body, previousName } : { frontmatter, body: draft.body, previousName, tier };
-      const saved = await api.studioSave(kind, draft.name, input, project);
+      const saved = await guardReload((options) => api.studioSave(kind, draft.name, input, project, options));
       const fresh = draftFromItem(saved);
       setDraft(fresh);
       setBaseline(stableStringify(fresh));
@@ -233,7 +235,7 @@ export function ItemEditor({
     if (!ok) return;
     setDeleting(true);
     try {
-      const { deleted } = await api.studioDelete(kind, item.name, project);
+      const { deleted } = await guardReload((options) => api.studioDelete(kind, item.name, project, options));
       if (deleted) toast.success("Supprimé", item.name);
       else toast.warning("Élément introuvable", "Il avait peut-être déjà été supprimé.");
       onDirtyChange(false);

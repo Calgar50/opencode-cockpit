@@ -23,6 +23,7 @@ import type { BrowserEvent, EventHub } from "./hub.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
+import { forMethods, reloadGuard } from "./reload-guard.ts";
 import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
@@ -472,6 +473,13 @@ export function createApp(deps: AppDeps): Hono {
   // Une application de configuration à la fois (chacune peut libérer ou redémarrer opencode), synchro de l'adresse Copilot comprise.
   const configQueue = deps.configQueue ?? new ConfigWriteQueue();
   const advanced = advancedOnly(settings);
+  // Garde « réponse en cours » avant tout rechargement ou redémarrage d'opencode (Studio, assistants, redémarrage). Demande
+  // facturée admise par le proxy mais pas encore visible dans /session/status : réponse en cours aussi (comme applyConfigFile).
+  const guardReload = reloadGuard({
+    settings,
+    control,
+    busy: async () => configQueue.billedInFlight > 0 || (await probeSessionsBusy({ client, projects, db: deps.db })),
+  });
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
   const SESSION_SECRET_KEY = "session.secret";
@@ -1476,11 +1484,16 @@ export function createApp(deps: AppDeps): Hono {
     });
   };
 
+  // Écritures d'assistants (routes-assistants.ts, enregistrées plus loin) : fichiers d'agents réécrits puis opencode rechargé.
+  // « Adopter » n'écrit que dans la base du cockpit : non gardé.
+  app.use("/api/assistants/catalogue/:id/install", forMethods(["POST"], guardReload));
+  app.use("/api/assistants/:name", forMethods(["PUT", "DELETE"], guardReload));
+
   app.get("/api/studio/templates", (c) => c.json(TEMPLATES));
 
   app.get("/api/studio/instructions", async (c) => c.json(await studio.getInstructions(scopeOf(c))));
 
-  app.put("/api/studio/instructions", advanced, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/instructions", advanced, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     await studio.saveInstructions(scopeOf(c), content);
     return c.json({ ok: true });
@@ -1511,7 +1524,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(item);
   });
 
-  app.put("/api/studio/:kind/:name", advanced, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/:kind/:name", advanced, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const input = studioBody.parse(await c.req.json());
     const kind = kindOf(c);
     const scope = scopeOf(c);
@@ -1545,7 +1558,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(item);
   });
 
-  app.delete("/api/studio/:kind/:name", advanced, async (c) => {
+  app.delete("/api/studio/:kind/:name", advanced, guardReload, async (c) => {
     const kind = kindOf(c);
     const scope = scopeOf(c);
     const name = c.req.param("name");
@@ -2035,7 +2048,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ hosts, catalogError, sync, copilot: copilotView() });
   });
 
-  app.post("/api/system/restart-opencode", async (c) => {
+  app.post("/api/system/restart-opencode", guardReload, async (c) => {
     // Dans la file partagée : jamais pendant une application (PATCH, libération des instances) ; « synchro due » posée avant la
     // libération d'applying, levée par la synchro lancée après la tâche.
     const result = await configQueue.run(() =>

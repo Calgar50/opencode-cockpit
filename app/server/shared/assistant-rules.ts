@@ -615,6 +615,7 @@ export const MESSAGES = Object.freeze({
   sessionsBusy: "Attendez la fin des réponses en cours.",
   configRestartBusy: "Attendez la fin des réponses en cours : ce changement redémarre opencode, ce qui les couperait.",
   configReloadBusy: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
+  reloadBusy: "Des réponses sont en cours : ce changement recharge opencode et les couperait. Attendez qu'elles se terminent.",
   restartEnCours: "opencode redémarre déjà : réessayez dans une minute.",
   adresseCopilotEnVerification:
     "opencode vient de redémarrer ou de recharger sa configuration : l'adresse de l'API Copilot est en cours de vérification. Réessayez dans quelques secondes.",
