@@ -365,7 +365,11 @@ export class FakeOpencode {
     return this.#statuses.get(sessionID) ?? { type: "idle" };
   }
 
-  /** Fin de la boucle de tours en cours de la session, repos compris (résolue aussitôt sans tour en cours). */
+  /**
+   * Fin du travail en cours de la session, repos compris : boucle de tours d'un envoi, ou sous-agent « task » (lié, repris par
+   * task_id ou détaché p7) quelle que soit sa sortie (fin, arrêt, clé étrangère, erreur). Résolue aussitôt sans travail en cours,
+   * donc aussi après un arrêt, dont le repos est publié avant la réponse.
+   */
   settled(sessionID: string): Promise<void> {
     return this.#runs.get(sessionID)?.done ?? Promise.resolve();
   }
@@ -1085,46 +1089,54 @@ export class FakeOpencode {
       link.run.children.add(child.id);
     }
     const run = this.#newRun(child.id);
+    // settled(enfant) : #newRun pose une promesse déjà résolue, remplacée ici par la fin du sous-agent. Le finally la résout sur
+    // toutes les sorties (fin normale, arrêt, clé étrangère d'un détaché, erreur relancée), toujours après le repos publié.
+    const { promise: finished, resolve: finish } = Promise.withResolvers<void>();
+    run.done = finished;
     const stopped = (): ChildResult | null =>
       link && !link.run.aborted && !this.#closed ? { sessionID: child.id, text: "", part, failed: "Task cancelled" } : null;
     try {
-      const now = Date.now();
-      this.#setAgentModel(child, spec.agent, childModel, now);
-      const user: OcMessageWithParts = {
-        info: { id: createId("msg"), sessionID: child.id, role: "user", time: { created: now }, agent: spec.agent, model: childModel },
-        parts: [],
-      };
-      this.#putMessage(user);
-      this.#putPart(user, { type: "text", text: typeof tool.input.prompt === "string" ? tool.input.prompt : "" });
-      if (spec.turn) {
-        await this.#turn(run, child, user, { ...spec.turn, agent: spec.turn.agent ?? spec.agent });
-        if (run.aborted || this.#closed) return stopped();
-      } else {
-        this.#setStatus(child.id, { type: "busy" });
-        const assistant = this.#newAssistant(child, user, { agent: spec.agent });
-        run.assistant = assistant;
-        if (!(await this.#live(run, spec.workMs ?? stepMs))) return stopped();
-        this.#putPart(assistant, { type: "step-start" });
-        this.#finishStep(child, assistant, spec, "stop", spec.text ?? "Résultat du sous-agent.");
-        run.assistant = null;
-        run.last = assistant;
+      try {
+        const now = Date.now();
+        this.#setAgentModel(child, spec.agent, childModel, now);
+        const user: OcMessageWithParts = {
+          info: { id: createId("msg"), sessionID: child.id, role: "user", time: { created: now }, agent: spec.agent, model: childModel },
+          parts: [],
+        };
+        this.#putMessage(user);
+        this.#putPart(user, { type: "text", text: typeof tool.input.prompt === "string" ? tool.input.prompt : "" });
+        if (spec.turn) {
+          await this.#turn(run, child, user, { ...spec.turn, agent: spec.turn.agent ?? spec.agent });
+          if (run.aborted || this.#closed) return stopped();
+        } else {
+          this.#setStatus(child.id, { type: "busy" });
+          const assistant = this.#newAssistant(child, user, { agent: spec.agent });
+          run.assistant = assistant;
+          if (!(await this.#live(run, spec.workMs ?? stepMs))) return stopped();
+          this.#putPart(assistant, { type: "step-start" });
+          this.#finishStep(child, assistant, spec, "stop", spec.text ?? "Résultat du sous-agent.");
+          run.assistant = null;
+          run.last = assistant;
+        }
+      } catch (err) {
+        // Sous-agent détaché dont la session a été supprimée : il échoue à sa prochaine écriture, comme un tour.
+        if (link || !(err instanceof ForeignKeyError)) throw err;
+        this.#runFailed(run, err);
+        return null;
       }
-    } catch (err) {
-      // Sous-agent détaché dont la session a été supprimée : il échoue à sa prochaine écriture, comme un tour.
-      if (link || !(err instanceof ForeignKeyError)) throw err;
-      this.#runFailed(run, err);
-      return null;
+      this.#settle(run);
+      const last = run.last;
+      const info = last?.info as OcAssistantMessage | undefined;
+      const errored = last?.parts.findLast((p) => p.type === "tool" && isRecord(p.state) && p.state.status === "error");
+      let reason: string | undefined;
+      if (info?.error) reason = typeof info.error.data?.message === "string" ? info.error.data.message : info.error.name;
+      else if (errored && isRecord(errored.state)) reason = String(errored.state.error);
+      const lastText = last?.parts.findLast((p) => p.type === "text")?.text;
+      const text = spec.turn ? (typeof lastText === "string" ? lastText : "") : (spec.text ?? "Résultat du sous-agent.");
+      return { sessionID: child.id, text, part, ...(reason === undefined ? {} : { failed: `Subagent failed (task_id: ${child.id}): ${reason}` }) };
+    } finally {
+      finish();
     }
-    this.#settle(run);
-    const last = run.last;
-    const info = last?.info as OcAssistantMessage | undefined;
-    const errored = last?.parts.findLast((p) => p.type === "tool" && isRecord(p.state) && p.state.status === "error");
-    let reason: string | undefined;
-    if (info?.error) reason = typeof info.error.data?.message === "string" ? info.error.data.message : info.error.name;
-    else if (errored && isRecord(errored.state)) reason = String(errored.state.error);
-    const lastText = last?.parts.findLast((p) => p.type === "text")?.text;
-    const text = spec.turn ? (typeof lastText === "string" ? lastText : "") : (spec.text ?? "Résultat du sous-agent.");
-    return { sessionID: child.id, text, part, ...(reason === undefined ? {} : { failed: `Subagent failed (task_id: ${child.id}): ${reason}` }) };
   }
 
   /** Sans tour : repos seulement (run-state.ts:77-86). Les sessions créées par POST /session ne sont pas arrêtées avec leur parent. */

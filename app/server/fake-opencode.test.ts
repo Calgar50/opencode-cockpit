@@ -19,6 +19,7 @@ import {
   type FakePermissionRequest,
   type FakeSession,
   type FakeToolScript,
+  type FakeTurnScript,
   idTime,
   readCapture,
   type SyncPayload,
@@ -46,6 +47,19 @@ async function until<T>(read: () => T | undefined | null | false, timeoutMs = 30
     if (value !== undefined && value !== null && value !== false) return value;
     if (Date.now() > deadline) throw new Error("condition non atteinte à temps");
     await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Promesse `label` tenue en `timeoutMs` au plus : une attente jamais résolue fait échouer le test (message nommé) au lieu de le bloquer. */
+async function within<T>(promise: Promise<T>, label: string, timeoutMs = 3000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} : promesse non tenue en ${timeoutMs} ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -906,6 +920,66 @@ describe("faux opencode : attentes", () => {
     assert.equal(await fake.settled("ses_sans_tour"), undefined);
     assert.deepEqual(fake.failures, []);
   });
+
+  it("settled() d'un sous-agent « task » : ne rend la main qu'au repos de l'enfant (workMs, tour complet, détaché p7), arrêt et clé étrangère compris", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const task = (agent: string, child: Partial<NonNullable<FakeToolScript["child"]>>, ask = false): FakeToolScript => ({
+      tool: "task",
+      input: { description: `Déléguer à ${agent}`, prompt: "Lis app.log", subagent_type: agent },
+      ...(ask ? { ask: { permission: "task", patterns: [agent] } } : {}),
+      child: { agent, ...child },
+    });
+    /** Racine qui délègue selon `tools` ; `detach` : racine arrêtée pendant la demande, puis « once » tardif (p7). Rend l'enfant `agent` occupé. */
+    const busyChild = async (agent: string, tools: FakeToolScript[], detach = false) => {
+      const root = await newSession(oc);
+      fake.script(root.id, { tools, followUp: { text: "Synthèse." } });
+      const since = fake.emitted.length;
+      assert.equal(await promptAsync(oc, root.id, "Délègue"), 204);
+      if (detach) {
+        const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === root.id, { since });
+        assert.equal(await oc.request("POST", `/session/${root.id}/abort`), true);
+        assert.equal(await reply(oc, String(asked.properties.id), { reply: "once" }), true);
+      }
+      const created = await fake.waitForEvent("session.created", (p) => (p.info as FakeSession).agent === agent, { since });
+      const id = (created.properties.info as FakeSession).id;
+      await until(() => fake.statusOf(id).type === "busy");
+      return { id, since };
+    };
+    /** Enfant au repos, assistant clos sans erreur, coût scripté facturé. */
+    const assertIdleAndBilled = (id: string, cost: number) => {
+      assert.equal(fake.statusOf(id).type, "idle", "enfant au repos");
+      assert.ok(assistants(fake.messages(id)).some((m) => m.time.completed !== undefined && !m.error), "assistant clos");
+      assert.ok(Math.abs((fake.session(id)?.cost ?? 0) - cost) < 1e-9, `coût ${cost}`);
+    };
+
+    const worker = await busyChild("travailleur", [task("travailleur", { workMs: 300, text: "Fait.", cost: 0.002 })]);
+    await within(fake.settled(worker.id), "settled(enfant workMs)");
+    assertIdleAndBilled(worker.id, 0.002);
+
+    const turn = await busyChild("tour", [task("tour", { turn: { text: "Fait.", cost: 0.003, stepMs: 150 } })]);
+    await within(fake.settled(turn.id), "settled(enfant turn)");
+    assertIdleAndBilled(turn.id, 0.003);
+
+    const detached = await busyChild("detache", [task("detache", { workMs: 300, text: "Fait.", cost: 0.004 }, true)], true);
+    await within(fake.settled(detached.id), "settled(enfant détaché p7)");
+    assertIdleAndBilled(detached.id, 0.004);
+
+    // Sorties sans fin normale : promesse relevée pendant le travail, tenue après l'arrêt ou l'échec par clé étrangère.
+    const cancelled = await busyChild("arrete", [task("arrete", { workMs: 60_000 })]);
+    const cancelledDone = fake.settled(cancelled.id);
+    assert.equal(await oc.request("POST", `/session/${cancelled.id}/abort`), true);
+    await within(cancelledDone, "settled(enfant arrêté)");
+    assert.equal(fake.statusOf(cancelled.id).type, "idle");
+
+    const orphan = await busyChild("supprime", [task("supprime", { workMs: 300 }, true)], true);
+    const orphanDone = fake.settled(orphan.id);
+    assert.equal(await oc.request("DELETE", `/session/${orphan.id}`), true);
+    await within(orphanDone, "settled(détaché supprimé, clé étrangère)");
+    assert.equal(fake.statusOf(orphan.id).type, "idle");
+    const failed = await fake.waitForEvent("session.error", (p) => p.sessionID === orphan.id, { since: orphan.since });
+    assert.deepEqual(failed.properties.error, { name: "UnknownError", data: { message: "FOREIGN KEY constraint failed" } });
+    assert.deepEqual(fake.failures, []);
+  });
 });
 
 describe("faux opencode : demandes de l'agent", () => {
@@ -971,6 +1045,34 @@ describe("faux opencode : rechargement", () => {
     assert.deepEqual(await oc.request("GET", "/session/status", { directory: "/workspace/a" }), {});
     assert.deepEqual((await oc.request<FakePermissionRequest[]>("GET", "/permission", { directory: "/workspace/b" })).map((p) => p.sessionID), [b.id]);
     assert.deepEqual(await oc.request("GET", "/session/status", { directory: "/workspace/b" }), { [b.id]: { type: "busy" } });
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("POST /instance/dispose : accords « always » propres à chaque instance, gardés à la libération d'une autre, oubliés avec la leur", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const a = await newSession(oc, {}, "/workspace/a");
+    const b = await newSession(oc, {}, "/workspace/b");
+    /** Envoi d'une commande : true si une demande est posée, alors accordée « always » dans le dossier de la session (sinon 404). */
+    const asks = async (session: FakeSession, command: string): Promise<boolean> => {
+      fake.script(session.id, { tools: [bash(command)], followUp: { text: "Fait." } });
+      const since = fake.emitted.length;
+      assert.equal(await promptAsync(oc, session.id, command), 204);
+      const idle = () => fake.emitted.slice(since).some((w) => w.payload.type === "session.idle" && props(w).sessionID === session.id) && "repos";
+      const asked = await until(() => fake.pendingPermissions().find((p) => p.sessionID === session.id) ?? idle());
+      if (asked === "repos") return false;
+      assert.equal(await oc.request("POST", `/permission/${asked.id}/reply`, { body: { reply: "always" }, directory: session.directory }), true);
+      await fake.waitForEvent("session.idle", (p) => p.sessionID === session.id, { since });
+      return true;
+    };
+    assert.equal(await asks(a, "git status"), true, "a : première demande");
+    assert.equal(await asks(b, "git status"), true, "b : l'accord donné dans a ne vaut pas dans b");
+    assert.equal(await asks(a, "git log"), false, "a : « git * » accordé");
+    assert.equal(await oc.request("POST", "/instance/dispose", { directory: "/workspace/b" }), true);
+    assert.equal(await asks(a, "git diff"), false, "a : accord gardé à la libération de b");
+    assert.equal(await asks(b, "git branch"), true, "b : accord oublié avec son instance");
+    assert.equal(await oc.request("POST", "/instance/dispose", { directory: "/workspace/a" }), true);
+    assert.equal(await asks(b, "git tag"), false, "b : accord gardé à la libération de a");
+    assert.equal(await asks(a, "git show"), true, "a : accord oublié avec son instance");
     assert.deepEqual(fake.failures, []);
   });
 
@@ -1152,6 +1254,52 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     assert.deepEqual(fake.failures, []);
   });
 
+  it("DELETE d'une session occupée hors du dossier par défaut : dossier gardé, session listée occupée dans son instance, tour en échec publié dans ce dossier", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc, {}, "/workspace/b");
+    fake.script(session.id, { text: "Trop tard.", stepMs: 300 });
+    const since = fake.emitted.length;
+    assert.equal(await promptAsync(oc, session.id, "Bonjour"), 204);
+    await fake.waitForEvent("session.status", (p) => p.sessionID === session.id && (p.status as { type: string }).type === "busy", { since });
+    assert.equal(await oc.request("DELETE", `/session/${session.id}`, { directory: "/workspace/b" }), true);
+    const deleted = fake.emitted.findIndex((w) => w.payload.type === "session.deleted" && props(w).sessionID === session.id);
+    assert.ok(deleted >= since);
+    assert.deepEqual(await oc.request("GET", "/session/status", { directory: "/workspace/b" }), { [session.id]: { type: "busy" } });
+    assert.deepEqual(await oc.request("GET", "/session/status"), {});
+    await fake.waitForEvent("session.idle", (p) => p.sessionID === session.id, { since: deleted });
+    const after = fake.emitted.slice(deleted).filter((w) => props(w).sessionID === session.id);
+    assert.deepEqual(trace(after, { [session.id]: "s" }), ["session.deleted@s", "session.error:UnknownError@s", "session.status:idle@s", "session.idle@s"]);
+    assert.deepEqual(after.map((w) => w.directory), ["/workspace/b", "/workspace/b", "/workspace/b", "/workspace/b"]);
+    assert.deepEqual(await oc.request("GET", "/session/status", { directory: "/workspace/b" }), {});
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("abort après le DELETE d'une session occupée : true, arrêt publié sans aucune écriture (ni message ni partie), rien ensuite, failures vide", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    fake.script(session.id, { text: "Trop tard.", stepMs: 300 });
+    const since = fake.emitted.length;
+    assert.equal(await promptAsync(oc, session.id, "Bonjour"), 204);
+    await fake.waitForEvent("session.status", (p) => p.sessionID === session.id && (p.status as { type: string }).type === "busy", { since });
+    assert.equal(await oc.request("DELETE", `/session/${session.id}`), true);
+    const deleted = fake.emitted.findIndex((w) => w.payload.type === "session.deleted" && props(w).sessionID === session.id);
+    assert.ok(deleted >= since);
+    assert.equal(await oc.request("POST", `/session/${session.id}/abort`), true);
+    // Au-delà de la pause du tour (300 ms) : le tour arrêté n'écrit plus rien.
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.deepEqual(trace(fake.emitted.slice(deleted + 1), { [session.id]: "s" }), [
+      "session.error:MessageAbortedError@s",
+      "session.status:idle@s",
+      "session.idle@s",
+      "session.status:idle@s",
+      "session.idle@s",
+    ]);
+    const writes = fake.emitted.slice(deleted).filter((w) => ["message.updated", "message.part.updated"].includes(w.payload.type) && props(w).sessionID === session.id);
+    assert.deepEqual(writes, [], "aucune écriture après session.deleted");
+    assert.deepEqual(await oc.request("GET", "/session/status"), {});
+    assert.deepEqual(fake.failures, []);
+  });
+
   it("abort avant busy (juste après le 204) : un seul repos, sans session.error ni message d'assistant", async (t) => {
     const { fake, oc } = await startFake(t);
     const session = await newSession(oc);
@@ -1258,6 +1406,35 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     const delegating = fake.messages(root.id).find((m) => m.info.role === "assistant");
     assert.ok(delegating);
     assert.match(String(toolParts(delegating)[0]?.state.output), /<task_result>\n2 TODO\.\n<\/task_result>/);
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("enfant « task » en échec : « Subagent failed (task_id: …) » chez la racine (metadata gardée), qui reprend et facture ; aussi pour un outil de l'enfant refusé sans message", async (t) => {
+    const { fake, oc } = await startFake(t);
+    /** La racine délègue à un enfant joué par `turn` ; `answer` répond à la demande de l'enfant ; `reason` : cause attendue. */
+    const assertSubagentFailed = async (turn: FakeTurnScript, reason: string, answer?: (asked: OcEvent) => Promise<unknown>) => {
+      const root = await newSession(oc);
+      fake.script(root.id, {
+        cost: 0.01,
+        tools: [{ tool: "task", input: { description: "Analyser app.log", prompt: "Lis app.log", subagent_type: "analyste" }, child: { agent: "analyste", turn } }],
+        followUp: { text: "Sans le résultat.", cost: 0.002 },
+      });
+      const since = fake.emitted.length;
+      assert.equal(await promptAsync(oc, root.id, "Délègue"), 204);
+      const created = await fake.waitForEvent("session.created", (p) => (p.info as FakeSession).parentID === root.id, { since });
+      const child = (created.properties.info as FakeSession).id;
+      if (answer) await answer(await fake.waitForEvent("permission.asked", (p) => p.sessionID === child, { since }));
+      await fake.waitForEvent("session.idle", (p) => p.sessionID === root.id, { since });
+      assert.deepEqual(assistants(fake.messages(root.id)).map((m) => m.finish), ["tool-calls", "stop"]);
+      const delegating = fake.messages(root.id).find((m) => m.info.role === "assistant");
+      assert.ok(delegating);
+      assert.deepEqual(toolParts(delegating).map((p) => [p.state.status, p.state.error, p.state.metadata]), [
+        ["error", `Subagent failed (task_id: ${child}): ${reason}`, { parentSessionId: root.id, sessionId: child, model: { providerID: "github-copilot", modelID: "gpt-5-mini" } }],
+      ]);
+      assert.ok(Math.abs((fake.session(root.id)?.cost ?? 0) - 0.012) < 1e-9, "reprise facturée");
+    };
+    await assertSubagentFailed({ error: { name: "ProviderAuthError", data: { message: "Jeton refusé", providerID: "github-copilot" } } }, "Jeton refusé");
+    await assertSubagentFailed({ tools: [bash("rm -rf dist")] }, REJECTED, (asked) => reply(oc, String(asked.properties.id), { reply: "reject" }));
     assert.deepEqual(fake.failures, []);
   });
 });
