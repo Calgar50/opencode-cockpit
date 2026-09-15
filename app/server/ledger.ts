@@ -470,6 +470,21 @@ export class Ledger {
     };
   }
 
+  /**
+   * 1.1 : dépense d'une conversation depuis `since` (début d'une demande, en ms), sur le modèle de sessionUsage : tout l'arbre
+   * (usage.root_id, sessions rattachées à leur vraie racine comprises), usages chat, sous-agents, étapes d'équipe et contrôles de
+   * sécurité. Chaque étape d'un tour est un message assistant distinct, enregistré une seule fois (clé message_id) dès sa clôture
+   * (mesure MX1 §7). Non compté : l'appel qui génère le titre d'une nouvelle conversation, porté par aucun message (MX1 §5).
+   * `since` illisible : erreur, jamais 0 (un plafond de coût ne doit pas se croire à zéro).
+   */
+  spentSince(rootId: string, since: number): number {
+    if (!Number.isFinite(since)) throw new RangeError("début de demande invalide");
+    const row = this.#db
+      .prepare("SELECT COALESCE(SUM(cost), 0) AS cost FROM usage WHERE root_id = ? AND created_at >= ?")
+      .get(rootId, since) as { cost: number };
+    return row.cost;
+  }
+
   months(): string[] {
     const rows = this.#db
       .prepare("SELECT DISTINCT strftime('%Y-%m', created_at / 1000, 'unixepoch') AS m FROM usage ORDER BY m DESC")

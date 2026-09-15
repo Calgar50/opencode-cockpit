@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { stringify } from "yaml";
-import { params } from "./db.ts";
+import { purgeConversation } from "./conversation-purge.ts";
+import { params, transaction } from "./db.ts";
 import { assertInside, safeSegment, slugify, writeFileAtomic } from "./fsutil.ts";
 import { type ClassificationResult, classifyHeuristic } from "./heuristic.ts";
 import type { Ledger } from "./ledger.ts";
@@ -490,8 +491,12 @@ export class ArchiveService {
     const row = this.#row(sessionId);
     if (!row) return false;
     if (row.archive_path) await this.#removeFile(row.archive_path);
-    this.#d.db.prepare("DELETE FROM conversations_fts WHERE session_id = ?").run(sessionId);
-    this.#d.db.prepare("DELETE FROM conversations WHERE session_id = ?").run(sessionId);
+    // Point unique de suppression d'une conversation (D-07) : textes 1.1 vidés et faits supprimés avec l'archive, ensemble.
+    transaction(this.#d.db, () => {
+      purgeConversation(this.#d.db, sessionId);
+      this.#d.db.prepare("DELETE FROM conversations_fts WHERE session_id = ?").run(sessionId);
+      this.#d.db.prepare("DELETE FROM conversations WHERE session_id = ?").run(sessionId);
+    });
     return true;
   }
 
