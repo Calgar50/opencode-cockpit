@@ -331,16 +331,47 @@ export async function knownDirectories(deps: { projects: Pick<ProjectsService, "
   return [...directories];
 }
 
+/** GET /session/status?directory=… (délai de 10 s). */
+function sessionStatus(client: OpencodeClient, directory: string | null): Promise<unknown> {
+  return client.request<unknown>("GET", "/session/status", { ...(directory ? { directory } : {}), timeoutMs: 10_000 });
+}
+
+/** Une session absente de la réponse est au repos ; toute autre forme que { type: "idle" } compte comme occupée. */
+function statusBusy(status: unknown): boolean {
+  return isRecord(status) && Object.values(status).some((s) => !isRecord(s) || s.type !== "idle");
+}
+
 /** true si une conversation n'est pas au repos (GET /session/status?directory=…) dans l'un des dossiers connus. */
 export async function probeSessionsBusy(deps: { client: OpencodeClient; projects: ProjectsService; db?: DatabaseSync }): Promise<boolean> {
   const directories = await knownDirectories(deps);
-  const answers = await Promise.all(
-    directories.map((directory) =>
-      deps.client.request<unknown>("GET", "/session/status", { ...(directory ? { directory } : {}), timeoutMs: 10_000 }),
-    ),
-  );
-  // Une session absente de la réponse est au repos ; toute autre forme que { type: "idle" } compte comme occupée.
-  return answers.some((status) => isRecord(status) && Object.values(status).some((s) => !isRecord(s) || s.type !== "idle"));
+  const answers = await Promise.all(directories.map((directory) => sessionStatus(deps.client, directory)));
+  return answers.some(statusBusy);
+}
+
+/**
+ * Sonde de la garde de rechargement : chaque dossier connu lu séparément. true dès qu'une réponse lue n'est pas au repos, et
+ * aussi quand un dossier est illisible (délai dépassé, instance qui ne démarre pas) alors qu'un autre a répondu : l'absence de
+ * réponse en cours n'y est pas prouvée. Rejetée seulement si aucun dossier n'a répondu (opencode peut-être injoignable).
+ */
+export async function probeSessionsBusyStrict(deps: {
+  client: OpencodeClient;
+  projects: ProjectsService;
+  db?: DatabaseSync;
+  log: Pick<Logger, "warn">;
+}): Promise<boolean> {
+  const directories = await knownDirectories(deps);
+  const settled = await Promise.allSettled(directories.map((directory) => sessionStatus(deps.client, directory)));
+  const answers = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  if (answers.some(statusBusy)) return true;
+  const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failures.length === 0) return false;
+  if (answers.length === 0) throw failures[0]?.reason;
+  deps.log.warn("conversations illisibles dans un dossier : absence de réponse en cours non prouvée", {
+    failed: failures.length,
+    directories: directories.length,
+    error: errorMessage(failures[0]?.reason),
+  });
+  return true;
 }
 
 // --- Service -----------------------------------------------------------------------------------

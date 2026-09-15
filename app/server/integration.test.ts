@@ -152,11 +152,15 @@ describe("registre des coûts", () => {
     const estimate = ledger.estimate("github-copilot", "claude-sonnet-5", now);
     assert.equal(estimate.samples, 1);
     assert.equal(estimate.avgUsd, firstCost);
+    // Résumé du mois : seule la vraie demande compte (mois de msg_k_vraie, stable même lancé dans les premières secondes d'un mois).
+    const prompts = () => ledger.summary(monthKey(now - 10_000), now).prompts;
+    assert.equal(prompts(), 1);
     // Annonce après l'enregistrement : appliquée tout de suite ; un nouvel événement ne la remet pas en « message ».
     ledger.markPromptKind("msg_k_vraie", "equipe-resultat");
     ledger.recordUser(user("msg_k_vraie", now - 10_000), root);
     assert.equal(kindOf("msg_k_vraie"), "equipe-resultat");
     assert.equal(ledger.estimate("github-copilot", "claude-sonnet-5", now).samples, 0);
+    assert.equal(prompts(), 0);
   });
 
   it("agrège par mois, usage, modèle et conversation (sous-agents rattachés)", () => {
@@ -524,6 +528,10 @@ describe("serveur HTTP (sécurité et proxy)", () => {
    * GET /session/:id/message/:messageID répond 500 (« message »).
    */
   let permissionLookupFailure: "socket" | "status" | "message" | null = null;
+  /** Interrupteur : GET /session/status répond 500 pour ce dossier seulement (instance qui ne démarre pas, dossier disparu). */
+  let statusFailDirectory: string | null = null;
+  /** Interrupteur : GET /global/health répond 500 (opencode entièrement injoignable). */
+  let healthFails = false;
   /** GET /global/config servi tel quel jusqu'au prochain redémarrage réussi (opencode 1.18.30 garde sa configuration en mémoire) ; undefined : fichiers relus. */
   let staleGlobalConfig: unknown;
   /** Faux ControlService : raisons des redémarrages demandés, résultats servis dans l'ordre (sinon restartResult), redémarrage déjà en cours. */
@@ -588,7 +596,15 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         applyingSeen.push([`${req.method ?? ""} ${pathname}`, configQueue.applying]);
         const json = (status: number, data: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
         if (pathname === "/global/health") {
-          json(200, { healthy: true, version: "test" });
+          if (healthFails) json(500, { name: "UnknownError", data: { message: "santé simulée en échec" } });
+          else json(200, { healthy: true, version: "test" });
+        } else if (
+          req.method === "GET" &&
+          pathname === "/session/status" &&
+          statusFailDirectory !== null &&
+          new URL(req.url ?? "/", "http://opencode.test").searchParams.get("directory") === statusFailDirectory
+        ) {
+          json(500, { name: "UnknownError", data: { message: "instance du dossier simulée en échec" } });
         } else if (req.method === "GET" && pathname === "/agent") {
           // Fichier de configuration marqué : refusé, comme une configuration invalide relue au démarrage.
           const configFile = path.join(tmp, "opencode.jsonc");
@@ -1665,6 +1681,72 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       settings.update({ ui: { mode: "simple" } });
     }
     assert.equal(configQueue.billedInFlight, 0);
+  });
+
+  it("garde « réponse en cours » : un dossier illisible alors qu'opencode répond compte comme une réponse en cours (Simple compris) ; seul opencode entièrement injoignable laisse passer le redémarrage", async () => {
+    const LENT = "/workspace/lent";
+    const now = Date.now();
+    // Conversation récente dans un second dossier : la garde le sonde à part, et son instance ne répond pas.
+    new SessionTracker(db, {} as OpencodeClient).upsert({ ...session("ses_lent"), directory: LENT, time: { created: now, updated: now } });
+    ocStatuses = { ses_actif: { type: "busy" } };
+    statusFailDirectory = LENT;
+    const before = restarts.length;
+    const calls = copilotSyncCalls;
+    const marks = copilotMarks.length;
+    const warned = warnings.length;
+    try {
+      // Réponse en cours dans le dossier par défaut, second dossier en échec : refus, jamais « aucune réponse en cours ».
+      const from = upstreamRequests.length;
+      const restart = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(restart.status, 409, restart.body);
+      assert.deepEqual(JSON.parse(restart.body), { error: "sessions-busy", message: MESSAGES.reloadBusy, override: false });
+      assert.ok(upstreamSince(from).includes(`GET /session/status?directory=${encodeURIComponent(LENT)}`), "second dossier sondé");
+      // Mode Simple : la confirmation ne force rien.
+      assert.equal((await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}")).status, 409);
+      const install = await call("POST", "/api/assistants/catalogue/analyser-incident/install", confirmedHeaders, "{}");
+      assert.equal(install.status, 409, install.body);
+
+      // Aucune réponse lue en cours mais un dossier illisible : absence de réponse non prouvée, refus aussi (journalisé).
+      ocStatuses = {};
+      assert.equal((await call("POST", "/api/system/restart-opencode", mutating, "{}")).status, 409);
+      assert.ok(warnings.slice(warned).some((w) => w.includes("absence de réponse en cours non prouvée")));
+      // Aucun dossier lisible alors qu'opencode répond (/global/health) : refus.
+      permissionLookupFailure = "status";
+      const unreadable = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(unreadable.status, 409, unreadable.body);
+      assert.equal(JSON.parse(unreadable.body).error, "sessions-busy");
+      assert.ok(warnings.slice(warned).some((w) => w.includes("rechargement refusé")));
+      assert.equal(restarts.length, before);
+      assert.equal(copilotSyncCalls, calls);
+      assert.deepEqual(copilotMarks.slice(marks), []);
+
+      // Mode Avancé : Studio refusé sans en-tête (dérogation proposée), dérogation explicite dans la file avec « synchro due ».
+      settings.update({ ui: { mode: "avance" } });
+      const save = await call("PUT", "/api/studio/agents/essai-sonde", mutating, JSON.stringify({ frontmatter: { description: "x", mode: "subagent" }, body: "x" }));
+      assert.equal(save.status, 409, save.body);
+      assert.equal(JSON.parse(save.body).override, true);
+      assert.equal(restarts.length, before);
+      const forced = await call("POST", "/api/system/restart-opencode", confirmedHeaders, "{}");
+      assert.equal(forced.status, 200, forced.body);
+      assert.deepEqual(restarts.slice(before), ["demande depuis l'interface"]);
+      assert.deepEqual(copilotMarks.slice(marks), [{ cause: "redémarrage d'opencode (page Diagnostic)", applying: true }]);
+      assert.equal(configQueue.applying, false);
+
+      // opencode entièrement injoignable (santé en échec aussi) : aucune réponse à couper, le redémarrage passe, même en Simple.
+      settings.update({ ui: { mode: "simple" } });
+      healthFails = true;
+      const unreachable = await call("POST", "/api/system/restart-opencode", mutating, "{}");
+      assert.equal(unreachable.status, 200, unreachable.body);
+      assert.deepEqual(restarts.slice(before), ["demande depuis l'interface", "demande depuis l'interface"]);
+      assert.ok(warnings.slice(warned).some((w) => w.includes("rechargement laissé passer")));
+    } finally {
+      statusFailDirectory = null;
+      healthFails = false;
+      permissionLookupFailure = null;
+      ocStatuses = {};
+      settings.update({ ui: { mode: "simple" } });
+      db.prepare("UPDATE sessions SET deleted_at = ? WHERE id = 'ses_lent'").run(Date.now());
+    }
   });
 
   it("verrou « fournisseurs » : configuration d'opencode, IA de classement et ancienne IA du chat limitées aux fournisseurs autorisés", async () => {

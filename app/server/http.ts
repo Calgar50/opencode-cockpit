@@ -9,7 +9,7 @@ import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { ArchiveService } from "./archive.ts";
-import { probeSessionsBusy } from "./assistants.ts";
+import { probeSessionsBusy, probeSessionsBusyStrict } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import { type BillRefusal, billRefusal, ConfigWriteQueue } from "./config-queue.ts";
@@ -475,10 +475,13 @@ export function createApp(deps: AppDeps): Hono {
   const advanced = advancedOnly(settings);
   // Garde « réponse en cours » avant tout rechargement ou redémarrage d'opencode (Studio, assistants, redémarrage). Demande
   // facturée admise par le proxy mais pas encore visible dans /session/status : réponse en cours aussi (comme applyConfigFile).
+  // Dossier illisible alors qu'opencode répond : réponse en cours possible, refus ; seul opencode injoignable laisse passer.
   const guardReload = reloadGuard({
     settings,
     control,
-    busy: async () => configQueue.billedInFlight > 0 || (await probeSessionsBusy({ client, projects, db: deps.db })),
+    busy: async () => configQueue.billedInFlight > 0 || (await probeSessionsBusyStrict({ client, projects, db: deps.db, log })),
+    reachable: async () => (await client.health()) !== null,
+    log,
   });
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
