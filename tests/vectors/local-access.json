@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "note": "Vecteurs communs 1.0.5, lus par app/server/core.test.ts et par les tests PowerShell 5.1. Valeurs de test publiques : aucun jeton ni secret reel. localAccess : scheme et confirmedAt sont les valeurs brutes des cles COCKPIT_LOCAL_SCHEME et COCKPIT_LOCAL_HTTP_CONFIRMED (null = cle absente) ; les espaces aux deux bouts sont retires avant le controle ; valid = configuration acceptee ; localScheme = mode servi (null si refus). dates : valeur brute de COCKPIT_LOCAL_HTTP_CONFIRMED lue avec COCKPIT_LOCAL_SCHEME=http. hmac : HMAC-SHA256 en hexadecimal minuscule ; cle = octets UTF-8 du jeton ; message = octets UTF-8 de opencode-cockpit/health-proof/v1 (preuve) ou opencode-cockpit/auth-ticket/v1 (ticket), suivi d'un saut de ligne LF puis du defi ou du nonce.",
+  "localAccess": [
+    { "name": "cle absente", "scheme": null, "confirmedAt": null, "valid": true, "localScheme": "https" },
+    { "name": "cle absente, date presente ignoree", "scheme": null, "confirmedAt": "2026-09-15T10:32:00Z", "valid": true, "localScheme": "https" },
+    { "name": "vide", "scheme": "", "confirmedAt": null, "valid": true, "localScheme": "https" },
+    { "name": "espaces seuls", "scheme": "   ", "confirmedAt": null, "valid": true, "localScheme": "https" },
+    { "name": "https", "scheme": "https", "confirmedAt": null, "valid": true, "localScheme": "https" },
+    { "name": "https entoure d'espaces", "scheme": " https ", "confirmedAt": null, "valid": true, "localScheme": "https" },
+    { "name": "https, date vide", "scheme": "https", "confirmedAt": "", "valid": true, "localScheme": "https" },
+    { "name": "https, date valable ignoree", "scheme": "https", "confirmedAt": "2026-09-15T10:32:00Z", "valid": true, "localScheme": "https" },
+    { "name": "https, date invalide ignoree", "scheme": "https", "confirmedAt": "2026-02-30T00:00:00Z", "valid": true, "localScheme": "https" },
+    { "name": "vide, date invalide ignoree", "scheme": "", "confirmedAt": "pas une date", "valid": true, "localScheme": "https" },
+    { "name": "http, date valable", "scheme": "http", "confirmedAt": "2026-09-15T10:32:00Z", "valid": true, "localScheme": "http" },
+    { "name": "http entoure d'espaces, date valable", "scheme": " http ", "confirmedAt": "2026-09-15T10:32:00Z", "valid": true, "localScheme": "http" },
+    { "name": "http, date entouree d'espaces", "scheme": "http", "confirmedAt": " 2026-09-15T10:32:00Z ", "valid": true, "localScheme": "http" },
+    { "name": "http, 29 fevrier 2028", "scheme": "http", "confirmedAt": "2028-02-29T00:00:00Z", "valid": true, "localScheme": "http" },
+    { "name": "http sans date", "scheme": "http", "confirmedAt": null, "valid": false, "localScheme": null },
+    { "name": "http, date vide", "scheme": "http", "confirmedAt": "", "valid": false, "localScheme": null },
+    { "name": "http, date en espaces", "scheme": "http", "confirmedAt": "   ", "valid": false, "localScheme": null },
+    { "name": "http, 30 fevrier", "scheme": "http", "confirmedAt": "2026-02-30T00:00:00Z", "valid": false, "localScheme": null },
+    { "name": "http, 31 fevrier", "scheme": "http", "confirmedAt": "2026-02-31T00:00:00Z", "valid": false, "localScheme": null },
+    { "name": "http, 31 septembre", "scheme": "http", "confirmedAt": "2026-09-31T10:00:00Z", "valid": false, "localScheme": null },
+    { "name": "http, 29 fevrier 2027", "scheme": "http", "confirmedAt": "2027-02-29T00:00:00Z", "valid": false, "localScheme": null },
+    { "name": "http, heure 24:00", "scheme": "http", "confirmedAt": "2026-09-15T24:00:00Z", "valid": false, "localScheme": null },
+    { "name": "http, minute 60", "scheme": "http", "confirmedAt": "2026-09-15T10:60:00Z", "valid": false, "localScheme": null },
+    { "name": "http, seconde 60", "scheme": "http", "confirmedAt": "2026-09-15T10:32:60Z", "valid": false, "localScheme": null },
+    { "name": "http, z minuscule", "scheme": "http", "confirmedAt": "2026-09-15T10:32:00z", "valid": false, "localScheme": null },
+    { "name": "http, fraction de seconde", "scheme": "http", "confirmedAt": "2026-09-15T10:32:00.000Z", "valid": false, "localScheme": null },
+    { "name": "http, decalage +00:00", "scheme": "http", "confirmedAt": "2026-09-15T10:32:00+00:00", "valid": false, "localScheme": null },
+    { "name": "http, espace au lieu de T", "scheme": "http", "confirmedAt": "2026-09-15 10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "HTTP majuscules", "scheme": "HTTP", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "Https casse mixte", "scheme": "Https", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "HTTPS majuscules", "scheme": "HTTPS", "confirmedAt": null, "valid": false, "localScheme": null },
+    { "name": "htps", "scheme": "htps", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "https,http", "scheme": "https,http", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "1", "scheme": "1", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "0", "scheme": "0", "confirmedAt": null, "valid": false, "localScheme": null },
+    { "name": "http entre guillemets", "scheme": "\"http\"", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null },
+    { "name": "https entre guillemets", "scheme": "\"https\"", "confirmedAt": null, "valid": false, "localScheme": null },
+    { "name": "h t t p", "scheme": "h t t p", "confirmedAt": "2026-09-15T10:32:00Z", "valid": false, "localScheme": null }
+  ],
+  "dates": {
+    "accepted": [
+      "2026-09-15T10:32:00Z",
+      "2028-02-29T00:00:00Z",
+      "2000-01-01T00:00:00Z",
+      "2099-12-31T23:59:59Z",
+      " 2026-09-15T10:32:00Z "
+    ],
+    "rejected": [
+      "2026-02-30T00:00:00Z",
+      "2026-02-31T00:00:00Z",
+      "2026-09-31T10:00:00Z",
+      "2027-02-29T00:00:00Z",
+      "2026-04-31T00:00:00Z",
+      "2026-09-15T24:00:00Z",
+      "2026-09-15T10:60:00Z",
+      "2026-09-15T10:32:60Z",
+      "0000-01-01T00:00:00Z",
+      "1999-12-31T23:59:59Z",
+      "2100-01-01T00:00:00Z",
+      "2026-00-15T10:32:00Z",
+      "2026-13-15T10:32:00Z",
+      "2026-09-00T10:32:00Z",
+      "2026-09-15T10:32:00z",
+      "2026-09-15 10:32:00Z",
+      "2026-09-15T10:32:00.000Z",
+      "2026-09-15T10:32:00+00:00",
+      "2026-9-15T10:32:00Z",
+      "2026-09-15T10:32Z",
+      "2026-09-15",
+      "",
+      "   "
+    ]
+  },
+  "hmac": {
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "healthProof": {
+      "challenge": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expected": "c7b5ab3dd4e004761880d8d3dd1bdeba4177b6e3d0f5a30eff860019cb058ded"
+    },
+    "authTicket": {
+      "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "expected": "dc032b1fb95481593f0bf5572d711d481edf0686350e8b55185d60e3267ffa7e"
+    }
+  }
+}

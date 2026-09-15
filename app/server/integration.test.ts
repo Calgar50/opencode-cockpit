@@ -582,6 +582,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       githubEnterpriseDomain: null,
       allowedProviders: ["github-copilot"],
       copilotApiUrl: null,
+      // Harnais en HTTP (1.0.5) : dossier TLS jamais créé ni lu.
+      localScheme: "http",
+      localHttpConfirmedAt: "2026-09-15T10:32:00Z",
+      tlsDir: path.join(tmp, "tls"),
+      opensslPath: "/usr/bin/openssl",
       version: "test",
     };
     const base = setup();
