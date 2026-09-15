@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { Hono } from "hono";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import { type ArchiveService, buildDigest, type Conversation, type ConversationDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
@@ -23,7 +24,12 @@ import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } fro
 import { redactSecrets } from "./redact.ts";
 import {
   attemptLogin,
+  authTicketMac,
+  csrfGuard,
+  healthProof as serverHealthProof,
+  hostGuard,
   hostnameOf,
+  isGeneratedToken,
   isValidSession,
   LoginLimiter,
   newSessionSecret,
@@ -389,6 +395,51 @@ describe("sécurité et utilitaires", () => {
     assert.equal(await attemptLogin(limiter, token, token, 0), "ok");
   });
 
+  it("anti-CSRF selon le schéma servi : https et http symétriques (origine au même schéma et au même hôte, ou absente)", async () => {
+    const host = "127.0.0.1:7777";
+    const statusFor = async (scheme: "https" | "http", origin: string | undefined): Promise<number> => {
+      const app = new Hono();
+      app.use("*", csrfGuard(scheme));
+      app.put("/api/x", (c) => c.json({ ok: true }));
+      const headers: Record<string, string> = { host, "x-cockpit-csrf": "1" };
+      if (origin !== undefined) headers.origin = origin;
+      return (await app.request(`http://${host}/api/x`, { method: "PUT", headers })).status;
+    };
+    const cases: Array<[string | undefined, number, number]> = [
+      // origine, statut en https, statut en http
+      [`https://${host}`, 200, 403],
+      [`http://${host}`, 403, 200],
+      ["https://evil.example", 403, 403],
+      ["http://evil.example", 403, 403],
+      [`https://127.0.0.1:7778`, 403, 403],
+      ["null", 403, 403],
+      [undefined, 200, 200],
+    ];
+    for (const [origin, https, http] of cases) {
+      assert.equal(await statusFor("https", origin), https, `https ${origin}`);
+      assert.equal(await statusFor("http", origin), http, `http ${origin}`);
+    }
+    // En-tête anti-CSRF toujours exigé, et lecture sans contrôle d'origine (GET).
+    const app = new Hono();
+    app.use("*", csrfGuard("https"));
+    app.put("/api/x", (c) => c.json({ ok: true }));
+    app.get("/api/x", (c) => c.json({ ok: true }));
+    assert.equal((await app.request(`http://${host}/api/x`, { method: "PUT", headers: { host, origin: `https://${host}` } })).status, 403);
+    assert.equal((await app.request(`http://${host}/api/x`, { headers: { host, origin: `http://${host}` } })).status, 200);
+  });
+
+  it("garde d'hôte : 421 avec l'adresse du schéma servi", async () => {
+    for (const scheme of ["https", "http"] as const) {
+      const app = new Hono();
+      app.use("*", hostGuard(["localhost", "127.0.0.1"], scheme));
+      app.get("/", (c) => c.text("ok"));
+      const refused = await app.request("http://127.0.0.1:7777/", { headers: { host: "evil.example:7777" } });
+      assert.equal(refused.status, 421);
+      assert.equal(await refused.text(), `Hôte non autorisé. Ouvrez le cockpit via ${scheme}://127.0.0.1 ou ${scheme}://localhost.`);
+      assert.equal((await app.request("http://127.0.0.1:7777/", { headers: { host: "127.0.0.1:7777" } })).status, 200);
+    }
+  });
+
   it("COCKPIT_TLS_INSECURE : seule la valeur 1 coupe la vérification (même règle que le superviseur d'opencode)", () => {
     const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
     assert.equal(loadEnv({ ...base, COCKPIT_TLS_INSECURE: "1" }).tlsInsecure, true);
@@ -535,6 +586,34 @@ describe("sécurité et utilitaires", () => {
       // Séparation des usages : le même aléa signé pour l'autre usage donne une autre valeur.
       assert.notEqual(mac(`opencode-cockpit/auth-ticket/v1\n${healthProof.challenge}`), healthProof.expected);
       assert.notEqual(healthProof.challenge, authTicket.nonce);
+    });
+
+    it("preuve du jeton et signature du ticket du serveur égales aux vecteurs communs", () => {
+      const v = vectors.hmac;
+      assert.equal(serverHealthProof(v.token, v.healthProof.challenge), v.healthProof.expected);
+      assert.equal(authTicketMac(v.token, v.authTicket.nonce), v.authTicket.expected);
+      assert.notEqual(serverHealthProof(v.token, v.authTicket.nonce), authTicketMac(v.token, v.authTicket.nonce));
+      assert.notEqual(serverHealthProof("ab".repeat(32), v.healthProof.challenge), v.healthProof.expected);
+    });
+
+    it("la preuve n'est jamais un cookie de session du même jeton (préfixes distincts)", () => {
+      const v = vectors.hmac;
+      const proof = serverHealthProof(v.token, v.healthProof.challenge);
+      // Même jeton, secret de session = défi, mêmes octets signés hors préfixe : MAC différent.
+      for (const issuedAt of [0, 1_757_930_000]) {
+        const session = sessionValue(v.token, v.healthProof.challenge, issuedAt);
+        const sessionMac = Buffer.from(session.split(".")[1] ?? "", "base64url").toString("hex");
+        assert.notEqual(sessionMac, proof);
+        assert.equal(isValidSession(proof, v.token, v.healthProof.challenge, issuedAt * 1000), false);
+      }
+    });
+
+    it("jeton au format généré : 64 hexadécimaux minuscules exactement", () => {
+      assert.equal(isGeneratedToken(vectors.hmac.token), true);
+      assert.equal(isGeneratedToken(crypto.randomBytes(32).toString("hex")), true);
+      for (const token of ["t".repeat(48), "A".repeat(64), "a".repeat(63), "a".repeat(65), "g".repeat(64), ` ${"a".repeat(64)}`, `${"a".repeat(64)}\n`, ""]) {
+        assert.equal(isGeneratedToken(token), false, JSON.stringify(token));
+      }
     });
   });
 

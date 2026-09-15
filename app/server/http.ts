@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { type Context, Hono } from "hono";
+import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -31,12 +31,17 @@ import type { EventProcessor } from "./processor.ts";
 import type { ProjectsService } from "./projects.ts";
 import type { QuotaSync } from "./quota.ts";
 import {
+  AuthTickets,
   attemptLogin,
+  attemptTicketLogin,
   authGuard,
   CONFIRM_HEADER,
   clearSessionCookie,
   csrfGuard,
+  healthProof,
   hostGuard,
+  isGeneratedToken,
+  isHealthChallenge,
   isValidSession,
   LoginLimiter,
   newSessionSecret,
@@ -44,15 +49,20 @@ import {
   sessionValue,
   setSessionCookie,
 } from "./security.ts";
+import type { LocalTls } from "./server-start.ts";
 import { type Settings, SettingsError, type SettingsStore } from "./settings.ts";
 import type {
   AssistantModelChangedError,
+  BootstrapLocalAccess,
   ChatTurnKind,
+  HealthBody,
   IssueLite,
   ItemKind,
   ResolveResponse,
   RestorePrudentResponse,
+  StatusLocalAccess,
   TierView,
+  TlsStatus,
 } from "./shared/api-types.ts";
 import {
   assistantModelChangedMessage,
@@ -138,6 +148,10 @@ export interface AppDeps {
   configQueue?: ConfigWriteQueue;
   /** Routes supplémentaires (assistants, niveaux d'IA), enregistrées juste avant le 404 de /api/*. */
   routes?: Array<(app: Hono) => void>;
+  /** Certificat servi en HTTPS (fichier public et poignées refusées) ; null en mode HTTP. */
+  tls: LocalTls | null;
+  /** Tickets de connexion à usage unique émis par /api/health (une instance propre si absente). */
+  tickets?: AuthTickets;
 }
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
@@ -488,9 +502,49 @@ export function createApp(deps: AppDeps): Hono {
   let sessionSecret = storedSecret && storedSecret.value.length >= 32 ? storedSecret.value : storeSessionSecret();
   const validSession = (cookie: string | undefined) => isValidSession(cookie, env.token, sessionSecret);
   const limiter = new LoginLimiter();
+  const tickets = deps.tickets ?? new AuthTickets();
 
   const fail = (c: Context, status: number, error: string, message: string, extra: Record<string, unknown> = {}) =>
     c.json({ error, message, ...extra }, status as ContentfulStatusCode);
+
+  /** Certificat servi (HTTPS) pour la page Diagnostic ; jamais la clé, jamais un contenu reçu d'un client. */
+  const tlsStatus = (): TlsStatus | null => {
+    if (deps.tls === null) return null;
+    const { info, refusals } = deps.tls;
+    return {
+      source: info.source,
+      sha256: info.sha256,
+      spkiSha256Base64: info.spkiSha256Base64,
+      notBefore: info.notBefore,
+      notAfter: info.notAfter,
+      daysLeft: Math.floor((Date.parse(info.notAfter) - Date.now()) / 86_400_000),
+      san: info.san,
+      ignoredHosts: info.ignoredHosts,
+      generatedAt: info.generatedAt,
+      previousSha256: info.previousSha256,
+      refusals24h: refusals.count24h(),
+      internalTraffic: "http-docker",
+    };
+  };
+  const localAccessStatus = (): StatusLocalAccess => ({
+    localScheme: env.localScheme,
+    localHttpConfirmedAt: env.localHttpConfirmedAt,
+    tls: tlsStatus(),
+  });
+  const localAccessBootstrap = (): BootstrapLocalAccess => {
+    const status = tlsStatus();
+    return {
+      localScheme: env.localScheme,
+      localHttpConfirmedAt: env.localHttpConfirmedAt,
+      tls: status === null ? null : { sha256: status.sha256, notAfter: status.notAfter, daysLeft: status.daysLeft },
+    };
+  };
+
+  /** Mode HTTP : le jeton ne se saisit jamais dans une page (il y circulerait en clair) ; refus avant le corps et le limiteur. */
+  const loginDisabledOverHttp: MiddlewareHandler = async (c, next) => {
+    if (env.localScheme === "http") return fail(c, 403, "login-disabled", "Mode HTTP local : ouvrez le cockpit avec .\\cockpit.ps1 open.");
+    await next();
+  };
 
   /** IA de GitHub Copilot et accès à son API, tels que lus à la dernière vérification. */
   const copilotView = () => {
@@ -548,9 +602,9 @@ export function createApp(deps: AppDeps): Hono {
     });
 
   app.use("*", securityHeaders());
-  app.use("*", hostGuard(env.allowedHosts));
+  app.use("*", hostGuard(env.allowedHosts, env.localScheme));
   app.use("*", authGuard(validSession));
-  app.use("*", csrfGuard());
+  app.use("*", csrfGuard(env.localScheme));
 
   app.onError((err, c) => {
     if (err instanceof StudioValidationError) return fail(c, 422, "validation", err.message, { issues: err.issues });
@@ -576,7 +630,23 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Authentification ---------------------------------------------------------------
 
-  app.get("/api/health", (c) => c.json({ ok: true, version: env.version }));
+  // Santé (healthcheck Docker, scripts). Avec un défi : preuve du jeton, puis ticket de connexion sur demande. Ni le défi ni le
+  // ticket ne sont journalisés.
+  app.get("/api/health", (c) => {
+    const body: HealthBody = { ok: true, version: env.version, scheme: env.localScheme };
+    const challenge = c.req.query("challenge");
+    if (challenge !== undefined) {
+      if (!isHealthChallenge(challenge)) return fail(c, 400, "invalid", "challenge : 64 caractères hexadécimaux attendus.");
+      // Jeton choisi à la main : aucune preuve servie, donc aucun oracle hors ligne contre lui (install.ps1 en génère un).
+      if (!isGeneratedToken(env.token)) {
+        body.proof = null;
+        return c.json(body);
+      }
+      body.proof = healthProof(env.token, challenge);
+      if (c.req.query("ticket") === "1") body.ticket = tickets.issue();
+    }
+    return c.json(body);
+  });
 
   app.get("/auth", async (c) => {
     // Lien à ouvrir directement (installateur, barre d'adresse). Refuser les requêtes émises par une
@@ -586,14 +656,17 @@ export function createApp(deps: AppDeps): Hono {
     if ((site && site !== "none" && site !== "same-origin") || (dest && dest !== "document")) {
       return c.text("Ouvrez ce lien directement dans la barre d'adresse du navigateur.", 403);
     }
-    const outcome = await attemptLogin(limiter, c.req.query("t") ?? "", env.token);
+    const link = c.req.query("k");
+    // Lien d'une version antérieure à 1.0.5 (jeton permanent dans l'adresse) : jamais comparé, aucun cookie.
+    if (link === undefined && c.req.query("t") !== undefined) return c.redirect("/?auth=ancien-lien", 303);
+    const outcome = await attemptTicketLogin(limiter, link ?? "", env.token, tickets);
     if (outcome === "blocked") return c.text("Trop de tentatives, réessayez dans quelques minutes.", 429);
     if (outcome === "refused") return c.redirect("/?auth=failed", 303);
     setSessionCookie(c, sessionValue(env.token, sessionSecret));
     return c.redirect("/", 303);
   });
 
-  app.post("/api/login", bodyLimit({ maxSize: 4_096 }), async (c) => {
+  app.post("/api/login", loginDisabledOverHttp, bodyLimit({ maxSize: 4_096 }), async (c) => {
     const { token } = z.object({ token: z.string().max(512) }).parse(await c.req.json());
     const outcome = await attemptLogin(limiter, token.trim(), env.token);
     if (outcome === "blocked") return fail(c, 429, "rate-limited", "Trop de tentatives, réessayez dans quelques minutes.");
@@ -640,6 +713,7 @@ export function createApp(deps: AppDeps): Hono {
         proxy: Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY),
         projectConfig: env.projectConfig,
         providerIssues,
+        ...localAccessBootstrap(),
       },
       workspace: { hostDir: process.env.COCKPIT_HOST_WORKSPACE_DIR ?? null, root: projects.opencodeRoot },
       projects: projectList,
@@ -2007,6 +2081,7 @@ export function createApp(deps: AppDeps): Hono {
         noProxy: process.env.NO_PROXY ?? "",
         allowedHosts: env.allowedHosts,
         projectConfig: env.projectConfig,
+        ...localAccessStatus(),
       },
       copilotConnected,
       catalog: { models: catalog.list().length, providers: catalog.providers(), loadedAt: catalog.loadedAt },
