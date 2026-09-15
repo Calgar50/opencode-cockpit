@@ -1,5 +1,6 @@
 // Tests d'intégration : registre des coûts sur SQLite réel, et sécurité HTTP sur un vrai serveur.
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import fs from "node:fs";
@@ -401,10 +402,11 @@ const FIXTURE_SKILLS = [
 const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" };
 
 describe("serveur HTTP (sécurité et proxy)", () => {
-  const token = "t".repeat(48);
+  // Jeton de test public au format généré par install.ps1 (64 hexadécimaux) : preuve et ticket servis (1.0.5).
+  const token = "5a".repeat(32);
   // Secret de session posé dans la base avant createApp (sinon un secret aléatoire y est créé au démarrage).
   const sessionSecret = "s".repeat(43);
-  const cookie = `cockpit_session=${sessionValue(token, sessionSecret)}`;
+  const cookie = `__Host-cockpit_session=${sessionValue(token, sessionSecret)}`;
   const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
   const warnings: string[] = [];
   /** Lignes info et warn du journal, avec leurs champs : aucune valeur de configuration ne doit y partir. */
@@ -708,6 +710,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         },
       },
       configQueue,
+      // Harnais en HTTP : aucun certificat.
+      tls: null,
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));
@@ -741,6 +745,28 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   const authed = { cookie };
   const mutating = { cookie, "x-cockpit-csrf": "1", "content-type": "application/json" };
   const confirmedHeaders = { ...mutating, "x-cockpit-confirm": "1" };
+  /** En-têtes Set-Cookie d'une réponse, un par cookie. */
+  const setCookiesOf = (res: { headers: http.IncomingHttpHeaders }): string[] => res.headers["set-cookie"] ?? [];
+  /** HMAC du jeton de test, recalculé ici sans le code du cockpit (préfixes du contrat 1.0.5). */
+  const tokenMac = (usage: "health-proof" | "auth-ticket", value: string) =>
+    crypto.createHmac("sha256", token).update(`opencode-cockpit/${usage}/v1\n${value}`).digest("hex");
+  /** Lien d'ouverture comme les scripts 1.0.5 : défi, preuve du jeton vérifiée, ticket à usage unique signé. */
+  const ticketLink = async (): Promise<string> => {
+    const challenge = crypto.randomBytes(32).toString("hex");
+    const health = await call("GET", `/api/health?challenge=${challenge}&ticket=1`);
+    assert.equal(health.status, 200, health.body);
+    const body = JSON.parse(health.body) as { scheme?: string; proof?: string | null; ticket?: string };
+    assert.equal(body.scheme, env.localScheme);
+    assert.equal(body.proof, tokenMac("health-proof", challenge));
+    const ticket = body.ticket ?? "";
+    assert.match(ticket, /^[0-9a-f]{64}$/);
+    return `/auth?k=${ticket}.${tokenMac("auth-ticket", ticket)}`;
+  };
+  /** Aide de connexion du harnais : ticket puis /auth?k=, cookie de session rendu (nom=valeur). */
+  const loginByTicket = async (headers: Record<string, string> = {}) => {
+    const res = await call("GET", await ticketLink(), headers);
+    return { ...res, cookie: (setCookiesOf(res)[0] ?? "").split(";")[0] ?? "" };
+  };
   const APP = encodeURIComponent("/workspace/app");
   const text = (value: string) => [{ type: "text", text: value }];
   /** Demandes réellement relayées à opencode (POST) dont l'URL contient `fragment`. */
@@ -783,27 +809,49 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.match(String(list.headers["content-type"]), /^application\/json/);
   });
 
-  it("exige la session sur l'API", async () => {
+  it("exige la session sur l'API ; le cookie à l'ancien nom seul ne suffit plus", async () => {
     assert.equal((await call("GET", "/api/settings")).status, 401);
     assert.equal((await call("GET", "/api/settings", authed)).status, 200);
+    // Même valeur sous le nom des versions < 1.0.5 : refusée.
+    assert.equal((await call("GET", "/api/settings", { cookie: cookie.slice("__Host-".length) })).status, 401);
+    // Les deux noms présents : seul le nom préfixé est lu.
+    assert.equal((await call("GET", "/api/settings", { cookie: `cockpit_session=faux; ${cookie}` })).status, 200);
   });
 
-  it("ouvre une session avec le bon jeton seulement, cookie durci", async () => {
-    const bad = await call("GET", "/auth?t=mauvais");
+  it("ouvre une session avec un ticket valide seulement, cookie __Host- durci, ancien nom effacé, lien à usage unique", async () => {
+    const bad = await call("GET", "/auth?k=mauvais");
     assert.equal(bad.status, 303);
     assert.equal(bad.headers.location, "/?auth=failed");
-    const good = await call("GET", `/auth?t=${token}`);
-    const setCookie = String(good.headers["set-cookie"]);
-    assert.match(setCookie, /HttpOnly/);
-    assert.match(setCookie, /Secure/);
-    assert.match(setCookie, /SameSite=Strict/);
-    assert.ok(!setCookie.includes(token));
+    assert.deepEqual(setCookiesOf(bad), []);
+    // Lien d'une version antérieure : jamais comparé, aucun cookie, même avec le bon jeton.
+    const legacy = await call("GET", `/auth?t=${token}`);
+    assert.equal(legacy.status, 303);
+    assert.equal(legacy.headers.location, "/?auth=ancien-lien");
+    assert.deepEqual(setCookiesOf(legacy), []);
+    const link = await ticketLink();
+    const good = await call("GET", link);
+    assert.equal(good.status, 303);
+    assert.equal(good.headers.location, "/");
+    const [session, legacyCleared, ...others] = setCookiesOf(good);
+    assert.match(session ?? "", /^__Host-cockpit_session=\d+\.[A-Za-z0-9_-]{43}; Max-Age=2592000; Path=\/; HttpOnly; Secure; SameSite=Strict$/);
+    assert.equal(legacyCleared, "cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict");
+    assert.deepEqual(others, []);
+    assert.ok(!String(good.headers["set-cookie"]).includes(token));
+    const replay = await call("GET", link);
+    assert.equal(replay.headers.location, "/?auth=failed");
+    assert.deepEqual(setCookiesOf(replay), []);
   });
 
-  it("bloque les requêtes modifiantes sans en-tête anti-CSRF ou d'une autre origine", async () => {
+  it("bloque les requêtes modifiantes sans en-tête anti-CSRF ou d'une autre origine (origine au schéma servi seulement)", async () => {
+    assert.equal(env.localScheme, "http");
+    const put = (origin?: string) => call("PUT", "/api/settings", origin === undefined ? mutating : { ...mutating, origin }, "{}");
     assert.equal((await call("PUT", "/api/settings", { cookie, "content-type": "application/json" }, "{}")).status, 403);
-    assert.equal((await call("PUT", "/api/settings", { ...mutating, origin: "http://evil.example" }, "{}")).status, 403);
-    assert.equal((await call("PUT", "/api/settings", { ...mutating, origin: `http://127.0.0.1:${port}` }, "{}")).status, 200);
+    assert.equal((await put("http://evil.example")).status, 403);
+    assert.equal((await put(`http://127.0.0.1:${port}`)).status, 200);
+    // Même hôte, autre schéma que celui servi : refusé.
+    assert.equal((await put(`https://127.0.0.1:${port}`)).status, 403);
+    assert.equal((await put("null")).status, 403);
+    assert.equal((await put()).status, 200);
   });
 
   it("relaie vers opencode avec authentification et filtre les paramètres", async () => {
@@ -825,11 +873,12 @@ describe("serveur HTTP (sécurité et proxy)", () => {
 
   it("ignore les tentatives de connexion émises par une autre page (pas de verrouillage à distance)", async () => {
     for (let i = 0; i < 25; i++) {
-      const res = await call("GET", "/auth?t=mauvais", { "sec-fetch-site": "cross-site", "sec-fetch-dest": "image" });
+      const res = await call("GET", "/auth?k=mauvais", { "sec-fetch-site": "cross-site", "sec-fetch-dest": "image" });
       assert.equal(res.status, 403);
     }
-    const good = await call("GET", `/auth?t=${token}`, { "sec-fetch-site": "none", "sec-fetch-dest": "document" });
+    const good = await loginByTicket({ "sec-fetch-site": "none", "sec-fetch-dest": "document" });
     assert.equal(good.status, 303);
+    assert.equal(good.headers.location, "/");
   });
 
   it("n'expose que les routes opencode utilisées par l'interface", async () => {
@@ -2459,14 +2508,24 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   });
 
   // Dernier test de la série : la déconnexion révoque le cookie partagé par les tests précédents.
-  it("déconnexion : le cookie et toutes ses copies sont révoqués, une nouvelle connexion en délivre un autre", async () => {
+  it("déconnexion : le cookie et toutes ses copies sont révoqués, les deux noms effacés, une nouvelle connexion en délivre un autre", async () => {
     assert.equal((await call("GET", "/api/settings", authed)).status, 200);
-    assert.equal((await call("POST", "/api/logout", mutating, "{}")).status, 200);
+    const logout = await call("POST", "/api/logout", mutating, "{}");
+    assert.equal(logout.status, 200);
+    assert.deepEqual(setCookiesOf(logout), [
+      "__Host-cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict",
+      "cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict",
+    ]);
     assert.equal((await call("GET", "/api/settings", authed)).status, 401);
-    const login = await call("POST", "/api/login", { "x-cockpit-csrf": "1", "content-type": "application/json" }, JSON.stringify({ token }));
-    assert.equal(login.status, 200, login.body);
-    const fresh = String(login.headers["set-cookie"]).split(";")[0] ?? "";
-    assert.match(fresh, /^cockpit_session=\d+\.[A-Za-z0-9_-]{43}$/);
+    // Mode HTTP : le jeton ne se saisit jamais dans une page, la connexion passe par un ticket.
+    const typed = await call("POST", "/api/login", { "x-cockpit-csrf": "1", "content-type": "application/json" }, JSON.stringify({ token }));
+    assert.equal(typed.status, 403, typed.body);
+    assert.equal((JSON.parse(typed.body) as { error?: string }).error, "login-disabled");
+    assert.deepEqual(setCookiesOf(typed), []);
+    const login = await loginByTicket();
+    assert.equal(login.status, 303, login.body);
+    const fresh = login.cookie;
+    assert.match(fresh, /^__Host-cockpit_session=\d+\.[A-Za-z0-9_-]{43}$/);
     assert.notEqual(fresh, cookie);
     assert.equal((await call("GET", "/api/settings", { cookie: fresh })).status, 200);
     assert.equal((await call("GET", "/api/settings", authed)).status, 401);
