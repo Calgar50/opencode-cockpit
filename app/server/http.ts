@@ -27,6 +27,7 @@ import { forMethods, reloadGuard, type ReloadGuardDeps } from "./reload-guard.ts
 import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
+import { createPermissionGate } from "./permission-gate.ts";
 import { COPILOT_PRICES, type ModelPrice, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
 import type { EventProcessor } from "./processor.ts";
 import type { ProjectsService } from "./projects.ts";
@@ -87,6 +88,7 @@ import {
   type Turn,
   withTierAvailability,
 } from "./shared/assistant-rules.ts";
+import { ID, SESSION_ID_RE } from "./shared/ids.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
@@ -142,8 +144,6 @@ export interface AppDeps {
 }
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
-
-const ID = "[A-Za-z0-9_-]{1,128}";
 
 interface ProxyRule {
   method: string;
@@ -315,7 +315,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** Réponse à une demande d'autorisation et arrêt d'une conversation, relayés par le proxy. */
 const PERMISSION_REPLY_ROUTE = new RegExp(`^/permission/(${ID})/reply$`);
 const SESSION_ABORT_ROUTE = new RegExp(`^/session/(${ID})/abort$`);
-const ID_RE = new RegExp(`^${ID}$`);
 
 export const PERMISSION_MESSAGES = Object.freeze({
   toujoursRefuse:
@@ -425,8 +424,6 @@ const resolveBody = z.strictObject({
   command: z.string().min(1).max(200).optional(),
 });
 
-const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-
 /** Demande facturée résolue par le proxy. */
 interface ProxyTurn {
   turn: Turn;
@@ -486,6 +483,8 @@ export function createApp(deps: AppDeps): Hono {
   };
   const guardReload = reloadGuard(reloadGuardDeps);
   const guardRestart = reloadGuard(reloadGuardDeps, { confirmUnverifiable: true });
+  // Portillon des accords : « once » vérifié, file commune aux réponses et aux arrêts, nettoyage après un arrêt.
+  const gate = createPermissionGate({ client, db: deps.db, log });
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
   const SESSION_SECRET_KEY = "session.secret";
@@ -913,268 +912,6 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(next);
   };
 
-  // --- Demandes d'autorisation : vérification avant de relayer une réponse, nettoyage après un arrêt ----------
-
-  const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
-  /** Bornes du nettoyage après un arrêt : profondeur de sous-agents, sessions suivies, appels à opencode, refus envoyés. */
-  const CLEANUP_MAX_DEPTH = 8;
-  const CLEANUP_MAX_SESSIONS = 200;
-  const CLEANUP_MAX_CHILDREN_CALLS = 50;
-  const CLEANUP_MAX_REJECTS = 100;
-  const CALL_ID_MAX_LENGTH = 512;
-
-  /** Appel d'outil qui a posé une demande (tool.messageID, tool.callID). */
-  interface PermissionTool {
-    messageID: string;
-    callID: string;
-  }
-
-  interface PendingPermission {
-    id: string;
-    sessionID: string;
-    /** null : demande posée hors d'un appel d'outil ; « invalid » : champ présent mais illisible (rien n'est vérifiable). */
-    tool: PermissionTool | "invalid" | null;
-  }
-
-  const permissionTool = (value: unknown): PendingPermission["tool"] => {
-    if (value === undefined || value === null) return null;
-    if (!isRecord(value)) return "invalid";
-    const { messageID, callID } = value;
-    return typeof messageID === "string" && ID_RE.test(messageID) && typeof callID === "string" && callID.length > 0 && callID.length <= CALL_ID_MAX_LENGTH
-      ? { messageID, callID }
-      : "invalid";
-  };
-
-  /** Demandes en attente (GET /permission, même dossier) ; erreur si opencode ne répond pas ou répond autre chose qu'une liste. */
-  const pendingPermissions = async (directory: string | null): Promise<PendingPermission[]> => {
-    const list = await client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
-    if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
-    return list.flatMap((item) =>
-      isRecord(item) && typeof item.id === "string" && typeof item.sessionID === "string"
-        ? [{ id: item.id, sessionID: item.sessionID, tool: permissionTool(item.tool) }]
-        : [],
-    );
-  };
-
-  /** Conversations qui travaillent (busy ou retry) : GET /session/status ne liste que les sessions qui ne sont pas au repos. */
-  const workingSessions = async (directory: string | null): Promise<Set<string>> => {
-    const statuses = await client.request<unknown>("GET", "/session/status", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
-    if (!isRecord(statuses)) throw new Error("états des conversations illisibles");
-    return new Set(Object.entries(statuses).filter(([, s]) => isRecord(s) && (s.type === "busy" || s.type === "retry")).map(([id]) => id));
-  };
-
-  /**
-   * L'appel d'outil qui a posé la demande est-il encore en cours ? Son message (GET /session/:id/message/:messageID) ne porte
-   * pas d'erreur et sa partie « tool » (même callID) est « running ». Après un arrêt, opencode 1.18.30 passe cette partie en
-   * « error » (« Tool execution aborted », metadata.interrupted, processor.ts:591-605) mais garde la demande en attente
-   * jusqu'à une réponse ou un redémarrage, même quand un nouveau message fait retravailler la conversation.
-   * Message introuvable (404) : false. opencode injoignable ou réponse illisible : erreur.
-   */
-  const toolCallRunning = async (sessionID: string, tool: PermissionTool, directory: string | null): Promise<boolean> => {
-    if (!ID_RE.test(sessionID)) throw new Error("identifiant de conversation de la demande illisible");
-    let message: unknown;
-    try {
-      message = await client.request<unknown>("GET", `/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(tool.messageID)}`, {
-        query: { directory },
-        timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
-      });
-    } catch (err) {
-      if (err instanceof OpencodeError && err.status === 404) return false;
-      throw err;
-    }
-    if (!isRecord(message) || !isRecord(message.info) || !Array.isArray(message.parts)) throw new Error("message de la demande illisible");
-    if (message.info.error !== undefined && message.info.error !== null) return false;
-    const part = message.parts.find((p) => isRecord(p) && p.type === "tool" && p.callID === tool.callID);
-    return isRecord(part) && isRecord(part.state) && part.state.status === "running";
-  };
-
-  /**
-   * File d'attente commune au « once » (vérification puis relais) et à l'arrêt (relais puis liste des demandes du nettoyage).
-   * Sans elle, un arrêt relayé entre la vérification et le relais d'un « once » laisserait ce « once » arriver après
-   * l'arrêt (sous-agent détaché, facturé, résultat perdu), et le nettoyage ne le verrait pas.
-   */
-  let replyGateTail: Promise<void> = Promise.resolve();
-  const REPLY_GATE_MAX_HOLD_MS = 30_000;
-  /** Attend son tour ; renvoie la fonction qui libère la place (sans effet au second appel). */
-  const acquireReplyGate = async (): Promise<() => void> => {
-    const previous = replyGateTail;
-    let resolveTail: () => void = () => undefined;
-    replyGateTail = new Promise<void>((resolve) => {
-      resolveTail = () => resolve();
-    });
-    await previous;
-    // Borne : un relais qu'opencode laisse sans réponse ne bloque pas indéfiniment les réponses et les arrêts suivants.
-    const timer = setTimeout(() => {
-      log.warn("file d'attente des réponses libérée : relais sans réponse d'opencode", { holdMs: REPLY_GATE_MAX_HOLD_MS });
-      resolveTail();
-    }, REPLY_GATE_MAX_HOLD_MS);
-    timer.unref();
-    return () => {
-      clearTimeout(timer);
-      resolveTail();
-    };
-  };
-
-  type OnceVerdict = { ok: true } | { ok: false; status: 409 | 503; request: PendingPermission | null; orphan: boolean };
-
-  /**
-   * « once » n'est relayé que si la demande est encore en attente, que sa conversation travaille ET que l'appel d'outil qui
-   * l'a posée est toujours en cours. Après un arrêt, un « once » tardif a lancé un sous-agent détaché, facturé, dont le
-   * résultat a été perdu (la conversation ne reprend pas). `orphan` : demande d'une conversation au repos, à refuser pour
-   * qu'elle ne revienne pas. Vérification impossible : 503, rien n'est relayé. Ne lève jamais.
-   */
-  const checkOnceReply = async (requestId: string, directory: string | null): Promise<OnceVerdict> => {
-    try {
-      const [pending, working] = await Promise.all([pendingPermissions(directory), workingSessions(directory)]);
-      const request = pending.find((p) => p.id === requestId) ?? null;
-      if (request === null) return { ok: false, status: 409, request, orphan: false };
-      if (!working.has(request.sessionID)) return { ok: false, status: 409, request, orphan: true };
-      if (request.tool === null) return { ok: true };
-      if (request.tool === "invalid") throw new Error("appel d'outil de la demande illisible");
-      // Conversation qui retravaille (nouveau message) : la demande doit venir d'un appel encore en cours.
-      if (await toolCallRunning(request.sessionID, request.tool, directory)) return { ok: true };
-      return { ok: false, status: 409, request, orphan: false };
-    } catch (err) {
-      log.warn("demande d'autorisation non vérifiable : réponse non relayée", { requestId, error: errorMessage(err) });
-      return { ok: false, status: 503, request: null, orphan: false };
-    }
-  };
-
-  /**
-   * « Refuser » d'une demande orpheline (appel d'outil qui n'est plus en cours) alors que sa conversation retravaille :
-   * opencode refuserait aussi toutes les demandes en attente de cette conversation (permission/index.ts:129-138), donc celles
-   * de la réponse en cours, qui échouerait sans explication. Vérification impossible : false (le refus n'autorise rien).
-   */
-  const isOrphanOfWorkingSession = async (requestId: string, directory: string | null): Promise<boolean> => {
-    try {
-      const [pending, working] = await Promise.all([pendingPermissions(directory), workingSessions(directory)]);
-      const request = pending.find((p) => p.id === requestId);
-      if (!request || !working.has(request.sessionID) || request.tool === null || request.tool === "invalid") return false;
-      return !(await toolCallRunning(request.sessionID, request.tool, directory));
-    } catch (err) {
-      log.warn("refus relayé sans vérification : opencode ne répond pas", { requestId, error: errorMessage(err) });
-      return false;
-    }
-  };
-
-  /** Descendants d'une conversation d'après le suivi du cockpit (table sessions, lue par root_id indexé), bornés. */
-  const trackedDescendants = (sessionId: string, tree: Set<string>): void => {
-    const known = deps.db.prepare("SELECT root_id FROM sessions WHERE id = ?").get(sessionId) as { root_id: string } | undefined;
-    const rows = deps.db
-      .prepare("SELECT id, parent_id FROM sessions WHERE root_id = ? AND parent_id IS NOT NULL LIMIT ?")
-      .all(known?.root_id ?? sessionId, CLEANUP_MAX_SESSIONS * 10) as Array<{ id: string; parent_id: string }>;
-    const childrenOf = new Map<string, string[]>();
-    for (const row of rows) {
-      const list = childrenOf.get(row.parent_id);
-      if (list) list.push(row.id);
-      else childrenOf.set(row.parent_id, [row.id]);
-    }
-    let frontier = [sessionId];
-    for (let depth = 0; depth < CLEANUP_MAX_DEPTH && frontier.length > 0; depth++) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const child of childrenOf.get(id) ?? []) {
-          if (tree.has(child) || tree.size >= CLEANUP_MAX_SESSIONS) continue;
-          tree.add(child);
-          next.push(child);
-        }
-      }
-      frontier = next;
-    }
-  };
-
-  /** Complète avec GET /session/:id/children (sous-agent pas encore enregistré par le cockpit), borné. */
-  const opencodeDescendants = async (sessionId: string, directory: string | null, tree: Set<string>): Promise<void> => {
-    const visited = new Set<string>();
-    let frontier = [sessionId];
-    let calls = 0;
-    for (let depth = 0; depth < CLEANUP_MAX_DEPTH && frontier.length > 0; depth++) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        if (visited.has(id)) continue;
-        if (calls >= CLEANUP_MAX_CHILDREN_CALLS || tree.size >= CLEANUP_MAX_SESSIONS) return;
-        visited.add(id);
-        calls++;
-        let children: unknown;
-        try {
-          children = await client.request<unknown>("GET", `/session/${encodeURIComponent(id)}/children`, {
-            query: { directory },
-            timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
-          });
-        } catch (err) {
-          log.warn("arrêt : sous-agents d'une conversation illisibles", { sessionId: id, error: errorMessage(err) });
-          continue;
-        }
-        if (!Array.isArray(children)) continue;
-        for (const child of children) {
-          const childId = isRecord(child) && typeof child.id === "string" && ID_RE.test(child.id) ? child.id : null;
-          if (childId === null || visited.has(childId)) continue;
-          tree.add(childId);
-          next.push(childId);
-        }
-      }
-      frontier = next;
-    }
-  };
-
-  /**
-   * Refuse (« reject ») des demandes orphelines. opencode 1.18.30 applique un refus à TOUTES les demandes en attente de la
-   * même conversation (permission/index.ts:129-138) : l'état des conversations est relu juste avant l'envoi, et celles qui
-   * travaillent de nouveau sont laissées de côté (la demande d'une nouvelle réponse échouerait sinon). États illisibles :
-   * rien n'est envoyé. Au mieux : les erreurs sont journalisées.
-   */
-  const rejectOrphans = async (requests: PendingPermission[], directory: string | null, context: Record<string, unknown>): Promise<void> => {
-    const candidates = requests.filter((p) => ID_RE.test(p.id));
-    if (candidates.length === 0) return;
-    let working: Set<string>;
-    try {
-      working = await workingSessions(directory);
-    } catch (err) {
-      log.warn("demandes d'autorisation orphelines non refusées : états des conversations illisibles", { ...context, error: errorMessage(err) });
-      return;
-    }
-    let rejected = 0;
-    let skipped = 0;
-    for (const request of candidates) {
-      if (working.has(request.sessionID)) {
-        skipped++;
-        continue;
-      }
-      try {
-        await client.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, {
-          query: { directory },
-          body: { reply: "reject" },
-          timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
-        });
-        rejected++;
-      } catch (err) {
-        log.warn("demande d'autorisation orpheline non refusée", { ...context, requestId: request.id, error: errorMessage(err) });
-      }
-    }
-    log.info("demandes d'autorisation orphelines refusées", { ...context, rejected, skipped, pending: candidates.length });
-  };
-
-  /**
-   * Après un arrêt réussi : refuse (« reject ») les demandes d'autorisation restées en attente dans la conversation arrêtée
-   * et dans ses sous-agents, pour qu'aucun « once » tardif ne lance un travail détaché. `releaseGate` libère la file
-   * d'attente des réponses dès la liste lue. Au mieux : les erreurs sont journalisées et la réponse de l'arrêt ne change pas.
-   */
-  const rejectAbortedPermissions = async (sessionId: string, directory: string | null, releaseGate: () => void): Promise<void> => {
-    let pending: PendingPermission[];
-    try {
-      pending = await pendingPermissions(directory);
-    } finally {
-      // Liste lue : un « once » qui attendait son tour verra la conversation arrêtée.
-      releaseGate();
-    }
-    if (pending.length === 0) return;
-    const tree = new Set([sessionId]);
-    trackedDescendants(sessionId, tree);
-    if (pending.some((p) => !tree.has(p.sessionID))) await opencodeDescendants(sessionId, directory, tree);
-    const stale = pending.filter((p) => tree.has(p.sessionID)).slice(0, CLEANUP_MAX_REJECTS);
-    await rejectOrphans(stale, directory, { cause: "arrêt", sessionId });
-  };
-
   // --- Proxy vers opencode --------------------------------------------------------------
 
   app.all("/api/oc/*", bodyLimit({ maxSize: 25 * 1024 * 1024 }), async (c) => {
@@ -1219,17 +956,17 @@ export function createApp(deps: AppDeps): Hono {
           if (!reply.ok) return fail(c, reply.status, reply.error, reply.message);
           if (reply.value.reply === "once") {
             // Gardée jusqu'au relais : aucun arrêt ne peut s'intercaler entre la vérification et le « once ».
-            releaseGate = await acquireReplyGate();
-            const verdict = await checkOnceReply(replyTo, directory);
+            releaseGate = await gate.acquire();
+            const verdict = await gate.checkOnce(replyTo, directory);
             if (!verdict.ok) {
               releaseGate();
               if (verdict.status === 503) return fail(c, 503, "verification-impossible", PERMISSION_MESSAGES.verificationImpossible);
               log.info("demande d'autorisation qui n'est plus active : « once » non relayé", { requestId: replyTo, found: verdict.request !== null });
               // Demande orpheline d'une conversation au repos : refusée, pour qu'elle ne redevienne pas autorisable plus tard.
-              if (verdict.orphan && verdict.request) await rejectOrphans([verdict.request], directory, { cause: "réponse tardive", requestId: replyTo });
+              if (verdict.orphan && verdict.request) await gate.rejectOrphans([verdict.request], directory, { cause: "réponse tardive", requestId: replyTo });
               return fail(c, 409, "demande-expiree", PERMISSION_MESSAGES.demandeExpiree);
             }
-          } else if (await isOrphanOfWorkingSession(replyTo, directory)) {
+          } else if (await gate.isOrphanOfWorkingSession(replyTo, directory)) {
             log.info("refus d'une demande orpheline non relayé : la conversation retravaille", { requestId: replyTo });
             return fail(c, 409, "demande-orpheline", PERMISSION_MESSAGES.demandeOrpheline);
           }
@@ -1264,7 +1001,7 @@ export function createApp(deps: AppDeps): Hono {
 
       const abortId = method === "POST" ? SESSION_ABORT_ROUTE.exec(sub)?.[1] : undefined;
       // Arrêt : attend qu'un « once » en cours de vérification soit relayé, puis garde la file jusqu'à la liste du nettoyage.
-      const abortGate = abortId !== undefined ? await acquireReplyGate() : undefined;
+      const abortGate = abortId !== undefined ? await gate.acquire() : undefined;
       if (abortGate !== undefined) releaseGate = abortGate;
       const upstream = await client.raw(method, target, {
         headers: {
@@ -1279,7 +1016,7 @@ export function createApp(deps: AppDeps): Hono {
       if (abortId !== undefined && abortGate !== undefined && upstream.ok) {
         // Sans attendre : la réponse de l'arrêt part tout de suite et reste celle d'opencode ; le nettoyage libère la file.
         releaseGate = undefined;
-        void rejectAbortedPermissions(abortId, directory, abortGate).catch((err: unknown) =>
+        void gate.rejectAborted(abortId, directory, abortGate).catch((err: unknown) =>
           log.warn("arrêt : demandes d'autorisation en attente non vérifiées", { sessionId: abortId, error: errorMessage(err) }),
         );
       }
