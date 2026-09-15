@@ -4,6 +4,9 @@ import { DiffView } from "../../components/DiffView.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Badge, Button } from "../../components/ui.tsx";
 import type { PermissionRequest, QuestionRequest } from "../../lib/types.ts";
+import { DecisionStatus } from "./autonomy/DecisionStatus.tsx";
+import { DelegationDetails } from "./delegation/DelegationDetails.tsx";
+import type { PermissionPromptSlots } from "./slots.ts";
 
 const PERMISSION_LABELS: Record<string, string> = {
   edit: "modifier un fichier",
@@ -20,9 +23,16 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 const str = (value: unknown) => (typeof value === "string" ? value : null);
 
+/** Identifiant DOM de la carte d'une demande (focus déplacé par [Répondre] de « Qui travaille ? »). */
+export function permissionElementId(requestId: string): string {
+  return `permission-${requestId}`;
+}
+
 /**
  * Pas de « Toujours autoriser » : opencode ajouterait une autorisation évaluée après les règles de chaque assistant, pour
  * tout le projet jusqu'à son redémarrage, et lèverait ainsi les refus des autres assistants (le serveur la refuse aussi).
+ * 1.1 (propriétés de slots.ts, absentes = carte 1.0.4) : pendant un contrôle de sécurité, seul [Refuser…] est proposé ; avec
+ * une décision du contrôle, la carte d'attente ajoute [Arrêter] ; une délégation reçoit sa carte détaillée.
  */
 export function PermissionPrompt({
   request,
@@ -30,7 +40,11 @@ export function PermissionPrompt({
   taskPrompt,
   active,
   onReply,
-}: {
+  decision,
+  examining = false,
+  onStop,
+  delegation,
+}: PermissionPromptSlots & {
   request: PermissionRequest;
   sessionTitle?: string | undefined;
   /** Consigne du travail délégué demandé (opencode ne la joint pas à la demande d'autorisation). */
@@ -62,12 +76,13 @@ export function PermissionPrompt({
   };
 
   return (
-    <div className="interaction" role="alertdialog" aria-label="Demande d'autorisation">
+    <div className="interaction" role="alertdialog" aria-label="Demande d'autorisation" id={permissionElementId(request.id)}>
       <div className="row">
         <Icon name="shield" size={18} />
         <strong className="spacer">L'assistant demande l'autorisation de {PERMISSION_LABELS[request.permission] ?? request.permission}</strong>
         {sessionTitle ? <span className="small muted ellipsis">{sessionTitle}</span> : null}
       </div>
+      {examining || decision ? <DecisionStatus examining={examining} decision={decision ?? null} /> : null}
       {command ? (
         <pre className="terminal">
           <span className="prompt">$ </span>
@@ -91,6 +106,9 @@ export function PermissionPrompt({
           ) : (
             <span className="tiny muted">Consigne du travail délégué indisponible : vérifiez-la dans la réponse avant d'autoriser.</span>
           )}
+          {delegation ? (
+            <DelegationDetails rootId={delegation.rootId} permissionId={request.id} sessionId={request.sessionID} advanced={delegation.advanced} />
+          ) : null}
         </div>
       ) : null}
       {refusing ? (
@@ -115,7 +133,7 @@ export function PermissionPrompt({
         </div>
       ) : (
         <div className="row wrap">
-          {active ? (
+          {active && !examining ? (
             <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
               Autoriser une fois
             </Button>
@@ -123,6 +141,11 @@ export function PermissionPrompt({
           <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => setRefusing(true)}>
             Refuser…
           </Button>
+          {decision && onStop ? (
+            <Button size="sm" variant="ghost" icon="stop" disabled={busy !== null} onClick={onStop}>
+              Arrêter
+            </Button>
+          ) : null}
           {active ? null : <span className="tiny muted">La réponse est arrêtée : cette demande ne peut plus être autorisée, seulement refusée.</span>}
         </div>
       )}

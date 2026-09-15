@@ -6,6 +6,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Button } from "../../components/ui.tsx";
 import { oc } from "../../lib/api.ts";
+import type { ComposerSlots } from "./slots.ts";
 import type { CommandOption } from "./turn.ts";
 
 export interface ComposerAttachment {
@@ -76,7 +77,9 @@ export function Composer({
   onSubmit,
   onAbort,
   seed,
-}: {
+  autonomy,
+  stopVisible = false,
+}: ComposerSlots & {
   directory: string;
   busy: boolean;
   disabled?: boolean;
@@ -406,11 +409,14 @@ export function Composer({
               }}
             />
           </label>
-          {busy ? (
+          {autonomy}
+          {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
+          {busy || stopVisible ? (
             <Button size="sm" variant="danger" icon="stop" onClick={onAbort}>
               Arrêter
             </Button>
-          ) : (
+          ) : null}
+          {busy ? null : (
             <Button
               size="sm"
               variant="primary"

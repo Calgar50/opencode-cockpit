@@ -134,7 +134,6 @@ interface Tolerance {
 
 /** « Réfléchit » (état) devient « Travaille » (§2.2) : occurrences connues, tolérées jusqu'au train de V3 (plan §4.6). */
 const TOLERANCES_REFLECHIT: readonly Tolerance[] = [
-  { fichier: "web/pages/ChatPage.tsx", extrait: "L'assistant réfléchit…", paquet: "T2" },
   { fichier: "server/shared/assistant-rules.ts", extrait: "Réfléchit et propose un plan. Ses droits suivent vos réglages", paquet: "L5t" },
   { fichier: "server/shared/assistant-rules.ts", extrait: "Réfléchit et propose un plan, sans rien modifier.", paquet: "L5t" },
 ];

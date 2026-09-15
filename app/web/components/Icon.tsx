@@ -58,6 +58,14 @@ const PATHS = {
   key: "M7 17a4 4 0 1 1 3.5-6L21 11v3h-2v3h-3v-3h-5.5A4 4 0 0 1 7 17Z",
   plug: "M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7ZM12 17v5",
   gauge: "M4 17a8 8 0 1 1 16 0M12 17l4-5",
+  // 1.1 (spécification §2.3 « États », §2.1 « Décisions ») : le mot reste le texte accessible, jamais l'icône ni la couleur seule.
+  circle: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
+  pause: "M9 6v12M15 6v12",
+  minus: "M5 12h14",
+  checkCircle: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM8 12.5l2.8 2.8L16 10",
+  ban: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM5.6 5.6l12.8 12.8",
+  eyeOff: "M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.9 0 3.6-.6 5-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2",
+  hourglass: "M6 3h12M6 21h12M7 3c0 5 5 6 5 9s-5 4-5 9M17 3c0 5-5 6-5 9s5 4 5 9",
 } as const;
 
 export type IconName = keyof typeof PATHS;
