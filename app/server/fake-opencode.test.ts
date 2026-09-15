@@ -4,29 +4,29 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import { describe, it, type TestContext } from "node:test";
+import { ModelCatalog } from "./catalog.ts";
+import { type OcAssistantMessage, type OcEvent, type OcMessageWithParts, type OcPart, type OcUserMessage, OpencodeClient, OpencodeError } from "./opencode.ts";
 import {
-  type OcAssistantMessage,
-  type OcEvent,
-  type OcGlobalEvent,
-  type OcMessageWithParts,
-  type OcPart,
-  type OcUserMessage,
-  OpencodeClient,
-  OpencodeError,
-} from "./opencode.ts";
-import {
+  builtinTools,
   createId,
   FakeOpencode,
+  type FakeCommand,
+  type FakeFileDiff,
   type FakeOpencodeOptions,
   type FakePermissionRequest,
+  type FakeQuestionRequest,
   type FakeSession,
   type FakeToolScript,
   type FakeTurnScript,
-  FETCH_BLOCKED_PORTS,
   idTime,
+  nativeAgents,
+  parseApplyPatch,
+  type PermissionRule,
   readCapture,
   type SyncPayload,
+  unifiedDiff,
 } from "./test-support/fake-opencode.ts";
+import { applyPatchText, applyPatchTool, assertSubsequence, bash, editTool, promptAsync, props, subscribe, trace, until, within, writeTool } from "./test-support/helpers.ts";
 
 const PASSWORD = "p".repeat(24);
 const FIXTURES = ["p1-delegation-parallele.jsonl", "p2-commande-subtask.jsonl", "p6-arret-global.jsonl", "p7-autorisation-orpheline.jsonl"];
@@ -42,97 +42,10 @@ async function startFake(t: TestContext, options: FakeOpencodeOptions = {}) {
   return { fake, oc: clientFor(fake) };
 }
 
-/** Attend qu'une lecture renvoie une valeur (sondage toutes les 5 ms). */
-async function until<T>(read: () => T | undefined | null | false, timeoutMs = 3000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = read();
-    if (value !== undefined && value !== null && value !== false) return value;
-    if (Date.now() > deadline) throw new Error("condition non atteinte à temps");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
-/** Promesse `label` tenue en `timeoutMs` au plus : une attente jamais résolue fait échouer le test (message nommé) au lieu de le bloquer. */
-async function within<T>(promise: Promise<T>, label: string, timeoutMs = 3000): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} : promesse non tenue en ${timeoutMs} ms`)), timeoutMs);
-  });
-  try {
-    return await Promise.race([promise, late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Abonnement du cockpit (subscribeGlobal) : blocs reçus, dans l'ordre. */
-async function subscribe(t: TestContext, oc: OpencodeClient): Promise<OcGlobalEvent[]> {
-  const events: OcGlobalEvent[] = [];
-  let connected = false;
-  const stop = oc.subscribeGlobal(
-    (event) => events.push(event),
-    (status) => {
-      if (status === "connected") connected = true;
-    },
-  );
-  t.after(stop);
-  await until(() => connected && events.some((e) => e.payload.type === "server.connected"));
-  return events;
-}
-
-const props = (event: { payload: OcEvent | SyncPayload }): Record<string, unknown> => ("properties" in event.payload ? event.payload.properties ?? {} : {});
 const newSession = (oc: OpencodeClient, body: Record<string, unknown> = {}, directory?: string) =>
   oc.request<FakeSession>("POST", "/session", { body, ...(directory ? { directory } : {}) });
 const reply = (oc: OpencodeClient, id: string, body: Record<string, unknown>) => oc.request<boolean>("POST", `/permission/${id}/reply`, { body });
 const statusIs = (status: number) => (err: unknown) => err instanceof OpencodeError && err.status === status;
-
-async function promptAsync(oc: OpencodeClient, sessionID: string, text: string, extra: Record<string, unknown> = {}): Promise<number> {
-  const res = await oc.raw("POST", oc.url(`/session/${sessionID}/prompt_async`), {
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agent: "build", parts: [{ type: "text", text }], ...extra }),
-  });
-  await res.arrayBuffer();
-  return res.status;
-}
-
-const bash = (command: string, extra: Partial<FakeToolScript> = {}): FakeToolScript => ({
-  tool: "bash",
-  input: { command, description: `Lancer ${command}` },
-  ask: { permission: "bash", patterns: [command], metadata: { command }, always: [`${command.split(" ")[0]} *`] },
-  output: "ok",
-  ...extra,
-});
-
-/** Trace lisible « type:détail@nom » des sessions nommées (jumeaux, deltas et événements serveur ignorés). */
-function trace(events: ReadonlyArray<{ payload: OcEvent | SyncPayload }>, names: Record<string, string>): string[] {
-  const out: string[] = [];
-  for (const event of events) {
-    const p = props(event);
-    const who = typeof p.sessionID === "string" ? names[p.sessionID] : undefined;
-    if (!who || event.payload.type === "message.part.delta") continue;
-    let detail = "";
-    if (event.payload.type === "session.status") detail = `:${(p.status as { type: string }).type}`;
-    if (event.payload.type === "session.error") detail = `:${(p.error as { name: string }).name}`;
-    if (event.payload.type === "permission.replied") detail = `:${String(p.reply)}`;
-    if (event.payload.type === "message.updated") {
-      const info = p.info as OcAssistantMessage;
-      detail = `:${info.role}${info.error ? `:${info.error.name}` : info.time.completed ? `:${info.finish}` : ""}`;
-    }
-    if (event.payload.type === "message.part.updated") {
-      const part = p.part as { type: string; state?: { status: string } };
-      detail = `:${part.type}${part.state ? `:${part.state.status}` : ""}`;
-    }
-    out.push(`${event.payload.type}${detail}@${who}`);
-  }
-  return out;
-}
-
-function assertSubsequence(actual: string[], expected: string[]): void {
-  let found = 0;
-  for (const item of actual) if (item === expected[found]) found++;
-  assert.equal(found, expected.length, `attendu ensuite : ${expected[found]}\ntrace : ${actual.join(", ")}`);
-}
 
 const toolParts = (message: OcMessageWithParts) => message.parts.filter((p) => p.type === "tool") as Array<OcPart & { state: Record<string, unknown> }>;
 const assistants = (messages: OcMessageWithParts[]) => messages.filter((m) => m.info.role === "assistant").map((m) => m.info as OcAssistantMessage);
@@ -254,36 +167,27 @@ describe("faux opencode : transport", () => {
     assert.deepEqual(await oc.request("GET", "/session/status"), {});
   });
 
-  it("port d'écoute jamais refusé par fetch (« bad port ») : un port bloqué rendu par le système est gardé le temps d'en obtenir un autre, puis libéré", async (t) => {
-    // Liste conforme à Node : fetch refuse chaque port avant toute connexion (aucun paquet envoyé).
-    for (const port of FETCH_BLOCKED_PORTS) {
-      await assert.rejects(fetch(`http://127.0.0.1:${port}/global/health`), (err: unknown) => {
-        assert.ok(err instanceof TypeError && err.cause instanceof Error, `port ${port}`);
-        assert.equal(err.cause.message, "bad port", `port ${port}`);
-        return true;
-      });
-    }
-    // Premier serveur annoncé sur 10080, port bloqué : le faux doit en ouvrir un second avant de fermer le premier.
+  it("port d'écoute jamais refusé par fetch (« bad port ») : un port refusé rendu par le système est remplacé (listenFetchable, voir fetch-ports.test.ts)", async (t) => {
+    // Premier port rendu annoncé 10080 (refusé) : le faux écoute ailleurs, sur un port que le client joint.
     const create = http.createServer;
     const servers: http.Server[] = [];
-    let heldOpen: boolean | undefined;
     t.mock.method(http, "createServer", ((...args: unknown[]) => {
-      if (servers.length === 1) heldOpen = servers[0]?.listening;
       const server = (create as (...params: unknown[]) => http.Server)(...args);
-      if (servers.length === 0) server.address = () => ({ address: "127.0.0.1", family: "IPv4", port: 10080 });
+      const real = server.address.bind(server);
+      let calls = 0;
+      server.address = () => (calls++ === 0 ? { address: "127.0.0.1", family: "IPv4", port: 10080 } : real());
       servers.push(server);
       return server;
     }) as typeof http.createServer);
-    // Un faux qui garderait le port bloqué ouvert ferait pendre le processus de test au lieu d'échouer.
+    // Un faux resté à l'écoute ferait pendre le processus de test au lieu d'échouer.
     t.after(() => {
       for (const server of servers) if (server.listening) server.close();
     });
     const { fake, oc } = await startFake(t);
     t.mock.restoreAll();
-    assert.equal(servers.length, 2);
-    assert.equal(heldOpen, true, "port bloqué gardé ouvert pendant le choix d'un autre");
-    assert.equal(servers[0]?.listening, false, "port bloqué libéré");
-    assert.equal(fake.url, `http://127.0.0.1:${(servers[1]?.address() as AddressInfo).port}`);
+    assert.equal(servers.length, 1);
+    assert.notEqual(new URL(fake.url).port, "10080");
+    assert.equal(fake.url, `http://127.0.0.1:${(servers[0]?.address() as AddressInfo).port}`);
     const events = await subscribe(t, oc);
     assert.equal(events[0]?.payload.type, "server.connected");
   });
@@ -1321,9 +1225,10 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     assert.equal(await oc.request("DELETE", `/session/${session.id}`), true);
     const deleted = fake.emitted.findIndex((w) => w.payload.type === "session.deleted" && props(w).sessionID === session.id);
     assert.ok(deleted >= since);
+    // Fin de la boucle du tour, relevée avant l'arrêt (qui retire le tour), attendue au lieu d'une pause fixe : plus rien ne peut être écrit ensuite.
+    const done = fake.settled(session.id);
     assert.equal(await oc.request("POST", `/session/${session.id}/abort`), true);
-    // Au-delà de la pause du tour (300 ms) : le tour arrêté n'écrit plus rien.
-    await new Promise((resolve) => setTimeout(resolve, 450));
+    await within(done, "fin du tour arrêté");
     assert.deepEqual(trace(fake.emitted.slice(deleted + 1), { [session.id]: "s" }), [
       "session.error:MessageAbortedError@s",
       "session.status:idle@s",
@@ -1376,8 +1281,10 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     fake.script(session.id, { text: "Jamais.", stepMs: 300 });
     assert.equal(await promptAsync(oc, session.id, "Bonjour"), 204);
     const since = fake.emitted.length;
+    // Fin de la boucle, relevée avant l'arrêt, au lieu d'une pause fixe au-delà du premier pas (300 ms) : plus rien ne peut être écrit ensuite.
+    const done = fake.settled(session.id);
     assert.equal(await oc.request("POST", `/session/${session.id}/abort`), true);
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await within(done, "fin du tour arrêté avant busy");
     assert.deepEqual(trace(fake.emitted.slice(since), { [session.id]: "s" }), ["session.status:idle@s", "session.idle@s"]);
     assert.deepEqual(assistants(fake.messages(session.id)), []);
     assert.deepEqual(fake.failures, []);
@@ -1506,5 +1413,406 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     await assertSubagentFailed({ error: { name: "ProviderAuthError", data: { message: "Jeton refusé", providerID: "github-copilot" } } }, "Jeton refusé");
     await assertSubagentFailed({ tools: [bash("rm -rf dist")] }, REJECTED, (asked) => reply(oc, String(asked.properties.id), { reply: "reject" }));
     assert.deepEqual(fake.failures, []);
+  });
+});
+
+describe("faux opencode : routes lues par le cockpit", () => {
+  it("GET /agent : agents natifs (build en tête, cachés compris) aux règles de la configuration ; liste propre à un dossier, liste par défaut", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const natives = await oc.request<Array<{ name: string; hidden?: boolean; permission: PermissionRule[] }>>("GET", "/agent");
+    assert.deepEqual(
+      natives.map((a) => a.name),
+      ["build", "plan", "general", "explore", "compaction", "title", "summary"],
+    );
+    assert.deepEqual(natives.filter((a) => a.hidden).map((a) => a.name), ["compaction", "title", "summary"]);
+    // Défauts d'abord, puis règles propres à l'agent, puis configuration (profil Prudent par défaut).
+    const build = natives[0]?.permission ?? [];
+    assert.deepEqual(build[0], { permission: "*", pattern: "*", action: "allow" });
+    assert.deepEqual(build.slice(-8), [
+      { permission: "question", pattern: "*", action: "allow" },
+      { permission: "plan_enter", pattern: "*", action: "allow" },
+      { permission: "edit", pattern: "*", action: "ask" },
+      { permission: "bash", pattern: "*", action: "ask" },
+      { permission: "bash", pattern: "pwd", action: "allow" },
+      { permission: "task", pattern: "*", action: "ask" },
+      { permission: "webfetch", pattern: "*", action: "ask" },
+      { permission: "websearch", pattern: "*", action: "ask" },
+    ]);
+    const own = [{ name: "relire", mode: "primary" as const, options: {}, permission: [] }];
+    fake.setAgents(own, "/workspace/projet");
+    assert.deepEqual(await oc.request("GET", "/agent", { directory: "/workspace/projet" }), own);
+    assert.equal((await oc.request<unknown[]>("GET", "/agent", { directory: "/workspace/autre" })).length, 7, "autres dossiers : agents natifs");
+    fake.setAgents([{ name: "seul", mode: "all", options: {}, permission: [] }]);
+    assert.deepEqual((await oc.request<Array<{ name: string }>>("GET", "/agent", { directory: "/workspace/autre" })).map((a) => a.name), ["seul"]);
+    assert.deepEqual((await oc.request<Array<{ name: string }>>("GET", "/agent", { directory: "/workspace/projet" })).map((a) => a.name), ["relire"]);
+  });
+
+  it("GET /command : aucun raccourci par défaut ; liste par défaut et liste propre à un dossier", async (t) => {
+    const { fake, oc } = await startFake(t);
+    assert.deepEqual(await oc.request("GET", "/command"), []);
+    const revue: FakeCommand = { name: "revue", template: "Revois $ARGUMENTS", hints: ["$ARGUMENTS"], source: "command" };
+    fake.setCommands([revue]);
+    fake.setCommands([], "/workspace/vide");
+    assert.deepEqual(await oc.request("GET", "/command"), [revue]);
+    assert.deepEqual(await oc.request("GET", "/command", { directory: "/workspace/vide" }), []);
+  });
+
+  it("GET /global/config et PATCH : fusion profonde (tableaux remplacés), journal des PATCH ; configuration changée : instances libérées puis global.disposed, sinon rien ; clé __proto__ ignorée ; corps absent 400", async (t) => {
+    const { fake, oc } = await startFake(t);
+    assert.deepEqual(await oc.request("GET", "/global/config"), {
+      enabled_providers: ["github-copilot"],
+      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+    });
+    const loaded = await newSession(oc, {}, "/workspace/a");
+    fake.script(loaded.id, { tools: [bash("ls")] });
+    await promptAsync(oc, loaded.id, "Liste");
+    await fake.waitForEvent("permission.asked", (p) => p.sessionID === loaded.id);
+    let since = fake.emitted.length;
+    const body = { permission: { bash: { "git *": "allow" } }, enabled_providers: ["opencode"] };
+    const merged = await oc.request<Record<string, unknown>>("PATCH", "/global/config", { body });
+    assert.deepEqual(merged, {
+      enabled_providers: ["opencode"],
+      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow", "git *": "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+    });
+    assert.deepEqual(await oc.request("GET", "/global/config"), merged);
+    await fake.waitForEvent("global.disposed", () => true, { since });
+    assert.ok(fake.emitted.slice(since).some((w) => w.payload.type === "server.instance.disposed" && w.directory === "/workspace/a"));
+    assert.deepEqual(fake.pendingPermissions(), [], "instances remises à zéro");
+    since = fake.emitted.length;
+    assert.deepEqual(await oc.request("PATCH", "/global/config", { body: { permission: { edit: "ask" } } }), merged);
+    const polluted = await oc.raw("PATCH", oc.url("/global/config"), { headers: { "content-type": "application/json" }, body: '{"__proto__":{"pollue":true}}' });
+    assert.equal(polluted.status, 200);
+    await polluted.arrayBuffer();
+    assert.equal(Object.getPrototypeOf(fake.globalConfig), Object.prototype);
+    await assert.rejects(oc.request("PATCH", "/global/config"), statusIs(400));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(!fake.emitted.slice(since).some((w) => w.payload.type === "global.disposed"), "configuration inchangée : aucune libération");
+    assert.deepEqual(
+      fake.globalConfigPatches.map((p) => [p.body, p.changed]),
+      [
+        [body, true],
+        [{ permission: { edit: "ask" } }, false],
+        [JSON.parse('{"__proto__":{"pollue":true}}'), false],
+      ],
+    );
+  });
+
+  it("GET /config/providers : fournisseurs et IA par défaut lus par le catalogue du cockpit ; IA available: false absente, champ available jamais servi", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const initial = await oc.request<{ providers: Array<{ id: string; models: Record<string, unknown> }>; default: Record<string, string> }>("GET", "/config/providers");
+    assert.deepEqual(initial.default, { "github-copilot": "gpt-5-mini" });
+    assert.deepEqual(Object.keys(initial.providers[0]?.models ?? {}), ["gpt-5-mini", "claude-sonnet-5"]);
+    fake.providers = [
+      {
+        id: "github-copilot",
+        name: "GitHub Copilot",
+        models: { "gpt-5-mini": { id: "gpt-5-mini", name: "GPT-5 mini", available: true }, "claude-opus-5": { id: "claude-opus-5", name: "Claude Opus 5", available: false } },
+      },
+    ];
+    const scripted = await oc.request<{ providers: unknown[] }>("GET", "/config/providers");
+    assert.deepEqual(scripted.providers, [{ id: "github-copilot", name: "GitHub Copilot", models: { "gpt-5-mini": { id: "gpt-5-mini", name: "GPT-5 mini" } } }]);
+    const catalog = new ModelCatalog(oc);
+    await catalog.refresh();
+    assert.deepEqual(catalog.list().map((m) => m.key), ["github-copilot/gpt-5-mini"]);
+  });
+
+  it("GET /experimental/session : tous les dossiers, plus récentes d'abord ; racines, recherche, dossier, bornes, archivées, limite et x-next-cursor ; projet null", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const a = await newSession(oc, { title: "Alpha" }, "/workspace/a");
+    const child = await newSession(oc, { title: "Enfant", parentID: a.id }, "/workspace/a");
+    const b = await newSession(oc, { title: "Bêta" }, "/workspace/b");
+    for (const [id, updated] of [[a.id, 1000], [child.id, 2000], [b.id, 3000]] as const) {
+      const stored = fake.session(id);
+      assert.ok(stored);
+      stored.time.updated = updated;
+    }
+    const list = async (query: Record<string, string | number | boolean> = {}, directory?: string) =>
+      (await oc.request<Array<{ id: string }>>("GET", "/experimental/session", { query, ...(directory ? { directory } : {}) })).map((s) => s.id);
+    assert.deepEqual(await list(), [b.id, child.id, a.id]);
+    assert.deepEqual(await list({ roots: true }), [b.id, a.id]);
+    assert.deepEqual(await list({ search: "ALP" }), [a.id]);
+    assert.deepEqual(await list({}, "/workspace/b"), [b.id]);
+    assert.deepEqual(await list({ start: 2000 }), [b.id, child.id]);
+    assert.deepEqual(await list({ cursor: 3000 }), [child.id, a.id]);
+    await oc.request("PATCH", `/session/${b.id}`, { body: { time: { archived: 5 } } });
+    assert.deepEqual(await list(), [child.id, a.id]);
+    assert.deepEqual(await list({ archived: true }), [b.id, child.id, a.id]);
+    const page = await oc.raw("GET", oc.url("/experimental/session", { limit: 1 }));
+    assert.equal(page.headers.get("x-next-cursor"), "2000");
+    assert.deepEqual(
+      ((await page.json()) as Array<{ id: string; project: unknown }>).map((s) => [s.id, s.project]),
+      [[child.id, null]],
+    );
+    await assert.rejects(oc.request("GET", "/experimental/session", { query: { limit: "beaucoup" } }), statusIs(400));
+  });
+
+  it("GET /session/:id/todo et /diff : listes scriptées (todo.updated diffusé ; diff de la session ou d'un message), vides par défaut, 404 pour une session inconnue", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    assert.deepEqual(await oc.request("GET", `/session/${session.id}/todo`), []);
+    assert.deepEqual(await oc.request("GET", `/session/${session.id}/diff`), []);
+    const since = fake.emitted.length;
+    const todos = [{ content: "Lire app.log", status: "in_progress", priority: "high" }];
+    fake.setTodos(session.id, todos);
+    const updated = await fake.waitForEvent("todo.updated", (p) => p.sessionID === session.id, { since });
+    assert.deepEqual(updated.properties, { sessionID: session.id, todos });
+    assert.deepEqual(await oc.request("GET", `/session/${session.id}/todo`), todos);
+    const all: FakeFileDiff[] = [{ file: "src/a.ts", patch: "@@ -1 +1 @@\n-a\n+b\n", additions: 1, deletions: 1, status: "modified" }];
+    const one: FakeFileDiff[] = [{ file: "src/b.ts", additions: 3, deletions: 0, status: "added" }];
+    fake.setDiff(session.id, all);
+    fake.setDiff(session.id, one, "msg_repere");
+    assert.deepEqual(await oc.request("GET", `/session/${session.id}/diff`), all);
+    assert.deepEqual(await oc.request("GET", `/session/${session.id}/diff`, { query: { messageID: "msg_repere" } }), one);
+    await assert.rejects(oc.request("GET", "/session/ses_inconnue/todo"), statusIs(404));
+    await assert.rejects(oc.request("GET", "/session/ses_inconnue/diff"), statusIs(404));
+  });
+
+  it("POST /session/:id/command : consigne du raccourci envoyée (agent et IA du raccourci d'abord), réponse d'assistant, puis command.executed ; raccourci inconnu ou arguments absents 400", async (t) => {
+    const { fake, oc } = await startFake(t);
+    fake.setCommands([{ name: "revue", template: "Revois $ARGUMENTS", hints: ["$ARGUMENTS"], agent: "plan", model: "github-copilot/claude-sonnet-5", source: "command" }]);
+    const session = await newSession(oc);
+    fake.script(session.id, { text: "Revue faite.", cost: 0.02 });
+    const since = fake.emitted.length;
+    const answer = await oc.request<OcMessageWithParts>("POST", `/session/${session.id}/command`, {
+      body: { command: "revue", arguments: "src/a.ts", agent: "build", model: "github-copilot/gpt-5-mini" },
+    });
+    const info = answer.info as OcAssistantMessage;
+    assert.deepEqual([info.role, info.agent, info.modelID, info.cost, info.finish], ["assistant", "plan", "claude-sonnet-5", 0.02, "stop"]);
+    const [user] = fake.messages(session.id);
+    assert.equal(user?.parts[0]?.text, "Revois src/a.ts");
+    const executed = await fake.waitForEvent("command.executed", () => true, { since });
+    assert.deepEqual(executed.properties, { name: "revue", sessionID: session.id, arguments: "src/a.ts", messageID: user?.info.id });
+    assertSubsequence(trace(fake.emitted.slice(since), { [session.id]: "s" }), ["message.updated:user@s", "message.updated:assistant:stop@s", "session.idle@s", "command.executed@s"]);
+    await assert.rejects(oc.request("POST", `/session/${session.id}/command`, { body: { command: "inconnue", arguments: "" } }), statusIs(400));
+    await assert.rejects(oc.request("POST", `/session/${session.id}/command`, { body: { command: "revue" } }), statusIs(400));
+    await assert.rejects(oc.request("POST", "/session/ses_inconnue/command", { body: { command: "revue", arguments: "" } }), statusIs(404));
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("POST /session/:id/summarize : message de compaction (agent du dernier message), tour « compaction » (summary), session.compacted, puis true ; corps invalide 400", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    assert.equal(await promptAsync(oc, session.id, "Bonjour", { agent: "plan" }), 204);
+    await within(fake.settled(session.id), "premier tour");
+    const since = fake.emitted.length;
+    assert.equal(await oc.request("POST", `/session/${session.id}/summarize`, { body: { providerID: "github-copilot", modelID: "gpt-5-mini" } }), true);
+    const messages = fake.messages(session.id);
+    const compaction = messages.at(-2);
+    assert.deepEqual(
+      [compaction?.info.role, (compaction?.info as OcUserMessage | undefined)?.agent, compaction?.parts.map((p) => [p.type, p.auto])],
+      ["user", "plan", [["compaction", false]]],
+    );
+    const summary = messages.at(-1)?.info as (OcAssistantMessage & { summary?: boolean }) | undefined;
+    assert.deepEqual([summary?.role, summary?.agent, summary?.mode, summary?.summary, summary?.finish], ["assistant", "compaction", "compaction", true, "stop"]);
+    assert.deepEqual(trace(fake.emitted.slice(since), { [session.id]: "s" }).slice(-3), ["session.status:idle@s", "session.idle@s", "session.compacted@s"]);
+    await assert.rejects(oc.request("POST", `/session/${session.id}/summarize`, { body: { providerID: "github-copilot" } }), statusIs(400));
+    await assert.rejects(oc.request("POST", `/session/${session.id}/summarize`, { body: { providerID: "github-copilot", modelID: "gpt-5-mini", auto: "oui" } }), statusIs(400));
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("GET /question, POST /question/:id/reply et /reject : question.asked, liste du dossier, question.replied ou question.rejected, 404 ensuite ; questions oubliées à la libération de l'instance", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc, {}, "/workspace/a");
+    const since = fake.emitted.length;
+    const questions = [{ question: "Quelle base ?", header: "Base", options: [{ label: "SQLite", description: "Fichier local" }, { label: "PostgreSQL", description: "Serveur" }] }];
+    const asked: FakeQuestionRequest = fake.askQuestion(session.id, questions);
+    assert.match(asked.id, /^que_/);
+    const event = await fake.waitForEvent("question.asked", () => true, { since });
+    assert.deepEqual(event.properties, { id: asked.id, sessionID: session.id, questions });
+    assert.equal(fake.emitted.find((w) => w.payload === event)?.directory, "/workspace/a");
+    assert.deepEqual(await oc.request("GET", "/question", { directory: "/workspace/a" }), [asked]);
+    assert.deepEqual(await oc.request("GET", "/question"), [], "autre dossier");
+    await assert.rejects(oc.request("POST", `/question/${asked.id}/reply`, { body: { answers: "SQLite" }, directory: "/workspace/a" }), statusIs(400));
+    await assert.rejects(oc.request("POST", `/question/${asked.id}/reply`, { body: { answers: [["SQLite"]] } }), statusIs(404));
+    assert.equal(await oc.request("POST", `/question/${asked.id}/reply`, { body: { answers: [["SQLite"]] }, directory: "/workspace/a" }), true);
+    const replied = await fake.waitForEvent("question.replied", () => true, { since });
+    assert.deepEqual(replied.properties, { sessionID: session.id, requestID: asked.id, answers: [["SQLite"]] });
+    assert.deepEqual(fake.pendingQuestions(), []);
+    await assert.rejects(oc.request("POST", `/question/${asked.id}/reply`, { body: { answers: [["SQLite"]] }, directory: "/workspace/a" }), (err: unknown) => {
+      assert.ok(err instanceof OpencodeError && err.status === 404);
+      assert.deepEqual(err.body, { _tag: "QuestionNotFoundError", requestID: asked.id, message: `Question request not found: ${asked.id}` });
+      return true;
+    });
+    const second = fake.askQuestion(session.id, questions);
+    assert.equal(await oc.request("POST", `/question/${second.id}/reject`, { directory: "/workspace/a" }), true);
+    assert.deepEqual((await fake.waitForEvent("question.rejected", () => true, { since })).properties, { sessionID: session.id, requestID: second.id });
+    const third = fake.askQuestion(session.id, questions);
+    assert.equal(await oc.request("POST", "/instance/dispose", { directory: "/workspace/a" }), true);
+    assert.deepEqual(fake.pendingQuestions(), []);
+    assert.ok(!fake.emitted.some((w) => w.payload.type === "question.rejected" && props(w).requestID === third.id), "oubliée sans événement");
+  });
+});
+
+describe("faux opencode : outils retirés par les règles (F-e, F-f, mesure M2)", () => {
+  interface M2Case {
+    name: string;
+    agent: string;
+    parent?: string;
+    create: PermissionRule[] | null;
+    patch: PermissionRule[] | null;
+    sessionPermission: PermissionRule[] | null;
+    tools: string[];
+  }
+  const M2_URL = new URL("./test-support/fixtures/m2-tools.json", import.meta.url);
+  const m2 = JSON.parse(fs.readFileSync(M2_URL, "utf8")) as { model: { providerID: string; modelID: string }; configPermission: Record<string, unknown>; cases: M2Case[] };
+
+  it("fixture m2-tools.json : sans secret ni chemin d'hôte, 5 cas de la mesure", () => {
+    assert.deepEqual(leaks(fs.readFileSync(M2_URL, "utf8")), []);
+    assert.deepEqual(
+      m2.cases.map((c) => c.name),
+      ["sans-regle", "racine-edit-bash-refuses", "enfant-general", "tout-refuse-sauf-lecture", "patch-bash-refuse"],
+    );
+  });
+
+  it("toolsFor rejoue les 5 cas de M2 : sans règle, racine edit et bash refusés, enfant general (règles héritées, task gardé), « * deny » avec lecture, PATCH d'un refus", async (t) => {
+    const { fake, oc } = await startFake(t, { config: { permission: m2.configPermission } });
+    const { modelID } = m2.model;
+    const ids = new Map<string, string>();
+    for (const c of m2.cases.filter((candidate) => candidate.parent === undefined)) {
+      const session = await newSession(oc, c.create ? { permission: c.create } : {});
+      if (c.patch) await oc.request("PATCH", `/session/${session.id}`, { body: { permission: c.patch } });
+      assert.deepEqual((await oc.request<FakeSession>("GET", `/session/${session.id}`)).permission, c.sessionPermission ?? undefined, c.name);
+      assert.deepEqual(fake.toolsFor(session.id, { modelID, agent: c.agent }), c.tools, c.name);
+      ids.set(c.name, session.id);
+    }
+    // Enfant lancé par task, sans règles d'agent scriptées : celles de l'agent natif general pour la configuration du banc.
+    const childCase = m2.cases.find((c) => c.parent !== undefined);
+    const rootID = ids.get(childCase?.parent ?? "");
+    assert.ok(childCase && rootID);
+    fake.script(rootID, {
+      tools: [{ tool: "task", input: { description: "Lecture", prompt: "Lis a.txt et résume.", subagent_type: "general" }, child: { agent: "general", text: "Résumé." } }],
+      followUp: { text: "fin" },
+    });
+    assert.equal(await promptAsync(oc, rootID, "Délègue la lecture de a.txt.", { model: m2.model }), 204);
+    await within(fake.settled(rootID), "délégation terminée");
+    const [child] = await oc.request<FakeSession[]>("GET", `/session/${rootID}/children`);
+    assert.ok(child);
+    assert.deepEqual([child.agent, child.permission], [childCase.agent, childCase.sessionPermission]);
+    assert.deepEqual(fake.toolsFor(child.id), childCase.tools, "IA et agent de la session enfant");
+    assert.deepEqual(fake.toolsFor(rootID), m2.cases.find((c) => c.name === childCase.parent)?.tools, "racine : même liste à la reprise");
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("toolsFor : apply_patch remplace edit et write pour une IA gpt- (hors gpt-4 et oss) et suit la règle edit ; seule la dernière règle compte, et seulement avec le motif « * »", async (t) => {
+    assert.deepEqual([...builtinTools("gpt-5-mini")].sort(), ["apply_patch", "bash", "glob", "grep", "question", "read", "skill", "task", "todowrite", "webfetch"]);
+    assert.ok(builtinTools("gpt-4.1").includes("edit") && builtinTools("gpt-oss-120b").includes("write") && !builtinTools("claude-sonnet-5").includes("apply_patch"));
+    const { fake, oc } = await startFake(t);
+    const refused = await newSession(oc, { permission: [{ permission: "edit", pattern: "*", action: "deny" }] });
+    assert.ok(!fake.toolsFor(refused.id, { modelID: "gpt-5-mini" }).includes("apply_patch"));
+    const reopened = await newSession(oc, {
+      permission: [
+        { permission: "bash", pattern: "*", action: "deny" },
+        { permission: "bash", pattern: "git *", action: "allow" },
+        { permission: "edit", pattern: "src/*", action: "deny" },
+      ],
+    });
+    const tools = fake.toolsFor(reopened.id, { modelID: "claude-sonnet-5" });
+    assert.ok(tools.includes("bash"), "dernière règle « git * allow » : bash gardé");
+    assert.ok(tools.includes("edit") && tools.includes("write"), "motif autre que « * » : edit et write gardés");
+    assert.deepEqual(nativeAgents({}).find((a) => a.name === "general")?.permission.at(-1), { permission: "todowrite", pattern: "*", action: "deny" });
+    assert.throws(() => fake.toolsFor("ses_inconnue"), /session inconnue/);
+  });
+});
+
+describe("faux opencode : métadonnées des demandes de modification", () => {
+  it("edit et write : filepath absolu et diff unifié par défaut, fichier connu mis à jour après l'outil terminé (pas après un refus) ; métadonnées scriptées gardées", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    fake.files.set("/workspace/src/a.ts", "un\ndeux\ntrois\n");
+    fake.script(session.id, { tools: [editTool("src/a.ts", "deux", "2")], followUp: { text: "Fait." } });
+    let since = fake.emitted.length;
+    await promptAsync(oc, session.id, "Modifie");
+    const edited = (await fake.waitForEvent("permission.asked", () => true, { since })).properties as unknown as FakePermissionRequest;
+    assert.deepEqual([edited.permission, edited.patterns, edited.always], ["edit", ["src/a.ts"], ["*"]]);
+    assert.deepEqual(edited.metadata, {
+      filepath: "/workspace/src/a.ts",
+      diff: "Index: /workspace/src/a.ts\n===================================================================\n--- /workspace/src/a.ts\n+++ /workspace/src/a.ts\n@@ -1,3 +1,3 @@\n un\n-deux\n+2\n trois\n",
+    });
+    await reply(oc, edited.id, { reply: "once" });
+    await within(fake.settled(session.id), "edit terminé");
+    assert.equal(fake.files.get("/workspace/src/a.ts"), "un\n2\ntrois\n");
+
+    fake.script(session.id, { tools: [writeTool("/workspace/src/nouveau.ts", "export {};\n")] });
+    since = fake.emitted.length;
+    await promptAsync(oc, session.id, "Crée");
+    const written = (await fake.waitForEvent("permission.asked", () => true, { since })).properties as unknown as FakePermissionRequest;
+    assert.deepEqual(written.patterns, ["src/nouveau.ts"]);
+    assert.deepEqual(written.metadata, { filepath: "/workspace/src/nouveau.ts", diff: unifiedDiff("/workspace/src/nouveau.ts", "", "export {};\n") });
+    assert.match(String(written.metadata.diff), /\n@@ -0,0 \+1,1 @@\n\+export \{\};\n$/);
+    await reply(oc, written.id, { reply: "reject" });
+    await within(fake.settled(session.id), "write refusé");
+    assert.equal(fake.files.has("/workspace/src/nouveau.ts"), false, "refusé : fichier jamais écrit");
+
+    const scripted = { filepath: "/ailleurs/x", diff: "" };
+    fake.script(session.id, { tools: [editTool("x", "a", "b", { ask: { permission: "edit", patterns: ["x"], metadata: scripted } })] });
+    since = fake.emitted.length;
+    await promptAsync(oc, session.id, "Scripté");
+    assert.deepEqual((await fake.waitForEvent("permission.asked", () => true, { since })).properties.metadata, scripted);
+  });
+
+  it("apply_patch : files[] (filePath, relativePath, type add, update, move, delete, patch, additions, deletions, movePath), filepath relatif joint, diff de tous les fichiers ; fichiers connus mis à jour après l'accord", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    fake.files.set("/workspace/src/vieux.ts", "a\nb\nc\nd\n");
+    fake.files.set("/workspace/src/garde.ts", "x\ny\n");
+    const tool = applyPatchTool([
+      { type: "add", path: "src/neuf.ts", content: "n1\nn2\n" },
+      { type: "update", path: "src/garde.ts", from: "x\ny\n", to: "x\nz\n" },
+      { type: "update", path: "src/a-deplacer.ts", from: "m\n", to: "m2\n", movePath: "lib/deplace.ts" },
+      { type: "delete", path: "src/vieux.ts" },
+    ]);
+    fake.script(session.id, { tools: [tool], followUp: { text: "Fait." } });
+    await promptAsync(oc, session.id, "Patch", { model: { providerID: "github-copilot", modelID: "gpt-5-mini" } });
+    const request = (await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id)).properties as unknown as FakePermissionRequest;
+    assert.deepEqual(request.patterns, ["src/neuf.ts", "src/garde.ts", "src/a-deplacer.ts", "src/vieux.ts"]);
+    const metadata = request.metadata as { filepath: string; diff: string; files: Array<Record<string, unknown>> };
+    assert.equal(metadata.filepath, "src/neuf.ts, src/garde.ts, src/a-deplacer.ts, src/vieux.ts");
+    assert.deepEqual(
+      metadata.files.map((f) => [f.filePath, f.relativePath, f.type, f.additions, f.deletions, f.movePath]),
+      [
+        ["/workspace/src/neuf.ts", "src/neuf.ts", "add", 2, 0, undefined],
+        ["/workspace/src/garde.ts", "src/garde.ts", "update", 1, 1, undefined],
+        ["/workspace/src/a-deplacer.ts", "lib/deplace.ts", "move", 1, 1, "/workspace/lib/deplace.ts"],
+        ["/workspace/src/vieux.ts", "src/vieux.ts", "delete", 0, 5, undefined],
+      ],
+    );
+    assert.ok(!("movePath" in (metadata.files[0] ?? {})), "movePath absent hors déplacement");
+    assert.equal(metadata.files[3]?.patch, unifiedDiff("/workspace/src/vieux.ts", "a\nb\nc\nd\n", ""));
+    assert.equal(metadata.diff, metadata.files.map((f) => `${String(f.patch)}\n`).join(""));
+    await reply(oc, request.id, { reply: "once" });
+    await within(fake.settled(session.id), "apply_patch terminé");
+    assert.deepEqual(
+      [...fake.files.entries()].sort(),
+      [
+        ["/workspace/lib/deplace.ts", "m2\n"],
+        ["/workspace/src/garde.ts", "x\nz\n"],
+        ["/workspace/src/neuf.ts", "n1\nn2\n"],
+      ],
+    );
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("texte d'apply_patch relu à l'identique (ajout, mise à jour avec déplacement et contexte @@, suppression) ; texte illisible : aucune métadonnée par défaut", async (t) => {
+    const text = applyPatchText([
+      { type: "add", path: "a.ts", content: "1\n" },
+      { type: "update", path: "b.ts", from: "x\ny\n", to: "x\nz\n", movePath: "c.ts" },
+      { type: "delete", path: "d.ts" },
+    ]);
+    assert.equal(text, "*** Begin Patch\n*** Add File: a.ts\n+1\n*** Update File: b.ts\n*** Move to: c.ts\n@@\n x\n-y\n+z\n*** Delete File: d.ts\n*** End Patch");
+    assert.deepEqual(parseApplyPatch(text), [
+      { type: "add", path: "a.ts", content: "1\n" },
+      { type: "update", path: "b.ts", movePath: "c.ts", from: "x\ny\n", to: "x\nz\n" },
+      { type: "delete", path: "d.ts" },
+    ]);
+    assert.deepEqual(parseApplyPatch("*** Begin Patch\n*** Update File: e.ts\n@@ function f()\n a\n-b\n+c\n*** End of File\n*** End Patch"), [
+      { type: "update", path: "e.ts", from: "a\nb\n", to: "a\nc\n" },
+    ]);
+    assert.equal(parseApplyPatch("*** Begin Patch\n*** Inconnu: x\n*** End Patch"), null);
+    assert.equal(parseApplyPatch("pas un patch"), null);
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    fake.script(session.id, { tools: [{ tool: "apply_patch", input: { patchText: "pas un patch" }, ask: { permission: "edit", patterns: ["x"] } }] });
+    await promptAsync(oc, session.id, "Patch");
+    assert.deepEqual((await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id)).properties.metadata, {});
   });
 });

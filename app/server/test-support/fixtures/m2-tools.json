@@ -1,0 +1,198 @@
+{
+  "source": "Mesure M2 du 2026-09-14 : opencode 1.18.30 hors ligne, faux fournisseur compatible OpenAI qui relève la liste d'outils de chaque requête (banc m2-probe). Agent par défaut build ; enfant lancé par task.",
+  "opencode": "1.18.30",
+  "model": {
+    "providerID": "mock",
+    "modelID": "mock-1"
+  },
+  "configPermission": {
+    "edit": "ask",
+    "bash": "ask",
+    "task": "allow",
+    "webfetch": "ask",
+    "websearch": "ask"
+  },
+  "cases": [
+    {
+      "name": "sans-regle",
+      "agent": "build",
+      "create": null,
+      "patch": null,
+      "sessionPermission": null,
+      "tools": [
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "question",
+        "read",
+        "skill",
+        "task",
+        "todowrite",
+        "webfetch",
+        "write"
+      ]
+    },
+    {
+      "name": "racine-edit-bash-refuses",
+      "agent": "build",
+      "create": [
+        {
+          "permission": "edit",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "bash",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "patch": null,
+      "sessionPermission": [
+        {
+          "permission": "edit",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "bash",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "tools": [
+        "glob",
+        "grep",
+        "question",
+        "read",
+        "skill",
+        "task",
+        "todowrite",
+        "webfetch"
+      ]
+    },
+    {
+      "name": "enfant-general",
+      "agent": "general",
+      "parent": "racine-edit-bash-refuses",
+      "create": null,
+      "patch": null,
+      "sessionPermission": [
+        {
+          "permission": "edit",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "bash",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "tools": [
+        "glob",
+        "grep",
+        "read",
+        "skill",
+        "task",
+        "webfetch"
+      ]
+    },
+    {
+      "name": "tout-refuse-sauf-lecture",
+      "agent": "build",
+      "create": [
+        {
+          "permission": "*",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "read",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "grep",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "glob",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "list",
+          "pattern": "*",
+          "action": "allow"
+        }
+      ],
+      "patch": null,
+      "sessionPermission": [
+        {
+          "permission": "*",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "read",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "grep",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "glob",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "list",
+          "pattern": "*",
+          "action": "allow"
+        }
+      ],
+      "tools": [
+        "glob",
+        "grep",
+        "read"
+      ]
+    },
+    {
+      "name": "patch-bash-refuse",
+      "agent": "build",
+      "create": null,
+      "patch": [
+        {
+          "permission": "bash",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "sessionPermission": [
+        {
+          "permission": "bash",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "tools": [
+        "edit",
+        "glob",
+        "grep",
+        "question",
+        "read",
+        "skill",
+        "task",
+        "todowrite",
+        "webfetch",
+        "write"
+      ]
+    }
+  ]
+}

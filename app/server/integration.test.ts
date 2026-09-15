@@ -657,7 +657,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         }
       });
     });
-    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    await (await import("./test-support/helpers.ts")).listenFetchable(upstream, "127.0.0.1");
     const upstreamPort = (upstream.address() as AddressInfo).port;
 
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-test-"));

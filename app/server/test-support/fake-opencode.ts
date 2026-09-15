@@ -3,8 +3,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import path from "node:path";
 import type { OcAssistantMessage, OcEvent, OcMessageWithParts, OcPart, OcSession, OcTokens, OcUserMessage } from "../opencode.ts";
+import { lineDiff, listenFetchable } from "./helpers.ts";
+
+// Liste des ports refusés par fetch, et son commentaire : ../fetch-ports.ts (module du serveur). Ré-exportée pour les tests.
+export { FETCH_BLOCKED_PORTS } from "../fetch-ports.ts";
 
 export type RuleAction = "allow" | "deny" | "ask";
 
@@ -99,6 +103,8 @@ export interface FakeTurnScript extends FakeUsage {
   error?: NonNullable<OcAssistantMessage["error"]>;
   /** Pause entre deux groupes d'événements, en ms (défaut 1). */
   stepMs?: number;
+  /** Tour de résumé (POST /session/:id/summarize) : `summary: true` sur les messages d'assistant. */
+  summary?: boolean;
 }
 
 export interface FakeOpencodeOptions {
@@ -110,6 +116,8 @@ export interface FakeOpencodeOptions {
   version?: string;
   heartbeatMs?: number;
   syncTwins?: boolean;
+  /** Configuration globale (GET /global/config) ; sa clé « permission » donne les règles des agents natifs. Défaut : profil Prudent. */
+  config?: Record<string, unknown>;
 }
 
 type Outcome = { reply: PermissionReply; message?: string };
@@ -166,17 +174,13 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const ACTIONS = new Set<string>(["allow", "deny", "ask"]);
 const REPLIES = new Set<string>(["once", "always", "reject"]);
 const FIXTURE_NAME = /^[a-z0-9][a-z0-9-]*\.jsonl$/;
-
-/**
- * Ports que fetch refuse sans rien envoyer (« bad port », Fetch Standard, port blocking ; badPorts d'undici, liste de Node 24.15).
- * Plage dynamique de Windows ouverte dès 1024 (Hyper-V, Docker) : listen(0) peut rendre l'un des 19 ports bloqués au-delà de 1024.
- * Chaque requête du client échouerait alors (« fetch failed »), et subscribeGlobal réessaierait sans jamais se connecter.
- */
-export const FETCH_BLOCKED_PORTS: ReadonlySet<number> = new Set([
-  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123,
-  135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995,
-  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
-]);
+/** Configuration livrée (profil Prudent), comme le repli de GET /global/config dans integration.test.ts. */
+const DEFAULT_CONFIG = {
+  enabled_providers: ["github-copilot"],
+  permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+};
+/** Tour de résumé (POST /session/:id/summarize) quand aucun script n'attend. */
+const SUMMARY_TURN: FakeTurnScript = { text: "Résumé de la conversation par le faux opencode.", cost: 0.001, tokens: { input: 40, output: 12 } };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const jsonClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -241,6 +245,310 @@ export function deriveChildRules(parent: PermissionRule[], agentRules: Permissio
     .filter((permission) => !agentRules.some((rule) => rule.permission === permission))
     .map((permission): PermissionRule => ({ permission, pattern: "*", action: "deny" }));
   return [...parent.filter((rule) => rule.permission === "external_directory" || rule.action === "deny"), ...defaults];
+}
+
+/** Agent de GET /agent (Agent.Info, agent/agent.ts:138-260), champs lus par le cockpit. */
+export interface FakeAgent {
+  name: string;
+  mode: "primary" | "subagent" | "all";
+  native?: boolean;
+  hidden?: boolean;
+  description?: string;
+  model?: { providerID: string; modelID: string };
+  variant?: string;
+  options: Record<string, unknown>;
+  permission: PermissionRule[];
+}
+
+/** Raccourci de GET /command (Command.Info) ; « $ARGUMENTS » de `template` remplacé à l'envoi. */
+export interface FakeCommand {
+  name: string;
+  template: string;
+  hints: string[];
+  description?: string;
+  agent?: string;
+  /** « fournisseur/IA ». */
+  model?: string;
+  subtask?: boolean;
+  source?: "command" | "mcp" | "skill";
+}
+
+/** IA d'un fournisseur de GET /config/providers (Provider.Model, provider/provider.ts:1078-1093). */
+export interface FakeModel {
+  id: string;
+  name: string;
+  capabilities?: { toolcall?: boolean; reasoning?: boolean; attachment?: boolean };
+  cost?: { input: number; output: number; cache?: { read: number; write: number } };
+  limit?: { context: number; output: number };
+  status?: string;
+  variants?: Record<string, Record<string, unknown>>;
+  /** Propre au faux : false = IA désactivée par la politique de l'organisation, retirée de la réponse comme le fait opencode. */
+  available?: boolean;
+}
+
+export interface FakeProvider {
+  id: string;
+  name: string;
+  models: Record<string, FakeModel>;
+  options?: Record<string, unknown>;
+}
+
+/** Tâche de GET /session/:id/todo (SessionTodo.Info). */
+export interface FakeTodo {
+  content: string;
+  status: string;
+  priority: string;
+}
+
+/** Fichier de GET /session/:id/diff (FileDiff.Info). */
+export interface FakeFileDiff {
+  file?: string;
+  patch?: string;
+  additions: number;
+  deletions: number;
+  status?: "added" | "deleted" | "modified";
+}
+
+/** Demande de GET /question et de question.asked (QuestionV1.Request) ; chaque question : question, header, options [{label, description}], multiple, custom. */
+export interface FakeQuestionRequest {
+  id: string;
+  sessionID: string;
+  questions: Array<Record<string, unknown>>;
+  tool?: { messageID: string; callID: string };
+}
+
+/** Changement de fichier d'un outil edit, write ou apply_patch (chemins absolus, contenus avant et après). */
+export interface EditChange {
+  type: "add" | "update" | "delete" | "move";
+  filePath: string;
+  movePath?: string;
+  before: string;
+  after: string;
+}
+
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Permission.fromConfig (permission/index.ts:184-199) : « permission: action » ou « permission: {motif: action} », dans l'ordre des clés ; ~ et $HOME non développés. */
+export function rulesFromConfig(config: unknown): PermissionRule[] {
+  if (!isRecord(config)) return [];
+  const rules: PermissionRule[] = [];
+  for (const [permission, value] of Object.entries(config)) {
+    if (typeof value === "string") {
+      if (ACTIONS.has(value)) rules.push({ permission, pattern: "*", action: value as RuleAction });
+      continue;
+    }
+    if (!isRecord(value)) continue;
+    for (const [pattern, action] of Object.entries(value)) {
+      if (typeof action === "string" && ACTIONS.has(action)) rules.push({ permission, pattern, action: action as RuleAction });
+    }
+  }
+  return rules;
+}
+
+/**
+ * Agents natifs d'opencode 1.18.30 (agent/agent.ts:117-260) pour la clé « permission » de la configuration : défauts, règles propres
+ * à l'agent, puis configuration (F-d). Omis : dossiers autorisés d'office dans external_directory (troncatures, /tmp, skills) et
+ * plans du dossier de données d'opencode ; descriptions abrégées.
+ */
+export function nativeAgents(permission: unknown = DEFAULT_CONFIG.permission): FakeAgent[] {
+  const defaults = rulesFromConfig({
+    "*": "allow",
+    doom_loop: "ask",
+    external_directory: { "*": "ask" },
+    question: "deny",
+    plan_enter: "deny",
+    plan_exit: "deny",
+    read: { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" },
+  });
+  const user = rulesFromConfig(permission);
+  const rules = (own: Record<string, unknown>): PermissionRule[] => [...defaults, ...rulesFromConfig(own), ...user];
+  const hidden = (name: string): FakeAgent => ({ name, mode: "primary", native: true, hidden: true, options: {}, permission: rules({ "*": "deny" }) });
+  return [
+    {
+      name: "build",
+      description: "The default agent. Executes tools based on configured permissions.",
+      mode: "primary",
+      native: true,
+      options: {},
+      permission: rules({ question: "allow", plan_enter: "allow" }),
+    },
+    {
+      name: "plan",
+      description: "Plan mode. Disallows all edit tools.",
+      mode: "primary",
+      native: true,
+      options: {},
+      permission: rules({ question: "allow", plan_exit: "allow", task: { general: "deny" }, edit: { "*": "deny", ".opencode/plans/*.md": "allow" } }),
+    },
+    {
+      name: "general",
+      description: "General-purpose agent for researching complex questions and executing multi-step tasks.",
+      mode: "subagent",
+      native: true,
+      options: {},
+      permission: rules({ todowrite: "deny" }),
+    },
+    {
+      name: "explore",
+      description: "Fast agent specialized for exploring codebases.",
+      mode: "subagent",
+      native: true,
+      options: {},
+      permission: rules({ "*": "deny", grep: "allow", glob: "allow", list: "allow", bash: "allow", webfetch: "allow", websearch: "allow", read: "allow", external_directory: { "*": "ask" } }),
+    },
+    hidden("compaction"),
+    hidden("title"),
+    hidden("summary"),
+  ];
+}
+
+/**
+ * Outils intégrés envoyés au modèle (tool/registry.ts:230-250, 292-301), tels que mesurés par M2 : apply_patch remplace edit et write
+ * pour une IA « gpt- » (hors gpt-4 et oss) ; websearch absent sans Exa ; question présent ; aucun outil MCP.
+ */
+export function builtinTools(modelID: string): string[] {
+  const patch = modelID.includes("gpt-") && !modelID.includes("oss") && !modelID.includes("gpt-4");
+  return ["question", "bash", "read", "glob", "grep", ...(patch ? ["apply_patch"] : ["edit", "write"]), "task", "webfetch", "todowrite", "skill"];
+}
+
+/** F-e, Permission.disabled (permission/index.ts:205-215) : outil retiré si la dernière règle de sa permission est « * deny » (edit, write, apply_patch : « edit »). */
+export function disabledTools(tools: readonly string[], rules: readonly PermissionRule[]): Set<string> {
+  const edits = new Set(["edit", "write", "apply_patch"]);
+  const reads = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+  return new Set(
+    tools.filter((tool) => {
+      const permission = edits.has(tool) ? "edit" : reads.has(tool) ? "read" : tool;
+      const rule = rules.findLast((candidate) => wildcardMatch(permission, candidate.permission));
+      return rule?.pattern === "*" && rule.action === "deny";
+    }),
+  );
+}
+
+/** mergeDeep de remeda (config/config.ts:666) : objets fusionnés récursivement, tableaux et autres valeurs remplacés ; clés de prototype ignorées. */
+function mergeDeep(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (FORBIDDEN_KEYS.has(key)) continue;
+    const current = out[key];
+    out[key] = isRecord(current) && isRecord(value) ? mergeDeep(current, value) : jsonClone(value);
+  }
+  return out;
+}
+
+/** Fournisseurs servis par défaut par GET /config/providers (forme d'opencode 1.18.30, IA de la fixture d'intégration). */
+const defaultProviders = (): FakeProvider[] => [
+  {
+    id: "github-copilot",
+    name: "GitHub Copilot",
+    models: {
+      "gpt-5-mini": {
+        id: "gpt-5-mini",
+        name: "GPT-5 mini",
+        capabilities: { toolcall: true, reasoning: true },
+        variants: { low: {}, medium: {}, high: {} },
+        limit: { context: 264_000, output: 64_000 },
+        status: "active",
+      },
+      "claude-sonnet-5": {
+        id: "claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        capabilities: { toolcall: true, reasoning: true },
+        variants: { low: {}, medium: {}, high: {} },
+        limit: { context: 1_000_000, output: 64_000 },
+        status: "active",
+      },
+    },
+  },
+];
+
+const joinLines = (lines: readonly string[]): string => (lines.length === 0 ? "" : `${lines.join("\n")}\n`);
+
+/** Diff unifié d'un fichier, en-têtes de createTwoFilesPatch (bibliothèque diff) ; un seul bloc qui garde tout le contexte (opencode : 4 lignes, puis trimDiff). */
+export function unifiedDiff(file: string, before: string, after: string): string {
+  const header = `Index: ${file}\n===================================================================\n--- ${file}\n+++ ${file}\n`;
+  const ops = lineDiff(before, after);
+  if (ops.every((op) => op.op === " ")) return header;
+  const oldCount = ops.filter((op) => op.op !== "+").length;
+  const newCount = ops.filter((op) => op.op !== "-").length;
+  return `${header}@@ -${oldCount === 0 ? 0 : 1},${oldCount} +${newCount === 0 ? 0 : 1},${newCount} @@\n${ops.map((op) => `${op.op}${op.line}`).join("\n")}\n`;
+}
+
+export type PatchHunk =
+  | { type: "add"; path: string; content: string }
+  | { type: "delete"; path: string }
+  | { type: "update"; path: string; movePath?: string; from: string; to: string };
+
+/** Texte d'apply_patch (patch/index.ts:70-240) ; null si illisible. Mise à jour : lignes « » et « - » avant, « » et « + » après. */
+export function parseApplyPatch(text: string): PatchHunk[] | null {
+  const lines = text.replaceAll("\r\n", "\n").split("\n");
+  const begin = lines.findIndex((line) => line.trim() === "*** Begin Patch");
+  const end = lines.findIndex((line) => line.trim() === "*** End Patch");
+  if (begin === -1 || end <= begin) return null;
+  const header = (line: string | undefined, prefix: string) => (line?.startsWith(prefix) ? line.slice(prefix.length).trim() : "");
+  const hunks: PatchHunk[] = [];
+  let i = begin + 1;
+  while (i < end) {
+    const line = lines[i] ?? "";
+    const added = header(line, "*** Add File:");
+    const deleted = header(line, "*** Delete File:");
+    const updated = header(line, "*** Update File:");
+    i++;
+    if (added) {
+      const content: string[] = [];
+      while (i < end && lines[i]?.startsWith("+")) content.push((lines[i++] ?? "").slice(1));
+      hunks.push({ type: "add", path: added, content: joinLines(content) });
+    } else if (deleted) {
+      hunks.push({ type: "delete", path: deleted });
+    } else if (updated) {
+      const movePath = header(lines[i], "*** Move to:");
+      if (movePath) i++;
+      const from: string[] = [];
+      const to: string[] = [];
+      for (; i < end && (!lines[i]?.startsWith("***") || lines[i] === "*** End of File"); i++) {
+        const change = lines[i] ?? "";
+        if (change.startsWith("@@") || change === "*** End of File") continue;
+        const op = change[0] ?? " ";
+        if (op !== " " && op !== "-" && op !== "+") return null;
+        if (op !== "+") from.push(change.slice(1));
+        if (op !== "-") to.push(change.slice(1));
+      }
+      hunks.push({ type: "update", path: updated, ...(movePath ? { movePath } : {}), from: joinLines(from), to: joinLines(to) });
+    } else if (line.trim() !== "") {
+      return null;
+    }
+  }
+  return hunks.length > 0 ? hunks : null;
+}
+
+/**
+ * Métadonnées d'une demande de modification quand le script n'en donne pas. edit et write (tool/edit.ts:102-110, tool/write.ts:54-62) :
+ * {filepath absolu, diff}. apply_patch (tool/apply_patch.ts:59-215) : {filepath (chemins relatifs joints par « , »), diff de tous les
+ * fichiers, files[] {filePath, relativePath, type add|update|delete|move, patch, additions, deletions, movePath}} ; suppression :
+ * deletions = lignes du contenu supprimé. Dossier de travail = dossier de la session. Mesure MX en parallèle : l'intégrateur
+ * alignera cette forme sur execution/mesures/MX1.md.
+ */
+export function editMetadata(tool: string, directory: string, changes: readonly EditChange[]): Record<string, unknown> {
+  if (tool !== "apply_patch") {
+    const [change] = changes;
+    return change ? { filepath: change.filePath, diff: unifiedDiff(change.filePath, change.before, change.after) } : {};
+  }
+  const files = changes.map((change) => {
+    const ops = lineDiff(change.before, change.after);
+    return {
+      filePath: change.filePath,
+      relativePath: path.posix.relative(directory, change.movePath ?? change.filePath),
+      type: change.type,
+      patch: unifiedDiff(change.filePath, change.before, change.after),
+      additions: change.type === "delete" ? 0 : ops.filter((op) => op.op === "+").length,
+      deletions: change.type === "delete" ? change.before.split("\n").length : ops.filter((op) => op.op === "-").length,
+      ...(change.movePath ? { movePath: change.movePath } : {}),
+    };
+  });
+  return {
+    filepath: changes.map((change) => path.posix.relative(directory, change.filePath)).join(", "),
+    diff: files.map((file) => `${file.patch}\n`).join(""),
+    files,
+  };
 }
 
 function parseRules(value: unknown): PermissionRule[] | null {
@@ -315,6 +623,24 @@ export class FakeOpencode {
   readonly #waiters = new Set<Waiter>();
   /** Instances chargées (instance-store.ts) : dossiers des requêtes d'instance et des sessions, retirés à leur libération. */
   readonly #instances = new Set<string>();
+  /** Configuration globale (GET /global/config), fusionnée par PATCH. */
+  globalConfig: Record<string, unknown>;
+  /** PATCH /global/config reçus, dans l'ordre : corps, et changement effectif (qui libère toutes les instances en tâche de fond). */
+  readonly globalConfigPatches: Array<{ body: Record<string, unknown>; changed: boolean }> = [];
+  /** GET /config/providers : une IA `available: false` n'y figure pas. */
+  providers: FakeProvider[] = defaultProviders();
+  /** Champ « default » de GET /config/providers : IA par défaut de chaque fournisseur. */
+  defaultModels: Record<string, string> = { "github-copilot": "gpt-5-mini" };
+  /** Contenus connus (chemins absolus) : état « avant » des métadonnées edit, write et apply_patch, mis à jour par chaque outil terminé. */
+  readonly files = new Map<string, string>();
+  #defaultAgents: FakeAgent[] | null = null;
+  readonly #agents = new Map<string, FakeAgent[]>();
+  #defaultCommands: FakeCommand[] = [];
+  readonly #commands = new Map<string, FakeCommand[]>();
+  readonly #todos = new Map<string, FakeTodo[]>();
+  /** Diffs par « session » ou « session/message ». */
+  readonly #diffs = new Map<string, FakeFileDiff[]>();
+  readonly #questions = new Map<string, { info: FakeQuestionRequest; directory: string }>();
 
   constructor(options: FakeOpencodeOptions = {}) {
     this.#username = options.username ?? "opencode";
@@ -324,6 +650,7 @@ export class FakeOpencode {
     this.version = options.version ?? "1.18.30";
     this.#heartbeatMs = options.heartbeatMs ?? 10_000;
     this.syncTwins = options.syncTwins ?? true;
+    this.globalConfig = jsonClone(options.config ?? DEFAULT_CONFIG);
   }
 
   get url(): string {
@@ -331,24 +658,12 @@ export class FakeOpencode {
   }
 
   async start(): Promise<string> {
-    // Port rendu par le système, sauf un port que fetch refuse (FETCH_BLOCKED_PORTS) : gardé ouvert, pour que le système en rende
-    // un autre, puis libéré.
-    const refused: http.Server[] = [];
-    let server = await this.#listen();
-    while (FETCH_BLOCKED_PORTS.has((server.address() as AddressInfo).port)) {
-      refused.push(server);
-      server = await this.#listen();
-    }
-    await Promise.all(refused.map((blocked) => new Promise<void>((resolve) => blocked.close(() => resolve()))));
-    this.#server = server;
-    this.#url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    return this.#url;
-  }
-
-  async #listen(): Promise<http.Server> {
+    // Port rendu par le système, jamais un port que fetch refuse (listenFetchable).
     const server = http.createServer((req, res) => this.#receive(req, res));
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    return server;
+    const port = await listenFetchable(server, "127.0.0.1");
+    this.#server = server;
+    this.#url = `http://127.0.0.1:${port}`;
+    return this.#url;
   }
 
   async close(): Promise<void> {
@@ -396,6 +711,70 @@ export class FakeOpencode {
    */
   settled(sessionID: string): Promise<void> {
     return this.#runs.get(sessionID)?.done ?? Promise.resolve();
+  }
+
+  /** Agents de GET /agent dans ce dossier : liste propre au dossier, sinon liste par défaut, sinon agents natifs de la configuration globale. */
+  agents(directory: string = this.directory): FakeAgent[] {
+    return this.#agents.get(directory) ?? this.#defaultAgents ?? nativeAgents(this.globalConfig.permission);
+  }
+
+  /** Agents servis dans `directory` ; sans dossier : dans tous les dossiers qui n'ont pas de liste propre. */
+  setAgents(agents: FakeAgent[], directory?: string): void {
+    if (directory === undefined) this.#defaultAgents = jsonClone(agents);
+    else this.#agents.set(directory, jsonClone(agents));
+  }
+
+  /** Raccourcis de GET /command dans ce dossier : liste propre au dossier, sinon liste par défaut (vide). */
+  commands(directory: string = this.directory): FakeCommand[] {
+    return this.#commands.get(directory) ?? this.#defaultCommands;
+  }
+
+  /** Raccourcis servis dans `directory` ; sans dossier : dans tous les dossiers qui n'ont pas de liste propre. */
+  setCommands(commands: FakeCommand[], directory?: string): void {
+    if (directory === undefined) this.#defaultCommands = jsonClone(commands);
+    else this.#commands.set(directory, jsonClone(commands));
+  }
+
+  todos(sessionID: string): FakeTodo[] {
+    return this.#todos.get(sessionID) ?? [];
+  }
+
+  /** Liste de tâches de la session (outil todowrite) : servie par GET /session/:id/todo, annoncée par todo.updated. */
+  setTodos(sessionID: string, todos: FakeTodo[]): void {
+    this.#todos.set(sessionID, jsonClone(todos));
+    this.#emitFor(sessionID, "todo.updated", { sessionID, todos });
+  }
+
+  /** Diff servi par GET /session/:id/diff, pour toute la session ou pour l'un de ses messages (`messageID`). */
+  setDiff(sessionID: string, diffs: FakeFileDiff[], messageID?: string): void {
+    this.#diffs.set(messageID ? `${sessionID}/${messageID}` : sessionID, jsonClone(diffs));
+  }
+
+  /** Question posée à l'utilisateur (outil question) : question.asked, listée par GET /question dans son dossier jusqu'à la réponse ou au refus. */
+  askQuestion(sessionID: string, questions: Array<Record<string, unknown>>, tool?: { messageID: string; callID: string }): FakeQuestionRequest {
+    const info: FakeQuestionRequest = { id: createId("que"), sessionID, questions: jsonClone(questions), ...(tool ? { tool } : {}) };
+    this.#questions.set(info.id, { info, directory: this.#directoryOf(sessionID) });
+    this.#emitFor(sessionID, "question.asked", { ...info });
+    return info;
+  }
+
+  pendingQuestions(): FakeQuestionRequest[] {
+    return [...this.#questions.values()].map((entry) => entry.info);
+  }
+
+  /**
+   * F-e, F-f : outils envoyés au modèle à la prochaine étape de la session (session/llm/request.ts:208-214) : outils intégrés de l'IA,
+   * moins ceux dont la dernière règle (agent puis session) est « * deny ». Agent : `agent`, sinon celui de la session, sinon build ;
+   * IA : `modelID`, sinon celle de la session, sinon l'IA par défaut du faux. Liste triée, comme la mesure M2.
+   */
+  toolsFor(sessionID: string, options: { modelID?: string; agent?: string } = {}): string[] {
+    const session = this.#sessions.get(sessionID);
+    if (!session) throw new Error(`session inconnue du faux opencode : ${sessionID}`);
+    const agentName = options.agent ?? session.agent ?? "build";
+    const agent = this.agents(session.directory).find((candidate) => candidate.name === agentName);
+    const tools = builtinTools(options.modelID ?? session.model?.id ?? DEFAULT_MODEL.modelID);
+    const disabled = disabledTools(tools, [...(agent?.permission ?? []), ...(session.permission ?? [])]);
+    return tools.filter((tool) => !disabled.has(tool)).sort();
   }
 
   /** Diffuse un événement ; identifiant horodaté si absent ; jumeau « sync » pour un événement durable. */
@@ -566,6 +945,22 @@ export class FakeOpencode {
 
     if (is("GET", "global", "health")) return json(200, { healthy: true, version: this.version });
     if (is("GET", "global", "event")) return this.#openStream(res);
+    if (is("GET", "global", "config")) return json(200, this.globalConfig);
+    // Fusion puis réponse ; configuration changée : toutes les instances libérées puis global.disposed, en tâche de fond (handlers/global.ts:78-82).
+    if (is("PATCH", "global", "config")) {
+      if (!isRecord(body)) return bad();
+      const next = mergeDeep(this.globalConfig, body);
+      const changed = JSON.stringify(next) !== JSON.stringify(this.globalConfig);
+      this.globalConfigPatches.push({ body: jsonClone(body), changed });
+      this.globalConfig = next;
+      json(200, next);
+      if (changed) {
+        setImmediate(() => {
+          if (!this.#closed) this.emitGlobalDisposed({ resetInstances: true });
+        });
+      }
+      return;
+    }
     // Libération de toutes les instances avant la réponse (handlers/global.ts:84-87).
     if (is("POST", "global", "dispose")) {
       this.emitGlobalDisposed({ resetInstances: true });
@@ -576,6 +971,34 @@ export class FakeOpencode {
       json(200, true);
       this.#disposeInstance(directory, true);
       return;
+    }
+    if (is("GET", "agent")) return json(200, this.agents(directory));
+    if (is("GET", "command")) return json(200, this.commands(directory));
+    // IA refusée par la politique de l'organisation : absente de la réponse, comme le fait le plugin github-copilot d'opencode.
+    if (is("GET", "config", "providers")) {
+      const providers = this.providers.map((provider) => ({
+        ...provider,
+        models: Object.fromEntries(
+          Object.entries(provider.models)
+            .filter(([, model]) => model.available !== false)
+            .map(([modelID, model]) => [modelID, Object.fromEntries(Object.entries(model).filter(([key]) => key !== "available"))]),
+        ),
+      }));
+      return json(200, { providers, default: this.defaultModels });
+    }
+    if (is("GET", "experimental", "session")) return this.#listSessions(res, url, directory);
+    if (is("GET", "question")) return json(200, [...this.#questions.values()].filter((entry) => entry.directory === directory).map((entry) => entry.info));
+    if (is("POST", "question", "*", "reply") || is("POST", "question", "*", "reject")) {
+      const replying = seg[2] === "reply";
+      const answers = input.answers;
+      if (replying && !(Array.isArray(answers) && answers.every((answer) => Array.isArray(answer) && answer.every((label) => typeof label === "string")))) return bad();
+      const entry = this.#questions.get(id);
+      // Forme supposée sur le modèle de PermissionNotFoundError (errors.ts:125-141), non capturée.
+      if (!entry || entry.directory !== directory) return json(404, { _tag: "QuestionNotFoundError", requestID: id, message: `Question request not found: ${id}` });
+      this.#questions.delete(id);
+      const { sessionID } = entry.info;
+      this.#emitFor(sessionID, replying ? "question.replied" : "question.rejected", replying ? { sessionID, requestID: id, answers } : { sessionID, requestID: id });
+      return json(200, true);
     }
     // Demandes et états sont propres à l'instance du répertoire demandé (InstanceState).
     if (is("GET", "permission")) return json(200, [...this.#pending.values()].filter((e) => e.directory === directory).map((e) => e.info));
@@ -621,6 +1044,13 @@ export class FakeOpencode {
       return json(200, true);
     }
     if (is("GET", "session", "*", "children")) return json(200, [...this.#sessions.values()].filter((s) => s.parentID === id));
+    if (is("GET", "session", "*", "todo")) return json(200, this.todos(id));
+    if (is("GET", "session", "*", "diff")) {
+      const messageID = url.searchParams.get("messageID");
+      return json(200, this.#diffs.get(messageID ? `${id}/${messageID}` : id) ?? []);
+    }
+    if (is("POST", "session", "*", "command")) return this.#command(res, session, input);
+    if (is("POST", "session", "*", "summarize")) return this.#summarize(res, session, input);
     if (is("GET", "session", "*", "message")) return json(200, this.messages(id));
     if (is("GET", "session", "*", "message", "*")) {
       const message = this.messages(id).find((m) => m.info.id === seg[3]);
@@ -833,6 +1263,88 @@ export class FakeOpencode {
     return { user, run: this.#enqueue(session, user, this.#scripts.get(session.id)?.shift() ?? this.defaultTurn) };
   }
 
+  /**
+   * POST /session/:id/command (handlers/session.ts:331-339) : consigne du raccourci (« $ARGUMENTS » remplacé) envoyée comme un
+   * message, agent et IA du raccourci d'abord ; command.executed après le tour, puis réponse d'assistant comme /message. Raccourci
+   * inconnu ou corps invalide : 400.
+   */
+  #command(res: http.ServerResponse, session: FakeSession, input: Record<string, unknown>): void {
+    const command = typeof input.command === "string" ? this.commands(session.directory).find((candidate) => candidate.name === input.command) : undefined;
+    if (!command || typeof input.arguments !== "string") return sendJson(res, 400, { _tag: "BadRequest" });
+    const args = input.arguments;
+    const modelKey = command.model ?? (typeof input.model === "string" ? input.model : undefined);
+    const slash = modelKey?.indexOf("/") ?? -1;
+    const { user, run } = this.#prompt(session, {
+      agent: command.agent ?? (typeof input.agent === "string" ? input.agent : "build"),
+      ...(modelKey && slash > 0 ? { model: { providerID: modelKey.slice(0, slash), modelID: modelKey.slice(slash + 1) } } : {}),
+      ...(typeof input.variant === "string" ? { variant: input.variant } : {}),
+      parts: [{ type: "text", text: command.template.replaceAll("$ARGUMENTS", args) }],
+    });
+    const answer = () => {
+      this.#emitFor(session.id, "command.executed", { name: command.name, sessionID: session.id, arguments: args, messageID: user.info.id });
+      sendJson(res, 200, run?.last ?? user);
+    };
+    if (!run) return answer();
+    void run.done.then(answer);
+  }
+
+  /**
+   * POST /session/:id/summarize (handlers/session.ts:273-293) : message de compaction (partie « compaction », agent du dernier message
+   * de l'utilisateur), tour de résumé de l'agent « compaction » (summary: true ; script de la session s'il y en a un),
+   * session.compacted, puis true.
+   */
+  #summarize(res: http.ServerResponse, session: FakeSession, input: Record<string, unknown>): void {
+    if (typeof input.providerID !== "string" || typeof input.modelID !== "string" || (input.auto !== undefined && typeof input.auto !== "boolean")) {
+      return sendJson(res, 400, { _tag: "BadRequest" });
+    }
+    const model: ModelRef = { providerID: input.providerID, modelID: input.modelID };
+    const last = this.messages(session.id).findLast((message) => message.info.role === "user")?.info as OcUserMessage | undefined;
+    const user: OcMessageWithParts = {
+      info: { id: createId("msg"), sessionID: session.id, role: "user", time: { created: Date.now() }, agent: last?.agent ?? "build", model },
+      parts: [],
+    };
+    this.#putMessage(user);
+    this.#putPart(user, { type: "compaction", auto: input.auto === true });
+    const run = this.#enqueue(session, user, { ...(this.#scripts.get(session.id)?.shift() ?? SUMMARY_TURN), agent: "compaction", summary: true });
+    void run.done.then(() => {
+      if (this.#sessions.has(session.id)) this.#emitFor(session.id, "session.compacted", { sessionID: session.id });
+      sendJson(res, 200, true);
+    });
+  }
+
+  /**
+   * GET /experimental/session (handlers/experimental.ts:138-157, Session.listGlobal) : sessions de tous les dossiers (ou du dossier
+   * demandé), les plus récemment modifiées d'abord ; racines seules, bornes de temps, recherche dans le titre, archivées ; x-next-cursor
+   * quand la page est pleine. Projet non modélisé (null, permis par le schéma).
+   */
+  #listSessions(res: http.ServerResponse, url: URL, directory: string): void {
+    const query = url.searchParams;
+    const numberOf = (key: string): number | undefined | null => {
+      const raw = query.get(key);
+      if (raw === null) return undefined;
+      const value = Number(raw);
+      return raw.trim() !== "" && Number.isFinite(value) ? value : null;
+    };
+    const rawLimit = numberOf("limit");
+    const start = numberOf("start");
+    const cursor = numberOf("cursor");
+    if (rawLimit === null || start === null || cursor === null || (rawLimit !== undefined && rawLimit < 0)) return sendJson(res, 400, { _tag: "BadRequest" });
+    const limit = rawLimit ?? 100;
+    const search = query.get("search")?.toLowerCase();
+    const list = [...this.#sessions.values()]
+      .filter((s) => !query.has("directory") || s.directory === directory)
+      .filter((s) => query.get("roots") !== "true" || !s.parentID)
+      .filter((s) => start === undefined || s.time.updated >= start)
+      .filter((s) => cursor === undefined || s.time.updated < cursor)
+      .filter((s) => !search || s.title.toLowerCase().includes(search))
+      .filter((s) => query.get("archived") === "true" || s.time.archived === undefined)
+      .sort((a, b) => b.time.updated - a.time.updated || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    const page = list.slice(0, limit);
+    const last = page.at(-1);
+    if (list.length > limit && last) res.setHeader("x-next-cursor", String(last.time.updated));
+    sendJson(res, 200, page.map((session) => ({ ...session, project: null })));
+  }
+
   #newRun(sessionID: string): Run {
     const { promise, resolve } = Promise.withResolvers<void>();
     const run: Run = {
@@ -906,7 +1418,7 @@ export class FakeOpencode {
   #newAssistant(session: FakeSession, user: OcMessageWithParts, turn: FakeTurnScript): OcMessageWithParts {
     const userInfo = user.info as OcUserMessage;
     const agent = turn.agent ?? userInfo.agent;
-    const info: OcAssistantMessage & { path: { cwd: string; root: string } } = {
+    const info: OcAssistantMessage & { path: { cwd: string; root: string }; summary?: boolean } = {
       id: createId("msg"),
       sessionID: session.id,
       role: "assistant",
@@ -921,6 +1433,7 @@ export class FakeOpencode {
       tokens: fullTokens(),
       // Variante du message utilisateur (prompt.ts:1192), absente sans variante.
       ...(userInfo.model.variant ? { variant: userInfo.model.variant } : {}),
+      ...(turn.summary ? { summary: true } : {}),
     };
     const message: OcMessageWithParts = { info, parts: [] };
     this.#putMessage(message);
@@ -1016,6 +1529,8 @@ export class FakeOpencode {
     const approved = this.#approvedIn(session.directory);
     const verdicts = ask ? ask.patterns.map((pattern) => evaluateRules(ask.permission, pattern, rules, approved).action) : [];
     const decision = verdicts.includes("deny") ? "deny" : verdicts.includes("ask") ? "ask" : "allow";
+    // edit, write, apply_patch : fichiers touchés, pour les métadonnées par défaut et les contenus connus après l'outil.
+    const changes = this.#editChanges(session, tool);
     let answer: Promise<Outcome | null> = Promise.resolve({ reply: "once" });
     if (ask && decision === "ask") {
       const { promise, resolve } = Promise.withResolvers<Outcome>();
@@ -1024,7 +1539,7 @@ export class FakeOpencode {
         sessionID: session.id,
         permission: ask.permission,
         patterns: [...ask.patterns],
-        metadata: ask.metadata ?? {},
+        metadata: ask.metadata ?? (changes ? editMetadata(tool.tool, session.directory, changes) : {}),
         always: ask.always ?? ["*"],
         ...(agentScope ? {} : { tool: { messageID: message.info.id, callID } }),
       };
@@ -1076,6 +1591,7 @@ export class FakeOpencode {
     } else if (!(await this.#live(run, stepMs))) return "blocked";
     const title = typeof tool.input.description === "string" ? tool.input.description : tool.tool;
     this.#putPart(message, { ...part, state: { status: "completed", input: tool.input, output, title, metadata, time: { start, end: Date.now() } } });
+    if (changes) this.#applyEdit(changes);
     return "ok";
   }
 
@@ -1102,7 +1618,8 @@ export class FakeOpencode {
         parentID: parent.id,
         title: `${description} (@${spec.agent} subagent)`,
         agent: spec.agent,
-        permission: deriveChildRules(parent.permission ?? [], spec.agentRules ?? []),
+        // Règles de l'agent : scriptées, sinon celles de l'agent du dossier (GET /agent), sinon aucune.
+        permission: deriveChildRules(parent.permission ?? [], spec.agentRules ?? this.agents(parent.directory).find((agent) => agent.name === spec.agent)?.permission ?? []),
       });
     // IA fixée par l'agent cible : sans variante ; sinon IA et variante du message qui délègue (task.ts:196-215).
     const childModel: ModelRef = spec.model ? { providerID: spec.model.providerID, modelID: spec.model.modelID } : model;
@@ -1257,6 +1774,55 @@ export class FakeOpencode {
     this.#child(entry.session, entry.tool, entry.stepMs, entry.model, null).catch((err: unknown) => this.failures.push(err));
   }
 
+  /**
+   * Fichiers touchés par un outil edit, write ou apply_patch, chemins résolus depuis le dossier de la session ; null pour un autre outil
+   * ou une entrée illisible. Fichier inconnu du faux (`files`) : son contenu est supposé égal au texte remplacé (oldString, lignes « »
+   * et « - » du bloc), ou vide pour write et une suppression.
+   */
+  #editChanges(session: FakeSession, tool: FakeToolScript): EditChange[] | null {
+    const input = tool.input;
+    const absolute = (file: string) => path.posix.resolve(session.directory, file);
+    if (tool.tool === "write" || tool.tool === "edit") {
+      if (typeof input.filePath !== "string" || input.filePath === "") return null;
+      const filePath = absolute(input.filePath);
+      const known = this.files.get(filePath);
+      if (tool.tool === "write") {
+        return typeof input.content === "string" ? [{ type: known === undefined ? "add" : "update", filePath, before: known ?? "", after: input.content }] : null;
+      }
+      const { oldString, newString } = input;
+      if (typeof oldString !== "string" || typeof newString !== "string") return null;
+      const before = known ?? oldString;
+      // Remplacement par fonction : « $& » ou « $1 » d'un texte de test restent littéraux.
+      const after = input.replaceAll === true ? before.replaceAll(oldString, () => newString) : before.replace(oldString, () => newString);
+      return [{ type: "update", filePath, before, after }];
+    }
+    if (tool.tool !== "apply_patch" || typeof input.patchText !== "string") return null;
+    const hunks = parseApplyPatch(input.patchText);
+    if (!hunks) return null;
+    return hunks.map((hunk): EditChange => {
+      const filePath = absolute(hunk.path);
+      const known = this.files.get(filePath);
+      if (hunk.type === "add") return { type: "add", filePath, before: "", after: hunk.content };
+      if (hunk.type === "delete") return { type: "delete", filePath, before: known ?? "", after: "" };
+      const base = known?.includes(hunk.from) ? known : undefined;
+      return {
+        type: hunk.movePath ? "move" : "update",
+        filePath,
+        ...(hunk.movePath ? { movePath: absolute(hunk.movePath) } : {}),
+        before: base ?? hunk.from,
+        after: base?.replace(hunk.from, () => hunk.to) ?? hunk.to,
+      };
+    });
+  }
+
+  /** Contenus connus après un outil terminé : fichier écrit, déplacé (ancien chemin retiré) ou supprimé. */
+  #applyEdit(changes: readonly EditChange[]): void {
+    for (const change of changes) {
+      if (change.type === "move" || change.type === "delete") this.files.delete(change.filePath);
+      if (change.type !== "delete") this.files.set(change.movePath ?? change.filePath, change.after);
+    }
+  }
+
   /** Libération d'une instance : remise à zéro facultative, puis server.instance.disposed. */
   #disposeInstance(directory: string, reset: boolean): void {
     if (reset) this.#resetInstances(directory);
@@ -1264,7 +1830,7 @@ export class FakeOpencode {
     this.emitInstanceDisposed(directory);
   }
 
-  /** Remise à zéro silencieuse d'une instance (de toutes sans `directory`) : tours coupés, demandes rejetées sans événement, états et accords vidés. */
+  /** Remise à zéro silencieuse d'une instance (de toutes sans `directory`) : tours coupés, demandes et questions rejetées sans événement, états et accords vidés. */
   #resetInstances(directory?: string): void {
     const inside = (sessionID: string) => directory === undefined || this.#directoryOf(sessionID) === directory;
     for (const run of [...this.#runs.values()]) {
@@ -1277,6 +1843,7 @@ export class FakeOpencode {
       this.#pending.delete(id);
       entry.settle({ reply: "reject" });
     }
+    for (const [id, entry] of [...this.#questions]) if (directory === undefined || entry.directory === directory) this.#questions.delete(id);
     for (const sessionID of [...this.#statuses.keys()]) if (inside(sessionID)) this.#statuses.delete(sessionID);
     if (directory === undefined) this.#approved.clear();
     else this.#approved.delete(directory);

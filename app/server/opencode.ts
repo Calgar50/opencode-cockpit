@@ -1,5 +1,6 @@
 // Client HTTP minimal du serveur opencode (API 1.18) : requêtes JSON et flux SSE global.
 import type { AppEnv } from "./env.ts";
+import { redactSecrets } from "./redact.ts";
 
 export interface OcTokens {
   total?: number;
@@ -127,13 +128,40 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     });
   });
 
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,39}$/;
+
+/**
+ * Message d'un échec du flux (« fetch failed » seul ne dit rien) : message de l'erreur, puis code et message de sa cause et de la
+ * cause de celle-ci (deux niveaux au plus). Masqué : `secrets` (mot de passe, en-tête), adresse à identifiants, en-tête
+ * Authorization ; 300 caractères au plus.
+ */
+export function describeNetworkError(err: unknown, secrets: readonly string[] = []): string {
+  const pieces: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; depth <= 2 && current !== undefined && current !== null; depth++) {
+    const record = typeof current === "object" ? (current as { message?: unknown; code?: unknown; cause?: unknown }) : { message: String(current) };
+    const code = typeof record.code === "string" && ERROR_CODE.test(record.code) ? record.code : "";
+    const message = typeof record.message === "string" ? record.message.trim() : "";
+    const piece = code && !message.includes(code) ? `${code}${message ? ` ${message}` : ""}` : message;
+    if (piece && !pieces.includes(piece)) pieces.push(piece);
+    current = record.cause;
+  }
+  let text = pieces.join(" : ") || "erreur inconnue";
+  for (const secret of secrets) if (secret.length >= 4) text = text.replaceAll(secret, "****");
+  return redactSecrets(text).slice(0, 300);
+}
+
 export class OpencodeClient {
   readonly baseUrl: string;
   readonly #authorization: string;
+  /** Valeurs masquées dans les messages d'erreur du flux (mot de passe, identifiants encodés). */
+  readonly #secrets: readonly string[];
 
   constructor(env: Pick<AppEnv, "opencodeUrl" | "opencodeUsername" | "opencodePassword">) {
     this.baseUrl = env.opencodeUrl;
-    this.#authorization = `Basic ${Buffer.from(`${env.opencodeUsername}:${env.opencodePassword}`).toString("base64")}`;
+    const encoded = Buffer.from(`${env.opencodeUsername}:${env.opencodePassword}`).toString("base64");
+    this.#authorization = `Basic ${encoded}`;
+    this.#secrets = [encoded, env.opencodePassword];
   }
 
   url(pathname: string, query?: Query, directory?: string): URL {
@@ -250,7 +278,8 @@ export class OpencodeClient {
           }
           onStatus("disconnected", "flux terminé par opencode");
         } catch (err) {
-          if (!stop.signal.aborted) onStatus("disconnected", (err as Error).message);
+          // Cause réseau comprise (ECONNREFUSED, ENOTFOUND, bad port…) : « fetch failed » seul ne permet aucun diagnostic.
+          if (!stop.signal.aborted) onStatus("disconnected", describeNetworkError(err, this.#secrets));
         } finally {
           clearTimeout(watchdog);
           stop.signal.removeEventListener("abort", abortAttempt);
