@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import { describe, it, type TestContext } from "node:test";
 import {
@@ -20,6 +22,7 @@ import {
   type FakeSession,
   type FakeToolScript,
   type FakeTurnScript,
+  FETCH_BLOCKED_PORTS,
   idTime,
   readCapture,
   type SyncPayload,
@@ -249,6 +252,40 @@ describe("faux opencode : transport", () => {
     assert.deepEqual(disposed.payload.properties, {});
     assert.deepEqual(await oc.request("GET", "/permission"), []);
     assert.deepEqual(await oc.request("GET", "/session/status"), {});
+  });
+
+  it("port d'écoute jamais refusé par fetch (« bad port ») : un port bloqué rendu par le système est gardé le temps d'en obtenir un autre, puis libéré", async (t) => {
+    // Liste conforme à Node : fetch refuse chaque port avant toute connexion (aucun paquet envoyé).
+    for (const port of FETCH_BLOCKED_PORTS) {
+      await assert.rejects(fetch(`http://127.0.0.1:${port}/global/health`), (err: unknown) => {
+        assert.ok(err instanceof TypeError && err.cause instanceof Error, `port ${port}`);
+        assert.equal(err.cause.message, "bad port", `port ${port}`);
+        return true;
+      });
+    }
+    // Premier serveur annoncé sur 10080, port bloqué : le faux doit en ouvrir un second avant de fermer le premier.
+    const create = http.createServer;
+    const servers: http.Server[] = [];
+    let heldOpen: boolean | undefined;
+    t.mock.method(http, "createServer", ((...args: unknown[]) => {
+      if (servers.length === 1) heldOpen = servers[0]?.listening;
+      const server = (create as (...params: unknown[]) => http.Server)(...args);
+      if (servers.length === 0) server.address = () => ({ address: "127.0.0.1", family: "IPv4", port: 10080 });
+      servers.push(server);
+      return server;
+    }) as typeof http.createServer);
+    // Un faux qui garderait le port bloqué ouvert ferait pendre le processus de test au lieu d'échouer.
+    t.after(() => {
+      for (const server of servers) if (server.listening) server.close();
+    });
+    const { fake, oc } = await startFake(t);
+    t.mock.restoreAll();
+    assert.equal(servers.length, 2);
+    assert.equal(heldOpen, true, "port bloqué gardé ouvert pendant le choix d'un autre");
+    assert.equal(servers[0]?.listening, false, "port bloqué libéré");
+    assert.equal(fake.url, `http://127.0.0.1:${(servers[1]?.address() as AddressInfo).port}`);
+    const events = await subscribe(t, oc);
+    assert.equal(events[0]?.payload.type, "server.connected");
   });
 });
 
@@ -1287,6 +1324,39 @@ describe("faux opencode : délégation et arrêts ciblés", () => {
     assert.equal(await oc.request("POST", `/session/${session.id}/abort`), true);
     // Au-delà de la pause du tour (300 ms) : le tour arrêté n'écrit plus rien.
     await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.deepEqual(trace(fake.emitted.slice(deleted + 1), { [session.id]: "s" }), [
+      "session.error:MessageAbortedError@s",
+      "session.status:idle@s",
+      "session.idle@s",
+      "session.status:idle@s",
+      "session.idle@s",
+    ]);
+    const writes = fake.emitted.slice(deleted).filter((w) => ["message.updated", "message.part.updated"].includes(w.payload.type) && props(w).sessionID === session.id);
+    assert.deepEqual(writes, [], "aucune écriture après session.deleted");
+    assert.deepEqual(await oc.request("GET", "/session/status"), {});
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("abort après le DELETE d'une session occupée avec une partie d'outil ouverte : true, ni message ni partie écrits après session.deleted, rien ensuite, failures vide", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc);
+    fake.script(session.id, { tools: [bash("git status")], followUp: { text: "Fait." } });
+    const since = fake.emitted.length;
+    assert.equal(await promptAsync(oc, session.id, "État du dépôt"), 204);
+    await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id, { since });
+    // Lue avant le DELETE, qui efface les messages avec la session : c'est bien une partie ouverte que l'arrêt trouvera.
+    const messages = await oc.request<OcMessageWithParts[]>("GET", `/session/${session.id}/message`);
+    assert.deepEqual(
+      messages.flatMap((m) => toolParts(m)).map((p) => [p.tool, p.state.status]),
+      [["bash", "running"]],
+    );
+    assert.equal(await oc.request("DELETE", `/session/${session.id}`), true);
+    const deleted = fake.emitted.findIndex((w) => w.payload.type === "session.deleted" && props(w).sessionID === session.id);
+    assert.ok(deleted >= since);
+    // Fin de la boucle du tour, relevée avant l'arrêt (qui retire le tour) : plus rien ne peut être écrit ensuite.
+    const done = fake.settled(session.id);
+    assert.equal(await oc.request("POST", `/session/${session.id}/abort`), true);
+    await within(done, "fin du tour arrêté");
     assert.deepEqual(trace(fake.emitted.slice(deleted + 1), { [session.id]: "s" }), [
       "session.error:MessageAbortedError@s",
       "session.status:idle@s",
