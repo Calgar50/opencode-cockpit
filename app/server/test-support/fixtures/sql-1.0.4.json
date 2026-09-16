@@ -1,5 +1,6 @@
 {
   "description": "Requêtes SQL des versions publiées du cockpit (app/server hors tests), relevées le 2026-09-15 en lecture seule sur les tags v1.0.2, v1.0.3 et v1.0.4 : les trois ensembles sont identiques. Rejouées dans l'ordre par migration5.test.ts sur une base en version 5 (compatibilité descendante I5), sans git en CI. Une requête à fragments est recopiée pour chacune de ses formes (filtres des Archives, coût moyen par demande, compteurs du diagnostic, résumé mensuel). Valeurs d'exemple sans secret ; marqueurs d'extrait de recherche remplacés par [ et ].",
+  "aReprendre": "Une version publiée après celle-ci (la 1.0.5 d'abord) s'ajoute au rebase : relever son SQL en lecture seule hors du dépôt (extraction d'app/server à son tag), ajouter les seules requêtes qui diffèrent, compléter « versions », et laisser « migrations » au nombre d'entrées de sa boucle de migration. Aucun appel à git dans les tests.",
   "versions": ["1.0.2", "1.0.3", "1.0.4"],
   "migrations": 3,
   "nonRejouees": [

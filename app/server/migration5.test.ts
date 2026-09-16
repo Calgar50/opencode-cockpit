@@ -1,5 +1,7 @@
 // Migration 5 (lot L2b) : schéma, montée des bases réelles, compatibilité descendante des versions publiées (I5), purge d'une
 // conversation (D-07), arbre des sessions, plancher et dépense d'une demande.
+// Versions couvertes : toutes celles publiées à l'écriture du paquet (1.0.2, 1.0.3, 1.0.4). La 1.0.5 ne l'était pas : ses requêtes
+// sont relevées dans la fixture au rebase (R105), avec la procédure écrite en tête de sql-1.0.4.json.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
