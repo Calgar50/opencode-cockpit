@@ -13,7 +13,17 @@ import tls from "node:tls";
 import { pathToFileURL } from "node:url";
 import { Hono } from "hono";
 import type { Logger } from "./log.ts";
-import { AUTH_TICKET_TTL_MS, AUTH_TICKETS_MAX, AuthTickets, attemptTicketLogin, authTicketMac, LoginLimiter } from "./security.ts";
+import {
+  AUTH_TICKET_CHALLENGES_MAX,
+  AUTH_TICKET_TTL_MS,
+  AUTH_TICKETS_MAX,
+  AuthTickets,
+  attemptTicketLogin,
+  authTicketMac,
+  authTicketRequestMac,
+  healthProof,
+  LoginLimiter,
+} from "./security.ts";
 import * as serverStart from "./server-start.ts";
 import { type ExecFileRunner, ensureServerCertificate } from "./tls.ts";
 
@@ -268,12 +278,15 @@ function request(port: number, method: string, pathname: string, headers: Record
 const setCookiesOf = (reply: Reply): string[] => reply.headers["set-cookie"] ?? [];
 const newChallenge = (): string => crypto.randomBytes(32).toString("hex");
 /** HMAC du jeton recalculé sans le code du cockpit (préfixes du contrat 1.0.5). */
-const tokenMac = (token: string, usage: "health-proof" | "auth-ticket", value: string): string =>
+const tokenMac = (token: string, usage: "health-proof" | "auth-ticket" | "auth-ticket-request", value: string): string =>
   crypto.createHmac("sha256", token).update(`opencode-cockpit/${usage}/v1\n${value}`).digest("hex");
+/** Demande de ticket signée par le jeton, comme les scripts : /api/health?challenge=<défi>&ticket=<MAC du défi>. */
+const ticketQuery = (challenge: string, token: string = TOKEN): string =>
+  `/api/health?challenge=${challenge}&ticket=${tokenMac(token, "auth-ticket-request", challenge)}`;
 
 async function ticketLink(port: number): Promise<string> {
   const challenge = newChallenge();
-  const health = await request(port, "GET", `/api/health?challenge=${challenge}&ticket=1`);
+  const health = await request(port, "GET", ticketQuery(challenge));
   assert.equal(health.status, 200, health.body);
   const body = JSON.parse(health.body) as { proof?: string | null; ticket?: string };
   assert.equal(body.proof, tokenMac(TOKEN, "health-proof", challenge));
@@ -583,7 +596,7 @@ describe("mode HTTP de bout en bout (main.ts réel)", () => {
     assert.equal((await request(port, "GET", "/api/health")).status, 200);
   });
 
-  it("/api/health : schéma http ; preuve seulement avec un défi valide ; ticket seulement avec un défi valide et ticket=1", async () => {
+  it("/api/health : schéma http ; preuve seulement avec un défi valide ; ticket seulement avec un défi valide et sa demande signée par le jeton", async () => {
     const plain = await request(port, "GET", "/api/health");
     assert.deepEqual(JSON.parse(plain.body), { ok: true, version: VERSION, scheme: "http" });
     const challenge = newChallenge();
@@ -594,14 +607,63 @@ describe("mode HTTP de bout en bout (main.ts réel)", () => {
       proof: tokenMac(TOKEN, "health-proof", challenge),
     });
     assert.deepEqual(JSON.parse((await request(port, "GET", "/api/health?ticket=1")).body), { ok: true, version: VERSION, scheme: "http" });
-    const withTicket = JSON.parse((await request(port, "GET", `/api/health?challenge=${challenge}&ticket=1`)).body) as Record<string, unknown>;
+    const withTicket = JSON.parse((await request(port, "GET", ticketQuery(challenge))).body) as Record<string, unknown>;
     assert.match(String(withTicket.ticket), /^[0-9a-f]{64}$/);
     assert.equal(withTicket.proof, tokenMac(TOKEN, "health-proof", challenge));
     for (const invalid of [challenge.toUpperCase(), challenge.slice(1), `${challenge}0`, "g".repeat(64), ""]) {
-      const res = await request(port, "GET", `/api/health?challenge=${invalid}&ticket=1`);
+      const res = await request(port, "GET", `/api/health?challenge=${invalid}&ticket=${tokenMac(TOKEN, "auth-ticket-request", invalid)}`);
       assert.equal(res.status, 400, invalid);
       assert.deepEqual(JSON.parse(res.body), { error: "invalid", message: "challenge : 64 caractères hexadécimaux attendus." });
     }
+  });
+
+  it("demande de ticket sans preuve du jeton : 403, aucun ticket, aucun ticket en attente évincé (page web, conteneur opencode)", async () => {
+    // Le script obtient son ticket, puis un appelant qui ne connaît pas le jeton demande plus de AUTH_TICKETS_MAX tickets.
+    const link = await ticketLink(port);
+    const challenge = newChallenge();
+    const other = newChallenge();
+    const unsigned = [
+      "1",
+      "0".repeat(64),
+      tokenMac(TOKEN, "auth-ticket-request", challenge).toUpperCase(),
+      tokenMac("4d".repeat(32), "auth-ticket-request", challenge),
+      tokenMac(TOKEN, "auth-ticket-request", other),
+      tokenMac(TOKEN, "health-proof", challenge),
+      tokenMac(TOKEN, "auth-ticket", challenge),
+      `${tokenMac(TOKEN, "auth-ticket-request", challenge)}0`,
+      "",
+    ];
+    for (let round = 0; round < 2; round++) {
+      for (const ticket of unsigned) {
+        const res = await request(port, "GET", `/api/health?challenge=${challenge}&ticket=${ticket}`);
+        assert.equal(res.status, 403, ticket);
+        const body = JSON.parse(res.body) as Record<string, unknown>;
+        assert.deepEqual(body, { error: "ticket-refused", message: "Ticket de connexion refusé : demande non signée par le jeton." }, ticket);
+      }
+    }
+    assert.ok(unsigned.length * 2 > AUTH_TICKETS_MAX);
+    const opened = await request(port, "GET", link, { "sec-fetch-site": "none", "sec-fetch-dest": "document" });
+    assert.equal(opened.status, 303);
+    assert.equal(opened.headers.location, "/");
+    assert.match(setCookiesOf(opened)[0] ?? "", /^__Host-cockpit_session=/);
+  });
+
+  it("demande de ticket rejouée (défi et signature déjà servis, lus sur la boucle locale) : 403, rien d'émis ni d'évincé", async () => {
+    const challenge = newChallenge();
+    const first = await request(port, "GET", ticketQuery(challenge));
+    assert.equal(first.status, 200, first.body);
+    const ticket = (JSON.parse(first.body) as { ticket?: string }).ticket ?? "";
+    assert.match(ticket, /^[0-9a-f]{64}$/);
+    for (let i = 0; i <= AUTH_TICKETS_MAX; i++) {
+      const replay = await request(port, "GET", ticketQuery(challenge));
+      assert.equal(replay.status, 403);
+      assert.deepEqual(JSON.parse(replay.body), { error: "ticket-refused", message: "Ticket de connexion refusé : défi déjà utilisé." });
+    }
+    const opened = await request(port, "GET", `/auth?k=${ticket}.${tokenMac(TOKEN, "auth-ticket", ticket)}`, { "sec-fetch-site": "none", "sec-fetch-dest": "document" });
+    assert.equal(opened.status, 303);
+    assert.equal(opened.headers.location, "/");
+    // Un nouveau défi signé obtient toujours un ticket.
+    assert.equal((await request(port, "GET", ticketQuery(newChallenge()))).status, 200);
   });
 
   it("K1-4 login-disabled : POST /api/login refusé avant le corps et le limiteur ; 30 appels n'épuisent pas le limiteur", async () => {
@@ -650,7 +712,7 @@ describe("mode HTTP de bout en bout (main.ts réel)", () => {
     assert.deepEqual(setCookiesOf(legacy), []);
 
     // Signature d'un autre jeton : refusée, le ticket reste utilisable avec la bonne signature.
-    const health = JSON.parse((await request(port, "GET", `/api/health?challenge=${newChallenge()}&ticket=1`)).body) as { ticket: string };
+    const health = JSON.parse((await request(port, "GET", ticketQuery(newChallenge()))).body) as { ticket: string };
     const forged = await request(port, "GET", `/auth?k=${health.ticket}.${tokenMac("4d".repeat(32), "auth-ticket", health.ticket)}`);
     assert.equal(forged.headers.location, "/?auth=failed");
     const genuine = await request(port, "GET", `/auth?k=${health.ticket}.${tokenMac(TOKEN, "auth-ticket", health.ticket)}`);
@@ -732,9 +794,12 @@ describe("jeton hors du format généré : aucune preuve, jamais de ticket", () 
     if (run) await stop(run);
   });
 
-  it("proof: null avec un défi valide, sans ticket même avec ticket=1 ; défi invalide toujours refusé", async () => {
-    const body = JSON.parse((await request(port, "GET", `/api/health?challenge=${newChallenge()}&ticket=1`)).body) as Record<string, unknown>;
-    assert.deepEqual(body, { ok: true, version: VERSION, scheme: "http", proof: null });
+  it("proof: null avec un défi valide, sans ticket même avec une demande signée par ce jeton ; défi invalide toujours refusé", async () => {
+    const challenge = newChallenge();
+    for (const ticket of ["1", tokenMac("t".repeat(40), "auth-ticket-request", challenge)]) {
+      const body = JSON.parse((await request(port, "GET", `/api/health?challenge=${challenge}&ticket=${ticket}`)).body) as Record<string, unknown>;
+      assert.deepEqual(body, { ok: true, version: VERSION, scheme: "http", proof: null }, ticket);
+    }
     assert.equal((await request(port, "GET", "/api/health?challenge=abc")).status, 400);
   });
 });
@@ -764,6 +829,49 @@ describe("tickets de connexion à usage unique (AuthTickets, attemptTicketLogin)
     assert.equal(tickets.consume(third), false);
     assert.equal(tickets.consume("0".repeat(64)), false);
     assert.notEqual(tickets.issue(), tickets.issue());
+  });
+
+  it("demande de ticket : signée par le jeton seulement ; défi rejoué refusé ; aucune demande refusée n'émet ni n'évince", () => {
+    const token = "3c".repeat(32);
+    const tickets = new AuthTickets({ now: manualClock().now });
+    const challenge = "a1".repeat(32);
+    const kept = tickets.request(token, challenge, authTicketRequestMac(token, challenge));
+    assert.equal(kept.ok, true);
+    const ticket = kept.ok ? kept.ticket : "";
+    assert.match(ticket, /^[0-9a-f]{64}$/);
+    const other = "c3".repeat(32);
+    const forged = [
+      "1",
+      "",
+      "0".repeat(64),
+      authTicketRequestMac("4d".repeat(32), other),
+      authTicketRequestMac(token, challenge),
+      authTicketMac(token, other),
+      healthProof(token, other),
+      authTicketRequestMac(token, other).toUpperCase(),
+      `${authTicketRequestMac(token, other)}0`,
+    ];
+    for (const mac of forged) {
+      for (let i = 0; i <= AUTH_TICKETS_MAX; i++) assert.deepEqual(tickets.request(token, other, mac), { ok: false, reason: "unsigned" }, mac);
+    }
+    for (let i = 0; i <= AUTH_TICKETS_MAX; i++) {
+      assert.deepEqual(tickets.request(token, challenge, authTicketRequestMac(token, challenge)), { ok: false, reason: "replayed" });
+    }
+    assert.equal(tickets.pending, 1);
+    assert.equal(tickets.consume(ticket), true);
+    // Un défi refusé faute de signature n'est pas consommé : la demande signée passe ensuite.
+    assert.equal(tickets.request(token, other, authTicketRequestMac(token, other)).ok, true);
+  });
+
+  it("défis déjà servis : 256 mémorisés au plus, les plus anciens oubliés", () => {
+    assert.equal(AUTH_TICKET_CHALLENGES_MAX, 256);
+    const token = "3c".repeat(32);
+    const tickets = new AuthTickets({ now: manualClock().now });
+    const signed = (challenge: string) => tickets.request(token, challenge, authTicketRequestMac(token, challenge));
+    const challenges = Array.from({ length: AUTH_TICKET_CHALLENGES_MAX + 1 }, (_, i) => i.toString(16).padStart(64, "0"));
+    for (const challenge of challenges) assert.equal(signed(challenge).ok, true, challenge);
+    for (const challenge of challenges.slice(1)) assert.deepEqual(signed(challenge), { ok: false, reason: "replayed" }, challenge);
+    assert.equal(signed(challenges[0] ?? "").ok, true);
   });
 
   it("8 tickets en attente au plus : le neuvième évince le plus ancien", () => {

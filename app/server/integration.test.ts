@@ -748,12 +748,12 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   /** En-têtes Set-Cookie d'une réponse, un par cookie. */
   const setCookiesOf = (res: { headers: http.IncomingHttpHeaders }): string[] => res.headers["set-cookie"] ?? [];
   /** HMAC du jeton de test, recalculé ici sans le code du cockpit (préfixes du contrat 1.0.5). */
-  const tokenMac = (usage: "health-proof" | "auth-ticket", value: string) =>
+  const tokenMac = (usage: "health-proof" | "auth-ticket" | "auth-ticket-request", value: string) =>
     crypto.createHmac("sha256", token).update(`opencode-cockpit/${usage}/v1\n${value}`).digest("hex");
-  /** Lien d'ouverture comme les scripts 1.0.5 : défi, preuve du jeton vérifiée, ticket à usage unique signé. */
+  /** Lien d'ouverture comme les scripts 1.0.5 : défi et demande de ticket signée, preuve du jeton vérifiée, ticket à usage unique signé. */
   const ticketLink = async (): Promise<string> => {
     const challenge = crypto.randomBytes(32).toString("hex");
-    const health = await call("GET", `/api/health?challenge=${challenge}&ticket=1`);
+    const health = await call("GET", `/api/health?challenge=${challenge}&ticket=${tokenMac("auth-ticket-request", challenge)}`);
     assert.equal(health.status, 200, health.body);
     const body = JSON.parse(health.body) as { scheme?: string; proof?: string | null; ticket?: string };
     assert.equal(body.scheme, env.localScheme);

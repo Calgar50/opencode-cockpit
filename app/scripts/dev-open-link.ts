@@ -2,10 +2,11 @@
 // node_modules), jamais utilisé par les scripts d'installation.
 //
 // Même vérification que .\cockpit.ps1 open, en plus court : défi aléatoire, preuve du jeton comparée en temps constant, puis
-// ticket de connexion à usage unique. Le jeton permanent n'est jamais affiché ni placé dans une adresse (I11).
+// ticket de connexion à usage unique, demandé avec la signature du défi par le jeton. Le jeton permanent n'est jamais affiché ni
+// placé dans une adresse (I11).
 import crypto from "node:crypto";
 import http from "node:http";
-import { authTicketMac, healthProof, isGeneratedToken } from "../server/security.ts";
+import { authTicketMac, authTicketRequestMac, healthProof, isGeneratedToken } from "../server/security.ts";
 
 /** Serveur de développement de Vite (vite.config.ts : port 5173, strictPort). */
 const WEB_ORIGIN = "http://localhost:5173";
@@ -55,7 +56,7 @@ if (!isGeneratedToken(token)) fail("COCKPIT_TOKEN hors format : 64 caractères h
 
 const port = readPort();
 const challenge = crypto.randomBytes(32).toString("hex");
-const health = await getJson(port, `/api/health?challenge=${challenge}&ticket=1`).catch((err: unknown): never =>
+const health = await getJson(port, `/api/health?challenge=${challenge}&ticket=${authTicketRequestMac(token, challenge)}`).catch((err: unknown): never =>
   fail(`cockpit injoignable sur 127.0.0.1:${port} (${err instanceof Error ? err.message : "erreur inconnue"}). Lancez npm run dev:server.`),
 );
 

@@ -62,7 +62,7 @@ L'en-tête du fichier fait foi. `$Mode` vaut `'https'`, `'http'` ou l'objet rend
 - Messages : `Write-CockpitModeNotice -Mode -Policy [-OneLine]` (A6, A6-1, A6b), `Confirm-CockpitHttpMode -Port -Policy` (A5 + saisie), `Write-CockpitLines`.
 - Docker : `Invoke-CockpitDocker -Root -DockerArgs -TimeoutSec`, `ConvertTo-CockpitDockerArgs`, `Clear-CockpitComposeEnv` / `Restore-CockpitComposeEnv` (appels par `&`), `Get-CockpitComposeProjectName`, `Get-CockpitComposeDivergence`, `Get-CockpitImageVersion` (`[version]` ou `$null`), `Get-CockpitServedScheme` (`https`, `http`, `inconnu` pour une valeur hors liste jamais recopiée, `$null` si illisible), `Get-CockpitContainerHealth`, `Read-CockpitTlsPublic`.
 - Valeurs venues du réseau : `Version` de la santé ne garde que `[0-9A-Za-z.+-]`, 32 caractères au plus ; `Detail` passe par `Hide-Secrets`.
-- Divers : `Invoke-CockpitProcess -FilePath <absolu> -Arguments -TimeoutSec -RemoveEnv`, `Hide-Secrets`, `Assert-CockpitFullLanguage`, `Get-CockpitBaseUrl`, `Get-CockpitHmacHex`, `Test-CockpitGeneratedToken`, `Get-CockpitPortOwner`, `Format-CockpitFingerprint`, `Get-CockpitCertWarnings`, `Get-CockpitCurl`.
+- Divers : `Invoke-CockpitProcess -FilePath <absolu> -Arguments -TimeoutSec -RemoveEnv`, `Hide-Secrets`, `Assert-CockpitFullLanguage`, `Get-CockpitBaseUrl`, `Get-CockpitHmacHex` (usages `health-proof`, `auth-ticket-request`, `auth-ticket`), `Test-CockpitGeneratedToken`, `Get-CockpitPortOwner`, `Format-CockpitFingerprint`, `Format-CockpitEdgePolicyValue` (valeur lue ou `absente`), `Get-CockpitCertWarnings`, `Get-CockpitCurl`.
 
 ## Faux docker (`fake-docker/`)
 
@@ -137,7 +137,8 @@ Charger par dot-sourcing dans la portée qui appelle le script testé (par exemp
 - `kind` : `https` (certificat `<cert>.crt` / `<cert>.key`), `http`, `close` (accepte puis ferme) ou `hang` (accepte et ne répond jamais).
 - `/api/health` : `{ ok, version, scheme, proof?, ticket? }`. Jeton et schéma attendus : relus **à chaque requête** dans `envFile` (`COCKPIT_TOKEN`, `COCKPIT_LOCAL_SCHEME`, vide = `https`) ; sans `envFile`, jeton de la variable `SRV_TEST_TOKEN` et schéma de l'écouteur.
 - Comportement (`behavior` de l'écouteur, complété par `behaviorFile` sous la clé du nom) : `scheme` (`https`, `http`, `none` = réponse 1.0.4 sans schéma), `proof` (`good`, `upper` = bonne valeur en majuscules, `bad`, `absent`, `null`), `ticket` (`good`, `bad`, `none`), `status`, `version`, `raw` (corps brut), `redirect` (302 vers `/redirige`, qui répond comme une santé normale : un client qui suit les redirections y arrive). Défaut : preuve bonne si le jeton a le format généré, sinon `null`.
-- Défi mal formé : 400. `logFile` : `{ listener, path, challenge, ticket, t, k }` en booléens, jamais de valeur.
+- Demande de ticket (`&ticket=`) : comme le serveur, servie seulement si elle vaut HMAC-SHA256(jeton, `opencode-cockpit/auth-ticket-request/v1` + LF + défi) ; sinon 403 `ticket-refused`, quel que soit `ticket`.
+- Défi mal formé : 400. `logFile` : `{ listener, path, challenge, ticket, ticketSigned, t, k }` en booléens, jamais de valeur (`ticket` : demande présente ; `ticketSigned` : demande signée par le jeton attendu).
 
 ## Certificats de test (`New-TestCerts.ps1`)
 

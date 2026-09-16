@@ -218,23 +218,56 @@ export function authTicketMac(token: string, nonce: string): string {
   return crypto.createHmac("sha256", token).update(`opencode-cockpit/auth-ticket/v1\n${nonce}`).digest("hex");
 }
 
+/**
+ * Demande de ticket : HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket-request/v1\n » + défi), en hexadécimal, passée dans
+ * `/api/health?challenge=<défi>&ticket=<demande>`. /api/health est public : sans cette preuve, une page web, un programme du
+ * poste ou le conteneur opencode obtiendraient des tickets et évinceraient celui qu'un script vient de recevoir.
+ */
+export function authTicketRequestMac(token: string, challenge: string): string {
+  return crypto.createHmac("sha256", token).update(`opencode-cockpit/auth-ticket-request/v1\n${challenge}`).digest("hex");
+}
+
 /** Durée de validité d'un ticket : l'avertissement de certificat du navigateur se place avant que le lien atteigne le serveur. */
 export const AUTH_TICKET_TTL_MS = 10 * 60_000;
 /** Tickets en attente au plus ; le plus ancien est évincé au-delà. */
 export const AUTH_TICKETS_MAX = 8;
+/** Défis déjà servis avec un ticket, mémorisés au plus ; les plus anciens sont oubliés au-delà. */
+export const AUTH_TICKET_CHALLENGES_MAX = 256;
+
+/** Issue d'une demande de ticket : « unsigned » = signature absente ou fausse, « replayed » = défi déjà servi. */
+export type TicketRequestOutcome = { ok: true; ticket: string } | { ok: false; reason: "unsigned" | "replayed" };
 
 /**
- * Tickets de connexion à usage unique, émis par /api/health (défi valide et `ticket=1`) après la preuve du jeton : le lien
- * ouvert par les scripts (/auth?k=<nonce>.<signature>) ne contient jamais le jeton permanent. Mémoire seulement (un redémarrage
- * les invalide) ; durée mesurée sur une horloge monotone, sans dépendance à l'horloge de la machine virtuelle Docker.
+ * Tickets de connexion à usage unique, émis par /api/health (défi valide et demande signée par le jeton) après la preuve du
+ * jeton : le lien ouvert par les scripts (/auth?k=<nonce>.<signature>) ne contient jamais le jeton permanent. Mémoire seulement
+ * (un redémarrage les invalide) ; durée mesurée sur une horloge monotone, sans dépendance à l'horloge de la machine virtuelle
+ * Docker.
  */
 export class AuthTickets {
   readonly #now: () => number;
   /** Nonce → échéance ; l'ordre d'insertion donne l'ancienneté. */
   readonly #pending = new Map<string, number>();
+  /** Défis déjà servis : une demande rejouée (lue sur la boucle locale en mode HTTP) n'obtient rien et n'évince rien. */
+  readonly #spent = new Set<string>();
 
   constructor(deps: { now?: () => number } = {}) {
     this.#now = deps.now ?? (() => performance.now());
+  }
+
+  /**
+   * Ticket pour une demande de /api/health dont le défi est déjà validé : signature comparée en temps constant, puis défi
+   * consommé. Une demande non signée ou rejouée ne crée aucun ticket et n'en évince aucun.
+   */
+  request(token: string, challenge: string, requestMac: string): TicketRequestOutcome {
+    if (!safeEqual(requestMac, authTicketRequestMac(token, challenge))) return { ok: false, reason: "unsigned" };
+    if (this.#spent.has(challenge)) return { ok: false, reason: "replayed" };
+    while (this.#spent.size >= AUTH_TICKET_CHALLENGES_MAX) {
+      const oldest = this.#spent.values().next();
+      if (oldest.done) break;
+      this.#spent.delete(oldest.value);
+    }
+    this.#spent.add(challenge);
+    return { ok: true, ticket: this.issue() };
   }
 
   /** Nouveau nonce de 32 octets aléatoires, en hexadécimal. */

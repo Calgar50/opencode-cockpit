@@ -630,8 +630,9 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Authentification ---------------------------------------------------------------
 
-  // Santé (healthcheck Docker, scripts). Avec un défi : preuve du jeton, puis ticket de connexion sur demande. Ni le défi ni le
-  // ticket ne sont journalisés.
+  // Santé (healthcheck Docker, scripts). Avec un défi : preuve du jeton, puis ticket de connexion sur demande signée par le jeton
+  // (route publique : un appelant sans jeton n'obtient ni n'évince aucun ticket). Ni le défi, ni la demande, ni le ticket ne sont
+  // journalisés.
   app.get("/api/health", (c) => {
     const body: HealthBody = { ok: true, version: env.version, scheme: env.localScheme };
     const challenge = c.req.query("challenge");
@@ -643,7 +644,15 @@ export function createApp(deps: AppDeps): Hono {
         return c.json(body);
       }
       body.proof = healthProof(env.token, challenge);
-      if (c.req.query("ticket") === "1") body.ticket = tickets.issue();
+      const request = c.req.query("ticket");
+      if (request !== undefined) {
+        const outcome = tickets.request(env.token, challenge, request);
+        if (!outcome.ok) {
+          const reason = outcome.reason === "replayed" ? "défi déjà utilisé" : "demande non signée par le jeton";
+          return fail(c, 403, "ticket-refused", `Ticket de connexion refusé : ${reason}.`);
+        }
+        body.ticket = outcome.ticket;
+      }
     }
     return c.json(body);
   });

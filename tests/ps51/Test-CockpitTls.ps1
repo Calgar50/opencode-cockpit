@@ -97,7 +97,8 @@ try {
     Assert-Test 'banc : aucune cle CNG persistante creee' (-not [System.Security.Cryptography.CngKey]::Exists(''))
     $Token = New-CockpitChallenge
     $BehaviorFile = Join-Path $Work 'behavior.json'
-    $Ports = Start-TestServer @{ certDir = $certDir; behaviorFile = $BehaviorFile; listeners = @(
+    $ServerLog = Join-Path $Work 'srv-test.jsonl'
+    $Ports = Start-TestServer @{ certDir = $certDir; behaviorFile = $BehaviorFile; logFile = $ServerLog; listeners = @(
             @{ name = 'A'; kind = 'https'; cert = 'A' }, @{ name = 'B'; kind = 'https'; cert = 'B' }, @{ name = 'A12'; kind = 'https'; cert = 'A'; maxVersion = 'TLSv1.2' },
             @{ name = 'expire'; kind = 'https'; cert = 'expire' }, @{ name = 'dns'; kind = 'https'; cert = 'dns' }, @{ name = 'close'; kind = 'close' }, @{ name = 'plain'; kind = 'http' },
             @{ name = 'hang'; kind = 'hang' }) } @{ SRV_TEST_TOKEN = $Token }
@@ -140,7 +141,13 @@ try {
     Assert-Test 'mode lu : aucune exception sur une entree inattendue' (-not (Get-CockpitLocalMode 42).Valid)
     Assert-Test 'mode lu : .env vide = https' ((Get-CockpitLocalMode ([ordered]@{})).Scheme -ceq 'https')
     Assert-Test 'HMAC health-proof = vecteur' ((Get-CockpitHmacHex $vectors.hmac.token 'health-proof' $vectors.hmac.healthProof.challenge) -ceq $vectors.hmac.healthProof.expected)
+    Assert-Test 'HMAC auth-ticket-request = vecteur' ((Get-CockpitHmacHex $vectors.hmac.token 'auth-ticket-request' $vectors.hmac.authTicketRequest.challenge) -ceq $vectors.hmac.authTicketRequest.expected)
     Assert-Test 'HMAC auth-ticket = vecteur' ((Get-CockpitHmacHex $vectors.hmac.token 'auth-ticket' $vectors.hmac.authTicket.nonce) -ceq $vectors.hmac.authTicket.expected)
+    $signedQuery = 'challenge=' + ('b' * 64) + '&ticket=' + (Get-CockpitHmacHex $Token 'auth-ticket-request' ('b' * 64))
+    Assert-Test 'requete de sante : demande de ticket signee (64 hex) acceptee' ($null -eq (Invoke-Captured { Assert-CockpitHealthQuery $signedQuery }).Error)
+    foreach ($query in @(('challenge=' + ('b' * 64) + '&ticket=1'), ('challenge=' + ('b' * 64) + '&ticket=' + ('B' * 64)), ('challenge=' + ('b' * 64) + '&ticket=' + $Token + '&x=1'))) {
+        Assert-Test ('requete de sante : demande de ticket non signee refusee ({0})' -f $query.Length) ($null -ne (Invoke-Captured { Assert-CockpitHealthQuery $query }).Error)
+    }
     Assert-Test 'HMAC : usage inconnu refuse' ($null -ne (Invoke-Captured { Get-CockpitHmacHex 'x' 'session' 'y' }).Error)
     Assert-Test 'jeton genere : 64 hex minuscules' ((Test-CockpitGeneratedToken ('a' * 64)) -and -not (Test-CockpitGeneratedToken ('A' * 64)) -and -not (Test-CockpitGeneratedToken ('a' * 40)) -and -not (Test-CockpitGeneratedToken (('a' * 64) + [char]10)))
     Assert-Test 'adresse de base https' ((Get-CockpitBaseUrl 'https' 7777) -ceq ('https' + '://127.0.0.1:7777'))
@@ -492,6 +499,13 @@ try {
     Assert-Test 'ticket : URL /auth?k=<nonce>.<mac>' ($match.Success -and [int]$match.Groups[1].Value -eq $Ports.plain)
     Assert-Test 'ticket : signature auth-ticket du jeton' ($match.Success -and $match.Groups[3].Value -ceq (Get-CockpitHmacHex $Token 'auth-ticket' $match.Groups[2].Value))
     Assert-Test 'ticket : jeton absent de l URL, rien d affiche' (-not $url.Contains($Token) -and $login.Host -ceq '' -and $login.Values.Count -eq 1)
+    $lastRequest = @(Get-Content -LiteralPath $ServerLog | Where-Object { $_ } | ForEach-Object { ConvertFrom-Json $_ } | Where-Object { $_.listener -ceq 'plain' -and $_.challenge }) | Select-Object -Last 1
+    Assert-Test 'ticket : demande signee par le jeton (HMAC auth-ticket-request du defi)' ($null -ne $lastRequest -and $lastRequest.ticket -and $lastRequest.ticketSigned)
+    $outOfFormat = Test-CockpitHealth -Port $Ports.plain -Mode 'http' -Token ('a' * 40) -TlsState $null -Methods @('native') -WithTicket -TimeoutSec 4
+    $lastRequest = @(Get-Content -LiteralPath $ServerLog | Where-Object { $_ } | ForEach-Object { ConvertFrom-Json $_ } | Where-Object { $_.listener -ceq 'plain' -and $_.challenge }) | Select-Object -Last 1
+    Assert-Test 'ticket : aucune demande envoyee avec un jeton hors format' ($null -ne $lastRequest -and -not $lastRequest.ticket -and $outOfFormat.Ticket -ceq '') $outOfFormat.Reason
+    $unsignedRaw = Invoke-CockpitHealthNative $Ports.plain ('challenge=' + ('c' * 64) + '&ticket=' + ('0' * 64)) 4000
+    Assert-Test 'banc : srv-test refuse comme le serveur une demande de ticket non signee (403, aucun ticket)' ($unsignedRaw.Status -eq 403 -and -not $unsignedRaw.Body.Contains('"ticket"')) ([string]$unsignedRaw.Status)
     foreach ($bad in @(@(@{ ticket = 'bad' }, 'TicketInvalide'), @(@{ ticket = 'none' }, 'TicketInvalide'), @(@{ proof = 'bad' }, 'PreuveInvalide'))) {
         Set-Behavior $bad[0]
         $refused = Get-CockpitLoginUrl -Health $okHttp -Port $Ports.plain -Mode 'http' -Token $Token
@@ -599,7 +613,11 @@ try {
         & $c[1]
         $p = Get-CockpitBrowserTlsPolicy -Port $c[2] -RegistryRoots $roots
         Assert-Test ('strategie Edge : {0} -> {1}' -f $c[0], $c[3]) ($p.Verdict -ceq $c[3] -and $p.Source -ceq $c[4]) ('{0} {1}' -f $p.Verdict, $p.Source)
+        $shown = Format-CockpitEdgePolicyValue $p
+        $expectedShown = 'absente'; if ($null -ne $p.Value) { $expectedShown = [string]$p.Value }
+        Assert-Test ('strategie Edge : {0} -> valeur affichee {1}' -f $c[0], $expectedShown) ($shown -ceq $expectedShown -and $shown -cne '' -and -not ('= {0},' -f $shown).Contains('= ,'))
     }
+    Assert-Test 'valeur Edge affichee : absente sans strategie, jamais vide' ((Format-CockpitEdgePolicyValue ([pscustomobject]@{ Value = $null })) -ceq 'absente' -and (Format-CockpitEdgePolicyValue $null) -ceq 'absente' -and (Format-CockpitEdgePolicyValue ([pscustomobject]@{ Value = 0 })) -ceq '0')
     Reset-TestPolicy
     Set-TestPolicy 'HKLM' 'Chrome' 'SSLErrorOverrideAllowed' 0
     Set-TestPolicy 'HKCU' 'Edge' 'HttpsOnlyMode' 'force_enabled' 'String'

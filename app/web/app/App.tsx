@@ -1,7 +1,7 @@
 // Coquille de l'application : amorçage, connexion, navigation, bandeaux d'alerte, règles d'utilisation.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { isDefaultProviders, MESSAGES } from "../../server/shared/assistant-rules.ts";
-import { authErrorText, type LocalAccessNotice, localAccessNotice, loginMode } from "../../server/shared/local-access-notice.ts";
+import { authErrorText, certificateRenewalDue, type LocalAccessNotice, localAccessNotice, loginMode } from "../../server/shared/local-access-notice.ts";
 import { Icon, type IconName } from "../components/Icon.tsx";
 import { ToastProvider, useToast } from "../components/Toast.tsx";
 import { Button, ConfirmProvider, EmptyState, IconButton, Meter, Spinner } from "../components/ui.tsx";
@@ -391,7 +391,7 @@ function Shell() {
             </div>
           ) : null}
           {accessNotice ? <LocalHttpBanner notice={accessNotice} onDetails={() => navigate("diagnostic")} /> : null}
-          {certDaysLeft !== null && certDaysLeft <= 30 ? (
+          {certDaysLeft !== null && certificateRenewalDue(certDaysLeft) ? (
             <div className="banner warning" role="status">
               <Icon name="shield" />
               <span className="spacer">

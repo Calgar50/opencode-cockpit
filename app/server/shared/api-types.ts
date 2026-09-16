@@ -420,8 +420,10 @@ export type LocalScheme = "https" | "http";
  * GET /api/health (public, jamais journalisé avec ses paramètres).
  * - `proof` : présent seulement avec `?challenge=<64 hex>` ; HMAC-SHA256(jeton, « opencode-cockpit/health-proof/v1\n » + défi) en
  *   hexadécimal ; null si le jeton n'a pas le format généré par install.ps1 (64 hexadécimaux minuscules). Défi invalide : 400.
- * - `ticket` : nonce de connexion à usage unique (10 min), présent seulement avec un défi valide, `&ticket=1` et un jeton au
- *   format généré. Lien d'ouverture : /auth?k=<ticket>.<HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket/v1\n » + ticket)>.
+ * - `ticket` : nonce de connexion à usage unique (10 min), présent seulement avec un défi valide, un jeton au format généré et
+ *   `&ticket=<HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket-request/v1\n » + défi)>`. Demande non signée par le jeton, ou défi
+ *   déjà servi avec un ticket : 403 `ticket-refused`, sans ticket créé ni évincé.
+ *   Lien d'ouverture : /auth?k=<ticket>.<HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket/v1\n » + ticket)>.
  */
 export interface HealthBody {
   ok: true;

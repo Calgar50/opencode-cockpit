@@ -202,9 +202,10 @@ function New-CockpitChallenge {
     return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
-# HMAC-SHA256 : cle = octets UTF-8 du jeton ; message = opencode-cockpit/<usage>/v1 + LF + donnee (vecteurs communs).
+# HMAC-SHA256 (vecteurs communs) : cle = octets UTF-8 du jeton ; message = opencode-cockpit/<usage>/v1 + LF + donnee.
+# Usages : preuve servie (health-proof), demande de ticket signee par les scripts (auth-ticket-request), lien (auth-ticket).
 function Get-CockpitHmacHex([string]$Token, [string]$Purpose, [string]$Data) {
-    if ($Purpose -cne 'health-proof' -and $Purpose -cne 'auth-ticket') { throw 'Usage HMAC inconnu.' }
+    if ($Purpose -cne 'health-proof' -and $Purpose -cne 'auth-ticket-request' -and $Purpose -cne 'auth-ticket') { throw 'Usage HMAC inconnu.' }
     $hmac = New-Object System.Security.Cryptography.HMACSHA256 -ArgumentList (, [System.Text.Encoding]::UTF8.GetBytes($Token))
     try { $mac = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("opencode-cockpit/$Purpose/v1`n$Data")) } finally { $hmac.Dispose() }
     return (($mac | ForEach-Object { $_.ToString('x2') }) -join '')
@@ -288,7 +289,7 @@ function Get-CockpitCurl([string]$CurlPath) {
 }
 
 function New-CockpitRaw([int]$Status, [string]$Body, [string]$Failure, [string]$Detail) { return [pscustomobject]@{ Status = $Status; Body = $Body; Failure = $Failure; Detail = $Detail } }
-function Assert-CockpitHealthQuery([string]$Query) { if ($Query -cnotmatch '^challenge=[0-9a-f]{64}(&ticket=1)?\z') { throw 'Requete de sante invalide.' } }
+function Assert-CockpitHealthQuery([string]$Query) { if ($Query -cnotmatch '^challenge=[0-9a-f]{64}(&ticket=[0-9a-f]{64})?\z') { throw 'Requete de sante invalide.' } }
 
 # Statut d'une WebException (ou de la classe C#) -> raison ; '' = erreur non classee.
 function Get-CockpitFailureOf([string]$Status) {
@@ -443,7 +444,8 @@ function Test-CockpitHealth {
     if (-not $Methods) { if ($scheme -ceq 'https') { $Methods = @('curl', 'csharp') } else { $Methods = @('native', 'curl') } }
     if ($scheme -ceq 'https' -and $null -eq $TlsState) { throw 'Certificat public requis pour verifier le cockpit en HTTPS.' }
     $challenge = New-CockpitChallenge; $query = 'challenge=' + $challenge
-    if ($WithTicket) { $query += '&ticket=1' }
+    # Demande de ticket signee (le serveur n'en emet pas sans elle) ; jamais pour un jeton hors format, qui n'en obtient pas.
+    if ($WithTicket -and (Test-CockpitGeneratedToken $Token)) { $query += '&ticket=' + (Get-CockpitHmacHex $Token 'auth-ticket-request' $challenge) }
     $unavailable = @(); $curlReason = $null
     foreach ($method in $Methods) {
         if ($method -ceq 'curl') {
@@ -543,6 +545,7 @@ function Get-CockpitBrowserTlsPolicy {
     elseif (@($normalized | Where-Object { $_ -cnotmatch '^https?://([a-z0-9-]+(\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(:[0-9]{1,5})?\z' }).Count -eq 0) { $policy.Verdict = 'Bloque' }
     return $policy
 }
+function Format-CockpitEdgePolicyValue($Policy) { if ($null -eq $Policy -or $null -eq $Policy.Value) { return 'absente' }; return [string]$Policy.Value }
 function Get-CockpitPortOwner([int]$Port) {
     try {
         $names = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | ForEach-Object { Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue } | ForEach-Object { $_.ProcessName } | Sort-Object -Unique)

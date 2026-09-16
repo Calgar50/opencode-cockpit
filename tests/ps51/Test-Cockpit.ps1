@@ -156,6 +156,14 @@ try {
     $startOld = Invoke-CockpitScript $HttpsDir @('start')
     Assert-Test 'etat intermediaire : start avertit (A10-court) puis demarre' ($startOld.Host.Contains('Mise a jour inachevee (scripts 1.0.5, cockpit 1.0.4)') -and (Test-DockerCall '^compose -f \S.* up -d\z')) (Get-Extract $startOld.Host)
 
+    # Conteneur recree par le compose 1.0.5 : printenv rend https, mais l'image 1.0.4 ignore la variable et sert en HTTP.
+    Set-DockerScenario ((New-CockpitDockerRules -ImageVersion '1.0.4' -Served 'https') + @((New-Rule '.*' '' 0)))
+    $diagOld = Invoke-CockpitScript $HttpsDir @('diag')
+    Assert-Test 'K2-3 diag : mode servi exact pour un cockpit 1.0.4 (http, mode d acces non gere)' ($diagOld.Host.Contains('Mode (cockpit)  : http (cockpit 1.0.4 anterieur a 1.0.5, mode d acces non gere)')) (Get-Extract ($diagOld.Host.Substring([Math]::Max(0, $diagOld.Host.IndexOf('Mode (.env)')))))
+    Assert-Test 'K2-3 diag : ni "https" ni "illisible (conteneur arrete ?)" pour le mode servi' (-not $diagOld.Host.Contains('Mode (cockpit)  : https') -and -not $diagOld.Host.Contains('Mode (cockpit)  : illisible') -and -not $diagOld.Host.Contains('different de .env'))
+    Assert-Test 'K2-3 diag : A10 affiche une seule fois' ([regex]::Matches($diagOld.Host, [regex]::Escape('Mise a jour inachevee : les scripts sont en 1.0.5')).Count -eq 1)
+    Assert-Test 'K2-3 diag : aucun printenv dans un conteneur 1.0.4' (-not (Test-DockerCall 'exec -T cockpit printenv'))
+
     # --- Mode invalide dans .env (A18) ------------------------------------------------------------------------------
     Write-Section 'A18 : mode d acces invalide dans .env'
     foreach ($command in @('open', 'start', 'restart')) {
@@ -177,13 +185,26 @@ try {
     $statusHttp = Invoke-CockpitScript $HttpDir @('status')
     Assert-Test 'status HTTP : A6-1 puis adresse et preuve du jeton' ($statusHttp.Host.Contains('[!] Mode HTTP local (confirme le') -and $statusHttp.Host -cmatch ('Cockpit : disponible sur http://127\.0\.0\.1:{0} \(preuve du jeton verifiee, voie HttpWebRequest\)' -f $Ports.plain)) (Get-Extract $statusHttp.Host)
 
-    $tlsNoise = (((1..40 | ForEach-Object { 'cockpit-1 | tlsClientError code=SSL_ERR' }) -join "`n") + "`n")
-    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Served 'http' -Extra @((New-Rule '^compose -f \S.* logs --tail 200 cockpit$' $tlsNoise))) + @((New-Rule '.*' '' 0)))
+    # Resumes reels du serveur (TlsRefusals.flush, app/server/tls.ts) : message accentue, totaux par fenetre de 60 s.
+    $refusedMessage = '"msg":"connexions TLS refus' + [char]0xE9 + 'es sur la boucle locale"'
+    $tlsSummary = { param([string]$At, [int]$Total, [string]$Codes) ('cockpit-1  | {{"t":"2026-09-15T10:{0}.000Z","level":"info",{1},"total":{2},"codes":{{{3}}}}}' -f $At, $refusedMessage, $Total, $Codes) }
+    $tlsJournal = ((@((& $tlsSummary '00:00' 15 '"ERR_SSL_HTTP_REQUEST":15'),
+                'cockpit-1  | {"t":"2026-09-15T10:00:30.000Z","level":"info","msg":"cockpit a l ecoute","total":99}',
+                'cockpit-1  | tlsClientError code=SSL_ERR',
+                (& $tlsSummary '01:00' 25 '"AUTRE":3,"ERR_SSL_HTTP_REQUEST":22')) -join "`n") + "`n")
+    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Served 'http' -Extra @((New-Rule '^compose -f \S.* logs --since 30m cockpit$' $tlsJournal))) + @((New-Rule '.*' '' 0)))
     $diag = Invoke-CockpitScript $HttpsDir @('diag') { Set-CockpitTestEnv 'COCKPIT_TOKEN' 'MARQUEUR-VALEUR-DIAG' }
     Set-CockpitTestEnv 'COCKPIT_TOKEN' $SavedEnv['COCKPIT_TOKEN']
     Assert-Test 'diag : section Acces a l interface' ($diag.Host.Contains('--- Acces a l interface ---') -and $diag.Host.Contains('Mode (.env)     : https')) (Get-Extract $diag.Host)
     Assert-Test 'K1-1 diag : schema servi different, variable nommee sans sa valeur' ($diag.Host.Contains('Mode (cockpit)  : http - different de .env') -and $diag.Host.Contains('Cause : variable(s) COCKPIT_TOKEN definie(s) (Processus)') -and -not $diag.Host.Contains('MARQUEUR'))
-    Assert-Test 'diag : certificat servi et refus TLS resumes' ($diag.Host.Contains('Certificat      : ' + $StateA.Sha256) -and $diag.Host.Contains('Refus TLS       : 40 ligne(s)'))
+    Assert-Test 'diag : certificat servi et refus TLS additionnes depuis les resumes du serveur (30 min)' ($diag.Host.Contains('Certificat      : ' + $StateA.Sha256) -and $diag.Host.Contains('Refus TLS       : 40 connexion(s) refusee(s) sur 30 min (2 resume(s) du journal')) (Get-Extract ($diag.Host.Substring([Math]::Max(0, $diag.Host.IndexOf('Refus TLS')))))
+    Assert-Test 'diag : journal lu sur 30 minutes (plan 3.9)' ((Test-DockerCall '^compose -f \S.* logs --since 30m cockpit\z') -and -not (Test-DockerCall 'logs --tail 200 cockpit'))
+    Assert-Test 'diag : strategie Edge absente nommee, jamais une valeur vide' ($diag.Host.Contains('Edge            : SSLErrorOverrideAllowed = absente (aucune), verdict Autorise') -and -not $diag.Host.Contains('SSLErrorOverrideAllowed =  ('))
+
+    $noSummary = ((@('cockpit-1  | {"t":"2026-09-15T10:00:30.000Z","level":"info","msg":"cockpit a l ecoute","total":99}', 'cockpit-1  | tlsClientError code=SSL_ERR') -join "`n") + "`n")
+    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Extra @((New-Rule '^compose -f \S.* logs --since 30m cockpit$' $noSummary))) + @((New-Rule '.*' '' 0)))
+    $diagQuiet = Invoke-CockpitScript $HttpsDir @('diag')
+    Assert-Test 'diag : aucune ligne de resume, aucun refus compte' ($diagQuiet.Host.Contains('Refus TLS       : 0 connexion(s) refusee(s) sur 30 min (0 resume(s) du journal')) (Get-Extract ($diagQuiet.Host.Substring([Math]::Max(0, $diagQuiet.Host.IndexOf('Refus TLS')))))
     Assert-Test 'diag : voie de verification et LanguageMode' ($diag.Host -cmatch 'Voie utilisee   : (curl \(|classe \.NET)' -and $diag.Host.Contains('LanguageMode FullLanguage'))
     Assert-Test 'J2-10 diag : aucun verdict "Edge interdit" sans strategie, malgre 40 refus TLS' (-not $diag.Host.Contains('Edge interdit')) (Get-Extract $diag.Host)
     Assert-Test 'diag : aucun jeton dans la sortie' (-not $diag.Host.Contains($Token))
@@ -202,10 +223,12 @@ try {
     Set-DockerScenario (New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA)
     $tls = Invoke-CockpitScript $HttpsDir @('tls')
     Assert-Test 'tls HTTPS : empreinte, cle publique, validite et verification' ($tls.Host.Contains('Empreinte SHA-256 : ' + $StateA.Sha256) -and $tls.Host.Contains('Cle publique      : sha256//' + $StateA.SpkiBase64) -and $tls.Host.Contains('Cockpit verifie sur')) (Get-Extract $tls.Host)
+    Assert-Test 'tls HTTPS : strategie Edge absente nommee, jamais une valeur vide' ($tls.Host.Contains('Strategie Edge lue : SSLErrorOverrideAllowed = absente, verdict Autorise') -and -not $tls.Host.Contains('SSLErrorOverrideAllowed = ,'))
 
     Set-DockerScenario (New-CockpitDockerRules -Served 'http')
     $tlsHttp = Invoke-CockpitScript $HttpDir @('tls')
     Assert-Test 'A16 : tls en mode HTTP' ($tlsHttp.Host.Contains("Mode HTTP local : aucun certificat n'est servi") -and $tlsHttp.Host.Contains("n'est ni lu ni modifie par le cockpit")) (Get-Extract $tlsHttp.Host)
+    Assert-Test 'A16 : strategie Edge absente nommee, jamais une valeur vide' ($tlsHttp.Host.Contains('Strategie Edge lue : SSLErrorOverrideAllowed = absente, verdict Autorise') -and -not $tlsHttp.Host.Contains('SSLErrorOverrideAllowed = ,'))
 
     Set-DockerScenario (New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Extra @((New-Rule '^compose -f \S.* stop' '' 0 $null '' -Fail), (New-Rule '^run ' '' 0 $null '' -Fail)))
     $noRenew = Invoke-CockpitScript $HttpsDir @('tls') -Parameters @{ Renew = $true } { Add-SpyReadHostAnswer 'renouveler' }
@@ -302,12 +325,27 @@ try {
     Assert-Test 'I12 rollback : 4 cles remplacees dans .env' ((Get-TestEnvValue $full.Directory 'COCKPIT_APP_IMAGE') -ceq 'opencode-cockpit/app:1.0.4' -and (Get-TestEnvValue $full.Directory 'COCKPIT_OPENCODE_IMAGE') -ceq 'opencode-cockpit/opencode:1.0.4' -and (Get-TestEnvValue $full.Directory 'COCKPIT_INSTALL_MODE') -ceq 'Pull' -and (Get-TestEnvValue $full.Directory 'COCKPIT_VERSION') -ceq '1.0.4')
     Assert-Test 'I12 rollback : mode d acces, date et jeton conserves' ((Get-TestEnvValue $full.Directory 'COCKPIT_LOCAL_SCHEME') -ceq 'http' -and (Get-TestEnvValue $full.Directory 'COCKPIT_LOCAL_HTTP_CONFIRMED') -ceq $ConfirmedAt -and (Get-TestEnvValue $full.Directory 'COCKPIT_TOKEN') -ceq $Token)
     Assert-Test 'rollback : install.ps1 de la cible relance avec -NoBrowser' ($calls.Count -eq $before + 1 -and $calls[$calls.Count - 1] -ceq '["-NoBrowser"]')
+    Assert-Test 'rollback Pull : A13 et A13-fin promettent le retour par update' ($rollback.Host.Contains('.\cockpit.ps1 update ramenera ensuite la derniere version') -and $rollback.Host.Contains('.\cockpit.ps1 update ramenera la 1.0.5 dans le mode d acces memorise (HTTP local).') -and -not $rollback.Host.Contains('-ImagesArchive'))
+
+    # Mode Load : update s'arreterait sur les images 1.0.4 de .env (A-Load, M5) ; A13 et A13-fin donnent la vraie marche a suivre.
+    $loadPrevious = @{} + $PreviousKeys
+    $loadPrevious['COCKPIT_PREVIOUS_INSTALL_MODE'] = 'Load'
+    $loadFull = New-TestGitInstallation $Work 'rb-load-complet' (New-TestEnvValues $Ports.plain 'http' $ConfirmedAt '1.0.5' 'Load' $loadPrevious)
+    $before = @(Get-InstallCalls).Count
+    $loadRollback = Invoke-CockpitScript $loadFull.Directory @('rollback') { Add-SpyReadHostAnswer 'REVENIR' }
+    $calls = @(Get-InstallCalls)
+    Assert-Test 'rollback Load : retour complet mene a bien' ($loadRollback.Host.Contains('Version 1.0.4 retablie') -and $calls.Count -eq $before + 1 -and (Get-TestEnvValue $loadFull.Directory 'COCKPIT_VERSION') -ceq '1.0.4') (Get-Extract $loadRollback.Host)
+    Assert-Test 'rollback Load : A13-fin sans la promesse "update ramenera"' (-not $loadRollback.Host.Contains('update ramenera')) (Get-Extract ($loadRollback.Host.Substring([Math]::Max(0, $loadRollback.Host.IndexOf('retablie')))))
+    Assert-Test 'rollback Load : A13-fin annonce l arret de update et donne la commande -ImagesArchive' ($loadRollback.Host.Contains('Mode Load : .\cockpit.ps1 update s arretera (images 1.0.4 inscrites dans .env).') -and $loadRollback.Host.Contains('.\cockpit.ps1 update, puis .\install.ps1 -Mode Load -ImagesArchive <opencode-cockpit-images-1.0.5.tar.gz>') -and $loadRollback.Host.Contains('d acces memorise (HTTP local)'))
+    Assert-Test 'rollback Load : A13 annonce l archive d images' ($loadRollback.Host.Contains('mode Load : revenir ensuite a la 1.0.5 demandera son archive d images'))
 
     $scripts = New-TestGitInstallation $Work 'rb-scripts' (New-TestEnvValues $Ports.plain 'http' $ConfirmedAt '1.0.4')
     $before = @(Get-InstallCalls).Count
     $envBefore = Get-TestFileHash (Join-Path $scripts.Directory '.env')
     $onlyScripts = Invoke-CockpitScript $scripts.Directory @('rollback') { Add-SpyReadHostAnswer 'REVENIR' }
     Assert-Test 'rollback scripts seuls : conteneurs inchanges, install.ps1 non relance' ($onlyScripts.Host.Contains("Vos conteneurs 1.0.4 n ont pas change.") -and @(Get-InstallCalls).Count -eq $before) (Get-Extract $onlyScripts.Host)
+    Assert-Test 'rollback scripts seuls : aucune commande absente des scripts 1.0.4 retablis (-Http)' (-not $onlyScripts.Host.Contains('.\install.ps1 -Http') -and -not $onlyScripts.Host.Contains('.\install.ps1 (HTTPS)')) (Get-Extract ($onlyScripts.Host.Substring([Math]::Max(0, $onlyScripts.Host.IndexOf('[OK] Scripts')))))
+    Assert-Test 'rollback scripts seuls : terminer la mise a jour par update' ($onlyScripts.Host.Contains('Terminer la mise a jour plus tard : .\cockpit.ps1 update (ramene les scripts 1.0.5'))
     Assert-Test 'rollback scripts seuls : .env inchange et branche repositionnee' ((Get-TestFileHash (Join-Path $scripts.Directory '.env')) -ceq $envBefore -and (Get-TestGitOut $scripts.Directory @('rev-parse', 'HEAD')) -ceq (Get-TestGitOut $scripts.Directory @('rev-parse', 'v1.0.4^{commit}')))
 
     $dirty = New-TestGitInstallation $Work 'rb-modifie' (New-TestEnvValues $Ports.plain 'https' '' '1.0.5' 'Pull' $PreviousKeys)

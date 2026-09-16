@@ -47,10 +47,14 @@ function handler(listener, secure) {
     const behavior = behaviorOf(listener);
     const exp = expected();
     const challenge = url.searchParams.get("challenge");
-    const ticketAsked = url.searchParams.get("ticket") === "1";
+    // Demande de ticket : comme le serveur, seulement signee par le jeton (HMAC du defi, prefixe auth-ticket-request).
+    const ticketRequest = url.searchParams.get("ticket");
+    const ticketAsked = ticketRequest !== null;
+    const ticketSigned = ticketAsked && challenge !== null && HEX64.test(exp.token) &&
+      ticketRequest === crypto.createHmac("sha256", exp.token).update("opencode-cockpit/auth-ticket-request/v1\n" + challenge).digest("hex");
     if (config.logFile) {
-      // Jamais de valeur : ni defi, ni jeton, ni ticket.
-      const entry = { listener: listener.name, path: url.pathname, challenge: challenge !== null, ticket: ticketAsked, t: url.searchParams.has("t"), k: url.searchParams.has("k") };
+      // Jamais de valeur : ni defi, ni jeton, ni demande, ni ticket.
+      const entry = { listener: listener.name, path: url.pathname, challenge: challenge !== null, ticket: ticketAsked, ticketSigned, t: url.searchParams.has("t"), k: url.searchParams.has("k") };
       appendFileSync(config.logFile, JSON.stringify(entry) + "\n");
     }
     // /redirige : reponse de sante normale, cible de behavior.redirect (un client qui suit les redirections y arrive).
@@ -87,6 +91,11 @@ function handler(listener, secure) {
       else if (proof === "bad") body.proof = "0".repeat(64);
       else if (proof === "null") body.proof = null;
       if (ticketAsked && proof === "good") {
+        if (!ticketSigned) {
+          res.writeHead(403, { "content-type": "application/json", "cache-control": "no-store" });
+          res.end(JSON.stringify({ error: "ticket-refused" }));
+          return;
+        }
         const ticket = behavior.ticket ?? "good";
         if (ticket === "good") body.ticket = crypto.randomBytes(32).toString("hex");
         else if (ticket === "bad") body.ticket = "pas-un-ticket";

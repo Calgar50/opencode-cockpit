@@ -1,9 +1,10 @@
 // Accès local vu par l'interface : module PUR (aucun import « node: », aucun accès au DOM).
 //
-// Trois décisions du plan 1.0.5, réunies ici pour être testées sans navigateur :
+// Quatre décisions du plan 1.0.5, réunies ici pour être testées sans navigateur :
 // - quel bandeau « connexion locale non chiffrée » afficher (I6 : mode HTTP visible partout, jamais masquable) ;
 // - quel écran de connexion proposer (I5 : en mode HTTP, le jeton ne se saisit jamais dans une page) ;
-// - quel message afficher après un retour de /auth (§3.6.6).
+// - quel message afficher après un retour de /auth (§3.6.6) ;
+// - quand annoncer le renouvellement du certificat HTTPS local (même borne que le serveur).
 import type { LocalScheme } from "./api-types.ts";
 
 /**
@@ -40,6 +41,21 @@ export function localAccessNotice(input: { scheme: LocalScheme; confirmedAt: str
   }
   if (input.protocol.toLowerCase() === "http:") return { kind: "page-http" };
   return null;
+}
+
+/**
+ * Renouvellement du certificat HTTPS local, en jours avant l'échéance : même valeur que TLS_RENEW_BEFORE_DAYS (server/tls.ts, qui
+ * charge « node: » et reste hors de l'interface), vérifiée par un test croisé.
+ */
+export const CERT_RENEW_BEFORE_DAYS = 30;
+
+/**
+ * Vrai si le prochain démarrage du cockpit remplacera le certificat. `daysLeft` est l'arrondi inférieur des jours restants
+ * (tlsStatus) : `daysLeft < 30` équivaut à « échéance à moins de 30 jours », la règle du serveur. « <= 30 » annoncerait le
+ * remplacement jusqu'à 30,99 jours avant l'échéance, alors que le redémarrage garderait le même certificat.
+ */
+export function certificateRenewalDue(daysLeft: number): boolean {
+  return daysLeft < CERT_RENEW_BEFORE_DAYS;
 }
 
 /** Page en clair : aucun champ de jeton (il circulerait en clair) ; le serveur refuse de toute façon POST /api/login. */

@@ -167,6 +167,7 @@ try {
     Assert-Test '-TlsPreflight : verdict affiche' ($result.Host.Contains('Verdict Edge : Autorise')) $result.Host
     Assert-Test '-TlsPreflight : voie de verification affichee' ($result.Host.Contains('Voie qui serait utilisee :'))
     Assert-Test '-TlsPreflight : mode lu affiche' ($result.Host.Contains('Mode d acces inscrit dans .env : https'))
+    Assert-Test '-TlsPreflight : strategie Edge absente nommee, jamais une valeur vide' ($result.Host.Contains('Edge SSLErrorOverrideAllowed : absente (non lue)'))
     Assert-Test '-TlsPreflight : edge://policy rappele' ($result.Host.Contains('edge://policy'))
 
     $journal = Set-InstallDockerScenario $Work 'preflight-bloque' @((New-DockerRule '.' '' 0 '' $null -Fail))
@@ -279,6 +280,8 @@ try {
     Assert-Test '-Http -NoBrowser : aucune ouverture' ($result.StartProcessCalls.Count -eq 0) ([string]$result.StartProcessCalls.Count)
     Assert-Test '-Http -NoBrowser : A6 et A7 affiches' ($result.Host.Contains('MODE HTTP LOCAL (confirme le') -and $result.Host.Contains('mode HTTP local, preuve du jeton verifiee'))
     Assert-Test '-Http -NoBrowser : commande d ouverture donnee' ($result.Host.Contains('Ouvrir : .\cockpit.ps1 open'))
+    $openLines = [regex]::Matches($result.Host, [regex]::Escape('Ouvrir : .\cockpit.ps1 open')).Count
+    Assert-Test '-Http -NoBrowser : commande d ouverture donnee une seule fois' ($openLines -eq 1) ([string]$openLines)
 
     # --- Relance en mode HTTP (chemin de cockpit.ps1 update) --------------------------------------------------------------
     Write-Section 'Relance en mode HTTP (update)'
@@ -293,6 +296,8 @@ try {
     Assert-Test 'relance HTTP : jeton inchange' ((Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore)
     Assert-Test 'relance HTTP : A6 rappele malgre -NoBrowser' ($result.Host.Contains('MODE HTTP LOCAL (confirme le 2026-09-15 10:32 UTC avec -Http)')) $result.Host
     Assert-Test 'relance HTTP : A6b absent quand Edge bloque' (-not $result.Host.Contains('Edge semble autoriser'))
+    $openLines = [regex]::Matches($result.Host, [regex]::Escape('Ouvrir : .\cockpit.ps1 open')).Count
+    Assert-Test 'relance HTTP (update) : commande d ouverture donnee une seule fois' ($openLines -eq 1) ([string]$openLines)
 
     Reset-Root $httpEnv
     $journal = Set-InstallDockerScenario $Work 'http-relance-autorise' (New-InstallDockerRules $CertFile $JsonFile)
@@ -308,6 +313,8 @@ try {
     $journal = Set-InstallDockerScenario $Work 'https-deja' (New-InstallDockerRules $CertFile $JsonFile)
     $result = Invoke-Install -Root $Root -Parameters (New-Params @{ Https = $true; NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
     Assert-Test '-Https sur une installation deja en HTTPS : rien a changer' ($result.Host.Contains('Deja en HTTPS local : rien a changer.') -and -not $result.Host.Contains('Retour en HTTPS : nouveau jeton')) $result.Host
+    $openLines = [regex]::Matches($result.Host, [regex]::Escape('Ouvrir : .\cockpit.ps1 open')).Count
+    Assert-Test 'HTTPS -NoBrowser : commande d ouverture donnee une seule fois' ($openLines -eq 1) ([string]$openLines)
 
     # --- Retour en HTTPS ---------------------------------------------------------------------------------------------------
     Write-Section 'Retour en HTTPS (-Https)'

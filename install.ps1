@@ -288,11 +288,9 @@ if ($TlsPreflight) {
     $curl = Get-CockpitCurl ''
     Write-Step 'Verification du poste (aucune modification, Docker non requis)'
     Write-Info ('Port vise : {0} ; exception a demander : {1}' -f $preflightPort, $policy.Origin)
-    $edgeValue = 'absente'
-    if ($null -ne $policy.Value) { $edgeValue = [string]$policy.Value }
     $edgeSource = 'non lue'
     if ($policy.Source) { $edgeSource = [string]$policy.Source }
-    Write-Info ('Edge SSLErrorOverrideAllowed : {0} ({1})' -f $edgeValue, $edgeSource)
+    Write-Info ('Edge SSLErrorOverrideAllowed : {0} ({1})' -f (Format-CockpitEdgePolicyValue $policy), $edgeSource)
     $origins = @($policy.Origins | Where-Object { $_ -cmatch '^[ -~]{1,80}\z' })
     $originsText = 'aucune'
     if ($origins.Count -gt 0) { $originsText = ($origins | Select-Object -First 10) -join ', ' }
@@ -767,7 +765,6 @@ if ($finalScheme -ceq 'https') {
 } else {
     Write-CockpitLines @(('    [OK] Cockpit disponible sur {0} (mode HTTP local, preuve du jeton verifiee : {1})' -f (Get-CockpitBaseUrl 'http' $Port), (Get-MethodLabel $health.Method)))
     Write-CockpitModeNotice $finalMode $policy
-    if ($NoBrowser) { Write-Info 'Ouvrir : .\cockpit.ps1 open' }
 }
 if ($health.Version -and $health.Version -cne $Version) {
     Write-Attention ('Le cockpit en marche annonce la version {0}, les scripts sont en {1}. Relancez .\install.ps1 si la mise a jour est incomplete.' -f $health.Version, $Version)

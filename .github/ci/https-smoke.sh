@@ -424,7 +424,12 @@ check "login-disabled" "$(json_field "$WORK/login.json" error)" "motif du refus 
 DEFI_HTTP="$(openssl rand -hex 32)"
 printf 'opencode-cockpit/health-proof/v1\n%s' "$DEFI_HTTP" >"$WORK/message-preuve-http.bin"
 PREUVE_HTTP_ATTENDUE="$(hmac_sha256 "$TOKEN" "$WORK/message-preuve-http.bin")"
-curl_code "$WORK/preuve-http.json" --proto '=http' "$BASE_HTTP/api/health?challenge=$DEFI_HTTP&ticket=1" >/dev/null
+# Demande de ticket : seulement signee par le jeton (HMAC du defi, usage auth-ticket-request), une seule fois par defi.
+check "403" "$(curl_code "$WORK/ticket-non-signe.json" --proto '=http' "$BASE_HTTP/api/health?challenge=$DEFI_HTTP&ticket=1")" "demande de ticket non signee par le jeton : 403"
+if [ -z "$(json_field "$WORK/ticket-non-signe.json" ticket)" ]; then ok "aucun ticket sans demande signee"; else ko "ticket emis sans demande signee"; fi
+printf 'opencode-cockpit/auth-ticket-request/v1\n%s' "$DEFI_HTTP" >"$WORK/message-demande-http.bin"
+DEMANDE_HTTP="$(hmac_sha256 "$TOKEN" "$WORK/message-demande-http.bin")"
+check "200" "$(curl_code "$WORK/preuve-http.json" --proto '=http' "$BASE_HTTP/api/health?challenge=$DEFI_HTTP&ticket=$DEMANDE_HTTP")" "demande de ticket signee : 200"
 if [ "$(json_field "$WORK/preuve-http.json" proof)" = "$PREUVE_HTTP_ATTENDUE" ] && [ -n "$PREUVE_HTTP_ATTENDUE" ]; then
   ok "preuve du jeton conforme en mode HTTP"
 else
@@ -432,6 +437,7 @@ else
 fi
 TICKET="$(json_field "$WORK/preuve-http.json" ticket)"
 if printf '%s' "$TICKET" | grep -Eq '^[0-9a-f]{64}$'; then ok "ticket de connexion au format attendu"; else ko "ticket de connexion absent ou mal forme"; fi
+check "403" "$(curl_code "$POUBELLE" --proto '=http' "$BASE_HTTP/api/health?challenge=$DEFI_HTTP&ticket=$DEMANDE_HTTP")" "demande de ticket rejouee : 403"
 docker stop "$C_HTTP" >/dev/null
 
 ########################################################################################################################

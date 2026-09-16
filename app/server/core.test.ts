@@ -25,6 +25,7 @@ import { redactSecrets } from "./redact.ts";
 import {
   attemptLogin,
   authTicketMac,
+  authTicketRequestMac,
   csrfGuard,
   healthProof as serverHealthProof,
   hostGuard,
@@ -469,6 +470,7 @@ describe("sécurité et utilitaires", () => {
         hmac: z.strictObject({
           token: z.string().regex(HEX64),
           healthProof: z.strictObject({ challenge: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
+          authTicketRequest: z.strictObject({ challenge: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
           authTicket: z.strictObject({ nonce: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
         }),
       })
@@ -578,21 +580,38 @@ describe("sécurité et utilitaires", () => {
       for (const value of ["openssl", "bin/openssl"]) assert.throws(() => loadEnv({ ...base, COCKPIT_OPENSSL: value }), EnvError, value);
     });
 
-    it("HMAC des vecteurs cohérents : clé = jeton en UTF-8, préfixes distincts pour la preuve et le ticket", () => {
-      const { token, healthProof, authTicket } = vectors.hmac;
+    it("README : réglages du serveur de développement HTTPS acceptés tels qu'écrits (chemins absolus)", () => {
+      const readme = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "README.md"), "utf8");
+      const settings = [...readme.matchAll(/`(COCKPIT_TLS_DIR|COCKPIT_OPENSSL)=([^`]*)`/g)].map((m) => ({ key: m[1] ?? "", value: m[2] ?? "" }));
+      assert.deepEqual([...new Set(settings.map((s) => s.key))].sort(), ["COCKPIT_OPENSSL", "COCKPIT_TLS_DIR"]);
+      for (const { key, value } of settings) {
+        // Valeur à remplacer (<…>) : elle doit annoncer un chemin absolu ; valeur littérale : acceptée par le serveur telle quelle.
+        if (value.startsWith("<")) assert.match(value, /chemin absolu/, key);
+        else assert.doesNotThrow(() => loadEnv({ ...base, [key]: value }), `${key}=${value}`);
+      }
+    });
+
+    it("HMAC des vecteurs cohérents : clé = jeton en UTF-8, préfixes distincts pour la preuve, la demande de ticket et le ticket", () => {
+      const { token, healthProof, authTicketRequest, authTicket } = vectors.hmac;
       const mac = (message: string) => crypto.createHmac("sha256", Buffer.from(token, "utf8")).update(message, "utf8").digest("hex");
       assert.equal(mac(`opencode-cockpit/health-proof/v1\n${healthProof.challenge}`), healthProof.expected);
+      assert.equal(mac(`opencode-cockpit/auth-ticket-request/v1\n${authTicketRequest.challenge}`), authTicketRequest.expected);
       assert.equal(mac(`opencode-cockpit/auth-ticket/v1\n${authTicket.nonce}`), authTicket.expected);
       // Séparation des usages : le même aléa signé pour l'autre usage donne une autre valeur.
       assert.notEqual(mac(`opencode-cockpit/auth-ticket/v1\n${healthProof.challenge}`), healthProof.expected);
       assert.notEqual(healthProof.challenge, authTicket.nonce);
+      // La demande signe le même défi que la preuve : la preuve servie par le cockpit ne vaut jamais demande de ticket.
+      assert.equal(authTicketRequest.challenge, healthProof.challenge);
+      assert.notEqual(authTicketRequest.expected, healthProof.expected);
     });
 
-    it("preuve du jeton et signature du ticket du serveur égales aux vecteurs communs", () => {
+    it("preuve du jeton, demande de ticket et signature du ticket du serveur égales aux vecteurs communs", () => {
       const v = vectors.hmac;
       assert.equal(serverHealthProof(v.token, v.healthProof.challenge), v.healthProof.expected);
+      assert.equal(authTicketRequestMac(v.token, v.authTicketRequest.challenge), v.authTicketRequest.expected);
       assert.equal(authTicketMac(v.token, v.authTicket.nonce), v.authTicket.expected);
       assert.notEqual(serverHealthProof(v.token, v.authTicket.nonce), authTicketMac(v.token, v.authTicket.nonce));
+      assert.notEqual(authTicketRequestMac(v.token, v.authTicket.nonce), authTicketMac(v.token, v.authTicket.nonce));
       assert.notEqual(serverHealthProof("ab".repeat(32), v.healthProof.challenge), v.healthProof.expected);
     });
 

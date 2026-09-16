@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "note": "Vecteurs communs 1.0.5, lus par app/server/core.test.ts et par les tests PowerShell 5.1. Valeurs de test publiques : aucun jeton ni secret reel. localAccess : scheme et confirmedAt sont les valeurs brutes des cles COCKPIT_LOCAL_SCHEME et COCKPIT_LOCAL_HTTP_CONFIRMED (null = cle absente) ; les espaces aux deux bouts sont retires avant le controle ; valid = configuration acceptee ; localScheme = mode servi (null si refus). dates : valeur brute de COCKPIT_LOCAL_HTTP_CONFIRMED lue avec COCKPIT_LOCAL_SCHEME=http. hmac : HMAC-SHA256 en hexadecimal minuscule ; cle = octets UTF-8 du jeton ; message = octets UTF-8 de opencode-cockpit/health-proof/v1 (preuve) ou opencode-cockpit/auth-ticket/v1 (ticket), suivi d'un saut de ligne LF puis du defi ou du nonce.",
+  "note": "Vecteurs communs 1.0.5, lus par app/server/core.test.ts et par les tests PowerShell 5.1. Valeurs de test publiques : aucun jeton ni secret reel. localAccess : scheme et confirmedAt sont les valeurs brutes des cles COCKPIT_LOCAL_SCHEME et COCKPIT_LOCAL_HTTP_CONFIRMED (null = cle absente) ; les espaces aux deux bouts sont retires avant le controle ; valid = configuration acceptee ; localScheme = mode servi (null si refus). dates : valeur brute de COCKPIT_LOCAL_HTTP_CONFIRMED lue avec COCKPIT_LOCAL_SCHEME=http. hmac : HMAC-SHA256 en hexadecimal minuscule ; cle = octets UTF-8 du jeton ; message = octets UTF-8 de opencode-cockpit/health-proof/v1 (preuve), opencode-cockpit/auth-ticket-request/v1 (demande de ticket) ou opencode-cockpit/auth-ticket/v1 (ticket), suivi d'un saut de ligne LF puis du defi (preuve, demande) ou du nonce (ticket).",
   "localAccess": [
     { "name": "cle absente", "scheme": null, "confirmedAt": null, "valid": true, "localScheme": "https" },
     { "name": "cle absente, date presente ignoree", "scheme": null, "confirmedAt": "2026-09-15T10:32:00Z", "valid": true, "localScheme": "https" },
@@ -80,6 +80,10 @@
     "healthProof": {
       "challenge": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
       "expected": "c7b5ab3dd4e004761880d8d3dd1bdeba4177b6e3d0f5a30eff860019cb058ded"
+    },
+    "authTicketRequest": {
+      "challenge": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "expected": "1d88f63e69269fc2e3f0158026f9193988b0ccf123ba1ffa6ef5de446379973b"
     },
     "authTicket": {
       "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",

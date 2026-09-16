@@ -223,7 +223,7 @@ function plainBytes(port: number, payload: string): Promise<number> {
   });
 }
 
-const tokenMac = (usage: "health-proof" | "auth-ticket", value: string): string =>
+const tokenMac = (usage: "health-proof" | "auth-ticket" | "auth-ticket-request", value: string): string =>
   crypto.createHmac("sha256", TOKEN).update(`opencode-cockpit/${usage}/v1\n${value}`).digest("hex");
 const newChallenge = (): string => crypto.randomBytes(32).toString("hex");
 const setCookiesOf = (reply: { headers: http.IncomingHttpHeaders }): string[] => reply.headers["set-cookie"] ?? [];
@@ -344,11 +344,15 @@ describe("HTTPS de bout en bout (main.ts réel, openssl)", { skip: SKIP_OPENSSL 
 
   it("ticket : lien → cookie __Host- exact ; lien rejoué refusé ; /auth?t= → ancien-lien sans cookie ; saisie du jeton inchangée en HTTPS", async () => {
     const challenge = newChallenge();
-    const health = JSON.parse((await tlsCall(port, "GET", `/api/health?challenge=${challenge}&ticket=1`, { ca })).body) as { proof?: string; ticket?: string };
+    const unsigned = await tlsCall(port, "GET", `/api/health?challenge=${challenge}&ticket=1`, { ca });
+    assert.equal(unsigned.status, 403);
+    assert.equal((JSON.parse(unsigned.body) as { ticket?: string }).ticket, undefined);
+    const request = tokenMac("auth-ticket-request", challenge);
+    const health = JSON.parse((await tlsCall(port, "GET", `/api/health?challenge=${challenge}&ticket=${request}`, { ca })).body) as { proof?: string; ticket?: string };
     assert.equal(health.proof, tokenMac("health-proof", challenge));
     const ticket = health.ticket ?? "";
     assert.match(ticket, /^[0-9a-f]{64}$/);
-    secrets.push(challenge, ticket);
+    secrets.push(challenge, request, ticket);
     const link = `/auth?k=${ticket}.${tokenMac("auth-ticket", ticket)}`;
     const opened = await tlsCall(port, "GET", link, { ca, headers: { "sec-fetch-site": "none", "sec-fetch-dest": "document" } });
     assert.equal(opened.status, 303);

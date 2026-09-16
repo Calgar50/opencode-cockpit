@@ -4,7 +4,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { isValidConfirmedAt } from "./env.ts";
-import { authErrorText, isDisplayableConfirmedAt, localAccessNotice, loginMode } from "./shared/local-access-notice.ts";
+import {
+  authErrorText,
+  CERT_RENEW_BEFORE_DAYS,
+  certificateRenewalDue,
+  isDisplayableConfirmedAt,
+  localAccessNotice,
+  loginMode,
+} from "./shared/local-access-notice.ts";
+import { TLS_RENEW_BEFORE_DAYS } from "./tls.ts";
 
 const VECTORS = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "..", "..", "tests", "vectors", "local-access.json"), "utf8")) as {
   dates: { accepted: string[]; rejected: string[] };
@@ -53,6 +61,37 @@ describe("bandeau d'accès local", () => {
     }
     assert.equal(isDisplayableConfirmedAt(null), false);
     assert.equal(isDisplayableConfirmedAt(undefined), false);
+  });
+});
+
+describe("échéance du certificat HTTPS local", () => {
+  const DAY_MS = 86_400_000;
+  /** Jours restants tels que le serveur les envoie à l'interface (http.ts, tlsStatus). */
+  const daysLeftOf = (msLeft: number) => Math.floor(msLeft / DAY_MS);
+
+  it("même borne que le renouvellement au démarrage (TLS_RENEW_BEFORE_DAYS)", () => {
+    assert.equal(CERT_RENEW_BEFORE_DAYS, TLS_RENEW_BEFORE_DAYS);
+  });
+
+  it("annoncé seulement quand le démarrage suivant renouvelle (échéance à moins de 30 jours, règle d'inspectPair)", () => {
+    const cases = [397 * DAY_MS, 31 * DAY_MS, 30 * DAY_MS + 12 * 3_600_000, 30 * DAY_MS + 1, 30 * DAY_MS, 30 * DAY_MS - 1, 29 * DAY_MS, 1, 0, -1, -DAY_MS];
+    for (const msLeft of cases) {
+      const renewedAtStart = msLeft < TLS_RENEW_BEFORE_DAYS * DAY_MS;
+      assert.equal(certificateRenewalDue(daysLeftOf(msLeft)), renewedAtStart, `${msLeft} ms`);
+    }
+    // Exemple relevé : 30 jours et 12 heures → aucun bandeau, le redémarrage garderait le même certificat.
+    assert.equal(certificateRenewalDue(30), false);
+    assert.equal(certificateRenewalDue(29), true);
+    assert.equal(certificateRenewalDue(-1), true);
+  });
+
+  it("interface : bandeau et Diagnostic suivent la règle partagée, jamais « <= 30 »", () => {
+    const web = path.join(import.meta.dirname, "..", "web");
+    for (const file of [path.join(web, "app", "App.tsx"), path.join(web, "pages", "DiagnosticsPage.tsx")]) {
+      const source = fs.readFileSync(file, "utf8");
+      assert.doesNotMatch(source, /daysLeft\s*<=\s*30|DaysLeft\s*<=\s*30/, file);
+      assert.match(source, /certificateRenewalDue\(/, file);
+    }
   });
 });
 

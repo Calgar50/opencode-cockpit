@@ -1,6 +1,6 @@
 // Diagnostic : état d'opencode, du flux d'événements, du réseau, de Copilot et journal.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { localAccessNotice } from "../../server/shared/local-access-notice.ts";
+import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -61,7 +61,7 @@ type Problem = { tone: "critical" | "warning"; text: string; action?: "restart-o
 function problemsOf(s: SystemStatus, quotaEnabled: boolean): Problem[] {
   const out: Problem[] = [];
   // Le mode HTTP local n'est jamais un « point à vérifier » : c'est un choix d'installation, rappelé par son bandeau permanent.
-  if (s.security.tls !== null && s.security.tls.daysLeft <= 30) {
+  if (s.security.tls !== null && certificateRenewalDue(s.security.tls.daysLeft)) {
     out.push({
       tone: "warning",
       text:
@@ -132,7 +132,7 @@ function LocalHttpsLines({ tls, onCopy }: { tls: NonNullable<SystemStatus["secur
       <Line tone="neutral" label="Empreinte SHA-256" hint={<Copyable value={tls.sha256} what="empreinte du certificat" onCopy={onCopy} />} />
       <Line tone="neutral" label="Clé publique (SPKI, base64)" hint={<span className="mono small" style={{ wordBreak: "break-all" }}>{tls.spkiSha256Base64}</span>} />
       <Line
-        tone={tls.daysLeft <= 30 ? "warning" : "good"}
+        tone={certificateRenewalDue(tls.daysLeft) ? "warning" : "good"}
         label="Validité"
         value={tls.daysLeft < 0 ? "expiré" : `${formatInt(tls.daysLeft)} jour${tls.daysLeft > 1 ? "s" : ""} restant${tls.daysLeft > 1 ? "s" : ""}`}
         hint={`Du ${formatDateTime(Date.parse(tls.notBefore))} au ${formatDateTime(Date.parse(tls.notAfter))}.`}

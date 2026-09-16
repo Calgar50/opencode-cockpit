@@ -361,6 +361,14 @@ function Invoke-CockpitRollback {
     if ($mode.Valid -and $mode.Scheme -ceq 'http') { $access = 'HTTP local' } elseif (-not $mode.Valid) { $access = 'a reconfigurer' }
     $full = ($null -ne $currentVersion -and $currentVersion -ge [version]'1.0.5')
     if ($full) { $target = Get-CockpitVersionOrNull (Get-ConfigValue $config 'COCKPIT_PREVIOUS_VERSION') } else { $target = $currentVersion }
+    # Mode d'installation que reprendra install.ps1 apres un retour complet (meme regle que sa section 2) : en mode Load, sans
+    # archive, .\cockpit.ps1 update s'arretera sur les images de la cible inscrites dans .env.
+    $nextInstallMode = Get-ConfigValue $config 'COCKPIT_PREVIOUS_INSTALL_MODE'
+    if (@('Build', 'Pull', 'Load') -notcontains $nextInstallMode) {
+        $previousOpencode = Get-ConfigValue $config 'COCKPIT_PREVIOUS_OPENCODE_IMAGE'
+        if ($previousOpencode -and $previousOpencode -notmatch ':local$') { $nextInstallMode = 'Load' } else { $nextInstallMode = 'Build' }
+    }
+    $loadAfter = $full -and $nextInstallMode -eq 'Load'
     if ($null -eq $target) {
         Write-Attention 'Retour impossible : aucune version precedente memorisee dans .env (COCKPIT_PREVIOUS_VERSION).'
         return
@@ -416,8 +424,12 @@ function Invoke-CockpitRollback {
             '       (autres reglages conserves, dont le mode d acces et le jeton)')
     }
     if ($gitExe) {
-        $plan += @(('    2. Scripts : branche {0} repositionnee sur v{1} (git checkout --no-overwrite-ignore -B {0} v{1}) ;' -f $branch, $target),
-            '       git refuse s il devait ecraser un fichier ; .\cockpit.ps1 update ramenera ensuite la derniere version')
+        $plan += ('    2. Scripts : branche {0} repositionnee sur v{1} (git checkout --no-overwrite-ignore -B {0} v{1}) ;' -f $branch, $target)
+        if ($loadAfter) {
+            $plan += ('       git refuse s il devait ecraser un fichier ; mode Load : revenir ensuite a la {0} demandera son archive d images' -f $Version)
+        } else {
+            $plan += '       git refuse s il devait ecraser un fichier ; .\cockpit.ps1 update ramenera ensuite la derniere version'
+        }
         if ($full) {
             $plan += ('    3. .\install.ps1 de la version {0} relance les conteneurs' -f $target)
             if ($installMode -ceq 'Build') { $plan += ('       Build : reconstruction des images {0}, acces a Docker Hub, npm et Debian requis' -f $target) }
@@ -473,14 +485,21 @@ function Invoke-CockpitRollback {
         return
     }
     if (-not $full) {
+        # install.ps1 est maintenant celui de la cible : ni -Http ni la version a terminer. update ramene les scripts d'abord.
         Write-CockpitLines @(('    [OK] Scripts {0} retablis.' -f $target), ('    Vos conteneurs {0} n ont pas change.' -f $target),
-            '    Terminer la mise a jour plus tard : .\install.ps1 (HTTPS) ou .\install.ps1 -Http (mode HTTP local)')
+            ('    Terminer la mise a jour plus tard : .\cockpit.ps1 update (ramene les scripts {0} et relance l installation ;' -f $Version),
+            '    s il s arrete de nouveau, suivez ses consignes)')
         return
     }
     Write-Step ('Conteneurs : install.ps1 de la version {0}' -f $target)
     & (Join-Path $Root 'install.ps1') -NoBrowser
-    $end = @(('    [OK] Version {0} retablie. Ouvrir : .\cockpit.ps1 open' -f $target),
-        ('    .\cockpit.ps1 update ramenera la {0} dans le mode d acces memorise ({1}).' -f $Version, $access))
+    $end = @(('    [OK] Version {0} retablie. Ouvrir : .\cockpit.ps1 open' -f $target))
+    if ($loadAfter) {
+        $end += @(('    Mode Load : .\cockpit.ps1 update s arretera (images {0} inscrites dans .env). Pour revenir a la {1} dans le mode' -f $target, $Version),
+            ('    d acces memorise ({0}) : .\cockpit.ps1 update, puis .\install.ps1 -Mode Load -ImagesArchive <opencode-cockpit-images-{1}.tar.gz>' -f $access, $Version))
+    } else {
+        $end += ('    .\cockpit.ps1 update ramenera la {0} dans le mode d acces memorise ({1}).' -f $Version, $access)
+    }
     if ($target -lt [version]'1.0.5') {
         $end += @(('    [!] Rappel : la version {0} sert le cockpit en HTTP, en clair, sans bandeau ; son .\cockpit.ps1 open envoie' -f $target),
             ('        le jeton sans verification. La mise a jour vers la {0} remplacera ce jeton.' -f $Version))
@@ -607,25 +626,30 @@ try {
                 if (-not $mode.Valid) { Write-CockpitA18 $mode }
                 elseif ($mode.Scheme -ceq 'http') { Write-Host ('Mode (.env)     : http, confirme le {0} UTC' -f $mode.ConfirmedAt) }
                 else { Write-Host 'Mode (.env)     : https' }
+                # Mise a jour inachevee (image du cockpit anterieure a 1.0.5) : elle sert toujours en HTTP et ignore
+                # COCKPIT_LOCAL_SCHEME, dont la valeur dans le conteneur ne dit donc rien du mode servi.
+                $running = Get-RunningImageVersion
+                $unfinished = Test-CockpitUnfinishedUpdate $running
                 # 2. Mode reellement servi par le conteneur (valeur demandee seule, jamais l'environnement du conteneur).
-                $served = Get-CockpitServedScheme $Root
-                if (-not $served) { Write-Host 'Mode (cockpit)  : illisible (conteneur arrete ?)' }
-                elseif ($mode.Valid -and $served -ceq [string]$mode.Scheme) { Write-Host ('Mode (cockpit)  : {0}' -f $served) }
+                if ($unfinished) { Write-Host ('Mode (cockpit)  : http (cockpit {0} anterieur a 1.0.5, mode d acces non gere)' -f $running) }
                 else {
-                    Write-Attention ('Mode (cockpit)  : {0} - different de .env' -f $served)
-                    $cause = Get-CockpitDivergenceText
-                    if ($cause) {
-                        Write-Host ('                  Cause : {0}' -f $cause)
-                        Write-Host '                  Remede : .\cockpit.ps1 restart, puis supprimez cette cause pour vos commandes docker lancees a la main (ou -f docker-compose.yml).'
-                    } else {
-                        Write-Host '                  Cause : aucune trouvee (.env modifie sans redemarrage). Remede : .\cockpit.ps1 restart'
+                    $served = Get-CockpitServedScheme $Root
+                    if (-not $served) { Write-Host 'Mode (cockpit)  : illisible (conteneur arrete ?)' }
+                    elseif ($mode.Valid -and $served -ceq [string]$mode.Scheme) { Write-Host ('Mode (cockpit)  : {0}' -f $served) }
+                    else {
+                        Write-Attention ('Mode (cockpit)  : {0} - different de .env' -f $served)
+                        $cause = Get-CockpitDivergenceText
+                        if ($cause) {
+                            Write-Host ('                  Cause : {0}' -f $cause)
+                            Write-Host '                  Remede : .\cockpit.ps1 restart, puis supprimez cette cause pour vos commandes docker lancees a la main (ou -f docker-compose.yml).'
+                        } else {
+                            Write-Host '                  Cause : aucune trouvee (.env modifie sans redemarrage). Remede : .\cockpit.ps1 restart'
+                        }
                     }
                 }
                 # 3. Conteneur cockpit : sante Docker, mise a jour inachevee, derniere erreur de configuration HTTPS.
                 $containerHealth = Get-CockpitContainerHealth $Root
                 if ($containerHealth) { Write-Host ('Conteneur       : sante Docker {0}' -f $containerHealth) } else { Write-Host 'Conteneur       : absent ou sante illisible' }
-                $running = Get-RunningImageVersion
-                $unfinished = Test-CockpitUnfinishedUpdate $running
                 if ($unfinished) { Write-CockpitA10 $running $port }
                 if ($containerHealth -cne 'healthy') {
                     $journal = Invoke-DockerTimeout 20 compose logs --tail 200 cockpit
@@ -646,9 +670,13 @@ try {
                             Write-Host ('                  valable du {0} au {1} (UTC), SAN {2}' -f $health.TlsState.NotBefore.ToString('yyyy-MM-dd'), $health.TlsState.NotAfter.ToString('yyyy-MM-dd'), (@($health.TlsState.San) -join ', '))
                             foreach ($warning in @(Get-CockpitCertWarnings $health.TlsState)) { Write-Attention $warning.Text }
                         } else { Write-Host 'Certificat      : non publie (cockpit arrete ou demarrage en cours)' }
-                        $tlsJournal = Invoke-DockerTimeout 20 compose logs --tail 200 cockpit
-                        $refused = @(($tlsJournal.Output -split "`r?`n") | Where-Object { $_ -match 'tlsClientError' })
-                        Write-Host ('Refus TLS       : {0} ligne(s) resumee(s) dans les 200 dernieres du journal (une requete toutes les 10 s environ est du bruit de fond normal)' -f $refused.Count)
+                        # Resumes du serveur (TlsRefusals, au plus un par minute) : {"msg":"connexions TLS refusees ...","total":N,...}.
+                        # Motif ASCII, independant de l'encodage de la console ; seuls les totaux sont additionnes.
+                        $tlsJournal = Invoke-DockerTimeout 20 compose logs --since 30m cockpit
+                        $summaries = @(($tlsJournal.Output -split "`r?`n") | Where-Object { $_.Contains('"msg":"connexions TLS refus') })
+                        $refusedTotal = [long]0
+                        foreach ($summary in $summaries) { if ($summary -cmatch '"total":([0-9]{1,9})[,}]') { $refusedTotal += [long]$Matches[1] } }
+                        Write-Host ('Refus TLS       : {0} connexion(s) refusee(s) sur 30 min ({1} resume(s) du journal ; une requete toutes les 10 s environ est du bruit de fond normal)' -f $refusedTotal, $summaries.Count)
                     } else {
                         Write-Host 'Certificat      : non utilise (mode HTTP local)'
                     }
@@ -656,7 +684,7 @@ try {
                 # 6. Poste gere : strategies lues dans le registre (edge://policy fait foi), voie de verification.
                 $source = 'aucune'
                 if ($policy.Source) { $source = [string]$policy.Source }
-                Write-Host ('Edge            : SSLErrorOverrideAllowed = {0} ({1}), verdict {2} pour {3}' -f $policy.Value, $source, $policy.Verdict, $policy.Origin)
+                Write-Host ('Edge            : SSLErrorOverrideAllowed = {0} ({1}), verdict {2} pour {3}' -f (Format-CockpitEdgePolicyValue $policy), $source, $policy.Verdict, $policy.Origin)
                 if (@($policy.Origins).Count -gt 0) { Write-Host ('                  exceptions declarees : {0}' -f (@($policy.Origins) -join ', ')) }
                 if ($null -ne $policy.Chrome.Value) { Write-Host ('Chrome          : SSLErrorOverrideAllowed = {0} ({1}) - information' -f $policy.Chrome.Value, $policy.Chrome.Source) }
                 foreach ($item in @($policy.HttpsOnly)) { Write-Host ('                  {0} = {1} ({2}) - information' -f $item.Name, $item.Value, $item.Source) }
@@ -729,7 +757,7 @@ try {
                 Write-CockpitModeNotice $mode $policy -OneLine
                 Write-CockpitLines @("Mode HTTP local : aucun certificat n'est servi. Le volume cockpit-tls n'est ni lu ni modifie par le cockpit ;",
                     'un certificat precedent y reste et sera reutilise au retour en HTTPS s il est encore valable.',
-                    ('Strategie Edge lue : SSLErrorOverrideAllowed = {0}, verdict {1} pour {2} (edge://policy fait foi).' -f $policy.Value, $policy.Verdict, $policy.Origin),
+                    ('Strategie Edge lue : SSLErrorOverrideAllowed = {0}, verdict {1} pour {2} (edge://policy fait foi).' -f (Format-CockpitEdgePolicyValue $policy), $policy.Verdict, $policy.Origin),
                     'Effacer le certificat local malgre tout : .\cockpit.ps1 tls -Renew')
                 return
             }
@@ -747,7 +775,7 @@ try {
             $health = Get-CockpitHealth $mode $port 5
             if ($health.Reason -ceq 'Ok') { Write-Host ('Cockpit verifie sur {0} (certificat epingle et preuve du jeton, voie {1})' -f (Get-CockpitBaseUrl 'https' $port), (Get-CockpitMethodLabel $health.Method)) -ForegroundColor Green }
             else { Write-CockpitHealthProblem $health $mode $port }
-            Write-Host ('Strategie Edge lue : SSLErrorOverrideAllowed = {0}, verdict {1} pour {2} (edge://policy fait foi).' -f $policy.Value, $policy.Verdict, $policy.Origin)
+            Write-Host ('Strategie Edge lue : SSLErrorOverrideAllowed = {0}, verdict {1} pour {2} (edge://policy fait foi).' -f (Format-CockpitEdgePolicyValue $policy), $policy.Verdict, $policy.Origin)
             Write-Host 'Nouveau certificat (cockpit arrete puis redemarre) : .\cockpit.ps1 tls -Renew'
         }
         'certs' {
