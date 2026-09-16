@@ -18,13 +18,15 @@
 // - consigne {etat: prepare | envoyee, callId, messageId, enfant?, agent?, source?, commande?, reprise?}   partie task
 // - resultat {etat: rendu | echec | interrompu, callId, messageId, enfant}                                partie task close
 // - attente {permission, messageId, callId, agent} · reponse {reponse}                  permission.asked · permission.replied
-// - origine {origine, cas, messageId}                                partie texte ou subtask d'un message utilisateur (§5.7.2)
+// - origine {origine, cas, messageId}                                message utilisateur (§5.7.2) : dès sa première partie texte ou
+//                                                                     subtask pour les cas 1 à 3 ; sinon quand toutes ses parties
+//                                                                     sont connues (réponse de l'assistant, ou session au repos)
 // Les faits decision, choix, affichage et statut {cause} sont écrits par leurs services (L10, L6a, L4b, L1c) ; reveil, reprise,
 // carnet et detection viendront avec la Salle OMO (L23, L25).
 import { redactSecrets } from "../redact.ts";
 import type { ActivityFact, ActivityFactKind, FactValue, SessionInstance, SessionRole } from "./activity-types.ts";
 import { ID_RE } from "./ids.ts";
-import { type OriginPart, originVerdict } from "./message-origin.ts";
+import { contextVerdict, type OriginContext, type OriginPart, originPartSummary, originVerdict } from "./message-origin.ts";
 
 // --- Heure d'un événement (M15) -------------------------------------------------------------------------------------------------
 
@@ -173,28 +175,92 @@ export interface FactContext {
   promptKind(messageId: string): string | null;
   /** Identifiant du premier message utilisateur de la session, null s'il est inconnu (EventMemory). */
   firstUserMessage(sessionId: string): string | null;
+  /** Parties texte et subtask déjà vues d'un message utilisateur, réduites par originPartSummary ; vide si aucune (EventMemory). */
+  userMessageParts(messageId: string): readonly OriginPart[];
+  /** Messages utilisateur de la session auxquels aucune réponse de l'assistant n'a encore été vue (EventMemory). */
+  unansweredUserMessages(sessionId: string): readonly string[];
 }
 
-/** Mémoire bornée du flux : rôle des messages et premier message utilisateur de chaque session, pour un FactContext. */
+/** Parties gardées par message utilisateur ; au-delà, une partie inconnue est comptée (elle peut ne pas être synthétique). */
+export const MEMORY_MAX_PARTS = 64;
+/** Messages sans réponse gardés par session ; les plus anciens sont oubliés au-delà. */
+export const MEMORY_MAX_UNANSWERED = 16;
+/** Partie qui tient la place de celles qui n'ont pas pu être gardées : texte réel possible, donc jamais « synthétique ». */
+const UNKNOWN_PART_KEY = " inconnue";
+const UNKNOWN_PART: OriginPart = Object.freeze({ type: "text", synthetic: false });
+
+/**
+ * Mémoire bornée du flux, pour un FactContext : rôle des messages, premier message utilisateur de chaque session, parties des
+ * messages utilisateur (réduites à ce que lit le classement d'origine, jamais leur texte) et messages encore sans réponse.
+ */
 export class EventMemory {
   readonly #limit: number;
   readonly #roles = new Map<string, "user" | "assistant">();
   readonly #firstUser = new Map<string, string>();
+  readonly #userParts = new Map<string, Map<string, OriginPart>>();
+  readonly #unanswered = new Map<string, string[]>();
 
   constructor(limit = 20_000) {
     this.#limit = Math.max(1, Math.floor(limit));
   }
 
-  /** À appeler pour chaque événement, AVANT factsFromEvent : un message.updated fait connaître le rôle de son message. */
+  /**
+   * À appeler pour chaque événement, AVANT factsFromEvent : un message.updated fait connaître le rôle de son message (et, pour
+   * une réponse de l'assistant, le message auquel elle répond) ; une partie texte ou subtask d'un message utilisateur est gardée.
+   */
   observe(event: FactEvent): void {
-    if (event.type !== "message.updated") return;
+    if (event.type === "message.part.updated") this.#observePart(event);
+    else if (event.type === "message.updated") this.#observeMessage(event);
+  }
+
+  #observeMessage(event: FactEvent): void {
     const info = isRecord(event.properties?.info) ? event.properties.info : null;
     const id = idOf(info?.id);
     const sessionId = idOf(info?.sessionID);
     const role = info?.role;
     if (id === null || sessionId === null || (role !== "user" && role !== "assistant")) return;
+    const seen = this.#roles.has(id);
     remember(this.#roles, id, role, this.#limit);
-    if (role === "user" && !this.#firstUser.has(sessionId)) remember(this.#firstUser, sessionId, id, this.#limit);
+    if (role === "assistant") {
+      this.#answered(sessionId, idOf(info?.parentID));
+      return;
+    }
+    if (!this.#firstUser.has(sessionId)) remember(this.#firstUser, sessionId, id, this.#limit);
+    // Un message utilisateur est republié plus tard (résumé) : seule sa première publication l'inscrit comme sans réponse.
+    if (!seen) this.#awaitAnswer(sessionId, id);
+  }
+
+  #awaitAnswer(sessionId: string, messageId: string): void {
+    let waiting = this.#unanswered.get(sessionId);
+    if (!waiting) {
+      if (this.#unanswered.size >= this.#limit) this.#unanswered.delete(this.#unanswered.keys().next().value as string);
+      waiting = [];
+      this.#unanswered.set(sessionId, waiting);
+    }
+    waiting.push(messageId);
+    if (waiting.length > MEMORY_MAX_UNANSWERED) waiting.shift();
+  }
+
+  #answered(sessionId: string, parentId: string | null): void {
+    const waiting = this.#unanswered.get(sessionId);
+    const index = parentId === null || !waiting ? -1 : waiting.indexOf(parentId);
+    if (index >= 0) waiting?.splice(index, 1);
+  }
+
+  #observePart(event: FactEvent): void {
+    const part = isRecord(event.properties?.part) ? event.properties.part : null;
+    if (part?.type !== "text" && part?.type !== "subtask") return;
+    const messageId = idOf(part.messageID);
+    if (messageId === null || this.#roles.get(messageId) !== "user") return;
+    let parts = this.#userParts.get(messageId);
+    if (!parts) {
+      if (this.#userParts.size >= this.#limit) this.#userParts.delete(this.#userParts.keys().next().value as string);
+      parts = new Map();
+      this.#userParts.set(messageId, parts);
+    }
+    const key = idOf(part.id) ?? `${UNKNOWN_PART_KEY} ${parts.size}`;
+    if (parts.has(key) || parts.size < MEMORY_MAX_PARTS) parts.set(key, originPartSummary(part));
+    else parts.set(UNKNOWN_PART_KEY, UNKNOWN_PART);
   }
 
   messageRole(messageId: string): "user" | "assistant" | null {
@@ -203,6 +269,14 @@ export class EventMemory {
 
   firstUserMessage(sessionId: string): string | null {
     return this.#firstUser.get(sessionId) ?? null;
+  }
+
+  userMessageParts(messageId: string): readonly OriginPart[] {
+    return [...(this.#userParts.get(messageId)?.values() ?? [])];
+  }
+
+  unansweredUserMessages(sessionId: string): readonly string[] {
+    return [...(this.#unanswered.get(sessionId) ?? [])];
   }
 }
 
@@ -304,7 +378,17 @@ export function factsFromEvent(event: FactEvent, ctx: FactContext): ActivityFact
       const etat = typeof status?.type === "string" ? STATUS_ETATS[status.type] : undefined;
       const s = etat ? sessionFacts(ctx, idOf(p.sessionID), at) : null;
       if (!s || !etat) return [];
-      return [s.fact("statut", null, etat === "nouvelle-tentative" ? { etat, tentative: countOf(status?.attempt) } : { etat })];
+      const facts = [s.fact("statut", null, etat === "nouvelle-tentative" ? { etat, tentative: countOf(status?.attempt) } : { etat })];
+      // Session au repos : un message resté sans réponse (sans réponse demandée, erreur avant l'appel) a toutes ses parties.
+      if (etat === "repos") for (const messageId of ctx.unansweredUserMessages(s.sessionId)) facts.push(...originFacts(messageId, s, ctx));
+      return facts;
+    }
+    case "message.updated": {
+      // Réponse de l'assistant : opencode ne la crée qu'après avoir publié toutes les parties du message auquel elle répond.
+      const info = isRecord(p.info) ? p.info : null;
+      const parentId = info?.role === "assistant" ? idOf(info.parentID) : null;
+      const s = parentId === null ? null : sessionFacts(ctx, idOf(info?.sessionID), at);
+      return s && parentId !== null ? originFacts(parentId, s, ctx) : [];
     }
     case "session.error": {
       const s = sessionFacts(ctx, idOf(p.sessionID), at);
@@ -353,6 +437,30 @@ export function factsFromEvent(event: FactEvent, ctx: FactContext): ActivityFact
 
 const TOOL_PHASES: Readonly<Record<string, string>> = { pending: "prepare", running: "en-cours", completed: "termine", error: "erreur" };
 
+type Facts = NonNullable<ReturnType<typeof sessionFacts>>;
+
+function originContext(messageId: string, s: Facts, ctx: FactContext): OriginContext {
+  return {
+    promptKind: ctx.promptKind(messageId),
+    firstUserOfChild: s.session.parentId !== null && ctx.firstUserMessage(s.sessionId) === messageId,
+    instance: s.session.instance,
+  };
+}
+
+const originFact = (messageId: string, s: Facts, verdict: { origine: string; cas: number }) =>
+  s.fact("origine", messageId, { origine: verdict.origine, cas: verdict.cas, messageId });
+
+/**
+ * Origine d'un message utilisateur dont toutes les parties sont connues (§5.7.2), classée sur le message ENTIER : les cas 4 à 7
+ * dépendent de toutes ses parties (un message n'est synthétique que si toutes ses parties texte le sont). Aucun fait si aucune
+ * partie texte ou subtask n'a été vue. Rendu à chaque clôture vue : le même verdict, écarté ensuite par FactDeduper.
+ */
+function originFacts(messageId: string, s: Facts, ctx: FactContext): ActivityFact[] {
+  if (ctx.messageRole(messageId) !== "user") return [];
+  const parts = ctx.userMessageParts(messageId);
+  return parts.length === 0 ? [] : [originFact(messageId, s, originVerdict(parts, originContext(messageId, s, ctx)))];
+}
+
 function partFacts(part: Record<string, unknown>, eventSessionId: string | null, at: number, ctx: FactContext): ActivityFact[] {
   const s = sessionFacts(ctx, idOf(part.sessionID) ?? eventSessionId, at);
   const messageId = idOf(part.messageID);
@@ -369,14 +477,10 @@ function partFacts(part: Record<string, unknown>, eventSessionId: string | null,
       const role = ctx.messageRole(messageId);
       if (role === "assistant") return part.type === "text" ? [s.fact("statut", messageId, { etat: "redige", messageId })] : [];
       if (role !== "user") return [];
-      const originPart: OriginPart = { type: part.type, synthetic: part.synthetic === true };
-      if (typeof part.text === "string") originPart.text = part.text;
-      const verdict = originVerdict([originPart], {
-        promptKind: ctx.promptKind(messageId),
-        firstUserOfChild: s.session.parentId !== null && ctx.firstUserMessage(s.sessionId) === messageId,
-        instance: s.session.instance,
-      });
-      return [s.fact("origine", messageId, { origine: verdict.origine, cas: verdict.cas, messageId })];
+      // Cas 1 à 3 : le contexte suffit, le verdict part dès la première partie. Sinon il attend la clôture du message (originFacts) :
+      // classé sur les parties déjà arrivées, il dépendrait de leur ordre, et FactDeduper garderait le premier fait.
+      const verdict = contextVerdict(originContext(messageId, s, ctx));
+      return verdict === null ? [] : [originFact(messageId, s, verdict)];
     }
     case "tool":
       return toolFacts(part, messageId, s);
@@ -385,7 +489,7 @@ function partFacts(part: Record<string, unknown>, eventSessionId: string | null,
   }
 }
 
-function toolFacts(part: Record<string, unknown>, messageId: string, s: NonNullable<ReturnType<typeof sessionFacts>>): ActivityFact[] {
+function toolFacts(part: Record<string, unknown>, messageId: string, s: Facts): ActivityFact[] {
   const tool = nameOf(part.tool);
   const callId = idOf(part.callID);
   const state = isRecord(part.state) ? part.state : null;

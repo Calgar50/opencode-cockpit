@@ -48,11 +48,41 @@ function carriesMarker(parts: readonly OriginPart[], marker: string): boolean {
   return parts.some((part) => part.type === "text" && typeof part.text === "string" && part.text.includes(marker));
 }
 
-/** Cas 1 à 6, dans l'ordre du §5.7.2 ; le cas 7 est le repli de classifyOrigin. */
-const RULES: ReadonlyArray<readonly [OriginVerdict["cas"], OriginRule]> = [
-  [1, (_parts, ctx) => (ctx.promptKind === "message" ? "demande" : null)],
-  [2, (_parts, ctx) => (ctx.promptKind !== null && /^equipe-[a-z]+$/.test(ctx.promptKind) ? "cockpit" : null)],
-  [3, (_parts, ctx) => (ctx.firstUserOfChild ? "consigne" : null)],
+/** Marqueurs qu'une règle cherche dans le texte d'une partie. Une règle qui en lit un autre doit l'ajouter ici (originPartSummary). */
+const TEXT_MARKERS: readonly string[] = [OMO_INITIATOR_MARKER];
+
+/**
+ * Partie réduite à ce que lit le classement : type, drapeau `synthetic` et marqueurs reconnus, jamais le texte. Le verdict d'un
+ * message est le même sur ses parties réduites (message-origin.test.ts) : c'est tout ce que la mémoire du flux en garde.
+ */
+export function originPartSummary(part: Readonly<Record<string, unknown>>): OriginPart {
+  const summary: OriginPart = { type: typeof part.type === "string" ? part.type : "", synthetic: part.synthetic === true };
+  const text = part.text;
+  if (typeof text === "string") summary.text = TEXT_MARKERS.filter((marker) => text.includes(marker)).join(" ");
+  return summary;
+}
+
+/** Cas 1 à 3 : ils ne lisent que le contexte, jamais les parties du message. */
+const CONTEXT_RULES: ReadonlyArray<readonly [OriginVerdict["cas"], (ctx: OriginContext) => MessageOrigin | null]> = [
+  [1, (ctx) => (ctx.promptKind === "message" ? "demande" : null)],
+  [2, (ctx) => (ctx.promptKind !== null && /^equipe-[a-z]+$/.test(ctx.promptKind) ? "cockpit" : null)],
+  [3, (ctx) => (ctx.firstUserOfChild ? "consigne" : null)],
+];
+
+/**
+ * Verdict des cas 1 à 3, rendu sans connaître les parties ; null quand il faut TOUTES les parties du message (cas 4 à 7) : un
+ * classement fait sur les parties déjà arrivées dépendrait de leur ordre d'arrivée (une partie synthétique, puis une réelle).
+ */
+export function contextVerdict(ctx: OriginContext): OriginVerdict | null {
+  for (const [cas, rule] of CONTEXT_RULES) {
+    const origine = rule(ctx);
+    if (origine !== null) return { cas, origine };
+  }
+  return null;
+}
+
+/** Cas 4 à 6, dans l'ordre du §5.7.2, après les cas 1 à 3 (contextVerdict) ; le cas 7 est le repli de classifyOrigin. */
+const PART_RULES: ReadonlyArray<readonly [OriginVerdict["cas"], OriginRule]> = [
   // Cas 4 : texte noReply ou marqueur OMO_INTERNAL_NOREPLY → reveil-sans-reponse. Réservé (L25, Salle OMO).
   [4, () => null],
   // Cas 5 : préfixe [SYSTEM DIRECTIVE: OH-MY-OPENCODE - {TYPE}] sur une racine → relance-extension. Réservé (L25, Salle OMO).
@@ -69,7 +99,9 @@ const RULES: ReadonlyArray<readonly [OriginVerdict["cas"], OriginRule]> = [
 
 /** Origine d'un message utilisateur et numéro du cas qui l'a reconnue (7 : « Message non écrit par vous (origine non identifiée) »). */
 export function originVerdict(parts: readonly OriginPart[], ctx: OriginContext): OriginVerdict {
-  for (const [cas, rule] of RULES) {
+  const known = contextVerdict(ctx);
+  if (known !== null) return known;
+  for (const [cas, rule] of PART_RULES) {
     const origine = rule(parts, ctx);
     if (origine !== null) return { cas, origine };
   }

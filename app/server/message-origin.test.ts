@@ -4,7 +4,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { MessageOrigin, SessionInstance } from "./shared/activity-types.ts";
-import { classifyOrigin, isSyntheticMessage, OMO_INITIATOR_MARKER, type OriginContext, type OriginPart, originVerdict } from "./shared/message-origin.ts";
+import {
+  classifyOrigin,
+  contextVerdict,
+  isSyntheticMessage,
+  OMO_INITIATOR_MARKER,
+  type OriginContext,
+  type OriginPart,
+  originPartSummary,
+  originVerdict,
+} from "./shared/message-origin.ts";
 
 const NOREPLY_MARKER = "<!-- OMO_INTERNAL_NOREPLY -->";
 const SYSTEM_DIRECTIVE = "[SYSTEM DIRECTIVE: OH-MY-OPENCODE - TODO CONTINUATION]";
@@ -79,6 +88,55 @@ describe("origine des messages : règles d'ordre et de prudence", () => {
     assert.equal(isSyntheticMessage([{ type: "subtask", synthetic: true }]), false);
     assert.equal(isSyntheticMessage([text("a", "true" as unknown as boolean)]), false);
     assert.equal(classifyOrigin([text("Vraie demande"), text("Called the Read tool", true)], ctx()), "origine-inconnue");
+  });
+});
+
+describe("origine des messages : verdict du contexte et parties réduites", () => {
+  it("contextVerdict : cas 1 à 3 sans lire les parties, null sinon ; originVerdict le reprend avant toute règle sur les parties", () => {
+    assert.deepEqual(contextVerdict(ctx({ promptKind: "message" })), { cas: 1, origine: "demande" });
+    assert.deepEqual(contextVerdict(ctx({ promptKind: "equipe-resultat", firstUserOfChild: true })), { cas: 2, origine: "cockpit" });
+    assert.deepEqual(contextVerdict(ctx({ firstUserOfChild: true, instance: "omo" })), { cas: 3, origine: "consigne" });
+    for (const over of [{}, { promptKind: "inconnu" }, { instance: "omo" as const }]) assert.equal(contextVerdict(ctx(over)), null, JSON.stringify(over));
+    for (const promptKind of [null, "message", "equipe-demande"]) {
+      for (const firstUserOfChild of [false, true]) {
+        const known = contextVerdict(ctx({ promptKind, firstUserOfChild }));
+        if (known !== null) assert.deepEqual(originVerdict([text("x", true)], ctx({ promptKind, firstUserOfChild })), known);
+      }
+    }
+  });
+
+  it("originPartSummary : ni texte libre ni secret gardé ; même verdict que sur les parties entières", () => {
+    const token = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
+    const summary = originPartSummary({ type: "text", text: `Texte libre ${token} ${OMO_INITIATOR_MARKER} suite`, synthetic: true, id: "prt_1" });
+    assert.deepEqual(summary, { type: "text", synthetic: true, text: OMO_INITIATOR_MARKER });
+    assert.deepEqual(originPartSummary({ type: "subtask", prompt: "Consigne libre" }), { type: "subtask", synthetic: false });
+    assert.deepEqual(originPartSummary({ type: 42, synthetic: "true", text: 7 }), { type: "", synthetic: false });
+    // Garde-fou pour L25 : une règle qui lira un nouveau marqueur (NOREPLY, SYSTEM DIRECTIVE) fera échouer ce balayage tant que
+    // originPartSummary ne le garde pas.
+    const variants: OriginPart[][] = [
+      [text("Bonjour")],
+      [text("Bonjour", true), text("Suite", true)],
+      [text("Vraie demande"), text("Called the Read tool", true)],
+      [text(`${OMO_INITIATOR_MARKER} Réveil`)],
+      [text(`Texte ${OMO_INITIATOR_MARKER}`, false), text("Autre", true)],
+      [text(NOREPLY_MARKER)],
+      [text(`${NOREPLY_MARKER} ${OMO_INITIATOR_MARKER}`, true)],
+      [text(`${SYSTEM_DIRECTIVE} Continue`)],
+      [text(`${SYSTEM_DIRECTIVE} Continue`, true)],
+      [{ type: "subtask" }, { type: "file" }],
+      [{ type: "text", synthetic: true }],
+    ];
+    let runs = 0;
+    for (const parts of variants) {
+      for (const firstUserOfChild of [false, true]) {
+        for (const instance of ["principale", "omo"] satisfies SessionInstance[]) {
+          const context = ctx({ firstUserOfChild, instance });
+          assert.deepEqual(originVerdict(parts.map((part) => originPartSummary({ ...part })), context), originVerdict(parts, context), JSON.stringify({ parts, instance }));
+          runs++;
+        }
+      }
+    }
+    assert.equal(runs, 44);
   });
 });
 

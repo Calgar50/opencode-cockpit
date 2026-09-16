@@ -52,14 +52,21 @@ docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2
 - **Fichier d'environnement** : neuf, hors du dépôt, et **jamais** un `.env` — le banc refuse tout chemin dont le nom
   est `.env` ou commence par `.env.`, tout chemin dans le dépôt, et tout fichier qui existe déjà.
 - **Verrou** : `<dossier temporaire>/opencode-cockpit-e2e/verrou-reel`. Une exécution réelle le prend ; tant qu'il est
-  tenu, **aucune** exécution ne démarre, quel que soit son mode.
+  tenu, **aucune** exécution ne démarre, quel que soit son mode. Le refus donne le processus noté dans `pid.txt` et dit
+  s'il tourne encore : si aucune exécution du banc ne tourne, effacez ce dossier.
+- **Interruption** : un Ctrl+C (ou un arrêt demandé) fait le même nettoyage que la fin normale — navigateur fermé,
+  `down -v`, fichier d'environnement, contexte et verrou effacés — puis quitte ; dès cet arrêt, plus aucune commande
+  Compose autre que `down` ne part. Un second Ctrl+C efface tout de suite le fichier d'environnement, le contexte et le
+  verrou, sans attendre Docker, et donne la commande pour démonter la pile. Un fichier d'environnement resté malgré
+  tout (processus tué) est signalé au démarrage suivant et fait tomber `--gardes`.
 - **Réseau** : `internal` (sans Internet) en `--faux` et en `--reel-hors-ligne`. Un conteneur relié au seul réseau
   interne ne reçoit rien de l'hôte, même sur un port publié (mesuré en MX1 §8) : le cockpit est donc aussi relié à un
   pont sans traduction d'adresse, le temps de l'exécution.
 - **Secrets** : jeton du cockpit, mot de passe d'opencode et jeton de pilotage sont fabriqués par
-  `crypto.randomBytes` à chaque exécution, écrits dans le seul fichier d'environnement (0600), supprimés à la fin,
-  et **jamais affichés** — ni dans les commandes montrées par `--dry-run`, ni dans un message d'erreur, ni dans
-  l'adresse de la page (le banc ouvre la session par `POST /api/login`, jamais par `/auth?t=`).
+  `crypto.randomBytes` à chaque exécution, écrits dans le seul fichier d'environnement (0600), supprimés à la fin
+  (interruption comprise), et **jamais affichés** — ni dans les commandes montrées par `--dry-run`, ni dans un
+  message d'erreur, ni dans l'adresse de la page (le banc ouvre la session par `POST /api/login`, jamais par
+  `/auth?t=`).
 
 Le cockpit sert en **HTTP** tant que la 1.0.5 n'est pas rebasée (décision D-05). Le rebase (paquet R105) passera le
 banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie : les deux endroits à reprendre portent

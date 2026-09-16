@@ -9,6 +9,7 @@
 // Rien de ce fichier ne tourne en intégration continue (D-06) ni dans l'image : le banc vit hors de app/.
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -152,7 +153,7 @@ export function prendreVerrou(chemin = VERROU) {
   try {
     fs.mkdirSync(chemin);
   } catch (err) {
-    if (err?.code === "EEXIST") refuser(`une exécution réelle du banc tient déjà le verrou « ${chemin} ».`);
+    if (err?.code === "EEXIST") refuser(messageVerrouTenu(chemin));
     throw err;
   }
   fs.writeFileSync(path.join(chemin, "pid.txt"), `${process.pid}\n`, { encoding: "utf8", mode: 0o600 });
@@ -161,6 +162,60 @@ export function prendreVerrou(chemin = VERROU) {
 
 export function rendreVerrou(chemin = VERROU) {
   fs.rmSync(chemin, { recursive: true, force: true });
+}
+
+/**
+ * Refus d'un verrou tenu, avec le processus noté dans pid.txt et la marche à suivre : un verrou laissé par une exécution
+ * tuée refuserait sinon toute exécution du banc sans dire comment le lever. « ne tourne plus » est sûr ; « tourne encore »
+ * peut venir d'un numéro réutilisé par un autre programme, d'où la prudence du conseil.
+ */
+export function messageVerrouTenu(chemin = VERROU) {
+  let pid = null;
+  try {
+    const lu = fs.readFileSync(path.join(chemin, "pid.txt"), "utf8").trim();
+    if (/^\d{1,10}$/.test(lu)) pid = Number(lu);
+  } catch {
+    // pid.txt absent (verrou pris à l'instant) ou illisible : le message reste valable sans le numéro.
+  }
+  let qui = "";
+  if (pid !== null) qui = processusVivant(pid) ? ` (processus ${pid}, qui tourne encore)` : ` (processus ${pid}, qui ne tourne plus)`;
+  return `une exécution réelle du banc tient déjà le verrou « ${chemin} »${qui}. Si aucune exécution du banc ne tourne, effacez ce dossier.`;
+}
+
+function processusVivant(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === "EPERM";
+  }
+}
+
+/**
+ * Fichiers d'environnement restés dans le dossier du banc : à sa racine, et dans le dossier de chaque projet, là où une
+ * exécution écrit « banc.env ». Chemins relatifs à `dossier`, triés ; jamais le contenu.
+ */
+export function fichiersEnvRestants(dossier = DOSSIER_BANC) {
+  const estEnv = (entree) => !entree.isDirectory() && entree.name.toLowerCase().endsWith(".env");
+  // Un dossier qui disparaît pendant la lecture (verrou rendu par une autre exécution) ne contient plus rien.
+  const lire = (chemin) => {
+    try {
+      return fs.readdirSync(chemin, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return [];
+      throw err;
+    }
+  };
+  const restes = [];
+  for (const entree of lire(dossier)) {
+    if (estEnv(entree)) restes.push(entree.name);
+    else if (entree.isDirectory()) {
+      for (const sous of lire(path.join(dossier, entree.name))) {
+        if (estEnv(sous)) restes.push(path.join(entree.name, sous.name));
+      }
+    }
+  }
+  return restes.sort();
 }
 
 // --- Mesure M-B1 ------------------------------------------------------------------------------
@@ -232,10 +287,15 @@ function executerDocker(args, { silencieux = false } = {}) {
   });
 }
 
-/** Lance une commande Compose du banc. Le nom de projet est revérifié juste avant chaque appel. */
+/**
+ * Lance une commande Compose du banc. Le nom de projet est revérifié juste avant chaque appel. Après un arrêt demandé
+ * (plan.interrompu, posé par preparerNettoyage), seul « down » part encore : un « up » lancé par le déroulé pendant le
+ * nettoyage relèverait la pile que celui-ci vient de démonter.
+ */
 export async function compose(plan, sousCommande, options = {}) {
   verifierProjet(plan.projet);
   const args = argumentsCompose(plan, sousCommande);
+  if (plan.interrompu && sousCommande[0] !== "down") refuser(`exécution interrompue : la commande « ${texteCommande(args)} » n'est pas lancée.`);
   if (plan.dryRun) {
     plan.journal.push(texteCommande(args));
     console.log(`  à blanc : ${texteCommande(args)}`);
@@ -405,10 +465,85 @@ async function attendreDemarrage(plan, service, delaiMs = 240_000) {
   refuser(`le service « ${service} » n'est pas prêt après ${Math.round(delaiMs / 1000)} s.`);
 }
 
+/** Signaux d'arrêt écoutés pendant une exécution, et code de sortie rendu (128 + numéro du signal). */
+const SIGNAUX_ARRET = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+
+/**
+ * Nettoyage d'une exécution, commun au « finally » et aux signaux d'arrêt (Ctrl+C, console fermée, arrêt demandé). Sans lui,
+ * un Ctrl+C sautait le « finally » : le fichier d'environnement (jetons, mot de passe) restait sur disque, la pile restait
+ * debout et le verrou restait pris.
+ *   - premier signal : nettoyage complet (navigateur, down -v, fichier d'environnement, contexte, verrou), puis sortie ;
+ *   - signal suivant : fichier d'environnement, contexte et verrou effacés tout de suite, sans attendre Docker, puis sortie.
+ * Dès le premier signal, `plan.interrompu` est posé : le déroulé, qui continue pendant le nettoyage, ne lance plus que
+ * « down » (compose). `etat` ({ navigateur, verrouPris }) est lu au moment du nettoyage. `nettoyer` ne nettoie qu'une fois, quel que soit le
+ * nombre d'appels ; `retirer` enlève les écouteurs à la fin normale de l'exécution.
+ */
+export function preparerNettoyage(plan, etat, { processus = process, sortir = (code) => process.exit(code), verrou = VERROU } = {}) {
+  const effacerFichiers = () => {
+    const erreurs = [];
+    const essayer = (fn) => {
+      try {
+        fn();
+      } catch (err) {
+        erreurs.push(err);
+      }
+    };
+    essayer(() => fs.rmSync(plan.fichierEnv, { force: true }));
+    essayer(() => fs.rmSync(path.join(plan.dossier, "contexte"), { recursive: true, force: true }));
+    if (etat.verrouPris) {
+      etat.verrouPris = false;
+      essayer(() => rendreVerrou(verrou));
+    }
+    if (erreurs.length > 0) throw erreurs[0];
+  };
+  let nettoyage = null;
+  const nettoyer = () =>
+    (nettoyage ??= (async () => {
+      if (etat.navigateur) await etat.navigateur.fermer().catch(() => {});
+      if (plan.garderPile) console.log(`Pile gardée : docker compose -p ${plan.projet} down -v --remove-orphans`);
+      else await demonterPile(plan).catch((err) => console.error(`  nettoyage : ${err?.message ?? err}`));
+      effacerFichiers();
+    })());
+  let recus = 0;
+  const ecouteurs = Object.entries(SIGNAUX_ARRET).map(([signal, code]) => {
+    const ecouteur = () => {
+      recus++;
+      plan.interrompu = true;
+      if (recus === 1) {
+        console.error(`Banc e2e : ${signal} reçu, nettoyage de la pile jetable avant de quitter (un second arrêt quitte sans attendre Docker).`);
+        nettoyer()
+          .catch((err) => console.error(`  nettoyage : ${err?.message ?? err}`))
+          .finally(() => sortir(code));
+        return;
+      }
+      console.error(`Banc e2e : ${signal} reçu de nouveau, sortie sans attendre Docker. Pile peut-être restée debout : docker compose -p ${plan.projet} down -v --remove-orphans`);
+      try {
+        effacerFichiers();
+      } catch (err) {
+        console.error(`  nettoyage : ${err?.message ?? err}`);
+      }
+      sortir(code);
+    };
+    processus.on(signal, ecouteur);
+    return [signal, ecouteur];
+  });
+  const retirer = () => {
+    for (const [signal, ecouteur] of ecouteurs) processus.off(signal, ecouteur);
+  };
+  return { nettoyer, retirer };
+}
+
 /** Exécute les scénarios sur la pile jetable. Rend le nombre d'échecs : c'est le code de sortie du banc. */
 export async function executer(options) {
-  if (verrouTenu()) refuser(`une exécution réelle du banc tient déjà le verrou « ${VERROU} ».`);
+  if (verrouTenu()) refuser(messageVerrouTenu());
   const plan = await preparerPlan(options);
+  const restes = fichiersEnvRestants();
+  if (restes.length > 0) {
+    console.error(
+      `Banc e2e : fichier(s) d'environnement laissé(s) dans ${DOSSIER_BANC} : ${restes.join(", ")}. Ils portent les jetons d'une ` +
+        "pile jetable : si aucune autre exécution du banc ne tourne, démontez la pile de ce projet et effacez-les.",
+    );
+  }
   if (plan.mode === "reel-hors-ligne") {
     const mesure = mesureMB1();
     if (!mesure.possible) {
@@ -439,14 +574,14 @@ export async function executer(options) {
   }
 
   const reel = plan.mode !== "faux";
-  let verrouPris = false;
-  let navigateur = null;
+  const etat = { navigateur: null, verrouPris: false };
+  const { nettoyer, retirer } = preparerNettoyage(plan, etat);
   let echecs = 0;
 
   try {
     if (reel) {
       prendreVerrou();
-      verrouPris = true;
+      etat.verrouPris = true;
     }
     const contexte = preparerContexte(plan);
     const secrets = ecrireEnvironnement(plan, contexte.chemin);
@@ -466,11 +601,11 @@ export async function executer(options) {
     const fournisseur = plan.mode === "reel-hors-ligne" ? relevesDuBanc(`http://127.0.0.1:${plan.portFournisseur}`, secrets.jetonControle) : null;
     if (faux) await faux.attendre();
     if (fournisseur) await fournisseur.attendre();
-    navigateur = await ouvrirNavigateur({ dossierProfil: path.join(plan.dossier, "profil-navigateur") });
+    etat.navigateur = await ouvrirNavigateur({ dossierProfil: path.join(plan.dossier, "profil-navigateur") });
 
     for (const scenario of scenarios) {
       const debut = Date.now();
-      const onglet = await navigateur.nouvelOnglet();
+      const onglet = await etat.navigateur.nouvelOnglet();
       const prefixe = path.join(plan.captures, scenario.nom.replace(/\.mjs$/, ""));
       try {
         const ctx = await construireContexte({ plan, onglet, urlCockpit, faux, fournisseur, secrets, scenario, prefixe });
@@ -488,12 +623,11 @@ export async function executer(options) {
       }
     }
   } finally {
-    if (navigateur) await navigateur.fermer().catch(() => {});
-    if (plan.garderPile) console.log(`Pile gardée : docker compose -p ${plan.projet} down -v --remove-orphans`);
-    else await demonterPile(plan).catch((err) => console.error(`  nettoyage : ${err?.message ?? err}`));
-    fs.rmSync(plan.fichierEnv, { force: true });
-    fs.rmSync(path.join(plan.dossier, "contexte"), { recursive: true, force: true });
-    if (verrouPris) rendreVerrou();
+    try {
+      await nettoyer();
+    } finally {
+      retirer();
+    }
   }
 
   console.log(echecs === 0 ? `Banc e2e : ${scenarios.length} scénario(s), aucun échec. Captures : ${plan.captures}` : `Banc e2e : ${echecs} échec(s). Captures : ${plan.captures}`);
@@ -537,6 +671,54 @@ const CHEMINS_FACTURABLES = /^\/session\/[^/]+\/(prompt_async|command|summarize|
 const estFacturable = (requete) => String(requete?.method).toUpperCase() === "POST" && CHEMINS_FACTURABLES.test(requete?.pathname ?? "");
 
 // --- Vérifications des gardes (run-e2e.sh --gardes) ---------------------------------------------
+
+/** Dossier d'essai à côté de celui du banc, jamais dedans (la garde des restes le verrait), effacé ensuite. */
+async function avecDossierEssai(fn) {
+  const essai = fs.mkdtempSync(path.join(path.dirname(DOSSIER_BANC), "opencode-cockpit-e2e-essai-"));
+  try {
+    return await fn(essai);
+  } finally {
+    fs.rmSync(essai, { recursive: true, force: true });
+  }
+}
+
+/** Exécution interrompue, jouée à blanc : fichier d'environnement factice (sans secret), contexte, verrou pris. */
+function planInterrompu(essai) {
+  const dossier = path.join(essai, "it11-e2e-essai");
+  const plan = { projet: "it11-e2e-essai", dossier, fichierEnv: path.join(dossier, "banc.env"), profils: ["faux"], dryRun: true, journal: [], garderPile: false };
+  fs.mkdirSync(path.join(dossier, "contexte"), { recursive: true });
+  fs.writeFileSync(plan.fichierEnv, "E2E_ESSAI=factice\n");
+  fs.writeFileSync(path.join(dossier, "contexte", "Dockerfile"), "FROM scratch\n");
+  const verrou = path.join(essai, "verrou");
+  prendreVerrou(verrou);
+  return { plan, verrou, etat: { navigateur: null, verrouPris: true } };
+}
+
+/** Fait taire la console le temps d'un essai (commandes à blanc, annonces d'arrêt), puis la rend. */
+async function sansConsole(fn) {
+  const { log, error } = console;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.log = log;
+    console.error = error;
+  }
+}
+
+/** Promesse bornée : un essai qui ne rend jamais la main échoue au lieu de laisser le processus finir sans verdict. */
+async function avant(promesse, delaiMs, message) {
+  let minuteur;
+  const delai = new Promise((_, reject) => {
+    minuteur = setTimeout(() => reject(new Error(message)), delaiMs);
+  });
+  try {
+    return await Promise.race([promesse, delai]);
+  } finally {
+    clearTimeout(minuteur);
+  }
+}
 
 /**
  * Chaque garde d'isolation a ici une vérification qui échoue si on la retire. Elles tournent sans Docker, sans
@@ -657,9 +839,125 @@ export async function verifierGardes() {
     if (!correspond("000-smoke.mjs", "smoke")) throw new Error("sous-chaîne non reconnue");
   });
 
+  await verifier("verrou tenu : le message donne le processus et la marche à suivre", () => {
+    rendreVerrou(verrouEssai);
+    prendreVerrou(verrouEssai);
+    try {
+      let refus = null;
+      try {
+        prendreVerrou(verrouEssai);
+      } catch (err) {
+        refus = err;
+      }
+      for (const attendu of [verrouEssai, `processus ${process.pid}, qui tourne encore`, "effacez ce dossier"]) {
+        if (!String(refus?.message).includes(attendu)) throw new Error(`message sans « ${attendu} » : ${refus?.message}`);
+      }
+      // Processus terminé : son numéro est libre, le message le dit.
+      const termine = spawnSync(process.execPath, ["-e", ""]).pid;
+      fs.writeFileSync(path.join(verrouEssai, "pid.txt"), `${termine}\n`);
+      if (!messageVerrouTenu(verrouEssai).includes(`processus ${termine}, qui ne tourne plus`)) throw new Error(`message : ${messageVerrouTenu(verrouEssai)}`);
+    } finally {
+      rendreVerrou(verrouEssai);
+    }
+  });
+
+  await verifier("fichier d'environnement laissé dans le dossier d'un projet : vu, chemin donné", () =>
+    avecDossierEssai((essai) => {
+      fs.mkdirSync(path.join(essai, "it11-e2e-essai", "captures"), { recursive: true });
+      fs.writeFileSync(path.join(essai, "it11-e2e-essai", "banc.env"), "E2E_ESSAI=factice\n");
+      fs.writeFileSync(path.join(essai, "it11-e2e-essai", "notes.txt"), "rien\n");
+      fs.writeFileSync(path.join(essai, "reste.env"), "E2E_ESSAI=factice\n");
+      const restes = fichiersEnvRestants(essai);
+      const attendus = [path.join("it11-e2e-essai", "banc.env"), "reste.env"];
+      if (JSON.stringify(restes) !== JSON.stringify(attendus)) throw new Error(`restes vus : ${restes.join(", ") || "aucun"}`);
+    }),
+  );
+
+  await verifier("interruption (Ctrl+C) : pile démontée, fichier d'environnement, contexte et verrou effacés, sortie 130, plus aucun « up »", () =>
+    avecDossierEssai(async (essai) => {
+      const { plan, verrou, etat } = planInterrompu(essai);
+      let ferme = false;
+      etat.navigateur = {
+        fermer: async () => {
+          ferme = true;
+        },
+      };
+      const processus = new EventEmitter();
+      const codes = [];
+      await sansConsole(() =>
+        avant(
+          new Promise((resolve) => {
+            preparerNettoyage(plan, etat, { processus, verrou, sortir: (code) => resolve(codes.push(code)) });
+            for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) if (processus.listenerCount(signal) !== 1) throw new Error(`${signal} non écouté`);
+            processus.emit("SIGINT");
+          }),
+          5_000,
+          "aucune sortie après Ctrl+C",
+        ),
+      );
+      if (codes[0] !== 130) throw new Error(`code de sortie : ${codes[0]}`);
+      if (fs.existsSync(plan.fichierEnv)) throw new Error("fichier d'environnement laissé");
+      if (fs.existsSync(path.join(plan.dossier, "contexte"))) throw new Error("contexte laissé");
+      if (verrouTenu(verrou)) throw new Error("verrou laissé");
+      if (!ferme) throw new Error("navigateur laissé ouvert");
+      if (!plan.journal.some((ligne) => ligne.includes(" down -v "))) throw new Error("pile non démontée");
+      // Le déroulé continue pendant le nettoyage : un « up » qu'il lancerait ensuite relèverait la pile démontée.
+      let refus = null;
+      await sansConsole(() => compose(plan, ["up", "-d", "--no-build", "cockpit"])).catch((err) => {
+        refus = err;
+      });
+      if (!(refus instanceof ErreurBanc) || !refus.message.includes("exécution interrompue")) throw new Error(`« up » après l'arrêt : ${refus?.message ?? "lancé"}`);
+      if (plan.journal.some((ligne) => ligne.includes(" up "))) throw new Error("« up » journalisé après l'arrêt");
+      await sansConsole(() => compose(plan, ["down", "-v", "--remove-orphans", "-t", "20"]));
+    }),
+  );
+
+  await verifier("second arrêt : fichier d'environnement, contexte et verrou effacés sans attendre Docker", () =>
+    avecDossierEssai(async (essai) => {
+      const { plan, verrou, etat } = planInterrompu(essai);
+      // Navigateur (ou Docker) qui ne rend jamais la main : le premier nettoyage reste bloqué.
+      etat.navigateur = { fermer: () => new Promise(() => {}) };
+      const processus = new EventEmitter();
+      const codes = [];
+      await sansConsole(() => {
+        preparerNettoyage(plan, etat, { processus, verrou, sortir: (code) => codes.push(code) });
+        processus.emit("SIGINT");
+        processus.emit("SIGINT");
+      });
+      if (codes[0] !== 130) throw new Error(`code de sortie : ${codes[0]}`);
+      if (fs.existsSync(plan.fichierEnv)) throw new Error("fichier d'environnement laissé");
+      if (fs.existsSync(path.join(plan.dossier, "contexte"))) throw new Error("contexte laissé");
+      if (verrouTenu(verrou)) throw new Error("verrou laissé");
+    }),
+  );
+
+  await verifier("fin normale : écouteurs de signaux retirés, nettoyage fait une seule fois", () =>
+    avecDossierEssai(async (essai) => {
+      const { plan, verrou, etat } = planInterrompu(essai);
+      let fermetures = 0;
+      etat.navigateur = {
+        fermer: async () => {
+          fermetures++;
+        },
+      };
+      const processus = new EventEmitter();
+      const { nettoyer, retirer } = preparerNettoyage(plan, etat, { processus, verrou, sortir: () => {} });
+      await sansConsole(() => Promise.all([nettoyer(), nettoyer()]));
+      retirer();
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) if (processus.listenerCount(signal) !== 0) throw new Error(`${signal} encore écouté`);
+      if (fermetures !== 1) throw new Error(`${fermetures} nettoyages`);
+      if (fs.existsSync(plan.fichierEnv) || verrouTenu(verrou)) throw new Error("fichier d'environnement ou verrou laissé");
+    }),
+  );
+
   await verifier("aucun secret dans un fichier d'environnement du banc laissé derrière", () => {
-    const restes = fs.existsSync(DOSSIER_BANC) ? fs.readdirSync(DOSSIER_BANC).filter((n) => n.endsWith(".env")) : [];
-    if (restes.length > 0) throw new Error(`fichiers d'environnement restants : ${restes.join(", ")}`);
+    const restes = fichiersEnvRestants();
+    if (restes.length > 0) {
+      throw new Error(
+        `fichiers d'environnement restants dans ${DOSSIER_BANC} : ${restes.join(", ")} (une exécution du banc en cours a le sien ; ` +
+          "sinon, démontez la pile de ce projet et effacez-les)",
+      );
+    }
   });
 
   console.log(echecs.length === 0 ? "Gardes du banc : aucune n'est tombée." : `Gardes du banc : ${echecs.length} vérification(s) en échec.`);

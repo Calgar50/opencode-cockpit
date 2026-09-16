@@ -24,11 +24,14 @@ import {
   type FactSession,
   idTime,
   isDelegatedWork,
+  MEMORY_MAX_PARTS,
+  MEMORY_MAX_UNANSWERED,
   mergeFacts,
   pathKey,
   sessionRole,
   toolCategory,
 } from "./shared/activity-facts.ts";
+import { OMO_INITIATOR_MARKER, type OriginPart, originVerdict } from "./shared/message-origin.ts";
 import { readCapture } from "./test-support/fake-opencode.ts";
 
 const CAPTURES = ["p1-delegation-parallele.jsonl", "p2-commande-subtask.jsonl", "p6-arret-global.jsonl", "p7-autorisation-orpheline.jsonl"] as const;
@@ -72,6 +75,8 @@ class World {
       messageRole: (id) => this.memory.messageRole(id),
       promptKind: (id) => this.promptKinds.get(id) ?? null,
       firstUserMessage: (id) => this.memory.firstUserMessage(id),
+      userMessageParts: (id) => this.memory.userMessageParts(id),
+      unansweredUserMessages: (id) => this.memory.unansweredUserMessages(id),
     };
   }
 
@@ -259,7 +264,8 @@ describe("garde « aucun texte de message dans data »", () => {
         for (const fact of factsFromEvent(event, world.ctx(recv))) assert.equal(factProblem(fact), null, `${name} : ${event.type}`);
       }
     }
-    // Non vide : 8 538 essais, dont 1 490 où l'événement planté produit encore des faits (sans le texte planté) au 15/09.
+    // Non vide : 8 538 essais, dont 2 428 où l'événement planté produit encore des faits (sans le texte planté) au 16/09 ; les
+    // réponses de l'assistant, qui closent l'origine du message auquel elles répondent, en font désormais partie.
     assert.ok(runs > 8_000, `${runs} essais`);
     assert.ok(productive > 1_000, `${productive} essais productifs`);
   });
@@ -272,6 +278,8 @@ describe("garde « aucun texte de message dans data »", () => {
       messageRole: () => null,
       promptKind: () => null,
       firstUserMessage: () => null,
+      userMessageParts: () => [],
+      unansweredUserMessages: () => [],
     });
     const [fact] = factsFromEvent(created, ctx({ rootId: ROOT, parentId: "parent libre", purpose: "chat", instance: "salle principale" as SessionInstance }));
     assert.deepEqual(fact?.data, { etat: "creee", role: "delegation", parent: null, agent: null, instance: null });
@@ -388,6 +396,109 @@ describe("faits des captures (§5.7.3)", () => {
     for (const name of CAPTURES) {
       for (const fact of replay(name)) assert.equal(factProblem(fact), null, `${name} : ${JSON.stringify(fact)}`);
     }
+  });
+});
+
+describe("origine classée sur le message entier (§5.7.2)", () => {
+  const USER = "msg_origine_mixte";
+  type Part = { id: string; type: string; text?: string; synthetic?: boolean };
+  const opened: FactEvent = { type: "message.updated", properties: { info: { id: USER, sessionID: ROOT, role: "user", time: { created: 1 } } } };
+  const partEvent = (part: Part): FactEvent => ({ type: "message.part.updated", properties: { part: { sessionID: ROOT, messageID: USER, ...part } } });
+  const busy: FactEvent = { type: "session.status", properties: { sessionID: ROOT, status: { type: "busy" } } };
+  const answered: FactEvent = { type: "message.updated", properties: { info: { id: "msg_reponse_mixte", sessionID: ROOT, role: "assistant", parentID: USER, time: { created: 2 } } } };
+  const answeredDone: FactEvent = { type: "message.updated", properties: { info: { id: "msg_reponse_mixte", sessionID: ROOT, role: "assistant", parentID: USER, time: { created: 2, completed: 3 } } } };
+  const idle: FactEvent = { type: "session.status", properties: { sessionID: ROOT, status: { type: "idle" } } };
+
+  function permutations<T>(items: readonly T[]): T[][] {
+    if (items.length <= 1) return [[...items]];
+    return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+  }
+
+  /** Rejoue un message et sa clôture ; rend les faits bruts (sans dédoublonnage) et le monde. */
+  function play(parts: readonly Part[], instance: SessionInstance, closing: readonly FactEvent[], promptKinds: ReadonlyMap<string, string> = new Map()) {
+    const world = new World(promptKinds, [ROOT], instance);
+    const facts: ActivityFact[] = [];
+    for (const event of [opened, ...parts.map(partEvent), ...closing]) {
+      world.observe(event);
+      facts.push(...factsFromEvent(event, world.ctx(1_789_364_600_000)));
+    }
+    return { facts, world };
+  }
+
+  const MIXED: readonly Part[] = [
+    { id: "prt_rappel", type: "text", text: "Rappel interne", synthetic: true },
+    { id: "prt_reel", type: "text", text: "Texte réel de la demande", synthetic: false },
+  ];
+  // Forme produite par « opencode run -f » : deux textes synthétiques (appel de lecture, contenu), le fichier, puis le texte réel.
+  const RUN_WITH_FILE: readonly Part[] = [
+    { id: "prt_appel", type: "text", text: "Called the Read tool with the following input", synthetic: true },
+    { id: "prt_contenu", type: "text", text: "contenu du fichier lu", synthetic: true },
+    { id: "prt_fichier", type: "file" },
+    { id: "prt_demande", type: "text", text: "Texte réel tapé après le fichier" },
+  ];
+  const ALL_SYNTHETIC: readonly Part[] = [
+    { id: "prt_s1", type: "text", text: "Summarize the task tool output above and continue", synthetic: true },
+    { id: "prt_s2", type: "text", text: "Second rappel interne", synthetic: true },
+    { id: "prt_s3", type: "file" },
+  ];
+  const MARKED: readonly Part[] = [
+    { id: "prt_marque", type: "text", text: `Réveil ${OMO_INITIATOR_MARKER}` },
+    { id: "prt_libre", type: "text", text: "Texte libre sans marqueur" },
+  ];
+
+  const cases: ReadonlyArray<{ name: string; parts: readonly Part[]; instance: SessionInstance; expected: { origine: string; cas: number } }> = [
+    { name: "une partie synthétique et une réelle, principale", parts: MIXED, instance: "principale", expected: { origine: "origine-inconnue", cas: 7 } },
+    { name: "une partie synthétique et une réelle, salle", parts: MIXED, instance: "omo", expected: { origine: "origine-inconnue", cas: 7 } },
+    { name: "forme de opencode run -f, principale", parts: RUN_WITH_FILE, instance: "principale", expected: { origine: "origine-inconnue", cas: 7 } },
+    { name: "forme de opencode run -f, salle", parts: RUN_WITH_FILE, instance: "omo", expected: { origine: "origine-inconnue", cas: 7 } },
+    { name: "entièrement synthétique, principale", parts: ALL_SYNTHETIC, instance: "principale", expected: { origine: "interne-opencode", cas: 6 } },
+    { name: "entièrement synthétique, salle", parts: ALL_SYNTHETIC, instance: "omo", expected: { origine: "interne-extension", cas: 6 } },
+    { name: "marqueur d'initiateur dans une des parties, salle", parts: MARKED, instance: "omo", expected: { origine: "interne-extension", cas: 6 } },
+    { name: "marqueur d'initiateur dans une des parties, principale", parts: MARKED, instance: "principale", expected: { origine: "origine-inconnue", cas: 7 } },
+  ];
+
+  it("toutes les parties, dans tous les ordres d'arrivée : un seul verdict, celui du message entier, clos par la réponse de l'assistant", () => {
+    let orders = 0;
+    for (const { name, parts, instance, expected } of cases) {
+      // Oracle indépendant : le classement du message entier, toutes parties connues.
+      const whole = originVerdict(parts satisfies readonly OriginPart[], { promptKind: null, firstUserOfChild: false, instance });
+      assert.deepEqual({ origine: whole.origine, cas: whole.cas }, expected, name);
+      for (const order of permutations(parts)) {
+        const { facts } = play(order, instance, [busy, answered, answeredDone, idle]);
+        const label = `${name} : ${order.map((part) => part.id).join(", ")}`;
+        const origins = facts.filter((fact) => fact.kind === "origine");
+        assert.ok(origins.length > 0, `${label} : aucun fait origine`);
+        // Aucun fait brut ne dit autre chose que le message entier : le premier fait gardé ne dépend pas de l'ordre.
+        for (const fact of origins) assert.deepEqual(fact.data, { ...expected, messageId: USER }, label);
+        assert.deepEqual(dedupeFacts(facts).filter((fact) => fact.kind === "origine").map((fact) => fact.data), [{ ...expected, messageId: USER }], label);
+        orders++;
+      }
+    }
+    assert.equal(orders, 2 + 2 + 24 + 24 + 6 + 6 + 2 + 2);
+  });
+
+  it("sans réponse de l'assistant (message sans réponse, erreur avant l'appel) : le verdict part quand la session revient au repos", () => {
+    for (const order of permutations(MIXED)) {
+      const { facts } = play(order, "principale", []);
+      assert.deepEqual(facts.filter((fact) => fact.kind === "origine"), [], "aucun verdict tant que des parties peuvent encore arriver");
+      const closed = play(order, "principale", [idle]).facts.filter((fact) => fact.kind === "origine");
+      assert.deepEqual(closed.map((fact) => fact.data), [{ origine: "origine-inconnue", cas: 7, messageId: USER }]);
+    }
+  });
+
+  it("cas 1 à 3 : le contexte suffit, le verdict part dès la première partie", () => {
+    const { facts } = play([MIXED[0] as Part], "principale", [], new Map([[USER, "message"]]));
+    assert.deepEqual(facts.filter((fact) => fact.kind === "origine").map((fact) => fact.data), [{ origine: "demande", cas: 1, messageId: USER }]);
+  });
+
+  it("la mémoire du flux ne garde des parties que le type, le drapeau synthetic et les marqueurs, jamais le texte", () => {
+    const { world } = play([...MARKED, ...MIXED, ...RUN_WITH_FILE], "omo", []);
+    const kept = JSON.stringify(world.memory.userMessageParts(USER));
+    for (const part of [...MARKED, ...MIXED, ...RUN_WITH_FILE]) {
+      const free = part.text?.replace(OMO_INITIATOR_MARKER, "").trim();
+      if (free) assert.equal(kept.includes(free), false, part.id);
+    }
+    assert.equal(kept.includes(OMO_INITIATOR_MARKER), true);
   });
 });
 
@@ -533,6 +644,44 @@ describe("événements isolés", () => {
     assert.equal(memory.messageRole("msg_3"), "assistant");
     assert.equal(memory.messageRole("msg_4"), null);
     assert.equal(memory.firstUserMessage("ses_c"), null);
+  });
+
+  it("EventMemory : parties des messages utilisateur et messages sans réponse, bornés", () => {
+    const memory = new EventMemory();
+    const message = (id: string, role: string, extra: Record<string, unknown> = {}): FactEvent => ({ type: "message.updated", properties: { info: { id, sessionID: "ses_a", role, ...extra } } });
+    const part = (messageID: string, id: unknown, synthetic = true, type = "text"): FactEvent => ({ type: "message.part.updated", properties: { part: { id, sessionID: "ses_a", messageID, type, text: "Texte", synthetic } } });
+    memory.observe(part("msg_1", "prt_avant"));
+    assert.deepEqual(memory.userMessageParts("msg_1"), [], "partie d'un message au rôle encore inconnu : non gardée");
+    memory.observe(message("msg_1", "user"));
+    memory.observe(message("msg_2", "user"));
+    assert.deepEqual(memory.unansweredUserMessages("ses_a"), ["msg_1", "msg_2"]);
+    memory.observe(message("msg_r", "assistant", { parentID: "msg_1" }));
+    assert.deepEqual(memory.unansweredUserMessages("ses_a"), ["msg_2"]);
+    memory.observe(message("msg_1", "user", { summary: { diffs: [] } }));
+    assert.deepEqual(memory.unansweredUserMessages("ses_a"), ["msg_2"], "une republication (résumé) n'inscrit pas de nouveau le message");
+    memory.observe(part("msg_r", "prt_r"));
+    assert.deepEqual(memory.userMessageParts("msg_r"), [], "parties de l'assistant : non gardées");
+    memory.observe(part("msg_1", "prt_1", true, "file"));
+    memory.observe(part("msg_1", "prt_1"));
+    memory.observe(part("msg_1", "prt_1"));
+    assert.deepEqual(memory.userMessageParts("msg_1"), [{ type: "text", synthetic: true, text: "" }], "une partie republiée remplace la précédente");
+    // Au-delà de la borne, une partie inconnue non synthétique est comptée : le message ne peut plus passer pour synthétique.
+    for (let i = 0; i < MEMORY_MAX_PARTS + 3; i++) memory.observe(part("msg_2", `prt_${i}`));
+    const kept = memory.userMessageParts("msg_2");
+    assert.equal(kept.length, MEMORY_MAX_PARTS + 1);
+    assert.deepEqual(kept.at(-1), { type: "text", synthetic: false });
+    assert.equal(kept.filter((p) => p.synthetic === false).length, 1);
+    for (let i = 0; i < MEMORY_MAX_UNANSWERED + 2; i++) memory.observe(message(`msg_s${i}`, "user"));
+    const waiting = memory.unansweredUserMessages("ses_a");
+    assert.equal(waiting.length, MEMORY_MAX_UNANSWERED);
+    assert.equal(waiting.at(-1), `msg_s${MEMORY_MAX_UNANSWERED + 1}`);
+    const small = new EventMemory(1);
+    small.observe(message("msg_x", "user"));
+    small.observe(part("msg_x", "prt_x"));
+    small.observe({ type: "message.updated", properties: { info: { id: "msg_y", sessionID: "ses_b", role: "user" } } });
+    small.observe(part("msg_y", "prt_y"));
+    assert.deepEqual(small.userMessageParts("msg_x"), [], "le plus ancien message est oublié au-delà de la borne");
+    assert.deepEqual(small.unansweredUserMessages("ses_a"), []);
   });
 });
 
