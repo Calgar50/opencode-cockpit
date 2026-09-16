@@ -1,6 +1,8 @@
-// Harnais du cockpit pour les tests : faux opencode, base en mémoire, createApp et EventProcessor réels, serveur HTTP sur un port
-// accepté par fetch. Services qui écriraient hors du test ou appelleraient GitHub (Studio, redémarrage, Copilot, solde, classement) :
-// doublures inspirées d'integration.test.ts, remplaçables par `deps`. Les options `ports` et `modules` arrivent avec L1a.
+// Harnais du cockpit pour les tests : faux opencode, base en mémoire, app-factory (createApp, câblage 1.1) et EventProcessor réels,
+// serveur HTTP sur un port accepté par fetch. Services qui écriraient hors du test ou appelleraient GitHub (Studio, redémarrage,
+// Copilot, solde, classement) : doublures inspirées d'integration.test.ts, remplaçables par `deps`. Modules 1.1 : seulement ceux
+// que le test déclare (`modules`), les autres gardent leur port neutre même quand leur code réel est fusionné (plan §2.2) ;
+// `ports` surcharge un port (espion ou faux).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -10,15 +12,17 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { TestContext } from "node:test";
 import { createAdaptorServer } from "@hono/node-server";
+import { type CockpitApp, createCockpitApp } from "../app-factory.ts";
 import { ArchiveService } from "../archive.ts";
 import { AssistantService } from "../assistants.ts";
 import { ModelCatalog } from "../catalog.ts";
 import type { Classifier } from "../classifier.ts";
 import { ConfigWriteQueue } from "../config-queue.ts";
+import type { PermissionGate } from "../contracts-11.ts";
 import type { ControlService, RestartResult } from "../control.ts";
 import { openMemoryDb } from "../db.ts";
 import type { AppEnv } from "../env.ts";
-import { type AppDeps, createApp } from "../http.ts";
+import type { AppDeps } from "../http.ts";
 import { EventHub } from "../hub.ts";
 import { Ledger } from "../ledger.ts";
 import { createLogger } from "../log.ts";
@@ -32,6 +36,7 @@ import { SessionTracker } from "../sessions.ts";
 import { SettingsStore } from "../settings.ts";
 import type { StudioService } from "../studio.ts";
 import { TierService } from "../tiers.ts";
+import type { BuildCockpit11Options } from "../wiring-11.ts";
 import { FakeOpencode } from "./fake-opencode.ts";
 import { listenFetchable, until } from "./helpers.ts";
 
@@ -45,6 +50,15 @@ export interface CockpitHarnessOptions {
    * (db, client, ledger, archive, classifier, hub, log) ; SessionTracker garde la base et le client du harnais.
    */
   deps?: (base: AppDeps) => Partial<Omit<AppDeps, "processor">>;
+  /**
+   * Modules 1.1 installés (noms ou modules factices). Absent : aucun (ports neutres). « tous » : réservé aux tests de croisement et
+   * aux e2e.
+   */
+  modules?: BuildCockpit11Options["modules"] | "tous";
+  /** Surcharges de ports 1.1, posées après l'installation des modules. */
+  ports?: BuildCockpit11Options["ports"];
+  /** Portillon remplacé (espion), construit sur les dépendances finales ; absent : createPermissionGate. */
+  gate?: (deps: AppDeps) => PermissionGate;
 }
 
 export interface CallResult {
@@ -64,6 +78,8 @@ export interface CockpitHarness {
   /** EventProcessor réel, abonné au faux opencode, connecté et rattrapage terminé au retour de startCockpit. */
   processor: EventProcessor;
   deps: AppDeps;
+  /** Application 1.1 (app-factory) : câblage, c11, portillon partagé, démarrage 1.1 (non lancé par le harnais). */
+  cockpit: CockpitApp;
   /** Requête HTTP au cockpit (en-tête Host posé ; corps objet envoyé en JSON). Réponses finies seulement, pas le flux /api/events. */
   call(method: string, pathname: string, init?: { headers?: Record<string, string>; body?: unknown }): Promise<CallResult>;
   /** authed : cookie de session ; mutating : + en-tête anti-CSRF ; confirmed : + x-cockpit-confirm. */
@@ -184,7 +200,26 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     remove: async () => true,
     ensureClassifierAgent: async () => undefined,
   } as unknown as StudioService;
-  const assistants = new AssistantService({ db, env, client, studio, lookup, tiers, ledger, settings, catalog, projects, hub, log });
+  // File de la configuration et décision en examen partagées avec la garde, comme dans main.ts (une file remplacée par `deps`
+  // n'est pas vue par cet AssistantService : remplacer aussi `assistants` dans ce cas).
+  const configQueue = new ConfigWriteQueue();
+  let cockpitRef: CockpitApp | null = null;
+  const assistants = new AssistantService({
+    db,
+    env,
+    client,
+    studio,
+    lookup,
+    tiers,
+    ledger,
+    settings,
+    catalog,
+    projects,
+    hub,
+    log,
+    queue: configQueue,
+    reloadBusy: () => cockpitRef?.c11.reloadBusy() ?? false,
+  });
   const archive = new ArchiveService({ db, client, settings, ledger, sessions, archiveDir: env.archiveDir, opencodeWorkspaceDir: env.opencodeWorkspaceDir, log });
   // Classement simulé : aucune demande facturée, aucun minuteur qui survivrait au test.
   const classifier = { onIdle: () => undefined, onBusy: () => undefined } as unknown as Classifier;
@@ -231,13 +266,19 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
       markDue: () => false,
       sync: async () => ({ state: "inactif", message: null, at: 0, details: { checked: [] } }),
     },
-    configQueue: new ConfigWriteQueue(),
+    configQueue,
   };
   const merged = { ...base, ...options.deps?.({ ...base, processor: makeProcessor(base) }) };
   const processor = makeProcessor(merged);
   const deps: AppDeps = { ...merged, processor };
 
-  const server = createAdaptorServer({ fetch: createApp(deps).fetch }) as http.Server;
+  const cockpit = createCockpitApp(
+    { ...deps, configQueue: deps.configQueue ?? configQueue, sessions, ...(options.gate ? { gate: options.gate(deps) } : {}) },
+    { modules: options.modules === "tous" ? undefined : (options.modules ?? []), ports: options.ports },
+  );
+  cockpitRef = cockpit;
+  cleanups.push(() => cockpit.close());
+  const server = createAdaptorServer({ fetch: cockpit.app.fetch }) as http.Server;
   const port = await listenFetchable(server, "127.0.0.1");
   cleanups.push(
     () =>
@@ -299,6 +340,7 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     ledger,
     processor,
     deps,
+    cockpit,
     call,
     headers,
     cockpitEvents: () => events.map((event) => ({ ...event })),

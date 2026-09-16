@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { ArchiveService } from "./archive.ts";
+import { createCockpitApp } from "./app-factory.ts";
 import { AssistantService, knownDirectories, probeSessionsBusy } from "./assistants.ts";
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
@@ -8,7 +9,6 @@ import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
 import { type AppEnv, loadEnv } from "./env.ts";
-import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
@@ -108,7 +108,24 @@ const studio = new StudioService({ env, client, projects, control, log, catalog,
 // Agents et raccourcis vus par opencode (cache 15 s, invalidé par studio.changed, opencode.config.changed, ai.changed).
 const lookup = new OcLookup({ client, env, hub, log });
 const tiers = new TierService({ settings, catalog, ledger, env });
-const assistants = new AssistantService({ db, env, client, studio, lookup, tiers, ledger, settings, catalog, projects, hub, log });
+// Garde du réalignement : même prédicat que la garde de rechargement (décision en examen lue sur le câblage 1.1, branchée plus bas).
+let reloadBusy: () => boolean = () => false;
+const assistants = new AssistantService({
+  db,
+  env,
+  client,
+  studio,
+  lookup,
+  tiers,
+  ledger,
+  settings,
+  catalog,
+  projects,
+  hub,
+  log,
+  queue: configQueue,
+  reloadBusy: () => reloadBusy(),
+});
 const quota = new QuotaSync({
   db,
   settings,
@@ -147,7 +164,8 @@ resyncOnReconnect(hub, copilotConfig);
 resyncOnIdle(hub, copilotConfig);
 
 const routeDeps = { assistants, tiers, settings, hub, log };
-const app = createApp({
+// Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
+const cockpit = createCockpitApp({
   env,
   log,
   db,
@@ -169,8 +187,11 @@ const app = createApp({
   copilot,
   copilotConfig,
   configQueue,
+  sessions,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
+reloadBusy = () => cockpit.c11.reloadBusy();
+const { app } = cockpit;
 
 const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port }, (info) => {
   log.info("cockpit à l'écoute", { host: env.host, port: info.port, version: env.version, tlsInsecure: env.tlsInsecure });
@@ -194,7 +215,8 @@ void (async () => {
   copilotConfig.markStartup();
   await catalog.refresh().catch((err) => log.warn("catalogue des modèles indisponible", { error: errorMessage(err) }));
   await copilotConfig.sync();
-  await studio.ensureClassifierAgent().catch((err) => log.warn("agent de classement non installé", { error: errorMessage(err) }));
+  // Démarrage 1.1 : retour des choix, agents internes (ports.internalAgents.ensureAll), reprises.
+  await cockpit.startup();
   processor.start();
 })();
 
@@ -204,6 +226,7 @@ const shutdown = (signal: string) => {
   stopping = true;
   log.info("arrêt du cockpit", { signal });
   processor.stop();
+  cockpit.close();
   catalog.stop();
   copilotConfig.stop();
   lookup.close();
