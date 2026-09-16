@@ -2445,7 +2445,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       assert.equal(busy.status, 409, busy.body);
       assert.deepEqual(JSON.parse(busy.body), {
         error: "sessions-busy",
-        message: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
+        message: "Des réponses sont en cours : ce changement recharge ou redémarre opencode et les couperait. Attendez qu'elles se terminent.",
       });
       ocStatuses = {};
       // Demande facturée admise juste avant (en vol) : 409 aussi.

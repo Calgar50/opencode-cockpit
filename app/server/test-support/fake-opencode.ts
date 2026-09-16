@@ -1025,6 +1025,11 @@ export class FakeOpencode {
       // Forme mesurée d'une seconde réponse (autonomy-capture/raw/approvals.jsonl).
       return json(404, { _tag: "PermissionNotFoundError", requestID: id, message: `Permission request not found: ${id}` });
     }
+    // GET /session (Session.list de l'instance du dossier demandé) : c'est la route que l'interface appelle par le proxy
+    // (web/lib/api.ts, PROXY_RULES), alors que processor.ts appelle GET /experimental/session. Même page, mais toujours
+    // bornée au dossier de l'instance, que le paramètre « directory » soit écrit ou non. Écart relevé par le banc e2e de
+    // L7a (le faux répondait 404 et l'interface affichait « Conversations indisponibles »), corrigé au train 1-vague-1.
+    if (is("GET", "session")) return this.#listSessions(res, url, directory, true);
     if (is("GET", "session", "status")) {
       const inInstance = ([sid]: [string, unknown]) => this.#directoryOf(sid) === directory;
       return json(200, Object.fromEntries([...this.#statuses].filter(inInstance)));
@@ -1333,7 +1338,7 @@ export class FakeOpencode {
    * demandé), les plus récemment modifiées d'abord ; racines seules, bornes de temps, recherche dans le titre, archivées ; x-next-cursor
    * quand la page est pleine. Projet non modélisé (null, permis par le schéma).
    */
-  #listSessions(res: http.ServerResponse, url: URL, directory: string): void {
+  #listSessions(res: http.ServerResponse, url: URL, directory: string, scoped = false): void {
     const query = url.searchParams;
     const numberOf = (key: string): number | undefined | null => {
       const raw = query.get(key);
@@ -1348,7 +1353,7 @@ export class FakeOpencode {
     const limit = rawLimit ?? 100;
     const search = query.get("search")?.toLowerCase();
     const list = [...this.#sessions.values()]
-      .filter((s) => !query.has("directory") || s.directory === directory)
+      .filter((s) => (!scoped && !query.has("directory")) || s.directory === directory)
       .filter((s) => query.get("roots") !== "true" || !s.parentID)
       .filter((s) => start === undefined || s.time.updated >= start)
       .filter((s) => cursor === undefined || s.time.updated < cursor)

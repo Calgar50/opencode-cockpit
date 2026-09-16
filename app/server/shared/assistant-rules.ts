@@ -613,10 +613,9 @@ export const MESSAGES = Object.freeze({
   paquetCopilotRefuse: "Remplacement du module d'accès à GitHub Copilot refusé : il recevrait le jeton Copilot.",
   modeAvance: "Action réservée au mode Avancé (Paramètres › Affichage).",
   sessionsBusy: "Attendez la fin des réponses en cours.",
-  // Garde « réponse en cours » (1.1, L1a) : une seule phrase, vraie pour une recharge comme pour un redémarrage. configRestartBusy
-  // a disparu ; configReloadBusy ne sert plus qu'au correctif de configuration du mode Avancé (PATCH /api/opencode/config), dont
-  // integration.test.ts (gelé pour L1a) attend la phrase à la lettre. À fondre dans reloadBusy quand ce test pourra être touché.
-  configReloadBusy: "Attendez la fin des réponses en cours : ce changement recharge opencode, ce qui les couperait.",
+  // Garde « réponse en cours » (1.1, L1a puis train 1-vague-1) : une seule phrase, vraie pour une recharge comme pour un
+  // redémarrage. configRestartBusy et configReloadBusy ont disparu ; tous les refus « sessions-busy » de recharge ou de
+  // redémarrage passent désormais par reloadBusy.
   reloadBusy: "Des réponses sont en cours : ce changement recharge ou redémarre opencode et les couperait. Attendez qu'elles se terminent.",
   reloadUnverifiable:
     "Impossible de vérifier s'il reste des réponses en cours : opencode répond, mais ses conversations sont illisibles. Ce changement recharge opencode et couperait une réponse en cours. Pour forcer, confirmez en mode Avancé (Paramètres › Affichage).",

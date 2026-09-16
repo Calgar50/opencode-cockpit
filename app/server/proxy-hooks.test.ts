@@ -481,7 +481,7 @@ describe("L1a : garde de rechargement", () => {
     assert.equal(permission.json<{ error: string }>().error, "sessions-busy");
     const patch = await h.call("PATCH", "/api/opencode/config", { headers: h.headers.confirmed, body: { share: "disabled" } });
     assert.equal(patch.status, 409, patch.body);
-    assert.deepEqual(patch.json(), { error: "sessions-busy", message: MESSAGES.configReloadBusy });
+    assert.deepEqual(patch.json(), { error: "sessions-busy", message: MESSAGES.reloadBusy });
     assert.equal(fs.readFileSync(configFile, "utf8"), configBase, "rien d'écrit");
     const realignAdvanced = await h.call("POST", "/api/ai/realign", { headers: h.headers.confirmed, body: {} });
     assert.equal(realignAdvanced.status, 409, realignAdvanced.body);

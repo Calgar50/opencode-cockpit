@@ -1659,7 +1659,7 @@ export function createApp(deps: AppDeps): Hono {
         } catch (err) {
           return { ok: false, status: 503, error: "opencode-injoignable", message: MESSAGES.opencodeInjoignable, wrote: false, cause: errorMessage(err) };
         }
-        if (busy) return { ok: false, status: 409, error: "sessions-busy", message: MESSAGES.configReloadBusy, wrote: false };
+        if (busy) return { ok: false, status: 409, error: "sessions-busy", message: MESSAGES.reloadBusy, wrote: false };
         if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
         let updated: unknown;
         try {

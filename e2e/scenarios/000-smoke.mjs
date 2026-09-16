@@ -4,12 +4,12 @@
 // Il ne vérifie aucun comportement de l'itération 1 : ceux-là arrivent avec L7b-1, L7b-2 et L13. Il vérifie le banc.
 
 /**
- * Écart connu du faux opencode, relevé par ce banc le 2026-09-16 et remis à l'intégrateur (paquet T1, propriétaire de
- * app/server/test-support/fake-opencode.ts) : le faux sert « GET /experimental/session », qu'appelle le processeur du
- * serveur, mais pas « GET /session », qu'appelle l'interface par le proxy (PROXY_RULES, web/lib/api.ts:300). La liste
- * des conversations répond donc 404 en mode « --faux ». Cette ligne tombe dès que le faux sert la route.
+ * Écarts connus du faux opencode, tolérés par ce scénario. Aucun aujourd'hui : le seul relevé par ce banc le 2026-09-16
+ * (« GET /session » servi au processeur sous « /experimental/session » mais pas à l'interface, d'où une liste de
+ * conversations en 404) a été corrigé au train de la vague 1 par l'intégrateur, propriétaire de
+ * app/server/test-support/fake-opencode.ts après T1. La liste reste ici pour le prochain écart, et doit rester vide.
  */
-const ECARTS_DU_FAUX = [/\/api\/oc\/session\?/];
+const ECARTS_DU_FAUX = [];
 
 /** Contexte remis par le banc : voir le tableau de e2e/README.md. */
 export async function run(ctx) {
