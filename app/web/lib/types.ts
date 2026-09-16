@@ -1,5 +1,5 @@
 // Types partagés par l'interface : API du cockpit et objets opencode relayés.
-import type { AiSettings, EstimateView, TierView, UiSettings } from "../../server/shared/api-types.ts";
+import type { AiSettings, EstimateView, LocalScheme, TierView, TlsStatus, TlsSummary, UiSettings } from "../../server/shared/api-types.ts";
 import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
 
 // 0.2.0 « Assistants et niveaux d'IA » : types définis une seule fois dans server/shared (serveur et interface).
@@ -59,6 +59,7 @@ export type {
   ItemKind,
   KeepModelRequest,
   KeepModelResponse,
+  LocalScheme,
   MissingItem,
   PutTiersRequest,
   PutTiersResponse,
@@ -69,6 +70,8 @@ export type {
   RestorePrudentResponse,
   SavedAssistant,
   TierView,
+  TlsStatus,
+  TlsSummary,
   ToCompleteItem,
   UiSettings,
   UpdateItem,
@@ -194,6 +197,12 @@ export interface Bootstrap {
     projectConfig: boolean;
     /** Verrou « fournisseurs » de la configuration globale d'opencode (configProviderIssues) ; null : opencode injoignable. */
     providerIssues: Array<{ path: string; message: string }> | null;
+    /** 1.0.5 : schéma servi sur la boucle locale (HTTPS par défaut). */
+    localScheme: LocalScheme;
+    /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */
+    localHttpConfirmedAt: string | null;
+    /** Certificat local, résumé pour le bandeau d'échéance ; null en mode HTTP. */
+    tls: TlsSummary | null;
   };
   workspace: { hostDir: string | null; root: string };
   projects: ProjectInfo[];
@@ -418,6 +427,12 @@ export interface SystemStatus {
     noProxy: string;
     allowedHosts: string[];
     projectConfig: boolean;
+    /** 1.0.5 : schéma servi sur la boucle locale (HTTPS par défaut). */
+    localScheme: LocalScheme;
+    /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */
+    localHttpConfirmedAt: string | null;
+    /** Certificat local (empreintes, validité, refus de poignée) ; null en mode HTTP. */
+    tls: TlsStatus | null;
   };
   copilotConnected: boolean;
   catalog: { models: number; providers: string[]; loadedAt: number };
