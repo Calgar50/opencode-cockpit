@@ -11,6 +11,7 @@
   "scripts": {
     "dev:server": "node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env.dev server/main.ts",
     "dev:web": "vite",
+    "dev:link": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env.dev scripts/dev-open-link.ts",
     "build": "vite build",
     "start": "node --disable-warning=ExperimentalWarning server/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
