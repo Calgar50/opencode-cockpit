@@ -8,15 +8,20 @@ FROM ${NODE_IMAGE} AS build
 ARG COCKPIT_TLS_INSECURE=0
 WORKDIR /src
 
-# Certificats d'entreprise facultatifs pour npm derrière un proxy TLS.
-COPY certs/ /tmp/cockpit-certs/
-RUN set -eu; : > /tmp/extra-ca.pem; \
-    for f in /tmp/cockpit-certs/*.pem /tmp/cockpit-certs/*.crt; do \
-      [ -f "$f" ] && grep -q 'BEGIN CERTIFICATE' "$f" && { cat "$f"; echo; } >> /tmp/extra-ca.pem || true; \
-    done
-
 COPY app/package.json app/package-lock.json ./
-RUN set -eu; \
+# Autorités de certification d'entreprise facultatives (certs/*.pem|*.crt) pour npm derrière un proxy TLS : montées le temps
+# de cette étape seulement. Aucune couche ne garde le dossier certs/, et seuls les blocs CERTIFICATE en sont extraits :
+# une clé privée déposée par erreur dans certs/ n'entre ni dans l'image, ni dans /tmp/extra-ca.pem.
+RUN --mount=type=bind,source=certs,target=/tmp/cockpit-certs \
+    set -eu; \
+    : > /tmp/extra-ca.pem; \
+    for f in /tmp/cockpit-certs/*.pem /tmp/cockpit-certs/*.crt; do \
+      [ -f "$f" ] || continue; \
+      if grep -q 'BEGIN CERTIFICATE' "$f"; then \
+        sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$f" >> /tmp/extra-ca.pem; \
+        echo >> /tmp/extra-ca.pem; \
+      fi; \
+    done; \
     if [ -s /tmp/extra-ca.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/extra-ca.pem; fi; \
     if [ "$COCKPIT_TLS_INSECURE" = "1" ]; then export npm_config_strict_ssl=false; fi; \
     npm ci --ignore-scripts --no-audit --no-fund
@@ -34,7 +39,18 @@ ENV COCKPIT_VERSION=${COCKPIT_VERSION} \
     COCKPIT_OC_CONFIG_DIR=/oc-config \
     COCKPIT_OC_DATA_DIR=/oc-data \
     COCKPIT_CONTROL_DIR=/control \
-    COCKPIT_WORKSPACE_DIR=/workspace
+    COCKPIT_WORKSPACE_DIR=/workspace \
+    COCKPIT_TLS_DIR=/tls \
+    COCKPIT_OPENSSL=/usr/bin/openssl
+# openssl : seule façon de créer le certificat du HTTPS local (execFile, chemin absolu, jamais de shell). Node embarque sa
+# propre bibliothèque TLS mais pas l'outil en ligne de commande. OpenSSL 3 exigé : les options -addext et -pkeyopt utilisées
+# par le serveur n'ont pas le même comportement en 1.x. Listes apt supprimées dans la même couche.
+RUN set -eu; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssl; \
+    rm -rf /var/lib/apt/lists/*; \
+    /usr/bin/openssl version | grep -q '^OpenSSL 3\.'
 WORKDIR /app
 COPY --from=build --chown=node:node /src/package.json ./package.json
 COPY --from=build --chown=node:node /src/node_modules ./node_modules
@@ -42,11 +58,13 @@ COPY --from=build --chown=node:node /src/server ./server
 COPY --from=build --chown=node:node /src/dist ./dist
 # Les points de montage partagés avec opencode doivent appartenir à l'utilisateur non-root (uid 1000) :
 # Docker initialise un volume nommé avec le propriétaire du dossier de la PREMIÈRE image qui le monte.
+# /tls est monté par ce seul service : 0700 à node, pour que la clé du HTTPS local n'y soit jamais lisible par d'autres.
 RUN rm -f server/*.test.ts \
- && mkdir -p /data /archives /oc-config /oc-data /control /workspace /certs \
- && chown node:node /data /archives /oc-config /oc-data /control
+ && mkdir -p /data /archives /oc-config /oc-data /control /workspace /certs /tls \
+ && chown node:node /data /archives /oc-config /oc-data /control /tls \
+ && chmod 0700 /tls
 USER node
 EXPOSE 7777
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:7777/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  CMD ["node", "--disable-warning=ExperimentalWarning", "server/healthcheck.ts"]
 CMD ["node", "--disable-warning=ExperimentalWarning", "server/main.ts"]
