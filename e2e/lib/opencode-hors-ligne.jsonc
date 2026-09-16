@@ -1,0 +1,33 @@
+// Banc e2e (L7a), mode « --reel-hors-ligne » : configuration d'un vrai opencode 1.18.30 sans aucune IA réelle.
+// Posée dans le volume jetable par le service « preparation » avant le premier démarrage d'opencode.
+// Levier mesuré par M-B1 (MX1 §8) : enabled_providers réduit au faux fournisseur du banc, aucun auth.json, donc
+// aucun appel facturable possible. Les permissions reprennent le profil Prudent livré avec le cockpit.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["banc"],
+  "provider": {
+    "banc": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Banc e2e",
+      "options": {
+        "baseURL": "http://faux-fournisseur:8080/v1",
+        // Valeur factice, exigée par le client compatible OpenAI : le faux fournisseur ne la lit pas. Ce n'est pas un
+        // secret, et c'est la seule chaîne de ce genre du banc (les vraies valeurs sont fabriquées à chaque exécution).
+        "apiKey": "banc-hors-ligne"
+      },
+      "models": {
+        "banc-1": {
+          "name": "Banc 1",
+          "cost": { "input": 3, "output": 15 }
+        }
+      }
+    }
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": { "*": "ask", "pwd": "allow" },
+    "task": "ask",
+    "webfetch": "ask",
+    "websearch": "ask"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "opencode-cockpit-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Banc e2e du cockpit : aucune dépendance (P8), aucun paquet installé, aucun script npm. Ce fichier ne sert qu'à déclarer que e2e/ est en modules ECMAScript, pour Node comme pour le contrôle de types."
+}
