@@ -71,7 +71,7 @@ function setup() {
 describe("registre des coûts", () => {
   it("1.1 (migration 4) : tables d'équipes et d'autonomie, IA et réflexion par appel, agent de session, usages equipe et controle", () => {
     const { db, ledger, sessions } = setup();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
     const tables = (
       db
         .prepare(

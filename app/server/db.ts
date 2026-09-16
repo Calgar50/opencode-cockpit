@@ -5,8 +5,9 @@ import { DatabaseSync } from "node:sqlite";
 export type Db = DatabaseSync;
 export type SqlValue = string | number | bigint | null | Uint8Array;
 
-// Chaque entrée est appliquée une seule fois, dans l'ordre (PRAGMA user_version).
-const MIGRATIONS: readonly string[] = [
+// Chaque entrée est appliquée une seule fois, dans l'ordre (PRAGMA user_version). Une entrée publiée ou appliquée sur une base
+// n'est jamais réécrite : ses empreintes sont vérifiées par migration5.test.ts. Exportée pour les tests (bases d'une version donnée).
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE settings (
     key TEXT PRIMARY KEY,
@@ -346,6 +347,33 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE prompts ADD COLUMN kind TEXT NOT NULL DEFAULT 'message';  -- message|equipe-demande|equipe-resultat
   ALTER TABLE item_meta ADD COLUMN methods TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE item_meta ADD COLUMN role TEXT NOT NULL DEFAULT 'assistant';
+  `,
+  // 1.1 : faits d'activité (« Qui travaille ? », Revoir), instance opencode d'une session, démarrages de la Salle OMO.
+  // Ajouts seulement, comme la migration 4 : les versions 1.0.x rouvrent cette base sans rien migrer.
+  `
+  CREATE TABLE activity_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                      -- statut|attente|reponse|origine|consigne|resultat|reveil|reprise|carnet|detection|affichage|decision|choix
+    ref TEXT,                                -- permission_id, message_id, call_id
+    data TEXT NOT NULL DEFAULT '{}',         -- identifiants, états, empreintes ; jamais de texte de message ; supprimé avec la conversation
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_activity_facts_root ON activity_facts(root_id, at);
+
+  ALTER TABLE sessions ADD COLUMN instance TEXT NOT NULL DEFAULT 'principale';  -- principale|omo
+
+  CREATE TABLE omo_room_starts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    image_id TEXT NOT NULL,                  -- identifiant de l'image chargée
+    manifest_sha256 TEXT NOT NULL,
+    precheck TEXT NOT NULL,                  -- JSON : un résultat par projet ouvert
+    cause TEXT NOT NULL,
+    ended_at INTEGER,
+    fin TEXT
+  );
   `,
 ];
 
