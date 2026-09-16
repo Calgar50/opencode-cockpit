@@ -9,9 +9,9 @@ certificat avec **leur propre autorité racine**. Sans cette racine, les contene
 `install.ps1` exporte automatiquement les autorités racines et intermédiaires de
 confiance du magasin Windows dans `certs/windows-trust.pem`. Le conteneur opencode les
 ajoute à son magasin au démarrage (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`,
-`GIT_SSL_CAINFO`) : la vérification TLS **reste active**. Le serveur du cockpit ne les
-charge pas : derrière un proxy TLS, seule la synchronisation facultative du solde Copilot
-échoue.
+`GIT_SSL_CAINFO`) : la vérification TLS **reste active**. Depuis la 1.0.1, le serveur du
+cockpit les charge aussi pour ses appels sortants (liste des IA du compte, solde
+facultatif).
 
 Pour ajouter une autorité à la main, déposez son certificat **PEM** (texte commençant
 par `-----BEGIN CERTIFICATE-----`) ici, avec l'extension `.pem` ou `.crt`, puis :
@@ -35,5 +35,16 @@ Uniquement si la méthode ci-dessus est impossible : `COCKPIT_TLS_INSECURE=1` da
 La vérification des certificats est alors **désactivée** dans le conteneur opencode, et
 un bandeau rouge le rappelle en permanence dans l'interface. Tout intermédiaire réseau
 pourrait lire ou modifier le trafic, jeton Copilot compris.
+
+## Ne déposez jamais ici le certificat ni la clé du cockpit
+
+Ce dossier est monté dans le conteneur de l'agent, et **chaque certificat qui s'y trouve
+devient une autorité de confiance** pour opencode. Il n'est destiné qu'aux autorités du
+proxy d'entreprise, pour le trafic **sortant**.
+
+Le certificat HTTPS local du cockpit (`https://127.0.0.1:7777`) est ailleurs : dans le
+volume Docker `cockpit-tls`, monté uniquement dans le conteneur du cockpit. Il est créé et
+renouvelé tout seul ; `.\cockpit.ps1 tls` l'affiche, `.\cockpit.ps1 tls -Renew` le
+remplace.
 
 > Ce dossier est ignoré par git (sauf ce README) : les certificats restent sur la machine.
