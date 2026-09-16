@@ -9,6 +9,11 @@
       (indispensable derriere un proxy d'entreprise qui inspecte le HTTPS) ;
     - construit, telecharge ou charge les images, demarre les conteneurs et ouvre l'interface.
 
+    Acces local en HTTPS par defaut (https://127.0.0.1:<port>), avec un certificat auto-signe cree dans
+    le volume cockpit-tls. Le navigateur affiche un avertissement au premier acces : ce script affiche
+    l'empreinte SHA-256 a comparer. Avant d'ouvrir le lien, il verifie le serveur (empreinte du certificat
+    et preuve du jeton) ; le lien ouvert est a usage unique et ne contient pas le jeton.
+
     Relancer le script est sans danger : les secrets et reglages existants sont conserves.
 
 .PARAMETER WorkspaceDir
@@ -41,6 +46,25 @@
     Le mode d'installation (-Mode) est memorise dans .env, ainsi que le registre s'il a ete passe
     avec -ImageRegistry : une relance sans -Mode (ou cockpit.ps1 update) reutilise le meme mode.
 
+.PARAMETER Http
+    Sert le cockpit en HTTP local (http://127.0.0.1:<port>) au lieu de HTTPS : a n'utiliser que si la
+    strategie d'entreprise interdit de passer l'avertissement de certificat dans le navigateur. Le cookie
+    de session et tout le contenu des pages circulent alors EN CLAIR sur ce PC. Le choix doit etre confirme
+    en tapant HTTP EN CLAIR, il est memorise dans .env avec sa date, rappele par un bandeau permanent de
+    l'interface, et garde par chaque mise a jour jusqu'a un .\install.ps1 -Https.
+
+.PARAMETER Https
+    Revient a l'acces HTTPS local apres un -Http (nouveau jeton, reconnexion necessaire).
+
+.PARAMETER TlsPreflight
+    Verifie le poste sans rien modifier et sans Docker : strategies du navigateur, mode inscrit dans .env,
+    voie de verification disponible. Code de sortie 3 si Edge interdit de passer l'avertissement, 0 sinon.
+
+.PARAMETER AcceptBrowserBlock
+    Poursuit l'installation en HTTPS meme quand la lecture du registre annonce qu'Edge interdit de passer
+    l'avertissement (par exemple quand l'exception est livree par le cloud et absente du registre).
+    Jamais memorise dans .env.
+
 .EXAMPLE
     .\install.ps1 -WorkspaceDir C:\dev
 
@@ -62,7 +86,11 @@ param(
     [switch]$InsecureTls,
     [switch]$SecureTls,
     [switch]$NoStart,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$Http,
+    [switch]$Https,
+    [switch]$TlsPreflight,
+    [switch]$AcceptBrowserBlock
 )
 
 Set-StrictMode -Version 2.0
@@ -74,6 +102,30 @@ $EnvFile = Join-Path $Root '.env'
 $Version = 'dev'
 $VersionFile = Join-Path $Root 'VERSION'
 if (Test-Path -LiteralPath $VersionFile) { $Version = (Get-Content -LiteralPath $VersionFile -TotalCount 1).Trim() }
+# Version minimale d'image capable de servir le mode choisi et la preuve du jeton.
+$MinimumImageVersion = [version]'1.0.5'
+
+# Mode de langage restreint (AppLocker, WDAC) : le chargement de CockpitTls.ps1 et les appels .NET echoueraient
+# plus loin, avec un message incomprehensible. Meme texte que Assert-CockpitFullLanguage, avant tout chargement.
+$LanguageMode = [string]$ExecutionContext.SessionState.LanguageMode
+if ($LanguageMode -ne 'FullLanguage') {
+    throw ("PowerShell est en mode de langage {0} sur ce poste (strategie AppLocker ou WDAC) : les scripts du cockpit exigent FullLanguage. Aucune modification. Lancez-les depuis un dossier autorise par l'informatique." -f $LanguageMode)
+}
+
+# Bibliotheque commune (adresses, sante, strategies du navigateur, isolation de docker compose).
+$TlsLibrary = Join-Path $Root 'CockpitTls.ps1'
+if (-not (Test-Path -LiteralPath $TlsLibrary -PathType Leaf)) {
+    throw 'Fichiers de la version incomplets : CockpitTls.ps1 est absent du dossier du cockpit. Retelechargez la version complete (page Releases ou git pull), puis relancez.'
+}
+$zone = $null
+try { $zone = Get-Item -LiteralPath $TlsLibrary -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue } catch { $zone = $null }
+if ($null -ne $zone) {
+    throw 'CockpitTls.ps1 est marque comme telecharge depuis Internet : Windows refuse de le charger. Lancez Unblock-File .\install.ps1, .\cockpit.ps1, .\CockpitTls.ps1 puis relancez.'
+}
+try { . $TlsLibrary } catch {
+    throw ("Chargement de CockpitTls.ps1 impossible : {0} Si les fichiers viennent d'une archive ZIP : Unblock-File .\install.ps1, .\cockpit.ps1, .\CockpitTls.ps1" -f $_.Exception.Message)
+}
+Assert-CockpitFullLanguage
 
 function Write-Step([string]$Message) { Write-Host ''; Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Info([string]$Message) { Write-Host "    $Message" }
@@ -95,42 +147,26 @@ function Test-PathOverlap([string]$First, [string]$Second) {
     return ($a -ieq $b) -or $a.StartsWith($b + '\', $ignoreCase) -or $b.StartsWith($a + '\', $ignoreCase)
 }
 
-$ProxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY')
-
-# docker compose donne priorite aux variables du shell sur .env : elles sont masquees le temps de l'appel.
-function Clear-ShellProxy {
-    $saved = @{}
-    # Nom reel conserve : une variable http_proxy en minuscules est restauree telle quelle.
-    $names = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $ProxyVariables -contains $_ })
-    foreach ($name in $names) {
-        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
-    }
-    return $saved
-}
-
-function Restore-ShellProxy {
-    param($Saved)
-    foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
-}
-
 # Fonctions simples, sans bloc param : un attribut [Parameter()] ajouterait les parametres communs de
 # PowerShell, et des options docker comme -v ou -d seraient prises pour -Verbose ou -Debug.
+# Toutes les variables lues par docker-compose.yml sont masquees le temps de l'appel, et le fichier compose
+# est passe explicitement : ni une variable du shell ni un docker-compose.override.yml ne changent le resultat.
 function Invoke-Docker {
-    $dockerArgs = @($args)
+    $dockerArgs = ConvertTo-CockpitDockerArgs $Root @($args)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $savedProxy = Clear-ShellProxy
-    try { & docker @dockerArgs } finally { $ErrorActionPreference = $previous; Restore-ShellProxy $savedProxy }
+    $savedEnv = Clear-CockpitComposeEnv
+    try { & docker @dockerArgs } finally { $ErrorActionPreference = $previous; Restore-CockpitComposeEnv $savedEnv }
     if ($LASTEXITCODE -ne 0) { throw ("La commande 'docker {0}' a echoue (code {1})." -f ($dockerArgs -join ' '), $LASTEXITCODE) }
 }
 
 function Get-DockerOutput {
-    $dockerArgs = @($args)
+    $dockerArgs = ConvertTo-CockpitDockerArgs $Root @($args)
     $output = $null
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $output = & docker @dockerArgs 2>&1 } finally { $ErrorActionPreference = $previous }
+    $savedEnv = Clear-CockpitComposeEnv
+    try { $output = & docker @dockerArgs 2>&1 } finally { $ErrorActionPreference = $previous; Restore-CockpitComposeEnv $savedEnv }
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String).Trim() }
 }
 
@@ -199,22 +235,97 @@ function Export-WindowsCertificates([string]$Destination) {
     return $count
 }
 
-function Wait-Health([int]$HealthPort, [int]$TimeoutSeconds) {
-    # Le proxy systeme ne doit pas intercepter les appels vers 127.0.0.1.
-    [System.Net.WebRequest]::DefaultWebProxy = $null
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/api/health" -f $HealthPort) -TimeoutSec 4
-            if ($response.StatusCode -eq 200) { return $true }
-        } catch { }
-        Start-Sleep -Seconds 3
-    }
-    return $false
+# Nom lisible de la voie qui a verifie le cockpit (jamais un detail technique de plus).
+function Get-MethodLabel([string]$Method) {
+    if ($Method -ceq 'curl') { return 'curl' }
+    if ($Method -ceq 'csharp') { return 'classe .NET' }
+    if ($Method -ceq 'native') { return 'HttpWebRequest' }
+    return 'voie inconnue'
 }
+
+# Port retenu pour la garde du navigateur et l'adresse affichee, avant que .env ne soit complete.
+function Get-GuardPort($Config) {
+    if ($Port -gt 0) { return $Port }
+    if ($Config.Contains('COCKPIT_PORT')) {
+        $parsed = 0
+        if ([int]::TryParse([string]$Config['COCKPIT_PORT'], [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 65535) { return $parsed }
+    }
+    return 7777
+}
+
+# Cause d'un schema servi different de .env : noms des variables (jamais leurs valeurs) ou fichier voisin.
+function Get-DivergenceCause($Divergence) {
+    $scopes = @{ 'Process' = 'Processus'; 'User' = 'Utilisateur'; 'Machine' = 'Machine' }
+    if ($Divergence.Variables.Count -gt 0) {
+        $names = @($Divergence.Variables | ForEach-Object { '{0} ({1})' -f $_.Name, $scopes[[string]$_.Scope] })
+        return ('variable(s) {0} definie(s)' -f ($names -join ', '))
+    }
+    if ($Divergence.Files.Count -gt 0) { return ('fichier {0} dans le dossier du cockpit' -f ($Divergence.Files -join ', ')) }
+    return 'aucune : .env modifie sans redemarrage'
+}
+
+# Version d'une chaine du fichier .env ($null si absente ou illisible : une 1.0.4 ecrit 1.0.4, une image de
+# developpement ecrit dev).
+function ConvertTo-CockpitVersionOrNull([string]$Text) {
+    if ($Text -cmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)') { return [version]('{0}.{1}.{2}' -f $Matches[1], $Matches[2], $Matches[3]) }
+    return $null
+}
+
+# --- 0. Incompatibilites de parametres (avant toute commande docker et toute ecriture) -----
+if ($Http -and $Https) { throw '-Http et -Https sont incompatibles : choisissez un seul mode d acces.' }
+if ($TlsPreflight -and ($Http -or $Https)) { throw '-TlsPreflight ne modifie rien : il ne se combine ni avec -Http ni avec -Https.' }
+if ($AcceptBrowserBlock -and $Http) { throw '-AcceptBrowserBlock ne concerne que l acces HTTPS : il est sans objet avec -Http.' }
 
 Write-Host ''
 Write-Host "opencode-cockpit $Version - installation" -ForegroundColor White
+
+# --- 0 bis. Verification du poste (-TlsPreflight) : aucune ecriture, aucun appel a Docker ---
+if ($TlsPreflight) {
+    $preflightConfig = Read-EnvFile $EnvFile
+    $preflightPort = Get-GuardPort $preflightConfig
+    $preflightMode = Get-CockpitLocalMode $preflightConfig
+    $policy = Get-CockpitBrowserTlsPolicy -Port $preflightPort
+    $curl = Get-CockpitCurl ''
+    Write-Step 'Verification du poste (aucune modification, Docker non requis)'
+    Write-Info ('Port vise : {0} ; exception a demander : {1}' -f $preflightPort, $policy.Origin)
+    $edgeValue = 'absente'
+    if ($null -ne $policy.Value) { $edgeValue = [string]$policy.Value }
+    $edgeSource = 'non lue'
+    if ($policy.Source) { $edgeSource = [string]$policy.Source }
+    Write-Info ('Edge SSLErrorOverrideAllowed : {0} ({1})' -f $edgeValue, $edgeSource)
+    $origins = @($policy.Origins | Where-Object { $_ -cmatch '^[ -~]{1,80}\z' })
+    $originsText = 'aucune'
+    if ($origins.Count -gt 0) { $originsText = ($origins | Select-Object -First 10) -join ', ' }
+    Write-Info ('Exceptions Edge listees (SSLErrorOverrideAllowedForOrigins) : {0}' -f $originsText)
+    Write-Info ('Verdict Edge : {0}' -f $policy.Verdict)
+    $chromeValue = 'absente'
+    if ($null -ne $policy.Chrome.Value) { $chromeValue = '{0} ({1})' -f $policy.Chrome.Value, $policy.Chrome.Source }
+    Write-Info ('Chrome SSLErrorOverrideAllowed (information) : {0}' -f $chromeValue)
+    $httpsOnly = 'aucune'
+    if (@($policy.HttpsOnly).Count -gt 0) { $httpsOnly = (@($policy.HttpsOnly | ForEach-Object { '{0} = {1} ({2})' -f $_.Name, $_.Value, $_.Source }) -join ' ; ') }
+    Write-Info ('Strategies Edge "HTTPS uniquement" (information) : {0}' -f $httpsOnly)
+    $modeText = 'aucun fichier .env (installation neuve)'
+    if ($preflightConfig.Count -gt 0) {
+        if (-not $preflightMode.Valid) { $modeText = 'invalide : {0}' -f $preflightMode.Problem }
+        elseif ([string]$preflightMode.Scheme -ceq 'http') { $modeText = 'http, confirme le {0} UTC' -f $preflightMode.ConfirmedAt }
+        else { $modeText = 'https' }
+    }
+    Write-Info ('Mode d acces inscrit dans .env : {0}' -f $modeText)
+    if ($curl.Available) { Write-Info ('curl.exe : {0}, version {1}, Schannel' -f $curl.Path, $curl.Version) }
+    else { Write-Info ('curl.exe : indisponible ({0})' -f $curl.Reason) }
+    $route = 'classe .NET (compilation, alerte antivirus possible)'
+    if ($curl.Available) { $route = 'curl ({0}, Schannel)' -f $curl.Version }
+    if ($preflightMode.Valid -and [string]$preflightMode.Scheme -ceq 'http') { $route = 'HttpWebRequest (mode HTTP)' }
+    Write-Info ('Voie qui serait utilisee : {0}' -f $route)
+    Write-Info ('Mode de langage PowerShell : {0}' -f $LanguageMode)
+    Write-Info ('Windows : {0}' -f [Environment]::OSVersion.Version)
+    Write-Info 'Verification qui fait foi : edge://policy (filtre SSLError).'
+    if ($policy.Verdict -ceq 'Bloque') {
+        Write-Attention 'Edge interdit de passer l avertissement de certificat : demandez l exception ci-dessus, ou installez en mode HTTP local (.\install.ps1 -Http).'
+        exit 3
+    }
+    exit 0
+}
 
 # --- 1. Docker ------------------------------------------------------------------------
 Write-Step 'Verification de Docker Desktop'
@@ -248,6 +359,92 @@ if (-not $PSBoundParameters.ContainsKey('Mode') -and $config.Contains('COCKPIT_I
 }
 if (-not $PSBoundParameters.ContainsKey('ImageRegistry') -and $config.Contains('COCKPIT_IMAGE_REGISTRY') -and $config['COCKPIT_IMAGE_REGISTRY']) {
     $ImageRegistry = $config['COCKPIT_IMAGE_REGISTRY']
+}
+
+# --- 2 bis. Pre-controles groupes (lecture seule, avant toute question et toute ecriture) ---
+# Un seul message et un seul arret : le mode d'acces inscrit dans .env, les images du mode Load et la
+# strategie du navigateur sont evalues ensemble (plan 3.5.1).
+$previousVersion = ''
+if ($config.Contains('COCKPIT_VERSION')) { $previousVersion = ([string]$config['COCKPIT_VERSION']).Trim() }
+$previousApp = ''
+if ($config.Contains('COCKPIT_APP_IMAGE')) { $previousApp = [string]$config['COCKPIT_APP_IMAGE'] }
+$previousOpencode = ''
+if ($config.Contains('COCKPIT_OPENCODE_IMAGE')) { $previousOpencode = [string]$config['COCKPIT_OPENCODE_IMAGE'] }
+$previousInstallMode = ''
+if ($config.Contains('COCKPIT_INSTALL_MODE')) { $previousInstallMode = [string]$config['COCKPIT_INSTALL_MODE'] }
+$previousToken = ''
+if ($config.Contains('COCKPIT_TOKEN')) { $previousToken = [string]$config['COCKPIT_TOKEN'] }
+$previousVersionValue = ConvertTo-CockpitVersionOrNull $previousVersion
+$isMigration = (-not $isNew) -and (($null -eq $previousVersionValue) -or ($previousVersionValue -lt $MinimumImageVersion))
+
+$modeRead = Get-CockpitLocalMode $config
+$transition = Get-CockpitTransition -Mode $modeRead -IsNew $isNew -IsMigration $isMigration -Http:$Http -Https:$Https
+$guardPort = Get-GuardPort $config
+$policy = Get-CockpitBrowserTlsPolicy -Port $guardPort
+
+# Mode Load sans archive : images presentes et assez recentes pour servir le mode choisi (controle avance ici,
+# pour qu'un seul message regroupe explique l'arret).
+$loadProblem = ''
+if ($Mode -ceq 'Load' -and -not $ImagesArchive) {
+    $loadedImages = @(@($previousOpencode, $previousApp) | Where-Object { $_ })
+    $missingImages = @($loadedImages | Where-Object { (Get-DockerOutput image inspect --format '{{.Id}}' $_).ExitCode -ne 0 })
+    if ($loadedImages.Count -lt 2 -or $missingImages.Count -gt 0) { $loadProblem = 'images absentes' }
+    else {
+        $appVersion = Get-CockpitImageVersion $previousApp
+        if ($null -eq $appVersion) { $loadProblem = 'image {0} de version inconnue, version {1} requise' -f $previousApp, $Version }
+        elseif ($appVersion -lt $MinimumImageVersion) { $loadProblem = 'image {0} en version {1}, version {2} requise' -f $previousApp, $appVersion, $Version }
+    }
+}
+
+$precheck = Get-CockpitPrecheckProblems -Transition $transition -Mode $modeRead -Policy $policy -AcceptBrowserBlock ([bool]$AcceptBrowserBlock) `
+    -IsMigration $isMigration -LoadProblem $loadProblem -Port $guardPort -Version $Version -PreviousVersion $previousVersion
+if ($precheck.Problems.Count -gt 0) {
+    Write-Host ''
+    foreach ($problem in $precheck.Problems) { Write-CockpitLines $problem.Lines }
+    throw $CockpitA19
+}
+foreach ($warning in $precheck.Warnings) { Write-CockpitLines $warning.Lines }
+
+# Relance dans le mode deja en place : le choix n'est pas redemande (plan 3.4.1).
+if ($Http -and $transition -ceq 'ResteHttp') { Write-Info ('Deja en mode HTTP local (confirme le {0}) : rien a confirmer.' -f $modeRead.ConfirmedAt) }
+elseif ($Https -and $transition -ceq 'ResteHttps') { Write-Info 'Deja en HTTPS local : rien a changer.' }
+
+# Seule question du mode HTTP (ecran A5 puis saisie de HTTP EN CLAIR) : aucun parametre ne l'evite.
+if ($transition -ceq 'EntreeHttp') { Confirm-CockpitHttpMode $guardPort $policy }
+
+# Valeurs a remettre dans .env si la construction ou le telechargement echoue : sinon .env designerait un mode
+# et un jeton differents des conteneurs encore en marche, et plus personne ne pourrait ouvrir le cockpit.
+$restoreKeys = @('COCKPIT_OPENCODE_IMAGE', 'COCKPIT_APP_IMAGE', 'COCKPIT_INSTALL_MODE', 'COCKPIT_LOCAL_SCHEME',
+    'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_VERSION', 'COCKPIT_TOKEN')
+$previousValues = @{}
+foreach ($key in $restoreKeys) { if ($config.Contains($key)) { $previousValues[$key] = $config[$key] } }
+
+# Mode final et date de confirmation, toujours ecrits explicitement (une cle absente ou vide = https).
+$finalScheme = 'https'
+$finalConfirmedAt = ''
+if ($transition -ceq 'EntreeHttp') {
+    $finalScheme = 'http'
+    $finalConfirmedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+} elseif ($transition -ceq 'ResteHttp') {
+    $finalScheme = 'http'
+    $finalConfirmedAt = [string]$modeRead.ConfirmedAt
+}
+$config['COCKPIT_LOCAL_SCHEME'] = $finalScheme
+$config['COCKPIT_LOCAL_HTTP_CONFIRMED'] = $finalConfirmedAt
+$finalMode = [pscustomobject]@{ Scheme = $finalScheme; ConfirmedAt = $finalConfirmedAt; Raw = $finalScheme; Valid = $true; Problem = $null }
+
+# Nouveau jeton des qu'il a pu circuler en clair, ou qu'il n'a pas le format servi par la preuve (plan 3.4.3).
+$rawScheme = ''
+if ($null -ne $modeRead.Raw) { $rawScheme = ([string]$modeRead.Raw).Trim() }
+$backToHttps = ($transition -ceq 'EntreeHttps') -and ($rawScheme -ceq 'http')
+$rotateToken = $backToHttps -or ($transition -ceq 'EntreeHttps' -and -not $modeRead.Valid) -or $isMigration -or (-not (Test-CockpitGeneratedToken $previousToken))
+$tokenReplaced = $rotateToken -and -not $isNew -and [bool]$previousToken
+if ($rotateToken) { $config['COCKPIT_TOKEN'] = New-Secret 32 }
+
+# Le mode HTTP est rappele des le debut de l'installation, y compris avec -NoBrowser et pendant une mise a jour.
+if ($finalScheme -ceq 'http') {
+    Write-Host ''
+    Write-CockpitModeNotice $finalMode $policy
 }
 
 if (-not $WorkspaceDir -and $config.Contains('WORKSPACE_DIR')) { $WorkspaceDir = $config['WORKSPACE_DIR'] }
@@ -357,10 +554,6 @@ if ($SkipCertificates) {
     Write-Good "$certCount autorites de certification Windows exportees vers certs\windows-trust.pem"
 }
 
-# Images (valeurs precedentes gardees pour les remettre dans .env si la construction ou le telechargement echoue)
-$imageKeys = @('COCKPIT_OPENCODE_IMAGE', 'COCKPIT_APP_IMAGE', 'COCKPIT_INSTALL_MODE')
-$previousImages = @{}
-foreach ($key in $imageKeys) { if ($config.Contains($key)) { $previousImages[$key] = $config[$key] } }
 switch ($Mode) {
     'Build' {
         $config['COCKPIT_OPENCODE_IMAGE'] = 'opencode-cockpit/opencode:local'
@@ -376,17 +569,7 @@ switch ($Mode) {
             $ImagesArchive = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ImagesArchive)
             if (-not (Test-Path -LiteralPath $ImagesArchive -PathType Leaf)) { throw "Archive d'images introuvable : $ImagesArchive" }
         } else {
-            # Relance sans archive : on garde les images deja chargees si elles sont toujours presentes.
-            $loadedImages = @(@($config['COCKPIT_OPENCODE_IMAGE'], $config['COCKPIT_APP_IMAGE']) | Where-Object { $_ })
-            $missingImages = @($loadedImages | Where-Object { (Get-DockerOutput image inspect --format '{{.Id}}' $_).ExitCode -ne 0 })
-            if ($loadedImages.Count -lt 2 -or $missingImages.Count -gt 0) {
-                throw "Mode Load : images absentes. Telechargez opencode-cockpit-images-$Version.tar.gz depuis la page Releases, puis : .\install.ps1 -Mode Load -ImagesArchive <fichier>"
-            }
-            foreach ($image in $loadedImages) {
-                if ($image -notmatch (':' + [regex]::Escape($Version) + '$')) {
-                    Write-Attention "Image $image : version differente de $Version. Mise a jour : .\install.ps1 -Mode Pull, ou .\install.ps1 -Mode Load -ImagesArchive <archive $Version>."
-                }
-            }
+            # Relance sans archive : les images deja chargees ont ete verifiees par les pre-controles (A-Load).
             Write-Good 'Images deja chargees reutilisees'
         }
     }
@@ -407,6 +590,14 @@ try {
             if ($name -match 'opencode-cockpit-app') { $config['COCKPIT_APP_IMAGE'] = $name }
         }
         Write-Good ("Images : {0}, {1}" -f $config['COCKPIT_OPENCODE_IMAGE'], $config['COCKPIT_APP_IMAGE'])
+        # Controle avant toute ecriture de .env : une archive trop ancienne ne sait ni servir le mode choisi,
+        # ni prouver qu'elle connait le jeton.
+        $loadedVersion = Get-CockpitImageVersion $config['COCKPIT_APP_IMAGE']
+        if ($null -eq $loadedVersion -or $loadedVersion -lt $MinimumImageVersion) {
+            $seen = 'de version inconnue'
+            if ($null -ne $loadedVersion) { $seen = 'en version {0}' -f $loadedVersion }
+            throw ("Archive refusee : l'image {0} est {1}, version {2} requise. Telechargez opencode-cockpit-images-{2}.tar.gz (page Releases), puis relancez avec -Mode Load -ImagesArchive <fichier>. Aucun fichier modifie." -f $config['COCKPIT_APP_IMAGE'], $seen, $Version)
+        }
     }
 
     if (-not $modeInferred) { $config['COCKPIT_INSTALL_MODE'] = $Mode }
@@ -414,6 +605,13 @@ try {
     $config['COCKPIT_VERSION'] = $Version
     # Registre memorise seulement s'il a ete choisi : sinon, le defaut de la version installee s'applique.
     if ($PSBoundParameters.ContainsKey('ImageRegistry')) { $config['COCKPIT_IMAGE_REGISTRY'] = $ImageRegistry }
+    # Version remplacee, ecrite une seule fois : cockpit.ps1 rollback y revient sans deviner.
+    if ($isMigration -and -not $config.Contains('COCKPIT_PREVIOUS_VERSION')) {
+        $config['COCKPIT_PREVIOUS_VERSION'] = $previousVersion
+        $config['COCKPIT_PREVIOUS_APP_IMAGE'] = $previousApp
+        $config['COCKPIT_PREVIOUS_OPENCODE_IMAGE'] = $previousOpencode
+        $config['COCKPIT_PREVIOUS_INSTALL_MODE'] = $previousInstallMode
+    }
     Write-EnvFile $EnvFile $config
     if ($isNew) { Write-Good 'Fichier .env cree' } else { Write-Good 'Fichier .env mis a jour (secrets conserves)' }
 
@@ -425,22 +623,32 @@ try {
             Write-Step 'Telechargement des images'
             Invoke-Docker compose pull
         }
+        if ($Mode -eq 'Build' -or $Mode -eq 'Pull') {
+            $builtVersion = Get-CockpitImageVersion $config['COCKPIT_APP_IMAGE']
+            if ($null -eq $builtVersion -or $builtVersion -lt $MinimumImageVersion) {
+                $seen = 'de version inconnue'
+                if ($null -ne $builtVersion) { $seen = 'en version {0}' -f $builtVersion }
+                throw ("L'image {0} est {1}, version {2} requise. Relancez .\install.ps1 apres avoir mis a jour les fichiers du cockpit (git pull ou nouvelle archive)." -f $config['COCKPIT_APP_IMAGE'], $seen, $Version)
+            }
+        }
     } catch {
-        # .env retrouve les images precedentes : start et restart continuent de fonctionner.
+        # .env retrouve les images, le mode d'acces, la version et le jeton precedents : les conteneurs encore
+        # en marche restent joignables, et la rotation du jeton aura lieu a la prochaine execution reussie.
         if (-not $isNew) {
-            foreach ($key in $imageKeys) {
-                if ($previousImages.ContainsKey($key)) { $config[$key] = $previousImages[$key] }
+            foreach ($key in $restoreKeys) {
+                if ($previousValues.ContainsKey($key)) { $config[$key] = $previousValues[$key] }
                 elseif ($config.Contains($key)) { $config.Remove($key) }
             }
             Write-EnvFile $EnvFile $config
-            Write-Attention 'Echec : les images precedentes restent configurees dans .env.'
+            Write-Attention 'Echec : les images, le mode d acces et le jeton precedents restent configures dans .env.'
         }
         throw
     }
 
     if ($NoStart) {
         Write-Step 'Installation terminee (demarrage non demande)'
-        Write-Info 'Demarrer : .\cockpit.ps1 start'
+        if ($finalScheme -ceq 'http') { Write-Info 'Demarrer : .\cockpit.ps1 start, puis .\cockpit.ps1 open (verification : preuve du jeton)' }
+        else { Write-Info 'Demarrer : .\cockpit.ps1 start, puis .\cockpit.ps1 open (verification HTTPS : empreinte et preuve du jeton)' }
         return
     }
 
@@ -448,31 +656,165 @@ try {
     # Les volumes partages doivent appartenir a l'utilisateur non-root des conteneurs (uid 1000),
     # quel que soit le conteneur qui les a initialises en premier (sinon opencode redemarre en boucle).
     Write-Step 'Preparation des volumes'
+    $Project = Get-CockpitComposeProjectName $Root
     Invoke-Docker compose up --no-start --remove-orphans
     $volumeArgs = @()
     foreach ($volume in @('oc-config', 'oc-data', 'oc-cache', 'cockpit-data', 'control')) {
-        $volumeArgs += @('-v', ('opencode-cockpit_{0}:/volumes/{0}' -f $volume))
+        $volumeArgs += @('-v', ('{0}_{1}:/volumes/{1}' -f $Project, $volume))
     }
-    Invoke-Docker run --rm --user 0 --entrypoint chown @volumeArgs $config['COCKPIT_OPENCODE_IMAGE'] -R 1000:1000 /volumes
+    Invoke-Docker run --rm --network none --user 0 --entrypoint chown @volumeArgs $config['COCKPIT_OPENCODE_IMAGE'] -R 1000:1000 /volumes
+    # Volume du certificat local : prepare dans les deux modes (le mode HTTP n'y ecrit rien, mais le retour en
+    # HTTPS doit trouver un dossier utilisable). Image du cockpit, jamais -R : la cle garde ses droits 0600.
+    $tlsMount = @('-v', ('{0}_cockpit-tls:/tls' -f $Project))
+    Invoke-Docker run --rm --network none --user 0 --entrypoint chown @tlsMount $config['COCKPIT_APP_IMAGE'] 1000:1000 /tls
+    Invoke-Docker run --rm --network none --user 0 --entrypoint chmod @tlsMount $config['COCKPIT_APP_IMAGE'] 0700 /tls
     Write-Good 'Droits des volumes verifies'
 
     Write-Step 'Demarrage des conteneurs'
     Invoke-Docker compose up -d --remove-orphans
     Write-Info 'Attente de la disponibilite du cockpit...'
-    if (-not (Wait-Health $Port 240)) {
-        Write-Attention 'Le cockpit ne repond pas encore. Consultez les journaux : .\cockpit.ps1 logs'
-        return
-    }
-    Write-Good ("Cockpit disponible sur http://127.0.0.1:{0}" -f $Port)
+    $health = Wait-CockpitHealth -Root $Root -Port $Port -Mode $finalScheme -Token $config['COCKPIT_TOKEN'] -TimeoutSec 240
 } finally {
     Pop-Location
 }
 
-$loginUrl = 'http://127.0.0.1:{0}/auth?t={1}' -f $Port, $config['COCKPIT_TOKEN']
-if (-not $NoBrowser) { Start-Process $loginUrl }
+# --- 5. Resultat : aucune adresse annoncee, aucun lien ouvert sans sante Ok -----------------
+if ($health.Reason -cne 'Ok') {
+    $baseUrl = Get-CockpitBaseUrl $finalScheme $Port
+    Write-Host ''
+    switch ($health.Reason) {
+        'EmpreinteDifferente' {
+            Write-CockpitLines @(('    [!] Le serveur sur 127.0.0.1:{0} ne presente PAS le certificat du cockpit.' -f $Port),
+                ("    Attendue : {0}  Programme a l'ecoute sur ce port : {1}" -f $health.TlsState.Sha256, (Get-CockpitPortOwner $Port)),
+                "    Aucune page n'a ete ouverte (aucun lien de connexion envoye).")
+        }
+        'PreuveInvalide' {
+            Write-CockpitLines @(("    [!] Le serveur sur 127.0.0.1:{0} ne prouve pas qu'il connait le jeton de ce cockpit." -f $Port),
+                ("    Programme a l'ecoute sur ce port : {0}" -f (Get-CockpitPortOwner $Port)),
+                "    Aucune page n'a ete ouverte (aucun lien de connexion envoye).",
+                '    Causes possibles : le cockpit est arrete et un autre programme occupe le port (.\cockpit.ps1 status),',
+                '    ou .env a ete modifie sans redemarrage (.\cockpit.ps1 restart).')
+        }
+        'JetonHorsFormat' {
+            Write-CockpitLines @("    [!] Le jeton de .env n'a pas le format genere par install.ps1 (64 caracteres hexadecimaux) :",
+                "    le cockpit ne peut pas prouver qu'il le connait. Aucune page n'a ete ouverte.",
+                '    Solution : .\install.ps1 (nouveau jeton, reconnexion necessaire).')
+        }
+        'SchemaDifferent' {
+            $divergence = Get-CockpitComposeDivergence $Root
+            $lines = @(('    [!] Le cockpit en marche ne sert pas le mode inscrit dans .env (.env : {0} ; cockpit : {1}).' -f $finalScheme, ($health.Detail -replace '^schema servi : ', '')),
+                "    Aucune page n'a ete ouverte.", ('    Cause trouvee : {0}.' -f (Get-DivergenceCause $divergence)),
+                '    Appliquer .env : .\cockpit.ps1 restart (les scripts ignorent ces variables et fichiers).')
+            if ($divergence.Variables.Count -gt 0 -or $divergence.Files.Count -gt 0) {
+                $lines += '    Pour vos commandes docker compose lancees a la main : supprimez cette cause, ou utilisez -f docker-compose.yml.'
+            }
+            Write-CockpitLines $lines
+        }
+        'ImageAncienne' {
+            $imageVersion = $health.Version
+            if (-not $imageVersion) { $imageVersion = 'anterieure a {0}' -f $MinimumImageVersion }
+            $lines = @(('    [!] Mise a jour inachevee : les scripts sont en {0}, le cockpit en marche est en {1}.' -f $Version, $imageVersion),
+                ('    Votre cockpit {0} fonctionne toujours sur {1} : utilisez votre favori' -f $imageVersion, (Get-CockpitBaseUrl 'http' $Port)),
+                '    ou un onglet deja connecte. A defaut : .\cockpit.ps1 rollback, puis .\cockpit.ps1 open.',
+                ("    .\cockpit.ps1 open n'ouvre rien ici : il ne sait pas verifier un cockpit {0}." -f $imageVersion),
+                '    Terminer la mise a jour : .\install.ps1 (HTTPS) ou .\install.ps1 -Http (mode HTTP local)')
+            if ($Mode -ceq 'Load') { $lines += ('    Mode Load : ajoutez -Mode Load -ImagesArchive <opencode-cockpit-images-{0}.tar.gz>' -f $Version) }
+            Write-CockpitLines $lines
+        }
+        'AucuneVoie' {
+            if ($finalScheme -ceq 'https') {
+                Write-CockpitLines @(('    [!] Aucune voie de verification utilisable ({0}).' -f (Hide-Secrets $health.Detail)),
+                    "    Aucune page n'a ete ouverte. Verification manuelle :",
+                    ("      1. ouvrez {0} dans Edge ; sur l'avertissement, affichez le certificat ;" -f $baseUrl),
+                    ('      2. comparez son empreinte SHA-256 a : {0} ;' -f $health.TlsState.Sha256),
+                    "      3. si elles sont identiques, continuez, puis saisissez dans l'ecran de connexion la valeur de COCKPIT_TOKEN",
+                    '         lue dans le fichier .env (ne la copiez nulle part ailleurs).')
+            } else {
+                Write-CockpitLines @(('    [!] Aucune voie de verification utilisable ({0}).' -f (Hide-Secrets $health.Detail)),
+                    "    Aucune page n'a ete ouverte. En mode HTTP local, le jeton ne se saisit jamais dans une page.",
+                    '    Diagnostic : .\cockpit.ps1 diag. Si Edge autorise le HTTPS sur ce poste : .\install.ps1 -Https')
+            }
+        }
+        default {
+            $state = $health.ContainerHealth
+            if (-not $state) { $state = 'inconnu' }
+            $first = '    [!] Verification du cockpit impossible ({0}) : {1}. Aucune page n a ete ouverte.' -f $health.Reason, (Hide-Secrets $health.Detail)
+            if ($health.Reason -ceq 'NonDisponible') { $first = '    [!] Le cockpit ne repond pas apres 240 secondes. Aucune page n a ete ouverte.' }
+            Write-CockpitLines @($first, ('    Etat Docker du conteneur cockpit : {0}' -f $state))
+            if ($state -cne 'healthy') {
+                $logs = Get-DockerOutput compose logs --no-color --tail 200 cockpit
+                $interesting = @(($logs.Output -split "`r?`n") | Where-Object { $_ -match '(?i)TLS|HTTPS|certificat|configuration' } | Select-Object -Last 20)
+                if ($interesting.Count -gt 0) {
+                    Write-Info 'Dernieres lignes utiles du journal du cockpit :'
+                    foreach ($line in $interesting) { Write-Info (Hide-Secrets $line) }
+                }
+            }
+            Write-Info 'Journaux complets : .\cockpit.ps1 logs ; diagnostic : .\cockpit.ps1 diag'
+        }
+    }
+    return
+}
+
+Write-Host ''
+if ($finalScheme -ceq 'https') {
+    $until = $health.TlsState.NotAfter.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    Write-CockpitLines @(('    [OK] Cockpit disponible sur {0} (certificat epingle et preuve du jeton verifies : {1})' -f (Get-CockpitBaseUrl 'https' $Port), (Get-MethodLabel $health.Method)),
+        ('    Empreinte SHA-256 du certificat : {0} (valable jusqu au {1})' -f $health.TlsState.Sha256, $until),
+        "    Le navigateur va afficher `"Votre connexion n'est pas privee`" : c'est attendu (certificat local,",
+        "    non approuve par Windows). Comparez l'empreinte, puis Avance > Continuer vers 127.0.0.1 (non securise).",
+        '    Le lien ouvert est a usage unique (10 minutes) et ne contient pas votre jeton.',
+        "    Utilisez 127.0.0.1 (localhost redemande l'avertissement). L'ancienne adresse en http:// ne repond plus.")
+} else {
+    Write-CockpitLines @(('    [OK] Cockpit disponible sur {0} (mode HTTP local, preuve du jeton verifiee : {1})' -f (Get-CockpitBaseUrl 'http' $Port), (Get-MethodLabel $health.Method)))
+    Write-CockpitModeNotice $finalMode $policy
+    if ($NoBrowser) { Write-Info 'Ouvrir : .\cockpit.ps1 open' }
+}
+if ($health.Version -and $health.Version -cne $Version) {
+    Write-Attention ('Le cockpit en marche annonce la version {0}, les scripts sont en {1}. Relancez .\install.ps1 si la mise a jour est incomplete.' -f $health.Version, $Version)
+}
+
+$previousLabel = $previousVersion
+if (-not $previousLabel) { $previousLabel = 'version precedente' }
+if ($isMigration -and $finalScheme -ceq 'https') {
+    Write-Step ('Passage a la {0} : HTTPS local' -f $Version)
+    Write-CockpitLines @(('    Nouvelle adresse : {0} (remplacez vos favoris http://).' -f (Get-CockpitBaseUrl 'https' $Port)),
+        "    Nouveau jeton de connexion : l'ancien, envoye en clair par la version precedente, est revoque.",
+        '    Une reconnexion est necessaire : lancez maintenant .\cockpit.ps1 open',
+        "    Le navigateur affichera un avertissement de certificat : comparez l'empreinte ci-dessus.",
+        ('    Retour a la version precedente ({0}) si besoin : .\cockpit.ps1 rollback' -f $previousLabel))
+} elseif ($isMigration) {
+    Write-Step ('Passage a la {0} en mode HTTP local' -f $Version)
+    Write-CockpitLines @(('    Adresse inchangee : {0} (vos favoris restent valables).' -f (Get-CockpitBaseUrl 'http' $Port)),
+        '    Nouveau jeton de connexion ; une reconnexion est necessaire : lancez maintenant .\cockpit.ps1 open',
+        "    En mode HTTP, la connexion se fait uniquement par .\cockpit.ps1 open (l'ecran de connexion ne demande pas le jeton).",
+        "    Un bandeau permanent rappelle le mode HTTP dans l'interface.",
+        ('    Retour a la version precedente ({0}) si besoin : .\cockpit.ps1 rollback' -f $previousLabel))
+} elseif ($backToHttps) {
+    Write-Host ''
+    Write-CockpitLines @("    [OK] Retour en HTTPS : nouveau jeton genere ; l'ancien, dont la session a circule en clair, est revoque (reconnexion necessaire).",
+        ('    Empreinte SHA-256 du certificat : {0} (valable jusqu au {1})' -f $health.TlsState.Sha256, $health.TlsState.NotAfter.ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)),
+        "    Si c'est l'empreinte deja acceptee dans votre navigateur il y a moins de 7 jours, aucun avertissement ;",
+        "    sinon le navigateur affichera `"Votre connexion n'est pas privee`" : comparez l'empreinte avant de continuer.")
+} elseif ($tokenReplaced) {
+    Write-Attention 'Nouveau jeton de connexion genere (l ancien n avait pas le format attendu) : une reconnexion est necessaire.'
+}
+
+# --- 6. Ouverture --------------------------------------------------------------------------
+# Le lien porte un ticket a usage unique obtenu du serveur deja verifie : il n'est ni affiche, ni journalise.
+$login = Get-CockpitLoginUrl -Health $health -Port $Port -Mode $finalScheme -Token $config['COCKPIT_TOKEN']
+if ($null -eq $login.Url) {
+    Write-Attention ('Lien de connexion non obtenu ({0}) : aucune page n a ete ouverte. Relancez .\cockpit.ps1 open' -f $login.Reason)
+} else {
+    $decision = Get-CockpitOpenDecision $health $finalScheme $policy
+    Write-CockpitLines $decision.Lines
+    if ($decision.Decision -ceq 'Open' -and -not $NoBrowser) { Start-Process $login.Url }
+    elseif ($NoBrowser) { Write-Info 'Ouvrir : .\cockpit.ps1 open' }
+}
 
 Write-Step 'Et ensuite ?'
 Write-Info '1. Dans l interface : Parametres > Connexion > Connecter GitHub Copilot.'
 Write-Info '2. Commandes utiles : .\cockpit.ps1 open | status | logs | stop | update | backup'
-Write-Info '3. Les conversations classees sont copiees en Markdown dans le dossier archives\.'
+if ($finalScheme -ceq 'https') { Write-Info '3. Certificat local : .\cockpit.ps1 tls (empreinte a comparer dans le navigateur).' }
+else { Write-Info '3. Revenir a l acces HTTPS, si Edge le permet : .\install.ps1 -Https' }
+Write-Info '4. Les conversations classees sont copiees en Markdown dans le dossier archives\.'
 Write-Host ''
