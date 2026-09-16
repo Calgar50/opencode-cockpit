@@ -6,9 +6,12 @@ import { useToast } from "../components/Toast.tsx";
 import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Badge, Button, Card, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, errorText } from "../lib/api.ts";
+import { diagnostic11Api } from "../lib/api-diagnostic-11.ts";
 import { formatDateTime, formatDuration, formatInt, formatPercent, formatTime, relativeTime } from "../lib/format.ts";
 import { routeHref } from "../lib/router.ts";
-import type { CopilotCheckResult, CopilotView, SystemStatus } from "../lib/types.ts";
+import type { CopilotCheckResult, CopilotView, DiagnosticActiviteResponse, SystemStatus } from "../lib/types.ts";
+import { AutonomyDiagnostics } from "./diagnostics/AutonomyDiagnostics.tsx";
+import { DelegationDiagnostics } from "./diagnostics/DelegationDiagnostics.tsx";
 import { LogsViewer } from "./diagnostics/LogsViewer.tsx";
 import "./diagnostics/diagnostics.css";
 
@@ -54,6 +57,42 @@ const SYNC_LABEL: Readonly<Record<CopilotView["configSync"]["state"], string>> =
   "redemarrage-requis": "redémarrage requis",
   echec: "échec",
 };
+
+/**
+ * 1.1 : carte « Travail délégué et autonomie » (GET /api/diagnostic/activite, relue à chaque actualisation de la page). Masquée
+ * tant que la route ne répond pas ou qu'aucun de ses contenus ne s'annonce (ActivityDiagnosticsProps.onPresence) : sans
+ * contenu, le Diagnostic reste celui de la 1.0.4. Une lecture en échec garde les dernières données.
+ */
+function DelegatedWorkCard({ refreshKey }: { refreshKey: number | null }) {
+  const [data, setData] = useState<DiagnosticActiviteResponse | null>(null);
+  const [present, setPresent] = useState({ delegation: false, autonomy: false });
+  const request = useRef(0);
+
+  useEffect(() => {
+    const id = ++request.current;
+    const controller = new AbortController();
+    diagnostic11Api.activite(controller.signal).then(
+      (next) => {
+        if (id === request.current) setData(next);
+      },
+      () => undefined,
+    );
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  const onDelegation = useCallback((value: boolean) => setPresent((p) => (p.delegation === value ? p : { ...p, delegation: value })), []);
+  const onAutonomy = useCallback((value: boolean) => setPresent((p) => (p.autonomy === value ? p : { ...p, autonomy: value })), []);
+
+  if (!data) return null;
+  return (
+    <div hidden={!present.delegation && !present.autonomy}>
+      <Card title="Travail délégué et autonomie">
+        <DelegationDiagnostics data={data} onPresence={onDelegation} />
+        <AutonomyDiagnostics data={data} onPresence={onAutonomy} />
+      </Card>
+    </div>
+  );
+}
 
 /** Point à vérifier, avec l'action qui le règle. */
 type Problem = { tone: "critical" | "warning"; text: string; action?: "restart-opencode" };
@@ -566,6 +605,8 @@ export function DiagnosticsPage() {
                   <dd className="mono small">{s.paths.archives}</dd>
                 </dl>
               </Card>
+
+              <DelegatedWorkCard refreshKey={loadedAt} />
             </div>
           </div>
         )}

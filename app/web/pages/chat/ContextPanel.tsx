@@ -1,5 +1,6 @@
 // Panneau latéral : coût de la conversation, classement, plan, fichiers modifiés, sous-agents.
 import { useState } from "react";
+import { useApp } from "../../app/AppContext.tsx";
 import { DiffView } from "../../components/DiffView.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Badge, Button, CategoryChip, IconButton, Modal, useAsync } from "../../components/ui.tsx";
@@ -7,6 +8,7 @@ import { api } from "../../lib/api.ts";
 import { formatCredits, formatTokens, formatUsd, relativeTime } from "../../lib/format.ts";
 import { routeHref } from "../../lib/router.ts";
 import type { Category, Conversation, FileDiff, OcSession, Todo } from "../../lib/types.ts";
+import { Deroule } from "./activity/Deroule.tsx";
 import { TodoItems } from "./ToolCard.tsx";
 
 const CLASSIFIED_BY: Record<string, string> = { llm: "par IA", heuristic: "automatique", manual: "manuel", none: "non classée" };
@@ -22,6 +24,7 @@ export function ContextPanel({
   onOpenSession,
   onClassify,
   onClose,
+  journalNonce,
 }: {
   sessionId: string | null;
   conversation: Conversation | null;
@@ -33,7 +36,10 @@ export function ContextPanel({
   onOpenSession: (id: string) => void;
   onClassify: () => Promise<void>;
   onClose: () => void;
+  /** 1.1 : change à chaque [Journal] du bandeau d'autonomie (transmis au Déroulé). */
+  journalNonce?: number | undefined;
 }) {
+  const { advanced } = useApp();
   const usage = useAsync(() => (sessionId ? api.sessionUsage(sessionId) : Promise.resolve(null)), [sessionId, usageTick]);
   const [openDiff, setOpenDiff] = useState<FileDiff | null>(null);
   const [classifying, setClassifying] = useState(false);
@@ -78,6 +84,8 @@ export function ContextPanel({
           <span className="tiny muted">Sous-agents inclus. Coût facturé rapporté par GitHub quand il est disponible.</span>
         </div>
       </section>
+
+      <Deroule rootId={sessionId} placement="contexte" advanced={advanced} usageTick={usageTick} journalNonce={journalNonce} />
 
       <section className="aside-section">
         <h4>Classement</h4>

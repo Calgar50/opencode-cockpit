@@ -15,12 +15,14 @@ import {
   RIGHTS_INFO,
   TIER_LABELS,
 } from "../../server/shared/assistant-rules.ts";
+import { pickRestorableAgent } from "../../server/shared/agent-choice.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Button, IconButton, Meter, Modal, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, assistantModelChanged, budgetGuard, oc } from "../lib/api.ts";
+import { stopConversation } from "../lib/api-conversations.ts";
 import { useEvents } from "../lib/events.ts";
 import { formatPercent, formatTokens, formatUsd } from "../lib/format.ts";
 import { CHAT_ASSISTANT_PARAM, navigate, openAssistants, useRoute, useRouteQuery } from "../lib/router.ts";
@@ -49,13 +51,20 @@ import type {
   UpdateItem,
 } from "../lib/types.ts";
 import "./chat/chat.css";
+import { ActivityRegion } from "./chat/activity/ActivityRegion.tsx";
+import { AutonomyBanner } from "./chat/autonomy/AutonomyBanner.tsx";
+import { AutonomySelector } from "./chat/autonomy/AutonomySelector.tsx";
+import { useDecisionStates } from "./chat/autonomy/DecisionStatus.tsx";
 import { ChangeAssistantModal, type ChangeAssistantTarget } from "./chat/ChangeAssistantModal.tsx";
 import { type AgentOption, Composer, type ComposerSubmit } from "./chat/Composer.tsx";
 import { ContextPanel } from "./chat/ContextPanel.tsx";
+import { DelegationNotice } from "./chat/delegation/DelegationNotice.tsx";
 import { IaControls, ProblemNotice } from "./chat/IaChip.tsx";
-import { PermissionPrompt, QuestionPrompt } from "./chat/Interactions.tsx";
+import { PermissionPrompt, permissionElementId, QuestionPrompt } from "./chat/Interactions.tsx";
 import { TurnView } from "./chat/MessageView.tsx";
+import { PlanCard } from "./chat/plan/PlanCard.tsx";
 import { SessionSidebar } from "./chat/SessionSidebar.tsx";
+import type { AutonomySelectorProps } from "./chat/slots.ts";
 import { SubSessionDrawer } from "./chat/SubSessionDrawer.tsx";
 import { contextTokens, EMPTY_TRANSCRIPT, groupTurns, transcriptReducer } from "./chat/transcript.ts";
 import {
@@ -155,6 +164,17 @@ export function ChatPage() {
   const [resolveTick, setResolveTick] = useState(0);
   const [changeTarget, setChangeTarget] = useState<ChangeAssistantTarget | null>(null);
 
+  // --- 1.1 : emplacements (propriétés figées dans chat/slots.ts) ---
+  /** L'arbre de la conversation travaille (ActivityRegion) : « Arrêter » reste affiché. */
+  const [treeWorking, setTreeWorking] = useState(false);
+  /** Brouillon posé dans la saisie à l'ouverture d'une conversation (exécution d'un plan). */
+  const [draftSeed, setDraftSeed] = useState<{ text: string; nonce: number } | undefined>(undefined);
+  const draftNonce = useRef(0);
+  /** Change à chaque [Journal] du bandeau d'autonomie. */
+  const [journalNonce, setJournalNonce] = useState(0);
+  const creatingRef = useRef<Promise<{ id: string; directory: string }> | null>(null);
+  const decisionStates = useDecisionStates(sessionId);
+
   const sessionRef = useRef<string | null>(sessionId);
   sessionRef.current = sessionId;
   const pendingRef = useRef<string | null>(null);
@@ -252,7 +272,10 @@ export function ChatPage() {
     setPlaceholder(null);
   };
 
-  /** Réouverture : derniers choix enregistrés par le cockpit (jamais l'IA d'un raccourci). */
+  /**
+   * Réouverture : derniers choix enregistrés par le cockpit (jamais l'IA d'un raccourci), sinon l'assistant du dernier message
+   * d'une conversation antérieure à 0.2.0. Calcul pur dans server/shared/agent-choice.ts (même comportement, testé).
+   */
   const restoreChoices = async (sid: string, messages: OcMessageWithParts[]) => {
     let choices: ChoicesResponse = null;
     try {
@@ -261,43 +284,25 @@ export function ChatPage() {
       choices = null;
     }
     if (sessionRef.current !== sid) return;
-    setOverride(null);
-    if (choices) {
-      const chosen = choices;
-      setAgent(chosen.agent || defaultAgentName(boot.settings.chat.defaultAgent, agentsRef.current));
-      const known = agentsRef.current.find((a) => a.name === chosen.agent);
-      const levelOfModel = boot.ai.tiers.find((t) => t.model !== null && t.model === chosen.model)?.id ?? null;
-      const level = levelOfModel ?? chosen.tier;
-      if (level) {
-        setTier(level);
-        setVariant(chosen.variant);
-      } else if (advanced && chosen.model && known && !known.model && boot.models.some((m) => m.key === chosen.model)) {
-        // Mode Avancé : l'IA précise choisie pour un agent sans IA propre.
-        setOverride(chosen.model);
-        setVariant(chosen.variant);
-      } else {
-        setTier(boot.ai.chatDefaultTier);
-        setVariant(undefined);
-      }
-      return;
-    }
-    // Conversation antérieure à 0.2.0 : seul l'assistant du dernier message est repris.
-    let lastAgent: string | null = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const info = messages[i]?.info;
-      if (info?.role === "user") {
-        lastAgent = info.agent;
-        break;
-      }
-    }
-    const known = lastAgent ? agentsRef.current.find((a) => a.name === lastAgent && isChatAgent(a)) : undefined;
-    if (known) setAgent(known.name);
-    setTier(boot.ai.chatDefaultTier);
-    setVariant(undefined);
+    const patch = pickRestorableAgent({
+      choices,
+      messages,
+      agents: agentsRef.current,
+      defaultAgent: boot.settings.chat.defaultAgent,
+      tiers: boot.ai.tiers,
+      chatDefaultTier: boot.ai.chatDefaultTier,
+      advanced,
+      models: boot.models,
+    });
+    setOverride(patch.override);
+    if (patch.agent !== undefined) setAgent(patch.agent);
+    if (patch.tier !== undefined) setTier(patch.tier);
+    setVariant(patch.variant);
   };
 
   useEffect(() => {
     dispatch({ type: "reset", messages: [] });
+    setTreeWorking(false);
     setTodos([]);
     setDiff([]);
     setChildren([]);
@@ -596,6 +601,26 @@ export function ChatPage() {
     return ok;
   };
 
+  /**
+   * Conversation courante ; nouvelle conversation : créée dans le projet, ajoutée à la liste et ouverte (la saisie garde son
+   * texte). Deux appels pendant la création partagent la même création (envoi et sélecteur d'autonomie).
+   */
+  const ensureConversation = (): Promise<{ id: string; directory: string }> => {
+    if (sessionId) return Promise.resolve({ id: sessionId, directory: sessionDirectory });
+    creatingRef.current ??= oc
+      .createSession(directory)
+      .then((created) => {
+        pendingRef.current = created.id;
+        setSessions((list) => upsertById(list, created));
+        navigate("chat", created.id);
+        return { id: created.id, directory: created.directory };
+      })
+      .finally(() => {
+        creatingRef.current = null;
+      });
+    return creatingRef.current;
+  };
+
   const handleSubmit = async (input: ComposerSubmit): Promise<boolean> => {
     if (boot.models.length === 0) {
       toast.warning("Aucune IA disponible", "Connectez GitHub Copilot dans Paramètres › Connexion.");
@@ -627,18 +652,7 @@ export function ChatPage() {
       modelOverride: Boolean(request.override) && allowOverride,
     };
     try {
-      let sid = sessionId;
-      let dir = sessionDirectory;
-      if (!sid) {
-        const created = await oc.createSession(directory);
-        sid = created.id;
-        dir = created.directory;
-        pendingRef.current = created.id;
-        setSessions((list) => upsertById(list, created));
-        navigate("chat", created.id);
-      }
-      const targetId = sid;
-      const targetDir = dir;
+      const { id: targetId, directory: targetDir } = await ensureConversation();
       const fileParts = input.attachments.map((a) => ({ type: "file", mime: a.mime, filename: a.filename, url: a.url }));
       setStatuses((s) => ({ ...s, [targetId]: { type: "busy" } }));
       stick.current = true;
@@ -686,10 +700,42 @@ export function ChatPage() {
     }
   };
 
-  const abort = () => {
+  /** « Arrêter » : la conversation et tout son travail délégué ; repli sur l'arrêt de la 1.0.4 si le cockpit ne suit pas la racine. */
+  const stop = () => {
     if (!sessionId) return;
-    oc.abort(sessionId, sessionDirectory).catch((err: unknown) => toast.error("Arrêt impossible", err));
+    stopConversation(sessionId, sessionDirectory).catch((err: unknown) => toast.error("Arrêt impossible", err));
   };
+
+  /** Ouvre une conversation (plan, exécution de plan) ; `draft` non null remplace le texte de la saisie. */
+  const openConversation = (rootId: string, draft: string | null) => {
+    setSidebarOpen(false);
+    if (draft !== null) setDraftSeed({ text: draft, nonce: ++draftNonce.current });
+    if (rootId !== sessionId) navigate("chat", rootId);
+  };
+
+  /** [Journal] du bandeau d'autonomie : panneau de contexte ouvert, Déroulé prévenu. */
+  const openJournal = () => {
+    setAsideOpen((open) => {
+      if (!open) writeFlag("cockpit-chat-aside", true);
+      return true;
+    });
+    setJournalNonce((n) => n + 1);
+  };
+
+  /** [Répondre] de « Qui travaille ? » (clic de l'utilisateur) : carte de la demande visible, focus sur son premier bouton actif. */
+  const focusPermission = (permissionId: string) => {
+    const card = document.getElementById(permissionElementId(permissionId));
+    card?.scrollIntoView({ block: "nearest" });
+    card?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+  };
+
+  /** Ignore l'annonce d'une région d'activité restée d'une conversation précédente. */
+  const onTreeWorking = useCallback(
+    (working: boolean) => {
+      if (sessionRef.current === sessionId) setTreeWorking(working);
+    },
+    [sessionId],
+  );
 
   /** « Résumer » : IA de la conversation (celle de l'assistant, sinon le niveau), jamais une IA choisie pour un message. */
   const summarize = async () => {
@@ -983,6 +1029,14 @@ export function ChatPage() {
     assistants?.updates.find((u) => u.kind === "agents" && u.name === shownTurn.agent) ?? assistantByName.get(shownTurn.agent)?.update ?? null;
   const shownModel = modelByKey(modelKey(shownTurn.send.model));
   const hasBuild = agents.length === 0 || agents.some((a) => a.name === "build" && isChatAgent(a));
+  const selectorProps: Omit<AutonomySelectorProps, "placement"> = {
+    rootId: sessionId,
+    directory: sessionDirectory,
+    advanced,
+    busy,
+    onOpenConversation: openConversation,
+    ensureConversation: () => ensureConversation().then((conversation) => conversation.id),
+  };
 
   return (
     <div className={`chat${asideOpen ? " aside-open" : ""}${sidebarOpen ? " sidebar-open" : ""}`}>
@@ -1032,6 +1086,7 @@ export function ChatPage() {
                   Résumer
                 </Button>
               ) : null}
+              <AutonomySelector placement="header" {...selectorProps} />
               <IconButton icon="edit" label="Renommer" onClick={() => setRenaming(session.title)} />
               {conversation ? (
                 <a className="btn ghost icon-only" href={api.archiveExportUrl(session.id)} download title="Exporter en Markdown" aria-label="Exporter en Markdown">
@@ -1042,12 +1097,30 @@ export function ChatPage() {
               <IconButton icon="panel" label={asideOpen ? "Masquer le contexte" : "Afficher le contexte"} onClick={toggleAside} />
             </>
           ) : (
-            <div className="stack tight spacer" style={{ gap: 0 }}>
-              <h1>Nouvelle conversation</h1>
-              <span className="tiny muted">{projectLabel}</span>
-            </div>
+            <>
+              <div className="stack tight spacer" style={{ gap: 0 }}>
+                <h1>Nouvelle conversation</h1>
+                <span className="tiny muted">{projectLabel}</span>
+              </div>
+              <AutonomySelector placement="header" {...selectorProps} />
+            </>
           )}
         </header>
+
+        {sessionId ? (
+          <>
+            <AutonomyBanner key={`autonomie-${sessionId}`} rootId={sessionId} directory={sessionDirectory} onStop={stop} onOpenJournal={openJournal} />
+            <ActivityRegion
+              key={`activite-${sessionId}`}
+              rootId={sessionId}
+              directory={sessionDirectory}
+              advanced={advanced}
+              onTreeWorking={onTreeWorking}
+              onOpenSession={setDrawer}
+              onReply={focusPermission}
+            />
+          </>
+        ) : null}
 
         <div className="chat-scroll" ref={scroller} onScroll={onScroll}>
           {!sessionId ? (
@@ -1084,9 +1157,10 @@ export function ChatPage() {
               {turns.map((turn) => (
                 <TurnView key={turn.key} turn={turn} root={boot.workspace.root} modelName={modelName} onOpenSession={setDrawer} />
               ))}
+              <DelegationNotice rootId={sessionId} advanced={advanced} />
               {waitingFirstStep ? (
                 <div className="row small muted" style={{ paddingLeft: 34 }}>
-                  <Spinner /> L'assistant réfléchit…
+                  <Spinner /> L'assistant travaille…
                 </div>
               ) : null}
               {status?.type === "retry" ? (
@@ -1095,6 +1169,7 @@ export function ChatPage() {
                   Nouvelle tentative n° {status.attempt} : {status.message}
                 </div>
               ) : null}
+              <PlanCard rootId={sessionId} directory={sessionDirectory} busy={busy} onOpenConversation={openConversation} />
             </div>
           )}
         </div>
@@ -1109,6 +1184,10 @@ export function ChatPage() {
                 sessionTitle={request.sessionID !== sessionId ? children.find((c) => c.id === request.sessionID)?.title : undefined}
                 taskPrompt={taskPromptFor(request)}
                 onReply={(reply, message) => replyPermission(request, reply, message)}
+                decision={decisionStates.get(request.id)?.decision ?? null}
+                examining={decisionStates.get(request.id)?.examining ?? false}
+                onStop={stop}
+                delegation={sessionId ? { rootId: sessionId, advanced } : null}
               />
             ))}
             {localQuestions.map((request) => (
@@ -1184,8 +1263,11 @@ export function ChatPage() {
             />
           }
           onSubmit={handleSubmit}
-          onAbort={abort}
+          onAbort={stop}
           placeholder={boot.models.length === 0 ? "Aucune IA disponible : connectez GitHub Copilot." : (placeholder ?? undefined)}
+          seed={draftSeed}
+          autonomy={<AutonomySelector placement="composer" {...selectorProps} />}
+          stopVisible={Boolean(sessionId) && treeWorking}
         />
       </section>
 
@@ -1201,6 +1283,7 @@ export function ChatPage() {
           onOpenSession={setDrawer}
           onClassify={classify}
           onClose={toggleAside}
+          journalNonce={journalNonce}
         />
       ) : null}
 

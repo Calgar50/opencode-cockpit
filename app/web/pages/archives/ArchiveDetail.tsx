@@ -10,6 +10,7 @@ import { cockpitEvent, useEvents } from "../../lib/events.ts";
 import { formatDateTime, formatInt, formatTokens, formatUsd, plural, relativeTime } from "../../lib/format.ts";
 import { navigate, routeHref } from "../../lib/router.ts";
 import type { Conversation, ModelInfo } from "../../lib/types.ts";
+import { Deroule } from "../chat/activity/Deroule.tsx";
 import { ClassificationBadge, classificationMethod, DeletedBadge, formatConfidence } from "./shared.tsx";
 
 type Action = "title" | "category" | "tags" | "summary" | "pin" | "classify" | "refresh" | "delete";
@@ -480,6 +481,8 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
             )}
           </Card>
         </aside>
+
+        <Deroule rootId={sessionId} placement="archives" advanced={boot.ui.mode === "avance"} />
 
         <Card
           className="area-transcript"

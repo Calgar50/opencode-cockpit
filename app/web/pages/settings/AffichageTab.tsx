@@ -1,9 +1,10 @@
-// Paramètres › Affichage (§9.7) : mode Simple (par défaut) ou Avancé.
+// Paramètres › Affichage (§9.7) : mode Simple (par défaut) ou Avancé ; 1.1 : annonces de « Qui travaille ? » (ActivitySettings).
 import { useId, useState } from "react";
 import { UI_MODES, type UiMode } from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Card, Spinner, useConfirm } from "../../components/ui.tsx";
+import { ActivitySettings } from "./ActivitySettings.tsx";
 
 const MODE_LABELS: Readonly<Record<UiMode, string>> = { simple: "Simple (recommandé)", avance: "Avancé" };
 
@@ -38,22 +39,25 @@ export function AffichageTab() {
   };
 
   return (
-    <Card title="Mode d'affichage">
-      <div className="settings-form">
-        <div className="stack tight" role="radiogroup" aria-label="Mode d'affichage" aria-describedby={hintId}>
-          {UI_MODES.map((mode) => (
-            <label key={mode} className={`choice-card${ui.mode === mode ? " selected" : ""}`}>
-              <input type="radio" name={name} checked={ui.mode === mode} disabled={busy !== null} onChange={() => void choose(mode)} />
-              <strong className="spacer">{MODE_LABELS[mode]}</strong>
-              {busy === mode ? <Spinner /> : null}
-            </label>
-          ))}
+    <>
+      <Card title="Mode d'affichage">
+        <div className="settings-form">
+          <div className="stack tight" role="radiogroup" aria-label="Mode d'affichage" aria-describedby={hintId}>
+            {UI_MODES.map((mode) => (
+              <label key={mode} className={`choice-card${ui.mode === mode ? " selected" : ""}`}>
+                <input type="radio" name={name} checked={ui.mode === mode} disabled={busy !== null} onChange={() => void choose(mode)} />
+                <strong className="spacer">{MODE_LABELS[mode]}</strong>
+                {busy === mode ? <Spinner /> : null}
+              </label>
+            ))}
+          </div>
+          <p className="field-hint" id={hintId}>
+            Le mode Simple n'affiche que les choix sûrs et expliqués. Le mode Avancé ouvre le Studio, les fichiers bruts et les réglages risqués. Ce
+            n'est pas une protection : chaque poste reste administré par son utilisateur.
+          </p>
         </div>
-        <p className="field-hint" id={hintId}>
-          Le mode Simple n'affiche que les choix sûrs et expliqués. Le mode Avancé ouvre le Studio, les fichiers bruts et les réglages risqués. Ce
-          n'est pas une protection : chaque poste reste administré par son utilisateur.
-        </p>
-      </div>
-    </Card>
+      </Card>
+      <ActivitySettings />
+    </>
   );
 }

@@ -1,6 +1,7 @@
 // Tour du chat côté interface : résolution (serveur, avec repli local sur le même module pur que le proxy),
 // choix de l'assistant et lignes du menu « / ».
 import { useEffect, useState } from "react";
+import { defaultAgentName, isChatAgent } from "../../../server/shared/agent-choice.ts";
 import {
   builtinAssistantInfo,
   DEFAULT_TIERS,
@@ -41,16 +42,8 @@ export interface ResolveContext {
   sizeOf: (name: string) => TaskSize;
 }
 
-/** Agent sélectionnable dans le chat (même règle que le serveur : tout sauf les sous-agents). */
-export function isChatAgent(agent: Pick<OcAgent, "mode">): boolean {
-  return agent.mode !== "subagent";
-}
-
-/** Agent des nouvelles conversations : chat.defaultAgent s'il existe, sinon build. */
-export function defaultAgentName(configured: string | null | undefined, agents: OcAgent[]): string {
-  if (configured && (agents.length === 0 || agents.some((a) => a.name === configured && isChatAgent(a)))) return configured;
-  return "build";
-}
+// 1.1 (T2) : isChatAgent et defaultAgentName vivent dans server/shared/agent-choice.ts (module pur testé), ré-exportés ici.
+export { defaultAgentName, isChatAgent };
 
 /** Titre d'un assistant intégré ; `permission` (règles de GET /agent) : « lecture seule » seulement si elles la garantissent. */
 export function builtinTitle(name: string, permission?: readonly Rule[] | null): string | null {
