@@ -1,0 +1,109 @@
+# Banc e2e (L7a) : surcharge de docker-compose.yml, jamais utilisée seule. scripts/run-e2e.sh la passe toujours ainsi :
+#   docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2e.yml --env-file <fichier temporaire> --profile <mode>
+# Les chemins relatifs partent du premier fichier (racine du dépôt). Toutes les variables E2E_* sont exigées : sans le fichier
+# d'environnement du banc, Compose refuse la configuration au lieu de retomber sur la pile de l'utilisateur (nom opencode-cockpit,
+# images opencode-cockpit/*, dossier de travail du .env). Aucun redémarrage automatique, aucune image tirée d'un registre.
+name: ${E2E_PROJET:?lancez scripts/run-e2e.sh}
+
+networks:
+  # Faux et réel hors ligne : réseau interne, sans Internet. Réel (Copilot) : opencode doit joindre GitHub.
+  default:
+    internal: ${E2E_RESEAU_INTERNE:?lancez scripts/run-e2e.sh}
+  # Seul accès depuis l'hôte (ports publiés sur 127.0.0.1) : un pont sans traduction d'adresse vers l'extérieur. Un conteneur
+  # relié au seul réseau interne ne reçoit rien de l'hôte, même sur un port publié (mesure MX1 §8).
+  e2e-front:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+
+services:
+  cockpit:
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    # Contexte propre préparé par le banc hors du dépôt : ni node_modules (une jonction Windows dans une copie git
+    # arrête Docker), ni .env de l'utilisateur, mais bien les sources du dossier de travail.
+    build:
+      context: ${E2E_CONTEXTE:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    # Le banc démarre les services lui-même, dans l'ordre du mode ; en « --faux », le service opencode n'existe pas.
+    depends_on: !reset {}
+    environment:
+      OPENCODE_URL: http://${E2E_OPENCODE_HOTE:?lancez scripts/run-e2e.sh}:4096
+    networks:
+      default: {}
+      e2e-front: {}
+
+  opencode:
+    image: ${E2E_IMAGE_OPENCODE:?lancez scripts/run-e2e.sh}
+    build:
+      context: ${E2E_CONTEXTE:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+
+  # --faux : faux opencode 1.18.30 (app/server/test-support/fake-opencode.ts) servi par e2e/fake-opencode-server.ts, dans l'image
+  # du cockpit (Node 24, TypeScript exécuté nativement). API d'opencode sur le réseau interne (4096) ; pilotage des scénarios sur
+  # 4097, publié sur 127.0.0.1 et protégé par un jeton fabriqué à chaque exécution.
+  faux-opencode:
+    profiles: ["faux"]
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    command: ["node", "--disable-warning=ExperimentalWarning", "/e2e-src/e2e/fake-opencode-server.ts"]
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      E2E_FAUX_MOT_DE_PASSE: ${OPENCODE_SERVER_PASSWORD:?lancez scripts/run-e2e.sh}
+      E2E_JETON_CONTROLE: ${E2E_JETON_CONTROLE:?lancez scripts/run-e2e.sh}
+    volumes:
+      # L'image finale du cockpit ne contient ni les tests ni le faux (app/Dockerfile) : les sources sont montées en lecture seule.
+      - ./app/server:/e2e-src/app/server:ro
+      - ./e2e:/e2e-src/e2e:ro
+    expose: ["4096"]
+    ports: ["127.0.0.1:${E2E_PORT_CONTROLE:?lancez scripts/run-e2e.sh}:4097"]
+    networks:
+      default: {}
+      e2e-front: {}
+
+  # --reel-hors-ligne : faux fournisseur compatible OpenAI (aucune IA réelle, aucun appel facturé) sur le réseau interne (8080) ;
+  # relevé et réponses des scénarios sur 8081, publié sur 127.0.0.1 et protégé par le même jeton.
+  faux-fournisseur:
+    profiles: ["reel-hors-ligne"]
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    command: ["node", "/e2e-src/e2e/lib/faux-fournisseur.mjs"]
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      E2E_JETON_CONTROLE: ${E2E_JETON_CONTROLE:?lancez scripts/run-e2e.sh}
+    volumes:
+      - ./e2e/lib:/e2e-src/e2e/lib:ro
+    expose: ["8080"]
+    ports: ["127.0.0.1:${E2E_PORT_FOURNISSEUR:?lancez scripts/run-e2e.sh}:8081"]
+    networks:
+      default: {}
+      e2e-front: {}
+
+  # --reel-hors-ligne : configuration d'opencode posée dans le volume jetable avant son premier démarrage (levier de la mesure
+  # M-B1 : enabled_providers réduit au faux fournisseur, aucun auth.json, donc aucun appel facturable possible).
+  preparation:
+    profiles: ["reel-hors-ligne"]
+    image: ${E2E_IMAGE_OPENCODE:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    user: "0"
+    network_mode: none
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    entrypoint: ["sh", "-c", "cp /seed/opencode-hors-ligne.jsonc /cfg/opencode.jsonc && chown -R 1000:1000 /cfg"]
+    volumes:
+      - oc-config:/cfg
+      - ./e2e/lib:/seed:ro

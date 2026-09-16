@@ -1,0 +1,148 @@
+# Banc e2e du cockpit
+
+Bout en bout, sur une pile Docker **jetable**, isolée de celle de l'utilisateur. Aucune dépendance npm : Node 24
+apporte `fetch` et `WebSocket`, Docker monte la pile, et un navigateur déjà installé (Edge ou Chromium) est piloté par
+le protocole CDP. Rien ici ne tourne en intégration continue (décision D-06) et rien n'entre dans l'image du cockpit.
+
+```sh
+scripts/run-e2e.sh                        # mode --faux : cockpit + faux opencode
+scripts/run-e2e.sh --scenarios 000-smoke  # un seul scénario
+scripts/run-e2e.sh --gardes               # vérifie les refus d'isolation, sans Docker
+scripts/run-e2e.sh --reel --dry-run       # montre les commandes docker sans les exécuter
+```
+
+Le **code de sortie est le nombre de scénarios en échec** ; 1 quand le banc refuse de démarrer.
+
+## Les trois modes
+
+| Mode | Pile | IA | Facturation |
+|---|---|---|---|
+| `--faux` (défaut) | cockpit + faux opencode 1.18.30 | aucune | aucune |
+| `--reel-hors-ligne` | cockpit + vrai opencode + faux fournisseur compatible OpenAI | aucune IA réelle | aucune |
+| `--reel` | cockpit + vrai opencode avec une IA réelle | Copilot | **appels facturés** |
+
+`--reel-hors-ligne` n'existe que parce que la mesure **M-B1** l'a conclu possible : `COCKPIT_ALLOWED_PROVIDERS` réglé
+sur le faux fournisseur, `COCKPIT_COPILOT_API_URL` vide, aucun `auth.json`, et une configuration d'opencode dont
+`enabled_providers` ne contient que ce fournisseur. Le banc **relit** le compte rendu (`execution/mesures/MX1.md`,
+cherché par `E2E_MESURES_DIR` puis dans `execution/mesures`) avant de démarrer ; sans lui, il refuse et le dit.
+
+`--reel` demande l'accord de l'utilisateur et annonce son budget (décision D-12) : il n'est jamais lancé
+automatiquement. Le banc, lui, se vérifie à blanc (`--reel --dry-run`).
+
+## Isolation
+
+Tout part de deux fichiers Compose, toujours passés ensemble :
+
+```sh
+docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2e.yml --env-file <fichier temporaire> --profile <mode>
+```
+
+- **Projet** : `<préfixe>-<id>`, `cockpit-e2e` par défaut, `it11-e2e` pour le chantier 1.1. Le banc **refuse de
+  démarrer** si le nom résolu commence par `opencode-cockpit` ou `ocauto`, avant comme après la normalisation de
+  Compose. Le nom est revérifié juste avant chaque commande, `down -v` compris.
+- **Images** : `<préfixe>/app:<étiquette>` et `<préfixe>/opencode:<étiquette>`, bâties depuis les sources du dépôt,
+  jamais tirées d'un registre (`pull_policy: never`). Une étiquette qui désignerait les images de l'utilisateur est
+  refusée.
+- **Volumes** : ceux de `docker-compose.yml`, donc préfixés par le projet, donc jetables ; `down -v` les supprime à la
+  fin, dans un `finally`.
+- **Dossiers** : dossier de travail, archives, captures et fichier d'environnement sous
+  `<dossier temporaire>/opencode-cockpit-e2e/<projet>`, hors du dépôt, en 0700.
+- **Port** : choisi libre entre 17800 et 17899, différent de 7777, hors `FETCH_BLOCKED_PORTS`
+  (`app/server/fetch-ports.ts`) et hors des ports que le navigateur refuse.
+- **Fichier d'environnement** : neuf, hors du dépôt, et **jamais** un `.env` — le banc refuse tout chemin dont le nom
+  est `.env` ou commence par `.env.`, tout chemin dans le dépôt, et tout fichier qui existe déjà.
+- **Verrou** : `<dossier temporaire>/opencode-cockpit-e2e/verrou-reel`. Une exécution réelle le prend ; tant qu'il est
+  tenu, **aucune** exécution ne démarre, quel que soit son mode.
+- **Réseau** : `internal` (sans Internet) en `--faux` et en `--reel-hors-ligne`. Un conteneur relié au seul réseau
+  interne ne reçoit rien de l'hôte, même sur un port publié (mesuré en MX1 §8) : le cockpit est donc aussi relié à un
+  pont sans traduction d'adresse, le temps de l'exécution.
+- **Secrets** : jeton du cockpit, mot de passe d'opencode et jeton de pilotage sont fabriqués par
+  `crypto.randomBytes` à chaque exécution, écrits dans le seul fichier d'environnement (0600), supprimés à la fin,
+  et **jamais affichés** — ni dans les commandes montrées par `--dry-run`, ni dans un message d'erreur, ni dans
+  l'adresse de la page (le banc ouvre la session par `POST /api/login`, jamais par `/auth?t=`).
+
+Le cockpit sert en **HTTP** tant que la 1.0.5 n'est pas rebasée (décision D-05). Le rebase (paquet R105) passera le
+banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie : les deux endroits à reprendre portent
+la mention `D-05` dans `e2e/lib/cockpit.mjs`.
+
+## Écrire un scénario
+
+Un fichier `e2e/scenarios/<nom>.mjs` qui exporte `run(ctx)` :
+
+```js
+export async function run(ctx) {
+  const reponse = await ctx.api.get("/api/bootstrap");
+  await ctx.navigateur.attendreQue("document.querySelector('nav.rail')");
+  await ctx.screenshot("accueil");
+  ctx.expectNoConsoleErrors();
+}
+```
+
+Le contexte `ctx` :
+
+| Champ | Ce qu'il donne |
+|---|---|
+| `navigateur` | l'onglet piloté : `aller`, `evaluer`, `attendreQue`, `texte`, `cliquer`, `taper`, `touche`, `focus`, `taille`, `theme`, `capture`, `journalReseau` |
+| `url` | adresse du cockpit de la pile jetable |
+| `faux` | pilotage du faux opencode (`requetes`, `evenements`, `scripter`, `tourParDefaut`, `oublier`), ou `null` hors du mode `--faux` |
+| `mode` | `faux`, `reel-hors-ligne` ou `reel` |
+| `api` | client d'API du cockpit, déjà connecté (`get`, `post`, `put`, `brut`) |
+| `screenshot(nom)` | les six captures : 1440, 1024 et 400, en clair et en sombre |
+| `expectNoConsoleErrors()` | lève si la console a porté la moindre erreur depuis l'ouverture de l'onglet |
+| `opencodeRequests()` | requêtes reçues par opencode (mode `--faux` seulement) |
+| `billedCalls()` | appels susceptibles d'être facturés, vus par le banc : requêtes d'envoi en `--faux`, appels au faux fournisseur en `--reel-hors-ligne`. En `--reel`, le banc ne voit pas la facturation de GitHub et le dit plutôt que de mentir |
+| `dossierCaptures`, `nom` | où sont écrites les captures, et le nom du scénario |
+
+La session du cockpit est ouverte **avant** le scénario, dans le navigateur comme dans le client d'API : un scénario
+ne manipule jamais le jeton.
+
+Un scénario échoue en levant : le banc l'écrit, prend une capture `...-echec.png` et passe au suivant. Le code de
+sortie est le nombre d'échecs.
+
+## Fichiers
+
+| Fichier | Rôle |
+|---|---|
+| `scripts/run-e2e.sh` | point d'entrée, aide, vérifications de base (Node 24, Docker), `MSYS_NO_PATHCONV` |
+| `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, déroulé, et leurs propres vérifications (`--gardes`) |
+| `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, captures, clavier, console, journal réseau |
+| `e2e/lib/cockpit.mjs` | santé, session, client d'API, relevés du faux |
+| `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
+| `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
+| `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable |
+| `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
+| `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même |
+
+`e2e/fake-opencode-server.ts` n'ajoute rien au faux : il l'enveloppe. Le faux écoute sur la boucle locale (le bon
+choix dans les tests) ; un relais d'octets l'expose sur 4096 pour le cockpit, sans toucher aux en-têtes ni au flux
+d'événements. Les sources sont montées en lecture seule, parce que l'image finale du cockpit ne contient ni les tests
+ni le faux.
+
+## Réglages
+
+| Variable | Effet |
+|---|---|
+| `E2E_NAVIGATEUR` | chemin du navigateur (sinon Edge puis Chromium, aux emplacements usuels) |
+| `E2E_MESURES_DIR` | dossier où lire `MX1.md` pour `--reel-hors-ligne` |
+
+Ces chemins sont lus par Node : sous Git Bash, écrivez-les à la mode Windows (`C:/…`) et non `/c/…`.
+
+## Contrôle des types
+
+`e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`
+ne le voit pas. Depuis la racine du dépôt, avec le TypeScript déjà installé dans `app/` (aucune dépendance en plus) :
+
+```sh
+node app/node_modules/typescript/bin/tsc --noEmit --module nodenext --moduleResolution nodenext \
+  --target ES2024 --lib ES2024,DOM,DOM.Iterable --strict --noUncheckedIndexedAccess \
+  --allowImportingTsExtensions --erasableSyntaxOnly --verbatimModuleSyntax --skipLibCheck \
+  --types node --typeRoots app/node_modules/@types e2e/fake-opencode-server.ts
+```
+
+## Dépannage
+
+- **« aucun navigateur trouvé »** : installez Edge ou Chromium, ou donnez son chemin dans `E2E_NAVIGATEUR`.
+- **« le cockpit ne répond pas »** : relancez avec `--garder-pile`, puis
+  `docker compose -p <projet> logs cockpit`. Pensez à `docker compose -p <projet> down -v` ensuite.
+- **Un scénario échoue sans raison claire** : la capture `<scénario>-echec.png` est dans le dossier des captures,
+  affiché à la fin de l'exécution.
