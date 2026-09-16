@@ -19,6 +19,11 @@ jobs:
     defaults:
       run:
         working-directory: app
+    env:
+      # Les tests du HTTPS local se sautent d'eux-memes quand openssl manque (developpement sous Windows) :
+      # en CI, il est exige, et son absence fait echouer la suite au lieu de la sauter en silence.
+      COCKPIT_TEST_REQUIRE_OPENSSL: "1"
+      COCKPIT_OPENSSL: /usr/bin/openssl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,7 +60,11 @@ jobs:
           context: .
           file: app/Dockerfile
           push: false
+          # Chargee dans le demon : le test de fumee la lance vraiment (deux modes, droits, couches, contexte).
+          load: true
           tags: opencode-cockpit/app:ci
+      - name: Test de fumee HTTPS de l'image app
+        run: bash .github/ci/https-smoke.sh opencode-cockpit/app:ci
 
   windows-ps51:
     name: Scripts PowerShell 5.1 (Windows)

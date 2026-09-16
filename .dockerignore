@@ -1,0 +1,27 @@
+# Contexte de construction : ce que le démon Docker ne doit jamais recevoir.
+# Seconde barrière derrière le montage de certs/ (RUN --mount dans les Dockerfiles) : même si un Dockerfile ajoutait un
+# COPY trop large, ni une clé privée, ni le .env, ni les données locales n'entreraient dans une couche d'image.
+# Vérifié par .github/ci/https-smoke.sh (sonde de contexte, étape 13).
+
+# --- Secrets et configuration locale ---
+.env
+.env.*
+**/*.key
+**/*.pfx
+**/*.p12
+
+# --- Données locales de l'outil et de l'installation ---
+data/
+workspace/
+archives/
+backups/
+testinstall/
+
+# --- Dépôt, dépendances et sorties de construction (reconstruites dans l'image) ---
+.git
+**/node_modules
+app/dist
+app/.tls-dev
+
+# --- Tests : jamais nécessaires à la construction des images ---
+tests/
