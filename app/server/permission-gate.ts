@@ -2,10 +2,20 @@
 // aux réponses et aux arrêts, nettoyage des demandes restées en attente après un arrêt. Extrait de createApp (http.ts) à
 // comportement constant (L1a) : une seule instance, empruntée par le proxy puis par toute réponse envoyée par le serveur.
 // Registre des réponses émises : chaque réponse (« once » ou « reject ») est inscrite AVANT son envoi à opencode.
-// relayOnce et rejectWhenAlone arrivent avec L1b.
-import type { EmittedReply, OnceVerdict, PendingPermission, PermissionGate, PermissionGateDeps, PermissionTool } from "./contracts-11.ts";
+// L1b : relayOnce et rejectWhenAlone (réponses des services), refus retenus réévalués par la dérivation « gate », arbre d'une
+// conversation lu par sessions.descendants (un seul calcul, même borne que la 1.0).
+import type {
+  EmittedReply,
+  EventDerivation,
+  OnceVerdict,
+  PendingPermission,
+  PermissionGate,
+  PermissionGateDeps,
+  PermissionTool,
+} from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import { OpencodeError } from "./opencode.ts";
+import type { RelayOutcome, RepliedBy } from "./shared/autonomy-types.ts";
 import { ID_RE } from "./shared/ids.ts";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -14,6 +24,15 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 /** Borne du registre des réponses émises : les plus anciennes sortent en premier. */
 export const EMITTED_MAX = 2_000;
+
+/**
+ * Borne d'un refus retenu (spécification §3.10 : décision 45 s ; au-delà : attente). À la borne, une dernière évaluation a lieu ;
+ * si une autre demande attend encore, rien n'est envoyé et la demande reste à l'utilisateur.
+ */
+export const REJECT_HOLD_MAX_MS = 45_000;
+
+/** Longueur maximale du message d'un refus du cockpit : même borne que le corps accepté par le proxy (parsePermissionReply). */
+export const REJECT_MESSAGE_MAX = 2_000;
 
 /** Registre borné des réponses émises, par identifiant de demande (la dernière inscription l'emporte). */
 export function emittedRegistry(max = EMITTED_MAX): PermissionGate["emitted"] & { entries(): EmittedReply[] } {
@@ -165,30 +184,12 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     }
   };
 
-  /** Descendants d'une conversation d'après le suivi du cockpit (table sessions, lue par root_id indexé), bornés. */
+  /**
+   * Descendants d'une conversation d'après le suivi du cockpit : arbre unique (sessions.descendants, L2b), même requête et mêmes
+   * bornes que la 1.0 (profondeur 8, CLEANUP_MAX_SESSIONS sessions en comptant celle de départ, lignes lues × 10).
+   */
   const trackedDescendants = (sessionId: string, tree: Set<string>): void => {
-    const known = deps.db.prepare("SELECT root_id FROM sessions WHERE id = ?").get(sessionId) as { root_id: string } | undefined;
-    const rows = deps.db
-      .prepare("SELECT id, parent_id FROM sessions WHERE root_id = ? AND parent_id IS NOT NULL LIMIT ?")
-      .all(known?.root_id ?? sessionId, CLEANUP_MAX_SESSIONS * 10) as Array<{ id: string; parent_id: string }>;
-    const childrenOf = new Map<string, string[]>();
-    for (const row of rows) {
-      const list = childrenOf.get(row.parent_id);
-      if (list) list.push(row.id);
-      else childrenOf.set(row.parent_id, [row.id]);
-    }
-    let frontier = [sessionId];
-    for (let depth = 0; depth < CLEANUP_MAX_DEPTH && frontier.length > 0; depth++) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        for (const child of childrenOf.get(id) ?? []) {
-          if (tree.has(child) || tree.size >= CLEANUP_MAX_SESSIONS) continue;
-          tree.add(child);
-          next.push(child);
-        }
-      }
-      frontier = next;
-    }
+    for (const id of deps.sessions.descendants(sessionId, CLEANUP_MAX_SESSIONS)) tree.add(id);
   };
 
   /** Complète avec GET /session/:id/children (sous-agent pas encore enregistré par le cockpit), borné. */
@@ -285,6 +286,193 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     await rejectOrphans(stale, directory, { cause: "arrêt", sessionId });
   };
 
+  /**
+   * Envoi d'une réponse déjà inscrite au registre. 404 (PermissionNotFoundError : demande déjà répondue, ou retirée sans
+   * événement par un rechargement d'opencode, mesure MX1 M14) : « deja-repondu ». Autre erreur : « echec ». Jamais de nouvel
+   * essai : la réponse a pu être prise en compte, et une seconde réponse n'est jamais envoyée.
+   */
+  const sendReply = async (requestId: string, directory: string | null, body: { reply: "once" | "reject"; message?: string }): Promise<RelayOutcome> => {
+    try {
+      await client.request("POST", `/permission/${encodeURIComponent(requestId)}/reply`, { query: { directory }, body, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
+      return "ok";
+    } catch (err) {
+      if (err instanceof OpencodeError && err.status === 404) return "deja-repondu";
+      log.warn("réponse d'autorisation du cockpit non relayée", { requestId, reply: body.reply, error: errorMessage(err) });
+      return "echec";
+    }
+  };
+
+  /**
+   * « once » envoyé par un service (autonomie, garde des délégations) : file → vérification « once » → inscription au registre →
+   * relais, la file gardée jusqu'à la réponse d'opencode (aucun arrêt ne s'intercale, comme pour le proxy). Réponse déjà inscrite
+   * (navigateur, autre service) : « deja-repondu », sans rien envoyer. Demande qui n'est plus active : « expiree », sans « once ».
+   * Vérification impossible : « echec ». Ne lève jamais. Jamais appelé en tenant une place de la file (attente jusqu'à sa borne).
+   */
+  const relayOnce = async (requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome> => {
+    if (!ID_RE.test(requestId)) {
+      log.warn("« once » du cockpit non relayé : identifiant de demande illisible", { by });
+      return "echec";
+    }
+    const release = await acquireReplyGate();
+    try {
+      if (emitted.has(requestId)) return "deja-repondu";
+      const verdict = await checkOnceReply(requestId, directory);
+      // Un refus du navigateur ne passe pas par la file : inscrit pendant la vérification (demande retirée ou non), il l'emporte.
+      if (emitted.has(requestId)) return "deja-repondu";
+      if (!verdict.ok) {
+        if (verdict.status === 503) return "echec";
+        log.info("demande d'autorisation qui n'est plus active : « once » du cockpit non relayé", { requestId, by, found: verdict.request !== null });
+        return "expiree";
+      }
+      // P9 : inscrite au registre avant l'envoi.
+      emitted.record({ requestId, reply: "once", by, at: Date.now() });
+      return await sendReply(requestId, directory, { reply: "once" });
+    } finally {
+      release();
+    }
+  };
+
+  /** Refus retenu en cours (rejectWhenAlone), réveillé par la dérivation « gate ». */
+  interface HeldReject {
+    requestId: string;
+    sessionId: string;
+    by: RepliedBy;
+    /** Sort partagé : un autre refus retenu de la même conversation a été envoyé et a emporté celui-ci (F-c). */
+    settled: RelayOutcome | null;
+    wake: () => void;
+  }
+  const held = new Set<HeldReject>();
+
+  /**
+   * Une évaluation d'un refus retenu, dans la file des réponses. opencode 1.18.30 applique un refus à TOUTES les demandes en
+   * attente de la conversation (F-c, mesure MX1 M12 : le tour s'arrête même avec un message) : tant qu'une autre demande attend,
+   * rien n'est envoyé (« retenu »). Seules les autres demandes que ce portillon refuse de toute façon (refus retenus, pas encore
+   * inscrits) ne retiennent pas : un seul refus part, inscrit pour chacune, et leur sort est celui de cet envoi.
+   * Limite : une demande posée entre la lecture de GET /permission et l'arrivée du refus serait refusée avec lui (aucune réponse
+   * « seulement celle-ci » n'existe dans opencode).
+   */
+  const evaluateReject = async (waiter: HeldReject, directory: string | null, message: string): Promise<RelayOutcome | "retenu"> => {
+    const release = await acquireReplyGate();
+    try {
+      if (waiter.settled !== null) return waiter.settled;
+      const { requestId, sessionId } = waiter;
+      if (emitted.has(requestId)) return "deja-repondu";
+      let pending: PendingPermission[];
+      try {
+        pending = await pendingPermissions(directory);
+      } catch (err) {
+        log.warn("refus du cockpit non relayé : demandes en attente illisibles", { requestId, error: errorMessage(err) });
+        return "echec";
+      }
+      // Un refus du navigateur ne passe pas par la file : inscrit pendant la lecture (demande retirée ou non), il l'emporte.
+      if (emitted.has(requestId)) return "deja-repondu";
+      const request = pending.find((p) => p.id === requestId);
+      if (!request) return "expiree";
+      if (request.sessionID !== sessionId) {
+        log.warn("refus du cockpit non relayé : la demande n'appartient pas à cette conversation", { requestId, sessionId });
+        return "echec";
+      }
+      const partners = new Map<string, HeldReject>();
+      for (const other of held) {
+        if (other !== waiter && other.sessionId === sessionId && other.settled === null) partners.set(other.requestId, other);
+      }
+      const siblings = pending.filter((p) => p.sessionID === sessionId && p.id !== requestId);
+      // Aucune attente entre ces contrôles et l'inscription : rien ne peut s'inscrire entre-temps.
+      if (siblings.some((p) => !partners.has(p.id) || emitted.has(p.id))) return "retenu";
+      const cascade = siblings.flatMap((p) => partners.get(p.id) ?? []);
+      // P9 : inscrits au registre avant l'envoi, la demande visée et celles que le même refus emporte.
+      const at = Date.now();
+      emitted.record({ requestId, reply: "reject", by: waiter.by, at });
+      for (const partner of cascade) emitted.record({ requestId: partner.requestId, reply: "reject", by: partner.by, at });
+      const outcome = await sendReply(requestId, directory, message === "" ? { reply: "reject" } : { reply: "reject", message });
+      for (const partner of cascade) {
+        partner.settled = outcome;
+        partner.wake();
+      }
+      return outcome;
+    } finally {
+      release();
+    }
+  };
+
+  /**
+   * Refus envoyé par le cockpit (refus Simple d'une délégation, interdit absolu de la Salle OMO), retenu tant qu'une autre demande
+   * de la même conversation attend (F-c). Réévalué quand la dérivation « gate » voit permission.replied de cette conversation ou le
+   * rechargement d'opencode (demandes retirées sans événement, M14), borné à REJECT_HOLD_MAX_MS (dernière évaluation à la borne).
+   * Rend le sort de l'envoi, ou « retenu » si une autre demande attend encore à la borne (rien n'est envoyé : la demande reste à
+   * l'utilisateur). Message vide : refus sans message. Ne lève jamais. Jamais appelé en tenant une place de la file.
+   */
+  const rejectWhenAlone = async (requestId: string, sessionId: string, directory: string | null, message: string, by: RepliedBy): Promise<RelayOutcome | "retenu"> => {
+    if (!ID_RE.test(requestId) || !ID_RE.test(sessionId)) {
+      log.warn("refus du cockpit non relayé : identifiant illisible", { by });
+      return "echec";
+    }
+    if (typeof message !== "string" || message.length > REJECT_MESSAGE_MAX) {
+      log.warn("refus du cockpit non relayé : message illisible ou trop long", { requestId, by });
+      return "echec";
+    }
+    let woken = false;
+    let resume: () => void = () => undefined;
+    let expired = false;
+    const waiter: HeldReject = {
+      requestId,
+      sessionId,
+      by,
+      settled: null,
+      wake: () => {
+        woken = true;
+        resume();
+      },
+    };
+    const timer = setTimeout(() => {
+      expired = true;
+      waiter.wake();
+    }, REJECT_HOLD_MAX_MS);
+    timer.unref();
+    // Inscrit avant la première évaluation : un événement arrivé pendant celle-ci provoque une nouvelle évaluation.
+    held.add(waiter);
+    try {
+      for (;;) {
+        woken = false;
+        const outcome = await evaluateReject(waiter, directory, message);
+        if (outcome !== "retenu") return outcome;
+        if (expired) {
+          log.info("refus du cockpit retenu jusqu'à la borne : rien n'est envoyé, la demande attend l'utilisateur", { requestId, sessionId, holdMs: REJECT_HOLD_MAX_MS });
+          return "retenu";
+        }
+        if (!woken) {
+          await new Promise<void>((resolve) => {
+            resume = resolve;
+          });
+        }
+        resume = () => undefined;
+      }
+    } finally {
+      clearTimeout(timer);
+      held.delete(waiter);
+    }
+  };
+
+  /**
+   * Dérivation « gate » (STEP_ORDER, avant toutes les autres) : réveille les refus retenus. Synchrone, sans appel réseau : la
+   * nouvelle évaluation part dans la file des réponses.
+   */
+  const derivation: EventDerivation = {
+    name: "gate",
+    onEvent(event) {
+      if (held.size === 0) return;
+      const type = event.payload?.type;
+      if (type === "permission.replied") {
+        const sessionID = event.payload.properties?.sessionID;
+        if (typeof sessionID !== "string") return;
+        for (const waiter of held) if (waiter.sessionId === sessionID) waiter.wake();
+      } else if (type === "server.instance.disposed" || type === "global.disposed") {
+        // Mesure MX1 M14 : les demandes en attente disparaissent sans permission.replied.
+        for (const waiter of held) waiter.wake();
+      }
+    },
+  };
+
   return {
     acquire: acquireReplyGate,
     pending: pendingPermissions,
@@ -293,8 +481,11 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     isOrphanOfWorkingSession,
     rejectOrphans,
     rejectAborted: rejectAbortedPermissions,
-    relayOnce: () => Promise.reject(new Error("portillon : relayOnce non disponible avant L1b")),
-    rejectWhenAlone: () => Promise.reject(new Error("portillon : rejectWhenAlone non disponible avant L1b")),
+    relayOnce,
+    rejectWhenAlone,
     emitted: { record: (entry) => emitted.record(entry), has: (requestId) => emitted.has(requestId) },
+    install(reg) {
+      reg.derivation(derivation);
+    },
   };
 }

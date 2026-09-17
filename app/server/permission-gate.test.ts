@@ -74,7 +74,8 @@ describe("L1a : portillon extrait", () => {
     assert.equal(big.has(`per_${EMITTED_MAX + 4}`), true);
   });
 
-  it("createPermissionGate : refus du serveur (orphelines) inscrits « cockpit » avant chaque envoi ; relayOnce et rejectWhenAlone refusés avant L1b", async () => {
+  // relayOnce et rejectWhenAlone (L1b) : permission-relay.test.ts.
+  it("createPermissionGate : refus du serveur (orphelines) inscrits « cockpit » avant chaque envoi", async () => {
     const sent: Array<{ path: string; registered: boolean }> = [];
     let gate: PermissionGate | undefined;
     const client = {
@@ -100,8 +101,6 @@ describe("L1a : portillon extrait", () => {
     );
     assert.deepEqual(sent, [{ path: "/permission/per_repos/reply", registered: true }]);
     assert.equal(gate.emitted.has("per_occupee"), false, "conversation qui travaille : ni envoyé ni inscrit");
-    await assert.rejects(gate.relayOnce("per_x", null, "vous"), /relayOnce non disponible avant L1b/);
-    await assert.rejects(gate.rejectWhenAlone("per_x", "ses_x", null, "non", "cockpit"), /rejectWhenAlone non disponible avant L1b/);
   });
 
   it("proxy : chaque réponse du navigateur (« once », « reject ») est inscrite « vous » avant d'être reçue par opencode ; refusée avant le relais → jamais inscrite", async (t) => {
