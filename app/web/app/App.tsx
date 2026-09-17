@@ -1,13 +1,13 @@
 // Coquille de l'application : amorçage, connexion, navigation, bandeaux d'alerte, règles d'utilisation.
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { isDefaultProviders, MESSAGES } from "../../server/shared/assistant-rules.ts";
-import { authErrorText, certificateRenewalDue, type LocalAccessNotice, localAccessNotice, loginMode } from "../../server/shared/local-access-notice.ts";
+import { authErrorText, certificateRenewalDue, localAccessNotice, loginMode } from "../../server/shared/local-access-notice.ts";
 import { Icon, type IconName } from "../components/Icon.tsx";
 import { ToastProvider, useToast } from "../components/Toast.tsx";
 import { Button, ConfirmProvider, EmptyState, IconButton, Meter, Spinner } from "../components/ui.tsx";
 import { ApiError, api, errorText, onUnauthorized } from "../lib/api.ts";
 import { cockpitEvent, eventBus, useEvents, useStreamStatus } from "../lib/events.ts";
-import { formatDateTime, formatPercent, formatUsd } from "../lib/format.ts";
+import { formatPercent, formatUsd } from "../lib/format.ts";
 import { navigate, routeHref, useRoute } from "../lib/router.ts";
 import type { BudgetAlert, Bootstrap, EventsStatus, Settings } from "../lib/types.ts";
 import { ArchivesPage } from "../pages/ArchivesPage.tsx";
@@ -19,6 +19,7 @@ import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
 import { AppProvider, type ThemeChoice, useApp } from "./AppContext.tsx";
 import { FirstRunRules, needsRules, UPGRADE_NOTICE_VERSION, UpgradeNotice } from "./FirstRunRules.tsx";
+import { LocalHttpBanner } from "./LocalHttpNotice.tsx";
 
 const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean }> = [
   { id: "chat", label: "Chat", icon: "chat" },
@@ -85,30 +86,6 @@ export function App() {
         )}
       </ConfirmProvider>
     </ToastProvider>
-  );
-}
-
-/**
- * Bandeau permanent du mode HTTP local (I6) : pas de bouton de fermeture, pas de préférence, hors notice de version. Le détail
- * technique (ce qui circule en clair, qui peut le lire, comment revenir en HTTPS) reste dans la page Diagnostic (K2-4).
- */
-function LocalHttpBanner({ notice, onDetails }: { notice: LocalAccessNotice; onDetails?: () => void }) {
-  return (
-    <div className="banner warning" role="status" data-testid="local-http-banner">
-      <Icon name="shield" />
-      <span className="spacer">
-        <strong>Connexion locale non chiffrée</strong>{" "}
-        {notice.kind === "http-choisi"
-          ? `(choix d'installation du ${formatDateTime(Date.parse(notice.confirmedAt))}).`
-          : "(mode HTTP choisi à l'installation)."}
-        {onDetails ? " Aucune action requise au quotidien." : ""}
-      </span>
-      {onDetails ? (
-        <Button size="sm" onClick={onDetails}>
-          Détails
-        </Button>
-      ) : null}
-    </div>
   );
 }
 
@@ -456,7 +433,8 @@ function Shell() {
           )}
         </main>
       </div>
-      {rulesOpen ? <FirstRunRules /> : null}
+      {/* La coquille est inerte tant que les règles ne sont pas acceptées : le bandeau du mode HTTP est repris dans la fenêtre. */}
+      {rulesOpen ? <FirstRunRules accessNotice={accessNotice} /> : null}
     </>
   );
 }

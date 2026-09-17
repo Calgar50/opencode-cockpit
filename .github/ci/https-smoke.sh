@@ -41,6 +41,10 @@ OVERRIDE="$ROOT/docker-compose.override.yml"
 MARKER_ENV="$ROOT/.env"
 MARKER_CERT="$ROOT/certs/marker.key"
 MARKER_TLS="$ROOT/tls/cockpit.key"
+# Fichiers .env sous app/ (comme app/.env.dev) : noms propres au test, pour ne jamais toucher un fichier de developpement reel.
+MARKER_APP_DIR="$ROOT/app/smoke-marqueur"
+MARKER_APP_ENV="$MARKER_APP_DIR/.env"
+MARKER_APP_ENV_DOT="$ROOT/app/.env.smoke-marqueur"
 
 FAILURES=0
 
@@ -62,8 +66,8 @@ abandon() {
 
 # Garde-fou AVANT d'armer le nettoyage : le test cree (et supprime) .env, docker-compose.override.yml et tls/ a la racine.
 # S'ils existent deja, c'est une vraie installation : on refuse, et surtout on n'a encore rien arme qui les effacerait.
-if [ -e "$MARKER_ENV" ] || [ -e "$OVERRIDE" ] || [ -e "$ROOT/tls" ]; then
-  echo "Refus : .env, docker-compose.override.yml ou tls/ existe deja dans $ROOT (le test les cree et les supprime)." >&2
+if [ -e "$MARKER_ENV" ] || [ -e "$OVERRIDE" ] || [ -e "$ROOT/tls" ] || [ -e "$MARKER_APP_DIR" ] || [ -e "$MARKER_APP_ENV_DOT" ]; then
+  echo "Refus : .env, docker-compose.override.yml, tls/, app/smoke-marqueur/ ou app/.env.smoke-marqueur existe deja dans $ROOT (le test les cree et les supprime)." >&2
   exit 2
 fi
 
@@ -80,8 +84,8 @@ cleanup() {
     chmod -R u+w "$WORK" 2>/dev/null
     rm -rf -- "$WORK"
   fi
-  rm -f -- "$OVERRIDE" "$MARKER_ENV" "$MARKER_CERT" "$MARKER_TLS"
-  rmdir -- "$ROOT/tls" 2>/dev/null
+  rm -f -- "$OVERRIDE" "$MARKER_ENV" "$MARKER_CERT" "$MARKER_TLS" "$MARKER_APP_ENV" "$MARKER_APP_ENV_DOT"
+  rmdir -- "$ROOT/tls" "$MARKER_APP_DIR" 2>/dev/null
   return $rc
 }
 trap cleanup EXIT
@@ -441,7 +445,7 @@ check "403" "$(curl_code "$POUBELLE" --proto '=http' "$BASE_HTTP/api/health?chal
 docker stop "$C_HTTP" >/dev/null
 
 ########################################################################################################################
-say "11/14 volume TLS traverse par un sejour en mode HTTP"
+say "11/14 volume TLS : sejour en mode HTTP, puis tls -Renew"
 
 docker stop "$C_HTTPS" >/dev/null
 CONDENSE_AVANT="$(docker run --rm --label "$LABEL" --network none -v "$V_TLS:/tls" "$IMAGE" sha256sum /tls/private/cockpit.key | cut -d' ' -f1)"
@@ -459,72 +463,171 @@ docker start "$C_HTTPS" >/dev/null
 if wait_healthy "$C_HTTPS" 60; then ok "retour en HTTPS : healthy"; else ko "retour en HTTPS : jamais healthy"; fi
 docker exec "$C_HTTPS" cat /tls/public/cockpit.crt >"$WORK/cockpit-3.crt" 2>/dev/null || true
 check "$EMPREINTE_AVANT" "$(openssl x509 <"$WORK/cockpit-3.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)" "meme certificat au retour en HTTPS"
+
+# « .\cockpit.ps1 tls -Renew » : meme suppression que le script (cle et certificats ; cockpit-tls.json reste), puis
+# demarrage. Le serveur cree une nouvelle paire et annonce l'empreinte precedente, lue dans le JSON garde.
+docker stop "$C_HTTPS" >/dev/null
+docker run --rm --label "$LABEL" --network none --user 1000:1000 --entrypoint rm -v "$V_TLS:/tls" "$IMAGE" \
+  -f /tls/private/cockpit.key /tls/private/cockpit.crt /tls/public/cockpit.crt
+docker start "$C_HTTPS" >/dev/null
+if wait_healthy "$C_HTTPS" 60; then ok "tls -Renew : conteneur healthy avec une nouvelle paire"; else ko "tls -Renew : conteneur jamais healthy"; fi
+: >"$WORK/cockpit-4.crt"
+: >"$WORK/cockpit-tls-4.json"
+docker exec "$C_HTTPS" cat /tls/public/cockpit.crt >"$WORK/cockpit-4.crt" 2>/dev/null || true
+docker exec "$C_HTTPS" cat /tls/public/cockpit-tls.json >"$WORK/cockpit-tls-4.json" 2>/dev/null || true
+EMPREINTE_RENOUVELEE="$(openssl x509 <"$WORK/cockpit-4.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' || true)"
+if [ -n "$EMPREINTE_RENOUVELEE" ] && [ "$EMPREINTE_RENOUVELEE" != "$EMPREINTE_AVANT" ]; then
+  ok "tls -Renew : nouvelle empreinte"
+else
+  ko "tls -Renew : empreinte inchangee ou certificat illisible"
+fi
+check "$EMPREINTE_RENOUVELEE" "$(json_field "$WORK/cockpit-tls-4.json" sha256)" "tls -Renew : cockpit-tls.json annonce la nouvelle empreinte"
+check "$EMPREINTE_AVANT" "$(json_field "$WORK/cockpit-tls-4.json" previousSha256)" "tls -Renew : previousSha256 = ancienne empreinte"
 docker rm -f "$C_HTTPS" "$C_REUSE" >/dev/null
 
 ########################################################################################################################
-say "12/14 couches de l'image : aucun bloc de cle privee"
+say "12/14 couches ajoutees a l'image de base : aucun bloc de cle privee"
 
-# Motif assemble a l'execution : aucune etiquette PEM complete n'est ecrite dans le depot.
+# Motif assemble a l'execution : aucune etiquette PEM complete n'est ecrite dans le depot. Toute etiquette « ... PRIVATE KEY »
+# (PKCS#8, RSA, EC, DSA, OPENSSH, ENCRYPTED), fin de ligne Unix ou Windows, puis une ligne base64.
 ETIQUETTE="PRIVATE KEY"
-MOTIF_PEM="-----BEGIN (RSA |EC |ENCRYPTED )?$ETIQUETTE-----\n[A-Za-z0-9+/=]{40,}"
+MOTIF_PEM="-----BEGIN ([A-Z0-9]+ )*$ETIQUETTE-----\r?\n[A-Za-z0-9+/=]{40,}"
+
+# Seules les couches AJOUTEES par app/Dockerfile sont examinees. Les couches de NODE_IMAGE (epinglee par condense) viennent de
+# Debian et de Node : le paquet libgnutls30 y embarque des cles d'auto-test FIPS au format PEM
+# (/usr/lib/x86_64-linux-gnu/libgnutls.so.30.*), hors de notre controle. Les couches sont comparees par leurs condenses de
+# contenu (.RootFS.Layers) : celles de l'image de base doivent former exactement le debut de celles de l'image, sinon
+# toutes les couches sont examinees.
+docker image inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$BASE_IMAGE" | tr -d '\r' | sed '/^$/d' >"$WORK/couches-base.txt"
+docker image inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE" | tr -d '\r' | sed '/^$/d' >"$WORK/couches-image.txt"
+NB_BASE="$(wc -l <"$WORK/couches-base.txt" | tr -d ' ')"
+NB_IMAGE="$(wc -l <"$WORK/couches-image.txt" | tr -d ' ')"
+head -n "$NB_BASE" "$WORK/couches-image.txt" >"$WORK/couches-debut.txt"
+if [ "$NB_BASE" -ge 1 ] && [ "$NB_IMAGE" -gt "$NB_BASE" ] && [ "$(cat "$WORK/couches-debut.txt")" = "$(cat "$WORK/couches-base.txt")" ]; then
+  ok "l'image part de NODE_IMAGE : $NB_BASE couche(s) de base identiques, non examinees"
+  tail -n +"$((NB_BASE + 1))" "$WORK/couches-image.txt" >"$WORK/couches-ajoutees.txt"
+else
+  ko "les couches de NODE_IMAGE ($NB_BASE) ne forment pas le debut de celles de l'image ($NB_IMAGE) : toutes les couches sont examinees"
+  cp "$WORK/couches-image.txt" "$WORK/couches-ajoutees.txt"
+fi
+sort -u "$WORK/couches-ajoutees.txt" >"$WORK/couches-a-examiner.txt"
+NB_A_EXAMINER="$(wc -l <"$WORK/couches-a-examiner.txt" | tr -d ' ')"
+
 # Sortie par redirection du shell, jamais par « -o <chemin> » : docker ne resout pas un chemin MSYS (Git Bash).
 docker save "$IMAGE" >"$WORK/image.tar"
 mkdir -p "$WORK/save"
 tar -xf "$WORK/image.tar" -C "$WORK/save"
 rm -f "$WORK/image.tar"
-COUCHES=0
+
+# Contenu tar d'un fichier de docker save, selon sa signature : gzip, zstd, sinon tel quel (tar, ou fichier JSON).
+decompresser() {
+  case "$(head -c 4 -- "$1" | od -An -tx1 | tr -d ' \n')" in
+    1f8b*) gzip -dc -- "$1" ;;
+    28b52ffd) zstd -dcq -- "$1" ;;
+    *) cat -- "$1" ;;
+  esac
+}
+
+: >"$WORK/couches-examinees.txt"
 COUCHES_SUSPECTES=0
 while IFS= read -r blob; do
-  if tar -tzf "$blob" >/dev/null 2>&1; then
-    COUCHES=$((COUCHES + 1))
-    if tar -xzOf "$blob" 2>/dev/null | grep -aPzq -- "$MOTIF_PEM"; then COUCHES_SUSPECTES=$((COUCHES_SUSPECTES + 1)); fi
-  elif tar -tf "$blob" >/dev/null 2>&1; then
-    COUCHES=$((COUCHES + 1))
-    if tar -xOf "$blob" 2>/dev/null | grep -aPzq -- "$MOTIF_PEM"; then COUCHES_SUSPECTES=$((COUCHES_SUSPECTES + 1)); fi
+  [ -n "$blob" ] || continue
+  # Condense du contenu decompresse = identifiant de la couche dans .RootFS.Layers (un fichier JSON n'y figure jamais).
+  CONDENSE="sha256:$( { decompresser "$blob" 2>/dev/null || true; } | sha256sum | cut -d' ' -f1)"
+  grep -qxF -- "$CONDENSE" "$WORK/couches-a-examiner.txt" || continue
+  COURT="${CONDENSE#sha256:}"
+  COURT="${COURT:0:12}"
+  # Ni « grep -q » ni tube interrompu : sous « set -o pipefail », un tar coupe par SIGPIPE ferait passer une couche suspecte
+  # pour saine. Chaque code de retour est lu : grep 0 = trouve, 1 = rien, 2 ou plus = erreur (jamais comptee comme saine).
+  set +e
+  decompresser "$blob" 2>/dev/null | tar -xOf - 2>"$WORK/tar.err" | grep -aPzc -- "$MOTIF_PEM" >"$WORK/grep.out" 2>"$WORK/grep.err"
+  STATUTS="${PIPESTATUS[0]} ${PIPESTATUS[1]} ${PIPESTATUS[2]}"
+  set -e
+  read -r RC_DECOMP RC_TAR RC_GREP <<<"$STATUTS"
+  if [ "$RC_DECOMP" -ne 0 ] || [ "$RC_TAR" -ne 0 ]; then
+    ko "couche $COURT illisible (decompression $RC_DECOMP, tar $RC_TAR : $(head -n 1 "$WORK/tar.err"))"
+    continue
   fi
+  case "$RC_GREP" in
+    0)
+      COUCHES_SUSPECTES=$((COUCHES_SUSPECTES + 1))
+      ko "couche $COURT : $(head -n 1 "$WORK/grep.out") enregistrement(s) « etiquette PEM + ligne base64 »"
+      # Fichiers en cause (noms seulement, jamais le contenu).
+      mkdir -p "$WORK/suspecte"
+      { decompresser "$blob" 2>/dev/null || true; } | tar -xf - -C "$WORK/suspecte" 2>/dev/null || true
+      { grep -rlaPz -- "$MOTIF_PEM" "$WORK/suspecte" 2>/dev/null || true; } | sed "s|^$WORK/suspecte|        |" | head -n 20 >&2
+      chmod -R u+w "$WORK/suspecte" 2>/dev/null || true
+      rm -rf -- "$WORK/suspecte"
+      ;;
+    1) ;;
+    *)
+      ko "couche $COURT : grep en erreur ($RC_GREP : $(head -n 1 "$WORK/grep.err"))"
+      continue
+      ;;
+  esac
+  printf '%s\n' "$CONDENSE" >>"$WORK/couches-examinees.txt"
 done <<EOF
 $(find "$WORK/save" -type f)
 EOF
-if [ "$COUCHES" -lt 2 ]; then ko "seulement $COUCHES couche(s) examinee(s) : extraction de docker save incomplete"; else ok "$COUCHES couches examinees"; fi
-check "0" "$COUCHES_SUSPECTES" "aucune couche ne contient « etiquette PEM + ligne base64 »"
+sort -u "$WORK/couches-examinees.txt" >"$WORK/couches-lues.txt"
+NB_MANQUANTES="$(comm -23 "$WORK/couches-a-examiner.txt" "$WORK/couches-lues.txt" | wc -l | tr -d ' ')"
+if [ "$NB_A_EXAMINER" -ge 1 ] && [ "$NB_MANQUANTES" -eq 0 ]; then
+  ok "$NB_A_EXAMINER couche(s) ajoutee(s), toutes retrouvees dans docker save et lues en entier"
+else
+  ko "couches ajoutees : $NB_A_EXAMINER attendue(s), $NB_MANQUANTES non retrouvee(s) ou illisible(s) dans docker save"
+fi
+check "0" "$COUCHES_SUSPECTES" "aucune couche ajoutee ne contient « etiquette PEM + ligne base64 »"
 docker history --no-trunc "$IMAGE" >"$WORK/history.txt"
 if grep -q "$ETIQUETTE" "$WORK/history.txt"; then ko "docker history mentionne une cle privee"; else ok "docker history sans mention de cle privee"; fi
 
 ########################################################################################################################
 say "13/14 contexte de construction"
 
-mkdir -p "$ROOT/tls"
+mkdir -p "$ROOT/tls" "$MARKER_APP_DIR"
 printf '%s\n' "$MARKER" >"$MARKER_ENV"
 printf '%s\n' "$MARKER" >"$MARKER_CERT"
 printf '%s\n' "$MARKER" >"$MARKER_TLS"
+printf '%s\n' "$MARKER" >"$MARKER_APP_ENV"
+printf '%s\n' "$MARKER" >"$MARKER_APP_ENV_DOT"
 
+# Journal de construction en echec : dernieres lignes, identifiants d'une adresse de proxy masques.
+journal_construction() { tail -n 20 "$1" | sed -E 's#://[^/@[:space:]]+@#://****@#g' >&2 || true; }
+
+# Constructions par « docker buildx build » : avec le pilote docker-container (docker/setup-buildx-action en CI), l'image
+# n'est chargee dans le demon qu'avec --load, et « docker build » sans sortie la laisse dans le cache du constructeur.
 # Sortie en archive sur la sortie standard puis extraction par tar : « dest=<chemin> » ne resout pas un chemin MSYS.
-docker buildx build --file .github/ci/context-probe.Dockerfile --output type=tar,dest=- . >"$WORK/ctx.tar" 2>/dev/null
+if ! docker buildx build --file .github/ci/context-probe.Dockerfile --output type=tar,dest=- . >"$WORK/ctx.tar" 2>"$WORK/ctx-build.log"; then
+  ko "sonde de contexte : construction impossible"
+  journal_construction "$WORK/ctx-build.log"
+fi
 mkdir -p "$WORK/ctx"
 tar -xf "$WORK/ctx.tar" -C "$WORK/ctx" 2>/dev/null || true
 if [ -d "$WORK/ctx/contexte" ]; then ok "sonde de contexte executee"; else ko "sonde de contexte sans sortie"; fi
 # « grep ne trouve rien » est le resultat attendu : son code 1 ne doit pas arreter le script (set -o pipefail).
 TROUVES="$( { grep -rl -- "$MARKER" "$WORK/ctx" 2>/dev/null || true; } | wc -l | tr -d ' ')"
 check "0" "$TROUVES" "aucun marqueur dans le contexte transmis au demon"
-for absent in contexte/.env contexte/certs/marker.key contexte/tls/cockpit.key contexte/app/node_modules contexte/tests; do
+for absent in contexte/.env contexte/app/.env.smoke-marqueur contexte/app/smoke-marqueur/.env contexte/certs/marker.key contexte/tls/cockpit.key contexte/app/node_modules contexte/tests; do
   if [ -e "$WORK/ctx/$absent" ]; then ko "$absent present dans le contexte"; else ok "$absent absent du contexte"; fi
 done
 if [ -e "$WORK/ctx/contexte/certs/README.md" ]; then ok "certs/README.md conserve (les autorites d'entreprise restent montables)"; else ko "certs/ entierement exclu du contexte"; fi
 
-if ! docker build --file app/Dockerfile --target build --tag "$BUILD_TAG" . >"$WORK/build-etape.log" 2>&1; then
-  ko "construction de l'etape « build » impossible (journal : $WORK/build-etape.log)"
-fi
-RESTES="$(docker run --rm --label "$LABEL" --network none -e "SMOKE_MARKER=$MARKER" "$BUILD_TAG" \
-  sh -c 'grep -rl --exclude-dir=node_modules -- "$SMOKE_MARKER" /src /tmp 2>/dev/null | wc -l' | tr -d ' \r')"
-check "0" "$RESTES" "etape de construction sans marqueur"
-if docker run --rm --label "$LABEL" --network none "$BUILD_TAG" sh -c 'test ! -e /tmp/cockpit-certs && test ! -e /src/certs && test ! -e /src/.env'; then
-  ok "etape de construction : ni certs/ monte, ni certs/, ni .env"
+if docker buildx build --load --file app/Dockerfile --target build --tag "$BUILD_TAG" . >"$WORK/build-etape.log" 2>&1; then
+  RESTES="$(docker run --rm --label "$LABEL" --network none -e "SMOKE_MARKER=$MARKER" "$BUILD_TAG" \
+    sh -c 'grep -rl --exclude-dir=node_modules -- "$SMOKE_MARKER" /src /tmp 2>/dev/null | wc -l' | tr -d ' \r')" || RESTES="illisible"
+  check "0" "$RESTES" "etape de construction sans marqueur"
+  if docker run --rm --label "$LABEL" --network none "$BUILD_TAG" \
+    sh -c 'test ! -e /tmp/cockpit-certs && test ! -e /src/certs && test ! -e /src/.env && test ! -e /src/.env.smoke-marqueur && test ! -e /src/smoke-marqueur/.env'; then
+    ok "etape de construction : ni certs/ monte, ni certs/, ni .env (racine ou app/)"
+  else
+    ko "etape de construction : certs/ ou un .env present dans une couche"
+  fi
 else
-  ko "etape de construction : certs/ ou .env present dans une couche"
+  ko "construction de l'etape « build » impossible (docker buildx build --load)"
+  journal_construction "$WORK/build-etape.log"
 fi
 
-rm -f -- "$MARKER_ENV" "$MARKER_CERT" "$MARKER_TLS"
-rmdir -- "$ROOT/tls" 2>/dev/null || true
+rm -f -- "$MARKER_ENV" "$MARKER_CERT" "$MARKER_TLS" "$MARKER_APP_ENV" "$MARKER_APP_ENV_DOT"
+rmdir -- "$ROOT/tls" "$MARKER_APP_DIR" 2>/dev/null || true
 
 ########################################################################################################################
 say "14/14 docker compose : montages, port et priorite des variables"

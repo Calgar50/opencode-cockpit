@@ -2,6 +2,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
 import { useApp } from "../app/AppContext.tsx";
+import { LOCAL_HTTP_EXPLANATIONS } from "../app/LocalHttpNotice.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Badge, Button, Card, Spinner, useConfirm } from "../components/ui.tsx";
@@ -218,42 +219,9 @@ function LocalHttpLines({ status, onCopy }: { status: SystemStatus; onCopy: Copy
         }
         hint="Choisi à l'installation avec .\install.ps1 -Http, parce que le navigateur de ce poste n'accepte pas le certificat local. Le cockpit n'écoute que sur ce PC, mais sans chiffrer."
       />
-      <Line
-        tone="neutral"
-        label="Ce qui circule en clair sur ce PC"
-        hint="Le cookie qui vous garde connecté et tout le contenu des pages : vos conversations, le code affiché, et le code de connexion GitHub quand il s'affiche."
-      />
-      <Line
-        tone="neutral"
-        label="Qui peut le lire"
-        hint={
-          <>
-            Les outils de sécurité installés sur ce poste quand ils examinent le trafic ; un programme lancé en administrateur sur ce PC ;
-            toute personne qui peut piloter Docker Desktop ici. Cette dernière peut de toute façon lire le jeton dans le conteneur, en
-            HTTPS comme en HTTP.
-          </>
-        }
-      />
-      <Line
-        tone="neutral"
-        label="Connexion"
-        hint={
-          <>
-            Ouvrez toujours le cockpit avec <code>.\cockpit.ps1 open</code> : il vérifie le cockpit avant d'ouvrir le lien. Ne saisissez
-            jamais le jeton dans une page ; l'écran de connexion ne le demande pas.
-          </>
-        }
-      />
-      <Line
-        tone="neutral"
-        label="Revenir en HTTPS"
-        hint={
-          <>
-            <code>.\install.ps1 -Https</code>, seulement si Edge l'autorise : vérifiez d'abord <code>.\cockpit.ps1 diag</code>. Le jeton
-            est alors remplacé et une reconnexion est demandée.
-          </>
-        }
-      />
+      {LOCAL_HTTP_EXPLANATIONS.map((item) => (
+        <Line key={item.label} tone="neutral" label={item.label} hint={item.hint} />
+      ))}
       <Line
         tone="neutral"
         label="Certificat"

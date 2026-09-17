@@ -470,7 +470,9 @@ async function prepare(o: EnsureCertificateOptions): Promise<ServerCertificate> 
   if (reason !== null) {
     o.log.info(`certificat régénéré : ${reason}`);
     try {
-      previousSha256 = certPem === null ? null : new crypto.X509Certificate(certPem).fingerprint256;
+      // Certificat absent (« .\cockpit.ps1 tls -Renew » efface la paire et garde cockpit-tls.json) : empreinte annoncée au
+      // démarrage précédent, relue et validée avant la purge de public/.
+      previousSha256 = certPem === null ? (announced?.sha256 ?? null) : new crypto.X509Certificate(certPem).fingerprint256;
     } catch {
       previousSha256 = null; // certificat illisible : aucune empreinte à annoncer
     }

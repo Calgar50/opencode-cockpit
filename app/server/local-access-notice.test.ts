@@ -85,6 +85,18 @@ describe("échéance du certificat HTTPS local", () => {
     assert.equal(certificateRenewalDue(-1), true);
   });
 
+  it("interface, premier lancement : le bandeau HTTP reste utilisable pendant la fenêtre des règles", () => {
+    const app = path.join(import.meta.dirname, "..", "web", "app");
+    const shell = fs.readFileSync(path.join(app, "App.tsx"), "utf8");
+    const rules = fs.readFileSync(path.join(app, "FirstRunRules.tsx"), "utf8");
+    // La coquille (bandeau compris) est inerte tant que les règles ne sont pas acceptées : le bandeau est repris dans la
+    // fenêtre, et Détails y déplie les explications (la page Diagnostic est hors d'atteinte).
+    assert.match(shell, /<div className="app" inert=\{rulesOpen\}>/);
+    assert.match(shell, /<FirstRunRules accessNotice=\{accessNotice\} \/>/);
+    assert.match(rules, /<LocalHttpBanner notice=\{accessNotice\} detailsId=\{detailsId\} detailsOpen=\{detailsOpen\} onDetails=\{/);
+    assert.match(rules, /<LocalHttpDetails id=\{detailsId\} \/>/);
+  });
+
   it("interface : bandeau et Diagnostic suivent la règle partagée, jamais « <= 30 »", () => {
     const web = path.join(import.meta.dirname, "..", "web");
     for (const file of [path.join(web, "app", "App.tsx"), path.join(web, "pages", "DiagnosticsPage.tsx")]) {

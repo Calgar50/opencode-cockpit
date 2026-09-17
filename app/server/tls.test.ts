@@ -369,6 +369,67 @@ describe("certificat TLS local : préparation au démarrage (openssl réel)", { 
     assert.equal(third.value.info.previousSha256, first.value.info.sha256);
   });
 
+  it("tls -Renew (clé et certificats effacés, cockpit-tls.json gardé) : nouvelle paire, previousSha256 = ancienne empreinte", async () => {
+    const tlsDir = freshTlsDir();
+    const first = await start(tlsDir);
+    // Mêmes chemins que « docker run ... rm -f » de cockpit.ps1 (Invoke-CockpitTlsRenew).
+    for (const file of ["private/cockpit.key", "private/cockpit.crt", "public/cockpit.crt"]) fs.rmSync(path.join(tlsDir, file));
+    const second = await start(tlsDir);
+    assert.equal(second.calls, 1);
+    assert.match(second.log, /certificat régénéré : absente/);
+    assert.notEqual(second.value.info.sha256, first.value.info.sha256);
+    assert.equal(second.value.info.previousSha256, first.value.info.sha256);
+    const json = JSON.parse(fs.readFileSync(path.join(tlsDir, "public", "cockpit-tls.json"), "utf8"));
+    assert.equal(json.previousSha256, first.value.info.sha256);
+    const third = await start(tlsDir);
+    assert.equal(third.calls, 0);
+    assert.equal(third.value.info.previousSha256, first.value.info.sha256);
+  });
+
+  it("paire effacée et cockpit-tls.json effacé ou mal formé : aucune empreinte précédente annoncée", async () => {
+    const tlsDir = freshTlsDir();
+    await start(tlsDir);
+    const erase = () => {
+      for (const file of ["private/cockpit.key", "private/cockpit.crt", "public/cockpit.crt"]) fs.rmSync(path.join(tlsDir, file));
+    };
+    erase();
+    fs.rmSync(path.join(tlsDir, "public", "cockpit-tls.json"));
+    const second = await start(tlsDir);
+    assert.equal(second.calls, 1);
+    assert.equal(second.value.info.previousSha256, null);
+    erase();
+    fs.writeFileSync(path.join(tlsDir, "public", "cockpit-tls.json"), JSON.stringify({ ...second.value.info, sha256: "pas une empreinte" }));
+    const third = await start(tlsDir);
+    assert.equal(third.calls, 1);
+    assert.equal(third.value.info.previousSha256, null);
+  });
+
+  it("certificat privé remplacé par un lien : refus fichier-inattendu, réparé par la suppression de tls -Renew", async () => {
+    const tlsDir = freshTlsDir();
+    await start(tlsDir);
+    const certFile = path.join(tlsDir, "private", "cockpit.crt");
+    const elsewhere = path.join(tempDir(), "ailleurs.crt");
+    fs.copyFileSync(certFile, elsewhere);
+    fs.rmSync(certFile);
+    fs.symlinkSync(elsewhere, certFile);
+    await assert.rejects(start(tlsDir), (err: unknown) => err instanceof TlsSetupError && err.reason === "fichier-inattendu");
+    for (const file of ["private/cockpit.key", "private/cockpit.crt", "public/cockpit.crt"]) fs.rmSync(path.join(tlsDir, file), { force: true });
+    const repaired = await start(tlsDir);
+    assert.equal(repaired.calls, 1);
+    assert.ok(fs.lstatSync(certFile).isFile());
+  });
+
+  it("certificat présent : previousSha256 vient toujours du certificat, jamais du JSON public", async () => {
+    const tlsDir = freshTlsDir();
+    const first = await start(tlsDir);
+    const jsonFile = path.join(tlsDir, "public", "cockpit-tls.json");
+    fs.writeFileSync(jsonFile, JSON.stringify({ ...first.value.info, sha256: `${"AB:".repeat(31)}AB` }));
+    fs.rmSync(path.join(tlsDir, "private", "cockpit.key"));
+    const second = await start(tlsDir);
+    assert.equal(second.calls, 1);
+    assert.equal(second.value.info.previousSha256, first.value.info.sha256);
+  });
+
   it("JSON public relu : falsifié ou d'une autre paire, ignoré (dates du certificat, previousSha256 null)", async () => {
     const tlsDir = freshTlsDir();
     const entries = [...BASE, "DNS:cockpit.localhost"];

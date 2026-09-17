@@ -10,6 +10,7 @@ $SpyState = @{
     StartProcessCalls = New-Object System.Collections.ArrayList
     Policies = @{}
     PolicyReads = New-Object System.Collections.ArrayList
+    HiddenPaths = New-Object System.Collections.ArrayList
 }
 # Reponse speciale : Read-Host leve l'exception de powershell.exe -NonInteractive.
 $SpyNonInteractive = '<<espion:NonInteractive>>'
@@ -20,7 +21,11 @@ function Reset-SpyState {
     $SpyState.StartProcessCalls.Clear()
     $SpyState.Policies.Clear()
     $SpyState.PolicyReads.Clear()
+    $SpyState.HiddenPaths.Clear()
 }
+
+# Hide-SpyPath (Join-Path ([Environment]::GetFolderPath('System')) 'curl.exe') : Test-Path rend $false pour ce fichier.
+function Hide-SpyPath([string]$Path) { [void]$SpyState.HiddenPaths.Add([System.IO.Path]::GetFullPath($Path)) }
 
 # Add-SpyReadHostAnswer 'HTTP EN CLAIR' ; Add-SpyReadHostAnswer $null (entree vide) ; Add-SpyReadHostAnswer $SpyNonInteractive
 function Add-SpyReadHostAnswer { foreach ($answer in $args) { $SpyState.ReadHostAnswers.Enqueue($answer) } }
@@ -81,6 +86,14 @@ function Test-Path {
     )
     process {
         $targets = @(@($Path) + @($LiteralPath) | Where-Object { $null -ne $_ })
+        if ($targets.Count -eq 1 -and $SpyState.HiddenPaths.Count -gt 0) {
+            $full = $null
+            try { $full = [System.IO.Path]::GetFullPath([string]$targets[0]) } catch { $full = $null }
+            if ($null -ne $full -and @($SpyState.HiddenPaths | Where-Object { [string]::Equals([string]$_, $full, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+                $false
+                return
+            }
+        }
         $keys = @(foreach ($target in $targets) { ConvertTo-SpyPolicyKey $target })
         if ($targets.Count -eq 0 -or @($keys | Where-Object { $_ -ceq '' }).Count -gt 0) {
             Microsoft.PowerShell.Management\Test-Path @PSBoundParameters

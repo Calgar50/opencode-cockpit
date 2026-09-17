@@ -171,8 +171,9 @@ function Get-CockpitMethodLabel([string]$Method) {
 }
 
 # Sante du cockpit (certificat epingle en HTTPS, preuve du jeton dans les deux modes) : 5 s par defaut.
-function Get-CockpitHealth($Mode, [int]$Port, [int]$TimeoutSec = 5) {
-    return (Wait-CockpitHealth -Root $Root -Port $Port -Mode $Mode -Token (Get-EnvValue 'COCKPIT_TOKEN') -TimeoutSec $TimeoutSec)
+# -Methods vide : voies du plan 3.11 (HTTPS : curl, puis classe .NET en dernier recours ; HTTP : HttpWebRequest, puis curl).
+function Get-CockpitHealth($Mode, [int]$Port, [int]$TimeoutSec = 5, [string[]]$Methods = @()) {
+    return (Wait-CockpitHealth -Root $Root -Port $Port -Mode $Mode -Token (Get-EnvValue 'COCKPIT_TOKEN') -TimeoutSec $TimeoutSec -Methods $Methods)
 }
 
 # Version de l'IMAGE du conteneur cockpit en marche ($null si absent ou illisible) : jamais l'environnement du conteneur,
@@ -307,8 +308,10 @@ function Invoke-CockpitTlsRenew($Mode, [int]$Port) {
         Invoke-Docker compose stop cockpit
     }
     Write-Step 'Suppression du certificat local (volume cockpit-tls)'
+    # Cle et certificats seulement : cockpit-tls.json (sans secret) reste, le serveur y lit l'empreinte precedente
+    # (previousSha256, affichee par tls et par la page Diagnostic) quand il cree la nouvelle paire.
     Invoke-Docker run --rm --network none --user 1000:1000 --entrypoint rm -v ('{0}_cockpit-tls:/tls' -f $project) $image `
-        -f /tls/private/cockpit.key /tls/private/cockpit.crt /tls/public/cockpit.crt /tls/public/cockpit-tls.json
+        -f /tls/private/cockpit.key /tls/private/cockpit.crt /tls/public/cockpit.crt
     if ($Mode.Scheme -cne 'https') {
         Write-CockpitLines @('Certificat local efface (volume cockpit-tls). Un nouveau certificat sera cree au retour en HTTPS (.\install.ps1 -Https).')
         return
@@ -657,9 +660,18 @@ try {
                     if ($failures.Count -gt 0) { Write-Attention ('Journal cockpit : {0}' -f (Hide-Secrets $failures[0])) }
                 }
                 # 4. Sante verifiee par les scripts (certificat epingle en HTTPS, preuve du jeton dans les deux modes).
+                # diag ne compile rien (plan 3.11) : en HTTPS, curl.exe seul ; la classe .NET reste reservee a open, status et tls.
+                $noCompile = $false
                 if ($mode.Valid -and -not $unfinished) {
-                    $health = Get-CockpitHealth $mode $port 5
-                    Write-Host ('Sante           : {0} (voie {1}, version {2}) {3}' -f $health.Reason, (Get-CockpitMethodLabel $health.Method), $health.Version, (Hide-Secrets $health.Detail))
+                    $diagMethods = @()
+                    if ($mode.Scheme -ceq 'https') { $diagMethods = @('curl') }
+                    $health = Get-CockpitHealth $mode $port 5 $diagMethods
+                    $noCompile = ($mode.Scheme -ceq 'https' -and $health.Reason -ceq 'AucuneVoie')
+                    if ($noCompile) {
+                        Write-Attention ('Sante           : non verifiee par diag ({0}). diag ne lance aucune compilation ; verification par la classe .NET : .\cockpit.ps1 status' -f (Hide-Secrets $health.Detail))
+                    } else {
+                        Write-Host ('Sante           : {0} (voie {1}, version {2}) {3}' -f $health.Reason, (Get-CockpitMethodLabel $health.Method), $health.Version, (Hide-Secrets $health.Detail))
+                    }
                     if (@('EmpreinteDifferente', 'PreuveInvalide') -contains $health.Reason) {
                         Write-Attention ('Programme a l ecoute sur le port {0} : {1}' -f $port, (Get-CockpitPortOwner $port))
                     }
@@ -692,7 +704,7 @@ try {
                 if ($curl.Available) { Write-Host ('curl.exe        : {0} (Schannel)' -f $curl.Version) } else { Write-Host ('curl.exe        : inutilisable ({0})' -f $curl.Reason) }
                 $route = 'HttpWebRequest (mode HTTP)'
                 if ($mode.Valid -and $mode.Scheme -ceq 'https') { if ($curl.Available) { $route = ('curl ({0}, Schannel)' -f $curl.Version) } else { $route = 'classe .NET (compilation, alerte antivirus possible)' } }
-                Write-Host ('Voie utilisee   : {0}' -f $route)
+                Write-Host ('Voie qui serait utilisee : {0}' -f $route)
                 Write-Host ('PowerShell      : LanguageMode {0} ; Windows {1}' -f $ExecutionContext.SessionState.LanguageMode, [Environment]::OSVersion.Version)
                 $browser = 'inconnu'
                 try {
@@ -710,6 +722,8 @@ try {
                     Write-Attention 'Verdict : mode d acces invalide dans .env (voir ci-dessus).'
                 } elseif ($unfinished) {
                     Write-Attention 'Verdict : mise a jour inachevee (voir ci-dessus).'
+                } elseif ($noCompile) {
+                    Write-Attention 'Verdict : interface non verifiee par diag (curl.exe inutilisable, aucune compilation ici) : .\cockpit.ps1 status'
                 } elseif ($health.Reason -ceq 'Ok') {
                     Write-Host ('Verdict : interface joignable et verifiee sur {0}' -f (Get-CockpitBaseUrl ([string]$mode.Scheme) $port)) -ForegroundColor Green
                 } else {

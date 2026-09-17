@@ -205,7 +205,7 @@ try {
     Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Extra @((New-Rule '^compose -f \S.* logs --since 30m cockpit$' $noSummary))) + @((New-Rule '.*' '' 0)))
     $diagQuiet = Invoke-CockpitScript $HttpsDir @('diag')
     Assert-Test 'diag : aucune ligne de resume, aucun refus compte' ($diagQuiet.Host.Contains('Refus TLS       : 0 connexion(s) refusee(s) sur 30 min (0 resume(s) du journal')) (Get-Extract ($diagQuiet.Host.Substring([Math]::Max(0, $diagQuiet.Host.IndexOf('Refus TLS')))))
-    Assert-Test 'diag : voie de verification et LanguageMode' ($diag.Host -cmatch 'Voie utilisee   : (curl \(|classe \.NET)' -and $diag.Host.Contains('LanguageMode FullLanguage'))
+    Assert-Test 'diag : voie de verification et LanguageMode' ($diag.Host -cmatch 'Voie qui serait utilisee : (curl \(|classe \.NET)' -and $diag.Host.Contains('LanguageMode FullLanguage'))
     Assert-Test 'J2-10 diag : aucun verdict "Edge interdit" sans strategie, malgre 40 refus TLS' (-not $diag.Host.Contains('Edge interdit')) (Get-Extract $diag.Host)
     Assert-Test 'diag : aucun jeton dans la sortie' (-not $diag.Host.Contains($Token))
 
@@ -217,6 +217,21 @@ try {
     Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA) + @((New-Rule '.*' '' 0)))
     $diagBlocked = Invoke-CockpitScript $HttpsDir @('diag') { Set-SpyPolicy -Hive HKCU -Browser Edge -Name SSLErrorOverrideAllowed -Value 0 }
     Assert-Test 'J2-10 diag : verdict Edge interdit avec la strategie lue Bloque' ($diagBlocked.Host.Contains('Verdict : Edge interdit de passer l avertissement de certificat pour https://127.0.0.1:' + $Ports.A)) (Get-Extract $diagBlocked.Host)
+
+    # Plan 3.11 : sans curl.exe, diag ne lance aucun Add-Type (voie seulement annoncee) ; status, lui, passe par la classe .NET
+    # en dernier recours (plan 3.7.2). Ordre impose : diag d'abord, le type compile ne se decharge plus du processus.
+    $SystemCurl = Join-Path ([Environment]::GetFolderPath('System')) 'curl.exe'
+    Assert-Test 'banc : classe .NET pas encore compilee dans ce processus' ($null -eq ('OpencodeCockpit.PinnedHttp' -as [type]))
+    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA) + @((New-Rule '.*' '' 0)))
+    $diagNoCurl = Invoke-CockpitScript $HttpsDir @('diag') { Hide-SpyPath $SystemCurl }
+    Assert-Test 'plan 3.11 diag sans curl.exe : aucun Add-Type (classe .NET absente du processus, aucun A8)' ($null -eq ('OpencodeCockpit.PinnedHttp' -as [type]) -and -not $diagNoCurl.Host.Contains('Voie de secours : petite classe .NET')) (Get-Extract $diagNoCurl.Host)
+    Assert-Test 'plan 3.11 diag sans curl.exe : sante non verifiee, renvoi vers status' ($diagNoCurl.Host.Contains('Sante           : non verifiee par diag (curl.exe : absent). diag ne lance aucune compilation ; verification par la classe .NET : .\cockpit.ps1 status')) (Get-Extract ($diagNoCurl.Host.Substring([Math]::Max(0, $diagNoCurl.Host.IndexOf('Sante')))))
+    Assert-Test 'plan 3.11 diag sans curl.exe : voie qui serait utilisee et verdict' ($diagNoCurl.Host.Contains('curl.exe        : inutilisable (absent)') -and $diagNoCurl.Host.Contains('Voie qui serait utilisee : classe .NET (compilation, alerte antivirus possible)') -and $diagNoCurl.Host.Contains('Verdict : interface non verifiee par diag (curl.exe inutilisable, aucune compilation ici) : .\cockpit.ps1 status')) (Get-Extract ($diagNoCurl.Host.Substring([Math]::Max(0, $diagNoCurl.Host.IndexOf('curl.exe')))))
+    Assert-Test 'plan 3.11 diag sans curl.exe : certificat servi toujours affiche' ($diagNoCurl.Host.Contains('Certificat      : ' + $StateA.Sha256))
+
+    Set-DockerScenario (New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA)
+    $statusNoCurl = Invoke-CockpitScript $HttpsDir @('status') { Hide-SpyPath $SystemCurl }
+    Assert-Test 'plan 3.7.2 status sans curl.exe : classe .NET en dernier recours, A8 une fois' ($statusNoCurl.Host -cmatch ('Cockpit : disponible sur https://127\.0\.0\.1:{0} \(empreinte {1}, expire dans [0-9]+ jours, voie classe \.NET\)' -f $Ports.A, [regex]::Escape($StateA.Sha256)) -and [regex]::Matches($statusNoCurl.Host, [regex]::Escape('Verification HTTPS : curl.exe indisponible (absent).')).Count -eq 1) (Get-Extract $statusNoCurl.Host)
 
     # --- tls et tls -Renew ------------------------------------------------------------------------------------------
     Write-Section 'tls et tls -Renew'
@@ -239,12 +254,14 @@ try {
         (New-Rule '^compose -f \S.* exec -T cockpit cat /tls/public/cockpit-tls\.json$' '' 0 1 $JsonA))
     Set-DockerScenario (New-CockpitDockerRules -CrtFile $CrtB -JsonFile $JsonB -Extra $PinRenewRules)
     $renew = Invoke-CockpitScript $PinDir @('tls') -Parameters @{ Renew = $true } { Add-SpyReadHostAnswer 'RENOUVELER' }
-    Assert-Test 'tls -Renew HTTPS : arret, suppression des 4 fichiers, redemarrage' ((Test-DockerCall '^compose -f \S.* stop cockpit\z') -and (Test-DockerCall '^compose -f \S.* up -d cockpit\z') -and (Test-DockerCall 'run --rm --network none --user 1000:1000 --entrypoint rm -v rg105-l7_cockpit-tls:/tls .* -f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt /tls/public/cockpit-tls\.json\z')) (Get-Extract $renew.Host)
+    Assert-Test 'tls -Renew HTTPS : arret, suppression de la cle et des certificats, redemarrage' ((Test-DockerCall '^compose -f \S.* stop cockpit\z') -and (Test-DockerCall '^compose -f \S.* up -d cockpit\z') -and (Test-DockerCall 'run --rm --network none --user 1000:1000 --entrypoint rm -v rg105-l7_cockpit-tls:/tls \S+ -f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt\z')) (Get-Extract $renew.Host)
+    Assert-Test 'RG5 tls -Renew HTTPS : cockpit-tls.json garde (le serveur y lit previousSha256)' (-not (Test-DockerCall '^run .*cockpit-tls\.json')) (Get-Extract $renew.Host)
     Assert-Test 'tls -Renew HTTPS : ancienne puis nouvelle empreinte' ($renew.Host.Contains(('ancienne empreinte {0} -> nouvelle {1}' -f $StateA.Sha256, $StateB.Sha256))) (Get-Extract $renew.Host)
 
     Set-DockerScenario (New-CockpitDockerRules -Served 'http' -Extra @((New-Rule '^compose -f \S.* stop' '' 0 $null '' -Fail), (New-Rule '^compose -f \S.* up' '' 0 $null '' -Fail)))
     $renewHttp = Invoke-CockpitScript $HttpDir @('tls') -Parameters @{ Renew = $true } { Add-SpyReadHostAnswer 'RENOUVELER' }
     Assert-Test 'A17 : tls -Renew en HTTP, suppression sans arret ni redemarrage' ((Test-DockerCall '^run --rm --network none') -and @(Get-DockerJournal | Where-Object { $_.forbidden }).Count -eq 0 -and $renewHttp.Host.Contains('Certificat local efface (volume cockpit-tls).')) (Get-Extract $renewHttp.Host)
+    Assert-Test 'RG5 tls -Renew HTTP : meme suppression, cockpit-tls.json garde' ((Test-DockerCall '-f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt\z') -and -not (Test-DockerCall '^run .*cockpit-tls\.json'))
 
     # --- update -----------------------------------------------------------------------------------------------------
     Write-Section 'update : git pull --ff-only par Invoke-CockpitProcess, puis install.ps1 -NoBrowser'

@@ -112,6 +112,7 @@ Charger par dot-sourcing dans la portée qui appelle le script testé (par exemp
 - `Read-Host` : réponses en file (`Add-SpyReadHostAnswer 'HTTP EN CLAIR'`, `Add-SpyReadHostAnswer $null` pour une entrée vide, `Add-SpyReadHostAnswer $SpyNonInteractive` pour l'exception de `-NonInteractive`) ; invites dans `$SpyState.ReadHostCalls` ; file vide = exception « aucune reponse prevue ».
 - `Start-Process` : consigné dans `$SpyState.StartProcessCalls` (`FilePath`, `ArgumentList`), jamais affiché.
 - `Get-ItemProperty`, `Test-Path` : clés `HKLM|HKCU:\SOFTWARE\Policies\...` simulées par `Set-SpyPolicy -Hive HKLM -Browser Edge|Chrome -Name <valeur> -Value <v> [-Origins @(...)]` ; lectures dans `$SpyState.PolicyReads` ; tout autre chemin est délégué à `Microsoft.PowerShell.Management\...`.
+- `Hide-SpyPath <fichier>` : `Test-Path` rend `$false` pour ce fichier (par exemple `curl.exe` de `System32`, pour faire passer les scripts par la voie sans curl sans toucher au poste).
 - `Reset-SpyState` vide l'état.
 - Vérifié par `Test-CockpitTls.ps1` : les espions restent actifs dans un script appelé par `&` qui a son propre `param` et `Set-StrictMode`, et disparaissent à la sortie de la fonction qui les a chargés.
 

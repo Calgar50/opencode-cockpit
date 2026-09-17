@@ -4,8 +4,10 @@
 # Vérifié par .github/ci/https-smoke.sh (sonde de contexte, étape 13).
 
 # --- Secrets et configuration locale ---
-.env
-.env.*
+# « **/ » : à toutes les profondeurs, racine comprise (app/.env.dev porte les secrets du serveur de développement).
+# Aucune exception pour .env.example : aucune construction d'image ne le lit.
+**/.env
+**/.env.*
 **/*.key
 **/*.pfx
 **/*.p12

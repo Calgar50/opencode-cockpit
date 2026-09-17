@@ -8,11 +8,13 @@ import {
   RULES_TITLE_CHANGED,
   RULES_TITLE_FIRST,
 } from "../../server/shared/assistant-rules.ts";
+import type { LocalAccessNotice } from "../../server/shared/local-access-notice.ts";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button } from "../components/ui.tsx";
 import { api, errorText } from "../lib/api.ts";
 import { useApp } from "./AppContext.tsx";
+import { LocalHttpBanner, LocalHttpDetails } from "./LocalHttpNotice.tsx";
 
 /** Version dont la notice « Nouveau » est enregistrée dans ui.noticeSeen. */
 export const UPGRADE_NOTICE_VERSION = "1.0.0";
@@ -25,11 +27,15 @@ export function needsRules(acceptedVersion: number, rulesVersion: number | undef
 /**
  * Fenêtre « Avant de commencer » : les 6 règles d'or, non modifiables. Aucune fermeture possible sans accepter
  * (ni Échap, ni clic à côté) ; le reste de l'application est rendu inerte par la coquille.
+ * Mode HTTP local : le bandeau permanent (I6), inerte derrière la fenêtre, y est repris ; son bouton Détails déplie les
+ * explications sur place, la page Diagnostic n'étant pas accessible avant l'acceptation.
  */
-export function FirstRunRules() {
+export function FirstRunRules({ accessNotice = null }: { accessNotice?: LocalAccessNotice | null }) {
   const { boot, ui, saveUi } = useApp();
   const titleId = useId();
   const checkId = useId();
+  const detailsId = useId();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const dialog = useRef<HTMLDivElement>(null);
   const checkbox = useRef<HTMLInputElement>(null);
   const [checked, setChecked] = useState(false);
@@ -84,7 +90,11 @@ export function FirstRunRules() {
             {title}
           </h2>
         </div>
+        {accessNotice ? (
+          <LocalHttpBanner notice={accessNotice} detailsId={detailsId} detailsOpen={detailsOpen} onDetails={() => setDetailsOpen((open) => !open)} />
+        ) : null}
         <div className="modal-body stack">
+          {accessNotice && detailsOpen ? <LocalHttpDetails id={detailsId} /> : null}
           <ol className="rules-list">
             {GOLDEN_RULES.map((rule) => (
               <li key={rule}>{rule}</li>
