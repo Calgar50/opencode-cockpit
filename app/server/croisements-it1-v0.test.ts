@@ -238,7 +238,7 @@ describe("croisements it1 V0 : faux opencode (T1) et mesures (M2, MX1)", () => {
 });
 
 describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
-  it("tous les modules sur les dépendances réelles du harnais : seule la route du Diagnostic inscrite, ports neutres, porte I1 fermée, agent de classement = 1.0.4, aucun rechargement d'opencode", async (t) => {
+  it("tous les modules sur les dépendances réelles du harnais : route du Diagnostic et choix d'autonomie (L6a) seuls inscrits, ports neutres, porte I1 fermée, agent de classement = 1.0.4, aucun rechargement d'opencode", async (t) => {
     let wiring: Cockpit11Wiring | undefined;
     const h = await startCockpit(t, {
       deps: (base) => {
@@ -271,9 +271,14 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     });
     assert.ok(wiring);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    assert.deepEqual(wiring.registrations, [{ kind: "routes", key: "diagnostic-11", module: "diagnostics" }]);
+    // Squelettes de T0 : rien d'inscrit ; module livré (L6a, vague 2) : retour à « demander » au démarrage et routes d'autonomie.
+    assert.deepEqual(wiring.registrations, [
+      { kind: "startup", key: "startup", module: "conversationAutonomy" },
+      { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
+      { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+    ]);
     for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, 0, step);
-    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [0, 0, 0]);
+    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [0, 0, 1]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, false);
     assert.equal(wiring.c11.reloadBusy(), false);

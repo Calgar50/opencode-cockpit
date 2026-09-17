@@ -14,6 +14,7 @@ import {
   type Cockpit11Module,
   type HookStep,
   type ModuleName,
+  type PortName,
   PortUnavailableError,
   type ProxyContext,
   type Registrar,
@@ -141,8 +142,8 @@ function mount(s: ReturnType<typeof setup>, routes: ReadonlyArray<(app: Hono) =>
 const ROOT = "ses_racine";
 const ctx = {} as ProxyContext;
 
-/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir »). */
-async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true) {
+/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir ») ; `livres` : ports des modules déjà livrés, non contrôlés ici. */
+async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, livres: readonly PortName[] = []) {
   const p = wiring.c11.ports;
   await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
   assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
@@ -156,37 +157,39 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   assert.equal(p.facts.work.markWait({ permissionId: "per_1", sessionId: ROOT, rootId: ROOT, permission: "edit" }, "once", "vous"), false);
   const caps = s.settings.get().budget.autonomie;
   const automatic = autonomy ? "a-venir" : "autonomie-coupee";
-  assert.deepEqual(await p.conversationAutonomy.get(ROOT), {
-    rootId: ROOT,
-    choix: "demander",
-    plafonds: {
-      plafondUsd: caps.plafondUsd,
-      actionsMax: caps.actionsMax,
-      delegationsMax: caps.delegationsMax,
-      dureeMinutes: caps.dureeMinutes,
-      fichiersMax: caps.fichiersMax,
-      controlesIaMax: caps.controlesIaMax,
-    },
-    depuis: null,
-    retourCause: null,
-    planSourceId: null,
-    executionDePlanId: null,
-    interrupteur: autonomy,
-    disponibles: [
-      { choix: "demander", disponible: true, raison: null },
-      { choix: "modifications", disponible: false, raison: automatic },
-      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
-      { choix: "autonome", disponible: false, raison: automatic },
-    ],
-    demande: null,
-  });
-  assert.equal(p.conversationAutonomy.choiceOf(ROOT), "demander");
-  assert.deepEqual(await p.conversationAutonomy.put(ROOT, { choix: "autonome" }, { confirmed: true }), {
-    ok: false,
-    status: 409,
-    error: "autonomie-indisponible",
-    raison: "a-venir",
-  });
+  if (!livres.includes("conversationAutonomy")) {
+    assert.deepEqual(await p.conversationAutonomy.get(ROOT), {
+      rootId: ROOT,
+      choix: "demander",
+      plafonds: {
+        plafondUsd: caps.plafondUsd,
+        actionsMax: caps.actionsMax,
+        delegationsMax: caps.delegationsMax,
+        dureeMinutes: caps.dureeMinutes,
+        fichiersMax: caps.fichiersMax,
+        controlesIaMax: caps.controlesIaMax,
+      },
+      depuis: null,
+      retourCause: null,
+      planSourceId: null,
+      executionDePlanId: null,
+      interrupteur: autonomy,
+      disponibles: [
+        { choix: "demander", disponible: true, raison: null },
+        { choix: "modifications", disponible: false, raison: automatic },
+        { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+        { choix: "autonome", disponible: false, raison: automatic },
+      ],
+      demande: null,
+    });
+    assert.equal(p.conversationAutonomy.choiceOf(ROOT), "demander");
+    assert.deepEqual(await p.conversationAutonomy.put(ROOT, { choix: "autonome" }, { confirmed: true }), {
+      ok: false,
+      status: 409,
+      error: "autonomie-indisponible",
+      raison: "a-venir",
+    });
+  }
   assert.deepEqual(p.plans, {});
   assert.equal(p.autonomy.examining(), false);
   assert.equal(p.requests.current(ROOT), null);
@@ -447,14 +450,26 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels, squelettes T0) : seule la route du Diagnostic est inscrite, ports neutres", async () => {
+  it("production (tous les modules réels) : squelettes T0 sans inscription ni port réel ; module livré (L6a) : démarrage et routes d'autonomie", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    assert.deepEqual(wiring.registrations, [{ kind: "routes", key: "diagnostic-11", module: "diagnostics" }]);
-    assertNoRegistration(wiring);
-    assert.equal(wiring.routes.length, 1);
-    await assertNeutralPorts(wiring, s);
+    assert.deepEqual(wiring.registrations, [
+      { kind: "startup", key: "startup", module: "conversationAutonomy" },
+      { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
+      { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+    ]);
+    assertNoRegistration({ ...wiring, startup: [] });
+    assert.equal(wiring.startup.length, 1);
+    assert.equal(wiring.routes.length, 2);
+    // Port réel du module livré (le neutre répondrait 409) ; son comportement est contrôlé par conversation-autonomy.test.ts.
+    assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
+      ok: false,
+      status: 400,
+      error: "invalid",
+      raison: null,
+    });
+    await assertNeutralPorts(wiring, s, true, ["conversationAutonomy"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
