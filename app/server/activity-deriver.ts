@@ -30,7 +30,7 @@ import {
   type FactSession,
   factsFromEvent,
 } from "./shared/activity-facts.ts";
-import type { ActivityFact, DelegationState } from "./shared/activity-types.ts";
+import type { ActivityFact, DelegationState, ReponseFactData } from "./shared/activity-types.ts";
 import { ID_RE } from "./shared/ids.ts";
 
 /** Recherche d'une session inconnue (sessions.ensure) : 5 s au plus (§3.10 point 2). */
@@ -322,7 +322,8 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
       safely("attente expirée", () => {
         if (!work().markWait(waitOf(row), "expiree", null)) return;
         // Fait « reponse » : l'attente dessinée prend fin (P12), pour le direct comme pour « Revoir ».
-        facts.push({ rootId: row.root_id, sessionId: row.session_id, kind: "reponse", ref: row.permission_id, data: { reponse: "expiree" }, at });
+        const data: ReponseFactData = { reponse: "expiree" };
+        facts.push({ rootId: row.root_id, sessionId: row.session_id, kind: "reponse", ref: row.permission_id, data, at });
         const delegation = delegationByPermission(row.permission_id);
         if (delegation?.state === "attente-accord") {
           work().markDelegation({ ...keyOf(delegation), agent: "", permissionId: row.permission_id }, "expiree", null);

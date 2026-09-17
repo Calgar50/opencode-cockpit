@@ -80,7 +80,10 @@ export interface PermissionGate {
   rejectAborted(sessionId: string, directory: string | null, release: () => void): Promise<void>;
   /** L1b : file → vérification « once » → inscription au registre → relais. */
   relayOnce(requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome>;
-  /** L1b : refus retenu tant qu'une autre demande de la même session attend (F-c), borné à 45 s, puis vérifié et envoyé. */
+  /**
+   * L1b : refus retenu tant qu'une autre demande de la même session attend (F-c), puis vérifié et envoyé une fois seul. Borne de
+   * 45 s : dernière évaluation ; si une autre demande attend encore, rien n'est envoyé (« retenu ») et la demande reste à l'utilisateur.
+   */
   rejectWhenAlone(requestId: string, sessionId: string, directory: string | null, message: string, by: RepliedBy): Promise<RelayOutcome | "retenu">;
   /** Registre des réponses émises, inscrites avant l'envoi. */
   readonly emitted: { record(entry: EmittedReply): void; has(requestId: string): boolean };
