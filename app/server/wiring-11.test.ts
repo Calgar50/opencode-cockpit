@@ -14,6 +14,7 @@ import {
   type Cockpit11Module,
   type HookStep,
   type ModuleName,
+  type PortName,
   PortUnavailableError,
   type ProxyContext,
   type Registrar,
@@ -141,10 +142,10 @@ function mount(s: ReturnType<typeof setup>, routes: ReadonlyArray<(app: Hono) =>
 const ROOT = "ses_racine";
 const ctx = {} as ProxyContext;
 
-/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir »). */
-async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true) {
+/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir ») ; `installed` : ports réels déjà livrés, non vérifiés ici. */
+async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, installed: readonly PortName[] = []) {
   const p = wiring.c11.ports;
-  await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
+  if (!installed.includes("stopTree")) await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
   assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
   await assert.rejects(p.taskGuard.collectDelegationFacts({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null }), PortUnavailableError);
   assert.deepEqual(p.delegationWatch, {});
@@ -447,14 +448,19 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels, squelettes T0) : seule la route du Diagnostic est inscrite, ports neutres", async () => {
+  it("production (tous les modules réels) : stopTree (L1c) inscrit son crochet et ses routes, route du Diagnostic, autres ports neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    assert.deepEqual(wiring.registrations, [{ kind: "routes", key: "diagnostic-11", module: "diagnostics" }]);
-    assertNoRegistration(wiring);
-    assert.equal(wiring.routes.length, 1);
-    await assertNeutralPorts(wiring, s);
+    assert.deepEqual(wiring.registrations, [
+      { kind: "hook", key: "abort", module: "stopTree" },
+      { kind: "routes", key: "conversations", module: "stopTree" },
+      { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+    ]);
+    assertNoRegistration({ ...wiring, hooks: { ...wiring.hooks, abort: [] } });
+    assert.equal(wiring.hooks.abort.length, 1);
+    assert.equal(wiring.routes.length, 2);
+    await assertNeutralPorts(wiring, s, true, ["stopTree"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
