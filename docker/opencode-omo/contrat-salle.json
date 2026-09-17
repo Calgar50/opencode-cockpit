@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "description": "Contrat machine de la Salle OMO (D-2b-39) : services, profil, reseau, volumes, chemins de l'image, perimetre du manifeste, fichiers de controle, variables et options de securite. Type OmoSalleContract (app/server/shared/omo-types.ts) ; lu par les tests du cockpit, supervisor-lib.mjs et les tests PowerShell.",
+  "services": {
+    "salle": "opencode-omo",
+    "egress": "egress",
+    "cockpit": "cockpit",
+    "principale": "opencode"
+  },
+  "profil": "omo",
+  "reseau": "omo-internal",
+  "volumes": [
+    {
+      "nom": "control-omo",
+      "proprietaire": "node",
+      "ecrivain": "cockpit",
+      "montages": [
+        { "service": "cockpit", "cible": "/control-omo", "mode": "rw" },
+        { "service": "salle", "cible": "/control", "mode": "ro" }
+      ]
+    },
+    {
+      "nom": "omo-auth",
+      "proprietaire": "node",
+      "ecrivain": "cockpit",
+      "montages": [
+        { "service": "cockpit", "cible": "/omo-auth", "mode": "rw" },
+        { "service": "salle", "cible": "/auth-src", "mode": "ro" }
+      ]
+    },
+    {
+      "nom": "omo-state",
+      "proprietaire": "root",
+      "ecrivain": "salle",
+      "montages": [
+        { "service": "salle", "cible": "/omo-state", "mode": "rw" },
+        { "service": "cockpit", "cible": "/omo-state", "mode": "ro" }
+      ]
+    },
+    {
+      "nom": "egress-log",
+      "proprietaire": "node",
+      "ecrivain": "egress",
+      "montages": [
+        { "service": "egress", "cible": "/egress-log", "mode": "rw" },
+        { "service": "cockpit", "cible": "/egress-log", "mode": "ro" }
+      ]
+    },
+    {
+      "nom": "oc-omo-data",
+      "proprietaire": "node",
+      "ecrivain": "salle",
+      "montages": [{ "service": "salle", "cible": "/home/node/.local/share/opencode", "mode": "rw" }]
+    },
+    {
+      "nom": "omo-vide",
+      "proprietaire": "root",
+      "ecrivain": null,
+      "montages": [
+        { "service": "salle", "cible": "/home/node/.config/opencode", "mode": "ro" },
+        { "service": "salle", "cible": "/home/node/.opencode", "mode": "ro" },
+        { "service": "salle", "cible": "/home/node/.omo", "mode": "ro" },
+        { "service": "salle", "cible": "/home/node/.claude", "mode": "ro" },
+        { "service": "salle", "cible": "/home/node/.agents", "mode": "ro" }
+      ]
+    }
+  ],
+  "cheminsImage": {
+    "superviseur": "/usr/local/bin/omo-supervisor",
+    "superviseurLib": "/opt/omo-check/supervisor-lib.mjs",
+    "valider": "/opt/omo-check/validate.mjs",
+    "validerCoeur": "/opt/omo-check/validate-core.mjs",
+    "enumerations": "/opt/omo-check/enums-4.19.4.json",
+    "manifeste": "/opt/omo-check/manifest.sh",
+    "referenceManifeste": "/etc/omo-reference/omo-manifest.sha256",
+    "garde": "/opt/omo-guard/cockpit-guard.js",
+    "configuration": "/etc/opencode-omo",
+    "extension": "/opt/omo",
+    "licence": "/usr/share/doc/oh-my-openagent/LICENSE.md"
+  },
+  "perimetreManifeste": ["/opt/omo", "/opt/omo-check", "/opt/omo-guard", "/etc/opencode-omo", "/usr/local/bin/omo-supervisor"],
+  "dossiersConfigHome": [
+    "/home/node/.config/opencode",
+    "/home/node/.opencode",
+    "/home/node/.omo",
+    "/home/node/.claude",
+    "/home/node/.agents"
+  ],
+  "nomsPrecontrole": {
+    "fichiers": [
+      ".omo/omo.json",
+      ".omo/omo.jsonc",
+      "oh-my-openagent.json",
+      "oh-my-openagent.jsonc",
+      "oh-my-opencode.json",
+      "oh-my-opencode.jsonc",
+      ".mcp.json",
+      "opencode.json",
+      "opencode.jsonc"
+    ],
+    "dossiers": [".sisyphus", ".claude", ".opencode", ".agents"]
+  },
+  "fichiersControle": {
+    "battement": "heartbeat",
+    "arret": "stop-request",
+    "precheck": "precheck-ok",
+    "garde": "guard-state.json"
+  },
+  "etat": "state.json",
+  "egress": { "port": 3128 },
+  "variables": {
+    "cockpit": [
+      "COCKPIT_OMO",
+      "OPENCODE_OMO_URL",
+      "OPENCODE_OMO_PASSWORD",
+      "COCKPIT_OMO_IMAGE",
+      "COCKPIT_OMO_CONTROL_DIR",
+      "COCKPIT_OMO_STATE_DIR",
+      "COCKPIT_OMO_AUTH_DIR",
+      "COCKPIT_OMO_PROJECTS_FILE",
+      "COCKPIT_EGRESS_JOURNAL",
+      "COCKPIT_AUTONOMY"
+    ],
+    "salle": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "OPENCODE_SERVER_USERNAME",
+      "OPENCODE_SERVER_PASSWORD",
+      "COCKPIT_COPILOT_API_URL",
+      "NODE_EXTRA_CA_CERTS"
+    ]
+  },
+  "securite": {
+    "cap_drop": ["ALL"],
+    "cap_add": ["SETUID", "SETGID"],
+    "security_opt": ["no-new-privileges:true"],
+    "read_only": true,
+    "tmpfs": ["/home/node:exec", "/tmp:exec"]
+  }
+}
