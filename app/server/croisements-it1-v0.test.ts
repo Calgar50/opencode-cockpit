@@ -260,7 +260,8 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
           control: base.control,
           configQueue,
           copilotConfig: base.copilotConfig,
-          studio: base.studio,
+          // L1g : Studio simulé du harnais, agent de classement déjà en place (ni écriture ni rechargement d'opencode).
+          studio: { ...(base.studio as object), internalAgentUpToDate: async () => true } as unknown as Cockpit11Deps["studio"],
           // Portillon extrait par L1a : sans méthode install, le module « gate » n'inscrit rien.
           gate: {} as Cockpit11Deps["gate"],
           occupancy: async () => "idle",
@@ -297,7 +298,8 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     assert.equal(diag.status, 200, diag.body);
     assert.deepEqual(diag.json(), {
       delegation: [],
-      agentsInternes: [{ nom: CLASSIFIER_AGENT, etat: "non-suivi", prochainEssai: null }],
+      // L1g : module réel, agent de classement suivi.
+      agentsInternes: [{ nom: CLASSIFIER_AGENT, etat: "installe", prochainEssai: null }],
       interrupteur: h.deps.env.autonomy,
       controleIa: h.settings.get().budget.autonomie.controleIa,
       activationOuverte: false,
