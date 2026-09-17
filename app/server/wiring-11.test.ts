@@ -14,6 +14,7 @@ import {
   type Cockpit11Module,
   type HookStep,
   type ModuleName,
+  type PortName,
   PortUnavailableError,
   type ProxyContext,
   type Registrar,
@@ -141,15 +142,20 @@ function mount(s: ReturnType<typeof setup>, routes: ReadonlyArray<(app: Hono) =>
 const ROOT = "ses_racine";
 const ctx = {} as ProxyContext;
 
-/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir »). */
-async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true) {
+/**
+ * Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir »). `real` : ports dont le module réel est fusionné,
+ * vérifiés par leurs propres tests (ils lisent des dépendances que setup() ne fournit pas).
+ */
+async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, real: ReadonlySet<PortName> = new Set()) {
   const p = wiring.c11.ports;
   await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
   assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
   await assert.rejects(p.taskGuard.collectDelegationFacts({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null }), PortUnavailableError);
   assert.deepEqual(p.delegationWatch, {});
-  assert.equal(await p.floors.verified(ROOT), false);
-  await assert.rejects(p.floors.createWithFloor("CONVERSATION", { directory: "/workspace/app" }), PortUnavailableError);
+  if (!real.has("floors")) {
+    assert.equal(await p.floors.verified(ROOT), false);
+    await assert.rejects(p.floors.createWithFloor("CONVERSATION", { directory: "/workspace/app" }), PortUnavailableError);
+  }
   p.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret" }, at: 1 }]);
   assert.deepEqual(p.facts.since(ROOT, 0), { facts: [], partial: false });
   assert.equal(p.facts.work.markDelegation({ rootId: ROOT, parentSessionId: ROOT, callId: "call_1", agent: "explore" }, "travaille", null), false);
@@ -447,14 +453,19 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels, squelettes T0) : seule la route du Diagnostic est inscrite, ports neutres", async () => {
+  it("production (tous les modules réels) : crochets du plancher (L3) et route du Diagnostic inscrits ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    assert.deepEqual(wiring.registrations, [{ kind: "routes", key: "diagnostic-11", module: "diagnostics" }]);
-    assertNoRegistration(wiring);
+    assert.deepEqual(wiring.registrations, [
+      { kind: "hook", key: "createSession", module: "floors" },
+      { kind: "hook", key: "sessionCreated", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+    ]);
+    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.hooks.abort, wiring.derivations, wiring.subscriptions, wiring.startup], [[], [], [], [], []]);
     assert.equal(wiring.routes.length, 1);
-    await assertNeutralPorts(wiring, s);
+    await assertNeutralPorts(wiring, s, true, new Set<PortName>(["floors"]));
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
