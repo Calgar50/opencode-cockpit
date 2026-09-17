@@ -5,7 +5,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { CATALOGUE, CATALOGUE_FICHES, type CatalogueFiche, REVIEW_BANNER } from "./assistants-catalogue.ts";
 import type { ModelCatalog } from "./catalog.ts";
-import { CLASSIFIER_AGENT } from "./classifier.ts";
 import type { ConfigWriteQueue } from "./config-queue.ts";
 import { type ItemMetaRow, params, transaction } from "./db.ts";
 import type { AppEnv } from "./env.ts";
@@ -92,7 +91,15 @@ import {
   uniqueName,
   variantLabel,
 } from "./shared/assistant-rules.ts";
-import { StudioApplyError, type StudioItem, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
+import {
+  INTERNAL_AGENTS,
+  isInternalAgentName,
+  StudioApplyError,
+  type StudioItem,
+  type StudioScope,
+  type StudioService,
+  StudioValidationError,
+} from "./studio.ts";
 import { issuesFrom, modelRefSchema, nameSchema } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
 import type { TierService } from "./tiers.ts";
@@ -191,6 +198,14 @@ const GLOBAL: StudioScope = { type: "global" };
 /** Agents natifs d'opencode 1.18.30 : un fichier du même nom les remplacerait. */
 const NATIVE_AGENTS = ["build", "plan", "general", "explore", "compaction", "title", "summary"] as const;
 
+/**
+ * Nom réservé : agent interne du cockpit (liste unique INTERNAL_AGENTS du Studio, cockpit-controle compris) ou agent natif
+ * d'opencode. Jamais créé, adopté, complété ni supprimé comme assistant.
+ */
+export function isReservedAgentName(name: string): boolean {
+  return isInternalAgentName(name) || (NATIVE_AGENTS as readonly string[]).includes(name);
+}
+
 const USAGE_STATE_TEXT: Readonly<Record<UsageRowState, string>> = {
   "a-jour": "À jour",
   "mise-a-jour": "Mise à jour disponible",
@@ -271,7 +286,7 @@ function sameDecisions(a: readonly RightLine[], b: readonly RightLine[]): boolea
 }
 
 function takenNames(agents: ReadonlyMap<string, StudioItem>, snapshot: OcLookupSnapshot | null): Set<string> {
-  return new Set([...agents.keys(), ...(snapshot?.agents.map((a) => a.name) ?? []), ...NATIVE_AGENTS, CLASSIFIER_AGENT]);
+  return new Set([...agents.keys(), ...(snapshot?.agents.map((a) => a.name) ?? []), ...NATIVE_AGENTS, ...INTERNAL_AGENTS]);
 }
 
 /** Brouillon « au mieux » quand le corps est invalide : l'aperçu reste affichable avec ses erreurs. */
@@ -695,7 +710,7 @@ export class AssistantService {
    * agents restent au Studio (mode Avancé) : le mode Simple ne peut ni les réécrire ni supprimer leur fichier.
    */
   #completable(name: string, file: StudioItem, snapshot: OcLookupSnapshot | null): boolean {
-    if (name === CLASSIFIER_AGENT || (NATIVE_AGENTS as readonly string[]).includes(name)) return false;
+    if (isReservedAgentName(name)) return false;
     const fm = file.frontmatter;
     const oc = snapshot?.agents.find((a) => a.name === name);
     // Présent sur disque mais absent de GET /agent : désactivé ou refusé par opencode.
@@ -1028,7 +1043,7 @@ export class AssistantService {
     assertName(name, "Nom d'agent invalide.");
     const body = adoptSchema.safeParse(input);
     if (!body.success) throw new AssistantServiceError(400, "validation", "Requête invalide.", { issues: issuesFrom(body.error) });
-    const file = name === CLASSIFIER_AGENT ? null : await this.#d.studio.get("agents", name, GLOBAL);
+    const file = isInternalAgentName(name) ? null : await this.#d.studio.get("agents", name, GLOBAL);
     // Mêmes agents que « À compléter » : sinon DELETE /api/assistants/:name supprimerait en mode Simple le fichier
     // d'un agent natif remplacé ou d'un sous-agent du Studio.
     if (!file || !this.#completable(name, file, await this.#snapshot())) throw notFound("Agent introuvable.");
@@ -1065,7 +1080,7 @@ export class AssistantService {
     assertName(name);
     // Seuls les assistants passent par cette route (utilisable en mode Simple) : les autres agents restent au Studio.
     const row = this.#row("agents", name);
-    const reserved = name === CLASSIFIER_AGENT || (NATIVE_AGENTS as readonly string[]).includes(name);
+    const reserved = isReservedAgentName(name);
     const file = row?.title && !reserved ? await this.#d.studio.get("agents", name, GLOBAL) : null;
     if (!row?.title || !file) throw notFound("Assistant introuvable.");
     const commands = await this.#commandsUsing(name);

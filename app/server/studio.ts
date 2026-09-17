@@ -90,7 +90,22 @@ const DIRS: Record<StudioKind, readonly [string, string]> = {
   skills: ["skills", "skill"],
 };
 const VERIFY_ROUTE: Record<StudioKind, string> = { agents: "/agent", commands: "/command", skills: "/skill" };
-const RESERVED = new Set([CLASSIFIER_AGENT]);
+
+/** Agent interne de l'IA de contrôle (spécification §4.6) : installé par L11b, réservé dès maintenant. */
+export const CONTROL_AGENT = "cockpit-controle";
+
+/**
+ * Agents internes du cockpit : liste unique des noms réservés (Studio, assistants). Jamais listés, créés, modifiés, adoptés ni
+ * supprimés par l'interface ; écrits seulement par ensureInternalAgent (installation gardée : internal-agents.ts, §3.11).
+ */
+export const INTERNAL_AGENTS: readonly string[] = [CLASSIFIER_AGENT, CONTROL_AGENT];
+
+const RESERVED: ReadonlySet<string> = new Set(INTERNAL_AGENTS);
+
+/** Nom réservé à un agent interne du cockpit. */
+export function isInternalAgentName(name: string): boolean {
+  return RESERVED.has(name);
+}
 
 export interface StudioDeps {
   env: AppEnv;
@@ -630,14 +645,36 @@ export class StudioService {
     });
   }
 
-  /** Agent interne du classificateur, recréé s'il manque ou a été modifié. */
-  async ensureClassifierAgent(): Promise<void> {
-    await this.#serialize(async () => {
-      const file = path.join(this.#d.env.opencodeConfigDir, "agents", `${CLASSIFIER_AGENT}.md`);
-      if ((await readIfExists(file)) === CLASSIFIER_AGENT_FILE) return;
-      await writeFileAtomic(file, CLASSIFIER_AGENT_FILE);
+  // --- Agents internes -----------------------------------------------------------------
+
+  /** Fichier global d'un agent interne ; tout autre nom est refusé (aucune écriture hors des agents internes). */
+  #internalAgentFile(name: string): string {
+    if (!RESERVED.has(name)) throw new StudioValidationError([{ path: "name", message: "Agent interne inconnu." }]);
+    return path.join(this.#d.env.opencodeConfigDir, "agents", `${name}.md`);
+  }
+
+  /** true si le fichier de l'agent interne est déjà celui attendu : ni écriture ni rechargement d'opencode nécessaires. */
+  async internalAgentUpToDate(name: string, content: string): Promise<boolean> {
+    return (await readIfExists(this.#internalAgentFile(name))) === content;
+  }
+
+  /**
+   * Agent interne recréé s'il manque ou a été modifié : écriture, rechargement d'opencode, vérification et retour arrière s'il est
+   * refusé (StudioApplyError). Rend true si le fichier a été écrit. Aucune garde ici : le rechargement couperait une réponse en
+   * cours, l'appelant attend le repos (internal-agents.ts, §3.11).
+   */
+  async ensureInternalAgent(name: string, content: string): Promise<boolean> {
+    const file = this.#internalAgentFile(name);
+    return this.#serialize(async () => {
+      if ((await readIfExists(file)) === content) return false;
+      await writeFileAtomic(file, content);
       await this.#verifyOrRollback("agents", { type: "global" }, () => fs.rm(file, { force: true }));
-      this.#d.log.info("agent de classement installé");
+      return true;
     });
+  }
+
+  /** Agent interne du classificateur, recréé s'il manque ou a été modifié (enveloppe 1.0, sans garde : port neutre, http.ts sans 1.1). */
+  async ensureClassifierAgent(): Promise<void> {
+    if (await this.ensureInternalAgent(CLASSIFIER_AGENT, CLASSIFIER_AGENT_FILE)) this.#d.log.info("agent de classement installé");
   }
 }

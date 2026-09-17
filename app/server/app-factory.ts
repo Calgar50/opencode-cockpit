@@ -7,6 +7,7 @@ import { probeSessionsBusyStrict } from "./assistants.ts";
 import type { ConfigWriteQueue } from "./config-queue.ts";
 import type { Cockpit11, Cockpit11Deps, HubEventMap, InternalAgentsPort, PermissionGate } from "./contracts-11.ts";
 import { type AppDeps, createApp } from "./http.ts";
+import { closeInternalAgents } from "./internal-agents.ts";
 import { errorMessage } from "./log.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { reloadOccupancy } from "./reload-guard.ts";
@@ -40,7 +41,7 @@ export interface CockpitApp {
    * n'arrête pas les suivantes.
    */
   startup(): Promise<void>;
-  /** Retire les dérivations du processeur et les abonnements au hub. */
+  /** Retire les dérivations du processeur et les abonnements au hub ; arrête la reprise d'installation des agents internes. */
   close(): void;
 }
 
@@ -132,6 +133,7 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
     startup,
     close: () => {
       for (const undo of detach.splice(0)) undo();
+      closeInternalAgents(built.c11);
     },
   };
 }
