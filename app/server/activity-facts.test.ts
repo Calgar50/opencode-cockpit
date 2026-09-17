@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { ActivityFact, SessionInstance } from "./shared/activity-types.ts";
+import type { ActivityFact, FactValue, SessionInstance } from "./shared/activity-types.ts";
 import {
   assertFact,
   dedupeFacts,
@@ -732,6 +732,19 @@ describe("fusion du direct et du différé", () => {
     const states = ["occupee", "repos", "occupee", "repos"].map((etat, i) => ({ rootId: ROOT, sessionId: ROOT, kind: "statut" as const, ref: null, data: { etat }, at: 100 + i }));
     assert.deepEqual(mergeFacts(states.slice(0, 3), states.slice(1)), states);
     assert.deepEqual(mergeFacts(states.slice(0, 2), states.slice(2)), states);
+  });
+
+  it("mergeFacts dédoublonne par identité seulement, comme le direct : un même état ou un même arrêt à une autre heure est gardé", () => {
+    const at = (data: Record<string, FactValue>, t: number): ActivityFact => ({ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data, at: t });
+    // Cockpit redémarré : sa mémoire du flux est neuve, le même état « occupée » est écrit deux fois, à deux heures.
+    const busyTwice = [at({ etat: "occupee" }, 100), at({ etat: "occupee" }, 200)];
+    assert.deepEqual(mergeFacts(busyTwice, []), busyTwice);
+    assert.deepEqual(mergeFacts(busyTwice.slice(0, 1), busyTwice.slice(1)), busyTwice);
+    const stops = [at({ cause: "arret", motif: "vous", nonConfirmees: 0 }, 300), at({ cause: "arret", motif: "vous", nonConfirmees: 0 }, 900)];
+    assert.deepEqual(mergeFacts(stops, []), stops);
+    // Fait identique (même heure, mêmes données) : un seul, dans le différé, dans le direct ou entre les deux.
+    const copy = (f: ActivityFact): ActivityFact => JSON.parse(JSON.stringify(f));
+    assert.deepEqual(mergeFacts([...stops, copy(stops[0] as ActivityFact)], [copy(stops[1] as ActivityFact), copy(stops[1] as ActivityFact)]), stops);
   });
 });
 

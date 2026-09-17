@@ -41,7 +41,9 @@ export type StatutCause = "arret" | "plafond" | "non-controle" | "interrompue";
 
 /**
  * Forme de `data` d'un fait « statut » posé par un arrêt ou un plafond. stopTree (L1c) y ajoute `motif` (la StopCause de l'arrêt :
- * « vous », « plafond-cout »…) et `nonConfirmees` (nombre de sessions encore occupées après la sonde).
+ * « vous », « plafond-cout »…), `nonConfirmees` (nombre de sessions encore occupées après la sonde) et `debut` (heure du début de
+ * l'arrêt, ms) : une session dont le travail s'est fermé entre `debut` et l'heure du fait a été arrêtée, même sans
+ * MessageAbortedError (tour clos par le refus d'une demande en attente).
  */
 export interface StatutFactData {
   cause: StatutCause;

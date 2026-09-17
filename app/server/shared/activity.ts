@@ -7,7 +7,8 @@
 // faits écartés par identité, messages par (id, time.completed) ; deltas jamais lus (le détail vient des faits).
 // Rend des CODES (états, causes, genres de barre, annonces) : les phrases sont écrites par le module de textes de l'interface (L5b).
 // Une session de rôle « controle » est la ligne « Contrôle de sécurité » : son coût compte dans la demande, jamais dans « dont x $ de
-// travail délégué ». Faits lus : statut (dont {cause} d'un arrêt, L1c), consigne, resultat, attente, reponse, choix (L6a) et
+// travail délégué ». Faits lus : statut (dont {cause, debut} d'un arrêt, L1c : une session arrêtée par MessageAbortedError, ou dont
+// le travail s'est fermé entre `debut` et le fait sans erreur, est « arrete »), consigne, resultat, attente, reponse, choix (L6a) et
 // affichage « deroule-partiel » (L4b) ; decision et origine ne changent pas les lignes (Journal et transcription).
 // Module pur (server/shared) : aucun module node, aucun accès à process, ni horloge ni aléa (l'heure est passée en paramètre).
 import type {
@@ -277,6 +278,12 @@ function derive(state: ActivityState): Model {
 
 const callKey = (sessionId: string, callId: string): string => `appel:${sessionId}:${callId}`;
 
+/** Dernière période de travail de la session fermée dans [from, to]. */
+function closedWithin(node: NodeModel, from: number, to: number): boolean {
+  const end = node.intervals.at(-1)?.[1];
+  return typeof end === "number" && end >= from && end <= to;
+}
+
 function closeBusy(node: NodeModel, at: number): void {
   const last = node.intervals.at(-1);
   if (last && last[1] === null) last[1] = Math.max(at, last[0]);
@@ -426,6 +433,7 @@ function build(state: ActivityState): Model {
           if (node.depth !== 0 || !STATUT_CAUSES.has(data.cause)) return;
           const cause = data.cause as StatutCause;
           model.stop = { cause, at, nonConfirmees: timeOf(data.nonConfirmees) ?? 0 };
+          const debut = timeOf(data.debut);
           for (const other of model.nodes.values()) {
             if (other.busy) {
               // Une session encore occupée n'est dite arrêtée que si opencode a été relancé : un arrêt non confirmé reste visible.
@@ -434,6 +442,10 @@ function build(state: ActivityState): Model {
                 other.stopped = { cause, at };
               }
             } else if (other.abortedAt !== null && other.abortedAt >= lastStop) {
+              other.stopped = { cause, at };
+            } else if (debut !== null && other.erreur === null && closedWithin(other, debut, at)) {
+              // Tour clos pendant l'arrêt sans MessageAbortedError (refus d'une demande en attente, étape 2) : arrêté, pas terminé.
+              // Une vraie erreur pendant l'arrêt reste un échec.
               other.stopped = { cause, at };
             }
           }

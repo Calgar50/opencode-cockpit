@@ -312,7 +312,10 @@ describe("L1c : arrêt de l'arbre (unitaires)", () => {
         ["call_trouvee", FOUND, "arretee", "vous"],
       ],
     );
-    assert.deepEqual(s.facts, [{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret", motif: "vous", nonConfirmees: 0 }, at: s.now() }]);
+    // `debut` : heure du début de l'arrêt, pour dire « arrêtée » une session close par un refus, sans MessageAbortedError (L4c, L5a).
+    assert.deepEqual(s.facts, [
+      { rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret", motif: "vous", nonConfirmees: 0, debut: s.now() - result.durationMs }, at: s.now() },
+    ]);
     assert.deepEqual(s.events, [{ type: "conversation.arretee", data: { rootId: ROOT, cause: "vous", unconfirmed: [] } }]);
 
     // F-c : la seconde demande de la même session répond 404 et compte comme refusée.
@@ -357,7 +360,8 @@ describe("L1c : arrêt de l'arbre (unitaires)", () => {
       s.marks.map((m) => [m.callId, m.par]),
       [["call_racine", "cockpit"]],
     );
-    assert.deepEqual(s.facts[0]?.data, { cause: "plafond", motif: "plafond-cout", nonConfirmees: 1 });
+    assert.deepEqual(s.facts[0]?.data, { cause: "plafond", motif: "plafond-cout", nonConfirmees: 1, debut: s.now() - result.durationMs });
+    assert.equal(s.facts[0]?.at, s.now(), "le fait est écrit à la fin de l'arrêt, et porte son début");
     assert.deepEqual(s.interrupts, [[ROOT, "plafond-cout"]]);
   });
 
@@ -463,7 +467,7 @@ describe("L1c : arrêt de l'arbre (unitaires)", () => {
     const s = unitSetup(t, { busy: [ROOT], pending: [] });
     await s.stopTree.run(ROOT, "plafond-delegations");
     assert.deepEqual(s.interrupts, [], "aucune valeur de fin pour cette cause : demande non marquée");
-    assert.deepEqual(s.facts[0]?.data, { cause: "plafond", motif: "plafond-delegations", nonConfirmees: 0 });
+    assert.deepEqual(s.facts[0]?.data, { cause: "plafond", motif: "plafond-delegations", nonConfirmees: 0, debut: s.now() });
 
     s.setInterrupt(() => {
       throw new Error("demande illisible");
@@ -471,7 +475,7 @@ describe("L1c : arrêt de l'arbre (unitaires)", () => {
     const result = await s.stopTree.run(ROOT, "non-controle");
     assert.equal(result.aborted[0], ROOT, "arrêt mené malgré l'échec du marquage");
     assert.ok(s.warns.some((w) => w.message === "arrêt : demande d'autonomie non marquée"));
-    assert.deepEqual(s.facts[1]?.data, { cause: "non-controle", motif: "non-controle", nonConfirmees: 0 });
+    assert.deepEqual(s.facts[1]?.data, { cause: "non-controle", motif: "non-controle", nonConfirmees: 0, debut: s.now() });
   });
 
   it("stoppableRoot : racine suivie, sans parent, principale, hors classement ; sinon run() refuse sans appeler opencode", async (t) => {

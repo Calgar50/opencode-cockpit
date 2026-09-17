@@ -428,6 +428,98 @@ describe("faits d'arrêt et de choix", () => {
     }
   });
 
+  it("« Arrêter » pendant une attente d'accord (commande) : le refus clôt le tour sans MessageAbortedError ; session close pendant l'arrêt « arrete », annoncée « arrêté » ; en différé comme en direct", () => {
+    const command = (at: number, phase: string) =>
+      fact(R, "statut", at, { etat: "outil", outil: "commande", nom: "bash", phase, callId: "call_b", messageId: "msg_r", fichier: null, dossier: null }, "call_b");
+    const waiting = [
+      busy(R, 100),
+      ...call(R, "msg_r", 110, null, 0),
+      command(150, "en-cours"),
+      fact(R, "attente", 150, { permission: "bash", messageId: "msg_r", callId: "call_b", agent: null }, "per_b"),
+    ];
+    // Ce que stopTree provoque : refus sans message (étape 2), l'outil échoue, l'appel se clôt, la session passe au repos.
+    const refusal = [fact(R, "reponse", 210, { reponse: "reject" }, "per_b"), command(211, "erreur"), ...call(R, "msg_r", 110, 212, 0.01).slice(1), idle(R, 213)];
+    const stop = fact(R, "statut", 260, { cause: "arret", motif: "vous", nonConfirmees: 0, debut: 200 });
+
+    // Direct, fait par fait, avec les annonces (la dernière annonce, « attente de votre accord », à 150).
+    let state = facts(emptyActivity(R), waiting);
+    let out = announcements(emptyActivity(R), state, 150);
+    let queue = out.queue;
+    const said: Array<[string, string | null]> = [];
+    for (const f of [...refusal, stop]) {
+      const next = applyEvent(state, factEvent(f));
+      out = announcements(state, next, f.at, queue);
+      for (const a of out.say ?? []) if (a.key === R) said.push([a.code, a.cause]);
+      queue = out.queue;
+      state = next;
+    }
+    for (const a of announcements(state, state, 2_260, queue).say ?? []) if (a.key === R) said.push([a.code, a.cause]);
+    assert.deepEqual(liveRows(state, 300).map((row) => [row.key, row.state, row.cause, row.until]), [[R, "arrete", "arret", 213]]);
+    assert.deepEqual(said, [["arrete", "arret"]], "jamais « terminé »");
+    assert.deepEqual(activityStatus(state).arret, { cause: "arret", at: 260, nonConfirmees: 0 });
+    // Différé : mêmes lignes, même Déroulé, même état.
+    const deferred = replayFacts(emptyActivity(R), reread([...waiting, ...refusal, stop]));
+    assert.deepEqual(liveRows(deferred, 300), liveRows(state, 300));
+    assert.deepEqual(timeline(deferred), timeline(state));
+    assert.deepEqual(activityStatus(deferred), activityStatus(state));
+
+    // Témoin : « Refuser » sans message, sans arrêt : le tour s'arrête aussi, la session reste « terminée ».
+    const refusedAlone = facts(emptyActivity(R), [...waiting, ...refusal]);
+    assert.deepEqual(liveRows(refusedAlone, 300).map((row) => [row.key, row.state, row.cause]), [[R, "termine", null]]);
+    // Session close avant le début de l'arrêt : l'arrêt est signalé, la session reste « terminée ».
+    const before = facts(refusedAlone, [fact(R, "statut", 400, { cause: "arret", motif: "vous", nonConfirmees: 0, debut: 300 })]);
+    assert.deepEqual(liveRows(before, 500).map((row) => [row.key, row.state, row.cause]), [[R, "termine", null]]);
+    assert.equal(activityStatus(before).arret?.at, 400);
+    // Échec réel pendant l'arrêt : « échec », pas « arrêté ».
+    const failed = facts(emptyActivity(R), [...waiting, fact(R, "statut", 212, { etat: "erreur", erreur: "APIError" }), idle(R, 213), stop]);
+    assert.deepEqual(liveRows(failed, 300).map((row) => [row.key, row.state, row.cause]), [[R, "echec", null]]);
+  });
+
+  it("différé = direct : deux « Arrêter » de même contenu séparés par une nouvelle réponse, relus à vide et à la reconnexion", () => {
+    const turn = (t0: number, n: number): ActivityFact[] => {
+      const child = `ses_delegue_${n}`;
+      const messageId = `msg_tour_${n}`;
+      const callId = `call_tour_${n}`;
+      return [
+        busy(R, t0),
+        ...call(R, messageId, t0 + 10, null, 0),
+        created(child, R, t0 + 20),
+        sent(R, callId, child, t0 + 21, messageId),
+        busy(child, t0 + 22),
+        fact(child, "statut", t0 + 50, { etat: "erreur", erreur: "MessageAbortedError" }),
+        idle(child, t0 + 50),
+        fact(R, "statut", t0 + 51, { etat: "erreur", erreur: "MessageAbortedError" }),
+        idle(R, t0 + 51),
+        fact(R, "resultat", t0 + 60, { etat: "interrompu", callId, messageId, enfant: child }, callId),
+        // Fait d'arrêt sans heure de début : deux arrêts successifs ont le même contenu, seule leur heure diffère.
+        fact(R, "statut", t0 + 70, { cause: "arret", motif: "vous", nonConfirmees: 0 }),
+      ];
+    };
+    const all = [...turn(100, 1), ...turn(1_000, 2)];
+    const direct = facts(emptyActivity(R), all);
+    assert.deepEqual(liveRows(direct, 2_000).map((row) => [row.key, row.state, row.cause]), [
+      [R, "arrete", "arret"],
+      ["ses_delegue_1", "arrete", "arret"],
+      ["ses_delegue_2", "arrete", "arret"],
+    ]);
+    assert.equal(activityStatus(direct).arret?.at, 1_070);
+    const deferred = replayFacts(emptyActivity(R), reread(all));
+    assert.equal(deferred.facts.length, all.length, "les deux faits d'arrêt sont gardés");
+    assert.deepEqual(liveRows(deferred, 2_000), liveRows(direct, 2_000));
+    assert.deepEqual(timeline(deferred), timeline(direct));
+    assert.deepEqual(totals(deferred), totals(direct));
+    assert.deepEqual(activityStatus(deferred), activityStatus(direct));
+    // Reconnexion : direct reçu depuis le second tour, faits persistés relus ensuite (recouvrement), puis le reste.
+    const k = all.findIndex((f) => f.at === 1_000);
+    for (const m of [k + 3, all.length]) {
+      let opened = facts(emptyActivity(R), all.slice(k, m));
+      opened = replayFacts(opened, reread(all.slice(0, m)));
+      opened = facts(opened, all.slice(k));
+      assert.deepEqual(liveRows(opened, 2_000), liveRows(direct, 2_000), `m=${m}`);
+      assert.deepEqual(activityStatus(opened), activityStatus(direct), `m=${m}`);
+    }
+  });
+
   it("choix : le dernier fait de la racine fait foi ; retour à « Demander » sans clic annoncé ; valeurs inconnues ignorées", () => {
     const chosen = facts(emptyActivity(R), [fact(R, "choix", 100, { choix: "autonome", cause: "clic" })]);
     assert.deepEqual(activityStatus(chosen).choix, { choix: "autonome", cause: "clic", at: 100 });

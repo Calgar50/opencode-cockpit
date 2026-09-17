@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import { CLASSIFIER_AGENT } from "./classifier.ts";
 import type { ActivationPort } from "./contracts-11.ts";
 import type { ActivityFact, ActivityResponse, FactsResponse } from "./shared/activity-types.ts";
-import { activityStatus, emptyActivity, liveRows, replayFacts } from "./shared/activity.ts";
+import { activityStatus, announcements, applyEvent, emptyActivity, liveRows, replayFacts } from "./shared/activity.ts";
 import type { ConversationAutonomyView } from "./shared/autonomy-types.ts";
 import type { InternalAgentStatus, StopResult } from "./shared/cockpit-event-types.ts";
 import { scene } from "./shared/neon-scene.ts";
@@ -151,9 +151,10 @@ describe("croisements it1 V2 : arrêt de l'arbre sur le câblage complet", () =>
     const facts = await readFacts(h, root.id);
     const stopFacts = facts.filter((f) => f.kind === "statut" && f.data.cause !== undefined);
     assert.deepEqual(
-      stopFacts.map((f) => [f.sessionId, f.data]),
-      [[root.id, { cause: "arret", motif: "vous", nonConfirmees: 0 }]],
+      stopFacts.map((f) => [f.sessionId, { ...f.data, debut: typeof f.data.debut }]),
+      [[root.id, { cause: "arret", motif: "vous", nonConfirmees: 0, debut: "number" }]],
     );
+    assert.ok(stopFacts.every((f) => Number(f.data.debut) <= f.at), "le fait d'arrêt porte l'heure de son début");
     assert.equal(facts.at(-1)?.kind, "statut");
     assert.ok(
       h.cockpitEvents().some((e) => e.type === "activite.fait" && (e.data as ActivityFact).kind === "statut" && (e.data as ActivityFact).data.cause === "arret"),
@@ -196,6 +197,74 @@ describe("croisements it1 V2 : arrêt de l'arbre sur le câblage complet", () =>
       return list.length > facts.length && list.at(-1)?.data.etat === "repos" ? list : null;
     });
     assert.equal(scene(resumed, null, { zoom: 2, mode: "avance" }).noeuds.find((n) => n.sessionId === root.id)?.etat, "termine");
+    h.assertNoGlobalRestart();
+  });
+
+  it("mode Simple : « Arrêter » pendant une attente d'accord pour une commande de la racine → racine « arrete » (cause arret), demande figée, annonce « arrêté » ; en direct comme en différé ; témoin : « Refuser » sans message reste « termine »", async (t) => {
+    const h = await startCockpit(t, { modules: "tous" });
+    const root = await trackedRoot(h, "Arrêt pendant une attente");
+    h.fake.script(root.id, { tools: [bash("ls")], followUp: { text: "fin" } });
+    await sendThroughProxy(h, root.id, "Liste.");
+    const asked = (await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === root.id)).properties as unknown as FakePermissionRequest;
+    const waiting = await untilAsync(async () => {
+      const list = await readFacts(h, root.id);
+      return list.some((f) => f.kind === "attente" && f.ref === asked.id) ? list : null;
+    });
+    const atWait = replayFacts(emptyActivity(root.id), waiting);
+    assert.deepEqual(liveRows(atWait, Date.now()).map((r) => [r.sessionId === root.id, r.state]), [[true, "attente-accord"]]);
+
+    const since = h.fake.emitted.length;
+    const stop = await h.call("POST", `/api/oc/session/${root.id}/abort`, { headers: h.headers.mutating });
+    assert.equal(stop.status, 200, stop.body);
+    assert.deepEqual([stop.json<StopResult>().rejected, stop.json<StopResult>().unconfirmed], [1, []]);
+    // Le tour s'arrête sur le refus (RejectedError), sans MessageAbortedError : c'est le cas que l'abortedAt ne couvre pas.
+    const stopped = trace(h.fake.emitted.slice(since), { [root.id]: "racine" });
+    assertSubsequence(stopped, ["permission.replied:reject@racine", "session.status:idle@racine"]);
+    assert.equal(stopped.some((e) => e.startsWith("session.error")), false, stopped.join(", "));
+
+    const facts = await untilAsync(async () => {
+      const list = await readFacts(h, root.id);
+      return list.some((f) => f.kind === "statut" && f.data.cause === "arret") ? list : null;
+    });
+    const stopFact = facts.find((f) => f.kind === "statut" && f.data.cause === "arret");
+    assert.ok(stopFact && typeof stopFact.data.debut === "number" && stopFact.data.debut <= stopFact.at, "début de l'arrêt écrit dans le fait");
+    const live = h
+      .cockpitEvents()
+      .filter((e) => e.type === "activite.fait")
+      .reduce((state, e) => applyEvent(state, { kind: "cockpit", type: e.type, data: e.data }), emptyActivity(root.id));
+    const deferred = replayFacts(emptyActivity(root.id), facts);
+    const now = Date.now();
+    for (const [label, state] of [["direct", live], ["différé", deferred]] as const) {
+      assert.deepEqual(liveRows(state, now).map((r) => [r.sessionId === root.id, r.state, r.cause]), [[true, "arrete", "arret"]], label);
+      assert.equal(activityStatus(state).arret?.cause, "arret", label);
+      for (const mode of ["simple", "avance"] as const) {
+        const drawn = scene(state.facts, null, { zoom: 2, mode });
+        assert.notEqual(drawn.arret, null, `${label} ${mode}`);
+        assert.deepEqual(drawn.noeuds.map((n) => [n.sessionId === root.id, n.etat]), [[true, "arrete"]], `${label} ${mode}`);
+        assert.ok(drawn.faisceaux.some((b) => b.kind === "demande") && drawn.faisceaux.every((b) => b.fige), `${label} ${mode} : demande figée`);
+      }
+    }
+    // Annonce : de l'attente à l'état final, « arrêté », jamais « terminé ».
+    const said = announcements(atWait, deferred, now).say ?? [];
+    assert.deepEqual(said.filter((a) => a.key === root.id).map((a) => [a.code, a.cause]), [["arrete", "arret"]]);
+
+    // Témoin : « Refuser » sans message, sans « Arrêter » : le tour s'arrête aussi, la réponse reste « terminée », rien de figé.
+    const other = await trackedRoot(h, "Refus seul");
+    h.fake.script(other.id, { tools: [bash("ls")], followUp: { text: "fin" } });
+    await sendThroughProxy(h, other.id, "Liste.");
+    const refusedAsk = (await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === other.id)).properties as unknown as FakePermissionRequest;
+    const refused = await h.call("POST", `/api/oc/permission/${refusedAsk.id}/reply`, { headers: h.headers.mutating, body: { reply: "reject" } });
+    assert.equal(refused.status, 200, refused.body);
+    await until(() => h.fake.statusOf(other.id).type === "idle");
+    const otherFacts = await untilAsync(async () => {
+      const list = await readFacts(h, other.id);
+      return list.at(-1)?.data.etat === "repos" ? list : null;
+    });
+    const refusedState = replayFacts(emptyActivity(other.id), otherFacts);
+    assert.deepEqual(liveRows(refusedState, Date.now()).map((r) => [r.state, r.cause]), [["termine", null]]);
+    assert.equal(activityStatus(refusedState).arret, null);
+    const refusedScene = scene(otherFacts, null, { zoom: 2, mode: "avance" });
+    assert.deepEqual([refusedScene.noeuds.map((n) => n.etat), refusedScene.faisceaux, refusedScene.arret], [["termine"], [], null]);
     h.assertNoGlobalRestart();
   });
 });

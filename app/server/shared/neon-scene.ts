@@ -17,12 +17,14 @@
 // - Mode Simple (défaut, P2) : un seul assistant, ses outils et ses fichiers (la délégation y est refusée, décision n° 4) ; les
 //   délégations déjà enregistrées sont comptées sans être dessinées.
 // - Arrêt : un fait `statut {cause: "arret"}` (L1c) fige en gris les faisceaux de la réponse arrêtée (en cours, ou terminée par
-//   l'arrêt si le fait arrive après), jusqu'au début d'une nouvelle réponse. Aucune autre cause ne fige rien.
+//   l'arrêt si le fait arrive après : interrompue, ou close depuis `debut`, l'heure du début de l'arrêt), jusqu'au début d'une
+//   nouvelle réponse. Aucune autre cause ne fige rien. Toute cause d'arrêt dit « arrete » l'assistant dont la réponse, finie sans
+//   erreur, s'est close entre `debut` et le fait (refus d'une demande en attente : aucune interruption).
 // - Temps : `t` null = direct (tous les faits) ; sinon, les faits jusqu'au dernier dont l'heure est au plus `t`, dans l'ordre du
 //   magasin (une inversion d'heure entre deux faits est bornée par 223 ms, mesure M15). `moments()` donne les coupures nettes.
 // - Station « Carnet partagé et plan » : toujours vide hors de la Salle OMO (faits `carnet`, L25).
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
-import type { ActivityFact, MessageOrigin } from "./activity-types.ts";
+import type { ActivityFact, MessageOrigin, StatutCause } from "./activity-types.ts";
 
 export type NeonZoom = 2 | 3;
 export type NeonMode = "simple" | "avance";
@@ -330,6 +332,8 @@ const TOOL_SLOTS: ReadonlySet<string> = new Set(NEON_OUTILS);
 /** Natures de faits qui décrivent l'activité d'une session : seules elles font apparaître un assistant. */
 const NODE_KINDS: ReadonlySet<string> = new Set(["statut", "origine", "consigne", "resultat", "attente", "reponse", "decision"]);
 const RESULT_STATES: Readonly<Record<string, NeonNodeState>> = { rendu: "termine", echec: "echec", interrompu: "arrete" };
+/** Causes d'un fait d'arrêt (StatutCause) ; seule « arret » fige des faisceaux. */
+const STOP_CAUSES: ReadonlySet<string> = new Set<StatutCause>(["arret", "plafond", "non-controle", "interrompue"]);
 const RESULT_PHASES: Readonly<Record<string, string>> = { rendu: "termine", echec: "erreur", interrompu: "interrompu" };
 
 interface Open<T> {
@@ -378,6 +382,8 @@ interface SessionBuild {
   node: NeonNode;
   created: number;
   working: boolean;
+  /** Dernière fin de réponse (repos ou erreur) : indice et heure du fait. */
+  ended: { index: number; at: number } | null;
   baseState: NeonNodeState;
   baseSince: number;
   baseRefs: NeonRefs;
@@ -437,6 +443,7 @@ function newSession(node: NeonNode, index: number, at: number): SessionBuild {
     node,
     created: index,
     working: false,
+    ended: null,
     baseState: "pas-commence",
     baseSince: at,
     baseRefs: [index],
@@ -455,13 +462,13 @@ function newSession(node: NeonNode, index: number, at: number): SessionBuild {
 
 /**
  * Réponses de la conversation, pour borner la réponse qu'un arrêt a interrompue : début de la réponse en cours (ou demande qui
- * l'annonce), dernière réponse finie et si elle l'a été par une interruption, dernier fait d'arrêt.
+ * l'annonce), dernière réponse finie (heure de fin, et si elle l'a été par une interruption), dernier fait d'arrêt.
  */
 class RootResponses {
   #start: number | null = null;
   #pendingDemand: number | null = null;
   #aborted = false;
-  #last: { start: number; aborted: boolean } | null = null;
+  #last: { start: number; aborted: boolean; endAt: number } | null = null;
   #stop: { index: number; at: number; boundary: number | null; limit: number | null; ended: boolean } | null = null;
 
   /** Votre demande : elle ouvre la prochaine réponse si aucune n'est en cours. */
@@ -483,19 +490,23 @@ class RootResponses {
     }
   }
 
-  end(aborted: boolean): void {
+  end(aborted: boolean, at: number): void {
     if (aborted) this.#aborted = true;
     const start = this.#start ?? this.#pendingDemand;
-    if (start !== null) this.#last = { start, aborted: this.#aborted };
+    if (start !== null) this.#last = { start, aborted: this.#aborted, endAt: at };
     else if (aborted && this.#last !== null) this.#last.aborted = true;
     this.#start = null;
     this.#pendingDemand = null;
   }
 
-  /** Fait d'arrêt : la réponse arrêtée est celle en cours, sinon la demande en attente, sinon la dernière réponse interrompue. */
-  stopAt(index: number, at: number): void {
-    const interrupted = this.#last?.aborted ? this.#last.start : null;
-    this.#stop = { index, at, boundary: this.#start ?? this.#pendingDemand ?? interrupted, limit: null, ended: false };
+  /**
+   * Fait d'arrêt : la réponse arrêtée est celle en cours, sinon la demande en attente, sinon la dernière réponse interrompue ou
+   * finie entre `debut` (début de l'arrêt, s'il est connu) et le fait : un refus envoyé par l'arrêt clôt le tour sans interruption.
+   */
+  stopAt(index: number, at: number, debut: number | null): void {
+    const last = this.#last;
+    const stopped = last !== null && (last.aborted || (debut !== null && last.endAt >= debut && last.endAt <= at)) ? last.start : null;
+    this.#stop = { index, at, boundary: this.#start ?? this.#pendingDemand ?? stopped, limit: null, ended: false };
   }
 
   /** Arrêt encore affiché (aucune réponse n'a commencé depuis), sinon null. */
@@ -597,8 +608,10 @@ class SceneBuilder {
   }
 
   /** Fin d'une réponse de la session (repos ou erreur) : ferme ce qui ne peut plus être en cours. */
-  #endWork(s: SessionBuild, index: number, fin: "repos" | "erreur", aborted: boolean): void {
+  #endWork(s: SessionBuild, step: Step, fin: "repos" | "erreur", aborted: boolean): void {
+    const { index, at } = step;
     s.working = false;
+    s.ended = { index, at };
     const sessionId = s.node.sessionId;
     for (const build of [...this.#openBeams]) if (build.owner === sessionId) this.#closeBeam(build.key, index, fin);
     for (const wait of this.#waits.values()) if (wait.close === null && wait.value.sessionId === sessionId) wait.close = index;
@@ -608,7 +621,23 @@ class SceneBuilder {
       pulse.close = index;
       this.#pulses.delete(key);
     }
-    if (sessionId === this.#rootId) this.#root.end(aborted);
+    if (sessionId === this.#rootId) this.#root.end(aborted, at);
+  }
+
+  /**
+   * Fait d'arrêt de la conversation (L1c) : « arret » fige la réponse arrêtée ; toute cause d'arrêt dit « arrete » un assistant
+   * dont la réponse, finie sans erreur, s'est close entre le début de l'arrêt (`debut`) et le fait (refus d'une demande en attente).
+   */
+  #onStop(step: Step): void {
+    const { data, fact, index, at } = step;
+    const debut = num(data.debut);
+    if (data.cause === "arret") this.#root.stopAt(index, at, debut);
+    if (debut === null || fact.sessionId !== this.#rootId || !STOP_CAUSES.has(String(data.cause))) return;
+    for (const s of this.#sessions.values()) {
+      if (s.working || s.baseState !== "termine" || s.ended === null || s.ended.at < debut || s.ended.at > at) continue;
+      s.baseState = "arrete";
+      s.baseRefs = [s.created, s.ended.index, index];
+    }
   }
 
   #openBeam(beam: BeamBuild["beam"], owner: string, index: number, group: string | null): void {
@@ -634,7 +663,7 @@ class SceneBuilder {
   #onStatut(step: Step): void {
     const { data, session: s } = step;
     if (data.cause !== undefined) {
-      if (data.cause === "arret") this.#root.stopAt(step.index, step.at);
+      this.#onStop(step);
       return;
     }
     if (data.etat === "creee") {
@@ -656,13 +685,13 @@ class SceneBuilder {
         // Un repos qui suit une erreur ou une interruption ne les masque pas.
         if (s.working || (s.baseState !== "arrete" && s.baseState !== "echec")) this.#setState(s, "termine", step);
         s.node.tentative = null;
-        this.#endWork(s, step.index, "repos", false);
+        this.#endWork(s, step, "repos", false);
         break;
       case "erreur": {
         const aborted = data.erreur === "MessageAbortedError";
         this.#setState(s, aborted ? "arrete" : "echec", step);
         s.node.tentative = null;
-        this.#endWork(s, step.index, "erreur", aborted);
+        this.#endWork(s, step, "erreur", aborted);
         break;
       }
       default:
