@@ -48,8 +48,9 @@ async function pendingAsk(h: CockpitHarness, title: string): Promise<{ session: 
 describe("croisements it1 V1 : tous les modules installés", () => {
   it("app-factory avec modules: « tous » = comportement 1.0 : « always » 403, « once » vérifié, arrêt relayé, demande restée refusée", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
-    // Squelettes de T0 : route du Diagnostic ; L1c ajoute les routes « conversations » (arrêt de l'arbre). Reste du cadre au repos.
-    assert.equal(h.cockpit.wiring.routes.length, 2, "deux inscriptions de routes (conversations, Diagnostic)");
+    // Squelettes de T0 : route du Diagnostic ; modules livrés en V2 : routes « conversations » (L1c, arrêt de l'arbre) et
+    // choix d'autonomie (L6a). Le reste du cadre reste au repos, ports neutres.
+    assert.equal(h.cockpit.wiring.routes.length, 3, "inscriptions de routes : conversations, choix d'autonomie, Diagnostic");
 
     const { session, asked } = await pendingAsk(h, "Croisement V1");
     const always = await h.call("POST", `/api/oc/permission/${asked.id}/reply`, { headers: h.headers.mutating, body: { reply: "always" } });

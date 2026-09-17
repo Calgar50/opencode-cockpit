@@ -238,7 +238,7 @@ describe("croisements it1 V0 : faux opencode (T1) et mesures (M2, MX1)", () => {
 });
 
 describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
-  it("tous les modules sur les dépendances réelles du harnais : seule la route du Diagnostic inscrite, ports neutres, porte I1 fermée, agent de classement = 1.0.4, aucun rechargement d'opencode", async (t) => {
+  it("tous les modules sur les dépendances réelles du harnais : route du Diagnostic et choix d'autonomie (L6a) seuls inscrits, ports neutres, porte I1 fermée, agent de classement = 1.0.4, aucun rechargement d'opencode", async (t) => {
     let wiring: Cockpit11Wiring | undefined;
     const h = await startCockpit(t, {
       deps: (base) => {
@@ -272,16 +272,19 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     assert.ok(wiring);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
     // Modules livrés en V2 : le plancher (L3) inscrit ses trois crochets, ce montage ne les branche pas au proxy ; stopTree (L1c)
-    // inscrit le crochet abort et les routes « conversations ». Le reste du cadre reste au repos.
+    // inscrit le crochet abort et les routes « conversations » ; le choix d'autonomie (L6a), le retour à « demander » au
+    // démarrage et ses routes. Le reste du cadre reste au repos.
     const hooked: HookStep[] = ["createSession", "sessionCreated", "beforeBilledSend", "abort"];
     assert.deepEqual(wiring.registrations, [
       ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       { kind: "hook", key: "abort", module: "stopTree" },
+      { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
+      { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
     for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked.includes(step) ? 1 : 0, step);
-    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [0, 0, 0]);
+    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [0, 0, 1]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, false);
     assert.equal(wiring.c11.reloadBusy(), false);

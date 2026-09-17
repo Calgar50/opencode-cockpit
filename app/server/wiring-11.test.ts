@@ -162,37 +162,39 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   assert.equal(p.facts.work.markWait({ permissionId: "per_1", sessionId: ROOT, rootId: ROOT, permission: "edit" }, "once", "vous"), false);
   const caps = s.settings.get().budget.autonomie;
   const automatic = autonomy ? "a-venir" : "autonomie-coupee";
-  assert.deepEqual(await p.conversationAutonomy.get(ROOT), {
-    rootId: ROOT,
-    choix: "demander",
-    plafonds: {
-      plafondUsd: caps.plafondUsd,
-      actionsMax: caps.actionsMax,
-      delegationsMax: caps.delegationsMax,
-      dureeMinutes: caps.dureeMinutes,
-      fichiersMax: caps.fichiersMax,
-      controlesIaMax: caps.controlesIaMax,
-    },
-    depuis: null,
-    retourCause: null,
-    planSourceId: null,
-    executionDePlanId: null,
-    interrupteur: autonomy,
-    disponibles: [
-      { choix: "demander", disponible: true, raison: null },
-      { choix: "modifications", disponible: false, raison: automatic },
-      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
-      { choix: "autonome", disponible: false, raison: automatic },
-    ],
-    demande: null,
-  });
-  assert.equal(p.conversationAutonomy.choiceOf(ROOT), "demander");
-  assert.deepEqual(await p.conversationAutonomy.put(ROOT, { choix: "autonome" }, { confirmed: true }), {
-    ok: false,
-    status: 409,
-    error: "autonomie-indisponible",
-    raison: "a-venir",
-  });
+  if (!livres.includes("conversationAutonomy")) {
+    assert.deepEqual(await p.conversationAutonomy.get(ROOT), {
+      rootId: ROOT,
+      choix: "demander",
+      plafonds: {
+        plafondUsd: caps.plafondUsd,
+        actionsMax: caps.actionsMax,
+        delegationsMax: caps.delegationsMax,
+        dureeMinutes: caps.dureeMinutes,
+        fichiersMax: caps.fichiersMax,
+        controlesIaMax: caps.controlesIaMax,
+      },
+      depuis: null,
+      retourCause: null,
+      planSourceId: null,
+      executionDePlanId: null,
+      interrupteur: autonomy,
+      disponibles: [
+        { choix: "demander", disponible: true, raison: null },
+        { choix: "modifications", disponible: false, raison: automatic },
+        { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+        { choix: "autonome", disponible: false, raison: automatic },
+      ],
+      demande: null,
+    });
+    assert.equal(p.conversationAutonomy.choiceOf(ROOT), "demander");
+    assert.deepEqual(await p.conversationAutonomy.put(ROOT, { choix: "autonome" }, { confirmed: true }), {
+      ok: false,
+      status: 409,
+      error: "autonomie-indisponible",
+      raison: "a-venir",
+    });
+  }
   assert.deepEqual(p.plans, {});
   assert.equal(p.autonomy.examining(), false);
   assert.equal(p.requests.current(ROOT), null);
@@ -453,7 +455,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés (L1c stopTree, L3 plancher) inscrits, route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -462,16 +464,26 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "abort", module: "stopTree" },
+      { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
+      { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
     assert.deepEqual(
       [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
       [1, 1, 1, 1],
     );
-    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.derivations, wiring.subscriptions, wiring.startup], [[], [], [], []]);
-    assert.equal(wiring.routes.length, 2);
-    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors"]);
+    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.derivations, wiring.subscriptions], [[], [], []]);
+    assert.equal(wiring.startup.length, 1);
+    assert.equal(wiring.routes.length, 3);
+    // Port réel de L6a (le neutre répondrait 409) ; son comportement est contrôlé par conversation-autonomy.test.ts.
+    assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
+      ok: false,
+      status: 400,
+      error: "invalid",
+      raison: null,
+    });
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
