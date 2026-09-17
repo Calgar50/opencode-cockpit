@@ -271,13 +271,16 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     });
     assert.ok(wiring);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    // L1c : le module stopTree inscrit le crochet abort et les routes « conversations » ; le reste du cadre reste au repos.
+    // Modules livrés en V2 : le plancher (L3) inscrit ses trois crochets, ce montage ne les branche pas au proxy ; stopTree (L1c)
+    // inscrit le crochet abort et les routes « conversations ». Le reste du cadre reste au repos.
+    const hooked: HookStep[] = ["createSession", "sessionCreated", "beforeBilledSend", "abort"];
     assert.deepEqual(wiring.registrations, [
+      ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
-    for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, step === "abort" ? 1 : 0, step);
+    for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked.includes(step) ? 1 : 0, step);
     assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [0, 0, 0]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, false);

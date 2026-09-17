@@ -142,15 +142,20 @@ function mount(s: ReturnType<typeof setup>, routes: ReadonlyArray<(app: Hono) =>
 const ROOT = "ses_racine";
 const ctx = {} as ProxyContext;
 
-/** Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir ») ; `installed` : ports réels déjà livrés, non vérifiés ici. */
-async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, installed: readonly PortName[] = []) {
+/**
+ * Ports neutres : comportement 1.0.4 (aucune action 1.1, codes « a-venir »). `livres` : ports dont le module réel est fusionné,
+ * vérifiés par leurs propres tests (ils lisent des dépendances que setup() ne fournit pas).
+ */
+async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, livres: readonly PortName[] = []) {
   const p = wiring.c11.ports;
-  if (!installed.includes("stopTree")) await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
+  if (!livres.includes("stopTree")) await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
   assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
   await assert.rejects(p.taskGuard.collectDelegationFacts({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null }), PortUnavailableError);
   assert.deepEqual(p.delegationWatch, {});
-  assert.equal(await p.floors.verified(ROOT), false);
-  await assert.rejects(p.floors.createWithFloor("CONVERSATION", { directory: "/workspace/app" }), PortUnavailableError);
+  if (!livres.includes("floors")) {
+    assert.equal(await p.floors.verified(ROOT), false);
+    await assert.rejects(p.floors.createWithFloor("CONVERSATION", { directory: "/workspace/app" }), PortUnavailableError);
+  }
   p.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret" }, at: 1 }]);
   assert.deepEqual(p.facts.since(ROOT, 0), { facts: [], partial: false });
   assert.equal(p.facts.work.markDelegation({ rootId: ROOT, parentSessionId: ROOT, callId: "call_1", agent: "explore" }, "travaille", null), false);
@@ -448,19 +453,25 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : stopTree (L1c) inscrit son crochet et ses routes, route du Diagnostic, autres ports neutres", async () => {
+  it("production (tous les modules réels) : modules livrés (L1c stopTree, L3 plancher) inscrits, route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
     assert.deepEqual(wiring.registrations, [
+      { kind: "hook", key: "createSession", module: "floors" },
+      { kind: "hook", key: "sessionCreated", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
-    assertNoRegistration({ ...wiring, hooks: { ...wiring.hooks, abort: [] } });
-    assert.equal(wiring.hooks.abort.length, 1);
+    assert.deepEqual(
+      [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
+      [1, 1, 1, 1],
+    );
+    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.derivations, wiring.subscriptions, wiring.startup], [[], [], [], []]);
     assert.equal(wiring.routes.length, 2);
-    await assertNeutralPorts(wiring, s, true, ["stopTree"]);
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
