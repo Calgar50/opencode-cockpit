@@ -156,10 +156,12 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
     assert.equal(await p.floors.verified(ROOT), false);
     await assert.rejects(p.floors.createWithFloor("CONVERSATION", { directory: "/workspace/app" }), PortUnavailableError);
   }
-  p.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret" }, at: 1 }]);
-  assert.deepEqual(p.facts.since(ROOT, 0), { facts: [], partial: false });
-  assert.equal(p.facts.work.markDelegation({ rootId: ROOT, parentSessionId: ROOT, callId: "call_1", agent: "explore" }, "travaille", null), false);
-  assert.equal(p.facts.work.markWait({ permissionId: "per_1", sessionId: ROOT, rootId: ROOT, permission: "edit" }, "once", "vous"), false);
+  if (!livres.includes("facts")) {
+    p.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { cause: "arret" }, at: 1 }]);
+    assert.deepEqual(p.facts.since(ROOT, 0), { facts: [], partial: false });
+    assert.equal(p.facts.work.markDelegation({ rootId: ROOT, parentSessionId: ROOT, callId: "call_1", agent: "explore" }, "travaille", null), false);
+    assert.equal(p.facts.work.markWait({ permissionId: "per_1", sessionId: ROOT, rootId: ROOT, permission: "edit" }, "once", "vous"), false);
+  }
   const caps = s.settings.get().budget.autonomie;
   const automatic = autonomy ? "a-venir" : "autonomie-coupee";
   if (!livres.includes("conversationAutonomy")) {
@@ -455,7 +457,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -464,8 +466,10 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "abort", module: "stopTree" },
+      { kind: "derivation", key: "facts", module: "facts" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
+      { kind: "routes", key: "activity", module: "facts" },
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
@@ -473,17 +477,21 @@ describe("câblage 1.1 : ports neutres", () => {
       [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
       [1, 1, 1, 1],
     );
-    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.derivations, wiring.subscriptions], [[], [], []]);
+    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.subscriptions], [[], []]);
+    assert.equal(wiring.derivations.length, 1);
     assert.equal(wiring.startup.length, 1);
-    assert.equal(wiring.routes.length, 3);
-    // Port réel de L6a (le neutre répondrait 409) ; son comportement est contrôlé par conversation-autonomy.test.ts.
+    assert.equal(wiring.routes.length, 4);
+    // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
+    // conversation-autonomy.test.ts et fact-store.test.ts.
     assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
       ok: false,
       status: 400,
       error: "invalid",
       raison: null,
     });
-    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy"]);
+    wiring.c11.ports.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { etat: "occupee" }, at: 1 }]);
+    assert.equal(wiring.c11.ports.facts.since(ROOT, 0).facts.length, 1);
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
