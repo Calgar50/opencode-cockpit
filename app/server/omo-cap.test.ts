@@ -21,8 +21,27 @@ const ZWSP = String.fromCharCode(0x200b);
 
 const bornes = (over: Partial<PlafondBornes> = {}): PlafondBornes => ({ plafondMaxUsd: 50, guardRuns: "ok", ...over });
 
-/** Montant écrit en euros et centimes, avec le séparateur donné : 435 → « 4,35 ». */
+/** Montant écrit en dollars et centimes, avec le séparateur donné : 435 → « 4,35 ». */
 const ecrit = (cents: number, sep: "," | "."): string => `${Math.trunc(cents / 100)}${sep}${String(cents % 100).padStart(2, "0")}`;
+
+/**
+ * Code d'un module sans commentaires, avec ses chaînes littérales mises à part et ses expressions régulières retirées : ce qui
+ * reste porte les nombres écrits en dur.
+ */
+function codeNu(source: string): { code: string; chaines: string[] } {
+  const sansCommentaires = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  const chaines: string[] = [];
+  const sansChaines = sansCommentaires.replace(/"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`/g, (s) => {
+    chaines.push(s.slice(1, -1));
+    return '""';
+  });
+  const code = sansChaines.replace(/(?<=[=(,:!&|?]\s*)\/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\n[])+\/[dgimsuyv]*/g, "/re/");
+  return { code, chaines };
+}
+
+/** Nombres littéraux d'un code nu, dans l'ordre : décimaux, hexadécimaux, octaux, binaires, avec exposant ou en BigInt. */
+const nombresEcrits = (code: string): string[] =>
+  code.match(/(?<![\w$.])(?:0[xob][0-9a-f_]+|\.[0-9][0-9_]*(?:e[+-]?[0-9]+)?|[0-9][0-9_]*(?:\.[0-9_]*)?(?:e[+-]?[0-9]+)?)n?(?![\w$])/gi) ?? [];
 
 describe("validatePlafond : formes refusées (T-L22-e)", () => {
   const refus: ReadonlyArray<readonly [string, OmoCapRefusalCode]> = [
@@ -311,6 +330,29 @@ describe("aucune valeur par défaut (Q7, §7.6 l.1155)", () => {
     assert.equal(/(?<![\w.])[0-9]+\.[0-9]+/.test(code), false, "littéral décimal");
     assert.equal(/\b(plafondMaxUsd|guardRuns|dernier|saisie)\s*(\?\?|\|\||=(?!=))/.test(code), false, "valeur par défaut ou de repli");
     assert.equal(/\bparseFloat\b|\btoFixed\b|\bMath\.round\b|\bMath\.floor\b/.test(code), false, "calcul en flottant");
+  });
+
+  it("source : aucune constante de plafond, même interne et inutilisée (inventaire des nombres et des chaînes à chiffres)", () => {
+    const { code, chaines } = codeNu(SOURCE);
+    // Indices des groupes lus (m[1], m[2], deux fois chacun), deux décimales (padEnd, slice), facteur des centimes, zéro (début
+    // de la coupe, montant nul). Tout autre nombre, même d'une constante interne, fait échouer ce test : à justifier ici.
+    assert.deepEqual(nombresEcrits(code).sort(), ["0", "0", "1", "1", "100", "2", "2", "2", "2"]);
+    // Seule chaîne à chiffre : le « 0 » de remplissage des centimes.
+    assert.deepEqual(chaines.filter((s) => /[0-9]/.test(s)), ["0"]);
+  });
+
+  it("outil du contrôle de source : commentaires et expressions régulières retirés, chaînes mises à part, nombres gardés", () => {
+    const echantillon = [
+      "// 5 dollars en commentaire",
+      "/** 7,50 en JSDoc */",
+      "const A = /^[0-9]{1,2}\\/x$/;",
+      'const B = "1,00";',
+      "const C = 5; const D = 0x10; const E = .5; const F = 1e3;",
+      "const G = m[1] ?? 100; // 9 en fin de ligne",
+    ].join(LF);
+    const { code, chaines } = codeNu(echantillon);
+    assert.deepEqual(nombresEcrits(code), ["5", "0x10", ".5", "1e3", "1", "100"]);
+    assert.deepEqual(chaines, ["1,00"]);
   });
 });
 
