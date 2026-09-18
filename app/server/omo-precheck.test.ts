@@ -22,7 +22,9 @@ import {
 import {
   cheminMasque,
   decidePrecheck,
+  estDossierEtatOmo,
   estFichierCle,
+  memeNom,
   NOMS_CONFIG_EXTENSION,
   NOMS_CONFIG_OPENCODE,
   NOMS_DANS_OMO_ACCEPTES,
@@ -188,6 +190,44 @@ describe("pré-contrôle : noms refusés et fichiers de clés", () => {
     }
     // Le dossier d'état et les noms ordinaires ne disent rien par eux-mêmes.
     for (const nom of [".omo", ".git", "README.md", "package.json", "src", ".github"]) assert.equal(raisonDuNom(nom), null, nom);
+  });
+
+  it("les noms refusés sont reconnus sans tenir compte de la casse (dossier Windows monté : « OpenCode.json » est lu)", () => {
+    for (const nom of [".SISYPHUS", ".Agents", "OH-MY-OPENCODE.JSONC", "Oh-My-OpenAgent.json"]) {
+      assert.equal(raisonDuNom(nom), "config-extension", nom);
+    }
+    for (const nom of ["OpenCode.json", "OPENCODE.JSONC", ".Claude", ".MCP.json", ".OpenCode"]) {
+      assert.equal(raisonDuNom(nom), "config-opencode", nom);
+    }
+    assert.equal(raisonDansDossierOmo("Omo.JSON"), "config-extension");
+    assert.equal(raisonDansDossierOmo("OMO.JSONC"), "config-extension");
+    assert.equal(raisonDansDossierOmo("Boulder.json"), null);
+    assert.equal(estDossierEtatOmo(".OMO"), true);
+    assert.equal(estDossierEtatOmo(".omo2"), false);
+    assert.equal(memeNom("Jenkinsfile", "JENKINSFILE"), true);
+    assert.equal(memeNom("opencode.json", "opencode.jsonc"), false);
+  });
+
+  it("un piège écrit dans une autre casse refuse le projet, et la liste garde le nom du disque", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "equipe/projet");
+    poser(workspace, "equipe/projet/OpenCode.json", '{"[synthétique]": "configuration piégée"}');
+    const opencode = await precontrolerProjet("equipe/projet", { workspace });
+    assert.equal(opencode.raison, "config-opencode");
+    assert.deepEqual(opencode.trouves, ["./OpenCode.json"]);
+    fs.rmSync(path.join(workspace, "equipe/projet/OpenCode.json"));
+    poser(workspace, "equipe/.SISYPHUS/etat.json", '{"[synthétique]": "état piégé"}');
+    const sisyphus = await precontrolerProjet("equipe/projet", { workspace });
+    assert.equal(sisyphus.raison, "config-extension");
+    assert.deepEqual(sisyphus.trouves, ["../.SISYPHUS"]);
+    fs.rmSync(path.join(workspace, "equipe/.SISYPHUS"), { recursive: true });
+    // Le dossier d'état écrit .OMO reste accepté ; la configuration qu'il porte, dans n'importe quelle casse, est refusée.
+    poser(workspace, "equipe/projet/.OMO/boulder.json", "{}");
+    assert.equal((await precontrolerProjet("equipe/projet", { workspace })).verdict, "conforme");
+    poser(workspace, "equipe/projet/.OMO/Omo.JSONC", "{}");
+    const omo = await precontrolerProjet("equipe/projet", { workspace });
+    assert.equal(omo.raison, "config-extension");
+    assert.deepEqual(omo.trouves, ["./.OMO/Omo.JSONC"]);
   });
 
   it("les fichiers de clés (motifs de KEY_FILE_READ_RULES et extensions P03) sont refusés, .env.example non", () => {
@@ -569,6 +609,58 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     // Chaque dossier relevé porte la forme de son .git : le dossier de travail n'en a pas, les projets si.
     assert.equal(travail?.git, "absent");
     assert.equal(releves.find((releve) => releve.racine === "autre")?.git, "dossier");
+  });
+
+  it("un projet préparé atteint par un lien n'est pas relevé : rien n'est lu au bout du lien (D-2b-35)", async (t) => {
+    const workspace = atelier(t);
+    const dehors = atelier(t, "omo-dehors-");
+    poser(dehors, "projet/.vscode/tasks.json", '{"[synthétique]": "tâche du dehors"}');
+    poser(dehors, "projet/package.json", '{"name": "dehors"}');
+    const projetLie = lien(path.join(dehors, "projet"), path.join(workspace, "lie"), "dir");
+    const parentLie = lien(dehors, path.join(workspace, "passage"), "dir");
+    if (!projetLie || !parentLie) {
+      t.skip("ce disque ne crée pas de lien symbolique (Windows sans mode développeur) ; obligatoire en CI Linux");
+      return;
+    }
+    const releves = await releverEmpreintesSalle({ workspace, prepares: ["lie", "passage/projet"] });
+    // Les liens du premier niveau ne sont pas pris pour des dossiers ; les projets préparés sont relevés sans rien lire.
+    assert.deepEqual(releves.map((releve) => releve.racine).sort(), [".", "lie", "passage/projet"]);
+    for (const nom of ["lie", "passage/projet"]) {
+      assert.deepEqual(
+        releves.find((releve) => releve.racine === nom),
+        { racine: nom, git: "absent", fichiers: [], liens: ["."], illisibles: [], impossible: true },
+        nom,
+      );
+    }
+  });
+
+  it("un projet préparé absent rend un relevé impossible, et le premier niveau est lu dans ses bornes", async (t) => {
+    const workspace = atelier(t);
+    for (const nom of ["a", "b", "c"]) fabriquerProjet(workspace, nom);
+    const absent = await releverEmpreintesSalle({ workspace, prepares: ["disparu"] });
+    assert.deepEqual(absent.find((releve) => releve.racine === "disparu"), {
+      racine: "disparu",
+      git: "absent",
+      fichiers: [],
+      liens: [],
+      illisibles: ["."],
+      impossible: true,
+    });
+    // Trois dossiers au premier niveau pour une borne de deux entrées : la lecture s'arrête, le relevé du dossier de travail
+    // le dit (impossible) et aucun dossier au-delà de la borne n'est relevé.
+    const tronques = await releverEmpreintesSalle({ workspace, bornes: { entreesMaxParDossier: 2 } });
+    assert.equal(tronques.find((releve) => releve.racine === ".")?.impossible, true);
+    assert.equal(tronques.filter((releve) => releve.racine !== ".").length, 2);
+  });
+
+  it("les dossiers d'IDE et les fichiers signalés sont relevés quelle que soit leur casse", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    poser(workspace, "projet/.VSCode/tasks.json", '{"[synthétique]": "tâche"}');
+    poser(workspace, "projet/PACKAGE.JSON", '{"name": "projet"}');
+    poser(workspace, "projet/jenkinsfile", "// [synthétique]\n");
+    const releve = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin), [".VSCode/tasks.json", "PACKAGE.JSON", "jenkinsfile"]);
   });
 
   it("le relevé d'un projet accompagne son pré-contrôle", async (t) => {

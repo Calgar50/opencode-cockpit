@@ -14,8 +14,9 @@ import { type Dirent, constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
-  DOSSIER_ETAT_OMO,
   decidePrecheck,
+  estDossierEtatOmo,
+  nomDansListe,
   type PrecheckBornes,
   type PrecheckDecision,
   type PrecheckFaits,
@@ -26,6 +27,8 @@ import {
 } from "./shared/omo-precheck-rules.ts";
 
 // --- Fichiers dont l'empreinte est relevée (§3.15.2 : « relevé des empreintes des fichiers d'IDE et de CI ») -------------------
+// Noms reconnus sans tenir compte de la casse, comme les noms refusés (memeNom) : l'éditeur de l'hôte Windows lit
+// « .VSCode/tasks.json » quand il cherche « .vscode/tasks.json ».
 
 /** Dossiers d'IDE et de CI parcourus récursivement, bornes comprises. */
 export const DOSSIERS_IDE_CI: readonly string[] = Object.freeze([".devcontainer", ".github", ".husky", ".idea", ".vscode"]);
@@ -118,8 +121,11 @@ export async function releverProjet(projet: string, options: PrecheckOptions): P
     return { faits: { projet: nom, horsWorkspace: false, prepare, profondeurDepassee: true, empreinteImpossible: false, trouves: [] }, empreintes: null };
   }
   const trouves: PrecheckTrouve[] = [];
-  const cheminSuivi = await suivreComposants(racine, segments, trouves);
-  if (!cheminSuivi) {
+  // Le fait porte la HAUTEUR du composant en cause (« . » le projet, « .. » son parent) et pas son nom : la liste rendue reste
+  // la même qu'ailleurs, et aucun nom de dossier n'a besoin d'en sortir. La remontée ne va pas plus loin.
+  const douteux = await composantDouteux(racine, segments);
+  if (douteux !== null) {
+    trouves.push({ remontee: segments.length - 1 - douteux.index, nom: "", raison: douteux.raison });
     return { faits: { projet: nom, horsWorkspace: false, prepare, profondeurDepassee: false, empreinteImpossible: false, trouves }, empreintes: null };
   }
   // Un dernier contrôle après coup : le chemin résolu doit rester dans le dossier de travail (un parent remplacé entre-temps).
@@ -158,32 +164,25 @@ function dansLaRacine(racine: string, cible: string): boolean {
 }
 
 /**
- * `lstat` de chaque composant du projet, du dossier de travail vers le bas : un lien ou un composant illisible est un doute
- * (rien n'est suivi). Le fait porte la HAUTEUR du composant en cause (« . » le projet, « .. » son parent) et pas son nom :
- * la liste rendue reste la même qu'ailleurs, et aucun nom de dossier n'a besoin d'en sortir. Rend false dès qu'un fait est
- * relevé : la remontée ne va pas plus loin.
+ * `lstat` de chaque composant d'un chemin sous `racine`, du dossier de travail vers le bas : rend le premier composant qui est
+ * un lien, qui n'est pas un dossier ou qui ne se lit pas (rien n'est suivi), `null` si tous sont des dossiers ordinaires.
  */
-async function suivreComposants(racine: string, segments: readonly string[], trouves: PrecheckTrouve[]): Promise<boolean> {
+async function composantDouteux(
+  racine: string,
+  segments: readonly string[],
+): Promise<{ index: number; raison: "lien-symbolique" | "illisible" } | null> {
   let courant = racine;
   for (const [index, segment] of segments.entries()) {
     courant = path.join(courant, segment);
-    const remontee = segments.length - 1 - index;
     try {
       const info = await fs.lstat(courant);
-      if (info.isSymbolicLink()) {
-        trouves.push({ remontee, nom: "", raison: "lien-symbolique" });
-        return false;
-      }
-      if (!info.isDirectory()) {
-        trouves.push({ remontee, nom: "", raison: "illisible" });
-        return false;
-      }
+      if (info.isSymbolicLink()) return { index, raison: "lien-symbolique" };
+      if (!info.isDirectory()) return { index, raison: "illisible" };
     } catch {
-      trouves.push({ remontee, nom: "", raison: "illisible" });
-      return false;
+      return { index, raison: "illisible" };
     }
   }
-  return true;
+  return null;
 }
 
 /**
@@ -216,9 +215,9 @@ async function scanDossier(dossier: string, remontee: number, trouves: PrecheckT
     if (lecture === null) return;
   }
   for (const entree of lecture.entrees) {
-    if (entree.name === DOSSIER_ETAT_OMO) {
-      if (entree.isSymbolicLink()) trouves.push({ remontee, nom: DOSSIER_ETAT_OMO, raison: "lien-symbolique" });
-      else if (entree.isDirectory()) await scanDossierOmo(path.join(dossier, DOSSIER_ETAT_OMO), remontee, trouves, bornes);
+    if (estDossierEtatOmo(entree.name)) {
+      if (entree.isSymbolicLink()) trouves.push({ remontee, nom: entree.name, raison: "lien-symbolique" });
+      else if (entree.isDirectory()) await scanDossierOmo(dossier, entree.name, remontee, trouves, bornes);
       continue;
     }
     const raison = raisonDuNom(entree.name);
@@ -226,16 +225,23 @@ async function scanDossier(dossier: string, remontee: number, trouves: PrecheckT
   }
 }
 
-async function scanDossierOmo(dossier: string, remontee: number, trouves: PrecheckTrouve[], bornes: Readonly<PrecheckBornes>): Promise<void> {
-  const lecture = await lireEntreesBornees(dossier, bornes);
+/** Entrées de `.omo` (nom du disque, casse comprise) : seule la configuration de l'extension y est refusée. */
+async function scanDossierOmo(
+  parent: string,
+  nomOmo: string,
+  remontee: number,
+  trouves: PrecheckTrouve[],
+  bornes: Readonly<PrecheckBornes>,
+): Promise<void> {
+  const lecture = await lireEntreesBornees(path.join(parent, nomOmo), bornes);
   if (lecture === null || lecture.tronque) {
-    trouves.push({ remontee, nom: DOSSIER_ETAT_OMO, raison: "illisible" });
+    trouves.push({ remontee, nom: nomOmo, raison: "illisible" });
     if (lecture === null) return;
   }
   for (const entree of lecture.entrees) {
     const raison = raisonDansDossierOmo(entree.name);
     if (raison === null) continue;
-    const nom = `${DOSSIER_ETAT_OMO}/${entree.name}`;
+    const nom = `${nomOmo}/${entree.name}`;
     trouves.push({ remontee, nom, raison: entree.isSymbolicLink() ? "lien-symbolique" : raison });
   }
 }
@@ -287,7 +293,7 @@ async function entreeRacine(
   candidats: string[],
   bornes: Readonly<PrecheckBornes>,
 ): Promise<void> {
-  const estIdeCi = DOSSIERS_IDE_CI.includes(entree.name);
+  const estIdeCi = nomDansListe(entree.name, DOSSIERS_IDE_CI);
   if (!estIdeCi && !estFichierRacineReleve(entree.name)) return;
   if (entree.isSymbolicLink()) {
     releve.liens.push(entree.name);
@@ -302,18 +308,17 @@ async function entreeRacine(
 
 /**
  * Empreintes de TOUS les dossiers contrôlés avant un démarrage (D-2b-35) : le dossier de travail, ses dossiers de premier
- * niveau et chaque projet préparé. Un même dossier n'est relevé qu'une fois.
+ * niveau et chaque projet préparé. Un même dossier n'est relevé qu'une fois. Un projet préparé atteint par un lien (lui-même
+ * ou l'un de ses parents), ou qui ne se lit pas, n'est pas relevé : son relevé porte `impossible`, rien n'est lu au bout.
  */
 export async function releverEmpreintesSalle(options: PrecheckOptions): Promise<ReleveEmpreintes[]> {
   const bornes = bornesDe(options);
   const racine = await fs.realpath(options.workspace);
   const noms: string[] = ["."];
-  try {
-    for (const entree of await fs.readdir(racine, { withFileTypes: true })) {
-      if (entree.isDirectory() && !entree.isSymbolicLink()) noms.push(entree.name);
-    }
-  } catch {
-    // Dossier de travail illisible : le seul relevé possible est le sien, qui portera `impossible`.
+  // Lecture bornée : un dossier de travail illisible ou trop peuplé laisse son propre relevé porter `impossible`.
+  const premierNiveau = await lireEntreesBornees(racine, bornes);
+  for (const entree of premierNiveau?.entrees ?? []) {
+    if (entree.isDirectory() && !entree.isSymbolicLink()) noms.push(entree.name);
   }
   for (const prepare of options.prepares ?? []) {
     const nom = normaliserProjet(prepare);
@@ -321,15 +326,25 @@ export async function releverEmpreintesSalle(options: PrecheckOptions): Promise<
   }
   const releves: ReleveEmpreintes[] = [];
   for (const nom of noms) {
-    const dossier = nom === "." ? racine : path.resolve(racine, nom);
-    if (!dansLaRacine(racine, dossier)) continue;
-    releves.push(await releverEmpreintes(dossier, nom, bornes));
+    const releve = await releverDossierSalle(racine, nom, bornes);
+    if (releve !== null) releves.push(releve);
   }
   return releves;
 }
 
+/** Relevé d'un dossier de la salle, `null` s'il sort du dossier de travail. Aucun lien n'est suivi pour l'atteindre. */
+async function releverDossierSalle(racine: string, nom: string, bornes: Readonly<PrecheckBornes>): Promise<ReleveEmpreintes | null> {
+  if (nom === ".") return releverEmpreintes(racine, nom, bornes);
+  const dossier = path.resolve(racine, nom);
+  if (!dansLaRacine(racine, dossier)) return null;
+  const douteux = await composantDouteux(racine, nom.split("/"));
+  if (douteux === null) return releverEmpreintes(dossier, nom, bornes);
+  const lienTrouve = douteux.raison === "lien-symbolique";
+  return { racine: nom, git: "absent", fichiers: [], liens: lienTrouve ? ["."] : [], illisibles: lienTrouve ? [] : ["."], impossible: true };
+}
+
 function estFichierRacineReleve(nom: string): boolean {
-  if (FICHIERS_CI_RACINE.includes(nom) || FICHIERS_SIGNALES_RACINE.includes(nom)) return true;
+  if (nomDansListe(nom, FICHIERS_CI_RACINE) || nomDansListe(nom, FICHIERS_SIGNALES_RACINE)) return true;
   return MOTIFS_CI_RACINE.some((re) => re.test(nom)) || MOTIFS_SIGNALES_RACINE.some((re) => re.test(nom));
 }
 

@@ -160,20 +160,41 @@ export function estFichierCle(nom: string): boolean {
 
 // --- Classement d'un nom -------------------------------------------------------------------------------------------------------
 
+/**
+ * Deux noms d'entrée sont le même nom, sans tenir compte de la casse. Le dossier de travail est un dossier Windows monté dans
+ * un conteneur Linux : `readdir` y rend « OpenCode.json » tel quel, mais une recherche de « opencode.json » par opencode ou par
+ * l'extension le trouve (sonde L19a du 18/09, Docker Desktop : `.SISYPHUS` et `.OMO/Omo.JSON` aussi). Une comparaison exacte
+ * laisserait passer ces pièges ; sur un disque qui distingue la casse, cette comparaison refuse seulement un peu plus (fermé en
+ * cas de doute). Le repliement se limite aux minuscules : le même disque distingue `ſ` de `s` et `ı` de `i`.
+ */
+export function memeNom(nom: string, reference: string): boolean {
+  return nom.toLowerCase() === reference.toLowerCase();
+}
+
+/** Vrai si `nom` est l'un des noms de la liste, sans tenir compte de la casse (voir `memeNom`). */
+export function nomDansListe(nom: string, liste: readonly string[]): boolean {
+  return liste.some((reference) => memeNom(nom, reference));
+}
+
+/** Vrai si cette entrée est le dossier d'état de l'extension (`.omo`, quelle que soit sa casse). */
+export function estDossierEtatOmo(nom: string): boolean {
+  return memeNom(nom, DOSSIER_ETAT_OMO);
+}
+
 /** Raisons qu'un NOM peut porter à lui seul. */
 export type PrecheckNomRaison = Extract<OmoPrecheckReason, "config-extension" | "config-opencode" | "fichier-cle">;
 
 /** Raison portée par le nom d'une entrée d'un dossier contrôlé (projet ou parent), null si le nom ne dit rien. */
 export function raisonDuNom(nom: string): PrecheckNomRaison | null {
-  if (NOMS_CONFIG_EXTENSION.includes(nom)) return "config-extension";
-  if (NOMS_CONFIG_OPENCODE.includes(nom)) return "config-opencode";
+  if (nomDansListe(nom, NOMS_CONFIG_EXTENSION)) return "config-extension";
+  if (nomDansListe(nom, NOMS_CONFIG_OPENCODE)) return "config-opencode";
   if (estFichierCle(nom)) return "fichier-cle";
   return null;
 }
 
 /** Raison portée par le nom d'une entrée DANS .omo : seule la configuration de l'extension est refusée (§9.3 n° 11). */
 export function raisonDansDossierOmo(nom: string): Extract<OmoPrecheckReason, "config-extension"> | null {
-  return NOMS_DANS_OMO_REFUSES.includes(nom) ? "config-extension" : null;
+  return nomDansListe(nom, NOMS_DANS_OMO_REFUSES) ? "config-extension" : null;
 }
 
 // --- Faits relevés par le lecteur ----------------------------------------------------------------------------------------------
@@ -188,7 +209,10 @@ export type PrecheckTrouveRaison = Extract<
 export interface PrecheckTrouve {
   /** 0 = le projet lui-même, 1 = son parent, … jusqu'à /workspace. */
   remontee: number;
-  /** Nom de l'entrée (« opencode.json », « .omo/omo.json »), vide si c'est le dossier entier qui est en cause. */
+  /**
+   * Nom de l'entrée tel qu'il est sur le disque (« opencode.json », « .omo/omo.json », « OpenCode.json »), vide si c'est le
+   * dossier entier qui est en cause.
+   */
   nom: string;
   raison: PrecheckTrouveRaison;
 }
@@ -240,8 +264,8 @@ const EXTENSION_AFFICHABLE = /^\.[A-Za-z0-9]{1,12}$/;
 
 /**
  * Chemin d'un piège, relatif au projet et masqué : « . » ou « ../… » dit à quelle hauteur, jamais un chemin absolu, jamais le
- * dossier de travail. Les noms montrés en clair viennent de la liste fermée (opencode.json, .sisyphus…) ou d'un chemin donné
- * par l'utilisateur lui-même : ils ne disent rien qu'il ne sache déjà. Le nom d'un FICHIER DE CLÉS, lui, est choisi par
+ * dossier de travail. Les noms montrés en clair sont ceux de la liste fermée (opencode.json, .sisyphus…, casse du disque
+ * gardée pour que l'utilisateur retrouve l'entrée) : ils ne disent rien qu'il ne sache déjà. Le nom d'un FICHIER DE CLÉS, lui, est choisi par
  * l'utilisateur et peut nommer un client, un environnement ou un service : il est réduit à « **** » suivi de sa seule
  * extension.
  */
