@@ -899,8 +899,13 @@ function scanForCommand(text: string): ScanOutcome {
  * F-l (§4.10) : vrai si opencode a pu exécuter cette commande SANS demande, faute de motif : affectation seule, `declare` et
  * autres déclarations, redirection seule, `cd`, et leurs combinaisons ; vrai aussi, par prudence, pour toute structure que cette
  * lecture ne modélise pas. Faux dès qu'un programme lancé est reconnu (opencode demande alors, pour toute la commande).
- * Sert à « Passé sans contrôle » : partie `bash` terminée sans `permission.asked` pour son `callID` (L10c). Liste ajustée au
- * train selon la mesure F-l de MX2.
+ * Sert à « Passé sans contrôle » : partie `bash` terminée sans `permission.asked` pour son `callID` (L10c).
+ *
+ * Liste confrontée à la mesure F-l de MX2 au train it2 V0 (29 formes sur opencode 1.18.30, fixtures/mx2-mesures.json) : les 21
+ * formes mesurées sans demande sont TOUTES reconnues — aucune écriture réelle ne peut échapper à L10c. Trois formes qui, elles,
+ * demandent (`x=1 > f`, `(( n=1 ))`, `cd /tmp`) sont reconnues elles aussi : l'écart va dans le sens prudent, puisque cette
+ * fonction ne fait que corroborer le fait runtime et n'autorise jamais rien. Un resserrement doit être décidé, pas subi :
+ * croisements-it2-v0.test.ts fige les trois. La mesure corrige aussi le plan §3.2 : « echo a > f » DEMANDE bash.
  */
 export function isNoRequestShellForm(text: string): boolean {
   if (typeof text !== "string") return false;

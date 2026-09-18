@@ -1,0 +1,41 @@
+{
+  "source": "Mesure MX2 du 2026-09-17 (chantier 1.1, execution/mesures/MX2.md, scénario « fl », passe A) : opencode 1.18.30 hors ligne, faux fournisseur, permission bash: ask, dossier /workspace/fl. Une session par forme ; relevé des permission.asked et de l'état final de la partie bash.",
+  "opencode": "1.18.30",
+  "notes": [
+    "asked = permission demandée pour la partie bash, null si la partie s'est terminée sans aucune demande pour son callID (« passé sans contrôle »).",
+    "ecrit = la forme a modifié le disque alors qu'aucune demande n'a été faite (relevé explicite de MX2.md §3).",
+    "La spec §3.3 listait trois familles (affectation, declare, redirection seule) : elles restent vraies, la mesure les élargit.",
+    "Correction du plan §3.2 : « echo a > f » n'est PAS une forme sans demande (FL06 demande bash) ; la forme sans demande est la redirection seule."
+  ],
+  "fl": [
+    { "id": "FL01", "command": "x=1", "asked": null },
+    { "id": "FL02", "command": "declare -x GIT_DIR=/tmp", "asked": null },
+    { "id": "FL03", "command": "> src/app.ts", "asked": null },
+    { "id": "FL04", "command": ">/home/node/.config/opencode/mx2-fl04.txt", "asked": null },
+    { "id": "FL05", "command": "declare y=2", "asked": null },
+    { "id": "FL06", "command": "echo a > f06", "asked": "bash" },
+    { "id": "FL07", "command": "export Z=3", "asked": null },
+    { "id": "FL08", "command": "readonly R=4", "asked": null },
+    { "id": "FL09", "command": "typeset T=5", "asked": null },
+    { "id": "FL10", "command": "local L=6", "asked": null },
+    { "id": "FL11", "command": "unset x", "asked": null },
+    { "id": "FL12", "command": "let n=1", "asked": "bash" },
+    { "id": "FL13", "command": "x=1; y=2", "asked": null },
+    { "id": "FL14", "command": "x=1 > f14", "asked": "bash" },
+    { "id": "FL15", "command": ">> f15", "asked": null },
+    { "id": "FL16", "command": "< src/app.ts", "asked": null },
+    { "id": "FL17", "command": "declare -p > f17", "asked": null, "ecrit": true },
+    { "id": "FL18", "command": "[[ -f src/app.ts ]]", "asked": null },
+    { "id": "FL19", "command": "[ -f src/app.ts ]", "asked": null },
+    { "id": "FL20", "command": "(( n = 1 ))", "asked": "bash" },
+    { "id": "FL21", "command": "for i in 1 2; do > f21-$i; done", "asked": null, "ecrit": true },
+    { "id": "FL22", "command": "( > f22 )", "asked": null, "ecrit": true },
+    { "id": "FL23", "command": "cd sub", "asked": null },
+    { "id": "FL24", "command": "cd sub && > f24", "asked": null, "ecrit": true },
+    { "id": "FL25", "command": "cd /tmp", "asked": "external_directory" },
+    { "id": "FL26", "command": "> ~/.gitconfig", "asked": null, "ecrit": true },
+    { "id": "FL27", "command": "x=$(ls)", "asked": "bash" },
+    { "id": "FL28", "command": "x=1 && ls", "asked": "bash" },
+    { "id": "FL29", "command": ": > f29", "asked": "bash" }
+  ]
+}
