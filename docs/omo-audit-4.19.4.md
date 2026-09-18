@@ -326,47 +326,124 @@ Motifs :
 Le rôle est lu sur la **clé de configuration** (`agents.<clé>`), jamais sur le `displayName`, que l'extension et l'utilisateur
 peuvent réécrire. Une clé inconnue tombe dans « autres » (`app/server/shared/omo-roles.ts`).
 
-**Permissions attendues.** Après la configuration figée, `GET /agent` ne doit montrer **aucun** `allow` sur `edit`, `bash`,
-`webfetch`, `external_directory` ni `read` : la colonne « autorisations » est vide pour tous. Tout `allow` supplémentaire fait
-échouer la porte G12 (`compareAgentsToAudit`). Le cas qui a motivé la règle : `prometheus` porte, dans le paquet, `edit`, `bash`,
-`webfetch` et `question` à `allow` (`agents/prometheus/system-prompt.ts`, symbole `PROMETHEUS_PERMISSION`) ;
-`agents.prometheus.permission` l'épingle à `edit: ask`, `bash: deny`, `webfetch: deny` (JS-3).
+**Permissions attendues (porte G12).** opencode applique la **dernière** règle qui correspond, et chaque agent commence par une
+règle qui autorise tout ; viennent ensuite la configuration d'instance, puis la section de l'agent. La porte (`compareAgentsToAudit`)
+ne retient donc que les `allow` **encore en vigueur** sur une permission sensible (`edit`, `bash`, `task`, `webfetch`, `websearch`, `external_directory`, `read`)
+et les compare aux autorisations auditées : celles de la colonne ci-dessous, plus les autorisations communes d'opencode. Elle sonde
+en plus des fichiers de clés, en lecture et en modification : aucun ne doit être autorisé. Un agent inconnu, un agent coupé
+toujours présent et, sur le banc, un agent attendu absent sont aussi des écarts.
+
+Le cas qui a motivé la porte : `prometheus` porte, dans le paquet, `edit`, `bash`, `webfetch` et `question` à `allow`
+(`agents/prometheus/system-prompt.ts`, symbole `PROMETHEUS_PERMISSION`). Le réglage `agents.prometheus.permission` remplace cette
+permission en entier par `edit: ask`, `bash: deny`, `webfetch: deny` (JS-3).
 
 <!-- table: agents -->
-| Clé de configuration | Décision | Rôle | Autorisations `allow` auditées |
-|---|---|---|---|
-| `build` | garder | executer | aucune |
-| `plan` | garder | planifier | aucune |
-| `sisyphus` | garder | planifier | aucune |
-| `hephaestus` | garder | executer | aucune |
-| `sisyphus-junior` | garder | executer | aucune |
-| `OpenCode-Builder` | garder | executer | aucune |
-| `prometheus` | garder | planifier | aucune |
-| `metis` | garder | conseiller | aucune |
-| `momus` | garder | verifier | aucune |
-| `oracle` | garder | conseiller | aucune |
-| `librarian` | couper | chercher | aucune |
-| `explore` | garder | chercher | aucune |
-| `multimodal-looker` | couper | chercher | aucune |
-| `atlas` | garder | planifier | aucune |
+| Clé de configuration | Décision | Rôle | Attendu dans `GET /agent` | Autorisations `allow` propres |
+|---|---|---|---|---|
+| `build` | garder | executer | oui | aucune |
+| `plan` | garder | planifier | oui | aucune |
+| `sisyphus` | garder | planifier | oui | `task *` |
+| `hephaestus` | garder | executer | oui | `task *` |
+| `sisyphus-junior` | garder | executer | oui | aucune |
+| `OpenCode-Builder` | garder | executer | non | aucune |
+| `prometheus` | garder | planifier | oui | `task *` |
+| `metis` | garder | conseiller | oui | aucune |
+| `momus` | garder | verifier | oui | aucune |
+| `oracle` | garder | conseiller | oui | aucune |
+| `librarian` | couper | chercher | non | aucune |
+| `explore` | garder | chercher | oui | aucune |
+| `multimodal-looker` | couper | chercher | non | aucune |
+| `atlas` | garder | planifier | oui | `task *` |
 
 Motifs :
 
-- `build` — agent natif d'opencode ; ses droits viennent de la configuration d'instance (edit, bash et task à « ask »).
-- `plan` — agent natif d'opencode, en lecture et plan.
-- `sisyphus` — orchestrateur du mode : planifie, confie, relance.
-- `hephaestus` — exécutant autonome ; aucune autorisation « allow » attendue après la configuration d'instance.
-- `sisyphus-junior` — exécutant sans délégation.
-- `OpenCode-Builder` — variante d'exécutant ; mêmes droits que build.
-- `prometheus` — planificateur ; agents.prometheus.permission épinglé à edit « ask », bash « deny », webfetch « deny » (JS-3), au lieu de trois «
-  allow » par défaut.
-- `metis` — conseil avant le plan ; lecture seule.
-- `momus` — relecture de plan ; lecture seule.
-- `oracle` — conseil sur les points durs ; lecture seule.
+- `build` — agent natif d'opencode, rendu caché par l'extension ; edit et bash à « ask » par la configuration d'instance, task refusé au niveau
+  global.
+- `plan` — agent natif d'opencode, en lecture et plan ; ses droits viennent de la configuration d'instance.
+- `sisyphus` — orchestrateur du mode : planifie, confie, relance ; l'extension lui accorde task, le principe même du mode.
+- `hephaestus` — exécutant autonome ; l'extension lui accorde task ; aucune autre autorisation après la configuration d'instance.
+- `sisyphus-junior` — exécutant sans délégation : task reste refusé au niveau global.
+- `OpenCode-Builder` — créé seulement si sisyphus_agent.default_builder_enabled vaut true, laissé à false : absent de GET /agent ; s'il apparaît,
+  mêmes droits que build.
+- `prometheus` — planificateur ; agents.prometheus.permission remplace les trois « allow » du paquet par edit « ask », bash « deny », webfetch « deny
+  » (JS-3) ; l'extension lui accorde task.
+- `metis` — conseil avant le plan ; lecture seule, task refusé par l'extension.
+- `momus` — relecture de plan ; lecture seule, task refusé par l'extension.
+- `oracle` — conseil sur les points durs ; lecture seule, task refusé par l'extension.
 - `librarian` — cherche dans des dépôts distants et récupère de la documentation : sortie réseau (spéc. §3.15.1).
-- `explore` — recherche dans le projet ouvert.
+- `explore` — recherche dans le projet ouvert ; task refusé par l'extension.
 - `multimodal-looker` — envoie des fichiers à une IA multimodale ; retire aussi l'outil look_at du registre (spéc. §3.15.1).
-- `atlas` — orchestration du plan (JS-9).
+- `atlas` — orchestration du plan (JS-9) ; l'extension lui accorde task.
+
+**Agents natifs d'opencode.** `GET /agent` rend aussi les agents natifs d'opencode 1.18.30, cachés compris, qu'aucune clé
+`agents.*` de l'extension ne nomme. Ils sont connus de la porte G12 mais restent hors des énumérations ; leur rôle est « autres ».
+
+<!-- table: agents-opencode -->
+| Agent | Décision | Rôle | Attendu dans `GET /agent` | Autorisations `allow` propres |
+|---|---|---|---|---|
+| `general` | garder | autres | oui | aucune |
+| `compaction` | garder | autres | oui | aucune |
+| `title` | garder | autres | oui | aucune |
+| `summary` | garder | autres | oui | aucune |
+
+Motifs :
+
+- `general` — sous-agent généraliste d'opencode ; ses droits viennent de la configuration d'instance, task refusé au niveau global.
+- `compaction` — agent caché d'opencode qui résume la mémoire d'une conversation ; aucune autorisation propre au-delà de la configuration d'instance.
+- `title` — agent caché d'opencode qui donne un titre à une conversation ; aucune autorisation propre au-delà de la configuration d'instance.
+- `summary` — agent caché d'opencode qui résume une conversation ; aucune autorisation propre au-delà de la configuration d'instance.
+
+**Autorisations communes.** opencode les pose sur tout agent, quelle que soit la configuration ; elles sont acceptées pour chacun.
+
+<!-- table: autorisations-communes -->
+| Permission | Motif de chemin |
+|---|---|
+| `read` | `*` |
+| `external_directory` | `/home/node/.local/share/opencode/tool-output/*` |
+
+Motifs :
+
+- `read` — lecture sans demande, règle par défaut d'opencode ; les fichiers de clés et .env* restent refusés, vérifié par les sondes.
+- `external_directory` — sorties d'outils tronquées d'opencode, réautorisées après toute configuration ; chemin de l'utilisateur node, à confirmer par
+  T-L20-b.
+
+**Fichiers de clés sondés** (`read` et `edit`) : la configuration d'instance les refuse, aucune
+section d'agent ne doit les rouvrir :
+
+- `/workspace/projet/.env`, `/workspace/projet/app/.env.production`, `/workspace/projet/certs/serveur.key`, `/workspace/projet/certs/serveur.pfx`,
+  `/workspace/projet/.ssh/id_ed25519`
+
+**Permissions posées par l'extension elle-même.** Le module de configuration des outils passe après les réglages `agents.*` : ce
+qu'il écrit l'emporte sur eux, et aucune clé d'`omo.jsonc` ne le reprend.
+
+<!-- table: permissions-posees -->
+| Ce que pose l'extension |
+|---|
+| webfetch et external_directory à « allow », placés devant la configuration d'instance |
+| task forcé à « deny » au niveau global, après la configuration d'instance |
+| task à « allow » pour atlas, sisyphus, hephaestus et prometheus |
+| task à « deny » pour librarian, explore, oracle, multimodal-looker, metis et momus |
+| question, teammate et task_* à « allow », call_omo_agent à « deny », selon l'agent : orchestrateurs et sisyphus-junior |
+| réglage agents.prometheus fusionné clé par clé au premier niveau : sa permission remplace celle du paquet en entier |
+
+Conséquences et preuves :
+
+- webfetch et external_directory à « allow », placés devant la configuration d'instance — la configuration d'instance doit écrire les deux à « deny »
+  : une clé oubliée resterait ouverte par l'extension. Preuve : `packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts`, symbole
+  `applyToolConfig`.
+- task forcé à « deny » au niveau global, après la configuration d'instance — le « ask » d'instance sur task ne s'applique jamais : un agent délègue
+  seulement si l'extension lui accorde task, et sa délégation ne demande pas. Preuve :
+  `packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts`, symbole `applyToolConfig`.
+- task à « allow » pour atlas, sisyphus, hephaestus et prometheus — aucune clé d'omo.jsonc ne le retire ; autorisation auditée dans la table des
+  agents. Preuve : `packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts`, symbole `applyToolConfig`.
+- task à « deny » pour librarian, explore, oracle, multimodal-looker, metis et momus — ces agents ne délèguent pas. Preuve :
+  `packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts`, symbole `TASK_DENIED_SUBAGENT_KEYS`.
+- question, teammate et task_* à « allow », call_omo_agent à « deny », selon l'agent : orchestrateurs et sisyphus-junior — hors des permissions
+  sensibles : teammate et task_* désignent des outils coupés (Team Mode, second système de tâches). Preuve :
+  `packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts`, symbole `applyToolConfig`.
+- réglage agents.prometheus fusionné clé par clé au premier niveau : sa permission remplace celle du paquet en entier — les trois « allow » de
+  PROMETHEUS_PERMISSION disparaissent ; applyToolConfig ajoute ensuite bash et interactive_bash à « deny ». Preuve :
+  `packages/omo-opencode/src/plugin-handlers/prometheus-agent-config-builder.ts`, symbole `buildPrometheusAgentConfig`.
 
 ## 7. Serveurs MCP intégrés
 
@@ -663,6 +740,7 @@ comparaison ne tient pas compte de la casse et n'accepte aucun joker (`plugin-co
 
 1. Relire le diff du paquet et reprendre les six énumérations : hooks, outils, MCP, compétences, commandes, clés.
 2. Trancher chaque nom nouveau : toute clé non tranchée bloque la construction de l'image.
-3. Relancer `app/server/omo-audit.test.ts` (document, table et JSON cohérents), puis la porte G12 sur l'image réelle.
+3. Relancer `app/server/omo-audit.test.ts` (document, table et JSON cohérents), puis la porte G12 sur l'image réelle, présences
+   exigées : elle confirme les agents rendus et le chemin des sorties tronquées d'opencode.
 4. Vérifier qu'aucune sous-chaîne du `dist` n'apparaît dans un fichier versionné (contrôle du banc, L21).
 

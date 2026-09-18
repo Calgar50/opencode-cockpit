@@ -2,8 +2,9 @@
 // (spécification §3.15.1 l.477-492, §3.7 l.308, §4.10 l.759, §5.7.3 l.970, G12 l.1226, JS-3, JS-9, M28 l.1296 ;
 //  plan d'exécution D-2b-10, D-2b-31, D-2b-47, fiche L20.)
 //
-// - T-L20-a : faux opencode, `GET /agent` = table d'audit → aucun écart ; un `allow` hors table, un agent inconnu ou un agent
-//   coupé toujours présent → échec (porte G12) ;
+// - T-L20-a : faux opencode, `GET /agent` = table d'audit → aucun écart ; un `allow` en vigueur hors table, un fichier de clés
+//   autorisé, un agent inconnu ou un agent coupé toujours présent → échec (porte G12). Les agents servis au faux sont ceux qu'opencode
+//   rend dans la salle : « * * allow » en tête, la dernière règle qui correspond l'emporte, agents natifs compris ;
 // - T-L20-c : rôle par clé de configuration ; `athena` et `council-member` → « autres » ;
 // - T-L20-d : pureté des trois modules partagés ;
 // - T-L20-e : tableau « Ce que l'extension fait sans demande » engendré depuis la table, jamais écrit à la main ;
@@ -14,9 +15,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
-import type { AgentLite, Rule } from "./shared/assistant-rules.ts";
+import { type AgentLite, effectiveAgentRules, type Rule, rulesFromConfig, truncateGlob } from "./shared/assistant-rules.ts";
 import {
   AGENTS,
+  AGENTS_OPENCODE,
+  AUTORISATIONS_OPENCODE,
   CLES,
   COMMANDES,
   COMPETENCES,
@@ -27,18 +30,22 @@ import {
   HOOKS,
   MCPS,
   type OmoAgentAudit,
+  type OmoEcartAgent,
   type OmoHookAudit,
   type OmoOutilAudit,
   OMO_VERSION,
   OUTILS,
   OUTILS_A_COUPER,
+  PERMISSIONS_POSEES,
   PERMISSIONS_SENSIBLES,
+  PERMISSIONS_SONDEES,
   RESEAU,
+  SONDES_FICHIERS_DE_CLES,
   valeursEpinglees,
 } from "./shared/omo-audit-4.19.4.ts";
 import { formatVersionAuditee, tableauSansDemande, TEXTES } from "./shared/omo-audit-texts.ts";
 import { CLES_AGENTS, OMO_ROLES, roleDeAgent } from "./shared/omo-roles.ts";
-import { FakeOpencode, type FakeAgent } from "./test-support/fake-opencode.ts";
+import { FakeOpencode, type FakeAgent, nativeAgents } from "./test-support/fake-opencode.ts";
 
 const SERVER_DIR = import.meta.dirname;
 const RACINE = path.join(SERVER_DIR, "..", "..");
@@ -75,8 +82,65 @@ const agentDuFaux = (nom: string, permission: Rule[] = []): FakeAgent => ({
   permission,
 });
 
-/** Agents que l'image doit rendre après la configuration figée : tous ceux que la table garde, sans aucune règle « allow ». */
-const agentsConformes = (): FakeAgent[] => AGENTS.filter((a) => a.decision === "garder").map((a) => agentDuFaux(a.cle, [{ permission: "edit", pattern: "*", action: "ask" }]));
+// --- Agents tels qu'opencode les rend dans la salle ---------------------------------------------------------------------------------
+//
+// Modèle écrit d'après la lecture du paquet (`plugin-handlers/tool-config-handler.ts`, `applyToolConfig` ;
+// `plugin-handlers/agent-config-assembly.ts`) et d'après les règles d'opencode déjà portées par le cockpit (`assistant-rules.ts`,
+// faux opencode) : défauts d'opencode (« * * allow » en tête), règles propres des agents natifs, configuration d'instance telle que
+// l'extension la laisse, section de l'agent, puis Truncate.GLOB réautorisé. L'image réelle est comparée au banc (T-L20-b, L21).
+
+/** Fichiers de clés et .env* refusés (spéc. §3.15.1 l.474). */
+const CLES_REFUSEES = { "*.env": "deny", "*.env.*": "deny", "*.key": "deny", "*.pfx": "deny", "*id_ed25519*": "deny" } as const;
+
+/** Configuration d'instance après l'extension : webfetch et external_directory restent en tête, task est forcé à « deny ». */
+const PERMISSION_SALLE = {
+  webfetch: "deny",
+  external_directory: "deny",
+  websearch: "deny",
+  read: { "*": "allow", ...CLES_REFUSEES, "*.env.example": "allow" },
+  edit: { "*": "ask", ...CLES_REFUSEES, "*.env.example": "ask" },
+  bash: "ask",
+  task: "deny",
+};
+
+const ORCHESTRATEUR = { call_omo_agent: "deny", task: "allow", question: "allow", "task_*": "allow", teammate: "allow" };
+const LECTURE_SEULE = { write: "deny", edit: "deny", apply_patch: "deny", task: "deny", call_omo_agent: "deny" };
+
+/** Section `permission` de chaque agent de l'extension présent dans la salle, après `applyToolConfig`. */
+const SECTIONS: Readonly<Record<string, Record<string, unknown>>> = {
+  sisyphus: ORCHESTRATEUR,
+  hephaestus: { call_omo_agent: "deny", task: "allow", question: "allow", teammate: "allow" },
+  "sisyphus-junior": { "task_*": "allow", teammate: "allow" },
+  prometheus: { edit: "ask", bash: "deny", webfetch: "deny", ...ORCHESTRATEUR, interactive_bash: "deny" },
+  metis: LECTURE_SEULE,
+  momus: LECTURE_SEULE,
+  oracle: LECTURE_SEULE,
+  atlas: { task: "allow", call_omo_agent: "deny", "task_*": "allow", teammate: "allow" },
+};
+
+const TRONCATURE: Rule = { permission: "external_directory", pattern: truncateGlob(), action: "allow" };
+
+/** Agents de `GET /agent` dans la salle : natifs d'opencode (explore repris par l'extension), puis agents de l'extension. */
+function agentsDeLaSalle(): FakeAgent[] {
+  const natifs = nativeAgents(PERMISSION_SALLE).map((a) => ({
+    ...a,
+    permission: [...a.permission, ...(a.name === "explore" ? rulesFromConfig(LECTURE_SEULE) : []), TRONCATURE],
+  }));
+  const extension = Object.entries(SECTIONS).map(([cle, section]) => agentDuFaux(cle, effectiveAgentRules(PERMISSION_SALLE, section)));
+  return [...natifs, ...extension];
+}
+
+/** Règles d'un agent de la salle, suivies de règles ajoutées (section d'agent assouplie, par exemple). */
+function reglesDe(nom: string, ...ajout: Rule[]): Rule[] {
+  const agent = agentsDeLaSalle().find((a) => a.name === nom);
+  assert.ok(agent, nom);
+  return [...agent.permission, ...ajout];
+}
+
+const allow = (permission: string, pattern = "*"): Rule => ({ permission, pattern, action: "allow" });
+const nonAuditee = (agent: string, permission: string, pattern = "*"): OmoEcartAgent => ({ type: "autorisation-non-auditee", agent, permission, pattern });
+const clesAutorisees = (agent: string, permission: string): OmoEcartAgent[] =>
+  SONDES_FICHIERS_DE_CLES.map((sonde) => ({ type: "fichier-de-cles-autorise", agent, permission, sonde }));
 
 async function fauxOpencode(t: TestContext, agents: FakeAgent[]): Promise<AgentLite[]> {
   const fake = new FakeOpencode();
@@ -122,6 +186,9 @@ describe("L20 : énumérations de la 4.19.4", () => {
 
   it("agents, MCP, compétences et commandes : énumérations closes du paquet", () => {
     assert.deepEqual(AGENTS.map((a) => a.cle), [...CLES_AGENTS]);
+    // Agents natifs d'opencode : dans la table de la porte G12, jamais dans les énumérations de l'extension.
+    assert.deepEqual(AGENTS_OPENCODE.map((a) => a.cle), ["general", "compaction", "title", "summary"]);
+    for (const natif of AGENTS_OPENCODE) assert.equal(enumerations().agents.includes(natif.cle), false, natif.cle);
     assert.deepEqual(noms(MCPS), ["codegraph", "context7", "grep_app", "lsp", "websearch"]);
     assert.equal(COMPETENCES.length, 13);
     assert.deepEqual(noms(COMMANDES), ["goal", "hyperplan", "refactor", "remove-ai-slops", "start-work", "stop-continuation"]);
@@ -138,6 +205,7 @@ describe("L20 : énumérations de la 4.19.4", () => {
       ["compétences", COMPETENCES, noms(COMPETENCES)],
       ["commandes", COMMANDES, noms(COMMANDES)],
       ["agents", AGENTS, AGENTS.map((a) => a.cle)],
+      ["agents d'opencode", AGENTS_OPENCODE, AGENTS_OPENCODE.map((a) => a.cle)],
       ["clés", CLES, CLES.map((c) => c.cle)],
     ];
     for (const [famille, entrees, etiquettes] of familles) {
@@ -211,14 +279,43 @@ describe("L20 : décisions exigées (JS-3, JS-9, D-2b-47)", () => {
     assert.deepEqual(valeurs.disabled_providers, [...FOURNISSEURS_COUPES]);
   });
 
-  it("prometheus : trois « allow » dans le paquet, aucune autorisation auditée dans la table (JS-3, G12)", () => {
+  it("prometheus : trois « allow » dans le paquet, aucun audité sur edit, bash ni webfetch (JS-3, G12)", () => {
     const prometheus = AGENTS.find((a) => a.cle === "prometheus");
     assert.ok(prometheus);
     assert.equal(prometheus.decision, "garder");
-    assert.deepEqual(prometheus.autorisations, []);
+    assert.deepEqual(prometheus.autorisations, [{ permission: "task", pattern: "*" }], "seul task, posé par l'extension après agents.*");
     const epingles = valeursEpinglees().agents as Record<string, { permission: Record<string, string> } | undefined>;
     assert.deepEqual(epingles.prometheus?.permission, { edit: "ask", bash: "deny", webfetch: "deny" });
-    assert.deepEqual([...PERMISSIONS_SENSIBLES].sort(), ["bash", "edit", "external_directory", "read", "webfetch"]);
+    // Permissions que la configuration d'instance met à « ask » ou « deny » (spéc. l.474), plus la lecture.
+    assert.deepEqual([...PERMISSIONS_SENSIBLES].sort(), ["bash", "edit", "external_directory", "read", "task", "webfetch", "websearch"]);
+  });
+
+  it("task : autorisation auditée pour les quatre agents auxquels l'extension l'accorde, et pour eux seuls", () => {
+    const delegues = [...AGENTS, ...AGENTS_OPENCODE].filter((a) => a.autorisations.length > 0);
+    assert.deepEqual(delegues.map((a) => a.cle).sort(), ["atlas", "hephaestus", "prometheus", "sisyphus"]);
+    for (const agent of delegues) assert.deepEqual(agent.autorisations, [{ permission: "task", pattern: "*" }], agent.cle);
+    assert.ok(PERMISSIONS_POSEES.some((f) => f.preuve.symbole === "applyToolConfig" && f.quoi.includes("task forcé")), "task forcé à deny au niveau global");
+    assert.ok(PERMISSIONS_POSEES.some((f) => f.quoi.includes("webfetch et external_directory")), "piège pour la configuration d'instance");
+  });
+
+  it("autorisations communes d'opencode : lecture et sorties tronquées, rien d'autre ; cinq fichiers de clés sondés", () => {
+    assert.deepEqual(
+      AUTORISATIONS_OPENCODE.map((a) => [a.permission, a.pattern]),
+      [
+        ["read", "*"],
+        ["external_directory", truncateGlob()],
+      ],
+    );
+    assert.deepEqual([...PERMISSIONS_SONDEES], ["read", "edit"]);
+    assert.equal(SONDES_FICHIERS_DE_CLES.length, 5);
+    for (const sonde of SONDES_FICHIERS_DE_CLES) assert.ok(sonde.startsWith("/workspace/"), sonde);
+  });
+
+  it("OpenCode-Builder n'est pas attendu dans GET /agent : l'extension ne le crée que sur un réglage laissé à false", () => {
+    assert.deepEqual(
+      [...AGENTS, ...AGENTS_OPENCODE].filter((a) => !a.attendu).map((a) => a.cle),
+      ["OpenCode-Builder", "librarian", "multimodal-looker"],
+    );
   });
 
   it("appels réseau et écritures disque connus : F-t, F-u et tui.json nommés, chacun avec sa preuve", () => {
@@ -237,37 +334,94 @@ describe("L20 : décisions exigées (JS-3, JS-9, D-2b-47)", () => {
 // --- T-L20-a : porte G12 sur le faux opencode ---------------------------------------------------------------------------------------
 
 describe("L20 : porte G12 sur GET /agent (T-L20-a)", () => {
-  it("agents conformes à la table : aucun écart", async (t) => {
-    const agents = await fauxOpencode(t, agentsConformes());
+  it("agents de la salle tels qu'opencode les rend (« * * allow » en tête, natifs compris) : aucun écart", async (t) => {
+    const agents = await fauxOpencode(t, agentsDeLaSalle());
+    assert.ok(agents.every((a) => a.permission?.[0]?.permission === "*" && a.permission[0].action === "allow"), "chaque agent commence par « * * allow »");
     assert.deepEqual(compareAgentsToAudit(agents), []);
     assert.deepEqual(compareAgentsToAudit(agents, { exigerPresence: true }), []);
   });
 
-  it("un « allow » hors table sur une permission sensible : échec", async (t) => {
+  it("un « allow » en vigueur hors table sur une permission sensible : échec", async (t) => {
     for (const permission of PERMISSIONS_SENSIBLES) {
-      const agents = agentsConformes();
-      agents[0] = agentDuFaux("sisyphus", [{ permission, pattern: "*", action: "allow" }]);
+      const agents = agentsDeLaSalle().map((a) => (a.name === "explore" ? { ...a, permission: [...a.permission, allow(permission)] } : a));
       const lus = await fauxOpencode(t, agents);
-      assert.deepEqual(compareAgentsToAudit(lus), [{ type: "autorisation-non-auditee", agent: "sisyphus", permission, pattern: "*" }]);
+      // read * est une autorisation commune d'opencode : seules les sondes des fichiers de clés le voient.
+      const attendus = [
+        ...(permission === "read" ? [] : [nonAuditee("explore", permission)]),
+        ...(PERMISSIONS_SONDEES.includes(permission) ? clesAutorisees("explore", permission) : []),
+      ];
+      assert.deepEqual(compareAgentsToAudit(lus), attendus, permission);
     }
   });
 
+  it("la dernière règle qui correspond l'emporte : un « allow » repris ensuite n'est pas un écart, l'ordre inverse l'est", () => {
+    const agent = (permission: Rule[]): AgentLite => ({ name: "explore", mode: "subagent", permission });
+    assert.deepEqual(compareAgentsToAudit([agent([allow("bash"), { permission: "bash", pattern: "*", action: "ask" }])]), []);
+    assert.deepEqual(compareAgentsToAudit([agent([{ permission: "bash", pattern: "*", action: "ask" }, allow("bash")])]), [nonAuditee("explore", "bash")]);
+    // Reprise sur un motif plus étroit : l'« allow » vaut toujours pour les autres commandes.
+    assert.deepEqual(compareAgentsToAudit([agent([allow("bash"), { permission: "bash", pattern: "git *", action: "ask" }])]), [nonAuditee("explore", "bash")]);
+    // Un « allow » repris sur son motif exact, puis rouvert plus loin : un seul écart par permission et par motif.
+    assert.deepEqual(compareAgentsToAudit([agent([allow("bash"), allow("bash")])]), [nonAuditee("explore", "bash")]);
+  });
+
   it("une règle « * allow » vise chaque permission sensible", () => {
-    const ecarts = compareAgentsToAudit([{ name: "sisyphus", mode: "all", permission: [{ permission: "*", pattern: "*", action: "allow" }] }]);
-    assert.deepEqual(ecarts.map((e) => (e.type === "autorisation-non-auditee" ? e.permission : e.type)).sort(), [...PERMISSIONS_SENSIBLES].sort());
+    const ecarts = compareAgentsToAudit([{ name: "explore", mode: "subagent", permission: [allow("*")] }]);
+    assert.deepEqual(ecarts, [
+      ...PERMISSIONS_SENSIBLES.filter((p) => p !== "read").map((p) => nonAuditee("explore", p)),
+      ...PERMISSIONS_SONDEES.flatMap((p) => clesAutorisees("explore", p)),
+    ]);
+  });
+
+  it("autorisations communes d'opencode : lecture et sorties tronquées acceptées pour tout agent, pas un autre dossier", () => {
+    const agent = (permission: Rule[]): AgentLite => ({ name: "general", mode: "subagent", permission });
+    assert.deepEqual(compareAgentsToAudit([agent([allow("read", "src/**"), allow("external_directory", truncateGlob())])]), []);
+    assert.deepEqual(compareAgentsToAudit([agent([allow("external_directory", "/home/node/**")])]), [nonAuditee("general", "external_directory", "/home/node/**")]);
+    assert.deepEqual(compareAgentsToAudit([agent([allow("read", "src/**")])], { communes: [] }), [nonAuditee("general", "read", "src/**")]);
+  });
+
+  it("task : accepté pour les quatre agents auxquels l'extension l'accorde, refusé ailleurs", () => {
+    for (const nom of ["atlas", "sisyphus", "hephaestus", "prometheus"]) assert.deepEqual(compareAgentsToAudit([{ name: nom, mode: "all", permission: [allow("task")] }]), [], nom);
+    for (const nom of ["explore", "sisyphus-junior", "build", "general"]) {
+      assert.deepEqual(compareAgentsToAudit([{ name: nom, mode: "all", permission: [allow("task")] }]), [nonAuditee(nom, "task")], nom);
+    }
+  });
+
+  it("une section d'agent qui rouvre les fichiers de clés : échec, même si read * est audité", async (t) => {
+    const agents = agentsDeLaSalle().map((a) => (a.name === "sisyphus" ? { ...a, permission: reglesDe("sisyphus", allow("read")) } : a));
+    const lus = await fauxOpencode(t, agents);
+    assert.deepEqual(compareAgentsToAudit(lus), clesAutorisees("sisyphus", "read"));
+    const env = compareAgentsToAudit([{ name: "sisyphus", mode: "all", permission: reglesDe("sisyphus", allow("edit", "*.env")) }]);
+    assert.deepEqual(env, [nonAuditee("sisyphus", "edit", "*.env"), { type: "fichier-de-cles-autorise", agent: "sisyphus", permission: "edit", sonde: "/workspace/projet/.env" }]);
   });
 
   it("une autorisation inscrite dans la table est acceptée, pas les autres", () => {
-    const table: OmoAgentAudit[] = AGENTS.map((a) => (a.cle === "sisyphus" ? { ...a, autorisations: [{ permission: "read", pattern: "src/**" }] } : a));
-    const lecture: AgentLite = { name: "sisyphus", mode: "all", permission: [{ permission: "read", pattern: "src/**", action: "allow" }] };
-    assert.deepEqual(compareAgentsToAudit([lecture], { table }), []);
-    assert.deepEqual(compareAgentsToAudit([lecture]), [{ type: "autorisation-non-auditee", agent: "sisyphus", permission: "read", pattern: "src/**" }]);
-    const ailleurs: AgentLite = { name: "sisyphus", mode: "all", permission: [{ permission: "read", pattern: "/etc/**", action: "allow" }] };
-    assert.deepEqual(compareAgentsToAudit([ailleurs], { table }), [{ type: "autorisation-non-auditee", agent: "sisyphus", permission: "read", pattern: "/etc/**" }]);
+    const table: OmoAgentAudit[] = AGENTS.map((a) => (a.cle === "sisyphus" ? { ...a, autorisations: [{ permission: "edit", pattern: "src/**" }] } : a));
+    const edition: AgentLite = { name: "sisyphus", mode: "all", permission: [allow("edit", "src/**")] };
+    assert.deepEqual(compareAgentsToAudit([edition], { table }), []);
+    assert.deepEqual(compareAgentsToAudit([edition]), [nonAuditee("sisyphus", "edit", "src/**")]);
+    const ailleurs: AgentLite = { name: "sisyphus", mode: "all", permission: [allow("edit", "/etc/**")] };
+    assert.deepEqual(compareAgentsToAudit([ailleurs], { table }), [nonAuditee("sisyphus", "edit", "/etc/**")]);
+  });
+
+  it("agents natifs d'opencode : connus de la porte, rôle « autres » ; sans eux dans la table, inconnus", () => {
+    const natifs: AgentLite[] = AGENTS_OPENCODE.map((a) => ({ name: a.cle, mode: "primary", permission: [] }));
+    assert.deepEqual(compareAgentsToAudit(natifs), []);
+    assert.deepEqual(
+      compareAgentsToAudit(natifs, { table: AGENTS }),
+      AGENTS_OPENCODE.map((a) => ({ type: "agent-inconnu", agent: a.cle })),
+    );
+    for (const natif of AGENTS_OPENCODE) assert.equal(natif.role, "autres", natif.cle);
+  });
+
+  it("présence exigée : un agent attendu manque → écart ; OpenCode-Builder absent → aucun", async (t) => {
+    const lus = await fauxOpencode(t, agentsDeLaSalle());
+    assert.equal(lus.some((a) => a.name === "OpenCode-Builder"), false);
+    assert.deepEqual(compareAgentsToAudit(lus, { exigerPresence: true }), []);
+    assert.deepEqual(compareAgentsToAudit(lus.filter((a) => a.name !== "general"), { exigerPresence: true }), [{ type: "agent-absent", agent: "general" }]);
   });
 
   it("agent inconnu de la table, agent coupé toujours présent, agent gardé absent", async (t) => {
-    const agents = [...agentsConformes(), agentDuFaux("athena"), agentDuFaux("librarian")];
+    const agents = [...agentsDeLaSalle(), agentDuFaux("athena"), agentDuFaux("librarian")];
     const lus = await fauxOpencode(t, agents);
     assert.deepEqual(compareAgentsToAudit(lus), [
       { type: "agent-inconnu", agent: "athena" },
@@ -378,7 +532,18 @@ describe("L20 : fichier d'énumérations et document", () => {
     assert.deepEqual(paires("competences"), COMPETENCES.map((c) => [c.nom, c.decision]));
     assert.deepEqual(paires("commandes"), COMMANDES.map((c) => [c.nom, c.decision]));
     assert.deepEqual(paires("agents"), AGENTS.map((a) => [a.cle, a.decision]));
+    assert.deepEqual(paires("agents-opencode"), AGENTS_OPENCODE.map((a) => [a.cle, a.decision]));
     assert.deepEqual(paires("cles"), CLES.map((c) => [c.cle, c.decision]));
+    // Présence attendue et autorisations auditées : mêmes valeurs que la table.
+    const oui = (a: OmoAgentAudit) => (a.attendu ? "oui" : "non");
+    const autos = (a: OmoAgentAudit) => (a.autorisations.length === 0 ? "aucune" : a.autorisations.map((x) => `${x.permission} ${x.pattern}`).join(", "));
+    const colonnes = (table: string) => tableDuDocument(texte, table).map((cols) => [cols[3] ?? "", sansAccents(cols[4] ?? "")]);
+    assert.deepEqual(colonnes("agents"), AGENTS.map((a) => [oui(a), autos(a)]));
+    assert.deepEqual(colonnes("agents-opencode"), AGENTS_OPENCODE.map((a) => [oui(a), autos(a)]));
+    assert.deepEqual(
+      tableDuDocument(texte, "autorisations-communes").map((cols) => [sansAccents(cols[0] ?? ""), sansAccents(cols[1] ?? "")]),
+      AUTORISATIONS_OPENCODE.map((a) => [a.permission, a.pattern]),
+    );
   });
 
   it("le document reprend le tableau « sans demande », les appels réseau et les écritures disque", () => {
@@ -389,6 +554,11 @@ describe("L20 : fichier d'énumérations et document", () => {
     );
     assert.equal(tableDuDocument(texte, "reseau").length, RESEAU.length);
     assert.equal(tableDuDocument(texte, "disque").length, DISQUE.length);
+    assert.deepEqual(
+      tableDuDocument(texte, "permissions-posees").map((cols) => cols[0] ?? ""),
+      PERMISSIONS_POSEES.map((f) => f.quoi),
+    );
+    for (const sonde of SONDES_FICHIERS_DE_CLES) assert.ok(texte.includes(`\`${sonde}\``), `sonde ${sonde} nommée`);
     assert.ok(texte.includes(TEXTES.avance.titre), "le titre du tableau §4.10 vient des textes");
   });
 
@@ -405,7 +575,17 @@ describe("L20 : fichier d'énumérations et document", () => {
 
   it("le document nomme les quatre faits de forme et les pièges relevés", () => {
     const texte = lire(DOC);
-    for (const attendu of ["filterDisabledTools", "mergeConfigs", "migrateRalphLoopConfig", "PROMETHEUS_PERMISSION", "hashline_edit", "start_work.auto_commit"]) {
+    for (const attendu of [
+      "filterDisabledTools",
+      "mergeConfigs",
+      "migrateRalphLoopConfig",
+      "PROMETHEUS_PERMISSION",
+      "hashline_edit",
+      "start_work.auto_commit",
+      "applyToolConfig",
+      "TASK_DENIED_SUBAGENT_KEYS",
+      "default_builder_enabled",
+    ]) {
       assert.ok(texte.includes(attendu), attendu);
     }
     assert.ok(texte.includes("SUL-1.0"), "la licence du paquet est rappelée");

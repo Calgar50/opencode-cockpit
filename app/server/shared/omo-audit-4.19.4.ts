@@ -19,7 +19,7 @@
 // - R3 : un nom faux n'a alors AUCUN effet et ne produit AUCUN message ; d'où le validateur de noms de L15a (G14).
 //
 // Module pur (server/shared) : aucune lecture de fichier ici, la comparaison avec le JSON est faite par le test.
-import type { AgentLite, Rule } from "./assistant-rules.ts";
+import { type AgentLite, evaluate, truncateGlob, wildcardMatch } from "./assistant-rules.ts";
 import { type OmoRole, roleDeAgent } from "./omo-roles.ts";
 
 export const OMO_VERSION = "4.19.4";
@@ -74,10 +74,15 @@ export interface OmoCommandeAudit {
   motif: string;
 }
 
-/** Autorisation `allow` acceptée dans `GET /agent` après la configuration figée : aucune n'est accordée aujourd'hui. */
+/** Autorisation `allow` acceptée dans `GET /agent` après la configuration figée, sur une permission sensible. */
 export interface OmoAutorisation {
   permission: string;
   pattern: string;
+}
+
+/** Autorisation qu'opencode pose sur tout agent, quelle que soit la configuration : acceptée pour chaque agent de la table. */
+export interface OmoAutorisationCommune extends OmoAutorisation {
+  motif: string;
 }
 
 export interface OmoAgentAudit {
@@ -85,8 +90,18 @@ export interface OmoAgentAudit {
   cle: string;
   role: OmoRole;
   decision: OmoDecision;
+  /** Rendu par `GET /agent` de l'image : exigé par la porte G12 quand elle vérifie les présences (banc local, L21). */
+  attendu: boolean;
+  /** Autorisations propres à cet agent, en plus des autorisations communes d'opencode. */
   autorisations: readonly OmoAutorisation[];
   motif: string;
+}
+
+/** Permission posée par l'extension elle-même dans la configuration, que la configuration d'instance ne peut pas toujours reprendre. */
+export interface OmoFaitPermission {
+  quoi: string;
+  preuve: OmoPreuve;
+  consequence: string;
 }
 
 export interface OmoCleAudit {
@@ -515,27 +530,127 @@ export const COMMANDES: readonly OmoCommandeAudit[] = [
 
 // --- Agents : clés de configuration et autorisations attendues (G12, JS-3) ----------------------------------------------------------
 
-const AGENT = (cle: string, decision: OmoDecision, motif: string): OmoAgentAudit => ({ cle, role: roleDeAgent(cle), decision, autorisations: [], motif });
+const AGENT = (
+  cle: string,
+  decision: OmoDecision,
+  motif: string,
+  options: { autorisations?: readonly OmoAutorisation[]; attendu?: boolean } = {},
+): OmoAgentAudit => ({ cle, role: roleDeAgent(cle), decision, attendu: options.attendu ?? decision === "garder", autorisations: options.autorisations ?? [], motif });
+
+/** `task` à « allow » : posé par l'extension après les réglages `agents.*` (`applyToolConfig`), aucune clé ne le retire. */
+const DELEGUE: readonly OmoAutorisation[] = [{ permission: "task", pattern: "*" }];
 
 export const AGENTS: readonly OmoAgentAudit[] = [
-  AGENT("build", "garder", "agent natif d'opencode ; ses droits viennent de la configuration d'instance (edit, bash et task à « ask »)"),
-  AGENT("plan", "garder", "agent natif d'opencode, en lecture et plan"),
-  AGENT("sisyphus", "garder", "orchestrateur du mode : planifie, confie, relance"),
-  AGENT("hephaestus", "garder", "exécutant autonome ; aucune autorisation « allow » attendue après la configuration d'instance"),
-  AGENT("sisyphus-junior", "garder", "exécutant sans délégation"),
-  AGENT("OpenCode-Builder", "garder", "variante d'exécutant ; mêmes droits que build"),
-  AGENT("prometheus", "garder", "planificateur ; agents.prometheus.permission épinglé à edit « ask », bash « deny », webfetch « deny » (JS-3), au lieu de trois « allow » par défaut"),
-  AGENT("metis", "garder", "conseil avant le plan ; lecture seule"),
-  AGENT("momus", "garder", "relecture de plan ; lecture seule"),
-  AGENT("oracle", "garder", "conseil sur les points durs ; lecture seule"),
+  AGENT("build", "garder", "agent natif d'opencode, rendu caché par l'extension ; edit et bash à « ask » par la configuration d'instance, task refusé au niveau global"),
+  AGENT("plan", "garder", "agent natif d'opencode, en lecture et plan ; ses droits viennent de la configuration d'instance"),
+  AGENT("sisyphus", "garder", "orchestrateur du mode : planifie, confie, relance ; l'extension lui accorde task, le principe même du mode", { autorisations: DELEGUE }),
+  AGENT("hephaestus", "garder", "exécutant autonome ; l'extension lui accorde task ; aucune autre autorisation après la configuration d'instance", { autorisations: DELEGUE }),
+  AGENT("sisyphus-junior", "garder", "exécutant sans délégation : task reste refusé au niveau global"),
+  AGENT("OpenCode-Builder", "garder", "créé seulement si sisyphus_agent.default_builder_enabled vaut true, laissé à false : absent de GET /agent ; s'il apparaît, mêmes droits que build", {
+    attendu: false,
+  }),
+  AGENT(
+    "prometheus",
+    "garder",
+    "planificateur ; agents.prometheus.permission remplace les trois « allow » du paquet par edit « ask », bash « deny », webfetch « deny » (JS-3) ; l'extension lui accorde task",
+    { autorisations: DELEGUE },
+  ),
+  AGENT("metis", "garder", "conseil avant le plan ; lecture seule, task refusé par l'extension"),
+  AGENT("momus", "garder", "relecture de plan ; lecture seule, task refusé par l'extension"),
+  AGENT("oracle", "garder", "conseil sur les points durs ; lecture seule, task refusé par l'extension"),
   AGENT("librarian", "couper", "cherche dans des dépôts distants et récupère de la documentation : sortie réseau (spéc. §3.15.1)"),
-  AGENT("explore", "garder", "recherche dans le projet ouvert"),
+  AGENT("explore", "garder", "recherche dans le projet ouvert ; task refusé par l'extension"),
   AGENT("multimodal-looker", "couper", "envoie des fichiers à une IA multimodale ; retire aussi l'outil look_at du registre (spéc. §3.15.1)"),
-  AGENT("atlas", "garder", "orchestration du plan (JS-9)"),
+  AGENT("atlas", "garder", "orchestration du plan (JS-9) ; l'extension lui accorde task", { autorisations: DELEGUE }),
 ];
 
-/** Permissions dont un `allow` non audité fait échouer la porte G12 (spéc. l.1226). */
-export const PERMISSIONS_SENSIBLES: readonly string[] = ["edit", "bash", "webfetch", "external_directory", "read"];
+/**
+ * Agents natifs d'opencode 1.18.30 que `GET /agent` rend toujours, cachés compris, et qu'aucune clé `agents.*` de la 4.19.4 ne nomme
+ * (`build`, `plan` et `explore` sont dans la table ci-dessus). Hors énumérations : ce ne sont pas des clés de l'extension, et leur
+ * rôle est donc « autres ».
+ */
+export const AGENTS_OPENCODE: readonly OmoAgentAudit[] = [
+  AGENT("general", "garder", "sous-agent généraliste d'opencode ; ses droits viennent de la configuration d'instance, task refusé au niveau global"),
+  AGENT("compaction", "garder", "agent caché d'opencode qui résume la mémoire d'une conversation ; aucune autorisation propre au-delà de la configuration d'instance"),
+  AGENT("title", "garder", "agent caché d'opencode qui donne un titre à une conversation ; aucune autorisation propre au-delà de la configuration d'instance"),
+  AGENT("summary", "garder", "agent caché d'opencode qui résume une conversation ; aucune autorisation propre au-delà de la configuration d'instance"),
+];
+
+/**
+ * Permissions dont un `allow` en vigueur et non audité fait échouer la porte G12 (spéc. l.1226) : celles que la configuration
+ * d'instance met à « ask » ou « deny » (spéc. §3.15.1 l.474), plus la lecture, qu'opencode accorde d'office.
+ */
+export const PERMISSIONS_SENSIBLES: readonly string[] = ["edit", "bash", "task", "webfetch", "websearch", "external_directory", "read"];
+
+/**
+ * Autorisations qu'opencode pose sur tout agent, quelle que soit la configuration (règles par défaut, puis Truncate.GLOB réautorisé
+ * après toute configuration) : acceptées pour chaque agent de la table.
+ */
+export const AUTORISATIONS_OPENCODE: readonly OmoAutorisationCommune[] = [
+  {
+    permission: "read",
+    pattern: "*",
+    motif: "lecture sans demande, règle par défaut d'opencode ; les fichiers de clés et .env* restent refusés, vérifié par les sondes",
+  },
+  {
+    permission: "external_directory",
+    pattern: truncateGlob(),
+    motif: "sorties d'outils tronquées d'opencode, réautorisées après toute configuration ; chemin de l'utilisateur node, à confirmer par T-L20-b",
+  },
+];
+
+/**
+ * Fichiers de clés sondés sur chaque agent, en lecture et en modification. `read *` étant audité, une section d'agent qui rouvrirait
+ * l'un d'eux par un « allow » placé après la configuration d'instance serait invisible sans ces sondes. La configuration d'instance
+ * les refuse (spéc. §3.15.1 l.474) : un « allow » en vigueur sur l'un d'eux est un écart.
+ */
+export const SONDES_FICHIERS_DE_CLES: readonly string[] = [
+  "/workspace/projet/.env",
+  "/workspace/projet/app/.env.production",
+  "/workspace/projet/certs/serveur.key",
+  "/workspace/projet/certs/serveur.pfx",
+  "/workspace/projet/.ssh/id_ed25519",
+];
+export const PERMISSIONS_SONDEES: readonly string[] = ["read", "edit"];
+
+// --- Permissions posées par l'extension dans la configuration (plugin-handlers) --------------------------------------------------------
+//
+// `applyToolConfig` passe après les réglages `agents.*` d'omo.jsonc : ce qu'il écrit l'emporte sur eux.
+
+const TOOL_CONFIG: OmoPreuve = { fichier: "packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts", symbole: "applyToolConfig" };
+
+export const PERMISSIONS_POSEES: readonly OmoFaitPermission[] = [
+  {
+    quoi: "webfetch et external_directory à « allow », placés devant la configuration d'instance",
+    preuve: TOOL_CONFIG,
+    consequence: "la configuration d'instance doit écrire les deux à « deny » : une clé oubliée resterait ouverte par l'extension",
+  },
+  {
+    quoi: "task forcé à « deny » au niveau global, après la configuration d'instance",
+    preuve: TOOL_CONFIG,
+    consequence: "le « ask » d'instance sur task ne s'applique jamais : un agent délègue seulement si l'extension lui accorde task, et sa délégation ne demande pas",
+  },
+  {
+    quoi: "task à « allow » pour atlas, sisyphus, hephaestus et prometheus",
+    preuve: TOOL_CONFIG,
+    consequence: "aucune clé d'omo.jsonc ne le retire ; autorisation auditée dans la table des agents",
+  },
+  {
+    quoi: "task à « deny » pour librarian, explore, oracle, multimodal-looker, metis et momus",
+    preuve: { fichier: "packages/omo-opencode/src/plugin-handlers/tool-config-handler.ts", symbole: "TASK_DENIED_SUBAGENT_KEYS" },
+    consequence: "ces agents ne délèguent pas",
+  },
+  {
+    quoi: "question, teammate et task_* à « allow », call_omo_agent à « deny », selon l'agent : orchestrateurs et sisyphus-junior",
+    preuve: TOOL_CONFIG,
+    consequence: "hors des permissions sensibles : teammate et task_* désignent des outils coupés (Team Mode, second système de tâches)",
+  },
+  {
+    quoi: "réglage agents.prometheus fusionné clé par clé au premier niveau : sa permission remplace celle du paquet en entier",
+    preuve: { fichier: "packages/omo-opencode/src/plugin-handlers/prometheus-agent-config-builder.ts", symbole: "buildPrometheusAgentConfig" },
+    consequence: "les trois « allow » de PROMETHEUS_PERMISSION disparaissent ; applyToolConfig ajoute ensuite bash et interactive_bash à « deny »",
+  },
+];
 
 // --- Fournisseurs cités par le paquet, autres que Copilot ---------------------------------------------------------------------------
 //
@@ -851,23 +966,59 @@ export type OmoEcartAgent =
   | { type: "agent-inconnu"; agent: string }
   | { type: "agent-coupe-present"; agent: string }
   | { type: "agent-absent"; agent: string }
-  | { type: "autorisation-non-auditee"; agent: string; permission: string; pattern: string };
+  | { type: "autorisation-non-auditee"; agent: string; permission: string; pattern: string }
+  | { type: "fichier-de-cles-autorise"; agent: string; permission: string; sonde: string };
 
 export interface CompareAgentsOptions {
+  /** Table des agents ; par défaut, ceux de l'extension puis les agents natifs d'opencode. */
   table?: readonly OmoAgentAudit[];
-  /** true : un agent gardé absent de `GET /agent` est un écart. Laissé à false hors du banc, où l'image réelle est lue (L21). */
+  /** Autorisations acceptées pour tout agent ; par défaut, celles qu'opencode pose d'office. */
+  communes?: readonly OmoAutorisation[];
+  /** true : un agent attendu absent de `GET /agent` est un écart. Laissé à false hors du banc, où l'image réelle est lue (L21). */
   exigerPresence?: boolean;
 }
 
-const autorisee = (entree: OmoAgentAudit, regle: Rule, permission: string): boolean =>
-  entree.autorisations.some((a) => a.permission === permission && (a.pattern === regle.pattern || a.pattern === "*"));
+const couvre = (autorisation: OmoAutorisation, permission: string, pattern: string): boolean =>
+  autorisation.permission === permission && (autorisation.pattern === pattern || autorisation.pattern === "*");
 
 /**
- * Écarts entre les agents rendus par `GET /agent` et la table d'audit versionnée (G12). Un `allow` sur une permission sensible
- * qui n'est pas inscrit dans `autorisations` est un écart ; une règle dont la permission est le joker « * » vaut pour chacune.
+ * Autorisations en vigueur et non auditées d'un agent. opencode applique la DERNIÈRE règle qui correspond (`evaluate`, portage de
+ * Permission.evaluate) : chaque agent commence par « * * allow », puis viennent la configuration d'instance et la section de l'agent.
+ * Un « allow » n'est donc un écart que s'il décide encore pour son propre motif, sans règle postérieure qui le reprenne.
+ */
+function autorisationsNonAuditees(agent: AgentLite, entree: OmoAgentAudit, communes: readonly OmoAutorisation[]): OmoEcartAgent[] {
+  const regles = agent.permission ?? [];
+  const acceptees = [...entree.autorisations, ...communes];
+  const ecarts = new Map<string, OmoEcartAgent>();
+  for (const regle of regles) {
+    if (regle.action !== "allow") continue;
+    const enVigueur = PERMISSIONS_SENSIBLES.filter((p) => wildcardMatch(p, regle.permission) && evaluate(regles, p, regle.pattern) === "allow");
+    for (const permission of enVigueur) {
+      if (acceptees.some((a) => couvre(a, permission, regle.pattern))) continue;
+      ecarts.set(JSON.stringify([permission, regle.pattern]), { type: "autorisation-non-auditee", agent: agent.name, permission, pattern: regle.pattern });
+    }
+  }
+  return [...ecarts.values()];
+}
+
+/** Fichiers de clés qu'une règle en vigueur autorise, en lecture ou en modification. */
+function fichiersDeClesAutorises(agent: AgentLite): OmoEcartAgent[] {
+  const regles = agent.permission ?? [];
+  return PERMISSIONS_SONDEES.flatMap((permission) =>
+    SONDES_FICHIERS_DE_CLES.filter((sonde) => evaluate(regles, permission, sonde) === "allow").map(
+      (sonde): OmoEcartAgent => ({ type: "fichier-de-cles-autorise", agent: agent.name, permission, sonde }),
+    ),
+  );
+}
+
+/**
+ * Écarts entre les agents rendus par `GET /agent` et la table d'audit versionnée (G12) : agent inconnu, agent coupé toujours
+ * présent, « allow » en vigueur sur une permission sensible sans être audité (une permission « * » vaut pour chacune), fichier de
+ * clés autorisé et, si on l'exige, agent attendu absent.
  */
 export function compareAgentsToAudit(agents: readonly AgentLite[], options: CompareAgentsOptions = {}): OmoEcartAgent[] {
-  const table = options.table ?? AGENTS;
+  const table = options.table ?? [...AGENTS, ...AGENTS_OPENCODE];
+  const communes = options.communes ?? AUTORISATIONS_OPENCODE;
   const parCle = new Map(table.map((entree) => [entree.cle.toLowerCase(), entree]));
   const ecarts: OmoEcartAgent[] = [];
   const vus = new Set<string>();
@@ -883,17 +1034,11 @@ export function compareAgentsToAudit(agents: readonly AgentLite[], options: Comp
       ecarts.push({ type: "agent-coupe-present", agent: agent.name });
       continue;
     }
-    for (const regle of agent.permission ?? []) {
-      if (regle.action !== "allow") continue;
-      const visees = regle.permission === "*" ? PERMISSIONS_SENSIBLES : PERMISSIONS_SENSIBLES.filter((p) => p === regle.permission);
-      for (const permission of visees) {
-        if (!autorisee(entree, regle, permission)) ecarts.push({ type: "autorisation-non-auditee", agent: agent.name, permission, pattern: regle.pattern });
-      }
-    }
+    ecarts.push(...autorisationsNonAuditees(agent, entree, communes), ...fichiersDeClesAutorises(agent));
   }
   if (options.exigerPresence === true) {
     for (const entree of table) {
-      if (entree.decision === "garder" && !vus.has(entree.cle.toLowerCase())) ecarts.push({ type: "agent-absent", agent: entree.cle });
+      if (entree.attendu && !vus.has(entree.cle.toLowerCase())) ecarts.push({ type: "agent-absent", agent: entree.cle });
     }
   }
   return ecarts;
