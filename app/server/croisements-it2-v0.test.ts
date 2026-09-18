@@ -89,7 +89,7 @@ function contexteOuvert(): ShellContext {
   return {
     conversationDir: "/workspace/fl",
     workdir: null,
-    paths: { resolve: () => ({ inside: true, symlinkOut: false }) },
+    paths: { resolve: () => ({ inside: true, symlinkOut: false }), sensitiveEntries: () => [] },
     git: { gitIsDirectory: true, configText: "[core]\n\trepositoryformatversion = 0\n" },
     allowJudge: true,
   };
@@ -178,8 +178,10 @@ describe("croisements it2 V0 : mesures MX2, porte shell (L8a), modifications (L9
     const verdicts = verdictsFl();
     const auto = mx2.fl.filter((f) => verdicts.get(f.id)?.verdict === "auto").map((f) => f.id);
     assert.deepEqual(auto, [], "forme mesurée bénie par la porte");
-    // Seules deux formes iraient à l'IA de contrôle, et seulement si elle est autorisée ; toutes les autres attendent l'accord.
-    assert.deepEqual(mx2.fl.filter((f) => verdicts.get(f.id)?.verdict === "a-juger").map((f) => f.id), ["FL12", "FL23"]);
+    // Une seule forme irait à l'IA de contrôle (cd sub), et seulement si elle est autorisée ; toutes les autres attendent l'accord.
+    // FL12 (`let n=1`) attend en S4 : `let` évalue ses arguments, `let 'a[$(id)]=1'` exécute du code (relecture 2-vague-0).
+    assert.deepEqual(mx2.fl.filter((f) => verdicts.get(f.id)?.verdict === "a-juger").map((f) => f.id), ["FL23"]);
+    assert.equal(verdicts.get("FL12")?.regle, "S4-declarations");
     const ferme = { ...contexteOuvert(), allowJudge: false };
     assert.ok(mx2.fl.every((f) => classifyCommand(f.command, ferme).verdict === "attente"));
   });

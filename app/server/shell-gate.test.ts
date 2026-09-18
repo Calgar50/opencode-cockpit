@@ -1,7 +1,8 @@
 // Porte déterministe des commandes (spécification §4.5, §4.10, décisions n° 6 et 7, F-l, F-m ; plan d'exécution, fiche L8a) :
 // un cas isolé par règle S1 à S7 avec un contexte factice ; la première étape qui échoue décide ; allowJudge faux → attente ; U01
 // et S4 → attente même en Autonome ; `.env.example` non sensible, `.env.local` sensible ; options de find et sous-commandes git ;
-// l'API n'accepte pas `patterns` ; formes F-l ; pureté ; corpus de la sonde `autonomy-probe` (116 commandes, 11 automatiques).
+// l'API n'accepte pas `patterns` ; formes F-l ; pureté ; corpus de la sonde `autonomy-probe` (116 commandes, 11 automatiques) ;
+// relecture 2-vague-0 : commandes internes de bash qui évaluent du code (S4), recherches récursives et motifs de noms (P03).
 // Les faits du disque réels (realpath, dépôts piégés, liens) sont testés par L8b.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -62,17 +63,25 @@ interface FakeOptions {
   unknown?: string[];
   throws?: string[];
   real?: Record<string, unknown>;
+  /** Chemins sensibles rapportés par le parcours d'un sous-arbre, par argument ; [] par défaut. */
+  walk?: Record<string, unknown>;
+  walkThrows?: string[];
 }
 
-type FakeContext = ShellContext & { calls: string[] };
+type FakeContext = ShellContext & { calls: string[]; walks: string[] };
 
-/** Contexte factice : résolution lexicale depuis `dir`, surchargée chemin par chemin ; appels de resolve enregistrés. */
+/**
+ * Contexte factice : résolution lexicale depuis `dir`, surchargée chemin par chemin ; parcours de sous-arbre sans rien de
+ * sensible, surchargé argument par argument ; appels de resolve et de sensitiveEntries enregistrés.
+ */
 function fakeCtx(options: FakeOptions = {}): FakeContext {
   const conversationDir = options.dir ?? DIR;
   const dir = conversationDir.length > 1 ? conversationDir.replace(/\/+$/, "") : conversationDir;
   const calls: string[] = [];
+  const walks: string[] = [];
   return {
     calls,
+    walks,
     conversationDir,
     workdir: options.workdir ?? null,
     allowJudge: options.allowJudge ?? false,
@@ -96,6 +105,12 @@ function fakeCtx(options: FakeOptions = {}): FakeContext {
         };
         if (options.real !== undefined && Object.hasOwn(options.real, arg)) facts.real = options.real[arg] as string;
         return facts;
+      },
+      sensitiveEntries(arg: string): readonly string[] | null {
+        walks.push(arg);
+        if (options.walkThrows?.includes(arg)) throw new Error("parcours refusé");
+        if (options.walk !== undefined && Object.hasOwn(options.walk, arg)) return options.walk[arg] as readonly string[] | null;
+        return [];
       },
     },
   };
@@ -370,10 +385,10 @@ describe("porte shell : S4 interdits (IA de contrôle jamais consultée)", () =>
       reseau: ["dig", "nslookup", "ssh-keyscan", "http"],
       production: ["docker-compose", "pg_dump", "pulumi"],
       code: ["pip", "uv", "poetry", "jest", "vite", "eslint", "gcc", "sqlite3", "busybox"],
-      enveloppes: ["setsid", "strace", "chroot", "parallel", "builtin"],
+      enveloppes: ["setsid", "strace", "chroot", "parallel", "builtin", "compgen", "complete", "enable", "fc", "bind", "jobs"],
       suppression: ["mv", "cp", "unlink", "install"],
       editeurs: ["patch", "nvim", "gawk"],
-      declarations: ["readonly", "local", "shopt"],
+      declarations: ["readonly", "local", "shopt", "let", "printf", "read", "mapfile", "readarray", "getopts", "wait", "test"],
     };
     for (const [category, programs] of Object.entries(additions)) {
       for (const program of programs) assert.equal(forbiddenCategory(program), category, program);
@@ -417,6 +432,38 @@ describe("porte shell : S4 interdits (IA de contrôle jamais consultée)", () =>
     expectWait("git --no-pager log", "S4-git");
     expectWait("git -c core.fsmonitor=/tmp/x status", "S4-git");
   });
+
+  it("commandes internes de bash qui exécutent du code caché entre guillemets simples : S4, jamais « à juger » (relecture 2-vague-0)", () => {
+    // Chacune passe S1 (le code est une donnée pour le shell qui lit la commande), puis la commande interne l'évalue : indice
+    // de tableau d'une variable affectée ou lue, ou commande reçue en argument. Vérifié sur bash 5.3.15 avec un fichier témoin,
+    // sauf enable -f (chargement d'une bibliothèque), fc et bind (shell interactif), complete et getopts (par prudence).
+    const cases: Array<[string, ShellForbiddenCategory]> = [
+      [`let ${SQ}a[$(rm -rf src)]=1${SQ}`, "declarations"],
+      ["let n=1", "declarations"],
+      [`printf -v ${SQ}a[$(rm -rf src)]${SQ} x`, "declarations"],
+      [`test -v ${SQ}a[$(id)]${SQ}`, "declarations"],
+      [`read ${SQ}a[$(id)]${SQ}`, "declarations"],
+      [`wait -n -p ${SQ}v[$(id)]${SQ}`, "declarations"],
+      [`mapfile -C ${SQ}rm -rf src${SQ} -c 1 t`, "declarations"],
+      [`readarray -C ${SQ}rm -rf src${SQ} -c 1 t`, "declarations"],
+      [`getopts a ${SQ}v[$(id)]${SQ}`, "declarations"],
+      [`compgen -C ${SQ}rm -rf src${SQ} x`, "enveloppes"],
+      [`compgen -W ${SQ}$(id)${SQ} x`, "enveloppes"],
+      [`complete -C ${SQ}rm -rf src${SQ} x`, "enveloppes"],
+      ["enable -f src/x.so x", "enveloppes"],
+      ["jobs -x rm -rf src", "enveloppes"],
+      [`fc -e ${SQ}rm -rf src${SQ} 1`, "enveloppes"],
+      [`bind -x ${SQ}rm -rf src${SQ}`, "enveloppes"],
+      // Témoin : la forme déjà couverte par la spécification.
+      [`declare ${SQ}a[$(id)]=1${SQ}`, "declarations"],
+    ];
+    for (const [text, category] of cases) {
+      assert.equal(tokenizeCommand(text).ok, true, `${text} : passe S1`);
+      const program = text.split(" ")[0] ?? "";
+      assert.equal(forbiddenCategory(program), category, program);
+      assert.equal(expectWait(text, `S4-${category}`, { allowJudge: true }).detail, program);
+    }
+  });
 });
 
 // --- S5 ------------------------------------------------------------------------------------------------------------------------
@@ -447,7 +494,7 @@ describe("porte shell : S5 chemins", () => {
     expectWait("cat README.md", "P02", { real: { "README.md": 42 } });
     expectWait("cat README.md", "P02", { real: { "README.md": "relatif/README.md" } });
     expectAuto("cat README.md", "A-cat", { real: { "README.md": "/workspace/proj/docs/README.md" } });
-    const malformed = (facts: unknown): ShellContext => ({ ...fakeCtx(), paths: { resolve: () => facts as ShellPathFacts } });
+    const malformed = (facts: unknown): ShellContext => ({ ...fakeCtx(), paths: { resolve: () => facts as ShellPathFacts, sensitiveEntries: () => [] } });
     for (const facts of [{ inside: true }, { inside: 1, symlinkOut: false }, { inside: true, symlinkOut: 0 }, "oui", 7]) {
       assert.equal(classifyCommand("cat README.md", malformed(facts)).regle, "P02", JSON.stringify(facts));
     }
@@ -572,6 +619,72 @@ describe("porte shell : S5 chemins", () => {
     const ctx = fakeCtx(judge);
     assert.equal(classifyCommand("mytool src/app.ts --level=2 build", ctx).verdict, "a-juger");
     assert.deepEqual(ctx.calls, ["src/app.ts"]);
+  });
+
+  it("P03 lexical sur les motifs de noms de fichiers : --include, --exclude, --exclude-dir (grep), -g, --glob (rg) (relecture 2-vague-0)", () => {
+    const cases: Array<[string, string]> = [
+      ["grep -rn AWS_SECRET --include=.env .", "environnement:.env"],
+      ["grep -rn A --include=id_rsa .", "nom:id_rsa"],
+      ["grep -rn A --include=server.key src", "cle:server.key"],
+      ["rg -n A -g .env .", "environnement:.env"],
+      ["rg -n A -g.env", "environnement:.env"],
+      ["rg -n A --glob=.env.local", "environnement:.env.local"],
+      ["rg -n A -g id_ed25519", "nom:id_ed25519"],
+      // Refus prudents acceptés : une exclusion qui nomme un fichier sensible attend aussi.
+      ["grep -rn A --exclude=.env .", "environnement:.env"],
+      ["grep -rn A --exclude-dir=.git .", "dossier:.git"],
+    ];
+    for (const [text, detail] of cases) assert.equal(expectWait(text, "P03").detail, detail, text);
+    // Motifs ordinaires : la consultation reste automatique (motif de rg -e, type de rg -t : pas des noms de fichiers).
+    expectAuto("grep --exclude-dir=node_modules --include=app.ts --exclude=x.ts -rn TODO .", "A-grep");
+    expectAuto("rg -g app.ts -t ts --glob=x --type=ts -A 2 TODO", "A-rg");
+    expectAuto("rg -e .env -t env src", "A-rg");
+  });
+
+  it("P03 récursif : grep -r, rg et git grep attendent si le sous-arbre lu contient un chemin sensible (relecture 2-vague-0)", () => {
+    // grep -r lit les fichiers cachés : .env, .git/config, clés.
+    expectWait("grep -rn password .", "P03", { walk: { ".": [".env"] } });
+    expectAuto("grep -rn password .", "A-grep", { walk: { ".": [] } });
+    assert.equal(expectWait("grep -rn password", "P03", { walk: { ".": [".git"] } }).detail, "dossier:.git");
+    assert.equal(expectWait("grep -rn TODO src", "P03", { walk: { src: ["src/certs/dev.key"] } }).detail, "cle:src/certs/dev.key");
+    expectAuto("grep -rn TODO src", "A-grep", { walk: { ".": [".env"] } });
+    // rg : toujours récursif, un .ignore ou un glob peut lui faire lire un fichier caché ; --files ne rend que des noms.
+    assert.equal(expectWait("rg -n BEGIN .", "P03", { walk: { ".": ["certs/id_rsa"] } }).detail, "nom:certs/id_rsa");
+    expectWait("rg -n BEGIN", "P03", { walk: { ".": ["certs/id_rsa"] } });
+    expectWait("rg -n BEGIN", "P03", { walk: { ".": [".env"] } });
+    expectAuto("rg --files .", "A-rg", { walk: { ".": [".env"] } });
+    // Entrée rapportée que la lecture lexicale ne connaît pas : elle compte quand même.
+    assert.equal(expectWait("rg -n x src", "P03", { walk: { src: ["src/coffre.bin"] } }).detail, "signale:src/coffre.bin");
+    // git grep ne lit que des fichiers suivis : ses dossiers .git ne comptent pas, un fichier sensible si.
+    expectAuto("git grep -n password", "A-git-grep", { walk: { ".": [".git", "vendor/lib/.git"] } });
+    assert.equal(expectWait("git grep -n password", "P03", { walk: { ".": [".git", ".env"] } }).detail, "environnement:.env");
+    expectWait("git grep -n password src", "P03", { walk: { ".": ["config/prod.env"] } });
+
+    // Sans récursion (grep sans -r, cat, find, ls), aucun parcours.
+    for (const text of ["grep -n password README.md", "cat README.md", "find . -name x", "ls -la", "git status"]) {
+      const ctx = fakeCtx({ walk: { ".": [".env"], "README.md": [".env"] } });
+      assert.equal(classifyCommand(text, ctx).verdict, "auto", text);
+      assert.deepEqual(ctx.walks, [], text);
+    }
+    // Chaque chemin cité est parcouru, dans l'ordre, après le contrôle des chemins : un chemin hors dossier n'est jamais parcouru.
+    const two = fakeCtx();
+    assert.equal(classifyCommand("grep -rn x src lib", two).regle, "A-grep");
+    assert.deepEqual(two.walks, ["src", "lib"]);
+    const outside = fakeCtx();
+    assert.equal(classifyCommand("grep -rn x src ../autre", outside).regle, "P02");
+    assert.deepEqual(outside.walks, []);
+  });
+
+  it("P03 récursif : parcours impossible, absent, en erreur ou mal formé → attente", () => {
+    assert.equal(expectWait("grep -rn x .", "P03", { walk: { ".": null } }).detail, "parcours-impossible:.");
+    assert.equal(expectWait("rg -n x src", "P03", { walkThrows: ["src"] }).detail, "parcours-impossible:src");
+    for (const walked of ["oui", 7, { length: 0 }, undefined]) {
+      assert.equal(classify("grep -rn x .", { walk: { ".": walked } }).detail, "parcours-impossible:.", JSON.stringify(walked));
+    }
+    assert.equal(classify("git grep x", { walk: { ".": [42] } }).detail, "signale:?");
+    const withoutWalk = { ...fakeCtx(), paths: { resolve: fakeCtx().paths.resolve } as ShellContext["paths"] };
+    assert.equal(classifyCommand("rg -n x", withoutWalk).detail, "parcours-impossible:.");
+    assert.equal(classifyCommand("cat README.md", withoutWalk).regle, "A-cat");
   });
 });
 
@@ -916,7 +1029,16 @@ describe("porte shell : pureté", () => {
       }
       return value;
     };
-    const commands = ["cat src/app.ts README.md", "git show HEAD:package.json", "mytool --config=src/x build", "find src lib -name x", "sort -o a b"];
+    const commands = [
+      "cat src/app.ts README.md",
+      "git show HEAD:package.json",
+      "mytool --config=src/x build",
+      "find src lib -name x",
+      "sort -o a b",
+      "grep -rn TODO src lib",
+      "rg -n TODO",
+      "git grep -n TODO",
+    ];
     for (const text of commands) {
       const ctx = fakeCtx({ allowJudge: true });
       const frozen: ShellContext = deepFreeze({
@@ -924,7 +1046,7 @@ describe("porte shell : pureté", () => {
         workdir: ctx.workdir,
         allowJudge: ctx.allowJudge,
         git: { ...ctx.git },
-        paths: { resolve: ctx.paths.resolve },
+        paths: { resolve: ctx.paths.resolve, sensitiveEntries: ctx.paths.sensitiveEntries },
       });
       const before = JSON.stringify(frozen);
       const first = classifyCommand(text, frozen);
@@ -932,6 +1054,8 @@ describe("porte shell : pureté", () => {
       assert.equal(JSON.stringify(frozen), before, text);
       const words = new Set(text.split(" ").flatMap((word) => [word, word.slice(word.indexOf(":") + 1), word.slice(word.indexOf("=") + 1)]));
       for (const call of ctx.calls) assert.ok(words.has(call), `${text} : resolve(${call})`);
+      // Parcours : un chemin de la commande, ou « . » (le dossier de la conversation) quand elle n'en cite aucun.
+      for (const walk of ctx.walks) assert.ok(walk === "." || words.has(walk), `${text} : sensitiveEntries(${walk})`);
     }
   });
 

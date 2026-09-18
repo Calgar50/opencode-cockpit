@@ -3,12 +3,14 @@
 // pour `export GIT_CONFIG_COUNT=1 …; git status`, seulement « git status » [M]).
 // Sept étapes, dans l'ordre ; la première qui échoue décide :
 //   S1 lexique (B01-B05) · S2 tête (C01-C03) · S3 consultation, liste blanche d'options (O01-O05) · S4 interdits par catégorie
-//   (attente, IA de contrôle jamais consultée : décisions n° 6 et 7) · S5 dossier de travail et chemins (P01-P03) · S6 git
-//   (G04, F-m) · S7 programme non listé (U01 ; « à juger » seulement si l'appelant l'autorise : Autonome avec contrôle par IA).
+//   (attente, IA de contrôle jamais consultée : décisions n° 6 et 7) · S5 dossier de travail, chemins et sous-arbre d'une
+//   recherche récursive (P01-P03) · S6 git (G04, F-m) · S7 programme non listé (U01 ; « à juger » seulement si l'appelant
+//   l'autorise : Autonome avec contrôle par IA).
 // Listes blanches d'options reprises de la sonde `autonomy-probe/probe.mjs` (corpus de 116 commandes, 11 automatiques).
 // Les codes de règle et le détail sont des DONNÉES (journal du contrôle) : les phrases affichées vivent dans un module de textes.
-// Module pur (server/shared) : les faits du disque (realpath, liens, `.git`, texte de `.git/config`) sont fournis par l'appelant
-// dans `ShellContext` ; aucun module node, aucun accès à process (test de pureté de core.test.ts).
+// Module pur (server/shared) : les faits du disque (realpath, liens, `.git`, texte de `.git/config`, chemins sensibles d'un
+// sous-arbre) sont fournis par l'appelant dans `ShellContext` ; aucun module node, aucun accès à process (test de pureté de
+// core.test.ts).
 import { redactSecrets } from "../redact.ts";
 
 // --- Contrat -------------------------------------------------------------------------------------------------------------------
@@ -39,6 +41,15 @@ export interface ShellPaths {
    * par son plus long préfixe existant. null : faits impossibles à établir (lecture refusée, boucle de liens) → attente.
    */
   resolve(arg: string): ShellPathFacts | null;
+  /**
+   * Chemins sensibles que lirait une recherche récursive de `arg` (déjà contrôlé par `resolve`, ou « . » quand la commande ne
+   * cite aucun chemin) : `arg` lui-même, puis tout son sous-arbre, FICHIERS CACHÉS COMPRIS (grep -r les lit ; rg aussi, dès
+   * qu'un glob `-g` ou un fichier `.ignore` du projet les rend visibles). Chaque entrée est jugée par `sensitivePath` sur son
+   * chemin relatif au dossier de la conversation ; le parcours ne descend ni dans un dossier sensible (rapporté seul, `.git`
+   * compris) ni dans un lien symbolique. Rend ces chemins relatifs ([] : rien de sensible), ou null si le parcours n'a pas pu se
+   * faire ou dépasse le plafond du serveur → attente (P03).
+   */
+  sensitiveEntries(arg: string): readonly string[] | null;
 }
 
 export interface ShellGitFacts {
@@ -93,8 +104,10 @@ const SAFE_BARE = new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 
 /**
  * S1 : mots de la commande, ou la règle B qui la refuse. Seuls l'espace, les caractères de SAFE_BARE et les chaînes entre
- * guillemets simples isolées (ni collées à un mot, ni suivies d'autre chose qu'une espace) sont permis : aucune expansion,
- * redirection, substitution ni enchaînement n'est donc possible dans une commande acceptée.
+ * guillemets simples isolées (ni collées à un mot, ni suivies d'autre chose qu'une espace) sont permis : le shell qui LIT la
+ * commande n'y fait donc aucune expansion, redirection, substitution ni enchaînement. Cela ne vaut qu'à ce premier niveau : une
+ * commande interne qui réévalue un argument exécute ce que la chaîne cache (indice de tableau de `let 'a[$(id)]=1'`,
+ * `printf -v`, `read`, `test -v` ; commande reçue par `compgen -C`, `mapfile -C`, `jobs -x`). Ces commandes relèvent de S4.
  */
 export function tokenizeCommand(text: string): TokenizeResult {
   if (typeof text !== "string") return { ok: false, regle: "B01", detail: "type" };
@@ -144,6 +157,8 @@ interface OptionSpec {
   numeric?: readonly string[];
   /** Options longues à valeur après `=` (`--max-depth=2`). */
   valueEq?: readonly string[];
+  /** Options (value ou valueEq) dont la valeur désigne des fichiers par leur nom (`--include=.env`, `-g id_rsa`) : P03 lexical. */
+  fileValues?: readonly string[];
   /** `-20` accepté (nombre de lignes ou de révisions). */
   numericDash?: boolean;
   /** Rôle des arguments : chemins, motif puis chemins, révisions, révisions ou `révision:chemin`. */
@@ -166,6 +181,7 @@ const SIMPLE_COMMANDS: Readonly<Record<string, OptionSpec>> = {
     value: ["-e", "-A", "-B", "-C", "-m"],
     numeric: ["-A", "-B", "-C", "-m"],
     valueEq: ["--include", "--exclude", "--exclude-dir"],
+    fileValues: ["--include", "--exclude", "--exclude-dir"],
     pos: "pattern+paths",
   },
   rg: {
@@ -173,6 +189,7 @@ const SIMPLE_COMMANDS: Readonly<Record<string, OptionSpec>> = {
     value: ["-e", "-g", "-t", "-A", "-B", "-C", "-m"],
     numeric: ["-A", "-B", "-C", "-m"],
     valueEq: ["--glob", "--type"],
+    fileValues: ["-g", "--glob"],
     flags: ["--files"],
     pos: "pattern+paths",
   },
@@ -250,15 +267,32 @@ interface PathCheck {
   path: string | null;
 }
 
+/** Recherche qui lit le contenu d'un sous-arbre entier (grep -r, rg, git grep) : contrôlée en S5 par `sensitiveEntries`. */
+interface RecursiveRead {
+  /** Chemins parcourus, tels qu'écrits ; « . » quand la commande n'en cite aucun (dossier de la conversation). */
+  targets: string[];
+  /** git grep ne lit que des fichiers suivis : un dossier `.git` (et ce qu'il contient) ne compte pas. */
+  ignoreGitDirs: boolean;
+}
+
 interface ConsultationPlan {
   regle: string;
   paths: PathCheck[];
   git: boolean;
+  recursive: RecursiveRead | null;
 }
 
-function parseOptions(args: readonly ShellWord[], spec: OptionSpec): { flags: Set<string>; positionals: ShellWord[] } | ShellVerdict {
+interface ParsedOptions {
+  flags: Set<string>;
+  positionals: ShellWord[];
+  /** Valeurs des options `fileValues`, dans l'ordre. */
+  fileValues: string[];
+}
+
+function parseOptions(args: readonly ShellWord[], spec: OptionSpec): ParsedOptions | ShellVerdict {
   const flags = new Set<string>();
   const positionals: ShellWord[] = [];
+  const fileValues: string[] = [];
   let endOfOptions = false;
   for (let k = 0; k < args.length; k++) {
     const word = args[k] as ShellWord;
@@ -280,6 +314,7 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): { flags: Se
     if (eq > 0 && spec.valueEq?.includes(v.slice(0, eq))) {
       const name = v.slice(0, eq);
       if (spec.numeric?.includes(name) && !NUMBER.test(v.slice(eq + 1))) return attente("O03", v);
+      if (spec.fileValues?.includes(name)) fileValues.push(v.slice(eq + 1));
       flags.add(name);
       continue;
     }
@@ -287,6 +322,7 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): { flags: Se
       const next = args[k + 1];
       if (next === undefined) return attente("O02", v);
       if (spec.numeric?.includes(v) && !NUMBER.test(next.value)) return attente("O03", v);
+      if (spec.fileValues?.includes(v)) fileValues.push(next.value);
       flags.add(v);
       k++;
       continue;
@@ -294,6 +330,7 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): { flags: Se
     const attached = spec.value?.find((option) => option.length === 2 && v.length > 2 && v.startsWith(option));
     if (attached !== undefined) {
       if (spec.numeric?.includes(attached) && !NUMBER.test(v.slice(2))) return attente("O03", v);
+      if (spec.fileValues?.includes(attached)) fileValues.push(v.slice(2));
       flags.add(attached);
       continue;
     }
@@ -308,7 +345,7 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): { flags: Se
     }
     return attente("O01", v);
   }
-  return { flags, positionals };
+  return { flags, positionals, fileValues };
 }
 
 function pathsOfPositionals(spec: OptionSpec, flags: Set<string>, positionals: readonly ShellWord[], name: string): PathCheck[] | ShellVerdict {
@@ -342,7 +379,8 @@ function findPlan(args: readonly ShellWord[]): ConsultationPlan | ShellVerdict {
     if (!FIND_VALUES[kind].test(next.value)) return attente("O03", `${expression} ${next.value}`);
     k++;
   }
-  return { regle: "A-find", paths, git: false };
+  // find ne lit que des noms, jamais le contenu des fichiers : aucune lecture récursive à contrôler.
+  return { regle: "A-find", paths, git: false, recursive: null };
 }
 
 /** S3 : null si le programme n'est pas une consultation listée ; sinon le verdict O0x qui la refuse, ou ce qu'il reste à contrôler. */
@@ -356,7 +394,10 @@ function consultationPlan(program: string, args: readonly ShellWord[]): Consulta
     if ("verdict" in parsed) return parsed;
     const paths = pathsOfPositionals(spec, parsed.flags, parsed.positionals, `git ${sub.value}`);
     if (!Array.isArray(paths)) return paths;
-    return { regle: `A-git-${sub.value}`, paths, git: true };
+    // git grep lit tous les fichiers suivis. Un argument peut être une révision, dont git lit tout l'arbre : faute de savoir
+    // lequel, le parcours porte toujours sur le dossier entier.
+    const recursive = sub.value === "grep" ? { targets: ["."], ignoreGitDirs: true } : null;
+    return { regle: `A-git-${sub.value}`, paths, git: true, recursive };
   }
   if (!Object.hasOwn(SIMPLE_COMMANDS, program)) return null;
   const spec = SIMPLE_COMMANDS[program] as OptionSpec;
@@ -364,7 +405,14 @@ function consultationPlan(program: string, args: readonly ShellWord[]): Consulta
   if ("verdict" in parsed) return parsed;
   const paths = pathsOfPositionals(spec, parsed.flags, parsed.positionals, program);
   if (!Array.isArray(paths)) return paths;
-  return { regle: `A-${program}`, paths, git: false };
+  // grep -r et rg (toujours récursif ; avec --files, il ne rend que des noms) lisent le contenu de tout le sous-arbre de chaque
+  // chemin cité, ou du dossier de la conversation quand la commande n'en cite aucun.
+  const readsTree = (program === "grep" && parsed.flags.has("-r")) || (program === "rg" && !parsed.flags.has("--files"));
+  const targets = paths.map((check) => check.path ?? check.word);
+  const recursive = readsTree ? { targets: targets.length > 0 ? targets : ["."], ignoreGitDirs: false } : null;
+  // Motifs de noms de fichiers (--include=.env, -g id_rsa) : contrôle lexical P03 du mot, comme pour un chemin.
+  for (const value of parsed.fileValues) paths.push({ word: value, path: null });
+  return { regle: `A-${program}`, paths, git: false, recursive };
 }
 
 // --- S4 interdits --------------------------------------------------------------------------------------------------------------
@@ -373,9 +421,14 @@ export type ShellForbiddenCategory = "reseau" | "production" | "code" | "envelop
 
 /**
  * S4 (§4.5), par catégorie ; « nom* » : tout programme qui commence par « nom ». Chaque liste reprend celle de la spécification,
- * puis des ajouts de même nature (plus strict, jamais plus permissif) : une commande qui exécute du code, touche au réseau ou à la
- * production, enveloppe un autre programme, supprime ou écrase un fichier n'est jamais soumise à l'IA de contrôle (décisions n° 6
- * et 7, phrase « Toujours avec votre accord » du §4.13). La Salle OMO n'applique que « reseau » et « production » (§4.5, Q2).
+ * puis des ajouts de même nature (plus strict, jamais plus permissif) : un programme dont le rôle est d'exécuter du code, de
+ * toucher au réseau ou à la production, d'envelopper un autre programme, de supprimer ou d'écraser un fichier n'est jamais soumis
+ * à l'IA de contrôle (décisions n° 6 et 7, phrase « Toujours avec votre accord » du §4.13). En font partie les commandes internes
+ * de bash qui évaluent un indice de tableau ou lancent une commande reçue en argument, même cachée entre guillemets simples
+ * (relecture 2-vague-0, vérifié sur bash 5.3) : `let`, `printf -v`, `read`, `test -v`, `wait -p`, `mapfile -C`,
+ * `compgen -C/-W/-F`, `jobs -x`, `enable -f`, comme `declare 'a[$(id)]=1'`. Un programme non listé qui peut en faire autant par
+ * une option (`sort -o`) reste en S7 : c'est ce que mesure la barrière des 60 programmes (§4.6). La Salle OMO n'applique que
+ * « reseau » et « production » (§4.5, Q2).
  */
 const S4_SPEC_AND_ADDITIONS = (specification: string, additions: string): readonly string[] =>
   Object.freeze([...specification.split(" "), ...additions.split(" ")]);
@@ -401,11 +454,14 @@ export const SHELL_FORBIDDEN: Readonly<Record<ShellForbiddenCategory, readonly s
   enveloppes: S4_SPEC_AND_ADDITIONS(
     "env command nice nohup timeout time xargs exec eval source . coproc watch sudo su",
     "builtin setsid stdbuf flock chroot nsenter unshare doas pkexec runuser script expect strace ltrace gdb lldb parallel at batch crontab " +
-      "ionice chrt taskset unbuffer trap",
+      "ionice chrt taskset unbuffer trap compgen complete enable fc bind jobs",
   ),
   suppression: S4_SPEC_AND_ADDITIONS("rm rmdir shred truncate chmod chown chgrp ln dd mkfs", "mkfs* unlink mv cp install rename wipefs chattr setfacl"),
   editeurs: S4_SPEC_AND_ADDITIONS("sed awk ed vi vim nano tee", "gawk mawk nawk ex view nvim emacs pico patch"),
-  declarations: S4_SPEC_AND_ADDITIONS("export declare typeset set unset alias", "readonly local unalias shopt ulimit umask hash"),
+  declarations: S4_SPEC_AND_ADDITIONS(
+    "export declare typeset set unset alias",
+    "readonly local unalias shopt ulimit umask hash let printf read mapfile readarray getopts wait test",
+  ),
 });
 
 const FORBIDDEN_ORDER: readonly ShellForbiddenCategory[] = ["reseau", "production", "code", "enveloppes", "suppression", "editeurs", "declarations"];
@@ -556,6 +612,38 @@ function checkPaths(checks: readonly PathCheck[], ctx: ShellContext): ShellVerdi
   return null;
 }
 
+function sensitiveEntriesOf(ctx: ShellContext, arg: string): readonly unknown[] | null {
+  const walk = ctx?.paths?.sensitiveEntries;
+  if (typeof walk !== "function") return null;
+  try {
+    const entries: unknown = walk.call(ctx.paths, arg);
+    return Array.isArray(entries) ? entries : null;
+  } catch {
+    // Parcours impossible : la recherche attend (P03), jamais une consultation automatique.
+    return null;
+  }
+}
+
+const insideGitDir = (entry: string) => entry.split("/").includes(".git");
+
+/**
+ * S5, après les chemins cités : une recherche récursive attend (P03) dès que le sous-arbre parcouru contient un chemin sensible,
+ * ou que le serveur n'a pas pu le parcourir. Toute entrée rapportée compte, même inconnue de `sensitivePath` (le serveur a pu la
+ * juger plus finement) ; git grep seul ignore les dossiers `.git`, qu'il ne lit jamais.
+ */
+function checkRecursive(read: RecursiveRead, ctx: ShellContext): ShellVerdict | null {
+  for (const target of read.targets) {
+    const entries = sensitiveEntriesOf(ctx, target);
+    if (entries === null) return attente("P03", `parcours-impossible:${target}`);
+    for (const entry of entries) {
+      if (read.ignoreGitDirs && typeof entry === "string" && insideGitDir(entry)) continue;
+      const text = typeof entry === "string" ? entry : "?";
+      return attente("P03", `${sensitivePath(text) ?? "signale"}:${text}`);
+    }
+  }
+  return null;
+}
+
 // --- S6 git (F-m) --------------------------------------------------------------------------------------------------------------
 
 /** Sections dont toute clé fait lire une autre configuration ou lancer un programme. */
@@ -669,6 +757,10 @@ export function classifyCommand(text: string, ctx: ShellContext): ShellVerdict {
   if (workdirVerdict !== null) return workdirVerdict;
   const pathVerdict = checkPaths(plan !== null ? plan.paths : genericPathChecks(args), ctx);
   if (pathVerdict !== null) return pathVerdict;
+  if (plan !== null && plan.recursive !== null) {
+    const recursiveVerdict = checkRecursive(plan.recursive, ctx);
+    if (recursiveVerdict !== null) return recursiveVerdict;
+  }
 
   // S6 git
   if (plan !== null && plan.git) {
