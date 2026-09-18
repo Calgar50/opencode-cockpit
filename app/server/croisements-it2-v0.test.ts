@@ -84,12 +84,18 @@ const ELARGISSEMENTS_PRUDENTS = ["FL14", "FL20", "FL25"];
 
 // --- Porte shell ----------------------------------------------------------------------------------------------------------------
 
-/** Contexte le plus permissif qui reste plausible : tout est dans le dossier, dépôt git sain, IA de contrôle autorisée. */
+/**
+ * Contexte le plus permissif qui reste plausible : tout est dans le dossier, sans lien (chemin réel = chemin écrit), dépôt git
+ * sain, IA de contrôle autorisée.
+ */
 function contexteOuvert(): ShellContext {
   return {
     conversationDir: "/workspace/fl",
     workdir: null,
-    paths: { resolve: () => ({ inside: true, symlinkOut: false }), sensitiveEntries: () => [] },
+    paths: {
+      resolve: (arg) => ({ inside: true, symlinkOut: false, real: arg.startsWith("/") ? arg : `/workspace/fl/${arg}` }),
+      sensitiveEntries: () => [],
+    },
     git: { gitIsDirectory: true, configText: "[core]\n\trepositoryformatversion = 0\n" },
     allowJudge: true,
   };

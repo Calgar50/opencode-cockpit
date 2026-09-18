@@ -2,7 +2,8 @@
 // un cas isolé par règle S1 à S7 avec un contexte factice ; la première étape qui échoue décide ; allowJudge faux → attente ; U01
 // et S4 → attente même en Autonome ; `.env.example` non sensible, `.env.local` sensible ; options de find et sous-commandes git ;
 // l'API n'accepte pas `patterns` ; formes F-l ; pureté ; corpus de la sonde `autonomy-probe` (116 commandes, 11 automatiques) ;
-// relecture 2-vague-0 : commandes internes de bash qui évaluent du code (S4), recherches récursives et motifs de noms (P03).
+// relecture 2-vague-0 : commandes internes de bash qui évaluent du code (S4), recherches récursives et motifs de noms (P03),
+// chemin réel obligatoire (lien interne vers `.git` ou `.env` : P03 ; faits sans chemin réel : P02).
 // Les faits du disque réels (realpath, dépôts piégés, liens) sont testés par L8b.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -62,6 +63,7 @@ interface FakeOptions {
   symlinkOut?: string[];
   unknown?: string[];
   throws?: string[];
+  /** Chemin réel rendu pour un chemin (tel qu'écrit) ; par défaut, sa résolution lexicale depuis `dir` (aucun lien). */
   real?: Record<string, unknown>;
   /** Chemins sensibles rapportés par le parcours d'un sous-arbre, par argument ; [] par défaut. */
   walk?: Record<string, unknown>;
@@ -71,8 +73,8 @@ interface FakeOptions {
 type FakeContext = ShellContext & { calls: string[]; walks: string[] };
 
 /**
- * Contexte factice : résolution lexicale depuis `dir`, surchargée chemin par chemin ; parcours de sous-arbre sans rien de
- * sensible, surchargé argument par argument ; appels de resolve et de sensitiveEntries enregistrés.
+ * Contexte factice : résolution lexicale depuis `dir` (chemin réel compris), surchargée chemin par chemin ; parcours de
+ * sous-arbre sans rien de sensible, surchargé argument par argument ; appels de resolve et de sensitiveEntries enregistrés.
  */
 function fakeCtx(options: FakeOptions = {}): FakeContext {
   const conversationDir = options.dir ?? DIR;
@@ -102,6 +104,7 @@ function fakeCtx(options: FakeOptions = {}): FakeContext {
         const facts: ShellPathFacts = {
           inside: (abs === dir || abs.startsWith(root)) && !(options.outside ?? []).includes(arg),
           symlinkOut: (options.symlinkOut ?? []).includes(arg),
+          real: abs,
         };
         if (options.real !== undefined && Object.hasOwn(options.real, arg)) facts.real = options.real[arg] as string;
         return facts;
@@ -485,7 +488,7 @@ describe("porte shell : S5 chemins", () => {
     expectAuto("ls /workspace/proj", "A-ls");
   });
 
-  it("P02 résolu : faits inconnus, erreur de lecture, chemin réel hors du dossier, lien sortant, faits mal formés", () => {
+  it("P02 résolu : faits inconnus, erreur de lecture, chemin réel hors du dossier, lien sortant, faits mal formés ou sans chemin réel", () => {
     expectWait("cat README.md", "P02", { unknown: ["README.md"] });
     expectWait("cat README.md", "P02", { throws: ["README.md"] });
     expectWait("cat docs/lien.md", "P02", { outside: ["docs/lien.md"] });
@@ -498,7 +501,13 @@ describe("porte shell : S5 chemins", () => {
     for (const facts of [{ inside: true }, { inside: 1, symlinkOut: false }, { inside: true, symlinkOut: 0 }, "oui", 7]) {
       assert.equal(classifyCommand("cat README.md", malformed(facts)).regle, "P02", JSON.stringify(facts));
     }
-    assert.equal(classifyCommand("cat README.md", malformed({ inside: true, symlinkOut: false })).regle, "A-cat");
+    // Chemin réel absent, indéfini, nul, vide, non absolu ou hors du dossier : attente, jamais une lecture automatique.
+    for (const real of ["absent", undefined, null, "", "README.md", `${DIR}/../x`, `${DIR}2/README.md`, 7]) {
+      const facts = real === "absent" ? { inside: true, symlinkOut: false } : { inside: true, symlinkOut: false, real };
+      assert.equal(classifyCommand("cat README.md", malformed(facts)).regle, "P02", `real : ${String(real)}`);
+    }
+    assert.equal(classifyCommand("cat README.md", malformed({ inside: true, symlinkOut: false, real: `${DIR}/README.md` })).regle, "A-cat");
+    assert.equal(classifyCommand("ls .", malformed({ inside: true, symlinkOut: false, real: DIR })).regle, "A-ls");
     assert.equal(classifyCommand("cat README.md", { ...fakeCtx(), paths: {} as ShellContext["paths"] }).regle, "P02");
   });
 
@@ -578,6 +587,31 @@ describe("porte shell : S5 chemins", () => {
     expectWait("cat src/../.env", "P03");
     expectWait("cat notes.txt", "P03", { real: { "notes.txt": "/workspace/proj/.env" } });
     expectAuto("cat README.md", "A-cat", { dir: "/workspace/.secrets/proj" });
+  });
+
+  it("chemin réel obligatoire : un lien interne vers .git ou .env attend en P03 ; des faits sans chemin réel attendent en P02 (relecture 2-vague-0)", () => {
+    // Le dépôt contient `docs/notes` → `.git` : la cible reste dans le dossier (inside vrai, symlinkOut faux) et le chemin
+    // écrit n'a aucun segment sensible ; seul le chemin réel révèle `.git/config`.
+    const lienGit = { real: { "docs/notes/config": `${DIR}/.git/config`, "docs/notes": `${DIR}/.git` } };
+    assert.equal(expectWait("cat docs/notes/config", "P03", lienGit).detail, "dossier:docs/notes/config");
+    assert.equal(expectWait("ls docs/notes", "P03", lienGit).detail, "dossier:docs/notes");
+    assert.equal(expectWait("grep -rn url docs/notes", "P03", lienGit).detail, "dossier:docs/notes");
+    assert.equal(expectWait("mytool docs/notes/config", "P03", { ...lienGit, allowJudge: true }).detail, "dossier:docs/notes/config");
+    assert.equal(expectWait("cat docs/config.txt", "P03", { real: { "docs/config.txt": `${DIR}/.env` } }).detail, "environnement:docs/config.txt");
+    assert.equal(expectWait("cat docs/cle.txt", "P03", { real: { "docs/cle.txt": `${DIR}/certs/server.key` } }).detail, "cle:docs/cle.txt");
+    // Le compilateur l'impose (npm run typecheck) : un appelant ne peut ni omettre le chemin réel, ni le laisser indéfini.
+    // @ts-expect-error ShellPathFacts.real est obligatoire.
+    const sansReel: ShellPathFacts = { inside: true, symlinkOut: false };
+    // @ts-expect-error ShellPathFacts.real est une chaîne, jamais undefined.
+    const reelIndefini: ShellPathFacts = { inside: true, symlinkOut: false, real: undefined };
+    // Et à l'exécution, le même lien rapporté sans chemin réel n'est jamais lu automatiquement.
+    for (const facts of [sansReel, reelIndefini]) {
+      const ctx: ShellContext = { ...fakeCtx({ allowJudge: true }), paths: { resolve: () => facts, sensitiveEntries: () => [] } };
+      for (const text of ["cat docs/notes/config", "ls docs/notes", "grep -rn url docs/notes", "cat docs/config.txt", "mytool docs/notes/config"]) {
+        const result = classifyCommand(text, ctx);
+        assert.deepEqual([result.verdict, result.regle], ["attente", "P02"], `${text} → ${JSON.stringify(result)}`);
+      }
+    }
   });
 
   it("arguments contrôlés selon la commande : chemins, motif, révision:chemin, révisions ; le premier mot qui échoue décide", () => {

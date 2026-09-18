@@ -31,8 +31,12 @@ export interface ShellPathFacts {
   inside: boolean;
   /** Un composant du chemin est un lien symbolique dont la cible sort du dossier de la conversation. */
   symlinkOut: boolean;
-  /** Facultatif : chemin réel absolu. S'il est fourni, il doit être dans le dossier, et P03 s'applique aussi à lui. */
-  real?: string;
+  /**
+   * Chemin réel absolu (`realpath` ; chemin qui n'existe pas : plus long préfixe existant résolu, puis le reste). Obligatoire :
+   * un lien INTERNE (`docs/notes` → `.git`) laisse `inside` vrai, `symlinkOut` faux et le chemin écrit sans segment sensible ;
+   * seul le chemin réel révèle `.git/config`. Absent, non absolu ou hors du dossier → P02 ; sensible → P03.
+   */
+  real: string;
 }
 
 export interface ShellPaths {
@@ -602,12 +606,11 @@ function checkPaths(checks: readonly PathCheck[], ctx: ShellContext): ShellVerdi
     if (facts === null || facts.inside !== true || facts.symlinkOut !== false) return attente("P02", word);
     const lexicalKind = sensitivePath(relative);
     if (lexicalKind !== null) return attente("P03", `${lexicalKind}:${word}`);
-    if (facts.real !== undefined) {
-      const real = typeof facts.real === "string" && facts.real.startsWith("/") ? relativeInside(dir, lexicalResolve("/", facts.real)) : null;
-      if (real === null) return attente("P02", word);
-      const realKind = sensitivePath(real);
-      if (realKind !== null) return attente("P03", `${realKind}:${word}`);
-    }
+    // Chemin réel, toujours : un lien interne vers `.git` ou `.env` ne se voit que là.
+    const real = typeof facts.real === "string" && facts.real.startsWith("/") ? relativeInside(dir, lexicalResolve("/", facts.real)) : null;
+    if (real === null) return attente("P02", word);
+    const realKind = sensitivePath(real);
+    if (realKind !== null) return attente("P03", `${realKind}:${word}`);
   }
   return null;
 }
