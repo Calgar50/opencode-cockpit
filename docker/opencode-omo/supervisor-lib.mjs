@@ -7,8 +7,9 @@
 // dans l'image) : un test rejoue les mêmes vecteurs sur les deux et compare les délais à l'octet.
 //
 // Qui écrit quoi :
-// - root : manifeste, validation, propriétaire et points de montage des dossiers de configuration et des volumes (MO-3, MO-11),
-//   `state.json`, dossier de travail du superviseur, empreinte des montages surveillée pendant la salle ;
+// - root : configuration du HOME (volume `omo-config`, D-2b-33 révisée au train de V1), manifeste, validation, propriétaire et
+//   points de montage des dossiers de configuration et des volumes (MO-3, MO-11), `state.json`, dossier de travail du superviseur,
+//   empreinte des montages surveillée pendant la salle ;
 // - `node` (par `setpriv`, D-2b-27) : tout ce qui touche à des fichiers de `node` — purge, copie d'`auth.json`, `test -w`, balayage
 //   de `/workspace` — et la vérification de ses propres capacités après la bascule (MO-7). Ces sous-commandes n'écrivent RIEN
 //   ailleurs que dans les dossiers de `node` : elles rendent leur constat en JSON sur la sortie standard, que le superviseur (root)
@@ -37,6 +38,9 @@ export const OMO_MANIFESTE_MAX_OCTETS = 4 * 1024 * 1024;
 /** `omo-projets.json` et `auth.json` : bornés eux aussi, jamais lus sans borne. */
 export const OMO_PROJETS_MAX_OCTETS = 1024 * 1024;
 export const OMO_AUTH_MAX_OCTETS = 1024 * 1024;
+
+/** `omo.jsonc` de référence (1 Mio, la borne de `validate.mjs`). */
+export const OMO_CONFIG_MAX_OCTETS = 1024 * 1024;
 
 /** Délais de l'homme mort, en secondes (D-2b-25) : mêmes valeurs que `OMO_DELAIS` du cockpit, égalité vérifiée par un test. */
 export const OMO_DELAIS = { battementS: 5, perimeS: 20, verificationS: 2, killApresS: 3 };
@@ -72,6 +76,10 @@ export const CHEMINS = {
   workspace: "/workspace",
   home: "/home/node",
   tmp: "/tmp",
+  /** Volume `omo-config`, seul montage en écriture, hors du HOME : root y pose la configuration du HOME (D-2b-33 révisée). */
+  configHome: "/omo-config",
+  /** `omo.jsonc` de référence, dans le périmètre du manifeste (`configuration`), lu aussi par `validate.mjs`. */
+  configurationOmo: "/etc/opencode-omo/omo/omo.jsonc",
   superviseur: "/usr/local/bin/omo-supervisor",
   superviseurLib: "/opt/omo-check/supervisor-lib.mjs",
   valider: "/opt/omo-check/validate.mjs",
@@ -86,7 +94,14 @@ export const CHEMINS = {
   licence: "/usr/share/doc/oh-my-openagent/LICENSE.md",
 };
 
-/** Cinq dossiers de configuration du HOME (D-2b-33), montés vides, en lecture seule, appartenant à root. */
+/**
+ * Cinq dossiers de configuration du HOME (D-2b-33), appartenant à root, montés en lecture seule depuis le volume `omo-config`.
+ * Révision du train de V1 (demande de contrat (A) de L15a, constat de L24) : ils ne sont plus vides. La 4.19.4 ne lit sa couche
+ * « utilisateur » qu'à `$HOME/.omo/omo.jsonc` (aucune variable ne la déplace) ; opencode 1.18.30 écrit un `.gitignore` dans chaque
+ * dossier de configuration et, sur un montage en lecture seule, reçoit EROFS et refuse tout projet (HTTP 500, mesuré par L24). Le
+ * superviseur (root) remplit donc le volume, sur son seul montage en écriture (`CHEMINS.configHome`, hors du HOME), avec
+ * EXACTEMENT deux fichiers : le `omo.jsonc` de référence de l'image et ce `.gitignore`. `node` ne voit que la lecture seule.
+ */
 export const DOSSIERS_CONFIG_HOME = [
   "/home/node/.config/opencode",
   "/home/node/.opencode",
@@ -94,6 +109,12 @@ export const DOSSIERS_CONFIG_HOME = [
   "/home/node/.claude",
   "/home/node/.agents",
 ];
+
+/** Seuls fichiers du volume `omo-config`, donc de chacun des cinq dossiers. */
+export const CONFIG_HOME_FICHIERS = Object.freeze({ omo: "omo.jsonc", gitignore: ".gitignore" });
+
+/** Contenu du `.gitignore` posé : la liste qu'opencode 1.18.30 écrirait lui-même (`config.ts`, `ensureGitignore`). */
+export const CONFIG_HOME_GITIGNORE = "node_modules\npackage.json\npackage-lock.json\nbun.lock\n.gitignore\n";
 
 /** Identifiant de `node` dans l'image (image node officielle, comme celle du cockpit) : propriétaire attendu des volumes de `node`. */
 export const UID_NODE = 1000;
@@ -108,13 +129,15 @@ export const VOLUMES_SALLE = [
   { volume: "omo-auth", chemin: CHEMINS.authSource, uid: UID_NODE },
   { volume: "omo-state", chemin: CHEMINS.etat, uid: 0 },
   { volume: "oc-omo-data", chemin: CHEMINS.donnees, uid: UID_NODE },
+  { volume: "omo-config", chemin: CHEMINS.configHome, uid: 0 },
 ];
 
 /**
  * Volumes que `node` ne doit jamais pouvoir écrire, vérifiés par `test -w` en tant que `node` : le battement (G9 : un battement
- * inscriptible depuis la salle tiendrait l'homme mort en échec), l'authentification, et l'état publié (M32).
+ * inscriptible depuis la salle tiendrait l'homme mort en échec), l'authentification, l'état publié (M32), et le montage en écriture
+ * de la configuration du HOME (ce que l'extension lit).
  */
-export const VOLUMES_FERMES_A_NODE = [CHEMINS.controle, CHEMINS.authSource, CHEMINS.etat];
+export const VOLUMES_FERMES_A_NODE = [CHEMINS.controle, CHEMINS.authSource, CHEMINS.etat, CHEMINS.configHome];
 
 /** Périmètre du manifeste (D-2b-32). */
 export const PERIMETRE_MANIFESTE = ["/opt/omo", "/opt/omo-check", "/opt/omo-guard", "/etc/opencode-omo", "/usr/local/bin/omo-supervisor"];
@@ -498,6 +521,73 @@ export function accesEcriture(chemin) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Contenu d'un dossier de configuration (ou du volume lui-même) : EXACTEMENT `.gitignore` et `omo.jsonc`, deux fichiers ordinaires
+ * (jamais un lien), le premier égal à `CONFIG_HOME_GITIGNORE`, le second à `texteReference`. Tout le reste, ou une lecture
+ * impossible, vaut « contenu » : fermé en cas de doute. `texteReference` nul (référence illisible) : refus aussi.
+ */
+export function controlerContenuConfig(chemin, texteReference) {
+  const refus = { chemin, ok: false, raison: "contenu" };
+  if (typeof texteReference !== "string") return refus;
+  let noms;
+  try {
+    noms = fs.readdirSync(chemin);
+  } catch {
+    return refus;
+  }
+  if (noms.length !== 2 || !noms.includes(CONFIG_HOME_FICHIERS.gitignore) || !noms.includes(CONFIG_HOME_FICHIERS.omo)) return refus;
+  const lire = (nom) => lireTexteBorne(path.join(chemin, nom), OMO_CONFIG_MAX_OCTETS, { suivreLiens: false });
+  if (lire(CONFIG_HOME_FICHIERS.gitignore) !== CONFIG_HOME_GITIGNORE) return refus;
+  if (lire(CONFIG_HOME_FICHIERS.omo) !== texteReference) return refus;
+  return { chemin, ok: true, raison: null };
+}
+
+/**
+ * Étape 1 bis (root, AVANT la validation et avant toute bascule vers `node`) : remplit le volume `omo-config` sur son montage en
+ * écriture. Le dossier doit être un point de montage à root (fermé en cas de doute : absent, lien, autre propriétaire, simple
+ * dossier) ; la référence est lue sans suivre de lien, bornée. Tout ce qui s'y trouve part (une relance garde le volume : rien ne
+ * doit s'y accumuler, ni `omo.json`, ni dossier), puis les deux fichiers sont écrits en 0444 et relus. La référence est dans le
+ * périmètre du manifeste, déjà comparé à l'étape 1 ; `validate.mjs` relit ensuite `~/.omo/omo.jsonc` par le montage en lecture seule.
+ */
+export function preparerConfigHome({ dossier = CHEMINS.configHome, reference = CHEMINS.configurationOmo, montages = pointsDeMontage(), uid = 0 } = {}) {
+  const echec = (raison) => ({ etape: "config-home", ok: false, raison });
+  const volume = controlerDossierRoot(dossier, uid, montages);
+  if (!volume.ok) return echec(volume.raison);
+  const texte = lireTexteBorne(reference, OMO_CONFIG_MAX_OCTETS, { suivreLiens: false });
+  if (texte === null) return echec("reference-illisible");
+  let noms;
+  try {
+    noms = fs.readdirSync(dossier);
+  } catch {
+    return echec("illisible");
+  }
+  for (const nom of noms) {
+    try {
+      // rmSync ne traverse pas un lien : il retire le lien lui-même.
+      fs.rmSync(path.join(dossier, nom), { recursive: true, force: true });
+    } catch {
+      return echec("purge");
+    }
+  }
+  try {
+    ecrireAtomique(path.join(dossier, CONFIG_HOME_FICHIERS.omo), texte, 0o444);
+    ecrireAtomique(path.join(dossier, CONFIG_HOME_FICHIERS.gitignore), CONFIG_HOME_GITIGNORE, 0o444);
+  } catch {
+    return echec("ecriture");
+  }
+  const relu = controlerContenuConfig(dossier, texte);
+  return relu.ok ? { etape: "config-home", ok: true, raison: null, octets: tailleOctets(texte) } : echec(relu.raison);
+}
+
+/**
+ * Dossier de configuration du HOME vu par root à l'étape 3 : dossier à root, point de montage (MO-3), PUIS le contenu posé à
+ * l'étape 1 bis, vu par ce chemin. Un dossier monté depuis un autre volume que `omo-config` (vide, ou à `node`) est refusé ici.
+ */
+export function controlerDossierConfigHome(chemin, texteReference, montages = pointsDeMontage()) {
+  const racine = controlerDossierConfigRoot(chemin, montages);
+  return racine.ok ? controlerContenuConfig(chemin, texteReference) : racine;
 }
 
 // --- Balayage git de /workspace (D-2b-28) ---------------------------------------------------------------------------------------
@@ -1058,9 +1148,15 @@ function principal(argv, dossiers) {
       sortie({ validation, code });
       return validation === "ok" ? CODES.ok : CODES.refus;
     }
+    case "config-home": {
+      const constat = preparerConfigHome();
+      sortie(constat);
+      return constat.ok ? CODES.ok : CODES.refus;
+    }
     case "config-root": {
       const montages = pointsDeMontage();
-      const dossiers = DOSSIERS_CONFIG_HOME.map((chemin) => controlerDossierConfigRoot(chemin, montages));
+      const reference = lireTexteBorne(CHEMINS.configurationOmo, OMO_CONFIG_MAX_OCTETS, { suivreLiens: false });
+      const dossiers = DOSSIERS_CONFIG_HOME.map((chemin) => controlerDossierConfigHome(chemin, reference, montages));
       majTravail(dossierEtat, { dossiersConfig: dossiers.map((d) => ({ chemin: d.chemin, ok: d.ok })) });
       sortie({ etape: "config-root", ok: dossiers.every((d) => d.ok), dossiers });
       return dossiers.every((d) => d.ok) ? CODES.ok : CODES.refus;

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Image opencode-omo de la Salle OMO : extension epinglee, installee sans script par npm ci --ignore-scripts. Jamais publiee (P13).",
   "license": "UNLICENSED",
+  "type": "module",
   "dependencies": {
     "oh-my-openagent": "4.19.4"
   }

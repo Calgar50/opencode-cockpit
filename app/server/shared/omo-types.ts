@@ -307,7 +307,7 @@ export interface OmoSalleVolume {
   nom: string;
   /** Propriétaire attendu du volume. */
   proprietaire: "root" | "node";
-  /** Seul service qui écrit ; null : personne (volume vide monté en lecture seule). */
+  /** Seul service qui écrit (un seul montage en écriture) ; null : personne. */
   ecrivain: Exclude<OmoSalleServiceRole, "principale"> | null;
   montages: OmoSalleMontage[];
 }
@@ -338,7 +338,11 @@ export interface OmoSalleContract {
   };
   /** Racines hachées par le manifeste (D-2b-32) ; la référence du manifeste est hors périmètre. */
   perimetreManifeste: string[];
-  /** Dossiers de configuration du HOME montés en lecture seule depuis un volume vide appartenant à root (D-2b-33). */
+  /**
+   * Dossiers de configuration du HOME, montés en lecture seule depuis le volume `omo-config` appartenant à root (D-2b-33, révisée au
+   * train de V1) : le superviseur (root) le remplit sur son montage en écriture, hors du HOME, avec le seul `omo.jsonc` de référence
+   * de l'image et un `.gitignore`, avant toute bascule vers node.
+   */
   dossiersConfigHome: string[];
   /** Noms refusés au pré-contrôle, relatifs à un dossier (projet, parent ; racine / de l'image pour validate.mjs). */
   nomsPrecontrole: { fichiers: string[]; dossiers: string[] };

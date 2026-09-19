@@ -260,9 +260,11 @@ describe("croisements 2bis V0 : supervisor-lib.mjs et le cockpit = contrat-salle
     assert.equal(salle.CHEMINS.authSource, montageSalle("omo-auth"));
     assert.equal(salle.CHEMINS.etat, montageSalle("omo-state"));
     assert.equal(salle.CHEMINS.donnees, montageSalle("oc-omo-data"));
-    const vide = CONTRAT.volumes.find((v) => v.nom === "omo-vide");
+    // Train de V1 (D-2b-33 révisée) : omo-config, en écriture sur /omo-config pour le superviseur, en lecture seule sur les cinq dossiers.
+    const config = CONTRAT.volumes.find((v) => v.nom === "omo-config");
+    assert.equal(salle.CHEMINS.configHome, montageSalle("omo-config"));
     assert.deepEqual(
-      vide?.montages.map((m) => m.cible),
+      config?.montages.filter((m) => m.mode === "ro").map((m) => m.cible),
       CONTRAT.dossiersConfigHome,
     );
     assert.deepEqual(CONTRAT.securite.tmpfs.map((entree) => entree.split(":")[0]).sort(), [salle.CHEMINS.home, salle.CHEMINS.tmp].sort());
@@ -271,13 +273,14 @@ describe("croisements 2bis V0 : supervisor-lib.mjs et le cockpit = contrat-salle
   it("propriétaires (MO-11) : chaque volume monté dans la salle est vérifié par le superviseur, avec le propriétaire du contrat", () => {
     const uid = (proprietaire: "root" | "node"): number => (proprietaire === "root" ? 0 : salle.UID_NODE);
     const attendus = CONTRAT.volumes
-      .filter((v) => v.nom !== "omo-vide" && v.montages.some((m) => m.service === "salle"))
+      .filter((v) => v.montages.some((m) => m.service === "salle"))
       .map((v) => ({ volume: v.nom, chemin: montageSalle(v.nom), uid: uid(v.proprietaire) }));
     assert.deepEqual(salle.VOLUMES_SALLE, attendus);
-    // Fermés à node : montés en lecture seule dans la salle, ou appartenant à root (G9, M32).
+    // Fermés à node : montés en lecture seule dans la salle, ou appartenant à root (G9, M32). Les cinq dossiers du HOME sont jugés à
+    // part (DOSSIERS_CONFIG_HOME, même test -w en tant que node).
     const fermes = CONTRAT.volumes
-      .filter((v) => v.nom !== "omo-vide")
-      .flatMap((v) => v.montages.filter((m) => m.service === "salle" && (m.mode === "ro" || v.proprietaire === "root")).map((m) => m.cible));
+      .flatMap((v) => v.montages.filter((m) => m.service === "salle" && (m.mode === "ro" || v.proprietaire === "root")).map((m) => m.cible))
+      .filter((cible) => !CONTRAT.dossiersConfigHome.includes(cible));
     assert.deepEqual([...salle.VOLUMES_FERMES_A_NODE].sort(), fermes.sort());
     // Le contrat dit « node », le superviseur compare un nombre : 1000, l'utilisateur node de l'image officielle, et le tmpfs du HOME
     // lui est donné (MO-4 : sans uid ni gid, /home/node repart à root).
@@ -489,8 +492,18 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
 
 // --- 8. Salle absente ------------------------------------------------------------------------------------------------------------
 
-/** Modules de la vague 0 (fichiers neufs, aucun branchement) : seuls eux-mêmes et leurs tests les importent. */
+/**
+ * Modules de la salle installés (fichiers neufs, aucun branchement) : seuls eux-mêmes et leurs tests les importent. Liste étendue à
+ * chaque train (demande de contrat n° 1 de L17b, train de V1) : V0, puis V1 (service de contrôle du cockpit, validateurs de l'image,
+ * filet). T3b (V2) branche omo-control.ts dans wiring-11.ts : c'est lui qui retirera ce nom, avec son test de salle coupée.
+ */
 const MODULES_SALLE_V0 = new Set([
+  // V1
+  "omo-control.ts",
+  "validate.mjs",
+  "validate-core.mjs",
+  "cockpit-guard.js",
+  // V0
   "omo-types.ts",
   "omo-limits.ts",
   "omo-contracts.ts",

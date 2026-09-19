@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Image « opencode-omo » de la Salle OMO (spéc. §3.15.1 ; plan, fiche L15a) : l'image opencode du cockpit, plus Oh My OpenAgent
 # 4.19.4 installé sans aucun script, une configuration figée en lecture seule et le superviseur (homme mort, manifeste, validation).
 #
@@ -6,6 +5,9 @@
 # construction = ce dossier (docker/opencode-omo), puis apportée au travail en archive (install.ps1 -OmoArchive, mode Load).
 #
 # Chemins de l'image : ceux du contrat contrat-salle.json (cheminsImage), égalité vérifiée par app/server/omo-image.test.ts.
+#
+# Aucune directive « syntax » (train de V1) : elle ferait tirer à chaque construction une image de frontal BuildKit NON épinglée
+# par empreinte ; ce fichier n'utilise que des instructions du frontal intégré au moteur (ARG, FROM, COPY, RUN, ENV, USER).
 
 # Image opencode du cockpit, épinglée par empreinte : <image>@sha256:<64 hexadécimaux>, sans valeur par défaut.
 ARG OPENCODE_BASE
@@ -70,9 +72,11 @@ RUN set -eu; \
     chmod -R a+rX,a-w /etc/opencode-omo /opt/omo-check /opt/omo-guard /etc/omo-reference; \
     chmod 0555 /usr/local/bin/omo-supervisor /opt/omo-check/manifest.sh
 
-# Dossiers de configuration du HOME (D-2b-33) : VIDES et à root. L'image de base en donne à node (agents, commands, skills) :
-# ils sont retirés. Compose monte par-dessus un volume vide à root en lecture seule ; le superviseur exige, pour chacun, un
-# dossier à root, point de montage, non inscriptible par node.
+# Dossiers de configuration du HOME (D-2b-33) : VIDES et à root dans l'image. L'image de base en donne à node (agents,
+# commands, skills) : ils sont retirés. Compose monte par-dessus, en lecture seule, le volume omo-config à root, que le
+# superviseur (root) remplit à chaque démarrage par /omo-config avec omo.jsonc (copie de /etc/opencode-omo/omo/omo.jsonc, seul
+# emplacement que la 4.19.4 lit : ~/.omo/omo.jsonc) et un .gitignore (révision du train de V1) ; il exige, pour chacun, un
+# dossier à root, point de montage, portant ce contenu, non inscriptible par node.
 RUN set -eu; \
     for d in /home/node/.config/opencode /home/node/.opencode /home/node/.omo /home/node/.claude /home/node/.agents; do \
       rm -rf "$d"; \

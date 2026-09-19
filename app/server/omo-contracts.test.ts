@@ -234,12 +234,27 @@ function ecartsDuContrat(contrat: OmoSalleContract): string[] {
     if (role !== "referenceManifeste" && role !== "licence" && !couvert) ecarts.push(`${role} hors du périmètre du manifeste`);
   }
 
-  // D-2b-33 : les cinq dossiers de configuration du HOME viennent du volume vide, root, en lecture seule, écrit par personne.
-  const vide = contrat.volumes.find((volume) => volume.montages.every((montage) => montage.mode === "ro") && volume.ecrivain === null);
-  if (vide === undefined) ecarts.push("aucun volume vide en lecture seule pour les dossiers de configuration");
+  // D-2b-33, révisée au train de V1 (demande de contrat (A) de L15a) : les cinq dossiers de configuration du HOME viennent d'UN
+  // volume à root, monté en lecture seule sur chacun, dans la salle seule ; son unique montage en écriture est celui du superviseur
+  // (root), HORS du HOME, où il pose le omo.jsonc de référence de l'image et un .gitignore (la 4.19.4 ne lit sa configuration
+  // utilisateur qu'à ~/.omo/omo.jsonc ; opencode écrit un .gitignore dans chaque dossier de configuration, EROFS sinon).
+  const dansLeHome = (chemin: string): boolean => dans(chemin, "/home/node");
+  const config = contrat.volumes.find((volume) => volume.montages.some((montage) => contrat.dossiersConfigHome.includes(montage.cible)));
+  if (config === undefined) ecarts.push("aucun volume pour les dossiers de configuration du HOME");
   else {
-    if (vide.proprietaire !== "root") ecarts.push(`${vide.nom} : propriétaire attendu root`);
-    assertMemeEnsemble(ecarts, "dossiersConfigHome", contrat.dossiersConfigHome, vide.montages.map((montage) => montage.cible));
+    if (config.proprietaire !== "root") ecarts.push(`${config.nom} : propriétaire attendu root`);
+    if (config.montages.some((montage) => montage.service !== "salle")) ecarts.push(`${config.nom} : monté hors de la salle`);
+    const enLecture = config.montages.filter((montage) => montage.mode === "ro");
+    assertMemeEnsemble(ecarts, "dossiersConfigHome", contrat.dossiersConfigHome, enLecture.map((montage) => montage.cible));
+    for (const montage of config.montages) {
+      if (montage.mode === "rw" && dansLeHome(montage.cible)) ecarts.push(`${config.nom} : écrit dans le HOME (${montage.cible})`);
+    }
+  }
+  for (const volume of contrat.volumes) {
+    if (volume === config) continue;
+    for (const montage of volume.montages) {
+      if (contrat.dossiersConfigHome.includes(montage.cible)) ecarts.push(`${volume.nom} : monte un dossier de configuration du HOME (${montage.cible})`);
+    }
   }
   if (contrat.dossiersConfigHome.length !== 5) ecarts.push("dossiersConfigHome : cinq dossiers attendus (D-2b-33)");
 
@@ -317,7 +332,7 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
 
   it("volumes : contrôle et authentification écrits par le cockpit, état par la salle, journal par egress, sessions de la salle", () => {
     const par = (nom: string) => contrat.volumes.find((volume) => volume.nom === nom);
-    assert.deepEqual(contrat.volumes.map((volume) => volume.nom), ["control-omo", "omo-auth", "omo-state", "egress-log", "oc-omo-data", "omo-vide"]);
+    assert.deepEqual(contrat.volumes.map((volume) => volume.nom), ["control-omo", "omo-auth", "omo-state", "egress-log", "oc-omo-data", "omo-config"]);
     assert.deepEqual(par("control-omo")?.montages, [
       { service: "cockpit", cible: "/control-omo", mode: "rw" },
       { service: "salle", cible: "/control", mode: "ro" },
@@ -330,7 +345,14 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
     assert.equal(par("omo-state")?.proprietaire, "root");
     assert.equal(par("egress-log")?.ecrivain, "egress");
     assert.equal(par("oc-omo-data")?.montages[0]?.cible, "/home/node/.local/share/opencode");
-    assert.equal(par("omo-vide")?.ecrivain, null);
+    // Train de V1 : la configuration du HOME n'est plus un volume vide. Le superviseur (root) remplit omo-config sur /omo-config, seul
+    // montage en écriture, hors du HOME ; les cinq dossiers le voient en lecture seule.
+    assert.equal(par("omo-config")?.ecrivain, "salle");
+    assert.equal(par("omo-config")?.proprietaire, "root");
+    assert.deepEqual(par("omo-config")?.montages, [
+      { service: "salle", cible: "/omo-config", mode: "rw" },
+      ...contrat.dossiersConfigHome.map((cible) => ({ service: "salle", cible, mode: "ro" })),
+    ]);
   });
 
   it("chemins de l'image : les douze chemins attendus, tous absolus (identifiant d'image ajouté au train de V0)", () => {
@@ -408,9 +430,32 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
     refuse("dossier de configuration du HOME non monté", (c) => {
       c.dossiersConfigHome = c.dossiersConfigHome.filter((chemin) => chemin !== "/home/node/.agents");
     });
+    const configHome = (c: OmoSalleContract) => {
+      const volume = c.volumes.find((v) => v.nom === "omo-config");
+      assert.ok(volume, "volume omo-config absent du contrat");
+      return volume;
+    };
     refuse("dossier de configuration inscriptible", (c) => {
-      const vide = c.volumes.find((volume) => volume.nom === "omo-vide");
-      if (vide?.montages[0] !== undefined) vide.montages[0].mode = "rw";
+      const montage = configHome(c).montages.find((m) => m.cible === "/home/node/.omo");
+      if (montage !== undefined) montage.mode = "rw";
+    });
+    refuse("configuration du HOME écrite depuis le HOME", (c) => {
+      const montage = configHome(c).montages.find((m) => m.mode === "rw");
+      if (montage !== undefined) montage.cible = "/home/node/.omo-ecriture";
+    });
+    refuse("volume de configuration du HOME à node", (c) => {
+      configHome(c).proprietaire = "node";
+    });
+    refuse("volume de configuration du HOME monté par le cockpit", (c) => {
+      configHome(c).montages.push({ service: "cockpit", cible: "/omo-config", mode: "ro" });
+    });
+    refuse("volume de configuration du HOME écrit par personne mais monté en écriture", (c) => {
+      configHome(c).ecrivain = null;
+    });
+    refuse("dossier de configuration du HOME pris sur un autre volume", (c) => {
+      const config = configHome(c);
+      config.montages = config.montages.filter((m) => m.cible !== "/home/node/.agents");
+      c.volumes.find((v) => v.nom === "oc-omo-data")?.montages.push({ service: "salle", cible: "/home/node/.agents", mode: "ro" });
     });
     refuse("contrôle inscriptible par la salle", (c) => {
       const control = c.volumes.find((volume) => volume.nom === "control-omo");

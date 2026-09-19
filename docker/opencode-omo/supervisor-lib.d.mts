@@ -7,6 +7,7 @@ export declare const OMO_LISTE_MAX: number;
 export declare const OMO_MANIFESTE_MAX_OCTETS: number;
 export declare const OMO_PROJETS_MAX_OCTETS: number;
 export declare const OMO_AUTH_MAX_OCTETS: number;
+export declare const OMO_CONFIG_MAX_OCTETS: number;
 
 export interface OmoDelais {
   battementS: number;
@@ -32,6 +33,8 @@ export declare const CHEMINS: {
   workspace: string;
   home: string;
   tmp: string;
+  configHome: string;
+  configurationOmo: string;
   superviseur: string;
   superviseurLib: string;
   valider: string;
@@ -47,6 +50,8 @@ export declare const CHEMINS: {
 };
 
 export declare const DOSSIERS_CONFIG_HOME: string[];
+export declare const CONFIG_HOME_FICHIERS: Readonly<{ omo: string; gitignore: string }>;
+export declare const CONFIG_HOME_GITIGNORE: string;
 export declare const UID_NODE: number;
 export declare const VOLUMES_SALLE: { volume: string; chemin: string; uid: number }[];
 export declare const VOLUMES_FERMES_A_NODE: string[];
@@ -229,6 +234,15 @@ export declare function etapeConfigNode(acces?: (chemin: string) => boolean): Co
 export declare function absorber(dossierEtat: string, fichier: string): { ok: boolean; raison: string; gitProtege?: boolean };
 export declare function controlerDossierConfigNode(chemin: string, acces?: (chemin: string) => boolean): DossierConfigVerdict;
 export declare function accesEcriture(chemin: string): boolean;
+export declare function controlerContenuConfig(chemin: string, texteReference: string | null): DossierConfigVerdict;
+export declare function controlerDossierConfigHome(chemin: string, texteReference: string | null, montages?: string[]): DossierConfigVerdict;
+export interface ConstatConfigHome {
+  etape: "config-home";
+  ok: boolean;
+  raison: string | null;
+  octets?: number;
+}
+export declare function preparerConfigHome(options?: { dossier?: string; reference?: string; montages?: string[]; uid?: number }): ConstatConfigHome;
 
 export declare function formeGit(chemin: string): GitForme;
 export declare function lireGitdir(cheminGit: string): string | null;

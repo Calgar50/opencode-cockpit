@@ -5,8 +5,11 @@
 #
 # Ordre impose (plan 2 bis, fiche L17a ; spec. 3.15.2 l.499-517) :
 #   1. manifeste compare a /etc/omo-reference/omo-manifest.sha256 (ecart ou amorce -> refus, D-2b-32) ;
-#   2. node /opt/omo-check/validate.mjs (echec -> refus, G14) ;
-#   3. cinq dossiers de configuration du HOME : a root, points de montage, node ne peut pas y ecrire (D-2b-33, MO-3) ; volumes
+#   1 bis. configuration du HOME : root remplit le volume omo-config sur /omo-config avec le omo.jsonc de reference (couvert par le
+#      manifeste) et un .gitignore, rien d'autre ; les cinq dossiers le voient en lecture seule (D-2b-33 revisee au train de V1) ;
+#   2. node /opt/omo-check/validate.mjs (echec -> refus, G14) : il relit ~/.omo/omo.jsonc, seul fichier que l'extension lit ;
+#   3. cinq dossiers de configuration du HOME : a root, points de montage, contenu de l'etape 1 bis, node ne peut pas y ecrire
+#      (D-2b-33, MO-3) ; volumes
 #      de la salle au proprietaire du contrat (MO-11), /control, /auth-src et /omo-state fermes a node (G9, M32) ; bascule vers
 #      node verifiee sur le processus lui-meme : aucune capacite, aucun groupe, no-new-privileges (D-2b-27, MO-7) ;
 #   4. EN TANT QUE node : purge de /tmp, du HOME et du dossier de donnees sauf opencode.db* (MO-2), copie d'auth.json en 0600 ;
@@ -127,6 +130,15 @@ executer node "$LIB" manifeste "$MANIFESTE_ACTUEL"
 [ "$CODE" -eq 0 ] || refus "manifeste different de la reference de l'image (ecart ou amorce)"
 log "manifeste conforme a la reference de l'image"
 
+# --- Etape 1 bis : configuration du HOME (D-2b-33 revisee au train de V1) ---------------------------------------------------------
+# La 4.19.4 ne lit sa configuration utilisateur qu'a ~/.omo/omo.jsonc, et opencode ecrit un .gitignore dans chaque dossier de
+# configuration (EROFS sur un montage en lecture seule : instance inutilisable, mesure L24). Root pose les deux fichiers dans le
+# volume omo-config, par son seul montage en ecriture (hors du HOME), avant toute bascule vers node ; la validation relit ensuite
+# ~/.omo/omo.jsonc par le montage en lecture seule. Volume absent, pas a root ou pas un point de montage : refus.
+executer node "$LIB" config-home
+[ "$CODE" -eq 0 ] || refus "configuration du HOME non posee : volume omo-config absent, pas a root, pas un point de montage, ou ecriture refusee"
+log "configuration du HOME posee depuis la reference de l'image"
+
 # --- Etape 2 : validation de la configuration (JS-5, G14) -------------------------------------------------------------------------
 [ -f "$VALIDATE" ] || refus "validateur absent"
 executer node "$VALIDATE"
@@ -141,7 +153,7 @@ eval "$delais"
 
 # --- Etape 3 : dossiers de configuration du HOME, volumes, bascule vers node (D-2b-33, MO-3, MO-7, MO-11) -------------------------
 executer node "$LIB" config-root
-[ "$CODE" -eq 0 ] || refus "un dossier de configuration manque, n'est pas un dossier, n'appartient pas a root ou n'est plus un point de montage"
+[ "$CODE" -eq 0 ] || refus "un dossier de configuration manque, n'est pas un dossier, n'appartient pas a root, n'est plus un point de montage ou n'a pas le contenu de l'etape 1 bis"
 executer node "$LIB" volumes-root
 [ "$CODE" -eq 0 ] || refus "un volume de la salle manque, n'est pas un point de montage ou n'a pas le proprietaire du contrat"
 # shellcheck disable=SC2086

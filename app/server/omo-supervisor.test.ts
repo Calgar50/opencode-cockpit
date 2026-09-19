@@ -260,6 +260,8 @@ describe("superviseur : présence d'opencode et signaux", () => {
     };
     const ordre = [
       /node "\$LIB" manifeste /,
+      // Train de V1 : la configuration du HOME est posée par root AVANT la validation, qui relit ~/.omo/omo.jsonc.
+      /^executer node "\$LIB" config-home$/,
       /node "\$VALIDATE"$/,
       /node "\$LIB" config-root$/,
       /node "\$LIB" volumes-root$/,
@@ -280,8 +282,8 @@ describe("superviseur : présence d'opencode et signaux", () => {
       ordre,
       "étapes dans le désordre",
     );
-    // Chaque contrôle de l'étape 3 refuse : la ligne qui suit exige un code nul.
-    for (const motif of [/node "\$LIB" volumes-root$/, /^executer \$SETPRIV node "\$LIB" capacites$/]) {
+    // Chaque contrôle de l'étape 3, et la pose de la configuration du HOME, refuse : la ligne qui suit exige un code nul.
+    for (const motif of [/^executer node "\$LIB" config-home$/, /node "\$LIB" volumes-root$/, /^executer \$SETPRIV node "\$LIB" capacites$/]) {
       assert.match(lignes[position(motif) + 1] ?? "", /^\[ "\$CODE" -eq 0 \] \|\| refus /);
     }
   });
@@ -439,6 +441,125 @@ describe("superviseur : cinq dossiers de configuration du HOME", () => {
   });
 });
 
+// --- Configuration du HOME posée par root (D-2b-33 révisée au train de V1) ----------------------------------------------------------
+
+describe("superviseur : configuration du HOME posée par root (train de V1, demande de contrat (A) de L15a)", () => {
+  const posix = (chemin: string) => chemin.replaceAll("\\", "/");
+  const REFERENCE = '{\n  // omo.jsonc de référence (test)\n  "disabled_hooks": ["goal"]\n}\n';
+
+  /** Volume de test : un dossier « monté » (sa liste de montages le dit), la référence à côté, et le propriétaire réel du dossier. */
+  function volumeDeTest(t: { after: (fn: () => void) => void }) {
+    const racine = dossierTemporaire();
+    t.after(() => fs.rmSync(racine, { recursive: true, force: true }));
+    const dossier = path.join(racine, "omo-config");
+    fs.mkdirSync(dossier);
+    const reference = path.join(racine, "omo.jsonc");
+    fs.writeFileSync(reference, REFERENCE);
+    return { racine, dossier, reference, montages: [posix(dossier)], uid: fs.lstatSync(dossier).uid };
+  }
+
+  it("pose EXACTEMENT omo.jsonc (la référence) et .gitignore, et efface tout le reste : une relance garde le volume", (t) => {
+    const v = volumeDeTest(t);
+    // Restes d'un démarrage précédent ou d'une configuration d'avant : rien ne doit s'accumuler (omo.json serait lu en plus).
+    fs.writeFileSync(path.join(v.dossier, "omo.json"), '{"disabled_hooks": []}');
+    fs.writeFileSync(path.join(v.dossier, "omo.jsonc"), '{"ancienne": true}');
+    fs.mkdirSync(path.join(v.dossier, "skills", "x"), { recursive: true });
+    fs.writeFileSync(path.join(v.dossier, "skills", "x", "SKILL.md"), "# compétence semée\n");
+    const dehors = path.join(v.racine, "dehors");
+    fs.mkdirSync(dehors);
+    fs.writeFileSync(path.join(dehors, "garde.txt"), "x");
+    const lien = lienDossier(dehors, path.join(v.dossier, "lien"));
+
+    const constat = salle.preparerConfigHome(v);
+    assert.deepEqual(constat, { etape: "config-home", ok: true, raison: null, octets: Buffer.byteLength(REFERENCE) });
+    assert.deepEqual(fs.readdirSync(v.dossier).sort(), [".gitignore", "omo.jsonc"]);
+    assert.equal(fs.readFileSync(path.join(v.dossier, "omo.jsonc"), "utf8"), REFERENCE);
+    assert.equal(fs.readFileSync(path.join(v.dossier, ".gitignore"), "utf8"), salle.CONFIG_HOME_GITIGNORE);
+    // Le lien est retiré, jamais traversé : sa cible reste.
+    if (lien) assert.equal(fs.existsSync(path.join(dehors, "garde.txt")), true);
+    if (process.platform !== "win32") {
+      for (const nom of [".gitignore", "omo.jsonc"]) assert.equal(fs.statSync(path.join(v.dossier, nom)).mode & 0o777, 0o444, nom);
+    }
+    // Deuxième démarrage sur le même volume : même résultat, fichiers en lecture seule remplacés.
+    assert.equal(salle.preparerConfigHome(v).ok, true);
+    assert.deepEqual(fs.readdirSync(v.dossier).sort(), [".gitignore", "omo.jsonc"]);
+    assert.deepEqual(salle.controlerContenuConfig(v.dossier, REFERENCE), { chemin: v.dossier, ok: true, raison: null });
+  });
+
+  it("le .gitignore posé est celui qu'opencode 1.18.30 écrirait (config.ts, ensureGitignore) : il n'essaie plus de l'écrire", () => {
+    assert.deepEqual(salle.CONFIG_HOME_GITIGNORE.trimEnd().split("\n"), ["node_modules", "package.json", "package-lock.json", "bun.lock", ".gitignore"]);
+    assert.deepEqual({ ...salle.CONFIG_HOME_FICHIERS }, { omo: "omo.jsonc", gitignore: ".gitignore" });
+  });
+
+  it("fermé en cas de doute : volume absent, simple dossier, autre propriétaire, référence absente ou trop grosse → rien n'est touché", (t) => {
+    const v = volumeDeTest(t);
+    const temoin = path.join(v.dossier, "temoin");
+    fs.writeFileSync(temoin, "x");
+    const raison = (options: Partial<typeof v>) => salle.preparerConfigHome({ ...v, ...options }).raison;
+    assert.equal(raison({ dossier: path.join(v.racine, "absent"), montages: [posix(path.join(v.racine, "absent"))] }), "absent");
+    assert.equal(raison({ montages: [] }), "pas-un-montage");
+    assert.equal(raison({ montages: [posix(v.racine)] }), "pas-un-montage");
+    assert.equal(raison({ uid: v.uid + 1 }), "proprietaire");
+    assert.equal(raison({ reference: path.join(v.racine, "absente.jsonc") }), "reference-illisible");
+    const grosse = path.join(v.racine, "grosse.jsonc");
+    fs.writeFileSync(grosse, `{"x": "${"a".repeat(salle.OMO_CONFIG_MAX_OCTETS)}"}`);
+    assert.equal(raison({ reference: grosse }), "reference-illisible");
+    // Aucun de ces refus n'a vidé le volume : le contrôle vient AVANT la purge.
+    assert.equal(fs.existsSync(temoin), true);
+    assert.equal(salle.preparerConfigHome(v).ok, true, "le même volume, bien monté, est accepté");
+    assert.equal(fs.existsSync(temoin), false);
+  });
+
+  it(
+    "une référence remplacée par un lien n'est pas suivie",
+    { skip: process.platform === "win32" ? "O_NOFOLLOW n'existe pas sous Windows : joué en CI Linux et dans le conteneur" : false },
+    (t) => {
+      const v = volumeDeTest(t);
+      const lien = path.join(v.racine, "lien.jsonc");
+      fs.symlinkSync(v.reference, lien, "file");
+      assert.equal(salle.preparerConfigHome({ ...v, reference: lien }).raison, "reference-illisible");
+      // Sans le lien, la même référence est acceptée : c'est bien le lien qui est refusé.
+      assert.equal(salle.preparerConfigHome(v).ok, true);
+    },
+  );
+
+  it("contenu d'un dossier de configuration : les deux fichiers exacts, rien d'autre ; sinon « contenu »", (t) => {
+    const v = volumeDeTest(t);
+    assert.equal(salle.preparerConfigHome(v).ok, true);
+    const juger = (texte: string | null) => salle.controlerContenuConfig(v.dossier, texte).raison;
+    assert.equal(juger(REFERENCE), null);
+    assert.equal(juger(null), "contenu", "référence illisible");
+    assert.equal(juger(`${REFERENCE} `), "contenu", "omo.jsonc différent de la référence");
+    fs.writeFileSync(path.join(v.dossier, "omo.json"), "{}");
+    assert.equal(juger(REFERENCE), "contenu", "un troisième fichier");
+    fs.rmSync(path.join(v.dossier, "omo.json"));
+    fs.chmodSync(path.join(v.dossier, ".gitignore"), 0o644);
+    fs.writeFileSync(path.join(v.dossier, ".gitignore"), "autre\n");
+    assert.equal(juger(REFERENCE), "contenu", ".gitignore différent");
+    fs.rmSync(path.join(v.dossier, ".gitignore"));
+    assert.equal(juger(REFERENCE), "contenu", ".gitignore absent");
+    assert.equal(salle.controlerContenuConfig(path.join(v.racine, "absent"), REFERENCE).raison, "contenu");
+  });
+
+  it("étape 3 : un dossier du HOME doit être à root, monté, ET porter le contenu posé (un volume vide ou étranger est refusé)", (t) => {
+    const v = volumeDeTest(t);
+    assert.equal(salle.preparerConfigHome(v).ok, true);
+    // Même règle de propriétaire que controlerDossierConfigRoot : root exigé (0 sous Windows, où le test peut conclure).
+    const attenduOk = v.uid === 0;
+    assert.equal(salle.controlerDossierConfigHome(v.dossier, REFERENCE, v.montages).ok, attenduOk);
+    assert.equal(salle.controlerDossierConfigHome(v.dossier, REFERENCE, []).ok, false);
+    if (!attenduOk) return;
+    assert.equal(salle.controlerDossierConfigHome(v.dossier, REFERENCE, []).raison, "pas-un-montage");
+    const vide = path.join(v.racine, "vide");
+    fs.mkdirSync(vide);
+    assert.equal(salle.controlerDossierConfigHome(vide, REFERENCE, [posix(vide)]).raison, "contenu");
+    // Le contenu est jugé par CE chemin : un dossier monté depuis un autre volume, même avec les bons noms, doit avoir les bons octets.
+    fs.writeFileSync(path.join(vide, ".gitignore"), salle.CONFIG_HOME_GITIGNORE);
+    fs.writeFileSync(path.join(vide, "omo.jsonc"), REFERENCE);
+    assert.equal(salle.controlerDossierConfigHome(vide, REFERENCE, [posix(vide)]).ok, true);
+  });
+});
+
 // --- Volumes de la salle (MO-11, M32, G9) -------------------------------------------------------------------------------------------
 
 describe("superviseur : volumes de la salle", () => {
@@ -448,10 +569,11 @@ describe("superviseur : volumes de la salle", () => {
       { volume: "omo-auth", chemin: "/auth-src", uid: 1000 },
       { volume: "omo-state", chemin: "/omo-state", uid: 0 },
       { volume: "oc-omo-data", chemin: "/home/node/.local/share/opencode", uid: 1000 },
+      { volume: "omo-config", chemin: "/omo-config", uid: 0 },
     ]);
     assert.equal(salle.UID_NODE, 1000);
-    // Le battement, l'authentification et l'état publié : jamais inscriptibles par node (G9, M32).
-    assert.deepEqual(salle.VOLUMES_FERMES_A_NODE, ["/control", "/auth-src", "/omo-state"]);
+    // Le battement, l'authentification, l'état publié et la configuration du HOME : jamais inscriptibles par node (G9, M32).
+    assert.deepEqual(salle.VOLUMES_FERMES_A_NODE, ["/control", "/auth-src", "/omo-state", "/omo-config"]);
   });
 
   it("propriétaire, point de montage et présence sont vérifiés, jamais déduits (MO-11)", (t) => {
@@ -1250,9 +1372,18 @@ interface OptionsCas {
   reference?: string;
   /** Code de sortie du faux validateur (G14). */
   codeValidation?: number;
-  /** Dossiers de configuration à ne pas créer, ou à donner à `node` (T-L17-f). */
+  /**
+   * Dossiers de configuration à ne pas monter, ou à monter depuis un volume à `node` au lieu d'`omo-config` (T-L17-f). Les autres
+   * voient tous le volume `omo-config` en lecture seule (D-2b-33 révisée au train de V1).
+   */
   configAbsente?: readonly string[];
   configANode?: readonly string[];
+  /** Dossiers montés depuis un volume VIDE à root (le contrat de V0) : à root, monté, non inscriptible, mais sans la configuration. */
+  configVide?: readonly string[];
+  /** Volume `omo-config` non monté sur `/omo-config` : root ne peut rien poser, refus à l'étape 1 bis. */
+  sansConfigHome?: boolean;
+  /** Restes d'un démarrage précédent dans `omo-config` (relance : le volume est gardé) ; l'étape 1 bis doit les effacer. */
+  configPerime?: boolean;
   /** `.git` inscriptible par `node` dans ce projet (T-L17-d). */
   projetOuvert?: boolean;
   /** `.git` à root, non inscriptible par `node`, mais monté par personne (T-L17-d, MO-3). */
@@ -1268,6 +1399,18 @@ interface OptionsCas {
 }
 
 const MANIFESTE_FAUX = "aaaa  /opt/omo/index.js\nbbbb  /opt/omo-check/supervisor-lib.mjs\n";
+
+/** `omo.jsonc` de référence du conteneur de test, posé à `/etc/opencode-omo/omo/omo.jsonc` (en lecture seule, comme dans l'image). */
+const REFERENCE_CONTENEUR = '{\n  // reference de test (L17a, train de V1)\n  "disabled_hooks": ["goal"]\n}\n';
+
+/** Les cinq dossiers de configuration du HOME, par nom de volume de test (T-L17-f). */
+const DOSSIERS_CONFIG_CONTENEUR = [
+  ["config-opencode", "/home/node/.config/opencode"],
+  ["opencode", "/home/node/.opencode"],
+  ["omo", "/home/node/.omo"],
+  ["claude", "/home/node/.claude"],
+  ["agents", "/home/node/.agents"],
+] as const;
 
 /** Prépare tous les volumes d'un cas en UN conteneur (root) : scripts, référence, authentification, dossiers, dossier de travail. */
 function preparer(cas: Cas, options: OptionsCas): void {
@@ -1323,9 +1466,15 @@ function preparer(cas: Cas, options: OptionsCas): void {
       "644",
     ),
     "chown 1000:1000 /vol-control /vol-control/omo-projets.json",
-    // Cinq dossiers de configuration : un volume vide par dossier, root, monté en lecture seule (D-2b-33).
-    ...["config-opencode", "opencode", "omo", "claude", "agents"].map((nom) => `mkdir -p /vol-vide-${nom}`),
-    ...(options.configANode ?? []).map((nom) => `chown 1000:1000 /vol-vide-${nom}`),
+    // Configuration du HOME (D-2b-33 révisée au train de V1) : la référence de l'image, et le volume omo-config, à root, que le
+    // superviseur remplit lui-même. Restes d'un démarrage précédent au besoin ; volumes à node pour les dossiers de T-L17-f.
+    poser("/vol-etc/omo/omo.jsonc", REFERENCE_CONTENEUR, "644"),
+    "chown 0:0 /vol-config && chmod 755 /vol-config",
+    options.configPerime
+      ? "printf '{}' > /vol-config/omo.json && printf '{\"ancienne\":true}' > /vol-config/omo.jsonc && mkdir -p /vol-config/skills/x && printf x > /vol-config/skills/x/SKILL.md"
+      : "true",
+    ...(options.configANode ?? []).map((nom) => `mkdir -p /vol-node-${nom} && chown 1000:1000 /vol-node-${nom}`),
+    ...(options.configVide ?? []).map((nom) => `chown 0:0 /vol-vide-${nom} && chmod 755 /vol-vide-${nom}`),
   ].join("\n");
 
   const montages = [
@@ -1347,7 +1496,12 @@ function preparer(cas: Cas, options: OptionsCas): void {
     `${cas.volume("control")}:/vol-control`,
     "-v",
     `${cas.volume("state")}:/vol-state`,
-    ...["config-opencode", "opencode", "omo", "claude", "agents"].flatMap((nom) => ["-v", `${cas.volume(`vide-${nom}`)}:/vol-vide-${nom}`]),
+    "-v",
+    `${cas.volume("etc")}:/vol-etc`,
+    "-v",
+    `${cas.volume("config")}:/vol-config`,
+    ...(options.configANode ?? []).flatMap((nom) => ["-v", `${cas.volume(`node-${nom}`)}:/vol-node-${nom}`]),
+    ...(options.configVide ?? []).flatMap((nom) => ["-v", `${cas.volume(`vide-${nom}`)}:/vol-vide-${nom}`]),
   ];
   const res = docker(["run", "--rm", "-i", ...montages, IMAGE_BASE, "sh", "-s"], script);
   assert.equal(res.code, 0, `préparation de ${cas.nom} : ${res.stderr}`);
@@ -1373,13 +1527,6 @@ const SECURITE = [
 /** Lance le superviseur en arrière-plan et rend le nom du conteneur. */
 function lancerSuperviseur(cas: Cas, options: OptionsCas): string {
   const nom = cas.conteneur("salle");
-  const dossiersConfig = [
-    ["config-opencode", "/home/node/.config/opencode"],
-    ["opencode", "/home/node/.opencode"],
-    ["omo", "/home/node/.omo"],
-    ["claude", "/home/node/.claude"],
-    ["agents", "/home/node/.agents"],
-  ] as const;
   const args = [
     "run",
     "-d",
@@ -1409,9 +1556,16 @@ function lancerSuperviseur(cas: Cas, options: OptionsCas): string {
     `${cas.volume("ws")}:/workspace`,
     "-v",
     `${cas.volume("git-alpha")}:/workspace/alpha/.git:ro`,
-    ...dossiersConfig
-      .filter(([nom2]) => !(options.configAbsente ?? []).includes(nom2))
-      .flatMap(([nom2, cible]) => ["-v", `${cas.volume(`vide-${nom2}`)}:${cible}:ro`]),
+    // Contrat, train de V1 : référence de l'image en lecture seule ; omo-config en écriture sur /omo-config (root seul) et en lecture
+    // seule sur les cinq dossiers du HOME.
+    "-v",
+    `${cas.volume("etc")}:/etc/opencode-omo:ro`,
+    ...(options.sansConfigHome ? [] : ["-v", `${cas.volume("config")}:/omo-config`]),
+    ...DOSSIERS_CONFIG_CONTENEUR.filter(([nom2]) => !(options.configAbsente ?? []).includes(nom2)).flatMap(([nom2, cible]) => {
+      if ((options.configANode ?? []).includes(nom2)) return ["-v", `${cas.volume(`node-${nom2}`)}:${cible}:ro`];
+      if ((options.configVide ?? []).includes(nom2)) return ["-v", `${cas.volume(`vide-${nom2}`)}:${cible}:ro`];
+      return ["-v", `${cas.volume("config")}:${cible}:ro`];
+    }),
     IMAGE_BASE,
     "sh",
     "/opt/omo-check/supervisor.sh",
@@ -1750,12 +1904,14 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     });
   }
 
-  for (const [nom, options] of [
-    ["dossier de configuration absent", { configAbsente: ["omo"] }],
-    ["dossier de configuration appartenant à node", { configANode: ["claude"] }],
+  for (const [nom, suffixe, options] of [
+    ["dossier de configuration absent", "absent", { configAbsente: ["omo"] }],
+    ["dossier de configuration appartenant à node", "node", { configANode: ["claude"] }],
+    // Train de V1 : à root, monté, non inscriptible, mais VIDE (le contrat de V0) : opencode y écrirait .gitignore (EROFS).
+    ["dossier de configuration monté depuis un volume vide", "vide", { configVide: ["opencode"] }],
   ] as const) {
     it(`T-L17-f : ${nom} → aucun démarrage`, async () => {
-      const c = nouveauCas(`f-${options.configAbsente ? "absent" : "node"}`);
+      const c = nouveauCas(`f-${suffixe}`);
       preparer(c, options);
       const salleNom = lancerSuperviseur(c, options);
       await attendre(() => inspecter(salleNom, "{{.State.Status}}") === "exited", 60_000, "refus du superviseur");
@@ -1769,6 +1925,53 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
       );
     });
   }
+
+  it("configuration du HOME (train de V1) : ~/.omo/omo.jsonc = référence, .gitignore partout, restes effacés, rien d'inscriptible par node", async () => {
+    const c = nouveauCas("config-home");
+    preparer(c, { configPerime: true });
+    const salleNom = lancerSuperviseur(c, {});
+    const etat = await attendre(() => (etatPublie(c)?.phase === "attente" ? etatPublie(c) : null), 60_000, `attente\n${journal(salleNom)}`);
+    assert.deepEqual(
+      etat.dossiersConfig.map((d) => d.ok),
+      [true, true, true, true, true],
+    );
+    assert.match(journal(salleNom), /configuration du HOME posee depuis la reference de l'image/);
+    // Ce que voit node, par les montages en lecture seule : exactement les deux fichiers, la référence octet pour octet.
+    const script = [
+      "for d in /home/node/.config/opencode /home/node/.opencode /home/node/.omo /home/node/.claude /home/node/.agents /omo-config; do",
+      '  printf "LISTE %s %s\\n" "$d" "$(ls -A "$d" | tr "\\n" " ")"',
+      '  if [ -w "$d" ]; then echo "INSCRIPTIBLE $d"; fi',
+      "done",
+      'printf "OMO %s\\n" "$(base64 -w0 /home/node/.omo/omo.jsonc)"',
+      'touch /home/node/.omo/x 2>/dev/null && echo "ECRIT ~/.omo"',
+      'touch /omo-config/x 2>/dev/null && echo "ECRIT /omo-config"',
+      'mv /home/node/.omo /home/node/.omo-deplace 2>/dev/null && echo "DEPLACE ~/.omo"',
+      "true",
+    ].join("\n");
+    const res = docker(["exec", "-i", "-u", "1000:1000", salleNom, "sh", "-s"], script);
+    assert.equal(res.code, 0, res.stderr);
+    const lignes = res.stdout.split("\n").filter(Boolean);
+    for (const [, cible] of DOSSIERS_CONFIG_CONTENEUR) assert.ok(lignes.includes(`LISTE ${cible} .gitignore omo.jsonc `), `${cible} : ${res.stdout}`);
+    assert.ok(lignes.includes("LISTE /omo-config .gitignore omo.jsonc "), res.stdout);
+    assert.equal(lignes.find((l) => l.startsWith("OMO ")), `OMO ${Buffer.from(REFERENCE_CONTENEUR, "utf8").toString("base64")}`);
+    assert.deepEqual(
+      lignes.filter((l) => /^(INSCRIPTIBLE|ECRIT|DEPLACE) /.test(l)),
+      [],
+      "node ne doit rien pouvoir écrire ni déplacer",
+    );
+  });
+
+  it("configuration du HOME : volume omo-config non monté en écriture → refus à l'étape 1 bis, aucun démarrage", async () => {
+    const c = nouveauCas("sans-config-home");
+    preparer(c, {});
+    lancerBattement(c);
+    const salleNom = lancerSuperviseur(c, { sansConfigHome: true });
+    await attendre(() => inspecter(salleNom, "{{.State.Status}}") === "exited", 60_000, `refus du superviseur\n${journal(salleNom)}`);
+    assert.notEqual(inspecter(salleNom, "{{.State.ExitCode}}"), "0");
+    assert.equal(capacitesDuFaux(c), null, "opencode lancé sans configuration du HOME");
+    assert.match(journal(salleNom), /REFUS: configuration du HOME non posee/);
+    assert.equal(etatPublie(c)?.phase, "arret");
+  });
 
   for (const [nom, suffixe, commande] of [
     ["un projet renommé, son .git monté suit l'inode", "projet", ["mv", "/workspace/alpha", "/workspace/alpha-deplace"]],

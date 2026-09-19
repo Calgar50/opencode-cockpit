@@ -53,10 +53,11 @@
       "montages": [{ "service": "salle", "cible": "/home/node/.local/share/opencode", "mode": "rw" }]
     },
     {
-      "nom": "omo-vide",
+      "nom": "omo-config",
       "proprietaire": "root",
-      "ecrivain": null,
+      "ecrivain": "salle",
       "montages": [
+        { "service": "salle", "cible": "/omo-config", "mode": "rw" },
         { "service": "salle", "cible": "/home/node/.config/opencode", "mode": "ro" },
         { "service": "salle", "cible": "/home/node/.opencode", "mode": "ro" },
         { "service": "salle", "cible": "/home/node/.omo", "mode": "ro" },
