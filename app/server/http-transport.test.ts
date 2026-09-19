@@ -484,7 +484,15 @@ describe("démarrage extrait (server-start.ts) : configuration et certificat ava
     const listeners = sources.filter((file) =>
       /from "@hono\/node-server"|\bcreateServer\b|createSecureServer|\.listen\(/.test(fs.readFileSync(path.join(SERVER_DIR, file), "utf8")),
     );
-    assert.deepEqual(listeners, ["server-start.ts"]);
+    // Salle OMO (L16a) : egress-proxy.ts est un programme à part (`node server/egress-proxy.ts`, service `egress`), jamais chargé
+    // par le cockpit : aucun module du serveur ne doit l'importer, sinon le processus du cockpit aurait deux écoutes.
+    assert.deepEqual([...listeners].sort(), ["egress-proxy.ts", "server-start.ts"]);
+    const egressImporters = sources.filter(
+      (file) =>
+        file !== "egress-proxy.ts" &&
+        /["'](?:\.{1,2}\/)+(?:[\w-]+\/)*egress-proxy(?:\.ts|\.js)?["']/.test(fs.readFileSync(path.join(SERVER_DIR, file), "utf8")),
+    );
+    assert.deepEqual(egressImporters, []);
     const main = fs.readFileSync(path.join(SERVER_DIR, "main.ts"), "utf8");
     assert.equal(main.match(/\bstartLocalServer\(/g)?.length, 1);
     // Certificat préparé avant la base, base ouverte avant l'écoute.
