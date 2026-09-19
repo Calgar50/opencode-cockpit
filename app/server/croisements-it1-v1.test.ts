@@ -49,9 +49,10 @@ describe("croisements it1 V1 : tous les modules installés", () => {
   it("app-factory avec modules: « tous » = comportement 1.0 : « always » 403, « once » vérifié, arrêt relayé, demande restée refusée", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
     // Squelettes de T0 : route du Diagnostic ; modules livrés en V2 : routes « conversations » (L1c, arrêt de l'arbre), activité
-    // (L4b, avec sa dérivation : les faits dérivés n'envoient rien à opencode) et choix d'autonomie (L6a). Le reste du cadre reste
-    // au repos, ports neutres ; comportement 1.0 inchangé ci-dessous.
-    assert.equal(h.cockpit.wiring.routes.length, 4, "inscriptions de routes : conversations, activité, choix d'autonomie, Diagnostic");
+    // (L4b, avec sa dérivation : les faits dérivés n'envoient rien à opencode) et choix d'autonomie (L6a) ; en V3 : plans (L6b,
+    // crochet d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0
+    // inchangé ci-dessous.
+    assert.equal(h.cockpit.wiring.routes.length, 5, "inscriptions de routes : conversations, activité, choix d'autonomie, plans, Diagnostic");
 
     const { session, asked } = await pendingAsk(h, "Croisement V1");
     const always = await h.call("POST", `/api/oc/permission/${asked.id}/reply`, { headers: h.headers.mutating, body: { reply: "always" } });

@@ -459,7 +459,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), puis L6b (plans), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -467,22 +467,24 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "createSession", module: "floors" },
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "activity", module: "facts" },
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
+      { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
     assert.deepEqual(
       [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
-      [1, 1, 1, 1],
+      [1, 1, 2, 1],
     );
     assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.subscriptions], [[], []]);
     assert.equal(wiring.derivations.length, 1);
     assert.equal(wiring.startup.length, 1);
-    assert.equal(wiring.routes.length, 4);
+    assert.equal(wiring.routes.length, 5);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.
     assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
