@@ -14,6 +14,13 @@
 //   bandeau d'état, jamais par l'écran d'erreur, qui ne sert plus qu'avant le premier chargement ;
 // - un 401 arrête tout (écran de connexion), jamais de boucle ; un succès arrête tout ; dispose() nettoie la minuterie et fait
 //   ignorer les réponses en retard.
+//
+// Rafraîchissement demandé (constat de la vérification de c630349, régression par rapport à la 1.0.5) : seuls les
+// déclencheurs de reprise (minuterie, « online », onglet, flux) partagent la tentative en cours. Un load() explicite
+// (rafraîchissement après une modification, « Réessayer », connexion) lancé pendant une tentative en programme UNE nouvelle,
+// lancée à sa fin : la réponse en cours, calculée avant la demande, ne doit jamais remplacer l'affichage. Seule compte la
+// réponse de la tentative la plus récemment lancée ou demandée (numéro de séquence) ; celle d'une tentative dépassée est
+// ignorée, qu'elle soit un succès ou un échec.
 
 export type BootPhase = "loading" | "login" | "ready" | "error";
 
@@ -69,11 +76,13 @@ export interface BootRecoveryDeps<T> {
 export interface BootRecovery<T> {
   readonly view: BootView<T>;
   /**
-   * Charge tout de suite (premier chargement, « Réessayer », connexion réussie, rafraîchissement demandé par l'interface) ;
-   * une tentative en cours est partagée, jamais doublée. Ne rejette jamais.
+   * Charge tout de suite (premier chargement, « Réessayer », connexion réussie, rafraîchissement demandé par l'interface).
+   * Pendant une tentative, en programme une seule nouvelle, lancée à sa fin (rafraîchissement de queue) : la réponse en
+   * cours, calculée avant la demande, est ignorée. Se résout une fois l'affichage réglé par une tentative lancée après
+   * l'appel (ou arrêté par un 401, ou le démontage).
    */
   load(): Promise<void>;
-  /** Relance aussitôt une reprise en attente ; sans reprise en attente (ou tentative en cours), ne fait rien. */
+  /** Relance aussitôt une reprise en attente ; sans reprise en attente, ou pendant une tentative (partagée), ne fait rien. */
   trigger(reason: RetryTrigger): void;
   /** Session perdue (401 vu par une autre requête) : écran de connexion, reprise arrêtée, réponse en cours ignorée. */
   unauthorized(): void;
@@ -84,9 +93,15 @@ export interface BootRecovery<T> {
 export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T> {
   let view: BootView<T> = INITIAL_BOOT_VIEW;
   let timer: unknown = null;
+  /** Tentative en cours ; se résout quand elle est réglée, et le rafraîchissement de queue qu'elle a reçu aussi. */
   let inFlight: Promise<void> | null = null;
-  /** Change à chaque 401 et au démontage : une réponse d'une génération passée est ignorée. */
-  let generation = 0;
+  /** Un load() explicite est arrivé pendant la tentative en cours : une seule nouvelle tentative partira à sa fin. */
+  let tailRequested = false;
+  /**
+   * Numéro de la tentative la plus récemment lancée ou demandée. Avance aussi à chaque 401 et au démontage : la réponse d'une
+   * tentative dépassée est ignorée.
+   */
+  let latest = 0;
   let disposed = false;
 
   const set = (next: BootView<T>) => {
@@ -99,8 +114,8 @@ export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T
     timer = null;
   };
 
-  const settle = (gen: number, outcome: { ok: true; data: T } | { ok: false; failure: BootFailure }) => {
-    if (disposed || gen !== generation) return;
+  const settle = (id: number, outcome: { ok: true; data: T } | { ok: false; failure: BootFailure }) => {
+    if (disposed || id !== latest) return;
     cancelTimer();
     if (outcome.ok) {
       set({ phase: "ready", data: outcome.data, error: "", retry: null, recovered: view.retry !== null && view.data !== null });
@@ -116,22 +131,33 @@ export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T
     set({ phase: view.data === null ? "error" : "ready", data: view.data, error: outcome.failure.message, retry: { failures, delayMs }, recovered: false });
     timer = deps.setTimer(() => {
       timer = null;
-      if (deps.hidden?.()) return;
-      void attempt();
+      if (deps.hidden?.() || inFlight !== null) return;
+      void launch();
     }, delayMs);
   };
 
-  const attempt = (): Promise<void> => {
-    if (disposed) return Promise.resolve();
-    if (inFlight) return inFlight;
+  /** Lance une tentative tout de suite (aucune en cours) ; à sa fin, lance le rafraîchissement de queue s'il a été demandé. */
+  const launch = (): Promise<void> => {
     cancelTimer();
-    const gen = generation;
-    const current = deps.load().then(
-      (data) => settle(gen, { ok: true, data }),
-      (err: unknown) => settle(gen, { ok: false, failure: deps.classify(err) }),
+    const id = ++latest;
+    const settled = deps.load().then(
+      (data) => settle(id, { ok: true, data }),
+      (err: unknown) => settle(id, { ok: false, failure: deps.classify(err) }),
     );
-    const tracked = current.finally(() => {
-      if (inFlight === tracked) inFlight = null;
+    const next = (): Promise<void> | undefined => {
+      // 401 ou démontage entre-temps : ils ont déjà remis l'état à zéro, rien ne suit.
+      if (inFlight !== tracked) return undefined;
+      inFlight = null;
+      if (!tailRequested) return undefined;
+      tailRequested = false;
+      return launch();
+    };
+    const tracked: Promise<void> = settled.then(next, (err: unknown) => {
+      if (inFlight === tracked) {
+        inFlight = null;
+        tailRequested = false;
+      }
+      throw err;
     });
     inFlight = tracked;
     return tracked;
@@ -139,8 +165,9 @@ export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T
 
   const toLogin = () => {
     cancelTimer();
-    generation++;
+    latest++;
     inFlight = null;
+    tailRequested = false;
     set({ phase: "login", data: null, error: "", retry: null, recovered: false });
   };
 
@@ -148,10 +175,19 @@ export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T
     get view() {
       return view;
     },
-    load: attempt,
+    load() {
+      if (disposed) return Promise.resolve();
+      if (inFlight === null) return launch();
+      if (!tailRequested) {
+        // La tentative en cours est dépassée : sa réponse, calculée avant la demande, sera ignorée.
+        tailRequested = true;
+        latest++;
+      }
+      return inFlight;
+    },
     trigger() {
-      if (disposed || view.retry === null || inFlight) return;
-      void attempt();
+      if (disposed || view.retry === null || inFlight !== null) return;
+      void launch();
     },
     unauthorized() {
       if (disposed) return;
@@ -159,11 +195,21 @@ export function createBootRecovery<T>(deps: BootRecoveryDeps<T>): BootRecovery<T
     },
     dispose() {
       disposed = true;
-      generation++;
+      latest++;
       inFlight = null;
+      tailRequested = false;
       cancelTimer();
     },
   };
+}
+
+/**
+ * Focus à rattraper quand le bandeau de reprise disparaît avec son bouton « Réessayer » (constat de la vérification de
+ * c630349) : seulement s'il était dans la zone d'annonce et qu'il est retombé sur le corps de la page, ou nulle part. Un focus
+ * parti ailleurs n'est jamais repris.
+ */
+export function focusARattraper(dansLaZone: boolean, actif: unknown, corps: unknown): boolean {
+  return dansLaZone && (actif === null || actif === undefined || actif === corps);
 }
 
 /** Sources des signaux de reprise (window, document et flux d'événements dans l'interface ; EventTarget dans les tests). */

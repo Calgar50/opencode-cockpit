@@ -356,6 +356,20 @@ export async function demonterPile(plan) {
   await compose(plan, ["down", "-v", "--remove-orphans", "-t", "20"], { tolerant: true });
 }
 
+/** Seules actions permises sur un service pendant un scénario (redémarrage réel) : jamais rm, kill ni down. */
+const ACTIONS_SERVICE = Object.freeze({ arreter: ["stop", "-t", "5"], demarrer: ["start"] });
+
+/**
+ * Arrête ou relance un service de la pile jetable, pour un scénario de redémarrage réel du conteneur (ctx.pile). Commande
+ * Compose du banc, donc projet revérifié juste avant ; seulement les services de la pile du mode courant, seulement
+ * « stop » et « start » : les volumes et les données restent.
+ */
+export async function servicePile(plan, action, service) {
+  if (!Object.hasOwn(ACTIONS_SERVICE, action)) refuser(`action inconnue sur un service de la pile jetable : « ${action} ».`);
+  if (!plan.services?.includes(service)) refuser(`service inconnu de la pile jetable : « ${service} ».`);
+  await compose(plan, [...ACTIONS_SERVICE[action], service], { silencieux: true });
+}
+
 // --- Plan d'exécution -------------------------------------------------------------------------
 
 export function identifiantExecution(maintenant = new Date()) {
@@ -781,6 +795,11 @@ async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, f
     schema: plan.schema,
     epinglage: epinglage ? { sha256: epinglage.sha256, spki: epinglage.spki } : null,
     api,
+    // Redémarrage réel d'un service de la pile jetable (« stop » puis « start ») ; jamais la pile de l'utilisateur.
+    pile: {
+      arreter: (service) => servicePile(plan, "arreter", service),
+      demarrer: (service) => servicePile(plan, "demarrer", service),
+    },
     nom: scenario.nom,
     dossierCaptures: plan.captures,
     screenshot: (nom, options) => onglet.captureSuite(`${prefixe}-${nom}`, options),
@@ -962,6 +981,30 @@ export async function verifierGardes() {
     () => demonterPile({ projet: "opencode-cockpit", fichierEnv: "/tmp/banc.env", profils: [], dryRun: true, journal: [] }),
     "pile de l'utilisateur",
   );
+
+  // Redémarrage réel d'un service (ctx.pile) : même garde de projet que toute commande Compose, services et actions bornés.
+  const planService = () => ({
+    projet: "cockpit-e2e-essai",
+    fichierEnv: "/tmp/banc.env",
+    profils: ["faux"],
+    services: ["faux-opencode", "cockpit"],
+    dryRun: true,
+    journal: [],
+  });
+  await refuse("service de la pile : pile de l'utilisateur refusée", () => sansConsole(() => servicePile({ ...planService(), projet: "opencode-cockpit" }, "arreter", "cockpit")), "pile de l'utilisateur");
+  await refuse("service de la pile : service inconnu refusé", () => sansConsole(() => servicePile(planService(), "arreter", "opencode")), "service inconnu");
+  await refuse("service de la pile : action autre que stop et start refusée", () => sansConsole(() => servicePile(planService(), "rm", "cockpit")), "action inconnue");
+  await verifier("service de la pile : arrêt puis relance, dans le projet du banc", async () => {
+    const plan = planService();
+    await sansConsole(async () => {
+      await servicePile(plan, "arreter", "cockpit");
+      await servicePile(plan, "demarrer", "cockpit");
+    });
+    const [arret, relance, ...reste] = plan.journal;
+    if (reste.length > 0 || !arret || !relance) throw new Error(`commandes inattendues : ${plan.journal.join(" | ")}`);
+    if (!arret.startsWith("docker compose -p cockpit-e2e-essai ") || !arret.endsWith(" stop -t 5 cockpit")) throw new Error(`arrêt : ${arret}`);
+    if (!relance.startsWith("docker compose -p cockpit-e2e-essai ") || !relance.endsWith(" start cockpit")) throw new Error(`relance : ${relance}`);
+  });
 
   await refuse("mode réel hors ligne sans la mesure M-B1", () => {
     const mesure = mesureMB1([path.join(DOSSIER_BANC, "mesures-absentes")]);

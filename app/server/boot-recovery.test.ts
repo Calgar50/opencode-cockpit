@@ -1,19 +1,22 @@
 // Reprise de l'amorçage de l'interface (1.1, décision U4 ; défaut constaté pendant la mesure M25 de R105b, présent dans la 1.0.5) :
 // un rechargement de /api/bootstrap qui échoue pendant une coupure ne doit plus laisser l'écran « Le cockpit ne répond pas »
-// pour toujours. Minuterie factice et faux cockpit : aucun réseau, aucun navigateur ; le branchement réel (événements
-// « online » et « visibilitychange », flux d'événements) est vérifié sur des EventTarget de Node, et de bout en bout par le
-// scénario e2e/scenarios/010-reprise-apres-coupure.mjs.
+// pour toujours. Minuterie factice et faux cockpit : aucun réseau, aucun navigateur. Le branchement du crochet
+// (startBootRecovery : « online », « visibilitychange » et état de l'onglet, reconnexion du flux, 401, arrêt) est joué ici sur
+// des EventTarget de Node, et de bout en bout par le scénario e2e/scenarios/010-reprise-apres-coupure.mjs (coupure réseau,
+// onglet, focus, onglet caché, redémarrage réel du conteneur, amorçage lent, 401).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { classifyBootError } from "../web/app/useBootRecovery.ts";
+import { classifyBootError, startBootRecovery } from "../web/app/useBootRecovery.ts";
 import { ApiError } from "../web/lib/api.ts";
+import type { BrowserEvent } from "../web/lib/types.ts";
 import {
   type BootFailure,
   type BootRecovery,
   type BootView,
   createBootRecovery,
+  focusARattraper,
   INITIAL_BOOT_VIEW,
   RETRY_DELAYS_MS,
   type RetryTrigger,
@@ -78,12 +81,12 @@ class FakeCockpit {
   calls = 0;
   /** Réponses retenues (tentative en cours) quand `hold` est vrai. */
   hold = false;
-  #held: Array<() => void> = [];
+  #held: Array<{ call: number; resolve: () => void }> = [];
 
   load = async (): Promise<Boot> => {
     this.calls++;
     const call = this.calls;
-    if (this.hold) await new Promise<void>((resolve) => this.#held.push(resolve));
+    if (this.hold) await new Promise<void>((resolve) => this.#held.push({ call, resolve }));
     if (this.state === "down") throw new ApiError(0, "network", "Le cockpit ne répond pas (conteneur arrêté ?).");
     if (this.state === "401") throw new ApiError(401, "unauthorized", "Session expirée.");
     return { n: call };
@@ -91,7 +94,14 @@ class FakeCockpit {
 
   release(): void {
     this.hold = false;
-    for (const resolve of this.#held.splice(0)) resolve();
+    for (const { resolve } of this.#held.splice(0)) resolve();
+  }
+
+  /** Rend la seule réponse de la requête n° `call` (réponses dans le désordre) ; les autres restent retenues. */
+  releaseCall(call: number): void {
+    const index = this.#held.findIndex((h) => h.call === call);
+    const [held] = index < 0 ? [] : this.#held.splice(index, 1);
+    held?.resolve();
   }
 }
 
@@ -233,20 +243,18 @@ describe("reprise de l'amorçage : déclencheurs", () => {
     assert.deepEqual(clock.pending, []);
   });
 
-  it("déclencheur pendant une tentative : partagée, jamais doublée ; « Réessayer » aussi", async () => {
+  it("déclencheurs pendant une tentative : partagée, jamais doublée", async () => {
     const { recovery, cockpit, clock } = await loaded();
     cockpit.state = "down";
     await recovery.load();
     cockpit.hold = true;
     const manual = recovery.load();
-    recovery.trigger("online");
-    recovery.trigger("stream");
-    const again = recovery.load();
+    for (const reason of ["online", "visible", "stream", "online"] as const) recovery.trigger(reason);
     assert.equal(cockpit.calls, 3, "une seule tentative en cours");
     cockpit.state = "up";
     cockpit.release();
-    await Promise.all([manual, again]);
-    assert.equal(cockpit.calls, 3);
+    await manual;
+    assert.equal(cockpit.calls, 3, "aucune tentative de plus après elle");
     assert.equal(recovery.view.retry, null);
     assert.deepEqual(clock.pending, []);
   });
@@ -278,6 +286,103 @@ describe("reprise de l'amorçage : déclencheurs", () => {
     await flush();
     assert.equal(cockpit.calls, 3);
     assert.equal(recovery.view.retry, null);
+  });
+});
+
+// Constat de la vérification de c630349 : un rafraîchissement demandé juste après une modification recevait la réponse d'une
+// tentative déjà en cours, calculée avant la modification (affichage faux, aucune nouvelle requête ; régression par rapport à
+// la 1.0.5). Seuls les déclencheurs de reprise partagent la tentative en cours ; un load() explicite en programme une seule
+// nouvelle, lancée à sa fin, et seule compte la réponse de la tentative la plus récente.
+describe("reprise de l'amorçage : rafraîchissement demandé pendant une tentative", () => {
+  it("une seule nouvelle requête, lancée à la fin de la tentative en cours ; ses données l'emportent, la réponse dépassée n'est jamais affichée", async () => {
+    const { recovery, cockpit, views, ready, clock } = await loaded();
+    cockpit.hold = true;
+    // Rechargement lancé avant une modification : sa réponse ({ n: 2 }) est calculée avant elle.
+    const avant = recovery.load();
+    // Modification pendant ce rechargement : l'interface demande un rafraîchissement (deux fois, deux événements).
+    const apres1 = recovery.load();
+    const apres2 = recovery.load();
+    assert.equal(cockpit.calls, 2, "rien ne part tant que la tentative en cours n'est pas finie");
+    cockpit.release();
+    await Promise.all([avant, apres1, apres2]);
+    assert.equal(cockpit.calls, 3, "une seule nouvelle requête, partie après la tentative en cours");
+    assert.deepEqual(recovery.view, { phase: "ready", data: { n: 3 }, error: "", retry: null, recovered: false });
+    assert.ok(
+      views.every((v) => v.data?.n !== 2),
+      "la réponse calculée avant la modification ne remplace jamais l'affichage",
+    );
+    assert.deepEqual(ready, [{ n: 1 }, { n: 3 }]);
+    assert.deepEqual(clock.pending, []);
+  });
+
+  it("chaque load() se résout une fois la nouvelle requête réglée, jamais avec la réponse dépassée", async () => {
+    const { recovery, cockpit } = await loaded();
+    cockpit.hold = true;
+    const avant = recovery.load();
+    const apres = recovery.load().then(() => recovery.view.data);
+    cockpit.release();
+    assert.deepEqual(await apres, { n: 3 });
+    await avant;
+    assert.deepEqual(recovery.view.data, { n: 3 });
+  });
+
+  it("« Réessayer » pendant une tentative en échec : une seule nouvelle tentative, un seul échec compté", async () => {
+    const { recovery, cockpit, clock } = await loaded();
+    cockpit.state = "down";
+    await recovery.load();
+    cockpit.hold = true;
+    recovery.trigger("online");
+    const reessayer = recovery.load();
+    assert.equal(cockpit.calls, 3);
+    cockpit.release();
+    await reessayer;
+    assert.equal(cockpit.calls, 4, "« Réessayer » fait partir une tentative après celle en cours");
+    assert.deepEqual(recovery.view.retry, { failures: 2, delayMs: 5_000 }, "la tentative dépassée ne compte pas");
+    assert.deepEqual(clock.pending, [5_000]);
+  });
+
+  it("session perdue (401 d'une autre requête) avec un rafraîchissement en attente : connexion, rien ne part ensuite", async () => {
+    const { recovery, cockpit, clock } = await loaded();
+    cockpit.hold = true;
+    const avant = recovery.load();
+    const apres = recovery.load();
+    recovery.unauthorized();
+    cockpit.release();
+    await Promise.all([avant, apres]);
+    assert.equal(recovery.view.phase, "login");
+    assert.equal(cockpit.calls, 2, "aucune requête après le 401");
+    assert.deepEqual(clock.pending, []);
+  });
+
+  it("401 rendu par une tentative dépassée : la nouvelle tentative le revoit, connexion, jamais de boucle", async () => {
+    const { recovery, cockpit, clock } = await loaded();
+    cockpit.hold = true;
+    const avant = recovery.load();
+    const apres = recovery.load();
+    cockpit.state = "401";
+    cockpit.release();
+    await Promise.all([avant, apres]);
+    assert.equal(recovery.view.phase, "login");
+    assert.equal(cockpit.calls, 3);
+    for (const reason of ["online", "visible", "stream"] as const) recovery.trigger(reason);
+    await clock.advance(120_000);
+    assert.equal(cockpit.calls, 3);
+    assert.deepEqual(clock.pending, []);
+  });
+
+  it("réponses dans le désordre : seule compte la tentative la plus récemment lancée", async () => {
+    const { recovery, cockpit } = await loaded();
+    cockpit.hold = true;
+    const ancienne = recovery.load();
+    recovery.unauthorized();
+    const nouvelle = recovery.load();
+    cockpit.releaseCall(3);
+    await nouvelle;
+    assert.deepEqual(recovery.view.data, { n: 3 });
+    cockpit.releaseCall(2);
+    await ancienne;
+    assert.equal(recovery.view.phase, "ready");
+    assert.deepEqual(recovery.view.data, { n: 3 }, "la réponse en retard ne remplace pas la plus récente");
   });
 });
 
@@ -351,6 +456,17 @@ describe("reprise de l'amorçage : 401 et démontage", () => {
     await clock.advance(120_000);
     assert.equal(cockpit.calls, 3);
   });
+
+  it("démontage avec une minuterie programmée et aucune tentative en cours : minuterie nettoyée, plus rien ne part", async () => {
+    const { recovery, cockpit, clock } = await loaded();
+    cockpit.state = "down";
+    await recovery.load();
+    assert.deepEqual(clock.pending, [2_000], "reprise programmée, aucune tentative en cours");
+    recovery.dispose();
+    assert.deepEqual(clock.pending, [], "minuterie nettoyée par le démontage lui-même");
+    await clock.advance(120_000);
+    assert.equal(cockpit.calls, 2);
+  });
 });
 
 describe("reprise de l'amorçage : branchement des événements", () => {
@@ -391,6 +507,141 @@ describe("reprise de l'amorçage : branchement des événements", () => {
     s.page.dispatchEvent(new Event("visibilitychange"));
     assert.equal(s.streamListeners.size, 0);
     assert.deepEqual(calls, ["online", "visible", "stream"], "plus rien après le débranchement");
+  });
+});
+
+// Constat de la vérification de c630349 : useBootRecovery.ts n'était testé que par classifyBootError. Un mutant sans l'onglet
+// caché (`hidden`) et sans l'écoute de « stream.reconnected » gardait tous les tests verts. Le branchement du crochet
+// (startBootRecovery) est maintenant joué ici sur des factices de window, document, flux et 401.
+describe("reprise de l'amorçage : branchement du crochet (window, document, flux, 401)", () => {
+  function environnement() {
+    const clock = new FakeClock();
+    const cockpit = new FakeCockpit();
+    const network = new EventTarget();
+    const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    const streamListeners = new Set<(event: BrowserEvent) => void>();
+    const unauthorizedListeners = new Set<() => void>();
+    const flux = { connexions: 0, coupures: 0 };
+    const views: Array<BootView<Boot>> = [];
+    const started = startBootRecovery<Boot>({
+      load: cockpit.load,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      network,
+      page,
+      stream: {
+        subscribe: (listener) => {
+          streamListeners.add(listener);
+          return () => streamListeners.delete(listener);
+        },
+        connect: () => {
+          flux.connexions++;
+        },
+        disconnect: () => {
+          flux.coupures++;
+        },
+      },
+      onUnauthorized: (listener) => {
+        unauthorizedListeners.add(listener);
+        return () => unauthorizedListeners.delete(listener);
+      },
+      onChange: (view) => views.push(view),
+    });
+    const emettre = (event: BrowserEvent) => {
+      for (const listener of [...streamListeners]) listener(event);
+    };
+    const vue = () => views.at(-1);
+    return { clock, cockpit, network, page, streamListeners, unauthorizedListeners, flux, started, emettre, vue };
+  }
+
+  /** Interface chargée, puis un rechargement en échec : reprise programmée dans 2 s. */
+  async function enReprise() {
+    const e = environnement();
+    await flush();
+    assert.equal(e.vue()?.phase, "ready");
+    e.cockpit.state = "down";
+    await e.started.load();
+    assert.deepEqual(e.clock.pending, [2_000]);
+    return e;
+  }
+
+  it("premier chargement tout de suite ; succès : flux d'événements connecté", async () => {
+    const e = environnement();
+    await flush();
+    assert.equal(e.cockpit.calls, 1);
+    assert.deepEqual(e.vue(), { phase: "ready", data: { n: 1 }, error: "", retry: null, recovered: false });
+    assert.equal(e.flux.connexions, 1);
+    e.started.stop();
+  });
+
+  it("onglet caché (document.visibilityState) : la tentative programmée ne part pas ; retour de l'onglet : aussitôt", async () => {
+    const e = await enReprise();
+    e.page.visibilityState = "hidden";
+    e.page.dispatchEvent(new Event("visibilitychange"));
+    await e.clock.advance(60_000);
+    assert.equal(e.cockpit.calls, 2, "aucune tentative tant que l'onglet est caché");
+    assert.deepEqual(e.clock.pending, [], "rien ne tourne en arrière-plan");
+    e.cockpit.state = "up";
+    e.page.visibilityState = "visible";
+    e.page.dispatchEvent(new Event("visibilitychange"));
+    await flush();
+    assert.equal(e.cockpit.calls, 3);
+    assert.equal(e.vue()?.retry, null);
+    assert.equal(e.vue()?.recovered, true);
+    e.started.stop();
+  });
+
+  it("reconnexion du flux (« stream.reconnected ») : reprise aussitôt ; un autre événement du flux ne relance rien", async () => {
+    const e = await enReprise();
+    e.emettre({ kind: "cockpit", type: "settings.updated", data: null });
+    e.emettre({ kind: "opencode", event: { type: "stream.reconnected", properties: {} } });
+    await flush();
+    assert.equal(e.cockpit.calls, 2);
+    e.cockpit.state = "up";
+    e.emettre({ kind: "cockpit", type: "stream.reconnected", data: null });
+    await flush();
+    assert.equal(e.cockpit.calls, 3);
+    assert.equal(e.vue()?.recovered, true);
+    assert.deepEqual(e.clock.pending, []);
+    assert.equal(e.flux.connexions, 2, "flux reconnecté après la reprise");
+    e.started.stop();
+  });
+
+  it("« online » (window) : reprise aussitôt", async () => {
+    const e = await enReprise();
+    e.cockpit.state = "up";
+    e.network.dispatchEvent(new Event("online"));
+    await flush();
+    assert.equal(e.cockpit.calls, 3);
+    assert.equal(e.vue()?.retry, null);
+    e.started.stop();
+  });
+
+  it("401 d'une autre requête pendant une reprise : flux coupé, connexion, plus aucune tentative", async () => {
+    const e = await enReprise();
+    for (const listener of [...e.unauthorizedListeners]) listener();
+    assert.equal(e.flux.coupures, 1);
+    assert.equal(e.vue()?.phase, "login");
+    e.network.dispatchEvent(new Event("online"));
+    e.emettre({ kind: "cockpit", type: "stream.reconnected", data: null });
+    await e.clock.advance(120_000);
+    assert.equal(e.cockpit.calls, 2);
+    assert.deepEqual(e.clock.pending, []);
+    e.started.stop();
+  });
+
+  it("arrêt (démontage du crochet) : flux et 401 débranchés, minuterie nettoyée, plus rien ne part", async () => {
+    const e = await enReprise();
+    e.started.stop();
+    assert.deepEqual(e.clock.pending, []);
+    assert.equal(e.streamListeners.size, 0);
+    assert.equal(e.unauthorizedListeners.size, 0);
+    e.cockpit.state = "up";
+    e.network.dispatchEvent(new Event("online"));
+    e.page.dispatchEvent(new Event("visibilitychange"));
+    await e.clock.advance(120_000);
+    await e.started.load();
+    assert.equal(e.cockpit.calls, 2);
   });
 });
 
@@ -442,11 +693,31 @@ describe("reprise de l'amorçage : interface", () => {
     assert.deepEqual(motionProblems("const t = setInterval(tick, 1000);"), ["boucle"]);
   });
 
-  it("bandeau et écran : aucune animation, aucune boucle, annonce polie (role=\"status\"), focus jamais déplacé", () => {
+  /**
+   * Seul déplacement de focus permis (constat de la vérification de c630349) : le bandeau disparaît avec « Réessayer », qui
+   * avait le focus ; celui-ci retomberait sur body et un lecteur d'écran perdrait sa position. Il est alors posé sur la zone
+   * d'annonce, à la même place, sans défilement. Jamais à l'apparition du bandeau, jamais ailleurs.
+   */
+  const RATTRAPAGE =
+    /if \(!bandeau && focusARattraper\(focusDansLaZone\.current, document\.activeElement, document\.body\)\) zone\.current\?\.focus\(\{ preventScroll: true \}\);/;
+
+  it("bandeau et écran : aucune animation, aucune boucle, annonce polie (role=\"status\"), focus jamais pris, seulement rattrapé", () => {
     const source = code("app/BootRecovery.tsx");
-    assert.deepEqual(motionProblems(source), []);
+    assert.match(source, RATTRAPAGE, "focus rattrapé sur la zone d'annonce quand le bandeau disparaît avec lui");
+    assert.equal(source.match(/\.focus\(/g)?.length, 1, "aucun autre déplacement de focus");
+    assert.deepEqual(motionProblems(source.replace(RATTRAPAGE, "")), []);
     assert.match(source, /role="status"/);
+    assert.match(source, /tabIndex=\{-1\}/, "zone d'annonce focalisable par programme seulement, hors de l'ordre de tabulation");
     assert.doesNotMatch(source, /role="alert"|aria-live="assertive"/);
+  });
+
+  it("focus rattrapé seulement s'il était dans la zone et qu'il est retombé sur body (ou nulle part)", () => {
+    const corps = { nom: "body" };
+    const autre = { nom: "champ Message" };
+    assert.equal(focusARattraper(true, corps, corps), true);
+    assert.equal(focusARattraper(true, null, corps), true);
+    assert.equal(focusARattraper(true, autre, corps), false, "le focus est ailleurs : on n'y touche pas");
+    assert.equal(focusARattraper(false, corps, corps), false, "il n'était pas dans la zone : on n'y touche pas");
   });
 
   it("App.tsx : amorçage, écran d'erreur et bandeau passent par la reprise ; plus aucune phase « error » posée à la main", () => {

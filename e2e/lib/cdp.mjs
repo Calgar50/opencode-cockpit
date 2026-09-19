@@ -213,7 +213,7 @@ async function creerOnglet(client, sessionId, targetId) {
         if (p.entry?.level === "error") erreurs.push({ source: p.entry.source ?? "journal", texte: p.entry.text ?? "", url: p.entry.url ?? "" });
         break;
       case "Network.requestWillBeSent":
-        reseau.push({ id: p.requestId, methode: p.request?.method, url: p.request?.url, etat: "envoyée" });
+        reseau.push({ id: p.requestId, methode: p.request?.method, url: p.request?.url, etat: "envoyée", envoyeeA: Date.now() });
         break;
       case "Network.responseReceived": {
         const ligne = reseau.find((r) => r.id === p.requestId);
@@ -352,6 +352,35 @@ async function creerOnglet(client, sessionId, targetId) {
       await envoyer("Network.setBlockedURLs", { urls: motifs });
     },
 
+    /**
+     * Retient, à l'arrivée de leur réponse, les requêtes dont l'adresse correspond à l'un des motifs (« * » joker) : le
+     * serveur a déjà calculé sa réponse, la page l'attend encore. C'est une requête lente vue de la page, dont la réponse
+     * date d'AVANT ce qui suit. Rend `retenues()` (réponses retenues à cet instant) et `relacher()`, qui les rend toutes telles
+     * quelles puis cesse de retenir (à appeler aussi en cas d'échec : sans lui, la page attend sans fin).
+     */
+    async retenirReponses(motifs) {
+      const retenues = [];
+      let actif = true;
+      const continuer = (requestId) =>
+        envoyer("Fetch.continueResponse", { requestId }).catch(() => envoyer("Fetch.continueRequest", { requestId }).catch(() => {}));
+      const arreterEcouteFetch = client.ecouter((bloc) => {
+        if (bloc.sessionId !== sessionId || bloc.method !== "Fetch.requestPaused") return;
+        if (actif) retenues.push(bloc.params.requestId);
+        else void continuer(bloc.params.requestId);
+      });
+      await envoyer("Fetch.enable", { patterns: motifs.map((urlPattern) => ({ urlPattern, requestStage: "Response" })) });
+      return {
+        retenues: () => retenues.length,
+        async relacher() {
+          if (!actif) return;
+          actif = false;
+          for (const requestId of retenues.splice(0)) await continuer(requestId);
+          await envoyer("Fetch.disable").catch(() => {});
+          arreterEcouteFetch();
+        },
+      };
+    },
+
     async capture(fichier) {
       const { data } = await envoyer("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       fs.mkdirSync(path.dirname(fichier), { recursive: true });
@@ -394,7 +423,7 @@ async function creerOnglet(client, sessionId, targetId) {
       return flux.map((trame) => ({ ...trame }));
     },
 
-    /** Journal réseau de l'onglet (méthode, adresse, code, échec). */
+    /** Journal réseau de l'onglet (méthode, adresse, code, échec, instant d'envoi `envoyeeA` en ms). */
     journalReseau() {
       return reseau.map(({ id, ...reste }) => reste);
     },
