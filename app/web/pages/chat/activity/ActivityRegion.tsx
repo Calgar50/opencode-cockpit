@@ -54,8 +54,9 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
 
   return (
     <div className="activity-region">
-      {/* Faits lus seulement (jamais modifiés) : le même tableau tant que rien ne change, pour la mémoïsation de la bande. */}
-      <NeonBand rootId={rootId} facts={activity.state.facts as ActivityFact[]} advanced={advanced} />
+      {/* Faits lus seulement (jamais modifiés) : le même tableau tant que rien ne change, pour la mémoïsation de la bande. Le dossier
+          sert à relire les textes du zoom 3 dans la bonne instance d'opencode (train it1 V3, demande de L5c). */}
+      <NeonBand rootId={rootId} facts={activity.state.facts as ActivityFact[]} advanced={advanced} directory={directory} />
       {visible ? (
         <WhoIsWorking
           rows={activity.rows}

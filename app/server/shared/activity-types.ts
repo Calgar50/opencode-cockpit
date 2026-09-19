@@ -85,6 +85,9 @@ export interface AffichageFactData {
 /**
  * Forme de `data` d'un fait « reponse » : réponse vue dans le flux (`permission.replied`), ou « expiree » écrit par la dérivation
  * des faits (L4b) quand l'instance qui portait la demande est libérée sans réponse (mesure M14).
+ * `par: "cockpit"` : refus Simple envoyé par le cockpit (L1d), écrit après l'envoi en plus du fait tiré du flux (arbitrage du train
+ * it1 V3 : gardé, il clôt l'attente même si l'événement du flux est manqué). Deux faits de même clé (reponse, session, demande) : les
+ * lecteurs gardent le premier ; l'auteur de la réponse est porté par permission_waits.replied_by (work.markWait), jamais par ce champ.
  */
 export interface ReponseFactData {
   reponse: "once" | "always" | "reject" | "expiree";

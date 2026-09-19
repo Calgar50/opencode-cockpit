@@ -500,7 +500,10 @@ describe("autonomy-menu : textes (autonomy-choice-texts.ts, sans doublon) et con
     assert.doesNotMatch(source, /\baccessKey\b|\bshiftKey\b/);
     // Actions de l'itération 1 : PUT du choix, POST /api/plans puis ouverture de la conversation (la saisie garde son texte).
     assert.match(source, /autonomyApi\.put\(/);
-    assert.match(source, /planApi\.create\(directory\)/);
+    // Conversation d'origine du plan (plan_source_id, train it1 V3) : la conversation ouverte, aucune pour une nouvelle.
+    assert.match(source, /const source = rootId \?\? undefined;/);
+    assert.match(source, /planApi\.create\(directory, \{ source \}\)/);
+    assert.match(source, /planApi\.create\(directory, \{ confirm: true, source \}\)/);
     assert.match(source, /onOpenConversation\(created\.rootId, null\)/);
     // Le composant ne décide rien : il lit le modèle.
     assert.match(source, /buildAutonomyMenu\(\{ rootId, view, boot: boot\.autonomy \}\)/);

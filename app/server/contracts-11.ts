@@ -246,6 +246,10 @@ export interface DelegationRequestRef {
 
 /** L1d. Neutre : details → null ; collectDelegationFacts lève ; aucun crochet ni refus Simple. */
 export interface TaskGuardPort {
+  /**
+   * Carte détaillée d'une délégation en attente ; null : inconnue ou hors de la conversation (route : 404). Lève si opencode ne
+   * répond pas (route : 503, rien n'est deviné ; code ajouté par L1d au train it1 V3).
+   */
   details(rootId: string, permissionId: string): Promise<DelegationDetailsView | null>;
   /** Exporté et documenté par L1d, réutilisé par L10e. */
   collectDelegationFacts(ref: DelegationRequestRef): Promise<DelegationFacts>;

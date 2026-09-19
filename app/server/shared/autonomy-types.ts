@@ -179,6 +179,12 @@ export interface PlanSessionInfo {
 /** Corps de POST /api/plans (permis avec COCKPIT_AUTONOMY=off). */
 export interface PlanCreateBody {
   directory: string;
+  /**
+   * Conversation d'origine de « Plan d'abord (nouvelle conversation) » (train it1 V3, demande de L6b) : racine de conversation de
+   * l'instance principale, dans le même dossier (400 sinon, 404 si inconnue) ; enregistrée dans plan_source_id. Absente : plan
+   * commencé depuis une nouvelle conversation.
+   */
+  source?: string;
 }
 
 /** Réponse de POST /api/plans : racine PLAN vérifiée (403 forbidden-directory, 409 budget-guard, 502 plancher-non-verifie). */

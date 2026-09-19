@@ -186,19 +186,23 @@ export function AutonomySelector({ placement, rootId, directory, onOpenConversat
     }
   };
 
-  /** POST /api/plans dans le dossier de la conversation, puis ouverture de la conversation de plan (la saisie garde son texte). */
+  /**
+   * POST /api/plans dans le dossier de la conversation, puis ouverture de la conversation de plan (la saisie garde son texte).
+   * Depuis une conversation existante, elle est la conversation d'origine du plan (plan_source_id).
+   */
   const createPlan = async (title: string) => {
     setPending(true);
+    const source = rootId ?? undefined;
     try {
       let created: PlanCreateResponse;
       try {
-        created = await planApi.create(directory);
+        created = await planApi.create(directory, { source });
       } catch (err) {
         const guard = budgetGuard(err);
         if (!guard) throw err;
         const ok = await confirm({ title: guard.title || BUDGET_CONFIRM_TITLE, message: guard.message, danger: true });
         if (!ok) return;
-        created = await planApi.create(directory, { confirm: true });
+        created = await planApi.create(directory, { confirm: true, source });
       }
       onOpenConversation(created.rootId, null);
     } catch (err) {

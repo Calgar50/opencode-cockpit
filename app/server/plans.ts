@@ -41,8 +41,8 @@ export function neutralPlans(): PlansPort {
 const DIRECTORY_MAX = 4096;
 
 /**
- * Corps de POST /api/plans : `directory` (PlanCreateBody) ; `source`, conversation d'origine de « Plan d'abord (nouvelle
- * conversation) », enregistrée dans plan_source_id (champ à ajouter au contrat PlanCreateBody : demande à l'intégrateur).
+ * Corps de POST /api/plans (PlanCreateBody) : `directory` ; `source`, conversation d'origine de « Plan d'abord (nouvelle
+ * conversation) », enregistrée dans plan_source_id.
  */
 const createBodySchema = z.strictObject({
   directory: z.string().min(1).max(DIRECTORY_MAX),
