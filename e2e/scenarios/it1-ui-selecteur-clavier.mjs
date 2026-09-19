@@ -16,7 +16,8 @@
 //      va à « Plan d'abord (nouvelle conversation) » ; Échap ferme le menu et rend le focus au bouton ;
 //   3. au clavier, « Plan d'abord (nouvelle conversation) » + Entrée crée la conversation de plan (POST /api/plans) et l'ouvre : son
 //      sélecteur affiche « Plan d'abord » ;
-//   4. dans cette conversation, Flèche haut ouvre le menu sur le dernier choix ; Tab le ferme et la tabulation continue hors du menu ;
+//   4. dans cette conversation, le focus est resté sur le bouton du sélecteur (jamais sur la page) ; Flèche haut ouvre le menu sur le
+//      dernier choix ; Tab le ferme et la tabulation continue hors du menu ;
 //   5. aucune violation de la CSP, console muette ; P6 et P4 tenus (témoin ouvert avant la création de la conversation, fermé après
 //      celle de la conversation de plan).
 import {
@@ -90,10 +91,11 @@ export async function run(ctx) {
     const choix = await ctx.api.get(`/api/conversations/${encodeURIComponent(plan)}/autonomie`);
     exiger(choix?.choix === "plan", `choix de la conversation de plan : ${resume(choix)}`);
 
-    // 4. Dans la conversation de plan : focus resté sur le bouton, sinon tabulation jusqu'à lui ; Flèche haut ouvre sur le dernier
-    // choix ; Tab ferme le menu et la tabulation continue hors de lui.
-    const resteSurLeBouton = await page.evaluer(`document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`);
-    if (!resteSurLeBouton) await tabulerJusquAuBouton(page);
+    // 4. Dans la conversation de plan : focus resté sur le bouton (répétition générale de l'itération 1 : il tombait sur la page,
+    // document.body) ; Flèche haut ouvre sur le dernier choix ; Tab ferme le menu et la tabulation continue hors de lui.
+    await page.attendreQue(`document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`, {
+      libelle: "focus gardé sur le bouton du sélecteur après l'ouverture de la conversation de plan",
+    });
     await page.touche("ArrowUp");
     await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
     await page.touche("Tab");
@@ -102,7 +104,7 @@ export async function run(ctx) {
     });
     releve(
       ctx,
-      `sélecteur atteint en ${tabulations} tabulation(s) ; menu parcouru, « Plan d'abord » choisi au clavier seul ; focus ${resteSurLeBouton ? "gardé" : "perdu"} ` +
+      `sélecteur atteint en ${tabulations} tabulation(s) ; menu parcouru, « Plan d'abord » choisi au clavier seul ; focus gardé ` +
         "sur le bouton après l'ouverture de la conversation de plan",
     );
   });

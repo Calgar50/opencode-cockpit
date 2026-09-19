@@ -274,6 +274,48 @@ describe("croisements it1 V4 : « Arrêter » visible pendant une délégation (
     assert.match(chat, /stopVisible=\{Boolean\(sessionId\) && treeWorking\}/);
     assert.match(read("../web/pages/chat/Composer.tsx"), /\{busy \|\| stopVisible \? \(/);
   });
+
+  it("mise en page lue dans les sources : colonne du fil dans la fenêtre, demandes bornées aux boutons collés, « Contexte » fermé par défaut quand il recouvre la saisie", () => {
+    // Répétition générale de l'itération 1 : fil à 0 px, « Autoriser une fois » et « Arrêter » hors de la fenêtre sous une zone
+    // principale qui ne défile pas, « Arrêter » recouvert par le panneau « Contexte » à 1280 et 400 px. La preuve dans le navigateur
+    // (elementFromPoint, quatre tailles) est le scénario e2e it1-ui-mise-en-page.
+    const read = (relative: string) => fs.readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const rule = (css: string, selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      assert.ok(at >= 0, `règle ${selector} absente`);
+      return css.slice(at, css.indexOf("}", at));
+    };
+    const chat = read("../web/pages/chat/chat.css");
+    assert.match(rule(chat, ".chat-center"), /overflow-y: auto;/, "dernier recours : la colonne défile, jamais la zone principale");
+    assert.match(chat, /\.chat-center > \.chat-header,\s*\.chat-center > \.composer-wrap \{\s*flex: none;/, "en-tête et saisie gardent leur taille");
+    assert.match(rule(chat, ".chat-scroll"), /flex: 1 1 0;[\s\S]*min-height: min\(96px, 12vh\);/, "le fil garde une hauteur lisible");
+    assert.match(rule(chat, ".chat-center:has(> .interactions) > .chat-scroll"), /min-height: min\(64px, 8vh\);/, "demande en attente : le fil garde ses dernières lignes");
+    const interactions = rule(chat, ".interactions");
+    for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "max-height: 50vh;", "overflow-y: auto;"]) assert.ok(interactions.includes(decl), `.interactions : ${decl}`);
+    assert.match(rule(chat, ".interactions:has(> .interaction)"), /min-height: min\(7rem, 40vh\);/, "une carte garde son titre et ses boutons");
+    assert.match(rule(chat, ".interaction-actions"), /position: sticky;\s*bottom: 0;/, "boutons collés au bas de la zone des demandes");
+    const activityCss = read("../web/pages/chat/activity/activity.css");
+    const activity = rule(activityCss, ".activity-region");
+    for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "max-height: 36vh;", "overflow-y: auto;"]) assert.ok(activity.includes(decl), `.activity-region : ${decl}`);
+    assert.match(rule(activityCss, ".activity-region.attente"), /flex-shrink: 0;\s*max-height: min\(36vh, 8rem\);/, "demande en attente : les deux lignes de tête restent entières");
+    const region = read("../web/pages/chat/activity/ActivityRegion.tsx");
+    assert.match(region, /className=\{demandeEnAttente \? "activity-region attente" : "activity-region"\}/);
+    assert.match(region, /working=\{working\}\s+demandeEnAttente=\{demandeEnAttente\}/, "« Qui travaille ? » replié pendant la demande");
+    const who = read("../web/pages/chat/activity/WhoIsWorking.tsx");
+    assert.match(who, /useEffect\(\(\) => setManual\(null\), \[working, demandeEnAttente\]\);/);
+    assert.match(who, /const expanded = manual \?\? \(working && !narrow && !demandeEnAttente\);/);
+    const prompts = read("../web/pages/chat/Interactions.tsx");
+    assert.equal(prompts.match(/className="row(?: wrap)? interaction-actions"/g)?.length, 3, "rangées de boutons : refus, choix, question");
+
+    // « Contexte » posé sur la conversation sous 1280 px : même borne dans la page et la feuille, fermé par défaut.
+    assert.match(chat, /@media \(max-width: 1280px\) \{\s*\.chat-aside \{\s*display: none;\s*\}\s*\.chat\.aside-open \.chat-aside \{\s*display: flex;\s*position: fixed;/);
+    const page = read("../web/pages/ChatPage.tsx");
+    assert.match(page, /const ASIDE_OVERLAY_QUERY = "\(max-width: 1280px\)";/);
+    assert.match(page, /useState\(\(\) => !asideOverlay\(\) && readFlag\(ASIDE_FLAG, true\)\)/);
+    assert.match(page, /const onChange = \(\) => \{\s*if \(media\.matches\) setAsideOpen\(false\);\s*\};/, "fermé à chaque passage sous 1280 px, jamais rouvert d'office");
+    assert.equal(page.match(/writeFlag\(ASIDE_FLAG/g)?.length, 2);
+    assert.equal(page.match(/if \(!asideOverlay\(\)\) writeFlag\(ASIDE_FLAG, !open\);|if \(!open && !asideOverlay\(\)\) writeFlag\(ASIDE_FLAG, true\);/g)?.length, 2, "préférence inchangée par le panneau posé");
+  });
 });
 
 describe("croisements it1 V4 : carte de plan (L6c) sur le câblage complet (L6b, porte I1)", () => {

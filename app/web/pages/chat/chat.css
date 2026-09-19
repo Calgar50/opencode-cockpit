@@ -59,11 +59,22 @@
   min-width: 0;
 }
 
+/* Colonne du fil : tout tient dans la hauteur de la fenêtre (répétition générale de l'itération 1 : pendant une délégation en mode
+   Avancé, la carte des agents, « Qui travaille ? » et la carte de la demande poussaient le fil à 0 px, et les boutons de la demande
+   et « Arrêter » hors de la fenêtre, sous une zone principale qui ne défile pas). En-tête et saisie gardent leur taille ; la région
+   d'activité se borne (activity.css) ; les demandes se bornent et défilent, leurs boutons toujours visibles ; le fil garde quelques
+   lignes. Bornes en vh, pas en pourcentage de la colonne : elles valent quelle que soit la façon dont la hauteur de la colonne est
+   calculée. En dernier recours (fenêtre très basse), la colonne défile elle-même : rien n'est hors d'atteinte. */
 .chat-center {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow-y: auto;
+}
+.chat-center > .chat-header,
+.chat-center > .composer-wrap {
+  flex: none;
 }
 
 .chat-header {
@@ -87,10 +98,14 @@
 }
 
 .chat-scroll {
-  flex: 1;
+  flex: 1 1 0;
   overflow: auto;
-  min-height: 0;
+  min-height: min(96px, 12vh);
   scroll-behavior: auto;
+}
+/* Une demande attend votre réponse : le fil garde ses dernières lignes, la carte de la demande prend le reste. */
+.chat-center:has(> .interactions) > .chat-scroll {
+  min-height: min(64px, 8vh);
 }
 .chat-thread {
   display: flex;
@@ -289,13 +304,40 @@
   background: var(--accent-soft);
 }
 .interactions {
+  flex: 0 1 auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
   max-width: 900px;
   width: 100%;
-  margin: 0 auto;
-  padding: 0 22px 10px;
+  min-height: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Espace sous la zone en marge, pas en rembourrage : les boutons collés touchent le bas de la zone défilante, rien ne passe dessous. */
+  margin: 0 auto 10px;
+  padding: 0 22px;
+}
+.interactions > * {
+  flex: none;
+}
+/* Une carte de demande ou de question garde au moins son titre et ses boutons (moins haute que toute carte : aucun blanc). Si la
+   fenêtre est trop basse pour tout le reste, c'est la colonne qui défile (mesuré sur opencode réel, 1024 × 768, deux bandeaux et un
+   avis dans la saisie : sans ce plancher, la zone tombait à 0 px et « Autoriser une fois » n'était plus atteignable). */
+.interactions:has(> .interaction) {
+  min-height: min(7rem, 40vh);
+}
+/* Boutons d'une demande ou d'une question : collés au bas de la zone des demandes quand la carte défile. Fond opaque : le fond
+   translucide de la carte posé sur celui de la page. */
+.interaction-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-top: 6px;
+  background: linear-gradient(var(--warning-soft), var(--warning-soft)), var(--page);
+}
+.interaction.question .interaction-actions {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--page);
 }
 .option-grid {
   display: flex;

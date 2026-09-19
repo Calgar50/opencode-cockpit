@@ -531,6 +531,16 @@ describe("autonomy-menu : textes (autonomy-choice-texts.ts, sans doublon) et con
     assert.ok(placed > 0 && focusedAt > placed, "le menu doit être placé avant que le focus n'y entre");
   });
 
+  it("emplacement de l'en-tête (ChatPage.tsx) : un seul sélecteur, hors du choix « conversation chargée ou non » ; le focus reste sur lui quand « Plan d'abord (nouvelle conversation) » ouvre la conversation de plan", () => {
+    // Répétition générale de l'itération 1 : deux sélecteurs, un par branche ; la conversation rechargée (session remise à null puis
+    // relue) démontait le bouton focalisé et le focus tombait sur la page (document.body). Relevé au clavier par it1-ui-selecteur-clavier.
+    const chat = withoutComments(read("web/pages/ChatPage.tsx"));
+    const header = chat.slice(chat.indexOf('<header className="chat-header">'), chat.indexOf("</header>"));
+    assert.ok(header.length > 0, "en-tête du chat introuvable");
+    assert.equal(header.match(/<AutonomySelector\b/g)?.length, 1, "un seul sélecteur dans l'en-tête");
+    assert.match(header, /\)\}\s*(?:\{\}\s*)?<AutonomySelector placement="header" \{\.\.\.selectorProps\} \/>\s*\{session \? \(/, "sélecteur enfant direct de l'en-tête, entre les deux choix");
+  });
+
   it("feuille de style : aucune animation, menu défilant, focus visible, forced-colors, texte secondaire en --text-2 (jamais une opacité)", () => {
     const css = read(CSS_FILE).replace(/\/\*[\s\S]*?\*\//g, "");
     assert.doesNotMatch(css, /\banimation\b|@keyframes|\binfinite\b/);

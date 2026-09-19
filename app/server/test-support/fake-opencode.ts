@@ -71,6 +71,12 @@ export interface FakeToolScript {
    * puis de la session ; « agent » (défaut pour doom_loop, processor.ts:372-379, F-j) : règles de l'agent seules, demande sans `tool`.
    */
   ask?: { permission: string; patterns: string[]; metadata?: Record<string, unknown>; always?: string[]; scope?: "agent" | "session" };
+  /**
+   * Travail de l'outil avant sa demande : la partie passe « running », puis l'outil évalue ses règles et pose sa demande quand la
+   * promesse est tenue (opencode 1.18.30 réel, répétition générale de l'itération 1 : edit lit le fichier et calcule le diff, 5 à
+   * 7 ms ; bash analyse la commande, environ 100 ms au premier appel d'un opencode neuf). Absent : demande aussitôt.
+   */
+  beforeAsk?: () => Promise<void>;
   /** Règles de l'agent, évaluées avant celles de la session (F-d). */
   agentRules?: PermissionRule[];
   output?: string;
@@ -1565,6 +1571,11 @@ export class FakeOpencode {
     let part = this.#putPart(message, { type: "tool", tool: tool.tool, callID, state: { status: "pending", input: {}, raw: "" } });
     if (!(await this.#live(run, stepMs))) return "blocked";
     const start = Date.now();
+    if (tool.beforeAsk) {
+      part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });
+      await Promise.race([tool.beforeAsk(), run.stopped]);
+      if (run.aborted || this.#closed) return "blocked";
+    }
     const ask = tool.ask;
     // doom_loop : règles de l'agent seules, demande sans appel d'outil (processor.ts:372-379, F-j).
     const agentScope = (ask?.scope ?? (ask?.permission === "doom_loop" ? "agent" : "session")) === "agent";

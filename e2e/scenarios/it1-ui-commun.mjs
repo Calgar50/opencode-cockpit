@@ -183,20 +183,27 @@ export async function ouvrirConversation(ctx, rootId) {
 }
 
 /**
- * Les six captures (1440, 1024 et 400, en clair et en sombre) d'une conversation ouverte. Le panneau « Contexte », ouvert par défaut
- * depuis la 0.2.0, devient sous 1280 px une feuille posée sur la conversation (chat.css), qui cache la bande, « Qui travaille ? » et
- * la saisie (constat du 19/09, mesures/L7b-2.md) : il est fermé par son bouton pour 1024 et 400, comme le ferait l'utilisateur, et
- * rouvert pour 1440. La fenêtre de travail (1440) est rétablie après ; le panneau reste dans l'état de la dernière capture (fermé).
+ * Les six captures (1440, 1024 et 400, en clair et en sombre) d'une conversation ouverte. Le panneau « Contexte » devient sous
+ * 1280 px une feuille posée sur la conversation (chat.css), qui cachait la bande, « Qui travaille ? » et la saisie (constat du 19/09,
+ * mesures/L7b-2.md) : depuis la correction de la répétition générale, il s'y ferme de lui-même, et n'est jamais rouvert d'office au
+ * large. Le banc attend l'état voulu (fermé sous 1280 px, ouvert au-dessus) ; seulement s'il ne vient pas, il clique le bouton du
+ * panneau, comme le ferait l'utilisateur (au large, après un passage sous 1280 px). La fenêtre de travail (1440) est rétablie après.
  */
 export async function capturerConversation(ctx, nom) {
   const page = ctx.navigateur;
   const avant = async ({ taille }) => {
     const voulu = taille.largeur > 1280;
-    const ouvert = await page.evaluer("document.querySelector('.chat')?.classList.contains('aside-open') === true");
-    if (ouvert === voulu) return;
+    const etat = `document.querySelector('.chat')?.classList.contains('aside-open') === ${voulu}`;
+    const libelle = `panneau « Contexte » ${voulu ? "ouvert" : "fermé"}`;
+    try {
+      await page.attendreQue(etat, { delaiMs: 1_500, libelle });
+      return;
+    } catch {
+      // Au large après un passage sous 1280 px (jamais rouvert d'office), ou préférence contraire : le bouton du panneau.
+    }
     const bouton = voulu ? "Afficher le contexte" : "Masquer le contexte";
     await page.evaluer(`document.querySelector(${JSON.stringify(`.chat-header button[aria-label="${bouton}"]`)})?.click()`);
-    await page.attendreQue(`document.querySelector('.chat')?.classList.contains('aside-open') === ${voulu}`, { libelle: `panneau « Contexte » ${voulu ? "ouvert" : "fermé"}` });
+    await page.attendreQue(etat, { libelle });
   };
   // Transitions de la carte finies (≈ 900 ms, un signe apparaît depuis l'opacité 0) avant la première capture.
   await attendre(1_000);

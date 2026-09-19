@@ -11,8 +11,9 @@
 //   est à retirer ; au-delà de 2 s d'attente, elle est vidée d'un coup : « Affichage rattrapé », annoncé 2 s et enregistré par
 //   POST …/facts/affichage (décision du 15/09, n° 3). « Figer l'affichage » garde l'image ; le travail continue.
 // - Modes : repliée par défaut en Simple, avec un résumé d'une ligne ; dépliée en Avancé ; une autre conversation ou un autre
-//   mode revient à ce défaut. Sous 900 px, mini-carte de 3 lignes ; à 400 px, liste seule (neon.css). Néon clair en thème clair
-//   (jetons de styles.css) ; couleurs forcées dans neon.css.
+//   mode revient à ce défaut. Repliée d'office tant qu'une demande attend votre réponse (demandeEnAttente), puis dépliée de
+//   nouveau. Sous 900 px, mini-carte de 3 lignes ; à 400 px, liste seule (neon.css). Néon clair en thème clair (jetons de
+//   styles.css) ; couleurs forcées dans neon.css.
 // Composant interne : ses propriétés restent libres pour son propriétaire. NeonCarte et NeonTableau sont réutilisables (L5d).
 import { type KeyboardEvent, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -77,6 +78,12 @@ export interface NeonBandProps {
   directory?: string | undefined;
   /** [Voir une démonstration] (L5d) : absent, le bouton n'est pas affiché. */
   onDemonstration?: (() => void) | undefined;
+  /**
+   * Une demande de la conversation attend votre réponse : la carte se replie pour laisser la place à la demande, au fil et à la
+   * saisie (répétition générale de l'itération 1), sauf si le focus clavier est dans la carte. La demande réglée, elle se déplie de
+   * nouveau, sauf si vous l'avez dépliée ou repliée entre-temps.
+   */
+  demandeEnAttente?: boolean | undefined;
 }
 
 const L = NEON_CADRE.largeur;
@@ -88,7 +95,7 @@ const TOUCHES = TEXTES.partout.commandes;
 /** Focus à rendre après un changement de vue demandé par l'utilisateur (jamais volé autrement). */
 type FocusApres = { vers: "retour" } | { vers: "noeud"; sessionId: string };
 
-export function NeonBand({ rootId, facts, advanced, directory, onDemonstration }: NeonBandProps) {
+export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, demandeEnAttente = false }: NeonBandProps) {
   const mode: NeonMode = advanced ? "avance" : "simple";
   const titreId = useId();
   const corpsId = useId();
@@ -96,6 +103,10 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration }
   const [tableau, setTableau] = useState(false);
   const [fige, setFige] = useState(false);
   const [focus, setFocus] = useState<string | null>(null);
+  /** Carte repliée d'office pendant une demande (demandeEnAttente) : dépliée de nouveau quand la demande est réglée. */
+  const [replieeDOffice, setReplieeDOffice] = useState(false);
+  const [attenteVue, setAttenteVue] = useState(false);
+  const corpsRef = useRef<HTMLDivElement>(null);
   // Autre mode ou autre conversation : repliée ou dépliée selon le mode, retour à la carte, affichage en direct.
   const contexte = `${mode}|${rootId}`;
   const [contexteVu, setContexteVu] = useState(contexte);
@@ -104,6 +115,20 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration }
     setDeplie(deplieeParDefaut(mode));
     setFocus(null);
     setFige(false);
+    setReplieeDOffice(false);
+    setAttenteVue(false);
+  } else if (attenteVue !== demandeEnAttente) {
+    // Jamais dans le rendu d'un changement de contexte : la carte y reprend d'abord son défaut, lu ici au rendu suivant.
+    setAttenteVue(demandeEnAttente);
+    const focusDansLaCarte = corpsRef.current?.contains(document.activeElement) === true;
+    if (demandeEnAttente && deplie && !focusDansLaCarte) {
+      setReplieeDOffice(true);
+      setDeplie(false);
+      setFocus(null);
+    } else if (!demandeEnAttente && replieeDOffice) {
+      setDeplie(true);
+      setReplieeDOffice(false);
+    }
   }
   const retourRef = useRef<HTMLButtonElement>(null);
   const noeudsRef = useRef<HTMLUListElement>(null);
@@ -144,6 +169,8 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration }
     setDeplie((v) => !v);
     setFige(false);
     setFocus(null);
+    // Votre choix l'emporte sur le repli d'office : la carte reste comme vous la laissez à la fin de la demande.
+    setReplieeDOffice(false);
   };
   let contenu = <NeonTableau vue={vue} />;
   if (!tableau && vue.detail === null) contenu = <NeonCarte vue={vue} onOuvrir={ouvrir} noeudsRef={noeudsRef} />;
@@ -180,7 +207,7 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration }
         </div>
       </div>
       {deplie ? (
-        <div className="neon-body" id={corpsId}>
+        <div className="neon-body" id={corpsId} ref={corpsRef}>
           {contenu}
           {mode === "simple" ? (
             <div className="neon-note">

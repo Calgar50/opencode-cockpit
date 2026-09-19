@@ -2,11 +2,25 @@
    Aucune animation ni transition : le mouvement de la carte néon est dans neon.css (L5c). L'état se lit toujours par une icône
    et un mot, jamais par la couleur seule ; couleurs par les jetons de styles.css (thèmes clair et sombre). */
 
+/* Dans la colonne du fil (chat.css), répétition générale de l'itération 1 : bornée, elle défile et cède sa place au fil et à la
+   saisie pendant le travail. Tant qu'une demande attend votre réponse (.attente), bande et liste sont repliées (NeonBand,
+   WhoIsWorking) : la région garde ses deux lignes de tête entières, [Répondre] compris, et ne cède rien à la carte de la demande. */
 .activity-region {
-  flex: none;
+  flex: 0 1 auto;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  max-height: 36vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.activity-region.attente {
+  flex-shrink: 0;
+  max-height: min(36vh, 8rem);
+}
+.activity-region > * {
+  flex: none;
 }
 .activity-region:empty {
   display: none;

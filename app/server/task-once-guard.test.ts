@@ -2,6 +2,7 @@
 // l.1050, décision n° 4 ; plan d'exécution, fiche L1d, question Q5 ; mesure MX1 §3.5 : F-c, refus retenu).
 // - 7 cas de refus en 409 delegation-refusee {message}, rien relayé, la demande reste en attente ;
 // - T-L1-c : `bash` en attente + `task` en Simple, aucun refus avant la réponse au `bash` (votre autre demande n'est pas annulée) ;
+//   aussi quand la demande voisine arrive après la lecture du portillon (edit 5 ms, bash 100 ms : course mesurée sur opencode réel) ;
 // - IA `available: false` refusée (l.1050) ; parité « après votre accord » avec evaluate (l.1048) ;
 // - choix « autonome » → aucun refus Simple ; repli M9 interne (désactivé par défaut) ; textes (Q5).
 // M9 (l'IA continue seule, sans boucle, sur une IA Copilot réelle) : RECETTE EN ATTENTE (facturée, non autorisée). Sur le faux,
@@ -13,7 +14,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import type { Cockpit11, ConversationAutonomyPort, EventDerivation, PermissionGate, ProxyContext, RequestsPort } from "./contracts-11.ts";
 import { createLogger } from "./log.ts";
-import type { OcGlobalEvent } from "./opencode.ts";
+import type { OcGlobalEvent, OpencodeClient } from "./opencode.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
 import type { ActivityFact, DelegationDetailsView, DelegationRefusalCode } from "./shared/activity-types.ts";
@@ -51,7 +52,7 @@ import {
   nativeAgents,
   type PermissionRule,
 } from "./test-support/fake-opencode.ts";
-import { bash, until, within } from "./test-support/helpers.ts";
+import { bash, editTool, until, within } from "./test-support/helpers.ts";
 
 const MODEL = { providerID: "github-copilot", modelID: "gpt-5-mini" };
 const AVANCE = { ui: { mode: "avance" } };
@@ -927,6 +928,96 @@ describe("L1d : refus Simple (décision n° 4, §3.14, T-L1-c)", () => {
     }
     assert.deepEqual(h.fake.failures, []);
     h.assertNoGlobalRestart();
+  });
+
+  it("T-L1-c, demande voisine posée APRÈS la lecture de GET /permission (opencode 1.18.30 réel : edit 5 à 7 ms, bash environ 100 ms après la délégation) : aucun refus tant que l'appel voisin prépare sa demande ou s'exécute ; puis refus avec message, l'IA continue seule", async (t) => {
+    // Le portillon lit GET /permission ; la demande voisine part `delayMs` après cette lecture, et le portillon ne reprend qu'une fois
+    // cette demande posée : la course relevée sur opencode réel par la répétition générale (rg-reel-5-diag-simple, rg-reel-6-diag-edit).
+    let afterRead: (() => Promise<void>) | null = null;
+    const h = await startCockpit(t, {
+      modules: ["gate", "taskGuard"],
+      gate: (deps) => {
+        const client = {
+          request: async (method: string, pathname: string, options?: Parameters<OpencodeClient["request"]>[2]) => {
+            const result = await deps.client.request(method, pathname, options);
+            const hook = method === "GET" && pathname === "/permission" ? afterRead : null;
+            if (hook) {
+              afterRead = null;
+              await hook();
+            }
+            return result;
+          },
+        } as unknown as OpencodeClient;
+        return createPermissionGate({ client, db: deps.db, log: deps.log, hub: deps.hub, sessions: new SessionTracker(deps.db, deps.client) });
+      },
+    });
+    const cases: Array<[string, number, string, (beforeAsk: () => Promise<void>) => FakeToolScript]> = [
+      ["modification, 5 ms après la lecture", 5, "edit", (beforeAsk) => editTool("notes.txt", "ancienne ligne", "nouvelle ligne", { beforeAsk })],
+      ["commande, 100 ms après la lecture", 100, "bash", (beforeAsk) => bash("ls", { beforeAsk })],
+    ];
+    for (const [label, delayMs, permission, sibling] of cases) {
+      const session = await conversation(h, `T-L1-c tardive, ${label}`);
+      const ready = Promise.withResolvers<void>();
+      afterRead = async () => {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        ready.resolve();
+        await until(() => h.fake.pendingPermissions().some((p) => p.sessionID === session.id && p.permission === permission));
+      };
+      await send(h, session, [task("general"), sibling(() => ready.promise)]);
+      const asked = await pending(h, session, 2);
+      const siblingAsk = asked.find((p) => p.permission === permission);
+      const taskAsk = asked.find((p) => p.permission === "task");
+      assert.ok(siblingAsk && taskAsk, label);
+      assert.equal(afterRead, null, `${label} : la demande voisine est bien posée après la lecture du portillon`);
+      await queueIdle(h.cockpit.gate);
+      assert.deepEqual([...repliesTo(h, siblingAsk.id), ...repliesTo(h, taskAsk.id)], [], `${label} : aucun refus avant votre réponse`);
+      assert.equal(h.fake.pendingPermissions().filter((p) => p.sessionID === session.id).length, 2, `${label} : votre autre demande n'est pas annulée`);
+
+      await assertRelayed(h, siblingAsk, `${label} : votre réponse`);
+      await within(h.fake.settled(session.id), `${label} : tour terminé`);
+      assert.deepEqual(repliesTo(h, taskAsk.id), [{ reply: "reject", message: messageRefusSimple() }], label);
+      assert.equal(toolState(h, session.id, permission)?.status, "completed", `${label} : l'action autorisée s'exécute`);
+      assert.equal(toolState(h, session.id, "task")?.status, "error", label);
+      assert.ok(toolState(h, session.id, "task")?.error?.includes(messageRefusSimple()), label);
+      assert.equal(lastText(h, session.id), FIN, `${label} : l'IA continue seule (faux ; M9 réelle en attente)`);
+    }
+    assert.deepEqual(h.fake.failures, []);
+    h.assertNoGlobalRestart();
+  });
+
+  it("refus retenu à la borne par un appel voisin encore en cours, sans demande (longue lecture) : réarmé à la fin de cet appel, puis envoyé", async (t) => {
+    let holdNext = true;
+    const calls: string[] = [];
+    const h = await startCockpit(t, {
+      modules: ["gate", "taskGuard"],
+      gate: wrapGate((real) => ({
+        rejectWhenAlone: async (...args) => {
+          calls.push(args[0]);
+          if (holdNext) {
+            holdNext = false;
+            return "retenu";
+          }
+          return real.rejectWhenAlone(...args);
+        },
+      })),
+    });
+    const session = await conversation(h, "Borne, appel voisin long");
+    const reading = Promise.withResolvers<void>();
+    await send(h, session, [task("general"), { tool: "read", input: { filePath: "notes.txt" }, output: "contenu", beforeAsk: () => reading.promise }]);
+    const [taskAsk] = await pending(h, session, 1);
+    assert.ok(taskAsk);
+    await until(() => calls.length === 1);
+    await flush();
+    assert.deepEqual(repliesTo(h, taskAsk.id), [], "retenu : rien envoyé");
+    assert.equal(toolState(h, session.id, "read")?.status, "running");
+
+    reading.resolve();
+    await within(h.fake.settled(session.id), "tour terminé");
+    assert.deepEqual(calls, [taskAsk.id, taskAsk.id], "réarmé une fois, à la fin de la lecture");
+    assert.deepEqual(repliesTo(h, taskAsk.id), [{ reply: "reject", message: messageRefusSimple() }]);
+    assert.equal(toolState(h, session.id, "read")?.status, "completed");
+    assert.equal(lastText(h, session.id), FIN);
+    assert.deepEqual(h.fake.failures, []);
   });
 
   it("délégation seule en Simple : refusée d'office avec le message ; attente close « par le cockpit » (écrivain unique) et fait « reponse » ; l'IA continue", async (t) => {

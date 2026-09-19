@@ -492,6 +492,22 @@ describe("bande néon : mouvement (JP-13) et dessin", () => {
     assert.equal(file.file.affiches, 4, "pendant une annonce, un changement est rendu à son créneau, sans attendre la fin de l'annonce");
   });
 
+  it("NeonBand.tsx : repliée d'office tant qu'une demande attend votre réponse (sauf focus dans la carte), rendue ensuite ; votre choix l'emporte", () => {
+    // Répétition générale de l'itération 1 : carte dépliée (Avancé) + « Qui travaille ? » + carte de la demande poussaient le fil à
+    // 0 px et les boutons de la demande hors de la fenêtre.
+    const source = code(fs.readFileSync(BAND_TSX, "utf8"));
+    const gardes: Array<[RegExp, string]> = [
+      [/demandeEnAttente = false \}: NeonBandProps\)/, "propriété facultative, fausse par défaut"],
+      [/if \(contexteVu !== contexte\) \{[^}]*setReplieeDOffice\(false\);\s*setAttenteVue\(false\);\s*\} else if \(attenteVue !== demandeEnAttente\) \{/, "autre contexte : repli d'office oublié, demande relue au rendu suivant"],
+      [/const focusDansLaCarte = corpsRef\.current\?\.contains\(document\.activeElement\) === true;/, "focus clavier dans la carte : pas de repli"],
+      [/if \(demandeEnAttente && deplie && !focusDansLaCarte\) \{\s*setReplieeDOffice\(true\);\s*setDeplie\(false\);\s*setFocus\(null\);\s*\}/, "repli d'office d'une carte dépliée"],
+      [/else if \(!demandeEnAttente && replieeDOffice\) \{\s*setDeplie\(true\);\s*setReplieeDOffice\(false\);\s*\}/, "demande réglée : carte dépliée de nouveau"],
+      [/const basculerRepli = \(\) => \{[^}]*setReplieeDOffice\(false\);/, "votre choix l'emporte sur le repli d'office"],
+      [/<div className="neon-body" id=\{corpsId\} ref=\{corpsRef\}>/, "corps de la carte suivi pour le focus"],
+    ];
+    for (const [re, garde] of gardes) assert.match(source, re, garde);
+  });
+
   it("géométrie : mêmes centre et anneaux que la scène ; grille sans boucle sans fin ; segments, hexagones, trait vers l'extérieur", () => {
     const vue: NeonScene = scene(histoire(), null, AVANCE);
     const racine = vue.noeuds.find((n) => n.role === "conversation");

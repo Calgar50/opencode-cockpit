@@ -176,10 +176,11 @@ console muette :
 | `it1-ui-commun.mjs` | préalables : mode Simple par défaut, page en HTTP sous la CSP réelle (D-05), règles acceptées au clic, flux d'événements ouvert ; relevés installés dans la page (faisceaux, animations, violations de CSP) |
 | `it1-ui-delegation.mjs` | mode Avancé : carte « Détails de la délégation », « Autoriser une fois » cliqué, faisceau rose (préparation, consigne) puis bleu (résultat), dans l'ordre des faits |
 | `it1-ui-arreter.mjs` | « Arrêter » visible pendant le travail délégué ; le clic arrête tout l'arbre et la consigne est figée en gris |
+| `it1-ui-mise-en-page.mjs` | mode Avancé, délégation en attente puis en cours, à 1440, 1280, 1024 et 400 px : fil et « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… », « Arrêter » et [Répondre] dans la fenêtre et non recouverts (elementFromPoint), zone principale jamais défilée, « Contexte » fermé de lui-même sous 1280 px, carte des agents repliée pendant la demande ; [Répondre] focalise « Autoriser une fois » |
 | `it1-ui-demonstration.mjs` | démonstration en Simple puis en Avancé : étiquette, avis du mode Simple, tous les moments parcourus, zéro requête de la page et d'opencode |
 | `it1-ui-p2-raccourci.mjs` | capture p2 : délégation d'un raccourci `subtask` lancée sans demande, enregistrée « sans confirmation », et « lancé sans confirmation » affiché |
 | `it1-ui-m25.mjs` | mesure M25 en HTTP : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
-| `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée |
+| `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
 
 ## Contrôle des types

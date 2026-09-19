@@ -3,7 +3,8 @@
 // fil (spécification §5.1, §5.4, §5.5, §5.7.4). Propriétés figées dans ../slots.ts.
 // - useActivity : relecture à l'ouverture et à la reconnexion, au plus 4 rendus par seconde ;
 // - onTreeWorking : l'arbre travaille (racine, travail délégué, contrôles, attente de votre accord) → « Arrêter » reste visible ;
-// - bande néon au-dessus de la liste des acteurs, qui reste la vérité ;
+// - bande néon au-dessus de la liste des acteurs, qui reste la vérité ; bande et liste repliées tant qu'une demande attend votre
+//   réponse (la carte de la demande garde la place) ;
 // - annonces des transitions par l'annonceur de la page (une région aria-live, au plus une annonce toutes les 2 s), coupées par
 //   `ui.activityAnnouncements` ;
 // - premier bandeau : phrase d'accueil, puis `ui.seenOnboarding` écrit par l'API des réglages (PUT /api/settings) ;
@@ -39,6 +40,9 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   useEffect(() => onTreeWorking(working), [working, onTreeWorking]);
 
   const visible = loaded && bannerVisible(activity.state, activity.rows, activity.status);
+  // Une demande attend votre réponse (ligne avec [Répondre]) : la carte des agents et « Qui travaille ? » se replient (NeonBand,
+  // WhoIsWorking), la région garde ses deux lignes de tête (activity.css) et la place va à la carte de la demande.
+  const demandeEnAttente = activity.rows.some((row) => row.permissionId !== null);
 
   // Premier bandeau (§5.4) : la phrase reste pendant cette visite ; « vu » est écrit une seule fois, par l'API des réglages.
   const [welcome, setWelcome] = useState(false);
@@ -60,7 +64,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   const fermerDemonstration = useCallback(() => setDemonstration(false), []);
 
   return (
-    <div className="activity-region">
+    <div className={demandeEnAttente ? "activity-region attente" : "activity-region"}>
       {/* Faits lus seulement (jamais modifiés) : le même tableau tant que rien ne change, pour la mémoïsation de la bande. Le dossier
           sert à relire les textes du zoom 3 dans la bonne instance d'opencode (train it1 V3, demande de L5c). */}
       <NeonBand
@@ -69,6 +73,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
         advanced={advanced}
         directory={directory}
         onDemonstration={ouvrirDemonstration}
+        demandeEnAttente={demandeEnAttente}
       />
       {demonstration ? <DemoPlayer advanced={advanced} onClose={fermerDemonstration} /> : null}
       {visible ? (
@@ -76,6 +81,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
           rows={activity.rows}
           advanced={advanced}
           working={working}
+          demandeEnAttente={demandeEnAttente}
           partial={activity.partial}
           welcome={welcome}
           details={activity.details}
