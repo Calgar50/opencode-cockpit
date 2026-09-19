@@ -1,9 +1,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { threeGuard } from "./server/build-three-guard.ts";
 
 export default defineConfig({
   root: "web",
-  plugins: [react()],
+  // Garde de three.js (L32, D-3d-06) : licence émise, taille journalisée, build en échec sur eval, new Function, modules
+  // three interdits ou three importé statiquement.
+  plugins: [react(), threeGuard()],
   build: {
     outDir: "../dist/web",
     emptyOutDir: true,
