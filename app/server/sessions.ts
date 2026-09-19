@@ -42,9 +42,14 @@ export const CLASSIFIER_TITLE_PREFIX = "[cockpit] ";
 /** Usages dont une session enfant hérite et qu'une mise à jour ne remplace jamais. */
 const STICKY_PURPOSES: readonly SessionPurpose[] = ["classifier", "equipe", "controle"];
 
-export function purposeOf(info: Pick<OcSession, "title" | "metadata">): SessionPurpose {
+/**
+ * Usage propre d'une session (sans l'héritage du parent). Le préfixe CLASSIFIER_TITLE_PREFIX ne vaut que pour une racine : les
+ * sessions de classement sont des racines créées par le serveur (classifier.ts), alors que le titre d'un enfant de délégation
+ * reprend la description écrite par l'IA (opencode tool/task.ts:160). Un enfant n'est donc jamais classé par son seul titre.
+ */
+export function purposeOf(info: Pick<OcSession, "title" | "metadata">, parentId: string | null | undefined): SessionPurpose {
   const cockpit = info.metadata?.cockpit;
-  if (cockpit === "classifier" || info.title.startsWith(CLASSIFIER_TITLE_PREFIX)) return "classifier";
+  if (cockpit === "classifier" || (!parentId && info.title.startsWith(CLASSIFIER_TITLE_PREFIX))) return "classifier";
   // metadata.cockpit n'est posé que par le serveur du cockpit : le proxy le refuse dans les créations de session.
   if (cockpit === "equipe" || cockpit === "controle") return cockpit;
   return "chat";
@@ -75,7 +80,7 @@ export class SessionTracker {
     const parent = info.parentID ? this.get(info.parentID) : undefined;
     const rootId = info.parentID ? (parent?.root_id ?? info.parentID) : info.id;
     const inherited = parent && STICKY_PURPOSES.includes(parent.purpose) ? parent.purpose : null;
-    const purpose = forcedPurpose ?? inherited ?? purposeOf(info);
+    const purpose = forcedPurpose ?? inherited ?? purposeOf(info, info.parentID);
     const previous = this.get(info.id);
     this.#db
       .prepare(

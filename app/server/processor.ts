@@ -192,8 +192,9 @@ export class EventProcessor {
       log.warn("rattrapage : liste des sessions indisponible", { error: errorMessage(err) });
       return;
     }
+    // Racines de classement écartées ; un enfant titré « [cockpit] … » est une délégation de l'IA (sessions.ts, purposeOf).
     const recent = list
-      .filter((s) => (s.time?.updated ?? 0) >= since && !(s.title ?? "").startsWith("[cockpit]"))
+      .filter((s) => (s.time?.updated ?? 0) >= since && !(!s.parentID && (s.title ?? "").startsWith("[cockpit]")))
       .sort((a, b) => (a.parentID ? 1 : 0) - (b.parentID ? 1 : 0) || a.time.created - b.time.created);
     for (const info of recent) sessions.upsert(info);
     const roots = new Set<string>();

@@ -15,6 +15,7 @@ import { EventHub } from "./hub.ts";
 import { createLogger, type Logger } from "./log.ts";
 import type { OcGlobalEvent, OcSession, OpencodeClient } from "./opencode.ts";
 import { emittedRegistry } from "./permission-gate.ts";
+import { sessionIdOf } from "./processor.ts";
 import { SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import type { StopResult } from "./shared/cockpit-event-types.ts";
@@ -369,6 +370,20 @@ describe("L1e : surveillance des délégations lancées sans demande (unitaires)
     // Témoin : une délégation de l'IA dans la conversation suivie est bien comptée.
     u.delegate("ses_enfant", "call_1");
     assert.deepEqual(u.of("delegation.plafond"), [{ rootId: ROOT, kind: "nombre" }]);
+  });
+
+  it("enfant titré « [cockpit] … » par l'IA (description du task, opencode tool/task.ts:160) : compté dès session.created, sans sa partie ; racine « [cockpit] » sans métadonnées : classement, jamais suivie", async (t) => {
+    const u = unit(t, { maxPerRequest: 0 });
+    u.send();
+    // Racine de classement titrée par le serveur, métadonnées non rendues : usage « classement », ni elle ni sa descendance suivies.
+    u.on(u.ev("session.created", { info: { id: "ses_classement", directory: DIR, title: "[cockpit] classement" } }));
+    u.delegate("ses_sous_classement", "call_k", "ses_classement");
+    assert.deepEqual([u.events, u.watch.snapshot("ses_classement")], [[], null]);
+
+    // Le titre d'un enfant vient de la description écrite par l'IA : il ne le fait jamais passer pour une session du cockpit.
+    u.on(u.ev("session.created", { info: { id: "ses_piege", parentID: ROOT, directory: DIR, title: "[cockpit] résumé (@general subagent)" } }));
+    assert.deepEqual(u.of("delegation.plafond"), [{ rootId: ROOT, kind: "nombre" }]);
+    assert.equal(u.watch.snapshot(ROOT)?.delegations, 1);
   });
 
   it("délégation lancée après une demande accordée : jamais comptée (permission.replied, registre emitted avant l'événement, sous-agent sans partie p7, « always ») ; une demande en attente ou refusée ne couvre pas un enfant lancé sans demande", async (t) => {
@@ -736,6 +751,49 @@ describe("L1e : surveillance sur le faux opencode", () => {
     assert.deepEqual(eventsOf(h, "delegation.plafond"), [{ rootId: root.id, kind: "cout" }]);
     assert.ok(h.ledger.spentSince(root.id, 0) >= 0.05);
     await settledTree(h, root.id);
+    h.assertNoGlobalRestart();
+  });
+
+  it("délégation dont la description, écrite par l'IA, commence par « [cockpit] » : enfant d'usage chat, jamais caché, faits « délégation », événements relayés, coût compté, rattrapage compris ; racine « [cockpit] » sans métadonnées : classement caché, hors rattrapage ; P12", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts", "delegationWatch"] });
+    // Événements relayés au navigateur ; session.created passe avant que la file n'enregistre la session : pas une preuve.
+    const relayed = new Set<string>();
+    t.after(
+      h.hub.subscribe((event) => {
+        if (event.kind === "opencode" && event.event.type !== "session.created") relayed.add(`${event.event.type} ${sessionIdOf(event.event)}`);
+      }),
+    );
+    const root = await trackedRoot(h, "Délégation au titre piégé");
+    h.fake.script(root.id, { tools: [allowTask("[cockpit] résumé", { workMs: 20, cost: 0.02 })] });
+    await sendThroughProxy(h, root.id, "Résume le journal.");
+    await until(() => h.fake.messages(root.id).some((m) => m.info.role === "assistant" && m.parts.some((p) => p.type === "text")), 5_000);
+    await settledTree(h, root.id);
+    const [child] = h.sessions.descendants(root.id);
+    assert.ok(child, "enfant suivi");
+    assert.equal(h.fake.session(child)?.title, "[cockpit] résumé (@general subagent)");
+    assert.deepEqual([h.sessions.get(child)?.purpose, h.sessions.isHidden(child)], ["chat", false]);
+    const created = await until(() =>
+      (h.db.prepare("SELECT data FROM activity_facts WHERE session_id = ? AND kind = 'statut'").all(child) as Array<{ data: string }>)
+        .map((row) => JSON.parse(row.data) as Record<string, unknown>)
+        .find((data) => data.etat === "creee"),
+    );
+    assert.deepEqual([created.role, created.parent], ["delegation", root.id]);
+    assert.ok(relayed.has(`message.updated ${child}`), [...relayed].join("\n"));
+    const usage = h.db.prepare("SELECT purpose, cost FROM usage WHERE session_id = ?").all(child) as Array<{ purpose: string; cost: number }>;
+    // Coût d'un sous-agent (ledger.ts, usagePurpose), jamais celui du classement, exclu des coûts.
+    assert.ok(usage.length > 0, "coût de l'enfant enregistré");
+    assert.deepEqual([...new Set(usage.map((row) => row.purpose))], ["subagent"]);
+
+    // Racine de classement titrée comme le serveur, sans métadonnées : toujours cachée.
+    const classement = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "[cockpit] classement" } });
+    await until(() => h.sessions.get(classement.id));
+    assert.deepEqual([h.sessions.get(classement.id)?.purpose, h.sessions.isHidden(classement.id)], ["classifier", true]);
+
+    // Rattrapage après une coupure du flux : l'enfant est relu comme toute session de la conversation, la racine de classement non.
+    h.db.prepare("DELETE FROM sessions WHERE id IN (?, ?)").run(child, classement.id);
+    await h.processor.backfill();
+    assert.deepEqual([h.sessions.get(child)?.purpose, h.sessions.get(child)?.root_id, h.sessions.isHidden(child)], ["chat", root.id, false]);
+    assert.equal(h.sessions.get(classement.id), undefined, "racine de classement hors rattrapage");
     h.assertNoGlobalRestart();
   });
 

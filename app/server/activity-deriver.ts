@@ -165,7 +165,8 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     const parent = parentId === null ? null : session(parentId);
     if (parentId !== null && parent === null) return null;
     const sticky = parent && STICKY_PURPOSES.has(parent.purpose) ? parent.purpose : null;
-    const purpose = sticky ?? purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined });
+    // Titre d'un enfant écrit par l'IA (description du task) : jamais lu comme l'usage d'une session du cockpit (purposeOf).
+    const purpose = sticky ?? purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined }, parentId);
     return { rootId: parent?.rootId ?? id, parentId, purpose, instance: parent?.instance ?? "principale" };
   };
 

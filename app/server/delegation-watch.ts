@@ -417,7 +417,8 @@ export function createDelegationWatch(deps: DelegationWatchDeps, options: Delega
     const rawParent = info.parentID;
     const parentId = idOf(rawParent);
     if (parentId === null && rawParent !== undefined && rawParent !== null && rawParent !== "") return;
-    const own = purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined });
+    // Titre d'un enfant écrit par l'IA (description du task) : jamais lu comme l'usage d'une session du cockpit (purposeOf).
+    const own = purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined }, parentId);
     if (parentId === null) {
       lineages.set(id, { rootId: id, parentId: null, purpose: own });
       return;
