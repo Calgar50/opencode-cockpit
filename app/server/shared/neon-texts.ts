@@ -1,6 +1,6 @@
 // Textes de la carte des agents en direct (spécification §2.1, §2.3, §5.4, §5.7.1 à §5.7.4, §5.9 ; plan d'exécution, fiche L5a) :
-// libellés des signes, des états, des secteurs, des outils et des stations de la scène (neon-scene.ts), commandes et états vides de
-// la bande 2D (L5c), étiquette de la démonstration enregistrée (L5d). Convention TEXTES de T0, contrôlée par textes.test.ts, avec
+// libellés des signes, des états, des secteurs, des outils et des stations de la scène (neon-scene.ts), commandes, états vides,
+// tableau et panneau du zoom 3 de la bande 2D (L5c), étiquette de la démonstration enregistrée (L5d). Convention TEXTES de T0, contrôlée par textes.test.ts, avec
 // « un sens par mot » : ni « pause », ni « relecture », « mode » seulement dans « mode Simple » ou « mode Avancé ».
 // Honnêteté (P3, P12) : chaque libellé de signe nomme un signe que la scène ne dessine que sur un fait (neon-scene.test.ts) ;
 // « terminé », jamais « réussi » ; la Salle OMO et l'extension ne sont nommées qu'en mode Avancé (salle réservée à ce mode).
@@ -129,6 +129,18 @@ export const TEXTES = {
     nonEnregistre: "non enregistré",
     /** Nom accessible du bouton d'un assistant sur la carte (§5.7.4 : un vrai bouton par assistant). */
     bouton: "{nom}, {etat}",
+    /** Assistant délégué dont le nom n'est pas enregistré (P12 : un inconnu est dit inconnu). */
+    assistantInconnu: "Assistant non identifié",
+    /** [Tableau] de la bande 2D (L5c) : une ligne par assistant dessiné ; la légende du tableau est le titre de la bande. */
+    tableau: {
+      assistant: "Assistant",
+      secteur: "Secteur",
+      etat: "État",
+      depuis: "Depuis",
+      carte: "Sur la carte",
+    },
+    /** Panneau du zoom 3 (L5c) : texte relu dans la conversation mais illisible (message absent, proxy injoignable). */
+    texteIndisponible: "Texte indisponible.",
   },
 };
 
