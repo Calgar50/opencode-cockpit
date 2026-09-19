@@ -1,0 +1,472 @@
+/* 1.1 (L5c) : bande néon 2D du chat, carte des agents en direct (spécification §5.7.4, §5.5, §5.6, JP-13, JP-14).
+   - Couleurs : jetons --neon-* de styles.css (néon sombre en thème sombre, néon clair en thème clair). Chaque signe prend sa
+     couleur par `color` et ses formes la lisent par currentColor ; un texte s'écrit toujours en --neon-texte ou
+     --neon-texte-discret, jamais dans une couleur de trait. La forme dit le sens, la couleur la double (couleurs forcées).
+   - Mouvement : AUCUNE animation ni transition CSS ici. Les transitions (environ 900 ms, une par changement) sont en WAAPI dans
+     NeonBand.tsx, sous prefers-reduced-motion: no-preference ; le halo est statique.
+   - Largeur : mini-carte de 3 lignes sous 900 px (boutons des assistants masqués : la liste des acteurs et le tableau restent) ;
+     liste seule à 400 px. */
+
+.neon-band {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.neon-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.neon-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.neon-summary {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Bande dépliée : la carte dit la même chose ; le résumé ne revient qu'à 400 px, quand la carte est retirée. */
+.neon-summary.is-deplie {
+  display: none;
+}
+
+.neon-rattrape {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.neon-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.neon-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.neon-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.neon-note p {
+  margin: 0;
+}
+
+/* --- Carte ---------------------------------------------------------------------------- */
+
+.neon-map-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+}
+
+.neon-map {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 560 / 220;
+  border-radius: var(--radius-sm);
+  background: var(--neon-fond);
+}
+.neon-map text {
+  font-family: var(--font-sans);
+}
+
+.neon-fond {
+  fill: var(--neon-fond);
+}
+.neon-grille {
+  fill: none;
+  stroke: var(--neon-grille);
+  stroke-width: 1;
+}
+.neon-anneau {
+  fill: none;
+  stroke: var(--neon-grille);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 5;
+}
+.neon-territoire {
+  fill: none;
+  stroke: var(--neon-territoire);
+  stroke-width: 1.2;
+}
+.neon-texte {
+  fill: var(--neon-texte);
+  font-size: 9px;
+}
+.neon-etiquette {
+  fill: var(--neon-texte-discret);
+  font-size: 8.5px;
+}
+
+/* Transitions WAAPI (NeonBand.tsx) : échelle autour du centre du signe. */
+.neon-map [data-neon-cle] {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.neon-station {
+  color: var(--neon-territoire);
+}
+.neon-station rect {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-station.is-carnet rect {
+  stroke-dasharray: 3 3;
+}
+
+/* Assistants : cœur, halo statique (travaille), anneau coché (terminé), anneau brisé (échec), carré gris (arrêté). */
+.neon-noeud {
+  color: var(--neon-acteur);
+}
+.neon-coeur {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.neon-halo {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.3;
+  stroke-width: 6;
+}
+.neon-coche {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.neon-carre {
+  fill: var(--neon-arret);
+}
+
+/* Faisceaux : votre demande (trait plein, flèche), préparation (pointillé fixe), consigne (trait plein à chevrons et enveloppe),
+   résultat (pointillé à losanges) ; figé par un arrêt : gris, avec le carré d'arrêt, forme gardée. */
+.neon-faisceau.is-demande {
+  color: var(--neon-vous);
+}
+.neon-faisceau.is-preparation,
+.neon-faisceau.is-consigne,
+.neon-enveloppe {
+  color: var(--neon-consigne);
+}
+.neon-faisceau.is-resultat {
+  color: var(--neon-resultat);
+}
+.neon-faisceau.is-fige {
+  color: var(--neon-arret);
+}
+.neon-trait {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.neon-faisceau.is-preparation .neon-trait {
+  stroke-dasharray: 5 4;
+}
+.neon-faisceau.is-resultat .neon-trait {
+  stroke-dasharray: 1 5;
+}
+.neon-chevron {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.neon-losange,
+.neon-fleche {
+  fill: currentColor;
+}
+.neon-enveloppe rect {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-enveloppe path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+
+/* Attente de votre accord : hexagone hachuré avec cadenas. */
+.neon-attente {
+  color: var(--neon-attente);
+}
+.neon-attente polygon {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-attente path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+/* Décision du cockpit : bouclier coché (automatique) ou croix (refusé). */
+.neon-decision.is-auto {
+  color: var(--neon-auto);
+}
+.neon-decision.is-refus {
+  color: var(--neon-refus);
+}
+.neon-decision path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Appel d'IA vers GitHub Copilot et marque d'origine d'un message. */
+.neon-impulsion {
+  color: var(--neon-acteur);
+}
+.neon-origine {
+  color: var(--neon-acteur);
+}
+.neon-origine.is-relance-extension {
+  color: var(--neon-extension);
+}
+.neon-origine circle {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.2;
+}
+.neon-arret {
+  color: var(--neon-arret);
+}
+
+/* Zoom 3 : anneau d'outils et tuiles de fichiers (contour bleu = lu, plein rose = modifié, barré = refusé). */
+.neon-outil {
+  color: var(--neon-acteur);
+}
+.neon-outil circle {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-outil.is-vide {
+  color: var(--neon-grille);
+}
+.neon-outil.is-vide circle {
+  stroke-dasharray: 2 3;
+}
+.neon-tuile {
+  color: var(--neon-texte-discret);
+}
+.neon-tuile rect {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-tuile.is-lu {
+  color: var(--neon-resultat);
+}
+.neon-tuile.is-modifie rect {
+  fill: var(--neon-consigne);
+}
+.neon-tuile.is-en-cours rect {
+  stroke-dasharray: 3 2;
+}
+.neon-tuile .neon-barre {
+  stroke: var(--neon-refus);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Un vrai bouton par assistant, posé sur la carte. */
+.neon-nodes {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+.neon-nodes li {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+.neon-node-btn {
+  display: block;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.neon-node-btn:hover {
+  box-shadow: 0 0 0 2px var(--neon-territoire);
+}
+.neon-node-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Zoom 3 : panneau ----------------------------------------------------------------- */
+
+.neon-detail {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.neon-panel {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.neon-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.neon-panel-head p {
+  margin: 0;
+  font-weight: 600;
+}
+.neon-panel dl {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+.neon-panel dt {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.neon-panel dd {
+  margin: 0;
+  min-width: 0;
+}
+.neon-panel ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.neon-panel-text {
+  max-height: 9.5em;
+  margin: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* --- Tableau -------------------------------------------------------------------------- */
+
+.neon-table tbody th {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: normal;
+}
+
+@media (min-width: 1100px) {
+  .neon-detail {
+    grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+/* §5.6 : mini-carte de 3 lignes sous 900 px (vignette entière, proportions gardées, boutons des assistants retirés) ; la liste
+   des acteurs (ActivityRegion) et le tableau restent la vérité. */
+@media (max-width: 899.98px) {
+  .neon-map {
+    width: auto;
+    height: 4.5em;
+  }
+  .neon-nodes {
+    display: none;
+  }
+}
+
+/* §5.6 : liste seule à 400 px ; le résumé d'une ligne remplace la carte. */
+@media (max-width: 400px) {
+  .neon-map-wrap {
+    display: none;
+  }
+  .neon-summary.is-deplie {
+    display: block;
+  }
+}
+
+/* §5.5 : couleurs forcées. Toute couleur de la carte passe par un jeton --neon-* (aucune couleur écrite en clair dans cette
+   feuille) : redéfinir les jetons en couleurs système couvre chaque règle, quelle que soit sa spécificité (.is-consigne,
+   .is-auto…). Formes, pointillés, hachures, chevrons, losanges, pleins et contours gardent le sens ; l'arrêt, le figé et le
+   décor passent en GrayText. La carte garde ces couleurs (forced-color-adjust: none) ; le reste de la bande suit le système. */
+@media (forced-colors: active) {
+  .neon-band {
+    --neon-fond: Canvas;
+    --neon-grille: GrayText;
+    --neon-territoire: CanvasText;
+    --neon-texte: CanvasText;
+    --neon-texte-discret: CanvasText;
+    --neon-vous: CanvasText;
+    --neon-consigne: CanvasText;
+    --neon-resultat: CanvasText;
+    --neon-attente: CanvasText;
+    --neon-auto: CanvasText;
+    --neon-refus: CanvasText;
+    --neon-extension: CanvasText;
+    --neon-acteur: CanvasText;
+    --neon-arret: GrayText;
+  }
+  .neon-map {
+    forced-color-adjust: none;
+  }
+  /* Grille de fond : décor seul, retirée (les couleurs système la rendraient aussi forte qu'un signe). */
+  .neon-grille {
+    display: none;
+  }
+  .neon-node-btn:hover {
+    box-shadow: none;
+    outline: 1px solid CanvasText;
+  }
+  .neon-node-btn:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .neon-rattrape {
+    border: 1px solid CanvasText;
+  }
+}
