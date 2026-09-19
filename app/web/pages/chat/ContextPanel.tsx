@@ -1,4 +1,5 @@
-// Panneau latéral : coût de la conversation, classement, plan, fichiers modifiés, sous-agents.
+// Panneau latéral : coût de la conversation, classement, plan, fichiers modifiés, travail délégué (« Sous-agents » et titres
+// d'opencode en mode Avancé seulement).
 import { useState } from "react";
 import { useApp } from "../../app/AppContext.tsx";
 import { DiffView } from "../../components/DiffView.tsx";
@@ -10,6 +11,7 @@ import { routeHref } from "../../lib/router.ts";
 import type { Category, Conversation, FileDiff, OcSession, Todo } from "../../lib/types.ts";
 import { Deroule } from "./activity/Deroule.tsx";
 import { TodoItems } from "./ToolCard.tsx";
+import { delegatedWorkName } from "./turn.ts";
 
 const CLASSIFIED_BY: Record<string, string> = { llm: "par IA", heuristic: "automatique", manual: "manuel", none: "non classée" };
 
@@ -81,7 +83,9 @@ export function ContextPanel({
               ))}
             </dl>
           ) : null}
-          <span className="tiny muted">Sous-agents inclus. Coût facturé rapporté par GitHub quand il est disponible.</span>
+          <span className="tiny muted">
+            {advanced ? "Sous-agents inclus." : "Travail délégué inclus."} Coût facturé rapporté par GitHub quand il est disponible.
+          </span>
         </div>
       </section>
 
@@ -176,12 +180,15 @@ export function ContextPanel({
 
       {childSessions.length > 0 ? (
         <section className="aside-section">
-          <h4>Sous-agents ({childSessions.length})</h4>
+          <h4>
+            {advanced ? "Sous-agents" : "Travail délégué"} ({childSessions.length})
+          </h4>
           <div className="list">
             {childSessions.map((child) => (
               <button key={child.id} type="button" className="list-item" style={{ padding: "6px 4px" }} onClick={() => onOpenSession(child.id)}>
                 <Icon name="users" size={13} />
-                <span className="ellipsis small">{child.title || child.id}</span>
+                {/* Titre d'opencode (« … (@assistant subagent) ») en Avancé seulement (§2.3). */}
+                <span className="ellipsis small">{advanced ? child.title || child.id : delegatedWorkName(child)}</span>
                 <span className="spacer" />
                 <span className="tiny muted nowrap">{relativeTime(child.time.updated)}</span>
               </button>

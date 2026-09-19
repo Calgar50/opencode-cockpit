@@ -400,6 +400,12 @@ export const VARIANT_HELP = "Plus de réflexion = réponses plus lentes et plus 
 
 // --- Résolution de l'IA (opencode 1.18.30) ----------------------------------------------
 
+/**
+ * Ligne « !`commande` » du texte d'un raccourci : opencode 1.18.30 l'exécute avant tout contrôle, sans demande d'autorisation
+ * (session/prompt.ts:1397-1407). Un seul motif pour le Studio (avertissement) et « Plan d'abord » (refus, oc-uncontrolled.ts).
+ */
+export const SHELL_LINE_RE = /!`[^`]+`/;
+
 /** `(agent.mode === "subagent" && cmd.subtask !== false) || cmd.subtask === true` (prompt.ts:1439). */
 export function isSubtask(agent: Pick<AgentLite, "mode">, command: Pick<CommandLite, "subtask">): boolean {
   return (agent.mode === "subagent" && command.subtask !== false) || command.subtask === true;

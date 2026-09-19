@@ -8,6 +8,9 @@
 // - « La demande d'autorisation reste en attente » : la garde ne répond rien à opencode, la demande reste à l'utilisateur ;
 // - l'avis Simple : le refus part avec le message à l'IA par rejectWhenAlone, jamais avant la réponse à une autre demande de la même
 //   conversation (votre autre demande n'est pas annulée) ; M9 (l'IA continue seule sur une IA Copilot réelle) : recette en attente.
+//   Rendu au « once » seulement quand ce refus est en cours (lancé par la dérivation ou par le « once » lui-même) ;
+// - « elle attend votre réponse » (avis Simple sans refus) : trop de refus Simple en cours (SIMPLE_JOBS_MAX), aucun refus n'est lancé
+//   pour cette demande, rien n'est relayé ; elle reste à l'utilisateur.
 import { formatUsd } from "./assistant-rules.ts";
 import type { DelegationRefusalCode } from "./activity-types.ts";
 
@@ -15,6 +18,8 @@ export const TEXTES = {
   simple: {
     /** Avis affiché en mode Simple quand l'IA veut déléguer (Q5, option b). */
     avis: "En mode Simple, l'IA ne délègue pas : elle continue seule.",
+    /** « Autoriser une fois » en mode Simple quand le refus d'office n'a pas pu être lancé (trop de refus en cours). */
+    avisAttente: "En mode Simple, l'IA ne délègue pas, mais le cockpit n'a pas pu refuser cette demande pour l'instant : elle attend votre réponse. Choisissez « Refuser ».",
   },
   avance: {},
   partout: {
@@ -61,6 +66,11 @@ function remplir(gabarit: string, valeurs: Readonly<Record<string, string | numb
 /** Avis du mode Simple sur la délégation (Q5). */
 export function avisSimple(): string {
   return TEXTES.simple.avis;
+}
+
+/** Avis du mode Simple quand aucun refus d'office n'a pu être lancé : la demande attend l'utilisateur. */
+export function avisSimpleEnAttente(): string {
+  return TEXTES.simple.avisAttente;
 }
 
 /** Message joint au refus Simple, envoyé à l'IA (décision n° 4). */

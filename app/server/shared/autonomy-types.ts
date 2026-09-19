@@ -187,7 +187,10 @@ export interface PlanCreateBody {
   source?: string;
 }
 
-/** Réponse de POST /api/plans : racine PLAN vérifiée (403 forbidden-directory, 409 budget-guard, 502 plancher-non-verifie). */
+/**
+ * Réponse de POST /api/plans : racine PLAN vérifiée (403 forbidden-directory, 409 budget-guard ou outils-hors-controle, 502
+ * plancher-non-verifie ou configuration-illisible).
+ */
 export interface PlanCreateResponse {
   rootId: string;
   session: PlanSessionInfo;

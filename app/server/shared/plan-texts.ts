@@ -6,7 +6,8 @@
 // Honnêteté (§6, P3), chaque phrase tenue par plans.test.ts :
 // - « ne peut rien modifier, même plus tard » : plancher PLAN (edit write apply_patch bash retirés, racine et travail délégué, F-e,
 //   F-f), vérifié à la création puis avant chaque envoi facturé d'une conversation de plan ; « plan » permanent (aucun PUT ne le
-//   change) ;
+//   change) ; ce qui passerait sans demande (§4.10) est refusé : création et envoi quand la configuration d'opencode déclare des
+//   outils MCP ou des extensions (oc-uncontrolled.ts), raccourci dont le texte a une ligne « !`…` » ;
 // - « Aucun message n'a été envoyé ni facturé » : seule la création a été demandée à opencode ;
 // - « non créée » seulement quand rien ne peut rester dans opencode ; sinon « refusée » et « peut rester dans la liste » ;
 // - « Créer cette conversation de plan ne coûte rien » : la création n'appelle aucune IA ; chaque message passe ensuite par le
@@ -58,6 +59,18 @@ export const TEXTES = {
       envoi: "Message non envoyé : le cockpit n'a pas pu vérifier que cette conversation de plan ne peut rien modifier. Rien n'a été facturé. Réessayez dans un instant.",
       envoiEcart:
         "Message non envoyé : le cockpit ne peut pas vérifier que cette conversation de plan ne peut rien modifier. Rien n'a été facturé. Continuez dans une nouvelle conversation de plan.",
+      /** 409 outils-hors-controle de POST /api/plans (§4.10) : la configuration d'opencode déclare mcp ou plugin. */
+      outilsCreation:
+        "Conversation de plan non créée : la configuration d'opencode déclare des outils MCP ou des extensions, qui peuvent modifier des fichiers sans vous demander. Retirez-les (Paramètres › opencode, en mode Avancé) pour utiliser « Plan d'abord ». Aucun message n'a été envoyé ni facturé.",
+      /** 502 configuration-illisible de POST /api/plans : outils MCP et extensions non vérifiables. */
+      configurationCreation:
+        "Conversation de plan non créée : le cockpit n'a pas pu lire la configuration d'opencode pour vérifier qu'elle ne peut rien modifier. Aucun message n'a été envoyé ni facturé. Réessayez dans un instant.",
+      /** 409 outils-hors-controle du crochet d'envoi d'une conversation de plan (outils déclarés après sa création). */
+      outilsEnvoi:
+        "Message non envoyé : la configuration d'opencode déclare des outils MCP ou des extensions, qui pourraient modifier des fichiers sans vous demander dans cette conversation de plan. Rien n'a été facturé. Retirez-les (Paramètres › opencode, en mode Avancé), puis réessayez.",
+      /** 409 raccourci-commande du crochet d'envoi (§4.10) : ligne « !`…` » dans le texte du raccourci. */
+      raccourciCommande:
+        "Raccourci non lancé : son texte contient une ligne « !`…` », qu'opencode exécuterait sans vous demander. Une conversation de plan ne peut rien modifier : lancez ce raccourci dans une autre conversation. Rien n'a été facturé.",
     },
   },
 };

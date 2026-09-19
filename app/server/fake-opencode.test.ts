@@ -1460,6 +1460,20 @@ describe("faux opencode : routes lues par le cockpit", () => {
     assert.deepEqual(await oc.request("GET", "/command", { directory: "/workspace/vide" }), []);
   });
 
+  it("GET /config : configuration effective du dossier (globale puis projet) ; `plugin` toujours présent, `mcp` absent sans serveur déclaré (mesuré sur 1.18.30)", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const initial = await oc.request<Record<string, unknown>>("GET", "/config", { directory: "/workspace" });
+    assert.deepEqual(initial.plugin, []);
+    assert.equal("mcp" in initial, false);
+    assert.deepEqual(initial.permission, fake.globalConfig.permission);
+    fake.globalConfig = { ...fake.globalConfig, mcp: { depot: { type: "remote", url: "https://mcp.exemple.invalid/mcp" } } };
+    fake.projectConfigs.set("/workspace/a", { plugin: ["file:///workspace/a/.opencode/plugins/ecrit.js"] });
+    const project = await oc.request<Record<string, unknown>>("GET", "/config", { directory: "/workspace/a" });
+    assert.deepEqual(project.mcp, { depot: { type: "remote", url: "https://mcp.exemple.invalid/mcp" } });
+    assert.deepEqual(project.plugin, ["file:///workspace/a/.opencode/plugins/ecrit.js"]);
+    assert.deepEqual((await oc.request<Record<string, unknown>>("GET", "/config", { directory: "/workspace" })).plugin, [], "autre dossier");
+  });
+
   it("GET /global/config et PATCH : fusion profonde (tableaux remplacés), journal des PATCH ; configuration changée : instances libérées puis global.disposed, sinon rien ; clé __proto__ ignorée ; corps absent 400", async (t) => {
     const { fake, oc } = await startFake(t);
     assert.deepEqual(await oc.request("GET", "/global/config"), {

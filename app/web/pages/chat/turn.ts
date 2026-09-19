@@ -256,6 +256,18 @@ export function boundedAiText(value: unknown, max = AI_TEXT_MAX): { text: string
   return { text: clean.slice(0, high >= 0xd800 && high <= 0xdbff ? max - 1 : max), clipped: true };
 }
 
+/** Nom d'assistant délégué affiché au plus (valeur venue d'opencode). */
+const DELEGATED_NAME_MAX = 64;
+
+/**
+ * Nom d'un travail délégué en mode Simple (tiroir de lecture, panneau latéral) : l'assistant qui travaille, comme la liste des
+ * acteurs, sinon « Travail délégué ». Jamais le titre d'opencode, « {description} (@{assistant} subagent) » en 1.18.30 : mots
+ * interdits en Simple (§2.3). Le mode Avancé garde ce titre.
+ */
+export function delegatedWorkName(info: { readonly agent?: unknown } | null | undefined): string {
+  return boundedAiText(info?.agent, DELEGATED_NAME_MAX).text.trim() || "Travail délégué";
+}
+
 /** Partie de message d'opencode, forme minimale lue par la transcription. */
 interface PartShape {
   readonly type: string;

@@ -628,6 +628,11 @@ export class FakeOpencode {
   globalConfig: Record<string, unknown>;
   /** PATCH /global/config reçus, dans l'ordre : corps, et changement effectif (qui libère toutes les instances en tâche de fond). */
   readonly globalConfigPatches: Array<{ body: Record<string, unknown>; changed: boolean }> = [];
+  /**
+   * Configuration propre à un dossier (opencode.json du projet, extensions découvertes dans ses plugin(s)/), fusionnée à la
+   * configuration globale par GET /config.
+   */
+  readonly projectConfigs = new Map<string, Record<string, unknown>>();
   /** GET /config/providers : une IA `available: false` n'y figure pas. */
   providers: FakeProvider[] = defaultProviders();
   /** Champ « default » de GET /config/providers : IA par défaut de chaque fournisseur. */
@@ -733,6 +738,15 @@ export class FakeOpencode {
   setAgents(agents: FakeAgent[], directory?: string): void {
     if (directory === undefined) this.#defaultAgents = jsonClone(agents);
     else this.#agents.set(directory, jsonClone(agents));
+  }
+
+  /**
+   * Configuration effective d'un dossier (GET /config, mesuré sur opencode 1.18.30) : globale puis projet ; `plugin` toujours présent
+   * (liste vide par défaut, fichiers de plugin(s)/ en « file:// ») ; `mcp` absent tant qu'aucun serveur n'est déclaré.
+   */
+  effectiveConfig(directory: string = this.directory): Record<string, unknown> {
+    const merged = mergeDeep(this.globalConfig, this.projectConfigs.get(directory) ?? {});
+    return { ...merged, plugin: Array.isArray(merged.plugin) ? merged.plugin : [] };
   }
 
   /** Raccourcis de GET /command dans ce dossier : liste propre au dossier, sinon liste par défaut (vide). */
@@ -986,6 +1000,7 @@ export class FakeOpencode {
     }
     if (is("GET", "agent")) return json(200, this.agents(directory));
     if (is("GET", "command")) return json(200, this.commands(directory));
+    if (is("GET", "config")) return json(200, this.effectiveConfig(directory));
     // Chemins de l'instance, forme relevée par MX1 (utilisateur node de l'image) ; worktree « / » hors git.
     if (is("GET", "path")) {
       return json(200, { home: "/home/node", state: "/home/node/.local/state/opencode", config: "/home/node/.config/opencode", worktree: this.worktreeOf(directory), directory });

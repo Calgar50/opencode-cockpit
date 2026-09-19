@@ -6,6 +6,11 @@
 // - Crochet beforeBilledSend : un envoi facturé dans l'arbre d'une conversation de plan exige le plancher PLAN vérifié sur la
 //   session visée ; sinon il est reposé (PATCH, écho vérifié, marque) avant de relayer, ou l'envoi est refusé (502). Le plancher
 //   CONVERSATION reposé par le crochet « floors » quand une marque manque n'enlève donc jamais « ne peut rien modifier ».
+// - Ce qui passerait sans demande (§4.10, relevé de oc-uncontrolled.ts) : la création (POST /api/plans) et chaque envoi de l'arbre
+//   sont refusés (409 outils-hors-controle) quand la configuration d'opencode déclare des outils MCP ou des extensions (défauts
+//   « "*": "allow" » d'opencode : ils écriraient sans demande) ; un raccourci dont le texte a une ligne « !`…` » (exécutée avant tout
+//   contrôle) est refusé dans l'arbre (409 raccourci-commande). Relevé impossible : 502 configuration-illisible, rien de créé ni
+//   de relayé (P1).
 // - POST /api/plans/:id/execution : nouvelle racine CONVERSATION (aucun fork : il recopierait les messages facturés, sans plancher),
 //   execution_de_plan_id, brouillon « Exécute le plan suivant. » + dernier texte du plan. La confirmation et l'activation d'un
 //   choix automatique suivent la logique de PUT …/autonomie (403 autonomie-coupee, 428 sans x-cockpit-confirm, 409 avec la raison
@@ -18,6 +23,7 @@ import { emitCockpit } from "./cockpit-events.ts";
 import type { AutonomyPutResult, Cockpit11, Cockpit11Module, PlansPort, ProxyContext } from "./contracts-11.ts";
 import { ConversationAutonomyStore } from "./conversation-autonomy.ts";
 import { errorMessage } from "./log.ts";
+import { anyDeclared, commandRunsShell, declaredTools } from "./oc-uncontrolled.ts";
 import type { OcSession } from "./opencode.ts";
 import { redactSecrets } from "./redact.ts";
 import { registerPlanRoutes } from "./routes-plans.ts";
@@ -39,6 +45,9 @@ export function neutralPlans(): PlansPort {
 
 /** Longueur maximale d'un dossier opencode reçu (chemin absolu du conteneur). */
 const DIRECTORY_MAX = 4096;
+
+/** Raccourci relayé par le proxy (chemin relatif d'opencode, identifiant déjà vérifié par la liste blanche du proxy). */
+const COMMAND_ROUTE = /^\/session\/[^/]+\/command$/;
 
 /**
  * Corps de POST /api/plans (PlanCreateBody) : `directory` ; `source`, conversation d'origine de « Plan d'abord (nouvelle
@@ -73,6 +82,8 @@ export type PlanRefusal =
   | { ok: false; status: 404; error: "not-found"; motif: "plan" | "source" }
   | { ok: false; status: 409; error: "budget-guard"; percent: number; spentUsd: number; budgetUsd: number }
   | { ok: false; status: 409; error: "plan-sans-reponse" }
+  | { ok: false; status: 409; error: "outils-hors-controle" }
+  | { ok: false; status: 502; error: "configuration-illisible" }
   | { ok: false; status: 502; error: "plancher-non-verifie"; motif: "plan" | "plan-reste" | "execution" | "execution-reste" }
   | { ok: false; status: 502; error: "opencode-unreachable" };
 
@@ -180,6 +191,19 @@ export function createPlanService(c11: Cockpit11): PlanService {
     if (!c11.sessions.get(session.id)) c11.sessions.upsert(session);
   };
 
+  /** Outils MCP ou d'extension du dossier (§4.10, oc-uncontrolled.ts) : aucun, déclarés, ou relevé impossible (refusé, P1). */
+  const uncontrolledTools = async (directory: string | null): Promise<"aucun" | "declares" | "illisible"> => {
+    try {
+      const tools = await declaredTools(c11, directory);
+      if (!anyDeclared(tools)) return "aucun";
+      c11.log.info("plans : outils MCP ou extensions déclarés, conversation de plan refusée", { directory, ...tools });
+      return "declares";
+    } catch (err) {
+      c11.log.warn("plans : outils MCP et extensions non vérifiables, conversation de plan refusée", { directory, error: errorMessage(err) });
+      return "illisible";
+    }
+  };
+
   /** Événement autonomie.choix et fait « choix » (sans texte) de la nouvelle conversation de plan. */
   const announcePlan = (rootId: string, at: number): void => {
     emitCockpit(c11.hub, "autonomie.choix", { rootId, choix: "plan", cause: "clic" });
@@ -201,6 +225,11 @@ export function createPlanService(c11: Cockpit11): PlanService {
       if (!origin) return { ok: false, status: 404, error: "not-found", motif: "source" };
       // Le plan s'écrit dans le dossier de la conversation d'origine.
       if (origin.directory !== directory) return invalid;
+    }
+    // §4.10 : un outil MCP ou d'extension passerait sans demande ; la conversation ne pourrait pas « rien modifier ».
+    const tools = await uncontrolledTools(directory);
+    if (tools !== "aucun") {
+      return tools === "declares" ? { ok: false, status: 409, error: "outils-hors-controle" } : { ok: false, status: 502, error: "configuration-illisible" };
     }
     // Garde-fou budgétaire (409 budget-guard) : budget du mois atteint, comme le premier refus de ledger.guard. La création
     // n'appelle aucune IA ; chaque message passera ensuite par le garde-fou normal du proxy.
@@ -328,9 +357,28 @@ export function createPlanService(c11: Cockpit11): PlanService {
     const row = c11.sessions.get(sessionId) ?? (await c11.sessions.ensure(sessionId, ctx.directory ?? undefined));
     const rootId = row?.root_id ?? sessionId;
     if (store.read(rootId)?.choix !== "plan") return null;
-    const outcome = await ensurePlanFloor(sessionId, ctx.directory || row?.directory || null);
+    const directory = ctx.directory || row?.directory || null;
+    const { erreurs } = TEXTES.partout;
+    // §4.10 : ce qui passerait sans demande dans l'arbre d'un plan est refusé avant tout relais (rien n'est facturé).
+    const tools = await uncontrolledTools(directory);
+    if (tools === "declares") return Response.json({ error: "outils-hors-controle", message: erreurs.outilsEnvoi }, { status: 409 });
+    if (tools === "illisible") return Response.json({ error: "configuration-illisible", message: erreurs.envoi }, { status: 502 });
+    if (COMMAND_ROUTE.test(ctx.sub) && typeof ctx.body.command === "string") {
+      let shell: boolean;
+      try {
+        shell = await commandRunsShell(c11, directory, ctx.body.command);
+      } catch (err) {
+        c11.log.warn("plans : texte du raccourci illisible, raccourci refusé", { sessionId, error: errorMessage(err) });
+        return Response.json({ error: "configuration-illisible", message: erreurs.envoi }, { status: 502 });
+      }
+      if (shell) {
+        c11.log.info("plans : raccourci avec une ligne !`…` refusé dans une conversation de plan", { sessionId });
+        return Response.json({ error: "raccourci-commande", message: erreurs.raccourciCommande }, { status: 409 });
+      }
+    }
+    const outcome = await ensurePlanFloor(sessionId, directory);
     if (outcome === "ok") return null;
-    const message = outcome === "ecart" ? TEXTES.partout.erreurs.envoiEcart : TEXTES.partout.erreurs.envoi;
+    const message = outcome === "ecart" ? erreurs.envoiEcart : erreurs.envoi;
     return Response.json({ error: FLOOR_ERROR, message }, { status: 502 });
   };
 

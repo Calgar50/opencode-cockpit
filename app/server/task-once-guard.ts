@@ -4,8 +4,9 @@
 // - crochet beforeOnceRelay : « Autoriser une fois » d'une délégation (`task`), dans la file des réponses, après la vérification 1.0
 //   (checkOnce). Refus 409 delegation-refusee {message} pour les 7 cas du §3.14 (guardRefusal), rien n'est relayé et rien n'est
 //   répondu à opencode : la demande d'autorisation reste en attente. En mode Simple hors « Autonome avec contrôle », 409 avec l'avis
-//   Simple (la délégation y est refusée d'office, décision n° 4). Vérification impossible : 503, rien n'est relayé. Les autres
-//   permissions passent (null) ;
+//   Simple (la délégation y est refusée d'office, décision n° 4) : le crochet lance (ou réarme) lui-même ce refus quand la
+//   dérivation ne l'a pas fait ; borne SIMPLE_JOBS_MAX atteinte : 409 avec l'avis « elle attend votre réponse », rien n'est lancé.
+//   Vérification impossible : 503, rien n'est relayé. Les autres permissions passent (null) ;
 // - dérivation du refus Simple (mode Simple ET choix de la racine différent de « autonome », lu par ports.conversationAutonomy) :
 //   sur permission.asked d'un `task`, refus avec message à l'IA par gate.rejectWhenAlone (retenu tant qu'une autre demande de la
 //   même conversation attend : votre autre demande n'est jamais annulée, F-c), puis work.markWait(…, « cockpit ») et fait « reponse »
@@ -22,8 +23,9 @@
 // qui délègue elle-même est refusé (reprise impossible sans casser le tour en cours) ; catalogue non chargé : IA refusée (P1).
 // Limites (dites) : un refus Simple retenu par le portillon (45 s au plus) part même si le mode ou le choix change pendant la
 // retenue ; le registre des réponses émises garantit qu'une seule réponse part (un « once » de l'autonomie ou de vous, inscrit
-// avant, l'emporte). Réarmé après la borne, il est revérifié. Une demande posée pendant une coupure du flux ou avant un redémarrage
-// du cockpit n'est pas refusée d'office : elle attend l'utilisateur, et son « once » reste gardé par ce crochet. Les @jetons sont
+// avant, l'emporte). Réarmé après la borne, il est revérifié. Une demande posée pendant une coupure du flux, avant un redémarrage
+// du cockpit ou en Avancé avant le passage en Simple n'est pas refusée d'office à son arrivée : elle attend l'utilisateur, et son
+// « Autoriser une fois » lance alors le refus Simple (409 avec l'avis), jamais un « once ». Les @jetons sont
 // vérifiés au moment du « once » (métadonnées du disque, liens suivis) : un fichier créé entre cette vérification et le lancement
 // du sous-agent (par exemple par une autre action autorisée du même tour) serait lu (TOCTOU, fenêtre courte).
 // neutralTaskGuard reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
@@ -61,7 +63,7 @@ import {
   type UiMode,
 } from "./shared/assistant-rules.ts";
 import type { AutonomyChoice, DelegationFacts } from "./shared/autonomy-types.ts";
-import { avisSimple, messageRefusSimple, refusDelegation, verificationImpossible } from "./shared/delegation-texts.ts";
+import { avisSimple, avisSimpleEnAttente, messageRefusSimple, refusDelegation, verificationImpossible } from "./shared/delegation-texts.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
 
 export function neutralTaskGuard(): TaskGuardPort {
@@ -609,49 +611,7 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
     },
   };
 
-  // --- Crochet beforeOnceRelay ---------------------------------------------------------------------------------------------------
-
-  const unverifiable = (ctx: Parameters<TaskGuard["hook"]>[0], requestId: string, err: unknown): Response => {
-    c11.log.warn("travail délégué non vérifiable : « once » non relayé", { requestId, error: errorMessage(err) });
-    return ctx.c.json({ error: "verification-impossible", message: verificationImpossible() }, 503);
-  };
-
-  const hook: TaskGuard["hook"] = async (ctx, requestId) => {
-    let request: TaskPermission | null;
-    try {
-      request = await readPermission(c11.client, ctx.directory, requestId);
-    } catch (err) {
-      return unverifiable(ctx, requestId, err);
-    }
-    // Autre permission : la garde ne s'applique qu'aux délégations.
-    if (request !== null && request.permission !== "task") return null;
-    if (request === null) {
-      c11.log.info("délégation refusée par la garde", { requestId, refus: "demande-morte" });
-      return ctx.c.json({ error: "delegation-refusee", message: refusDelegation("demande-morte") }, 409);
-    }
-    const rootId = await rootOfSession(c11, request.sessionID, ctx.directory);
-    if (rootId === null) return unverifiable(ctx, requestId, new Error("conversation de la demande inconnue"));
-    if (simpleApplies(rootId)) {
-      c11.log.info("délégation refusée : mode Simple", { requestId, rootId });
-      return ctx.c.json({ error: "delegation-refusee", message: avisSimple() }, 409);
-    }
-    let inspection: DelegationInspection;
-    try {
-      inspection = await inspectDelegation(
-        c11,
-        { rootId, sessionId: request.sessionID, permissionId: requestId, directory: ctx.directory },
-        { request, confirmed: ctx.c.req.header(CONFIRM_HEADER) === "1" },
-      );
-    } catch (err) {
-      return unverifiable(ctx, requestId, err);
-    }
-    const code = guardRefusal(inspection);
-    if (code === null) return null;
-    c11.log.info("délégation refusée par la garde", { requestId, rootId, refus: code });
-    return ctx.c.json({ error: "delegation-refusee", message: refusalMessage(code, inspection) }, 409);
-  };
-
-  // --- Refus Simple (dérivation) --------------------------------------------------------------------------------------------------
+  // --- Refus Simple (dérivation et crochet) ---------------------------------------------------------------------------------------
 
   const running = new Set<string>();
   const retained = new Map<string, SimpleJob>();
@@ -695,21 +655,76 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
     }
   };
 
-  const start = (job: SimpleJob): void => {
+  /** Lance (ou réarme) le refus Simple de la demande ; false : non lancé (borne SIMPLE_JOBS_MAX), la demande attend l'utilisateur. */
+  const start = (job: SimpleJob): boolean => {
     retained.delete(job.permissionId);
-    if (running.has(job.permissionId)) return;
+    if (running.has(job.permissionId)) return true;
     if (running.size >= SIMPLE_JOBS_MAX) {
       c11.log.warn("refus Simple non lancé : trop de délégations en cours de refus, la demande attend l'utilisateur", { permissionId: job.permissionId });
-      return;
+      return false;
     }
     running.add(job.permissionId);
-    // Hors de l'appel : aucune requête ne part pendant onEvent, ni dans la file du processeur.
+    // Hors de l'appel : aucune requête ne part pendant onEvent, ni dans la file du processeur, ni dans le crochet (qui tient la
+    // file des réponses : rejectWhenAlone la prend après sa libération par le proxy).
     queueMicrotask(() => {
       refuseInSimple(job)
         .catch((err: unknown) => c11.log.warn("refus Simple en échec", { permissionId: job.permissionId, error: errorMessage(err) }))
         .finally(() => running.delete(job.permissionId));
     });
+    return true;
   };
+
+  // --- Crochet beforeOnceRelay ---------------------------------------------------------------------------------------------------
+
+  const unverifiable = (ctx: Parameters<TaskGuard["hook"]>[0], requestId: string, err: unknown): Response => {
+    c11.log.warn("travail délégué non vérifiable : « once » non relayé", { requestId, error: errorMessage(err) });
+    return ctx.c.json({ error: "verification-impossible", message: verificationImpossible() }, 503);
+  };
+
+  const hook: TaskGuard["hook"] = async (ctx, requestId) => {
+    let request: TaskPermission | null;
+    try {
+      request = await readPermission(c11.client, ctx.directory, requestId);
+    } catch (err) {
+      return unverifiable(ctx, requestId, err);
+    }
+    // Autre permission : la garde ne s'applique qu'aux délégations.
+    if (request !== null && request.permission !== "task") return null;
+    if (request === null) {
+      c11.log.info("délégation refusée par la garde", { requestId, refus: "demande-morte" });
+      return ctx.c.json({ error: "delegation-refusee", message: refusDelegation("demande-morte") }, 409);
+    }
+    const rootId = await rootOfSession(c11, request.sessionID, ctx.directory);
+    if (rootId === null) return unverifiable(ctx, requestId, new Error("conversation de la demande inconnue"));
+    if (simpleApplies(rootId)) {
+      // L'avis n'est vrai que si le refus part : la dérivation n'a pas vu cette demande (posée en Avancé avant le passage en
+      // Simple, pendant une coupure du flux, avant un redémarrage du cockpit) ou son refus est resté retenu à la borne. Il est
+      // lancé (ou réarmé) ici ; déjà en cours : rien de plus.
+      const launched = start({ permissionId: requestId, sessionId: request.sessionID, directory: ctx.directory, target: nameOf(request.metadata.subagent_type) });
+      if (!launched) {
+        c11.log.info("délégation non autorisée : mode Simple, refus d'office non lancé", { requestId, rootId });
+        return ctx.c.json({ error: "delegation-refusee", message: avisSimpleEnAttente() }, 409);
+      }
+      c11.log.info("délégation refusée : mode Simple", { requestId, rootId });
+      return ctx.c.json({ error: "delegation-refusee", message: avisSimple() }, 409);
+    }
+    let inspection: DelegationInspection;
+    try {
+      inspection = await inspectDelegation(
+        c11,
+        { rootId, sessionId: request.sessionID, permissionId: requestId, directory: ctx.directory },
+        { request, confirmed: ctx.c.req.header(CONFIRM_HEADER) === "1" },
+      );
+    } catch (err) {
+      return unverifiable(ctx, requestId, err);
+    }
+    const code = guardRefusal(inspection);
+    if (code === null) return null;
+    c11.log.info("délégation refusée par la garde", { requestId, rootId, refus: code });
+    return ctx.c.json({ error: "delegation-refusee", message: refusalMessage(code, inspection) }, 409);
+  };
+
+  // --- Dérivation -----------------------------------------------------------------------------------------------------------------
 
   const derivation: EventDerivation = {
     name: "taskGuard",

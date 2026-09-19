@@ -1,6 +1,7 @@
 // Éditeur d'un agent, d'une commande ou d'un skill : nom, champs du type, corps, enregistrement.
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { unknownAgentKeyMessage, unknownAgentKeys } from "../../../server/shared/assistant-rules.ts";
+// SHELL_LINE_RE : ligne « !`commande` » d'un texte de commande, exécutée par opencode sans demande de permission.
+import { SHELL_LINE_RE, unknownAgentKeyMessage, unknownAgentKeys } from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -32,9 +33,6 @@ const BODY_LABEL: Record<StudioKind, { title: string; hint: string }> = {
 };
 
 const NEW_TITLE: Record<StudioKind, string> = { agents: "Nouvel agent", commands: "Nouvelle commande", skills: "Nouveau skill" };
-
-/** Ligne « !`commande` » d'un texte de commande : exécutée par opencode sans demande de permission. */
-const SHELL_LINE_RE = /!`[^`]+`/;
 
 interface TierState {
   /** Niveau choisi dans le formulaire. */

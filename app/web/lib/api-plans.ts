@@ -8,7 +8,8 @@ const enc = encodeURIComponent;
 export const planApi = {
   /**
    * POST /api/plans : nouvelle conversation de plan (400 ; 403 forbidden-directory ; 404 conversation d'origine inconnue ; 409
-   * budget-guard ; 502 plancher-non-verifie). `source` : conversation d'origine (« Plan d'abord (nouvelle conversation) »).
+   * budget-guard, outils-hors-controle ; 502 plancher-non-verifie, configuration-illisible). `source` : conversation d'origine
+   * (« Plan d'abord (nouvelle conversation) »).
    */
   create: (directory: string, options: { confirm?: boolean; source?: string } = {}) => {
     const { source, ...request } = options;

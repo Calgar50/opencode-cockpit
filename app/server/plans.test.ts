@@ -6,6 +6,7 @@
 // Écarts provoqués par un client opencode qui altère les réponses (TamperingClient) : le faux reste fidèle à opencode 1.18.30.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ActivationInput, ActivationPort, ActivationVerdict, FactsPort } from "./contracts-11.ts";
 import { ConversationAutonomyStore } from "./conversation-autonomy.ts";
@@ -524,6 +525,133 @@ describe("Plan d'abord : crochet beforeBilledSend d'une conversation de plan", (
   });
 });
 
+// --- Outils qui échappent aux demandes (§4.10) -----------------------------------------------------------------------------------
+
+/** Serveur MCP déclaré dans la configuration (outil sur « allow » par défaut : il écrirait sans demande). */
+const MCP = { mcp: { depot: { type: "remote", url: "https://mcp.exemple.invalid/mcp" } } };
+
+/** Raccourci lancé par le proxy (POST …/command), avec l'IA de la conversation. */
+const runCommand = (h: CockpitHarness, sessionId: string, command: string) =>
+  h.call("POST", `/api/oc/session/${sessionId}/command`, {
+    headers: h.headers.mutating,
+    body: { command, arguments: "", agent: "build", model: `${MODEL.providerID}/${MODEL.modelID}` },
+  });
+
+describe("Plan d'abord : outils MCP, extensions et lignes !`…` des raccourcis (« ne peut rien modifier », §4.9, §4.10)", () => {
+  it("création : MCP ou extension dans la configuration effective, fichier .js/.ts dans plugin(s)/ du dossier de configuration → 409, aucune racine ; configuration illisible → 502", async (t) => {
+    const { h, client } = await start(t);
+    const base = { ...h.fake.globalConfig };
+    const refused = async (label: string) => {
+      const res = await createPlan(h);
+      assert.equal(res.status, 409, `${label} : ${res.body}`);
+      assert.deepEqual(res.json(), { error: "outils-hors-controle", message: TEXTES.partout.erreurs.outilsCreation }, label);
+      assert.equal(creations(h), 0, `${label} : aucune racine créée`);
+    };
+
+    h.fake.globalConfig = { ...base, ...MCP };
+    await refused("MCP de la configuration globale");
+    h.fake.globalConfig = { ...base, mcp: { local: { type: "local", command: ["serveur-mcp"], enabled: false } } };
+    await refused("MCP déclaré mais désactivé");
+    h.fake.globalConfig = base;
+    h.fake.projectConfigs.set(h.fake.directory, { plugin: ["file:///workspace/.opencode/plugins/ecrit.js"] });
+    await refused("extension du projet");
+    h.fake.projectConfigs.clear();
+
+    // Relevé du dossier de configuration monté : une extension posée dans plugin(s)/ sera chargée au prochain rechargement.
+    const plugins = path.join(h.deps.env.opencodeConfigDir, "plugins");
+    fs.mkdirSync(plugins, { recursive: true });
+    fs.writeFileSync(path.join(plugins, "ecrit.ts"), "export const Ecrit = async () => ({});\n");
+    await refused("fichier dans plugins/");
+    fs.rmSync(path.join(plugins, "ecrit.ts"));
+    fs.mkdirSync(path.join(h.deps.env.opencodeConfigDir, "plugin"), { recursive: true });
+    fs.writeFileSync(path.join(h.deps.env.opencodeConfigDir, "plugin", "autre.js"), "export const Autre = async () => ({});\n");
+    await refused("fichier dans plugin/");
+    fs.rmSync(path.join(h.deps.env.opencodeConfigDir, "plugin", "autre.js"));
+    fs.writeFileSync(path.join(plugins, "LISEZMOI.md"), "Aucune extension ici.\n");
+
+    // Configuration illisible : rien n'est créé (P1).
+    client.tamper = async (method, pathname, forward) => {
+      if (method === "GET" && pathname === "/config") throw new TypeError("fetch failed");
+      return forward();
+    };
+    const unreadable = await createPlan(h);
+    assert.equal(unreadable.status, 502, unreadable.body);
+    assert.deepEqual(unreadable.json(), { error: "configuration-illisible", message: TEXTES.partout.erreurs.configurationCreation });
+    client.tamper = async (method, pathname, forward) => (method === "GET" && pathname === "/config" ? jsonResponse(200, ["pas", "un", "objet"]) : forward());
+    assert.equal((await createPlan(h)).status, 502, "réponse illisible");
+    assert.equal(creations(h), 0);
+
+    // Rien de déclaré (un fichier qui n'est pas une extension ne compte pas) : créée, configuration lue dans le dossier du plan.
+    client.tamper = null;
+    await newPlan(h);
+    assert.equal(creations(h), 1);
+    assert.equal(requests(h, "GET", "/config").at(-1)?.query.directory, h.fake.directory);
+  });
+
+  it("envoi dans un plan : MCP ou extension déclarés après la création → 409, rien relayé ni facturé ; retirés → relayé ; conversation ordinaire jamais refusée pour ça", async (t) => {
+    const { h, client } = await start(t);
+    const { rootId: planId } = await newPlan(h);
+    const base = { ...h.fake.globalConfig };
+    h.fake.globalConfig = { ...base, ...MCP };
+    const refused = await send(h, planId);
+    assert.equal(refused.status, 409, refused.body);
+    assert.deepEqual(refused.json(), { error: "outils-hors-controle", message: TEXTES.partout.erreurs.outilsEnvoi });
+    h.fake.globalConfig = { ...base, plugin: ["ecrit@1.0.0"] };
+    assert.equal((await send(h, planId)).status, 409, "extension npm");
+    assert.equal(requests(h, "POST", `/session/${planId}/prompt_async`).length, 0, "rien relayé ni facturé");
+
+    // Configuration illisible : message non envoyé (P1).
+    h.fake.globalConfig = base;
+    client.tamper = async (method, pathname, forward) => {
+      if (method === "GET" && pathname === "/config") throw new TypeError("fetch failed");
+      return forward();
+    };
+    const unreadable = await send(h, planId);
+    assert.equal(unreadable.status, 502, unreadable.body);
+    assert.deepEqual(unreadable.json(), { error: "configuration-illisible", message: TEXTES.partout.erreurs.envoi });
+    assert.equal(requests(h, "POST", `/session/${planId}/prompt_async`).length, 0);
+
+    // Conversation ordinaire : l'activation des choix automatiques (§4.11) en juge, pas « Plan d'abord ».
+    const ordinary = await conversation(h);
+    h.fake.globalConfig = { ...base, ...MCP };
+    await answer(h, ordinary.id, "Bonjour.");
+
+    client.tamper = null;
+    h.fake.globalConfig = base;
+    await answer(h, planId, "1. Lire.");
+    assert.equal(requests(h, "POST", `/session/${planId}/prompt_async`).length, 1);
+  });
+
+  it("raccourci dont le texte contient une ligne !`…` : refusé dans un plan (et son travail délégué), rien exécuté ; sans ligne !`…` → lancé ; conversation ordinaire → lancé", async (t) => {
+    const { h } = await start(t);
+    h.fake.setCommands([
+      { name: "formate", template: "Lance !`npm run format` puis résume $ARGUMENTS.", hints: [] },
+      { name: "resume", template: "Résume $ARGUMENTS en trois points.", hints: [] },
+    ]);
+    const { rootId: planId } = await newPlan(h);
+    const refused = await runCommand(h, planId, "formate");
+    assert.equal(refused.status, 409, refused.body);
+    assert.deepEqual(refused.json(), { error: "raccourci-commande", message: TEXTES.partout.erreurs.raccourciCommande });
+    assert.equal(requests(h, "POST", `/session/${planId}/command`).length, 0, "raccourci jamais relayé");
+    assert.equal(h.fake.messages(planId).length, 0);
+
+    h.fake.script(planId, { text: "1. Lire." });
+    const allowed = await runCommand(h, planId, "resume");
+    assert.equal(allowed.status, 200, allowed.body);
+    assert.equal(requests(h, "POST", `/session/${planId}/command`).length, 1);
+
+    // Travail délégué d'un plan : même arbre, même refus.
+    const child = await h.deps.client.request<FakeSession>("POST", "/session", { body: { parentID: planId, title: "Délégué" } });
+    await until(() => h.sessions.get(child.id));
+    assert.equal((await runCommand(h, child.id, "formate")).status, 409, "enfant d'un plan");
+
+    const ordinary = await conversation(h);
+    h.fake.script(ordinary.id, { text: "Formaté." });
+    const outside = await runCommand(h, ordinary.id, "formate");
+    assert.equal(outside.status, 200, outside.body);
+  });
+});
+
 // --- Exécution ------------------------------------------------------------------------------------------------------------------
 
 describe("Plan d'abord : POST /api/plans/:id/execution", () => {
@@ -869,6 +997,16 @@ describe("Plan d'abord : dernier texte du plan et textes", () => {
         { permission: "edit", pattern: "*", action: "deny" },
         { permission: "bash", pattern: "*", action: "deny" },
       ],
+    );
+    // Refus du §4.10 : ils nomment ce qui passerait sans demande et disent que rien n'est parti.
+    const { erreurs } = TEXTES.partout;
+    for (const phrase of [erreurs.outilsCreation, erreurs.outilsEnvoi]) assert.match(phrase, /outils MCP ou des extensions, qui (?:peuvent|pourraient) modifier des fichiers sans vous demander/);
+    assert.match(erreurs.outilsCreation, /^Conversation de plan non créée : .*Aucun message n'a été envoyé ni facturé\.$/);
+    assert.match(erreurs.configurationCreation, /^Conversation de plan non créée : .*Aucun message n'a été envoyé ni facturé\. Réessayez dans un instant\.$/);
+    assert.match(erreurs.outilsEnvoi, /^Message non envoyé : .*Rien n'a été facturé\./);
+    assert.equal(
+      erreurs.raccourciCommande,
+      "Raccourci non lancé : son texte contient une ligne « !`…` », qu'opencode exécuterait sans vous demander. Une conversation de plan ne peut rien modifier : lancez ce raccourci dans une autre conversation. Rien n'a été facturé.",
     );
   });
 

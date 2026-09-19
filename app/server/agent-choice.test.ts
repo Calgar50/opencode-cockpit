@@ -12,6 +12,7 @@ import type { Turn as TranscriptTurn } from "../web/pages/chat/transcript.ts";
 import {
   AI_TEXT_MAX,
   boundedAiText,
+  delegatedWorkName,
   delegatesWork,
   gapsText,
   isAutomaticUserMessage,
@@ -699,11 +700,47 @@ describe("transcription et renommages : gardes lues dans les sources (L5t)", () 
     assert.equal(/sous-agent|Session enfant/i.test(drawer), false, "vocabulaire du mode Simple (§2.3)");
   });
 
+  it("titre d'un travail délégué : « … (@assistant subagent) » d'opencode en Avancé seulement ; en Simple, nom de l'assistant (tiroir, panneau)", () => {
+    // Titre d'un enfant en opencode 1.18.30 (fixtures/p1-delegation-parallele.jsonl).
+    const info = { title: "Analyser les journaux .log (@analyste-journaux subagent)", agent: "analyste-journaux" };
+    assert.equal(delegatedWorkName(info), "analyste-journaux");
+    const withoutAgent: { title: string; agent?: string } = { title: info.title };
+    assert.equal(delegatedWorkName(withoutAgent), "Travail délégué", "sans assistant : jamais le titre d'opencode");
+    assert.equal(delegatedWorkName(null), "Travail délégué");
+    assert.equal(delegatedWorkName({ agent: `${char(27)}[1mrevue${char(0x202e)}` }), "revue", "texte venu d'opencode nettoyé");
+    assert.equal(delegatedWorkName({ agent: "a".repeat(200) }).length, 64, "borné");
+    assert.doesNotMatch(delegatedWorkName(info), /subagent|@|\(/);
+
+    // Tiroir : le titre d'opencode n'est lu qu'en Avancé.
+    const drawer = code(read("web", "pages", "chat", "SubSessionDrawer.tsx"));
+    assert.match(drawer, /advanced \? info\?\.title \?\? "Travail délégué" : delegatedWorkName\(info\)/);
+    assert.equal([...drawer.matchAll(/info\??\.title/g)].length, 1, "aucune autre lecture du titre d'opencode");
+    // Panneau latéral : « Sous-agents » et titres d'opencode en Avancé seulement.
+    const panel = code(read("web", "pages", "chat", "ContextPanel.tsx"));
+    assert.match(panel, /advanced \? "Sous-agents" : "Travail délégué"/);
+    assert.match(panel, /advanced \? "Sous-agents inclus\." : "Travail délégué inclus\."/);
+    assert.equal([...panel.matchAll(/sous-agents?/gi)].length, [...panel.matchAll(/advanced \? "Sous-agents/g)].length, "« Sous-agents » en Avancé seulement");
+    assert.match(panel, /advanced \? child\.title \|\| child\.id : delegatedWorkName\(child\)/);
+    assert.equal([...panel.matchAll(/child\.title/g)].length, 1, "aucune autre lecture du titre d'opencode");
+  });
+
   it("renommages §2.2 et D1 : « 2 / 5 · Les droits », « Progression », « Actions maximum », « Sans confirmation (déconseillé) »", () => {
     const wizard = code(read("web", "pages", "assistants", "AssistantWizard.tsx"));
     assert.match(wizard, /\{step \+ 1\} \/ \{STEPS\.length\} · \{STEPS\[step\]\}/);
     assert.match(wizard, /aria-label="Progression"/);
     assert.equal(/Étapes?\s*\{|aria-label="Étapes"/.test(wizard), false);
+    // « Étape » est réservé à la part d'un assistant dans une équipe (§2.1) : aucun « étape » au sens d'écran de l'assistant de
+    // création, ni dans ses liens (« Étape « Les droits » ») ni dans les annonces qui le présentent (« en 5 étapes »).
+    assert.equal(/étapes?/i.test(wizard), false, "AssistantWizard.tsx");
+    assert.match(wizard, /Aller à « \{STEPS\[issueStep\(issue\.path\)\]\} »/);
+    for (const file of [
+      ["web", "pages", "chat", "WelcomeCards.tsx"],
+      ["web", "pages", "AssistantsPage.tsx"],
+    ]) {
+      const source = code(read(...file));
+      assert.equal(/en \d+ étapes|en cinq étapes/i.test(source), false, file.join("/"));
+      assert.match(source, /créez le vôtre en 5 écrans\./, file.join("/"));
+    }
     const fields = code(read("web", "pages", "studio", "AgentFields.tsx"));
     assert.match(fields, /label="Actions maximum"/);
     assert.equal(/Étapes maximum/i.test(fields), false);

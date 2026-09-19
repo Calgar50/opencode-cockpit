@@ -1,4 +1,5 @@
-// Assistant de création en 5 étapes (§9.5) : créer, « Modifier » ou « Compléter » un assistant, avec aperçu en direct.
+// Assistant de création en 5 écrans (§9.5) : créer, « Modifier » ou « Compléter » un assistant, avec aperçu en direct. 1.1 (§2.1,
+// §2.2) : « Étape » est réservé aux équipes ; ici « 2 / 5 · Les droits » et le lien « Aller à « Les droits » ».
 import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   COMMON_RULES_NOTE,
@@ -51,7 +52,7 @@ type FieldKey = "title" | "description" | "tier" | "model" | "instructions" | "e
 
 const FIELD_STEP: Readonly<Record<FieldKey, number>> = { title: 0, description: 0, tier: 2, model: 2, instructions: 3, examples: 3, confirm: 4 };
 
-/** Étape où corriger une erreur du serveur (chemin zod « title », « tier », « fiches.0 »…). */
+/** Écran où corriger une erreur du serveur (chemin zod « title », « tier », « fiches.0 »…). */
 function issueStep(path: string): number {
   switch (path.split(".")[0]) {
     case "title":
@@ -936,7 +937,7 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
                               <>
                                 {" "}
                                 <button type="button" className="link-button" onClick={() => goToStep(issueStep(issue.path))}>
-                                  Étape « {STEPS[issueStep(issue.path)]} »
+                                  Aller à « {STEPS[issueStep(issue.path)]} »
                                 </button>
                               </>
                             ) : null}

@@ -1,6 +1,6 @@
 // Propriétaire : L6b.
-// POST /api/plans {directory, source?} → PlanCreateResponse (400 ; 403 forbidden-directory ; 404 source inconnue ; 409 budget-guard ;
-// 502 plancher-non-verifie ; permis avec COCKPIT_AUTONOMY=off) ; POST /api/plans/:id/execution {choix, plafonds?} →
+// POST /api/plans {directory, source?} → PlanCreateResponse (400 ; 403 forbidden-directory ; 404 source inconnue ; 409 budget-guard,
+// outils-hors-controle ; 502 plancher-non-verifie, configuration-illisible ; permis avec COCKPIT_AUTONOMY=off) ; POST /api/plans/:id/execution {choix, plafonds?} →
 // PlanExecutionResponse (400 ; 404 ; 403 autonomie-coupee ; 409 autonomie-indisponible {raison}, plan-sans-reponse ; 428
 // confirmation-requise sans x-cockpit-confirm pour un choix automatique, avant toute création de racine ; 502) (plan d'exécution
 // §4.5). Groupe « plans », monté par le module plans. Routes minces : toute la logique est dans le service (plans.ts) ; phrases :
@@ -64,6 +64,10 @@ function planBody(result: PlanRefusal): ErrorBody {
       };
     case "plan-sans-reponse":
       return { error: result.error, message: erreurs.sansReponse };
+    case "outils-hors-controle":
+      return { error: result.error, message: erreurs.outilsCreation };
+    case "configuration-illisible":
+      return { error: result.error, message: erreurs.configurationCreation };
     case "opencode-unreachable":
       return { error: result.error, message: erreurs.lecture };
     case "plancher-non-verifie": {

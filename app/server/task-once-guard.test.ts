@@ -19,7 +19,7 @@ import { SessionTracker } from "./sessions.ts";
 import type { ActivityFact, DelegationDetailsView, DelegationRefusalCode } from "./shared/activity-types.ts";
 import type { Rule, UiMode } from "./shared/assistant-rules.ts";
 import type { AutonomyChoice, AutonomyRequestView, DelegationFacts } from "./shared/autonomy-types.ts";
-import { avisSimple, erreurDetails, messageRefusSimple, refusDelegation, TEXTES, verificationImpossible } from "./shared/delegation-texts.ts";
+import { avisSimple, avisSimpleEnAttente, erreurDetails, messageRefusSimple, refusDelegation, TEXTES, verificationImpossible } from "./shared/delegation-texts.ts";
 import {
   COMPARED_PERMISSIONS,
   comparedRights,
@@ -378,6 +378,11 @@ describe("L1d : consigne, cibles, refus et parité (fonctions pures)", () => {
   it("textes (Q5, décision n° 4) : avis Simple exact sans équipes, message à l'IA exact, refus par code, chiffres jamais inventés", () => {
     assert.equal(avisSimple(), "En mode Simple, l'IA ne délègue pas : elle continue seule.");
     assert.doesNotMatch(avisSimple(), /équipe|Voir les/i, "P3 : ni équipes ni [Voir les équipes] tant qu'elles n'existent pas");
+    assert.equal(
+      avisSimpleEnAttente(),
+      "En mode Simple, l'IA ne délègue pas, mais le cockpit n'a pas pu refuser cette demande pour l'instant : elle attend votre réponse. Choisissez « Refuser ».",
+    );
+    assert.doesNotMatch(avisSimpleEnAttente(), /continue seule/, "P3 : aucun refus lancé, l'IA ne continue pas");
     assert.equal(messageRefusSimple(), "Travaille seul : le mode Simple n'autorise pas la délégation.");
     const codes: DelegationRefusalCode[] = ["demande-morte", "cible-refusee", "task-id-hors-arbre", "consigne-refusee", "ia-refusee", "budget-refuse", "plafond-atteint"];
     for (const code of codes) assert.ok(refusDelegation(code).length > 20, code);
@@ -585,6 +590,48 @@ describe("L1d : dérivation du refus Simple et crochet, sur doublures", () => {
     const retained = many.guard.simpleState().retained;
     assert.equal(retained.length, SIMPLE_RETAINED_MAX);
     assert.ok(!retained.includes("per_0_0") && retained.includes("per_3_59"), "les plus anciens oubliés d'abord");
+  });
+
+  it("crochet en Simple : l'avis n'est rendu que si le refus part (lancé hors de l'appel, une seule fois ; retenu : réarmé) ; borne atteinte → « elle attend votre réponse », rien lancé", async () => {
+    const listed = (id: string) => async (_method: string, pathname: string) =>
+      pathname === "/permission" ? [{ id, sessionID: "ses_a", permission: "task", patterns: ["general"], metadata: { subagent_type: "general" } }] : null;
+
+    // Demande jamais vue par la dérivation (posée en Avancé, coupure du flux, redémarrage du cockpit) : le « once » lance le refus.
+    const unseen = stubGuard({ request: listed("per_a") });
+    const res = await unseen.guard.hook(hookContext(), "per_a");
+    assert.equal(res?.status, 409);
+    assert.deepEqual(await res?.json(), { error: "delegation-refusee", message: avisSimple() });
+    // Hors de l'appel (microtâche) : sur le faux, le test d'intégration montre qu'il part après la libération de la file par le proxy.
+    await flush();
+    assert.deepEqual(unseen.calls.rejects, [{ requestId: "per_a", sessionId: "ses_a", message: messageRefusSimple(), by: "cockpit" }]);
+    // Refus déjà en cours : un second « once » ne lance rien de plus.
+    assert.equal((await unseen.guard.hook(hookContext(), "per_a"))?.status, 409);
+    await flush();
+    assert.equal(unseen.calls.rejects.length, 1);
+
+    // Refus retenu à la borne : réarmé par le « once ».
+    const held = stubGuard({ request: listed("per_b"), reject: async () => "retenu" });
+    held.guard.derivation.onEvent(asked("per_b"));
+    await flush();
+    assert.deepEqual(held.guard.simpleState().retained, ["per_b"]);
+    assert.equal((await held.guard.hook(hookContext(), "per_b"))?.status, 409);
+    await flush();
+    assert.deepEqual(
+      held.calls.rejects.map((r) => r.requestId),
+      ["per_b", "per_b"],
+      "réarmé",
+    );
+
+    // Borne atteinte : aucun refus lancé, l'avis ne dit pas « elle continue seule ».
+    const full = stubGuard({ request: listed("per_z") });
+    for (let i = 0; i < SIMPLE_JOBS_MAX; i++) full.guard.derivation.onEvent(asked(`per_${i}`));
+    await flush();
+    const bounded = await full.guard.hook(hookContext(), "per_z");
+    assert.equal(bounded?.status, 409);
+    assert.deepEqual(await bounded?.json(), { error: "delegation-refusee", message: avisSimpleEnAttente() });
+    await flush();
+    assert.equal(full.calls.rejects.some((r) => r.requestId === "per_z"), false, "rien lancé pour cette demande");
+    assert.equal(full.guard.simpleState().running.includes("per_z"), false);
   });
 
   it("crochet : liste des demandes illisible ou conversation introuvable → 503, phrase générique, rien relayé", async () => {
@@ -902,6 +949,33 @@ describe("L1d : refus Simple (décision n° 4, §3.14, T-L1-c)", () => {
       return list.length > 0 ? list : null;
     });
     assert.deepEqual(facts.map((f) => f.data), [{ reponse: "reject", par: "cockpit" }]);
+  });
+
+  it("délégation posée en Avancé, passage en Simple : « Autoriser une fois » → 409 avis, puis refus avec message ; l'IA continue seule", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts", "taskGuard"], settings: AVANCE });
+    const session = await conversation(h, "Avancé puis Simple");
+    await send(h, session, [task("general")]);
+    const [request] = await pending(h, session, 1);
+    assert.ok(request);
+    await waitRow(h, request.id);
+    await flush();
+    assert.deepEqual(repliesTo(h, request.id), [], "Avancé : aucun refus d'office, la délégation attend votre accord");
+    // Passage en Simple : la dérivation ne revoit pas la demande (aucun nouvel événement) ; le « once » doit lancer le refus.
+    h.settings.update({ ui: { mode: "simple" } });
+    const refused = await once(h, request.id);
+    assert.equal(refused.status, 409, refused.body);
+    assert.deepEqual(refused.json(), { error: "delegation-refusee", message: avisSimple() });
+    await within(h.fake.settled(session.id), "tour terminé");
+    assert.deepEqual(repliesTo(h, request.id), [{ reply: "reject", message: messageRefusSimple() }], "l'avis dit vrai : le refus est parti");
+    assert.equal(toolState(h, session.id, "task")?.status, "error");
+    assert.ok(toolState(h, session.id, "task")?.error?.includes(messageRefusSimple()));
+    assert.equal(lastText(h, session.id), FIN, "l'IA continue seule (faux ; M9 réelle en attente)");
+    const row = await until(() => {
+      const r = h.db.prepare("SELECT reply, replied_by FROM permission_waits WHERE permission_id = ?").get(request.id) as { reply: string; replied_by: string | null } | undefined;
+      return r?.replied_by ? r : null;
+    });
+    assert.deepEqual({ ...row }, { reply: "reject", replied_by: "cockpit" });
+    assert.deepEqual(h.fake.failures, []);
   });
 
   it("choix « autonome » de la racine → aucun refus Simple, « once » gardé seulement ; « demander », « plan », « modifications » → refus", async (t) => {

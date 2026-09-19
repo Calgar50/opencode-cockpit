@@ -1,7 +1,8 @@
 // Tiroir de lecture d'un travail délégué (session enfant), mis à jour en direct. 1.1 (L5t, spécification §5.7.3, JP-4) :
 // [Voir la consigne] montre le premier message réellement reçu par le travail délégué (receivedInstruction, turn.ts), jamais la
 // seule consigne écrite par l'IA qui délègue ; texte d'IA rendu en texte brut, borné. Vocabulaire du mode Simple (§2.3) : ni
-// « sous-agent » ni « session » affichés.
+// « sous-agent » ni « session » affichés ; le titre d'opencode (« … (@assistant subagent) ») seulement en Avancé, le nom de
+// l'assistant en Simple (delegatedWorkName).
 import { useEffect, useId, useMemo, useReducer, useState } from "react";
 import { useApp } from "../../app/AppContext.tsx";
 import { Button, IconButton, Spinner } from "../../components/ui.tsx";
@@ -12,7 +13,7 @@ import type { OcMessage, OcPart, OcSession } from "../../lib/types.ts";
 import "./activity/deroule.css";
 import { TurnView } from "./MessageView.tsx";
 import { EMPTY_TRANSCRIPT, groupTurns, type MessageEntry, transcriptReducer } from "./transcript.ts";
-import { receivedInstruction } from "./turn.ts";
+import { delegatedWorkName, receivedInstruction } from "./turn.ts";
 
 export function SubSessionDrawer({
   sessionId,
@@ -87,7 +88,7 @@ export function SubSessionDrawer({
       <div className="drawer" role="dialog" aria-modal="true" aria-label="Travail délégué">
         <div className="chat-header">
           <div className="stack tight spacer" style={{ gap: 0, minWidth: 0 }}>
-            <h1 className="ellipsis">{info?.title ?? "Travail délégué"}</h1>
+            <h1 className="ellipsis">{advanced ? info?.title ?? "Travail délégué" : delegatedWorkName(info)}</h1>
             <span className="tiny muted">
               Travail délégué{info?.cost ? ` · ${formatUsd(info.cost)}` : ""}
               {advanced ? <span className="mono"> · {sessionId}</span> : null}

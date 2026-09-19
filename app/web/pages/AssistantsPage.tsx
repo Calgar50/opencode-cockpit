@@ -173,7 +173,7 @@ function AssistantsList({ detail }: { detail: string | null }) {
           ) : res.assistants.length === 0 ? (
             <div className="card">
               <EmptyState icon="sparkle" title="Aucun assistant pour l'instant" action={createButton}>
-                Installez un assistant prêt à l'emploi ou créez le vôtre en 5 étapes.
+                Installez un assistant prêt à l'emploi ou créez le vôtre en 5 écrans.
               </EmptyState>
             </div>
           ) : (
