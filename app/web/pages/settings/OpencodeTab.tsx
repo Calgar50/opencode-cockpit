@@ -1,6 +1,12 @@
 // Configuration globale d'opencode : modèles, fournisseurs, partage, permissions et fichier brut.
 import { useEffect, useId, useRef, useState } from "react";
-import { detectPermissionPreset, MESSAGES, type PermissionPresetId, presetPermission } from "../../../server/shared/assistant-rules.ts";
+import {
+  detectPermissionPreset,
+  MESSAGES,
+  PERMISSION_PRESETS,
+  type PermissionPresetId,
+  presetPermission,
+} from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -28,7 +34,9 @@ const PRESETS: Array<{ id: PermissionPresetId; title: string; summary: string; p
   },
   {
     id: "autonome",
-    title: "Autonome",
+    // 1.1 (D1, §2.2) : « Sans confirmation (déconseillé) », libellé de PERMISSION_PRESETS ; « Autonome » nomme le choix
+    // d'autonomie d'une conversation, jamais ce profil.
+    title: PERMISSION_PRESETS.autonome.label,
     summary: "Aucune confirmation : l'agent agit seul.",
     points: ["Fichiers : autoriser", "Shell : autoriser", "Sous-agents : autoriser", "Web : autoriser"],
     danger: true,
@@ -228,7 +236,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
 
   const currentPermission = cfg.permission;
   const activePreset = detectPermissionPreset(currentPermission);
-  // Mode Simple : la carte « Autonome » n'est pas proposée (seulement affichée si ce profil est déjà actif).
+  // Mode Simple : la carte « Sans confirmation (déconseillé) » n'est pas proposée (seulement affichée si ce profil est déjà actif).
   const advanced = boot.ui?.mode === "avance";
   const visiblePresets = PRESETS.filter((p) => advanced || p.id !== "autonome" || activePreset === "autonome");
 

@@ -1,13 +1,26 @@
-// Rendu d'un échange : demande de l'utilisateur puis toutes les étapes de réponse de l'agent.
-import { memo, useDeferredValue } from "react";
+// Rendu d'un échange : demande de l'utilisateur puis toutes les réponses de l'assistant. 1.1 (L5t, spécification §5.1) : travail
+// délégué en carte (DelegationCard), « Reprise dans la conversation » quand la conversation reprend après un travail délégué ou
+// d'elle-même, repères non facturés, pied « {coût} dont {x} $ de travail délégué · {n} appels d'IA » (jetons en mode Avancé).
+import { memo, type ReactNode, useDeferredValue } from "react";
 import { MESSAGES } from "../../../server/shared/assistant-rules.ts";
+import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Markdown } from "../../components/Markdown.tsx";
-import { formatDuration, formatTokens, formatUsd } from "../../lib/format.ts";
+import { formatDuration, formatTokens } from "../../lib/format.ts";
 import type { OcError, OcFilePart, OcPart, OcTextPart } from "../../lib/types.ts";
+import { DelegationCard } from "./activity/DelegationCard.tsx";
+import { useConversationValue } from "./activity/Deroule.tsx";
 import { relativePath, ToolCard } from "./ToolCard.tsx";
 import { type MessageEntry, type Turn, turnTotals } from "./transcript.ts";
-import { isModelNotFound } from "./turn.ts";
+import {
+  isAutomaticUserMessage,
+  isModelNotFound,
+  isUnbilledMarker,
+  resumesAfterDelegation,
+  shortcutLabel,
+  turnCosts,
+  turnFooterText,
+} from "./turn.ts";
 
 function StreamingMarkdown({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
@@ -41,9 +54,17 @@ function UserBubble({ entry }: { entry: MessageEntry }) {
     .join("\n")
     .trim();
   const files = entry.parts.filter((p): p is OcFilePart => p.type === "file");
+  // Raccourci envoyé (partie subtask, sans texte de vous) : son nom et sa description, jamais une bulle vide (§5.1).
+  const shortcuts = entry.parts.filter((p) => p.type === "subtask");
   return (
     <div className="user-msg">
       {text}
+      {shortcuts.map((part) => (
+        <span key={part.id} className="chip">
+          <Icon name="bolt" size={12} />
+          {shortcutLabel(part)}
+        </span>
+      ))}
       {files.length > 0 ? (
         <div className="attachments">
           {files.map((file) =>
@@ -62,7 +83,22 @@ function UserBubble({ entry }: { entry: MessageEntry }) {
   );
 }
 
-function PartView({ part, root, onOpenSession }: { part: OcPart; root: string; onOpenSession?: (id: string) => void }) {
+/** « Reprise dans la conversation » (§5.1) : la conversation reprend après un travail délégué, ou d'elle-même. */
+function ResumeSeparator() {
+  return <p className="turn-resume">Reprise dans la conversation</p>;
+}
+
+function PartView({
+  part,
+  root,
+  advanced,
+  onOpenSession,
+}: {
+  part: OcPart;
+  root: string;
+  advanced: boolean;
+  onOpenSession?: (id: string) => void;
+}) {
   switch (part.type) {
     case "text":
       return part.synthetic || !part.text ? null : <StreamingMarkdown text={part.text} />;
@@ -77,7 +113,12 @@ function PartView({ part, root, onOpenSession }: { part: OcPart; root: string; o
         </details>
       ) : null;
     case "tool":
-      return <ToolCard part={part} root={root} {...(onOpenSession ? { onOpenSession } : {})} />;
+      // Travail délégué (outil task) : carte à part, textes d'IA en texte brut (DelegationCard).
+      return part.tool === "task" ? (
+        <DelegationCard part={part} advanced={advanced} onOpenSession={onOpenSession} />
+      ) : (
+        <ToolCard part={part} root={root} {...(onOpenSession ? { onOpenSession } : {})} />
+      );
     case "patch":
       return part.files.length > 0 ? (
         <div className="row wrap small muted">
@@ -128,15 +169,48 @@ interface TurnViewProps {
   root: string;
   modelName: (key: string) => string;
   onOpenSession?: (id: string) => void;
+  /**
+   * Le pied de tour lit l'activité de la conversation du tour (travail délégué, contrôles de sécurité). Vrai par défaut : le chat
+   * montre une conversation racine. Faux dans le tiroir d'un travail délégué, qui n'est pas une conversation racine.
+   */
+  conversationRoot?: boolean;
 }
 
-function TurnViewImpl({ turn, root, modelName, onOpenSession }: TurnViewProps) {
+/**
+ * Pied de tour (§5.1) : « {coût} dont {x} $ de travail délégué · {n} appels d'IA », calculé par turnCosts (turn.ts) ; redessiné
+ * seulement quand son texte change. Jetons en mode Avancé seulement (mot interdit en mode Simple, §2.3).
+ */
+function TurnFooter({ turn, conversationRoot, advanced }: { turn: Turn; conversationRoot: boolean; advanced: boolean }) {
+  const rootId = conversationRoot ? (turn.user?.info.sessionID ?? turn.replies[0]?.info.sessionID ?? null) : null;
+  const text = useConversationValue(rootId, (data) => turnFooterText(turnCosts(turn, data.state)));
+  const totals = turnTotals(turn);
+  return (
+    <div className="turn-footer" title="Coût de cette demande">
+      <span>{text}</span>
+      {advanced ? (
+        <>
+          <span>
+            {formatTokens(totals.input + totals.cacheRead)} tokens en entrée
+            {totals.cacheRead > 0 ? ` (dont ${formatTokens(totals.cacheRead)} en cache)` : ""}
+          </span>
+          <span>{formatTokens(totals.output)} en sortie</span>
+        </>
+      ) : null}
+      {totals.durationMs ? <span>{formatDuration(totals.durationMs)}</span> : null}
+    </div>
+  );
+}
+
+function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot = true }: TurnViewProps) {
+  const { advanced } = useApp();
   const totals = turnTotals(turn);
   const agents = [...new Set(turn.replies.map((r) => r.info.agent))];
   const models = [...new Set(turn.replies.map((r) => `${r.info.providerID}/${r.info.modelID}`))];
+  let opening: ReactNode = null;
+  if (turn.user) opening = isAutomaticUserMessage(turn.user) ? <ResumeSeparator /> : <UserBubble entry={turn.user} />;
   return (
     <article className="turn">
-      {turn.user ? <UserBubble entry={turn.user} /> : null}
+      {opening}
       {turn.replies.length > 0 ? (
         <div className="assistant">
           <div className="assistant-head">
@@ -153,12 +227,19 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession }: TurnViewProps) {
             ) : null}
           </div>
           <div className="assistant-body">
-            {turn.replies.map((reply) => {
+            {turn.replies.map((reply, index) => {
               const error = reply.info.error ? describeError(reply.info.error) : null;
               return (
                 <div key={reply.info.id} className="stack tight">
+                  {resumesAfterDelegation(turn.replies, index) ? <ResumeSeparator /> : null}
+                  {isUnbilledMarker(reply) ? (
+                    <span className="reply-marker tiny">
+                      <Icon name="minus" size={12} />
+                      Sans appel d'IA : non facturé
+                    </span>
+                  ) : null}
                   {reply.parts.map((part) => (
-                    <PartView key={part.id} part={part} root={root} {...(onOpenSession ? { onOpenSession } : {})} />
+                    <PartView key={part.id} part={part} root={root} advanced={advanced} {...(onOpenSession ? { onOpenSession } : {})} />
                   ))}
                   {error ? (
                     <div className={error.tone === "critical" ? "callout critical" : "small muted"}>
@@ -170,29 +251,17 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession }: TurnViewProps) {
               );
             })}
           </div>
-          {!totals.running ? (
-            <div className="turn-footer" title="Coût et tokens de cet échange (toutes étapes)">
-              <span>{formatUsd(totals.cost)}</span>
-              <span>
-                {formatTokens(totals.input + totals.cacheRead)} tokens en entrée
-                {totals.cacheRead > 0 ? ` (dont ${formatTokens(totals.cacheRead)} en cache)` : ""}
-              </span>
-              <span>{formatTokens(totals.output)} en sortie</span>
-              <span>
-                {totals.steps} appel{totals.steps > 1 ? "s" : ""}
-              </span>
-              {totals.durationMs ? <span>{formatDuration(totals.durationMs)}</span> : null}
-            </div>
-          ) : null}
+          {totals.running ? null : <TurnFooter turn={turn} conversationRoot={conversationRoot} advanced={advanced} />}
         </div>
       ) : null}
     </article>
   );
 }
 
-/** Rendu mémorisé : un échange n'est redessiné que si l'un de ses messages a changé. */
+/** Rendu mémorisé : un échange n'est redessiné que si l'un de ses messages a changé (le pied de tour suit l'activité seul). */
 export const TurnView = memo(TurnViewImpl, (prev, next) => {
   if (prev.root !== next.root || prev.modelName !== next.modelName || prev.onOpenSession !== next.onOpenSession) return false;
+  if ((prev.conversationRoot ?? true) !== (next.conversationRoot ?? true)) return false;
   if (prev.turn.user !== next.turn.user || prev.turn.replies.length !== next.turn.replies.length) return false;
   return prev.turn.replies.every((reply, i) => reply === next.turn.replies[i]);
 });

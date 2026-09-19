@@ -536,13 +536,14 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
           </Button>
           <div className="spacer" style={{ minWidth: 0 }}>
             <h1 className="ellipsis">{pageTitle}</h1>
+            {/* 1.1 (§2.2) : « Étape » est réservé aux équipes ; la progression s'écrit « 2 / 5 · Les droits ». */}
             <p>
-              Étape {step + 1} sur {STEPS.length}
+              {step + 1} / {STEPS.length} · {STEPS[step]}
             </p>
           </div>
         </header>
 
-        <ol className="wiz-steps" aria-label="Étapes">
+        <ol className="wiz-steps" aria-label="Progression">
           {STEPS.map((label, i) => (
             <li key={label}>
               <button

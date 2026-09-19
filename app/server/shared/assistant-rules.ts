@@ -1008,13 +1008,13 @@ export const BUILTIN_ASSISTANTS: Readonly<Record<"build" | "plan", { title: stri
     title: "Assistant général",
     help: "Pour les demandes qui ne correspondent à aucun assistant. Demande avant de modifier ou d'exécuter.",
   },
-  plan: { title: "Conseiller", help: "Réfléchit et propose un plan. Ses droits suivent vos réglages : vérifiez ce qu'il peut faire." },
+  plan: { title: "Conseiller", help: "Prépare un plan. Ses droits suivent vos réglages : vérifiez ce qu'il peut faire." },
 });
 
 /** Conseiller dont les règles effectives refusent toute modification, toute commande et toute délégation. */
 export const PLAN_READ_ONLY: Readonly<{ title: string; help: string }> = Object.freeze({
   title: "Conseiller (lecture seule)",
-  help: "Réfléchit et propose un plan, sans rien modifier.",
+  help: "Prépare un plan, sans rien modifier.",
 });
 
 /** true si `permission` est refusée pour toute entrée : un refus « * » qu'aucune règle non refusante ne suit (findLast). */
@@ -1528,11 +1528,18 @@ export function toCatalogLite(
 export const PERMISSION_PRESET_IDS = ["prudent", "equilibre", "autonome"] as const;
 export type PermissionPresetId = (typeof PERMISSION_PRESET_IDS)[number];
 
-/** Permission globale de chaque profil. « prudent » = docker/opencode/opencode.default.jsonc (configuration livrée). */
+/**
+ * Permission globale de chaque profil. « prudent » = docker/opencode/opencode.default.jsonc (configuration livrée). Le profil
+ * `autonome` s'affiche « Sans confirmation (déconseillé) » (1.1, D1, §2.2) : « Autonome » nomme le choix d'autonomie d'une
+ * conversation (« Autonome avec contrôle »), jamais ce profil global.
+ */
 export const PERMISSION_PRESETS: Readonly<Record<PermissionPresetId, { label: string; permission: Readonly<Record<string, unknown>> }>> = Object.freeze({
   prudent: { label: "Prudent", permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" } },
   equilibre: { label: "Équilibré", permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" } },
-  autonome: { label: "Autonome", permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" } },
+  autonome: {
+    label: "Sans confirmation (déconseillé)",
+    permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
+  },
 });
 
 /**
