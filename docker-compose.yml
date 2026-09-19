@@ -78,6 +78,8 @@ services:
       COCKPIT_PORT: "7777"
       COCKPIT_TOKEN: ${COCKPIT_TOKEN:?Lancez install.ps1 pour générer le fichier .env}
       COCKPIT_ALLOWED_HOSTS: ${COCKPIT_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
+      COCKPIT_LOCAL_SCHEME: ${COCKPIT_LOCAL_SCHEME:-https}
+      COCKPIT_LOCAL_HTTP_CONFIRMED: ${COCKPIT_LOCAL_HTTP_CONFIRMED:-}
       # Fournisseurs d'IA acceptés (liste séparée par des virgules). Toute autre valeur = mode test, bandeau rouge.
       COCKPIT_ALLOWED_PROVIDERS: ${COCKPIT_ALLOWED_PROVIDERS:-github-copilot}
       # Adresse d'API Copilot imposée (pare-feu à routage par abonnement). Vide : adresse d'office d'opencode, ou celle
@@ -93,11 +95,12 @@ services:
       - ${WORKSPACE_DIR}:/workspace
       - ${ARCHIVE_DIR:-./archives}:/archives
       - cockpit-data:/data
+      - cockpit-tls:/tls
       - oc-config:/oc-config
       - oc-data:/oc-data:ro
       - control:/control
       - ./certs:/certs:ro
-    # Uniquement sur la boucle locale de la machine.
+    # Uniquement sur la boucle locale ; HTTPS par défaut, HTTP seulement après install.ps1 -Http
     ports: ["127.0.0.1:${COCKPIT_PORT:-7777}:7777"]
 
 volumes:
@@ -105,4 +108,5 @@ volumes:
   oc-data:
   oc-cache:
   cockpit-data:
+  cockpit-tls:
   control:

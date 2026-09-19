@@ -14,10 +14,14 @@ certs/*
 !certs/README.md
 auth.json
 credentials*.json
+# Certificat du HTTPS local en développement (npm run dev:server) : clé privée, jamais versionnée.
+app/.tls-dev/
 
 # --- Données locales de l'outil ---
 data/
 workspace/
+# Installations d'essai créées à la racine du dépôt (bancs, répétition générale).
+testinstall/
 
 # --- Build / dépendances ---
 node_modules/

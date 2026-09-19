@@ -1784,3 +1784,27 @@ kbd,
   justify-content: flex-end;
   gap: 4px;
 }
+
+/* --- 1.0.5 : mode HTTP local dans la fenêtre des règles ------------------------- */
+
+.rules-modal > .banner {
+  padding: 8px 16px;
+}
+.local-http-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.local-http-details dt {
+  font-weight: 600;
+}
+.local-http-details dd {
+  margin: 2px 0 0;
+  color: var(--text-2);
+}

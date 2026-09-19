@@ -31,7 +31,7 @@ import { OpencodeClient } from "../opencode.ts";
 import { EventProcessor } from "../processor.ts";
 import { ProjectsService } from "../projects.ts";
 import type { QuotaSync } from "../quota.ts";
-import { CONFIRM_HEADER, CSRF_HEADER, SESSION_COOKIE, sessionValue } from "../security.ts";
+import { CONFIRM_HEADER, CSRF_HEADER, SESSION_COOKIE_NAME, sessionValue } from "../security.ts";
 import { SessionTracker } from "../sessions.ts";
 import { SettingsStore } from "../settings.ts";
 import type { StudioService } from "../studio.ts";
@@ -154,6 +154,11 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     allowedProviders: ["github-copilot"],
     copilotApiUrl: null,
     autonomy: true,
+    // Harnais en HTTP (1.0.5, createAdaptorServer sans TLS) : dossier TLS jamais créé ni lu.
+    localScheme: "http",
+    localHttpConfirmedAt: "2026-09-15T10:32:00Z",
+    tlsDir: path.join(tmp, "tls"),
+    opensslPath: "/usr/bin/openssl",
     version: "test",
     ...options.env,
   };
@@ -267,8 +272,10 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
       sync: async () => ({ state: "inactif", message: null, at: 0, details: { checked: [] } }),
     },
     configQueue,
+    // Harnais en HTTP : aucun certificat.
+    tls: null,
   };
-  const merged = { ...base, ...options.deps?.({ ...base, processor: makeProcessor(base) }) };
+  const merged ={ ...base, ...options.deps?.({ ...base, processor: makeProcessor(base) }) };
   const processor = makeProcessor(merged);
   const deps: AppDeps = { ...merged, processor };
 
@@ -292,7 +299,7 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   cleanups.push(() => processor.stop());
   await until(() => processor.status.connected && !processor.status.backfilling, 5_000);
 
-  const cookie = `${SESSION_COOKIE}=${sessionValue(env.token, sessionSecret)}`;
+  const cookie = `${SESSION_COOKIE_NAME}=${sessionValue(env.token, sessionSecret)}`;
   const headers = {
     authed: { cookie },
     mutating: { cookie, [CSRF_HEADER]: "1" },
