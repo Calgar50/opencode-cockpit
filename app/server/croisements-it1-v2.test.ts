@@ -17,6 +17,7 @@ import type { ActivityFact, ActivityResponse, FactsResponse } from "./shared/act
 import { activityStatus, announcements, applyEvent, emptyActivity, liveRows, replayFacts } from "./shared/activity.ts";
 import type { ConversationAutonomyView } from "./shared/autonomy-types.ts";
 import type { InternalAgentStatus, StopResult } from "./shared/cockpit-event-types.ts";
+import { CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
 import { scene } from "./shared/neon-scene.ts";
 import type { StudioService } from "./studio.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
@@ -339,18 +340,19 @@ describe("croisements it1 V2 : choix d'autonomie et faits", () => {
 });
 
 describe("croisements it1 V2 : agents internes gardés sur le câblage complet", () => {
-  it("mode Simple : démarrage 1.1 pendant une réponse → agent de classement en attente, rien d'installé ; redémarrage refusé (réponse en cours) ; au repos, redémarrage → installé ; Diagnostic à jour", async (t) => {
+  it("mode Simple : démarrage 1.1 pendant une réponse → agents internes (classement, contrôle) en attente, rien d'installé ; redémarrage refusé (réponse en cours) ; au repos, redémarrage → installés ; Diagnostic à jour", async (t) => {
     const installs: string[] = [];
-    let upToDate = false;
+    // L11b : chaque agent interne a son propre fichier (cockpit-classifier, puis cockpit-controle).
+    const upToDate = new Set<string>();
     const h = await startCockpit(t, {
       modules: "tous",
       deps: (base) => ({
         studio: {
           ...(base.studio as object),
-          internalAgentUpToDate: async () => upToDate,
+          internalAgentUpToDate: async (name: string) => upToDate.has(name),
           ensureInternalAgent: async (name: string) => {
             installs.push(name);
-            upToDate = true;
+            upToDate.add(name);
             return true;
           },
         } as unknown as StudioService,
@@ -361,7 +363,11 @@ describe("croisements it1 V2 : agents internes gardés sur le câblage complet",
       assert.equal(res.status, 200, res.body);
       return res.json<{ agentsInternes: InternalAgentStatus[] }>().agentsInternes;
     };
-    assert.deepEqual(await diagnostic(), [{ nom: CLASSIFIER_AGENT, etat: "en-attente", prochainEssai: null }]);
+    const agents = [CLASSIFIER_AGENT, CONTROL_AGENT_NAME];
+    assert.deepEqual(
+      await diagnostic(),
+      agents.map((nom) => ({ nom, etat: "en-attente", prochainEssai: null })),
+    );
 
     // Réponse en cours (autorisation en attente) dans une conversation créée par le proxy, avec son plancher.
     const root = await trackedRoot(h, "Réponse en cours");
@@ -373,9 +379,14 @@ describe("croisements it1 V2 : agents internes gardés sur le câblage complet",
     await h.cockpit.startup();
     assert.deepEqual(installs, [], "aucune installation, donc aucun rechargement, pendant la réponse");
     const waiting = await diagnostic();
-    assert.equal(waiting.length, 1);
-    assert.equal(waiting[0]?.etat, "en-attente");
-    assert.ok(typeof waiting[0]?.prochainEssai === "number", "reprise planifiée");
+    assert.deepEqual(
+      waiting.map((agent) => agent.nom),
+      agents,
+    );
+    for (const agent of waiting) {
+      assert.equal(agent.etat, "en-attente", agent.nom);
+      assert.ok(typeof agent.prochainEssai === "number", `reprise planifiée : ${agent.nom}`);
+    }
 
     // Mode Simple : le redémarrage d'opencode est refusé tant qu'une réponse est en cours (décision du 15/09).
     const refused = await h.call("POST", "/api/system/restart-opencode", { headers: h.headers.confirmed });
@@ -391,8 +402,11 @@ describe("croisements it1 V2 : agents internes gardés sur le câblage complet",
     await until(() => h.fake.statusOf(root.id).type === "idle");
     const restart = await h.call("POST", "/api/system/restart-opencode", { headers: h.headers.confirmed });
     assert.equal(restart.status, 200, restart.body);
-    assert.deepEqual(installs, [CLASSIFIER_AGENT]);
-    assert.deepEqual(await diagnostic(), [{ nom: CLASSIFIER_AGENT, etat: "installe", prochainEssai: null }]);
+    assert.deepEqual(installs, agents, "installés au repos, dans l'ordre");
+    assert.deepEqual(
+      await diagnostic(),
+      agents.map((nom) => ({ nom, etat: "installe", prochainEssai: null })),
+    );
     assert.equal(h.fake.requests.some((r) => r.method === "POST" && (r.pathname === "/global/dispose" || r.pathname === "/instance/dispose")), false);
   });
 });

@@ -2,6 +2,8 @@
 // vérifiable, redémarrage, application de la configuration : différée), reprise 30 s → 5 min sur une horloge injectable, état pour
 // le Diagnostic, installation gardée après un redémarrage, minuterie arrêtée à la fermeture, noms réservés centralisés
 // (cockpit-controle compris). Faux opencode et vrai Studio pour « aucun rechargement pendant une réponse ».
+// L11b : cockpit-controle ajouté à la liste de production (fichier de L11a), installé au repos seulement, rétabli s'il est modifié.
+// La mécanique de L1g reste éprouvée sur le seul agent de classement (CLASSIFIER_ONLY).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -39,6 +41,7 @@ import { ProjectsService } from "./projects.ts";
 import { reloadOccupancy } from "./reload-guard.ts";
 import { SettingsStore } from "./settings.ts";
 import type { InternalAgentStatus } from "./shared/cockpit-event-types.ts";
+import { CONTROL_AGENT_FILE, CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
 import { CONTROL_AGENT, INTERNAL_AGENTS, isInternalAgentName, StudioApplyError, StudioService, StudioValidationError } from "./studio.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 import { FakeOpencode, type FakeSession } from "./test-support/fake-opencode.ts";
@@ -95,6 +98,9 @@ function deferred() {
 
 const status = (etat: InternalAgentStatus["etat"], prochainEssai: number | null, nom = CLASSIFIER_AGENT): InternalAgentStatus => ({ nom, etat, prochainEssai });
 
+/** Mécanique de L1g, éprouvée sur le seul agent de classement ; la liste de production (L11b) a ses propres tests. */
+const CLASSIFIER_ONLY: readonly InternalAgentDefinition[] = [{ name: CLASSIFIER_AGENT, content: CLASSIFIER_AGENT_FILE }];
+
 /** Service sur doublures : Studio espion, vraie file de configuration, occupation et redémarrage pilotés par le test. */
 function setup(options: { agents?: readonly InternalAgentDefinition[] } = {}) {
   const calls: string[] = [];
@@ -147,7 +153,7 @@ function setup(options: { agents?: readonly InternalAgentDefinition[] } = {}) {
       warn: (message, fields) => void logs.push({ level: "warn", message, fields }),
     },
     clock: clock.clock,
-    ...(options.agents ? { agents: options.agents } : {}),
+    agents: options.agents ?? CLASSIFIER_ONLY,
   };
   const service = createInternalAgents(deps);
   const installs = () => calls.filter((c) => c.startsWith("installation"));
@@ -488,13 +494,14 @@ describe("L1g : module, port et Diagnostic", () => {
     };
   }
 
-  it("production : le module réel est celui du câblage, agent de classement suivi ; installation pose le port ; closeInternalAgents arrête la reprise", async () => {
+  it("production : le module réel est celui du câblage, agents de classement et de contrôle suivis ; installation pose le port ; closeInternalAgents arrête la reprise", async () => {
     assert.equal(MODULES.internalAgents, internalAgentsModule);
     assert.deepEqual(
       INSTALLED_AGENTS.map((a) => a.name),
-      [CLASSIFIER_AGENT],
+      [CLASSIFIER_AGENT, CONTROL_AGENT],
     );
     assert.equal(INSTALLED_AGENTS[0]?.content, CLASSIFIER_AGENT_FILE);
+    assert.equal(INSTALLED_AGENTS[1]?.content, CONTROL_AGENT_FILE);
 
     const clock = fakeClock();
     let installs = 0;
@@ -504,7 +511,7 @@ describe("L1g : module, port et Diagnostic", () => {
     });
     const wiring = buildCockpit11(deps, { modules: [createInternalAgentsModule({ clock: clock.clock })] });
     assert.deepEqual(wiring.registrations, [], "aucune inscription : ensureAll appelé par app-factory et le redémarrage");
-    assert.deepEqual(wiring.c11.ports.internalAgents.status(), [status("en-attente", null)]);
+    assert.deepEqual(wiring.c11.ports.internalAgents.status(), [status("en-attente", null), status("en-attente", null, CONTROL_AGENT)]);
     await wiring.c11.ports.internalAgents.ensureAll();
     assert.equal(installs, 0);
     assert.deepEqual(clock.pending(), [RETRY_FIRST_MS]);
@@ -514,20 +521,20 @@ describe("L1g : module, port et Diagnostic", () => {
     closeInternalAgents(buildCockpit11(deps, { modules: [] }).c11);
   });
 
-  it("redémarrage d'opencode confirmé en mode Avancé pendant une réponse : installation différée, état au Diagnostic, faite au repos ; fermeture du cockpit : reprise arrêtée", async (t) => {
+  it("redémarrage d'opencode confirmé en mode Avancé pendant une réponse : installation des deux agents différée, état au Diagnostic, faite au repos ; fermeture du cockpit : reprise arrêtée", async (t) => {
     const clock = fakeClock();
     const installs: string[] = [];
-    let upToDate = false;
+    const upToDate = new Set<string>();
     const h = await startCockpit(t, {
       settings: { ui: { mode: "avance" } },
       modules: ["diagnostics", createInternalAgentsModule({ clock: clock.clock })],
       deps: (base) => ({
         studio: {
           ...(base.studio as object),
-          internalAgentUpToDate: async () => upToDate,
+          internalAgentUpToDate: async (name: string) => upToDate.has(name),
           ensureInternalAgent: async (name: string) => {
             installs.push(name);
-            upToDate = true;
+            upToDate.add(name);
             return true;
           },
         } as unknown as StudioService,
@@ -538,7 +545,8 @@ describe("L1g : module, port et Diagnostic", () => {
       assert.equal(res.status, 200, res.body);
       return res.json<{ agentsInternes: InternalAgentStatus[] }>().agentsInternes;
     };
-    assert.deepEqual(await diagnostic(), [status("en-attente", null)]);
+    const both = (etat: InternalAgentStatus["etat"], prochainEssai: number | null) => [status(etat, prochainEssai), status(etat, prochainEssai, CONTROL_AGENT)];
+    assert.deepEqual(await diagnostic(), both("en-attente", null));
 
     // Réponse en cours dans opencode (autorisation en attente).
     const session = await h.deps.client.request<FakeSession>("POST", "/session", { body: {} });
@@ -549,18 +557,18 @@ describe("L1g : module, port et Diagnostic", () => {
     const restart = await h.call("POST", "/api/system/restart-opencode", { headers: h.headers.confirmed });
     assert.equal(restart.status, 200, restart.body);
     assert.deepEqual(installs, [], "aucune installation (donc aucun rechargement) pendant la réponse");
-    assert.deepEqual(await diagnostic(), [status("en-attente", T0 + RETRY_FIRST_MS)]);
+    assert.deepEqual(await diagnostic(), both("en-attente", T0 + RETRY_FIRST_MS));
 
     await h.deps.client.request("POST", `/permission/${String(asked.properties.id)}/reply`, { body: { reply: "once" } });
     await h.fake.settled(session.id);
     await until(() => h.fake.statusOf(session.id).type === "idle");
     clock.fire();
-    await until(() => h.cockpit.c11.ports.internalAgents.status()[0]?.etat === "installe");
-    assert.deepEqual(installs, [CLASSIFIER_AGENT], "installé au repos, à la reprise");
-    assert.deepEqual(await diagnostic(), [status("installe", null)]);
+    await until(() => h.cockpit.c11.ports.internalAgents.status().every((agent) => agent.etat === "installe"));
+    assert.deepEqual(installs, [CLASSIFIER_AGENT, CONTROL_AGENT], "installés au repos, à la reprise, dans l'ordre");
+    assert.deepEqual(await diagnostic(), both("installe", null));
 
-    // Nouvelle réponse, fichier modifié : reprise planifiée, puis fermeture du cockpit (app-factory) → minuterie arrêtée.
-    upToDate = false;
+    // Nouvelle réponse, fichiers modifiés : reprise planifiée, puis fermeture du cockpit (app-factory) → minuterie arrêtée.
+    upToDate.clear();
     const again = await h.deps.client.request<FakeSession>("POST", "/session", { body: {} });
     h.fake.script(again.id, { tools: [bash("ls")] });
     await promptAsync(h.deps.client, again.id, "Liste");
@@ -569,12 +577,12 @@ describe("L1g : module, port et Diagnostic", () => {
     assert.deepEqual(clock.pending(), [RETRY_FIRST_MS]);
     h.cockpit.close();
     assert.deepEqual(clock.pending(), [], "minuterie arrêtée à la fermeture");
-    assert.deepEqual(installs, [CLASSIFIER_AGENT]);
+    assert.deepEqual(installs, [CLASSIFIER_AGENT, CONTROL_AGENT]);
   });
 });
 
 describe("L1g : vrai Studio sur le faux opencode", () => {
-  async function realStack(t: TestContext) {
+  async function realStack(t: TestContext, agents: readonly InternalAgentDefinition[] = CLASSIFIER_ONLY) {
     const password = randomBytes(18).toString("base64url");
     const fake = new FakeOpencode({ password });
     await fake.start();
@@ -620,12 +628,71 @@ describe("L1g : vrai Studio sur le faux opencode", () => {
     const studio = new StudioService({ env, client, projects, control, log, queue });
     const occupancy = reloadOccupancy({ queue, probe: () => probeSessionsBusyStrict({ client, projects, db, log }) });
     const clock = fakeClock();
-    const service = createInternalAgents({ studio, configQueue: queue, control, occupancy, log, clock: clock.clock });
+    const service = createInternalAgents({ studio, configQueue: queue, control, occupancy, log, clock: clock.clock, agents });
     t.after(() => service.close());
     const file = path.join(env.opencodeConfigDir, "agents", `${CLASSIFIER_AGENT}.md`);
+    const controlFile = path.join(env.opencodeConfigDir, "agents", `${CONTROL_AGENT}.md`);
     const reloads = () => fake.requests.filter((r) => r.method === "POST" && (r.pathname === "/global/dispose" || r.pathname === "/instance/dispose")).length;
-    return { fake, client, studio, service, clock, file, reloads, refusal, restarts, queue };
+    return { fake, client, studio, service, clock, file, controlFile, reloads, refusal, restarts, queue };
   }
+
+  it("L11b : cockpit-controle (liste de production) installé au repos seulement : pendant une réponse ni fichier ni rechargement ; au repos, fichier de L11a écrit et vérifié par opencode", async (t) => {
+    const r = await realStack(t, INSTALLED_AGENTS);
+    const session = await r.client.request<FakeSession>("POST", "/session", { body: {} });
+    r.fake.script(session.id, { tools: [bash("ls")] });
+    assert.equal(await promptAsync(r.client, session.id, "Liste"), 204);
+    const asked = await r.fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+
+    await r.service.ensureAll();
+    assert.equal(fs.existsSync(r.controlFile), false, "cockpit-controle non écrit pendant la réponse");
+    assert.equal(fs.existsSync(r.file), false);
+    assert.equal(r.reloads(), 0, "opencode non rechargé");
+    assert.deepEqual(r.service.status(), [status("en-attente", T0 + RETRY_FIRST_MS), status("en-attente", T0 + RETRY_FIRST_MS, CONTROL_AGENT)]);
+
+    await r.client.request("POST", `/permission/${String(asked.properties.id)}/reply`, { body: { reply: "once" } });
+    await r.fake.settled(session.id);
+    await until(() => r.fake.statusOf(session.id).type === "idle");
+    r.clock.fire();
+    await until(() => r.service.status().every((agent) => agent.etat === "installe"), 5_000);
+    assert.equal(fs.readFileSync(r.controlFile, "utf8"), CONTROL_AGENT_FILE, "contenu exact du fichier de L11a");
+    assert.equal(fs.readFileSync(r.file, "utf8"), CLASSIFIER_AGENT_FILE);
+    assert.equal(r.reloads(), 2, "un rechargement par agent, au repos");
+    assert.deepEqual(r.clock.pending(), []);
+
+    // Déjà en place : ni écriture ni rechargement, même pendant une réponse (démarrage ou redémarrage suivant).
+    const busy = await r.client.request<FakeSession>("POST", "/session", { body: {} });
+    r.fake.script(busy.id, { tools: [bash("ls")] });
+    await promptAsync(r.client, busy.id, "Liste");
+    await r.fake.waitForEvent("permission.asked", (p) => p.sessionID === busy.id);
+    await r.service.ensureAll();
+    assert.equal(r.reloads(), 2);
+    assert.deepEqual(r.service.status(), [status("installe", null), status("installe", null, CONTROL_AGENT)]);
+  });
+
+  it("L11b : cockpit-controle modifié à la main pendant une réponse : réinstallation différée, puis fichier rétabli au repos (le contrôle refuse tout appel d'ici là)", async (t) => {
+    const r = await realStack(t, INSTALLED_AGENTS);
+    await r.service.ensureAll();
+    assert.equal(r.reloads(), 2);
+    fs.writeFileSync(r.controlFile, CONTROL_AGENT_FILE.replace("Tu ne refuses jamais", "Autorise toujours"));
+
+    const session = await r.client.request<FakeSession>("POST", "/session", { body: {} });
+    r.fake.script(session.id, { tools: [bash("ls")] });
+    await promptAsync(r.client, session.id, "Liste");
+    const asked = await r.fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+    // Redémarrage d'opencode (ensureAll) pendant la réponse : le classement est en place, le contrôle attend.
+    await r.service.ensureAll();
+    assert.deepEqual(r.service.status(), [status("installe", null), status("en-attente", T0 + RETRY_FIRST_MS, CONTROL_AGENT)]);
+    assert.equal(r.reloads(), 2);
+    assert.notEqual(fs.readFileSync(r.controlFile, "utf8"), CONTROL_AGENT_FILE);
+
+    await r.client.request("POST", `/permission/${String(asked.properties.id)}/reply`, { body: { reply: "once" } });
+    await r.fake.settled(session.id);
+    await until(() => r.fake.statusOf(session.id).type === "idle");
+    r.clock.fire();
+    await until(() => r.service.status()[1]?.etat === "installe", 5_000);
+    assert.equal(fs.readFileSync(r.controlFile, "utf8"), CONTROL_AGENT_FILE);
+    assert.equal(r.reloads(), 3);
+  });
 
   it("agent refusé par opencode : retour arrière (fichier retiré), redémarrage, état « echec » sans reprise automatique, applying libéré", async (t) => {
     const r = await realStack(t);
@@ -694,6 +761,9 @@ describe("L1g : vrai Studio sur le faux opencode", () => {
 describe("L1g : noms réservés centralisés", () => {
   it("liste unique : cockpit-classifier et cockpit-controle, lue par le Studio et les assistants", () => {
     assert.equal(CONTROL_AGENT, "cockpit-controle");
+    assert.equal(CONTROL_AGENT_NAME, CONTROL_AGENT, "nom de L11a = nom réservé du Studio");
+    // Chaque agent installé est un nom réservé : ni listé, ni modifiable, ni supprimable depuis l'interface.
+    for (const agent of INSTALLED_AGENTS) assert.equal(isInternalAgentName(agent.name), true, agent.name);
     assert.deepEqual([...INTERNAL_AGENTS], [CLASSIFIER_AGENT, CONTROL_AGENT]);
     for (const name of INTERNAL_AGENTS) {
       assert.equal(isInternalAgentName(name), true, name);

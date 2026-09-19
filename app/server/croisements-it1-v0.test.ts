@@ -9,6 +9,7 @@ import { ConfigWriteQueue } from "./config-queue.ts";
 import type { Cockpit11Deps, HookStep } from "./contracts-11.ts";
 import type { OcEvent } from "./opencode.ts";
 import { SessionTracker } from "./sessions.ts";
+import { CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 import {
@@ -298,8 +299,11 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     assert.equal(diag.status, 200, diag.body);
     assert.deepEqual(diag.json(), {
       delegation: [],
-      // L1g : module réel, agent de classement suivi.
-      agentsInternes: [{ nom: CLASSIFIER_AGENT, etat: "installe", prochainEssai: null }],
+      // L1g : module réel, agent de classement suivi ; L11b : cockpit-controle suivi aussi (déjà en place pour ce Studio simulé).
+      agentsInternes: [
+        { nom: CLASSIFIER_AGENT, etat: "installe", prochainEssai: null },
+        { nom: CONTROL_AGENT_NAME, etat: "installe", prochainEssai: null },
+      ],
       interrupteur: h.deps.env.autonomy,
       controleIa: h.settings.get().budget.autonomie.controleIa,
       activationOuverte: false,

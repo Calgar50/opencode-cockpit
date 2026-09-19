@@ -16,6 +16,7 @@ import type { Cockpit11, Cockpit11Deps, Cockpit11Module, InternalAgentsPort } fr
 import type { ControlService } from "./control.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import type { InternalAgentState, InternalAgentStatus } from "./shared/cockpit-event-types.ts";
+import { CONTROL_AGENT_FILE, CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
 import { StudioApplyError, type StudioService } from "./studio.ts";
 
 export function neutralInternalAgents(deps: Cockpit11Deps): InternalAgentsPort {
@@ -37,8 +38,15 @@ export interface InternalAgentDefinition {
   content: string;
 }
 
-/** Agents installés par le module, dans l'ordre (L11b ajoute cockpit-controle). */
-export const INSTALLED_AGENTS: readonly InternalAgentDefinition[] = [{ name: CLASSIFIER_AGENT, content: CLASSIFIER_AGENT_FILE }];
+/**
+ * Agents installés par le module, dans l'ordre : classement, puis IA de contrôle (L11b : fichier de L11a, `mode: primary`,
+ * `hidden: true`, `permission: {"*": "deny"}`). Chacun a son état et sa tentative ; le contrôle refuse tout appel tant que
+ * opencode ne voit pas cet agent avec ces consignes (control-ai.ts, agent-non-installe).
+ */
+export const INSTALLED_AGENTS: readonly InternalAgentDefinition[] = [
+  { name: CLASSIFIER_AGENT, content: CLASSIFIER_AGENT_FILE },
+  { name: CONTROL_AGENT_NAME, content: CONTROL_AGENT_FILE },
+];
 
 /** Horloge injectable (tests) : minuterie de reprise. */
 export interface InternalAgentsClock {
