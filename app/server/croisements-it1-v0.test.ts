@@ -276,10 +276,12 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // inscrit le crochet abort et les routes « conversations » ; les faits (L4b) leur dérivation, que ce montage ne branche pas au
     // processeur, et les routes d'activité ; le choix d'autonomie (L6a) le retour à « demander » au démarrage et ses routes. V3 :
     // la garde du « task once » (L1d) inscrit son crochet, sa dérivation (refus Simple) et les routes « delegations » ; la
-    // surveillance des délégations (L1e) sa dérivation et son abonnement usage.updated. Le reste du cadre reste au repos.
-    const hooked: HookStep[] = ["createSession", "sessionCreated", "beforeBilledSend", "beforeOnceRelay", "abort"];
+    // surveillance des délégations (L1e) sa dérivation et son abonnement usage.updated ; les plans (L6b) leur crochet d'envoi,
+    // après le plancher, et leurs routes. Le reste du cadre reste au repos.
+    const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 2, beforeOnceRelay: 1, abort: 1 };
     assert.deepEqual(wiring.registrations, [
       ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
@@ -291,9 +293,10 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "delegations", module: "taskGuard" },
       { kind: "routes", key: "activity", module: "facts" },
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
+      { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
-    for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked.includes(step) ? 1 : 0, step);
+    for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked[step] ?? 0, step);
     assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [3, 1, 1]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, false);
