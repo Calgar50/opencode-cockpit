@@ -101,6 +101,22 @@ export function bannerVisible(state: ActivityState, rows: readonly LiveRow[], st
   return state.facts.some((fact) => fact.kind === "attente" || fact.kind === "decision");
 }
 
+/**
+ * Repli d'office de la bande néon et de « Qui travaille ? » tant qu'une demande attend votre réponse (ligne avec [Répondre] :
+ * modification, commande ou délégation) : en mode Simple seulement, où la bande est repliée par défaut et où la place va à la carte
+ * de la demande. En mode Avancé, jamais (clôture de l'itération 1, §5.1 : bande dépliée par défaut, une ligne par acteur ; §5.7.1 et
+ * §5.7.3 : attente de votre accord et préparation en pointillé fixe visibles sans clic) : si la hauteur de la fenêtre manque, les
+ * bornes de activity.css, neon.css et chat.css gardent la carte de la demande, ses boutons et « Arrêter » dans la fenêtre.
+ */
+export function replierPendantLaDemande(advanced: boolean, rows: readonly LiveRow[]): boolean {
+  return !advanced && demandeEnAttente(rows);
+}
+
+/** Une demande de l'arbre attend votre réponse (une ligne porte [Répondre]). */
+export function demandeEnAttente(rows: readonly LiveRow[]): boolean {
+  return rows.some((row) => row.permissionId !== null);
+}
+
 /** Ligne résumée du bandeau replié ou à 400 px : une attente de votre accord, sinon un acteur au travail, sinon la racine. */
 export function mainRow(rows: readonly LiveRow[]): LiveRow | null {
   return rows.find((row) => row.state === "attente-accord") ?? rows.find((row) => row.depth > 0 && ACTIVE_STATES.has(row.state)) ?? rows[0] ?? null;

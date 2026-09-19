@@ -8,13 +8,18 @@
 // « Contexte » à 1280 et 400 px.
 //
 // Ce que le scénario établit (« --faux », mode Avancé : en Simple la délégation est refusée d'office, décision n° 4) :
-//   1. demande de délégation en attente, à chaque taille : fil et « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… »,
-//      « Arrêter » et [Répondre] dans la fenêtre et non recouverts, zone principale ni défilée ni débordée, en-tête en vue ; panneau
-//      « Contexte » fermé de lui-même à 1280 px et au-dessous (il s'y pose sur la conversation), ouvert à 1440 ; carte des agents
-//      repliée d'office pendant la demande ;
+//   1. demande de délégation en attente (posée quelques ms après la partie task, comme opencode réel), à chaque taille : fil et
+//      région « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… » et « Arrêter » dans la fenêtre et non recouverts,
+//      zone principale ni défilée ni débordée, en-tête en vue ; panneau « Contexte » fermé de lui-même à 1280 px et au-dessous (il
+//      s'y pose sur la conversation), ouvert à 1440. Clôture de l'itération 1 : la carte des agents reste dépliée pendant la demande
+//      (défaut du mode Avancé, §5.1), « Qui travaille ? » aussi au-dessus de 400 px ; l'attente de votre accord (§5.7.1) et la
+//      préparation en pointillé fixe (§5.7.3) sont visibles sans défiler là où la hauteur suffit (1440 × 900, 1280 × 800) ; là où
+//      elle manque (1024 × 768 du banc : la saisie y prend 428 px), la région d'activité se borne et on les atteint en la faisant
+//      défiler, elle seule ; à 400 px, pas de carte (liste seule, §5.6). [Répondre] est atteignable, au besoin en faisant défiler la
+//      seule région d'activité ;
 //   2. [Répondre] de « Qui travaille ? » : focus sur « Autoriser une fois », atteignable, zone principale toujours en place ;
 //   3. « Autoriser une fois » cliqué, travail délégué en cours, à chaque taille : « Arrêter » atteignable, fil et « Qui travaille ? »
-//      visibles, zone principale en place ; la carte des agents est dépliée de nouveau (défaut du mode Avancé) ;
+//      visibles, zone principale en place ; la carte des agents reste dépliée (défaut du mode Avancé) ;
 //   4. « Arrêter » cliqué : plus aucune session de l'arbre occupée ; aucune violation de la CSP, console muette, P6 et P4 tenus.
 // En « --reel-hors-ligne », le faux fournisseur ne délègue pas : le scénario le dit et ne joue rien.
 import {
@@ -32,6 +37,7 @@ import {
   enModeAvance,
   exiger,
   exigerAucuneViolationCsp,
+  exigerSignesDeLaDemande,
   LARGE,
   nonJoue,
   oc,
@@ -41,16 +47,24 @@ import {
   preparerPage,
   releve,
   resume,
+  signesPendantLaDemande,
 } from "./it1-ui-commun.mjs";
 
 const DESCRIPTION = "Relire les journaux de la nuit";
 const REFUSER = "Refuser…";
+/**
+ * `signes` pendant la demande : « visibles » sans défiler ; « par-defilement » (la hauteur manque dans les conditions du banc : la
+ * région d'activité, bornée, les montre quand on la fait défiler, elle seule ; visibles directement, c'est mieux encore) ;
+ * « sans-carte » à 400 px (liste seule, §5.6).
+ */
 const TAILLES = [
-  { nom: "1440", largeur: 1440, hauteur: 900 },
-  { nom: "1280", largeur: 1280, hauteur: 800 },
-  { nom: "1024", largeur: 1024, hauteur: 768 },
-  { nom: "400", largeur: 400, hauteur: 860 },
+  { nom: "1440", largeur: 1440, hauteur: 900, signes: "visibles" },
+  { nom: "1280", largeur: 1280, hauteur: 800, signes: "visibles" },
+  { nom: "1024", largeur: 1024, hauteur: 768, signes: "par-defilement" },
+  { nom: "400", largeur: 400, hauteur: 860, signes: "sans-carte" },
 ];
+/** Demande posée quelques ms après la partie task, comme opencode 1.18.30 réel (askAfterMs du faux, rg-reel-7). */
+const DEMANDE_APRES_MS = 5;
 /** Hauteur visible minimale du fil (chat.css : min(64px, 8vh) pendant une demande, min(96px, 12vh) sinon). */
 const FIL_MIN = 40;
 /** Hauteur visible minimale de la région « Qui travaille ? » (au moins sa ligne de tête). */
@@ -79,6 +93,19 @@ const MESURE = (boutons) => `(() => {
     demandes: visible(".interactions"),
     boutons: Object.fromEntries(${JSON.stringify(boutons)}.map(([t, p]) => [t, bouton(t, p)])),
     repondre: bouton("Répondre", ".activity-region"),
+    // [Répondre] sous la carte des agents, dans la région bornée : défilée ELLE SEULE (molette au-dessus d'elle), mesuré, remise en place.
+    repondreApresDefilement: (() => {
+      const region = document.querySelector(".activity-region");
+      const b = region ? [...region.querySelectorAll("button")].find((x) => x.textContent.replace(/\\s+/g, " ").trim() === "Répondre" && x.getClientRects().length > 0) : null;
+      if (!b) return "absent";
+      const avant = region.scrollTop;
+      const rr = region.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      if (rb.top < rr.top || rb.bottom > rr.bottom) region.scrollTop += rb.top + rb.height / 2 - (rr.top + rr.height / 2);
+      const etat = bouton("Répondre", ".activity-region");
+      const main = document.querySelector(".main")?.scrollTop ?? null;
+      region.scrollTop = avant;
+      return main === 0 ? etat : etat + " (zone principale défilée)";
+    })(),
     mainDefile: main ? Math.round(main.scrollTop) : null,
     mainDeborde: main ? main.scrollHeight - main.clientHeight : null,
     entete: entete ? Math.round(entete.top) : null,
@@ -126,7 +153,7 @@ export async function run(ctx) {
       const client = oc(ctx);
       const racine = await client.creerConversation("it1-ui-mise-en-page");
       await ctx.faux.scripter(racine.id, {
-        tools: [delegation(DESCRIPTION, "general", { text: "Rien d'anormal.", workMs: 60_000 })],
+        tools: [{ ...delegation(DESCRIPTION, "general", { text: "Rien d'anormal.", workMs: 60_000 }), askAfterMs: DEMANDE_APRES_MS }],
         followUp: { text: "Relecture faite." },
       });
       await ouvrirConversation(ctx, racine.id);
@@ -149,8 +176,17 @@ export async function run(ctx) {
         const m = await page.evaluer(MESURE(enAttente));
         releve(ctx, `attente de votre accord, ${taille.nom} : ${JSON.stringify(m)}`);
         exigerMesure(m, taille, enAttente, "attente de votre accord");
-        exiger(m.repondre === "atteignable", `attente de votre accord, ${taille.nom} : [Répondre] de « Qui travaille ? » ${m.repondre}.`);
-        if (taille.largeur >= 900) exiger(m.carte === "false", `attente de votre accord, ${taille.nom} : carte des agents non repliée (${m.carte}).`);
+        exiger(
+          m.repondre === "atteignable" || m.repondreApresDefilement === "atteignable",
+          `attente de votre accord, ${taille.nom} : [Répondre] de « Qui travaille ? » ${m.repondre}, ${m.repondreApresDefilement} en faisant défiler la région.`,
+        );
+        // Clôture de l'itération 1 : jamais de repli pour une demande en Avancé ; les signes de la carte selon la hauteur disponible.
+        exiger(m.carte === "true", `attente de votre accord, ${taille.nom} : carte des agents repliée pendant la demande (${m.carte}).`);
+        if (taille.signes === "sans-carte") continue;
+        const s = await signesPendantLaDemande(page, racine.id, { defiler: taille.signes === "par-defilement" });
+        releve(ctx, `attente de votre accord, ${taille.nom}, signes de la carte : ${JSON.stringify(s)}`);
+        exigerSignesDeLaDemande(s, `attente de votre accord, ${taille.nom}`);
+        if (taille.signes === "visibles") exiger(s.defilement === 0, `attente de votre accord, ${taille.nom} : signes vus après un défilement de ${s.defilement} px.`);
       }
       await capturerConversation(ctx, "attente-accord");
       await panneauSelonLaTaille(page, TAILLES[0]);
@@ -182,7 +218,7 @@ export async function run(ctx) {
         const m = await page.evaluer(MESURE(pendant));
         releve(ctx, `travail délégué, ${taille.nom} : ${JSON.stringify(m)}`);
         exigerMesure(m, taille, pendant, "travail délégué");
-        if (taille.largeur >= 900) exiger(m.carte === "true", `travail délégué, ${taille.nom} : carte des agents non rendue après la demande (${m.carte}).`);
+        exiger(m.carte === "true", `travail délégué, ${taille.nom} : carte des agents repliée pendant le travail délégué (${m.carte}).`);
       }
       exiger((await occupees(client, [racine.id, enfant.id])).length === 2, "le travail délégué s'est terminé pendant les mesures.");
 

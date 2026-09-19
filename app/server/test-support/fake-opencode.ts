@@ -77,6 +77,13 @@ export interface FakeToolScript {
    * 7 ms ; bash analyse la commande, environ 100 ms au premier appel d'un opencode neuf). Absent : demande aussitôt.
    */
   beforeAsk?: () => Promise<void>;
+  /**
+   * Pause entre la partie « pending » de l'outil et son évaluation (sa demande), en ms ; absente : le pas du tour (`stepMs`).
+   * opencode 1.18.30 réel pose permission.asked quelques millisecondes après la partie `task` (clôture de l'itération 1, rg-reel-7) :
+   * un scénario qui regarde ce que la page dessine AVANT la demande la fixe à quelques ms, sinon le pas du tour lui en laisse le
+   * temps. Valeur JSON : le banc e2e la transmet telle quelle (e2e/fake-opencode-server.ts).
+   */
+  askAfterMs?: number;
   /** Règles de l'agent, évaluées avant celles de la session (F-d). */
   agentRules?: PermissionRule[];
   output?: string;
@@ -1569,7 +1576,7 @@ export class FakeOpencode {
   async #tool(run: Run, session: FakeSession, message: OcMessageWithParts, tool: FakeToolScript, stepMs: number): Promise<"ok" | "blocked" | "continue"> {
     const callID = tool.callID ?? `call_${randomBytes(12).toString("hex")}`;
     let part = this.#putPart(message, { type: "tool", tool: tool.tool, callID, state: { status: "pending", input: {}, raw: "" } });
-    if (!(await this.#live(run, stepMs))) return "blocked";
+    if (!(await this.#live(run, tool.askAfterMs ?? stepMs))) return "blocked";
     const start = Date.now();
     if (tool.beforeAsk) {
       part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });

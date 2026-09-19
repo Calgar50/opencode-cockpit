@@ -311,12 +311,12 @@ describe("croisements it1 V3 : interfaces entre paquets web", () => {
   it("ActivityRegion (L5b) rend la bande néon (L5c) avec le dossier de la conversation (relecture des textes du zoom 3)", () => {
     const source = read("../web/pages/chat/activity/ActivityRegion.tsx");
     // Entrée [Voir une démonstration] (L5d) permise après le dossier ; son câblage est vérifié dans demo-p1.test.ts. Demande en
-    // attente (répétition générale de l'itération 1) : la bande se replie pour laisser la place à la carte de la demande.
+    // attente : repli d'office en mode Simple seulement (clôture de l'itération 1, replierPendantLaDemande ; jamais en Avancé).
     assert.match(
       source,
-      /<NeonBand\s+rootId=\{rootId\}\s+facts=\{[^}]+\}\s+advanced=\{advanced\}\s+directory=\{directory\}(?:\s+onDemonstration=\{\w+\})?\s+demandeEnAttente=\{demandeEnAttente\}\s*\/>/,
+      /<NeonBand\s+rootId=\{rootId\}\s+facts=\{[^}]+\}\s+advanced=\{advanced\}\s+directory=\{directory\}(?:\s+onDemonstration=\{\w+\})?\s+repliPourLaDemande=\{repliPourLaDemande\}\s*\/>/,
     );
-    assert.match(source, /const demandeEnAttente = activity\.rows\.some\(\(row\) => row\.permissionId !== null\);/);
+    assert.match(source, /const repliPourLaDemande = replierPendantLaDemande\(advanced, activity\.rows\);/);
     assert.match(read("../web/pages/chat/activity/NeonBand.tsx"), /oc\.messages\(sessionId, directory\)/);
   });
 

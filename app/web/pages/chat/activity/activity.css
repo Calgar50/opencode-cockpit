@@ -3,8 +3,10 @@
    et un mot, jamais par la couleur seule ; couleurs par les jetons de styles.css (thèmes clair et sombre). */
 
 /* Dans la colonne du fil (chat.css), répétition générale de l'itération 1 : bornée, elle défile et cède sa place au fil et à la
-   saisie pendant le travail. Tant qu'une demande attend votre réponse (.attente), bande et liste sont repliées (NeonBand,
-   WhoIsWorking) : la région garde ses deux lignes de tête entières, [Répondre] compris, et ne cède rien à la carte de la demande. */
+   saisie quand la hauteur de la fenêtre manque. Mode Avancé : une demande qui attend votre réponse ne replie rien (clôture de
+   l'itération 1, §5.1, §5.7) ; carte et liste restent dépliées dans ces mêmes bornes. Mode Simple seulement (.attente, posée par
+   ActivityRegion) : bande et liste sont repliées tant que la demande attend (NeonBand, WhoIsWorking) ; la région garde ses deux
+   lignes de tête entières, [Répondre] compris, et ne cède rien à la carte de la demande. */
 .activity-region {
   flex: 0 1 auto;
   display: flex;
@@ -18,6 +20,12 @@
 .activity-region.attente {
   flex-shrink: 0;
   max-height: min(36vh, 8rem);
+}
+/* Mode Avancé, une demande attend (.demande) : la carte de la demande cède avant la région (chat.css) ; dans une fenêtre très basse
+   (mesuré sur opencode réel hors ligne à 1024 × 768 et 400 × 860, deux bandeaux et un avis dans la saisie), la région garde au
+   moins sa première ligne, qu'on fait défiler ; « Arrêter » et les boutons de la demande restent dans la fenêtre. */
+.activity-region.demande {
+  min-height: min(2.5rem, 6vh);
 }
 .activity-region > * {
   flex: none;

@@ -275,10 +275,12 @@ describe("croisements it1 V4 : « Arrêter » visible pendant une délégation (
     assert.match(read("../web/pages/chat/Composer.tsx"), /\{busy \|\| stopVisible \? \(/);
   });
 
-  it("mise en page lue dans les sources : colonne du fil dans la fenêtre, demandes bornées aux boutons collés, « Contexte » fermé par défaut quand il recouvre la saisie", () => {
+  it("mise en page lue dans les sources : colonne du fil dans la fenêtre, demandes bornées aux boutons collés, « Contexte » fermé par défaut quand il recouvre la saisie, carte des agents et « Qui travaille ? » jamais repliés par une demande en Avancé", () => {
     // Répétition générale de l'itération 1 : fil à 0 px, « Autoriser une fois » et « Arrêter » hors de la fenêtre sous une zone
     // principale qui ne défile pas, « Arrêter » recouvert par le panneau « Contexte » à 1280 et 400 px. La preuve dans le navigateur
-    // (elementFromPoint, quatre tailles) est le scénario e2e it1-ui-mise-en-page.
+    // (elementFromPoint, quatre tailles) est le scénario e2e it1-ui-mise-en-page. Clôture de l'itération 1 : la correction repliait la
+    // carte des agents et « Qui travaille ? » à chaque demande, en Avancé aussi (rg-reel-7 en échec sur opencode réel) ; en Avancé,
+    // rien ne se replie plus pour une demande, les bornes ci-dessous suffisent (e2e it1-ui-delegation et it1-ui-mise-en-page).
     const read = (relative: string) => fs.readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     const rule = (css: string, selector: string) => {
       const at = css.indexOf(`\n${selector} {`);
@@ -297,13 +299,27 @@ describe("croisements it1 V4 : « Arrêter » visible pendant une délégation (
     const activityCss = read("../web/pages/chat/activity/activity.css");
     const activity = rule(activityCss, ".activity-region");
     for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "max-height: 36vh;", "overflow-y: auto;"]) assert.ok(activity.includes(decl), `.activity-region : ${decl}`);
-    assert.match(rule(activityCss, ".activity-region.attente"), /flex-shrink: 0;\s*max-height: min\(36vh, 8rem\);/, "demande en attente : les deux lignes de tête restent entières");
+    assert.match(rule(activityCss, ".activity-region.attente"), /flex-shrink: 0;\s*max-height: min\(36vh, 8rem\);/, "mode Simple, demande en attente : les deux lignes de tête restent entières");
+    assert.match(
+      rule(chat, ".chat-center:has(> .activity-region.demande) > .interactions"),
+      /flex-shrink: 2;/,
+      "mode Avancé, demande en attente : la carte de la demande cède plus vite que la région, jusqu'à son plancher",
+    );
+    assert.match(rule(activityCss, ".activity-region.demande"), /min-height: min\(2\.5rem, 6vh\);/, "mode Avancé, demande en attente : la région garde sa première ligne");
     const region = read("../web/pages/chat/activity/ActivityRegion.tsx");
-    assert.match(region, /className=\{demandeEnAttente \? "activity-region attente" : "activity-region"\}/);
-    assert.match(region, /working=\{working\}\s+demandeEnAttente=\{demandeEnAttente\}/, "« Qui travaille ? » replié pendant la demande");
+    assert.match(region, /const repliPourLaDemande = replierPendantLaDemande\(advanced, activity\.rows\);/, "repli d'office : mode Simple seulement");
+    assert.match(
+      region,
+      /if \(repliPourLaDemande\) classe = "activity-region attente";\s*else if \(demandeEnAttente\(activity\.rows\)\) classe = "activity-region demande";/,
+      "Simple : région repliée (.attente) ; Avancé : région dépliée (.demande)",
+    );
+    assert.match(region, /<div className=\{classe\}>/);
+    assert.match(region, /working=\{working\}\s+repliPourLaDemande=\{repliPourLaDemande\}/, "« Qui travaille ? » replié pendant la demande en Simple seulement");
+    assert.doesNotMatch(region, /demandeEnAttente=\{|permissionId !== null/, "aucune demande brute passée aux composants");
     const who = read("../web/pages/chat/activity/WhoIsWorking.tsx");
-    assert.match(who, /useEffect\(\(\) => setManual\(null\), \[working, demandeEnAttente\]\);/);
-    assert.match(who, /const expanded = manual \?\? \(working && !narrow && !demandeEnAttente\);/);
+    assert.match(who, /useEffect\(\(\) => setManual\(null\), \[working, repliPourLaDemande\]\);/);
+    assert.match(who, /const expanded = manual \?\? \(working && !narrow && !repliPourLaDemande\);/, "Avancé : déplié pendant le travail, demande comprise (§5.1)");
+    assert.doesNotMatch(who, /demandeEnAttente|permissionId !== null\)/, "« Qui travaille ? » ne lit aucune demande pour se replier");
     const prompts = read("../web/pages/chat/Interactions.tsx");
     assert.equal(prompts.match(/className="row(?: wrap)? interaction-actions"/g)?.length, 3, "rangées de boutons : refus, choix, question");
 

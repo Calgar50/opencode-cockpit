@@ -492,20 +492,33 @@ describe("bande néon : mouvement (JP-13) et dessin", () => {
     assert.equal(file.file.affiches, 4, "pendant une annonce, un changement est rendu à son créneau, sans attendre la fin de l'annonce");
   });
 
-  it("NeonBand.tsx : repliée d'office tant qu'une demande attend votre réponse (sauf focus dans la carte), rendue ensuite ; votre choix l'emporte", () => {
-    // Répétition générale de l'itération 1 : carte dépliée (Avancé) + « Qui travaille ? » + carte de la demande poussaient le fil à
-    // 0 px et les boutons de la demande hors de la fenêtre.
+  it("NeonBand.tsx, ActivityRegion.tsx : une demande ne replie jamais la carte en mode Avancé ; en Simple seulement, repliée d'office tant qu'elle attend (sauf focus dans la carte), rendue ensuite ; votre choix l'emporte", () => {
+    // Clôture de l'itération 1 (revue de l'itération, rg-reel-7 en échec sur opencode 1.18.30 réel) : la correction de la répétition
+    // générale repliait la carte à CHAQUE demande, en Avancé aussi (modification, commande, délégation) ; l'attente de votre accord
+    // (§5.7.1) et la préparation en pointillé fixe (§5.7.3) ne se voyaient plus sans clic. Le repli d'office ne passe plus que par
+    // repliPourLaDemande, calculé par ActivityRegion avec replierPendantLaDemande (useActivity.ts : jamais en Avancé ; comportement
+    // vérifié dans activity-live.test.ts). La place de la carte pendant une demande en Avancé : croisements-it1-v4 (sources) et e2e
+    // it1-ui-delegation, it1-ui-mise-en-page (navigateur).
     const source = code(fs.readFileSync(BAND_TSX, "utf8"));
     const gardes: Array<[RegExp, string]> = [
-      [/demandeEnAttente = false \}: NeonBandProps\)/, "propriété facultative, fausse par défaut"],
-      [/if \(contexteVu !== contexte\) \{[^}]*setReplieeDOffice\(false\);\s*setAttenteVue\(false\);\s*\} else if \(attenteVue !== demandeEnAttente\) \{/, "autre contexte : repli d'office oublié, demande relue au rendu suivant"],
+      [/repliPourLaDemande = false \}: NeonBandProps\)/, "propriété facultative, fausse par défaut"],
+      [/if \(contexteVu !== contexte\) \{[^}]*setReplieeDOffice\(false\);\s*setAttenteVue\(false\);\s*\} else if \(attenteVue !== repliPourLaDemande\) \{/, "autre contexte : repli d'office oublié, demande relue au rendu suivant"],
       [/const focusDansLaCarte = corpsRef\.current\?\.contains\(document\.activeElement\) === true;/, "focus clavier dans la carte : pas de repli"],
-      [/if \(demandeEnAttente && deplie && !focusDansLaCarte\) \{\s*setReplieeDOffice\(true\);\s*setDeplie\(false\);\s*setFocus\(null\);\s*\}/, "repli d'office d'une carte dépliée"],
-      [/else if \(!demandeEnAttente && replieeDOffice\) \{\s*setDeplie\(true\);\s*setReplieeDOffice\(false\);\s*\}/, "demande réglée : carte dépliée de nouveau"],
+      [/if \(repliPourLaDemande && deplie && !focusDansLaCarte\) \{\s*setReplieeDOffice\(true\);\s*setDeplie\(false\);\s*setFocus\(null\);\s*\}/, "repli d'office d'une carte dépliée (Simple)"],
+      [/else if \(!repliPourLaDemande && replieeDOffice\) \{\s*setDeplie\(true\);\s*setReplieeDOffice\(false\);\s*\}/, "demande réglée : carte dépliée de nouveau"],
       [/const basculerRepli = \(\) => \{[^}]*setReplieeDOffice\(false\);/, "votre choix l'emporte sur le repli d'office"],
       [/<div className="neon-body" id=\{corpsId\} ref=\{corpsRef\}>/, "corps de la carte suivi pour le focus"],
     ];
     for (const [re, garde] of gardes) assert.match(source, re, garde);
+    // Contrôles discriminants : la bande ne lit aucune demande elle-même (ni propriété « demande en attente », ni lignes d'acteurs), et
+    // ne se replie d'office qu'à un seul endroit, celui de repliPourLaDemande.
+    assert.doesNotMatch(source, /demandeEnAttente|rows\.some/, "NeonBand n'obéit qu'à repliPourLaDemande");
+    assert.equal([...source.matchAll(/setDeplie\(false\)/g)].length, 1, "un seul repli d'office");
+    const region = code(fs.readFileSync(path.join(WEB_DIR, "pages", "chat", "activity", "ActivityRegion.tsx"), "utf8"));
+    assert.match(region, /const repliPourLaDemande = replierPendantLaDemande\(advanced, activity\.rows\);/, "repli calculé avec le mode");
+    assert.match(region, /<NeonBand[^>]*\srepliPourLaDemande=\{repliPourLaDemande\}\s*\/>/, "bande : repli de la seule règle");
+    assert.match(region, /<WhoIsWorking[^>]*\srepliPourLaDemande=\{repliPourLaDemande\}/, "« Qui travaille ? » : repli de la seule règle");
+    assert.doesNotMatch(region, /demandeEnAttente=\{|permissionId !== null/, "aucune demande brute passée aux composants");
   });
 
   it("géométrie : mêmes centre et anneaux que la scène ; grille sans boucle sans fin ; segments, hexagones, trait vers l'extérieur", () => {

@@ -7,8 +7,13 @@
 // la délégation est refusée d'office : le scénario passe en Avancé).
 //
 // Ce que le scénario établit (« --faux ») :
-//   1. l'IA délègue à general ; la page montre la demande d'autorisation avec sa carte « Détails de la délégation », « Qui
-//      travaille ? » affiche general « en attente de votre accord », et la bande dessine la préparation (rose) ;
+//   1. l'IA délègue à general ; comme opencode 1.18.30 réel, la demande d'autorisation suit la partie task de quelques
+//      millisecondes (clôture de l'itération 1 : avec le pas du tour de 1,5 s, la bande avait le temps de dessiner la préparation
+//      AVANT la demande, et le scénario passait même quand la carte se repliait à chaque demande, rg-reel-7 en échec sur opencode
+//      réel). La page montre la demande avec sa carte « Détails de la délégation » ; « Qui travaille ? » affiche general « en attente
+//      de votre accord ». Sans aucun clic, pendant la demande (§5.1, §5.7.1, §5.7.3) : la carte des agents reste dépliée (défaut du
+//      mode Avancé) et montre, dans la fenêtre, l'attente de votre accord (hexagone hachuré, cadenas, ambre) et la préparation
+//      (pointillé rose fixe, sans animation en boucle) ; « Qui travaille ? » reste déplié, une ligne par acteur ;
 //   2. « Autoriser une fois » est cliqué dans la carte ; general « travaille », la bande dessine la consigne (rose), « Arrêter » est
 //      visible ; captures pendant le travail délégué ;
 //   3. general rend son résultat : la bande dessine le résultat (bleu) pendant que la conversation reprend (capture à 1440), la
@@ -40,6 +45,7 @@ import {
   exiger,
   exigerAucuneViolationCsp,
   exigerListe,
+  exigerSignesDeLaDemande,
   faisceauxDesFaits,
   faits,
   nonJoue,
@@ -50,6 +56,7 @@ import {
   releve,
   releves,
   resume,
+  signesPendantLaDemande,
   texteVisible,
 } from "./it1-ui-commun.mjs";
 
@@ -63,6 +70,11 @@ const TRAVAIL_MS = 9_000;
  * dessiné (essai du 19/09 : c'est ce que montre la page, et c'est juste).
  */
 const PAS_MS = 1_500;
+/**
+ * Demande d'autorisation posée quelques millisecondes après la partie `task`, comme opencode 1.18.30 réel (rg-reel-7 ; option
+ * askAfterMs du faux) : le pas du tour ne s'applique plus entre la partie et la demande.
+ */
+const DEMANDE_APRES_MS = 5;
 
 export async function run(ctx) {
   const page = await preparerPage(ctx);
@@ -79,7 +91,7 @@ export async function run(ctx) {
       const racine = await client.creerConversation("it1-ui-delegation");
       await ctx.faux.scripter(racine.id, {
         stepMs: PAS_MS,
-        tools: [delegation(DESCRIPTION, "general", { text: "Deux changements relevés.", workMs: TRAVAIL_MS })],
+        tools: [{ ...delegation(DESCRIPTION, "general", { text: "Deux changements relevés.", workMs: TRAVAIL_MS }), askAfterMs: DEMANDE_APRES_MS }],
         followUp: { text: "Synthèse : deux changements à surveiller." },
       });
       await ouvrirConversation(ctx, racine.id);
@@ -95,6 +107,11 @@ export async function run(ctx) {
       }
       await attendreEtatActeur(page, "general", "en attente de votre accord");
       await page.attendreQue(`window.__e2e.faisceaux.some((f) => f.cle.startsWith("f:preparation:${racine.id}:"))`, { libelle: "faisceau de préparation dessiné" });
+      // Sans aucun clic, une fois les transitions finies (≈ 900 ms) : ce que la page montre pendant la demande.
+      await attendre(1_000);
+      const signes = await signesPendantLaDemande(page, racine.id);
+      releve(ctx, `pendant la demande, sans clic, 1440 : ${JSON.stringify(signes)}`);
+      exigerSignesDeLaDemande(signes, "pendant la demande, 1440");
 
       // 2. « Autoriser une fois » dans la carte : l'enfant travaille, la consigne est dessinée, « Arrêter » est visible.
       await cliquerBouton(page, PHRASES.autoriser, { portee: ".interactions" });

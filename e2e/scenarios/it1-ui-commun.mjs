@@ -270,6 +270,92 @@ export function estBleu(couleur) {
   return t !== null && t.teinte !== null && t.teinte >= 195 && t.teinte <= 235 && t.saturation >= 0.4;
 }
 
+/** Ambre de l'attente de votre accord (§5.7.1 : #FFB02E en néon sombre, #9A6400 en néon clair) : teinte 25 à 55, couleur franche. */
+export function estAmbre(couleur) {
+  const t = teinte(couleur);
+  return t !== null && t.teinte !== null && t.teinte >= 25 && t.teinte <= 55 && t.saturation >= 0.4;
+}
+
+/**
+ * Ce que la page montre pendant une demande d'autorisation de délégation en mode Avancé, relevé sans aucun clic (§5.1, §5.7.1,
+ * §5.7.3 ; clôture de l'itération 1) : carte des agents dépliée ou non, « Qui travaille ? » déplié ou non et les noms de ses lignes
+ * affichées ; signe de l'attente de votre accord et faisceau de préparation de la conversation `rootId` : présents, dans la fenêtre
+ * et non recouverts (elementFromPoint à leur centre donne un point de la carte : ni hors de la région défilante, ni sous la carte de
+ * la demande), forme (hexagone et traits : hachures et cadenas ; tirets du pointillé), couleur, et animation en boucle éventuelle.
+ * `defiler` : quand la hauteur de la fenêtre manque, la région d'activité se borne et défile (activity.css) ; les signes sont alors
+ * relevés après avoir fait défiler cette SEULE région (comme la molette de l'utilisateur au-dessus d'elle) jusqu'à l'attente de votre
+ * accord, puis la région est remise en place ; `defilement` dit de combien (0 : visible sans défiler), `mainDefile` si la zone
+ * principale a bougé.
+ */
+export async function signesPendantLaDemande(page, rootId, { defiler = false } = {}) {
+  return await page.evaluer(`(() => {
+    const region = document.querySelector(".activity-region");
+    const avant = region ? region.scrollTop : 0;
+    const signe = document.querySelector(".neon-band .neon-map .neon-attente");
+    if (${defiler} && region && signe) {
+      const rr = region.getBoundingClientRect(), rs = signe.getBoundingClientRect();
+      if (rs.top < rr.top || rs.bottom > rr.bottom) region.scrollTop += rs.top + rs.height / 2 - (rr.top + rr.height / 2);
+    }
+    const defilement = region ? Math.round(region.scrollTop - avant) : 0;
+    const releve = (() => {
+      const vh = window.innerHeight, vw = window.innerWidth;
+      const vu = (el) => {
+        if (!el) return "absent";
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return "sans-taille";
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        if (cy < 0 || cy > vh || cx < 0 || cx > vw) return "hors-fenetre(y=" + Math.round(cy) + ")";
+        const dessus = document.elementFromPoint(cx, cy);
+        if (dessus && dessus.closest(".neon-map-wrap")) return "visible";
+        const classe = dessus ? (typeof dessus.className === "string" ? dessus.className : dessus.getAttribute("class")) : "?";
+        return "recouvert(par " + String(classe ?? "?").slice(0, 40) + ", y=" + Math.round(cy) + ")";
+      };
+      const carte = document.querySelector(".neon-band .neon-map");
+      const attente = carte ? carte.querySelector(".neon-attente") : null;
+      const prep = carte ? ([...carte.querySelectorAll(".neon-faisceau")].find((g) => (g.dataset.neonCle || "").startsWith(${JSON.stringify(`f:preparation:${rootId}:`)})) ?? null) : null;
+      const trait = prep ? prep.querySelector(".neon-trait") : null;
+      return {
+        carte: document.querySelector(".neon-band .neon-commands button[aria-expanded]")?.getAttribute("aria-expanded") ?? null,
+        quiTravaille: document.querySelector(".who-toggle")?.getAttribute("aria-expanded") ?? null,
+        lignes: [...document.querySelectorAll(".who-body .actor-row")].filter((l) => l.getClientRects().length > 0).map((l) => (l.querySelector(".actor-name")?.textContent ?? "").trim()),
+        attente: vu(attente),
+        formeAttente: attente ? { hexagones: attente.querySelectorAll("polygon").length, traits: attente.querySelectorAll("path").length } : null,
+        couleurAttente: attente ? getComputedStyle(attente).color : "",
+        preparation: vu(prep),
+        tiretsPreparation: trait ? getComputedStyle(trait).strokeDasharray : "",
+        couleurPreparation: trait ? getComputedStyle(trait).stroke : "",
+        animationEnBoucle: prep ? prep.getAnimations({ subtree: true }).some((a) => a.effect && a.effect.getTiming().iterations === Infinity) : null,
+      };
+    })();
+    releve.defilement = defilement;
+    releve.mainDefile = document.querySelector(".main")?.scrollTop ?? null;
+    if (region) region.scrollTop = avant;
+    return releve;
+  })()`);
+}
+
+/**
+ * Exige, pendant une demande de délégation en mode Avancé et sans clic, une carte dessinée (900 px de large et plus) : carte dépliée,
+ * attente de votre accord visible (hexagone hachuré, cadenas, ambre), préparation visible (pointillé rose, fixe) ; et, si
+ * `quiTravaille` (au-dessus de 400 px, où le bandeau tient sur une ligne, §5.6), « Qui travaille ? » déplié avec la ligne de `enfant`.
+ */
+export function exigerSignesDeLaDemande(s, ou, { quiTravaille = true, enfant = "general" } = {}) {
+  const dit = `${ou} (${resume(s, 700)})`;
+  exiger(s.carte === "true", `${dit} : carte des agents repliée pendant la demande (§5.1 : dépliée par défaut en Avancé).`);
+  exiger(s.mainDefile === 0, `${dit} : zone principale défilée.`);
+  if (quiTravaille) {
+    exiger(s.quiTravaille === "true", `${dit} : « Qui travaille ? » replié pendant la demande (§5.1 : une ligne par acteur).`);
+    exiger(s.lignes.length >= 2 && s.lignes.includes(enfant), `${dit} : lignes d'acteur affichées ${resume(s.lignes)}, la conversation et ${enfant} attendues.`);
+  }
+  exiger(s.attente === "visible", `${dit} : attente de votre accord ${s.attente} (§5.7.1).`);
+  exiger(s.formeAttente !== null && s.formeAttente.hexagones >= 1 && s.formeAttente.traits >= 2, `${dit} : attente sans hexagone hachuré ni cadenas.`);
+  exiger(estAmbre(s.couleurAttente), `${dit} : attente de couleur ${s.couleurAttente} au lieu de l'ambre.`);
+  exiger(s.preparation === "visible", `${dit} : préparation ${s.preparation} (§5.7.3 : partie task en attente, pointillé fixe).`);
+  exiger(s.tiretsPreparation !== "" && s.tiretsPreparation !== "none", `${dit} : préparation en trait « ${s.tiretsPreparation} » au lieu du pointillé.`);
+  exiger(estRose(s.couleurPreparation), `${dit} : préparation de couleur ${s.couleurPreparation} au lieu du rose.`);
+  exiger(s.animationEnBoucle === false, `${dit} : préparation animée en boucle (pointillé fixe attendu, JP-13).`);
+}
+
 /** Gris d'un faisceau figé par un arrêt : couleur sans teinte franche. */
 export function estGris(couleur) {
   const t = teinte(couleur);
