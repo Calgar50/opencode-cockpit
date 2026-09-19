@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "description": "Alertes npm audit (--omit=dev) acceptees pour docker/opencode-omo. scripts/build-omo-image.ps1 s'arrete sur toute alerte haute ou critique absente de cette liste. Base initiale : aucune alerte connue. Une entree ajoutee porte exactement paquet (nom npm), avis (identifiant GHSA ou numero npm), severite (high ou critical), raison et accepteeLe (aaaa-mm-jj). Noms et identifiants seulement : ni extrait du registre, ni secret.",
+  "paquet": "oh-my-openagent",
+  "versionPaquet": "4.19.4",
+  "alertesAcceptees": []
+}
