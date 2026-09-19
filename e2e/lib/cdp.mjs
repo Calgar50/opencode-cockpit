@@ -57,41 +57,53 @@ async function lirePortDevTools(dossierProfil, delaiMs = 30_000) {
   throw new Error("le navigateur n'a pas ouvert son protocole de pilotage.");
 }
 
+/** Condensé SHA-256 d'une clé publique (SPKI DER) en base64, tel que Chromium l'attend. */
+const SPKI_BASE64 = /^[A-Za-z0-9+/]{43}=$/;
+
 /**
- * Ouvre un navigateur sans fenêtre sur un profil temporaire neuf.
+ * Arguments du navigateur. `spkiEpingle` (HTTPS du banc) : seul le certificat dont la clé publique a ce condensé est
+ * accepté malgré son autorité inconnue (--ignore-certificate-errors-spki-list, que Chromium n'honore qu'avec un
+ * --user-data-dir). Toute autre erreur de certificat reste bloquante : jamais --ignore-certificate-errors, jamais
+ * Security.setIgnoreCertificateErrors.
  */
-export async function ouvrirNavigateur({ dossierProfil, executable = trouverNavigateur(), silencieux = true } = {}) {
+export function argumentsNavigateur(profil, { spkiEpingle = null } = {}) {
+  if (spkiEpingle !== null && !SPKI_BASE64.test(String(spkiEpingle))) throw new Error("condensé de clé publique épinglé mal formé.");
+  return [
+    "--headless=new",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profil}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--disable-features=Translate,MediaRouter,OptimizationHints",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--hide-scrollbars",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    // Isolation : rien ne se résout hors de la boucle locale. Chromium applique aussi ces règles aux adresses IP
+    // écrites en clair : sans l'exclusion, « https://127.0.0.1:port » donnerait ERR_NAME_NOT_RESOLVED.
+    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    "--no-proxy-server",
+    ...(spkiEpingle === null ? [] : [`--ignore-certificate-errors-spki-list=${spkiEpingle}`]),
+    "about:blank",
+  ];
+}
+
+/**
+ * Ouvre un navigateur sans fenêtre sur un profil temporaire neuf. En HTTPS, `spkiEpingle` est le condensé de la clé
+ * publique du certificat lu sur le volume de la pile jetable.
+ */
+export async function ouvrirNavigateur({ dossierProfil, executable = trouverNavigateur(), silencieux = true, spkiEpingle = null } = {}) {
   // Profil neuf à chaque ouverture : Windows garde les fichiers du profil précédent verrouillés un moment après la
   // fermeture, et une exécution ne doit jamais s'arrêter là-dessus.
   const profil = `${dossierProfil}-${randomBytes(3).toString("hex")}`;
   fs.mkdirSync(profil, { recursive: true, mode: 0o700 });
-  const processus = spawn(
-    executable,
-    [
-      "--headless=new",
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profil}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-component-update",
-      "--disable-sync",
-      "--disable-default-apps",
-      "--disable-features=Translate,MediaRouter,OptimizationHints",
-      "--metrics-recording-only",
-      "--mute-audio",
-      "--hide-scrollbars",
-      "--password-store=basic",
-      "--use-mock-keychain",
-      // Isolation : rien ne se résout hors de la boucle locale. Chromium applique aussi ces règles aux adresses IP
-      // écrites en clair : sans l'exclusion, « http://127.0.0.1:port » donnerait ERR_NAME_NOT_RESOLVED.
-      "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
-      "--no-proxy-server",
-      "about:blank",
-    ],
-    { stdio: silencieux ? "ignore" : "inherit" },
-  );
+  const processus = spawn(executable, argumentsNavigateur(profil, { spkiEpingle }), { stdio: silencieux ? "ignore" : "inherit" });
   processus.on("error", (err) => {
     throw err;
   });
@@ -183,6 +195,8 @@ async function connecter(url) {
 async function creerOnglet(client, sessionId, targetId) {
   const erreurs = [];
   const reseau = [];
+  // Trames du flux d'événements (SSE) reçues par la page : nom et instant seulement, jamais les données.
+  const flux = [];
   let chargement = null;
 
   const arreterEcoute = client.ecouter((bloc) => {
@@ -207,6 +221,11 @@ async function creerOnglet(client, sessionId, targetId) {
           ligne.etat = "reçue";
           ligne.code = p.response?.status;
         }
+        break;
+      }
+      case "Network.eventSourceMessageReceived": {
+        const ligne = reseau.find((r) => r.id === p.requestId);
+        flux.push({ evenement: p.eventName || "message", url: ligne?.url ?? null, recuA: Date.now() });
         break;
       }
       case "Network.loadingFailed": {
@@ -349,6 +368,11 @@ async function creerOnglet(client, sessionId, targetId) {
       if (retenues.length === 0) return;
       const liste = retenues.map((e) => `    ${e.source} : ${e.texte}${e.url ? ` (${e.url})` : ""}`).join("\n");
       throw new Error(`${retenues.length} erreur(s) dans la console :\n${liste}`);
+    },
+
+    /** Trames du flux d'événements reçues par la page, dans l'ordre : nom (« hello », « message »…), adresse, instant. */
+    evenementsFlux() {
+      return flux.map((trame) => ({ ...trame }));
     },
 
     /** Journal réseau de l'onglet (méthode, adresse, code, échec). */

@@ -1,9 +1,16 @@
 // Banc e2e (L7a) : parler au cockpit de la pile jetable, et relever ce que le faux opencode a reçu.
 //
-// Depuis R105 (intégration de la 1.0.5), le cockpit du banc sert dans le mode HTTP explicite de la 1.0.5 (date de
-// confirmation posée par docker-e2e.mjs) : connexion par ticket à usage unique, cookie « __Host-cockpit_session ». La
-// bascule en HTTPS épinglé (D-05) reste à faire : les endroits à reprendre portent la mention D-05.
+// Depuis R105b, le cockpit du banc sert en HTTPS par défaut, comme une installation 1.0.5, et le banc s'y connecte comme
+// « cockpit.ps1 open » :
+//   1. certificat public et empreintes lus sur le volume cockpit-tls de la pile jetable (docker-e2e.mjs), puis
+//      contre-vérifiés ici (verifierCertificatPublic) ;
+//   2. HTTPS épinglé : ce certificat seul pour autorité, vérification TLS complète (nom compris), et empreinte comparée à
+//      chaque poignée de main. Jamais « -k », jamais NODE_TLS_REJECT_UNAUTHORIZED=0, jamais rejectUnauthorized: false ;
+//   3. preuve du jeton sur /api/health, puis connexion par ticket à usage unique (/auth?k=), cookie « __Host-cockpit_session ».
+// Le mode HTTP explicite de la 1.0.5 reste disponible par « run-e2e.sh --http » : mêmes étapes 3, par fetch, sans TLS.
 import crypto from "node:crypto";
+import https from "node:https";
+import tls from "node:tls";
 
 const attendre = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -13,18 +20,193 @@ const signer = (jeton, usage, valeur) => crypto.createHmac("sha256", jeton).upda
 /** Seul nom de cookie de session lu par le cockpit depuis la 1.0.5. */
 const COOKIE_SESSION = "__Host-cockpit_session";
 
-/** Attend que le cockpit réponde à /api/health (le conteneur démarre avant d'écouter). */
-export async function attendreSante(url, delaiMs = 120_000) {
+// --- HTTPS épinglé -------------------------------------------------------------------------------
+
+/** Empreinte SHA-256 d'un certificat, au format de X509Certificate.fingerprint256 (« AB:CD:… »). */
+const EMPREINTE = /^(?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/;
+/** Condensé SHA-256 de la clé publique (SPKI DER) en base64 : format de curl --pinnedpubkey et de Chromium. */
+export const SPKI_BASE64 = /^[A-Za-z0-9+/]{43}=$/;
+/** Code des erreurs d'épinglage : un autre certificat que celui du volume ne mérite aucune nouvelle tentative. */
+export const CODE_EMPREINTE = "E2E_EMPREINTE_DIFFERENTE";
+/** Taille maximale d'une réponse du cockpit lue par le banc (une page d'accueil ou un JSON d'état tiennent largement). */
+const MAX_REPONSE = 16 * 1024 * 1024;
+
+const spkiDe = (x509) => crypto.createHash("sha256").update(x509.publicKey.export({ type: "spki", format: "der" })).digest("base64");
+
+/**
+ * Contre-vérifie le certificat public et cockpit-tls.json lus sur le volume, comme ConvertTo-CockpitTlsState
+ * (CockpitTls.ps1) : un seul certificat, aucune clé privée, empreintes du JSON égales à celles recalculées, clé ECDSA
+ * P-256, feuille qui n'est pas une autorité, adresse 127.0.0.1 couverte, dates valables. Rend l'épinglage du banc :
+ * certificat (seule autorité acceptée), empreinte du certificat et condensé de sa clé publique. Aucun secret.
+ */
+export function verifierCertificatPublic(pem, texteJson, maintenant = new Date()) {
+  const texte = String(pem ?? "");
+  const json = String(texteJson ?? "");
+  if (/PRIVATE KEY/i.test(texte) || /PRIVATE KEY/i.test(json)) throw new Error("clé privée présente dans les fichiers publics du volume : refusé.");
+  const blocs = texte.match(/-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----/g) ?? [];
+  if (blocs.length !== 1) throw new Error(`${blocs.length} certificat(s) dans cockpit.crt : exactement un attendu.`);
+  let x509;
+  try {
+    x509 = new crypto.X509Certificate(blocs[0]);
+  } catch {
+    throw new Error("cockpit.crt illisible (structure X.509 invalide).");
+  }
+  let info;
+  try {
+    info = JSON.parse(json);
+  } catch {
+    throw new Error("cockpit-tls.json illisible.");
+  }
+  if (typeof info?.sha256 !== "string" || !EMPREINTE.test(info.sha256)) throw new Error("cockpit-tls.json : empreinte SHA-256 absente ou mal formée.");
+  if (info.sha256 !== x509.fingerprint256 || info.sha256Hex !== x509.fingerprint256.replaceAll(":", "").toLowerCase()) {
+    throw new Error("empreinte de cockpit.crt différente de cockpit-tls.json.");
+  }
+  const spki = spkiDe(x509);
+  if (info.spkiSha256Base64 !== spki) throw new Error("clé publique de cockpit.crt différente de cockpit-tls.json.");
+  if (x509.publicKey.asymmetricKeyType !== "ec" || x509.publicKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+    throw new Error("certificat inattendu : clé ECDSA P-256 attendue.");
+  }
+  if (x509.ca) throw new Error("certificat inattendu : une autorité, pas la feuille du cockpit.");
+  if (x509.checkIP("127.0.0.1") !== "127.0.0.1") throw new Error("le certificat ne couvre pas l'adresse 127.0.0.1.");
+  const instant = maintenant.getTime();
+  if (x509.validToDate.getTime() <= instant) throw new Error(`certificat expiré depuis le ${x509.validToDate.toISOString()}.`);
+  if (x509.validFromDate.getTime() > instant + 5 * 60_000) throw new Error("certificat pas encore valable : vérifiez l'horloge.");
+  return { certificat: x509.toString(), sha256: x509.fingerprint256, spki, expireLe: x509.validToDate.toISOString() };
+}
+
+/**
+ * Contrôle du pair à chaque poignée de main (checkServerIdentity de node:tls) : vérification usuelle du nom (ici
+ * l'adresse 127.0.0.1), puis empreinte du certificat et condensé de sa clé publique égaux à ceux du volume. Rend une
+ * erreur (connexion coupée avant tout envoi) ou undefined.
+ */
+export function controlerPair(hote, pair, epinglage) {
+  const erreurNom = tls.checkServerIdentity(hote, pair);
+  if (erreurNom) return erreurNom;
+  let spki = null;
+  try {
+    spki = pair?.raw ? spkiDe(new crypto.X509Certificate(pair.raw)) : null;
+  } catch {
+    spki = null;
+  }
+  if (pair?.fingerprint256 !== epinglage.sha256 || spki !== epinglage.spki) {
+    const erreur = new Error(`certificat servi différent de celui du volume (empreinte ${pair?.fingerprint256 ?? "absente"}).`);
+    erreur.code = CODE_EMPREINTE;
+    return erreur;
+  }
+  return undefined;
+}
+
+/** Réponse d'une requête épinglée, au sous-ensemble de l'interface Response dont le banc se sert. */
+function reponseDe(res, corps, url) {
+  const entetes = new Headers();
+  for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) entetes.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+  const status = res.statusCode ?? 0;
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    url,
+    headers: entetes,
+    text: async () => corps.toString("utf8"),
+    json: async () => JSON.parse(corps.toString("utf8")),
+  };
+}
+
+/**
+ * Une requête HTTPS épinglée (node:https) : le certificat du volume est la seule autorité (ca), la vérification reste
+ * exigée (rejectUnauthorized: true) et controlerPair compare l'empreinte. agent: false : aucune connexion réutilisée,
+ * aucun proxy de l'environnement. Aucune redirection n'est suivie (le cockpit n'en sert qu'à /auth).
+ */
+function requeteEpinglee(base, chemin, { method = "GET", headers = {}, body, delaiMs = 60_000 } = {}, epinglage) {
+  const url = `${base.origin}${chemin}`;
+  // Pour les messages : jamais la requête (défi, demande signée, ticket).
+  const sansRequete = chemin.split("?")[0];
+  return new Promise((resolve, reject) => {
+    const requete = https.request(
+      {
+        hostname: base.hostname,
+        port: base.port,
+        path: chemin,
+        method,
+        headers,
+        ca: epinglage.certificat,
+        rejectUnauthorized: true,
+        checkServerIdentity: (hote, pair) => controlerPair(hote, pair, epinglage),
+        agent: false,
+        timeout: delaiMs,
+      },
+      (res) => {
+        const morceaux = [];
+        let taille = 0;
+        res.on("data", (morceau) => {
+          taille += morceau.length;
+          if (taille > MAX_REPONSE) {
+            res.destroy(new Error(`réponse de plus de ${MAX_REPONSE} octets sur ${sansRequete}.`));
+            return;
+          }
+          morceaux.push(morceau);
+        });
+        res.on("error", reject);
+        res.on("end", () => resolve(reponseDe(res, Buffer.concat(morceaux), url)));
+      },
+    );
+    requete.on("timeout", () => requete.destroy(new Error(`délai de ${delaiMs} ms dépassé sur ${sansRequete}.`)));
+    requete.on("error", reject);
+    if (body !== undefined) requete.write(body);
+    requete.end();
+  });
+}
+
+/**
+ * Accès au cockpit : fetch en mode HTTP explicite, requête épinglée en HTTPS. Une adresse https:// sans épinglage est
+ * refusée : le banc ne se rabat jamais sur une vérification coupée. `chemin` est toujours un chemin absolu du cockpit.
+ */
+export function creerTransport(url, epinglage = null) {
+  let base;
+  try {
+    base = new URL(url);
+  } catch {
+    throw new Error(`adresse du cockpit invalide : « ${url} ».`);
+  }
+  if (base.protocol === "https:") {
+    if (!epinglage || typeof epinglage.certificat !== "string" || !EMPREINTE.test(epinglage.sha256 ?? "") || !SPKI_BASE64.test(epinglage.spki ?? "")) {
+      throw new Error("HTTPS sans épinglage complet (certificat, empreinte, clé publique) : refusé, le banc ne coupe jamais la vérification TLS.");
+    }
+  } else if (base.protocol === "http:") {
+    if (epinglage) throw new Error("épinglage donné pour une adresse http:// : mode incohérent.");
+  } else {
+    throw new Error(`schéma refusé : « ${base.protocol} ».`);
+  }
+  const verifierChemin = (chemin) => {
+    if (typeof chemin !== "string" || !chemin.startsWith("/") || chemin.startsWith("//")) throw new Error(`chemin du cockpit refusé : « ${chemin} ».`);
+  };
+  if (base.protocol === "http:") {
+    return async (chemin, options = {}) => {
+      verifierChemin(chemin);
+      return await fetch(`${base.origin}${chemin}`, options);
+    };
+  }
+  return async (chemin, options = {}) => {
+    verifierChemin(chemin);
+    return await requeteEpinglee(base, chemin, options, epinglage);
+  };
+}
+
+/**
+ * Attend que le cockpit réponde à /api/health (le conteneur démarre avant d'écouter). En HTTPS, un certificat servi
+ * autre que celui du volume arrête l'attente tout de suite : ce n'est pas un démarrage lent.
+ */
+export async function attendreSante(url, { epinglage = null, delaiMs = 120_000 } = {}) {
+  const requete = creerTransport(url, epinglage);
   const limite = Date.now() + delaiMs;
   let derniere = "aucune réponse";
   while (Date.now() < limite) {
     try {
-      // D-05 : mode HTTP explicite de la 1.0.5 ; plus tard HTTPS épinglé, jamais « -k ».
-      const reponse = await fetch(`${url}/api/health`);
+      const reponse = await requete("/api/health", { delaiMs: 10_000 });
       if (reponse.ok) return await reponse.json();
       derniere = `code ${reponse.status}`;
     } catch (err) {
-      derniere = err?.cause?.code ?? err?.message ?? String(err);
+      if (err?.code === CODE_EMPREINTE) throw err;
+      derniere = err?.cause?.code ?? err?.code ?? err?.message ?? String(err);
     }
     await attendre(500);
   }
@@ -33,16 +215,18 @@ export async function attendreSante(url, delaiMs = 120_000) {
 
 /**
  * Client d'API du cockpit pour les scénarios : cookie de session tenu à la main (aucune dépendance), en-tête
- * anti-CSRF sur toute écriture. Le jeton n'est jamais journalisé ni rendu.
+ * anti-CSRF sur toute écriture. Le jeton n'est jamais journalisé ni rendu. `epinglage` est exigé en HTTPS.
  */
-export function creerClientCockpit(url, jeton) {
+export function creerClientCockpit(url, jeton, epinglage = null) {
   let cookie = null;
+  const requete = creerTransport(url, epinglage);
+  const origine = new URL(url).origin;
 
   const appeler = async (methode, chemin, corps, options = {}) => {
-    const entetes = { "x-cockpit-csrf": "1", origin: url };
+    const entetes = { "x-cockpit-csrf": "1", origin: origine };
     if (cookie) entetes.cookie = cookie;
     if (corps !== undefined) entetes["content-type"] = "application/json";
-    const reponse = await fetch(`${url}${chemin}`, {
+    const reponse = await requete(chemin, {
       method: methode,
       headers: entetes,
       body: corps === undefined ? undefined : JSON.stringify(corps),
@@ -139,7 +323,8 @@ export async function connecterNavigateur(onglet, url, cookie) {
     url,
     path: "/",
     httpOnly: true,
-    // D-05 : cookie « __Host- » donc « Secure », accepté en HTTP sur 127.0.0.1, que les navigateurs tiennent pour une origine sûre.
+    // Cookie « __Host- », donc « Secure » : naturel en HTTPS, et accepté aussi en mode --http sur 127.0.0.1, que les
+    // navigateurs tiennent pour une origine sûre (mesuré pour la 1.0.5).
     secure: true,
     sameSite: "Strict",
   });

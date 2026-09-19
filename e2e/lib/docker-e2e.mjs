@@ -11,17 +11,37 @@ import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import https from "node:https";
 import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { FETCH_BLOCKED_PORTS } from "../../app/server/fetch-ports.ts";
-import { ouvrirNavigateur } from "./cdp.mjs";
-import { attendreOpencode, attendreSante, connecterNavigateur, creerClientCockpit, relevesDuBanc } from "./cockpit.mjs";
+import { argumentsNavigateur, ouvrirNavigateur } from "./cdp.mjs";
+import {
+  attendreOpencode,
+  attendreSante,
+  CODE_EMPREINTE,
+  connecterNavigateur,
+  controlerPair,
+  creerClientCockpit,
+  creerTransport,
+  relevesDuBanc,
+  verifierCertificatPublic,
+} from "./cockpit.mjs";
 
 /** Racine du dépôt : e2e/lib → e2e → dépôt. */
 export const RACINE = path.resolve(import.meta.dirname, "..", "..");
 
 export const MODES = ["faux", "reel-hors-ligne", "reel"];
+
+/**
+ * Schéma servi par le cockpit de la pile jetable : HTTPS épinglé par défaut, comme une installation 1.0.5 ; HTTP
+ * seulement par « --http », dans le mode HTTP explicite de la 1.0.5 (date de confirmation posée par le banc).
+ */
+export const SCHEMAS = ["https", "http"];
+
+/** Fichiers publics du volume cockpit-tls, lus comme « cockpit.ps1 open » : feuille seule et empreintes, jamais la clé. */
+const FICHIERS_TLS_PUBLICS = { certificat: "/tls/public/cockpit.crt", empreintes: "/tls/public/cockpit-tls.json" };
 
 /** Profil Compose activé par mode (la surcharge e2e/docker-compose.e2e.yml range chaque service sous son profil). */
 const PROFILS = { faux: ["faux"], "reel-hors-ligne": ["reel-hors-ligne"], reel: ["reel"] };
@@ -267,23 +287,42 @@ export function argumentsCompose(plan, sousCommande) {
 /** Commande lisible pour --dry-run et pour le journal (aucune valeur secrète n'y figure). */
 export const texteCommande = (args) => ["docker", ...args].join(" ");
 
+/**
+ * Environnement passé à docker : celui du processus, sans aucune variable que le fichier d'environnement du banc
+ * définit. Compose donne la priorité au shell sur --env-file : un COCKPIT_LOCAL_SCHEME, un COCKPIT_PORT ou un
+ * COCKPIT_TOKEN resté dans le shell changerait sinon, sans rien dire, le mode, le port ou le jeton de la pile jetable.
+ */
+export function environnementDocker(source = process.env, cles = CLES_ENVIRONNEMENT) {
+  const env = { ...source };
+  for (const nom of Object.keys(env)) {
+    if (cles.has(nom) || nom.startsWith("E2E_") || nom.startsWith("COCKPIT_")) delete env[nom];
+  }
+  // MSYS_NO_PATHCONV : sous Git Bash, MSYS convertirait « /workspace » en chemin Windows dans les arguments.
+  env.MSYS_NO_PATHCONV = "1";
+  return env;
+}
+
 function executerDocker(args, { silencieux = false } = {}) {
   return new Promise((resolve, reject) => {
     const enfant = spawn("docker", args, {
       cwd: RACINE,
-      // MSYS_NO_PATHCONV : sous Git Bash, MSYS convertirait « /workspace » en chemin Windows dans les arguments.
-      env: { ...process.env, MSYS_NO_PATHCONV: "1" },
+      env: environnementDocker(),
       stdio: silencieux ? ["ignore", "pipe", "pipe"] : ["ignore", "inherit", "inherit"],
     });
+    // « sortie » mêle les deux flux (messages) ; « stdout » seul sert à lire un fichier du conteneur.
     let sortie = "";
+    let stdout = "";
     if (silencieux) {
       enfant.stdout.setEncoding("utf8");
       enfant.stderr.setEncoding("utf8");
-      enfant.stdout.on("data", (bloc) => (sortie += bloc));
+      enfant.stdout.on("data", (bloc) => {
+        sortie += bloc;
+        stdout += bloc;
+      });
       enfant.stderr.on("data", (bloc) => (sortie += bloc));
     }
     enfant.on("error", reject);
-    enfant.on("close", (code) => resolve({ code: code ?? 1, sortie }));
+    enfant.on("close", (code) => resolve({ code: code ?? 1, sortie, stdout }));
   });
 }
 
@@ -329,6 +368,8 @@ export function identifiantExecution(maintenant = new Date()) {
 export async function preparerPlan(options) {
   const mode = options.mode;
   if (!MODES.includes(mode)) refuser(`mode inconnu : « ${mode} ».`);
+  const schema = options.schema ?? "https";
+  if (!SCHEMAS.includes(schema)) refuser(`schéma inconnu : « ${schema} ».`);
   const id = options.id ?? identifiantExecution();
   const projet = verifierProjet(`${options.prefixe}-${id}`);
   const imageApp = verifierImage(`${options.prefixe}/app:${options.tag}`);
@@ -338,6 +379,7 @@ export async function preparerPlan(options) {
   const [portCockpit, portControle, portFournisseur] = await choisirPorts(3);
   return {
     mode,
+    schema,
     id,
     projet,
     profils: PROFILS[mode],
@@ -358,21 +400,28 @@ export async function preparerPlan(options) {
   };
 }
 
-/** Écrit le fichier d'environnement de la pile jetable. Aucune de ses valeurs n'est affichée ni journalisée. */
-export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "contexte")) {
-  // Format généré par install.ps1 (64 hexadécimaux) : sans lui, la 1.0.5 ne sert ni preuve ni ticket de connexion.
-  const jeton = crypto.randomBytes(32).toString("hex");
-  const motDePasse = secret(24);
-  const jetonControle = secret(24);
-  const lignes = [
+/**
+ * Variables du fichier d'environnement du banc hors des préfixes COCKPIT_ et E2E_ : environnementDocker les retire aussi
+ * de l'environnement de docker, pour que le fichier du banc l'emporte toujours.
+ */
+const CLES_ENVIRONNEMENT = new Set(["OPENCODE_SERVER_PASSWORD", "WORKSPACE_DIR", "ARCHIVE_DIR"]);
+
+/**
+ * Lignes du fichier d'environnement de la pile jetable (sans l'écrire). HTTPS : schéma servi par défaut par la 1.0.5,
+ * aucune date de confirmation. --http : mode HTTP explicite de la 1.0.5, confirmé à l'instant au format strict.
+ */
+export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte, maintenant = new Date() }) {
+  const acces =
+    plan.schema === "http"
+      ? ["COCKPIT_LOCAL_SCHEME=http", `COCKPIT_LOCAL_HTTP_CONFIRMED=${maintenant.toISOString().slice(0, 19)}Z`]
+      : ["COCKPIT_LOCAL_SCHEME=https", "COCKPIT_LOCAL_HTTP_CONFIRMED="];
+  return [
     `COCKPIT_APP_IMAGE=${plan.imageApp}`,
     `COCKPIT_OPENCODE_IMAGE=${plan.imageOpencode}`,
     `COCKPIT_PORT=${plan.portCockpit}`,
     `COCKPIT_TOKEN=${jeton}`,
     `COCKPIT_VERSION=e2e-${plan.id}`,
-    // 1.0.5 : mode HTTP explicite (D-05 : bascule en HTTPS épinglé restant à faire), confirmé à l'instant au format strict.
-    "COCKPIT_LOCAL_SCHEME=http",
-    `COCKPIT_LOCAL_HTTP_CONFIRMED=${new Date().toISOString().slice(0, 19)}Z`,
+    ...acces,
     // Mode test d'origine, mesuré par M-B1 : seul « --reel-hors-ligne » parle à un faux fournisseur.
     `COCKPIT_ALLOWED_PROVIDERS=${plan.mode === "reel-hors-ligne" ? "banc" : "github-copilot"}`,
     "COCKPIT_COPILOT_API_URL=",
@@ -391,6 +440,15 @@ export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "co
     `E2E_PORT_FOURNISSEUR=${plan.portFournisseur}`,
     `E2E_JETON_CONTROLE=${jetonControle}`,
   ];
+}
+
+/** Écrit le fichier d'environnement de la pile jetable. Aucune de ses valeurs n'est affichée ni journalisée. */
+export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "contexte")) {
+  // Format généré par install.ps1 (64 hexadécimaux) : sans lui, la 1.0.5 ne sert ni preuve ni ticket de connexion.
+  const jeton = crypto.randomBytes(32).toString("hex");
+  const motDePasse = secret(24);
+  const jetonControle = secret(24);
+  const lignes = lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte });
   // Dossiers fermés (0700) : ils portent le fichier d'environnement et les captures de la pile jetable.
   fs.mkdirSync(path.join(plan.dossier, "workspace"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(plan.dossier, "archives"), { recursive: true, mode: 0o700 });
@@ -467,6 +525,67 @@ async function attendreDemarrage(plan, service, delaiMs = 240_000) {
     await new Promise((r) => setTimeout(r, 1_000));
   }
   refuser(`le service « ${service} » n'est pas prêt après ${Math.round(delaiMs / 1000)} s.`);
+}
+
+/** Sous-commandes Compose qui lisent les fichiers publics du volume cockpit-tls (conteneur démarré). */
+export const lecturesTlsPubliques = () => Object.values(FICHIERS_TLS_PUBLICS).map((chemin) => ["exec", "-T", "cockpit", "cat", chemin]);
+
+/**
+ * Épinglage du banc, lu comme « cockpit.ps1 open » : certificat public et cockpit-tls.json lus sur le volume cockpit-tls
+ * de la pile jetable par « docker compose exec », puis contre-vérifiés (verifierCertificatPublic). Le serveur purge et
+ * réécrit ces fichiers au démarrage, avant d'écouter : on relit jusqu'à obtenir une paire cohérente.
+ */
+export async function lireEpinglage(plan, delaiMs = 120_000) {
+  const limite = Date.now() + delaiMs;
+  let derniere = "fichiers absents";
+  while (Date.now() < limite) {
+    const lus = [];
+    for (const sous of lecturesTlsPubliques()) {
+      const { code, stdout } = await compose(plan, sous, { silencieux: true, tolerant: true });
+      lus.push(code === 0 ? stdout : null);
+    }
+    if (lus.every((texte) => texte !== null)) {
+      try {
+        return verifierCertificatPublic(lus[0], lus[1]);
+      } catch (err) {
+        derniere = err?.message ?? String(err);
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  refuser(`certificat public du cockpit illisible sur le volume de la pile jetable après ${Math.round(delaiMs / 1000)} s (${derniere}).`);
+}
+
+/**
+ * Contre-épreuves de l'épinglage, sur le cockpit réel de la pile jetable : il ne suffit pas que la connexion épinglée
+ * réussisse, il faut que ce qui n'est pas épinglé échoue. Deux refus attendus :
+ *   1. même autorité, autre empreinte attendue : refus par controlerPair (code CODE_EMPREINTE) ;
+ *   2. magasin d'autorités par défaut de Node (aucune option TLS) : refus du certificat auto-signé.
+ * Si l'un passe, le banc s'arrête : son HTTPS ne prouverait rien.
+ */
+export async function contreEpreuvesEpinglage(url, epinglage) {
+  const autre = { ...epinglage, sha256: epinglage.sha256.replace(/^[0-9A-F]{2}/, (octet) => (octet === "00" ? "01" : "00")) };
+  try {
+    await creerTransport(url, autre)("/api/health", { delaiMs: 10_000 });
+    refuser("contre-épreuve : une autre empreinte attendue a été acceptée ; l'épinglage ne protège rien.");
+  } catch (err) {
+    if (err instanceof ErreurBanc) throw err;
+    if (err?.code !== CODE_EMPREINTE) refuser(`contre-épreuve : refus inattendu pour une autre empreinte (${err?.code ?? err?.message}).`);
+  }
+  // Aucune option TLS : magasin d'autorités et vérification par défaut du processus. NODE_TLS_REJECT_UNAUTHORIZED=0
+  // ou une autorité ajoutée à la main feraient accepter le certificat, et le banc s'arrêterait ici. agent: false :
+  // aucun proxy de l'environnement.
+  const cible = new URL(url);
+  const code = await new Promise((resolve) => {
+    const requete = https.get({ hostname: cible.hostname, port: cible.port, path: "/api/health", agent: false, timeout: 10_000 }, (res) => {
+      res.resume();
+      resolve("ACCEPTE");
+    });
+    requete.on("timeout", () => requete.destroy(new Error("délai dépassé")));
+    requete.on("error", (err) => resolve(String(err?.code ?? err?.message ?? err)));
+  });
+  if (code === "ACCEPTE") refuser("contre-épreuve : le certificat du cockpit est accepté sans épinglage ; la vérification TLS est coupée dans ce processus.");
+  if (!/CERT|SELF_SIGNED|UNABLE_TO_VERIFY/i.test(code)) refuser(`contre-épreuve : refus inattendu sans épinglage (${code}).`);
 }
 
 /** Signaux d'arrêt écoutés pendant une exécution, et code de sortie rendu (128 + numéro du signal). */
@@ -562,7 +681,8 @@ export async function executer(options) {
   const scenarios = listerScenarios(plan.motif);
   if (scenarios.length === 0) refuser(plan.motif ? `aucun scénario ne correspond à « ${plan.motif} ».` : "aucun scénario dans e2e/scenarios.");
 
-  console.log(`Banc e2e : mode ${plan.mode}, projet ${plan.projet}, port 127.0.0.1:${plan.portCockpit}, ${scenarios.length} scénario(s).`);
+  const acces = plan.schema === "https" ? "HTTPS épinglé" : "HTTP explicite (--http)";
+  console.log(`Banc e2e : mode ${plan.mode}, ${acces}, projet ${plan.projet}, port 127.0.0.1:${plan.portCockpit}, ${scenarios.length} scénario(s).`);
   if (plan.dryRun) {
     console.log("À blanc : les commandes ci-dessous ne sont pas exécutées.");
     for (const sous of [
@@ -570,6 +690,7 @@ export async function executer(options) {
       ...(plan.mode === "reel-hors-ligne" ? [["run", "--rm", "--no-deps", "preparation"]] : []),
       ["up", "-d", "--no-build", ...plan.services],
       ["ps", "-a"],
+      ...(plan.schema === "https" ? lecturesTlsPubliques() : []),
       ["down", "-v", "--remove-orphans", "-t", "20"],
     ]) {
       await compose(plan, sous);
@@ -596,23 +717,30 @@ export async function executer(options) {
     await compose(plan, ["up", "-d", "--no-build", ...plan.services]);
     await attendreDemarrage(plan, "cockpit");
 
-    const urlCockpit = `http://127.0.0.1:${plan.portCockpit}`;
-    await attendreSante(urlCockpit);
-    const sonde = creerClientCockpit(urlCockpit, secrets.jeton);
+    // HTTPS (défaut) : épinglage lu sur le volume de la pile jetable avant toute requête au cockpit.
+    const epinglage = plan.schema === "https" ? await lireEpinglage(plan) : null;
+    const urlCockpit = `${plan.schema}://127.0.0.1:${plan.portCockpit}`;
+    const sante = await attendreSante(urlCockpit, { epinglage });
+    if (sante?.scheme !== plan.schema) refuser(`le cockpit sert « ${sante?.scheme ?? "?"} » au lieu de « ${plan.schema} » : environnement de la pile incohérent.`);
+    if (epinglage) {
+      await contreEpreuvesEpinglage(urlCockpit, epinglage);
+      console.log(`HTTPS épinglé : certificat SHA-256 ${epinglage.sha256} (volume de la pile jetable) ; autre empreinte et magasin par défaut refusés.`);
+    }
+    const sonde = creerClientCockpit(urlCockpit, secrets.jeton, epinglage);
     await sonde.connecter();
     await attendreOpencode(sonde);
     const faux = plan.mode === "faux" ? relevesDuBanc(`http://127.0.0.1:${plan.portControle}`, secrets.jetonControle) : null;
     const fournisseur = plan.mode === "reel-hors-ligne" ? relevesDuBanc(`http://127.0.0.1:${plan.portFournisseur}`, secrets.jetonControle) : null;
     if (faux) await faux.attendre();
     if (fournisseur) await fournisseur.attendre();
-    etat.navigateur = await ouvrirNavigateur({ dossierProfil: path.join(plan.dossier, "profil-navigateur") });
+    etat.navigateur = await ouvrirNavigateur({ dossierProfil: path.join(plan.dossier, "profil-navigateur"), spkiEpingle: epinglage?.spki ?? null });
 
     for (const scenario of scenarios) {
       const debut = Date.now();
       const onglet = await etat.navigateur.nouvelOnglet();
       const prefixe = path.join(plan.captures, scenario.nom.replace(/\.mjs$/, ""));
       try {
-        const ctx = await construireContexte({ plan, onglet, urlCockpit, faux, fournisseur, secrets, scenario, prefixe });
+        const ctx = await construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, secrets, scenario, prefixe });
         const module = await import(pathToFileURL(scenario.chemin).href);
         if (typeof module.run !== "function") refuser(`le scénario « ${scenario.nom} » n'exporte pas run(ctx).`);
         await module.run(ctx);
@@ -639,8 +767,8 @@ export async function executer(options) {
 }
 
 /** Contexte remis à chaque scénario (format figé par la fiche L7a). */
-async function construireContexte({ plan, onglet, urlCockpit, faux, fournisseur, secrets, scenario, prefixe }) {
-  const api = creerClientCockpit(urlCockpit, secrets.jeton);
+async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, secrets, scenario, prefixe }) {
+  const api = creerClientCockpit(urlCockpit, secrets.jeton, epinglage);
   await api.connecter();
   // La session du navigateur est ouverte ici, par le cookie du client d'API : ni le jeton ni le scénario n'y touchent.
   await connecterNavigateur(onglet, urlCockpit, api.cookie);
@@ -649,6 +777,9 @@ async function construireContexte({ plan, onglet, urlCockpit, faux, fournisseur,
     url: urlCockpit,
     faux,
     mode: plan.mode,
+    // « https » (défaut) ou « http » (--http) ; en HTTPS, empreintes publiques épinglées (jamais la clé).
+    schema: plan.schema,
+    epinglage: epinglage ? { sha256: epinglage.sha256, spki: epinglage.spki } : null,
     api,
     nom: scenario.nom,
     dossierCaptures: plan.captures,
@@ -954,6 +1085,8 @@ export async function verifierGardes() {
     }),
   );
 
+  await verifierGardesHttps(verifier, refuse);
+
   await verifier("aucun secret dans un fichier d'environnement du banc laissé derrière", () => {
     const restes = fichiersEnvRestants();
     if (restes.length > 0) {
@@ -968,10 +1101,142 @@ export async function verifierGardes() {
   return echecs.length;
 }
 
+/**
+ * Certificat PUBLIC d'essai des gardes (ECDSA P-256, SAN IP:127.0.0.1 et DNS:localhost, valable jusqu'au 2046-09-14).
+ * Sa clé a été jetée à sa création : il ne sert qu'aux contre-vérifications, jamais à servir du TLS.
+ */
+const CERTIFICAT_ESSAI = `-----BEGIN CERTIFICATE-----
+MIIBtjCCAVygAwIBAgIUdgvardXC3+cNFE2kIhFkN3RarekwCgYIKoZIzj0EAwIw
+GTEXMBUGA1UEAwwOYmFuYyBlMmUgZXNzYWkwHhcNMjYwOTE5MTAwNDExWhcNNDYw
+OTE0MTAwNDExWjAZMRcwFQYDVQQDDA5iYW5jIGUyZSBlc3NhaTBZMBMGByqGSM49
+AgEGCCqGSM49AwEHA0IABGCxGKq2LArJWi5JFVShaQ459nXQHbXhuYhYhpQpjCzy
+VAkxl+Mi1sYaS+KZEOPs80V94i5UbGryIjihWT3PAQCjgYEwfzAdBgNVHQ4EFgQU
+6YzHQisLPKYm7tUU07Z9JkHPF60wHwYDVR0jBBgwFoAU6YzHQisLPKYm7tUU07Z9
+JkHPF60wGgYDVR0RBBMwEYcEfwAAAYIJbG9jYWxob3N0MAwGA1UdEwEB/wQCMAAw
+EwYDVR0lBAwwCgYIKwYBBQUHAwEwCgYIKoZIzj0EAwIDSAAwRQIhANyZe2urmftP
+AZ0PT5gXsstcVgT60pbmbetqnwAeo5MHAiB36mwqtz5jo087O78MzWX4nJFHsFLA
+foTRgWlgnjip2Q==
+-----END CERTIFICATE-----
+`;
+
+/** cockpit-tls.json tel que tls.ts l'écrit pour un certificat, avec des champs remplaçables pour les refus. */
+function jsonEssai(certificat, remplacements = {}) {
+  const x509 = new crypto.X509Certificate(certificat);
+  const spki = crypto.createHash("sha256").update(x509.publicKey.export({ type: "spki", format: "der" })).digest("base64");
+  return JSON.stringify({ schema: 1, source: "genere", sha256: x509.fingerprint256, sha256Hex: x509.fingerprint256.replaceAll(":", "").toLowerCase(), spkiSha256Base64: spki, ...remplacements });
+}
+
+/** Gardes du HTTPS épinglé (R105b) : mode par défaut, environnement de la pile, épinglage de Node et du navigateur. */
+async function verifierGardesHttps(verifier, refuse) {
+  await verifier("HTTPS épinglé par défaut, « --http » pour le mode HTTP explicite de la 1.0.5", () => {
+    if (analyserArguments([]).schema !== "https") throw new Error("le défaut n'est pas HTTPS");
+    if (analyserArguments(["--faux", "--scenarios", "smoke"]).schema !== "https") throw new Error("HTTPS perdu avec d'autres options");
+    if (analyserArguments(["--http"]).schema !== "http") throw new Error("--http sans effet");
+  });
+  await refuse("schéma inconnu refusé", () => preparerPlan({ mode: "faux", schema: "ftp", prefixe: "it11-e2e", tag: "essai" }), "schéma inconnu");
+
+  const planEssai = (schema) => ({ schema, mode: "faux", id: "essai", projet: "it11-e2e-essai", imageApp: "it11-e2e/app:essai", imageOpencode: "it11-e2e/opencode:essai", portCockpit: 17801, portControle: 17802, portFournisseur: 17803, dossier: path.join(DOSSIER_BANC, "it11-e2e-essai") });
+  const valeursEssai = { jeton: "essai", motDePasse: "essai", jetonControle: "essai", contexte: "contexte", maintenant: new Date("2026-09-19T10:00:00.000Z") };
+  await verifier("fichier d'environnement : HTTPS sans date de confirmation, « --http » daté au format strict", () => {
+    const enHttps = lignesEnvironnement(planEssai("https"), valeursEssai);
+    if (!enHttps.includes("COCKPIT_LOCAL_SCHEME=https") || !enHttps.includes("COCKPIT_LOCAL_HTTP_CONFIRMED=")) throw new Error(`HTTPS : ${enHttps.filter((l) => l.startsWith("COCKPIT_LOCAL")).join(", ")}`);
+    const enHttp = lignesEnvironnement(planEssai("http"), valeursEssai);
+    if (!enHttp.includes("COCKPIT_LOCAL_SCHEME=http") || !enHttp.includes("COCKPIT_LOCAL_HTTP_CONFIRMED=2026-09-19T10:00:00Z")) throw new Error(`HTTP : ${enHttp.filter((l) => l.startsWith("COCKPIT_LOCAL")).join(", ")}`);
+  });
+  await verifier("variables du fichier du banc retirées de l'environnement de docker (le shell ne l'emporte jamais)", () => {
+    const cles = lignesEnvironnement(planEssai("https"), valeursEssai).map((ligne) => ligne.slice(0, ligne.indexOf("=")));
+    const shell = Object.fromEntries([...cles, "PATH"].map((cle) => [cle, "valeur-du-shell"]));
+    const env = environnementDocker(shell);
+    const restees = cles.filter((cle) => cle in env);
+    if (restees.length > 0) throw new Error(`restées : ${restees.join(", ")}`);
+    if (env.PATH !== "valeur-du-shell" || env.MSYS_NO_PATHCONV !== "1") throw new Error("PATH ou MSYS_NO_PATHCONV perdus");
+  });
+  await verifier("lectures du volume TLS limitées aux fichiers publics", () => {
+    for (const sous of lecturesTlsPubliques()) {
+      const chemin = sous.at(-1);
+      if (sous[0] !== "exec" || !chemin.startsWith("/tls/public/") || /private|\.key$/i.test(chemin)) throw new Error(`lecture refusée : ${sous.join(" ")}`);
+    }
+  });
+
+  await refuse("HTTPS sans épinglage refusé", () => {
+    try {
+      creerTransport("https://127.0.0.1:17801");
+    } catch (err) {
+      refuser(err.message);
+    }
+  }, "jamais la vérification TLS");
+  await refuse("HTTPS avec un épinglage incomplet refusé", () => {
+    try {
+      creerTransport("https://127.0.0.1:17801", { certificat: CERTIFICAT_ESSAI, sha256: "AB", spki: "" });
+    } catch (err) {
+      refuser(err.message);
+    }
+  }, "épinglage complet");
+  await refuse("chemin hors du cockpit refusé", async () => {
+    try {
+      await creerTransport("http://127.0.0.1:17801")("//autre.exemple/x");
+    } catch (err) {
+      refuser(err.message);
+    }
+  }, "chemin du cockpit refusé");
+
+  const x509 = new crypto.X509Certificate(CERTIFICAT_ESSAI);
+  const maintenant = new Date("2026-09-19T12:00:00.000Z");
+  await verifier("certificat public cohérent : épinglage rendu (empreinte, clé publique)", () => {
+    const epinglage = verifierCertificatPublic(CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI), maintenant);
+    if (epinglage.sha256 !== x509.fingerprint256) throw new Error("empreinte changée");
+    if (epinglage.spki !== JSON.parse(jsonEssai(CERTIFICAT_ESSAI)).spkiSha256Base64) throw new Error("clé publique changée");
+    if (/PRIVATE/.test(epinglage.certificat)) throw new Error("clé dans l'épinglage");
+  });
+  const refusCertificat = async (nom, pem, json, extrait, instant = maintenant) =>
+    await refuse(nom, () => {
+      try {
+        verifierCertificatPublic(pem, json, instant);
+      } catch (err) {
+        refuser(err.message);
+      }
+    }, extrait);
+  await refusCertificat("certificat public : empreinte du JSON différente refusée", CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI, { sha256: `00${x509.fingerprint256.slice(2)}` }), "empreinte");
+  await refusCertificat("certificat public : clé publique du JSON différente refusée", CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI, { spkiSha256Base64: `A${"B".repeat(42)}=` }), "clé publique");
+  // La garde refuse toute mention « PRIVATE KEY » (en-tête PEM compris) : la mention seule suffit à l'essai, sans
+  // écrire un en-tête de clé dans le dépôt.
+  await refusCertificat("certificat public : clé privée dans les fichiers publics refusée", CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI, { note: "PRIVATE KEY" }), "clé privée");
+  await refusCertificat("certificat public : mention de clé privée dans le certificat refusée", `${CERTIFICAT_ESSAI}PRIVATE KEY\n`, jsonEssai(CERTIFICAT_ESSAI), "clé privée");
+  await refusCertificat("certificat public : deux certificats refusés", `${CERTIFICAT_ESSAI}${CERTIFICAT_ESSAI}`, jsonEssai(CERTIFICAT_ESSAI), "exactement un");
+  await refusCertificat("certificat public : certificat expiré refusé", CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI), "expiré", new Date("2047-01-01T00:00:00.000Z"));
+
+  await verifier("poignée de main : empreinte du volume acceptée, autre empreinte et autre adresse refusées", () => {
+    const epinglage = verifierCertificatPublic(CERTIFICAT_ESSAI, jsonEssai(CERTIFICAT_ESSAI), maintenant);
+    const pair = x509.toLegacyObject();
+    if (controlerPair("127.0.0.1", pair, epinglage) !== undefined) throw new Error("certificat épinglé refusé");
+    const autre = controlerPair("127.0.0.1", pair, { ...epinglage, sha256: `00${epinglage.sha256.slice(2)}` });
+    if (autre?.code !== CODE_EMPREINTE) throw new Error(`autre empreinte : ${autre?.message ?? "acceptée"}`);
+    const autreSpki = controlerPair("127.0.0.1", pair, { ...epinglage, spki: `A${"B".repeat(42)}=` });
+    if (autreSpki?.code !== CODE_EMPREINTE) throw new Error(`autre clé publique : ${autreSpki?.message ?? "acceptée"}`);
+    if (controlerPair("10.0.0.1", pair, epinglage) === undefined) throw new Error("adresse non couverte acceptée");
+  });
+
+  await verifier("navigateur : seule la clé publique épinglée passe, jamais --ignore-certificate-errors", () => {
+    const spki = JSON.parse(jsonEssai(CERTIFICAT_ESSAI)).spkiSha256Base64;
+    const avec = argumentsNavigateur("profil", { spkiEpingle: spki });
+    const ignores = avec.filter((arg) => arg.startsWith("--ignore-certificate-errors"));
+    if (ignores.length !== 1 || ignores[0] !== `--ignore-certificate-errors-spki-list=${spki}`) throw new Error(`arguments : ${ignores.join(" ") || "aucun"}`);
+    if (!avec.includes("--user-data-dir=profil")) throw new Error("--user-data-dir absent (Chromium ignorerait la liste)");
+    if (argumentsNavigateur("profil").some((arg) => arg.startsWith("--ignore-certificate-errors"))) throw new Error("exception de certificat sans épinglage");
+    let refus = null;
+    try {
+      argumentsNavigateur("profil", { spkiEpingle: "*" });
+    } catch (err) {
+      refus = err;
+    }
+    if (!refus) throw new Error("condensé mal formé accepté");
+  });
+}
+
 // --- Arguments --------------------------------------------------------------------------------
 
 export function analyserArguments(argv) {
-  const options = { mode: "faux", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null };
+  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const suivant = () => {
@@ -982,6 +1247,8 @@ export function analyserArguments(argv) {
     if (arg === "--faux") options.mode = "faux";
     else if (arg === "--reel-hors-ligne") options.mode = "reel-hors-ligne";
     else if (arg === "--reel") options.mode = "reel";
+    // Mode HTTP explicite de la 1.0.5 ; sans l'option, HTTPS épinglé.
+    else if (arg === "--http") options.schema = "http";
     else if (arg === "--scenarios") options.motif = suivant();
     else if (arg === "--project-prefix") options.prefixe = suivant();
     else if (arg === "--image-tag") options.tag = suivant();
