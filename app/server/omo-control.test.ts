@@ -17,11 +17,15 @@ import type { OmoControlPort } from "./omo-contracts.ts";
 import { OMO_STOP_CAUSES } from "./omo-contracts.ts";
 import {
   analyserProjetsPrepares,
+  analyserSuspension,
   createOmoControl,
+  ecrireSuspension,
   OMO_AUTH_FOURNISSEUR,
   OMO_AUTH_SOURCE_MAX_OCTETS,
   OMO_BATTEMENT_MS,
+  OMO_FICHIER_SUSPENSION,
   OMO_PROJETS_MAX_OCTETS,
+  OMO_SUSPENSION_MAX_OCTETS,
   OmoAuthPublicationError,
   OmoControlRefusError,
   type OmoControlClock,
@@ -144,8 +148,10 @@ function dossiers(t: TestContext) {
     authDir: path.join(racine, "omo-auth"),
     dataDir: path.join(racine, "oc-data"),
     projectsFile: path.join(racine, "hote", "omo-projets.json"),
+    /** Dossier de données du cockpit (COCKPIT_DATA_DIR), hors des volumes de la salle : la suspension y est gardée. */
+    donnees: path.join(racine, "donnees-cockpit"),
   };
-  for (const dossier of [d.stateDir, d.dataDir, path.dirname(d.projectsFile)]) fs.mkdirSync(dossier);
+  for (const dossier of [d.stateDir, d.dataDir, path.dirname(d.projectsFile), d.donnees]) fs.mkdirSync(dossier);
   return d;
 }
 
@@ -162,25 +168,32 @@ function monter(t: TestContext, options: { actif?: () => boolean; projets?: bool
   const horloge = fausseHorloge(options.depart);
   const journal = espion();
   let actif = true;
-  const ctl = createOmoControl({
-    controlDir: d.controlDir,
-    stateDir: d.stateDir,
-    authDir: d.authDir,
-    opencodeDataDir: d.dataDir,
-    projectsFile: fichierProjets(options.projets, d),
-    clock: horloge.clock,
-    actif: options.actif ?? (() => actif),
-    log: journal.log,
-  });
-  t.after(async () => {
-    ctl.stopHeartbeat();
-    await ctl.settled();
-  });
+  /** Un service sur ces dossiers ; appelé de nouveau, c'est le cockpit redémarré (mêmes volumes, même dossier de données). */
+  const creer = () => {
+    const service = createOmoControl({
+      controlDir: d.controlDir,
+      stateDir: d.stateDir,
+      authDir: d.authDir,
+      opencodeDataDir: d.dataDir,
+      cockpitDataDir: d.donnees,
+      projectsFile: fichierProjets(options.projets, d),
+      clock: horloge.clock,
+      actif: options.actif ?? (() => actif),
+      log: journal.log,
+    });
+    t.after(async () => {
+      service.stopHeartbeat();
+      await service.settled();
+    });
+    return service;
+  };
+  const ctl = creer();
   return {
     d,
     horloge,
     journal,
     ctl,
+    redemarrer: creer,
     couper: () => void (actif = false),
     rallumer: () => void (actif = true),
   };
@@ -588,6 +601,91 @@ describe("omo-control : suspension (D-2b-29)", () => {
     assert.equal(ctl.suspended(), false);
     await ctl.writePrecheckOk(FIXTURE.autreStartId, []);
     assert.equal(salle.lirePrecheckOk(d.controlDir)?.startId, FIXTURE.autreStartId);
+  });
+
+  it("gardée d'un redémarrage du cockpit à l'autre : relue par un nouveau service, levée seulement par resume (troisième service compris)", async (t) => {
+    const { d, journal, ctl, redemarrer } = monter(t);
+    ctl.suspend("activite-hors-demande");
+    await ctl.settled();
+    const fichier = path.join(d.donnees, OMO_FICHIER_SUSPENSION);
+    assert.deepEqual(analyserSuspension(lire(fichier)), { raison: "activite-hors-demande", at: T0 });
+    // Hors des volumes de la salle : ni control-omo ni omo-auth n'en portent la trace.
+    assert.equal(fs.existsSync(path.join(d.controlDir, OMO_FICHIER_SUSPENSION)), false);
+
+    // Cockpit redémarré (même dossier de données) : toujours suspendue, aucun precheck-ok.
+    const apres = redemarrer();
+    assert.equal(apres.suspended(), true);
+    await assert.rejects(apres.writePrecheckOk(FIXTURE.startId, []), refus("salle-suspendue"));
+    assert.equal(fs.existsSync(controle(d, "precheck-ok")), false);
+    assert.ok(journal.lignes.some((l) => l.niveau === "warn" && l.message === "salle : suspendue (relue au démarrage)" && l.champs?.raison === "activite-hors-demande"));
+
+    // Réouverture confirmée d'une salle : levée, fichier retiré ; un troisième service ne la voit plus.
+    apres.resume();
+    await apres.settled();
+    assert.equal(apres.suspended(), false);
+    assert.equal(fs.existsSync(fichier), false);
+    const troisieme = redemarrer();
+    assert.equal(troisieme.suspended(), false);
+    await troisieme.writePrecheckOk(FIXTURE.autreStartId, []);
+    assert.equal(salle.lirePrecheckOk(d.controlDir)?.startId, FIXTURE.autreStartId);
+  });
+
+  it("fichier de suspension présent mais vide, illisible, trop gros, mal formé ou de raison inconnue : suspendue (fermé en cas de doute) ; absent : non", async (t) => {
+    const { d, journal, ctl, redemarrer } = monter(t);
+    assert.equal(ctl.suspended(), false, "absent");
+    const fichier = path.join(d.donnees, OMO_FICHIER_SUSPENSION);
+    const valide = ecrireSuspension("config-apparue", T0);
+    assert.deepEqual(analyserSuspension(valide), { raison: "config-apparue", at: T0 });
+    for (const [cas, contenu] of [
+      ["vide", ""],
+      ["pas du JSON", "{pas du json"],
+      ["tableau", "[]"],
+      ["version", valide.replace('"version":1', '"version":2')],
+      ["raison inconnue", valide.replace("config-apparue", "fantaisie")],
+      ["horodatage", valide.replace(String(T0), "-1")],
+      ["trop gros", `${valide.trimEnd()}${" ".repeat(OMO_SUSPENSION_MAX_OCTETS)}\n`],
+    ] as const) {
+      fs.writeFileSync(fichier, contenu);
+      assert.equal(redemarrer().suspended(), true, cas);
+    }
+    fs.rmSync(fichier);
+    fs.mkdirSync(fichier);
+    assert.equal(redemarrer().suspended(), true, "un dossier à la place du fichier");
+    assert.ok(journal.lignes.some((l) => l.niveau === "warn" && l.message === "salle : suspension illisible, tenue pour suspendue"));
+    // Levée par la réouverture confirmée, même quand le fichier était illisible : rien d'autre ne la lève.
+    fs.rmdirSync(fichier);
+    fs.writeFileSync(fichier, "{pas du json");
+    const illisible = redemarrer();
+    assert.equal(illisible.suspended(), true);
+    illisible.resume();
+    await illisible.settled();
+    assert.equal(fs.existsSync(fichier), false);
+    assert.equal(redemarrer().suspended(), false);
+  });
+
+  it("lien à la place du fichier de suspension : jamais suivi, suspendue ; retrait impossible : reste suspendue, dit au journal (Linux)", { skip: SAUT_POSIX }, async (t) => {
+    const { d, journal, redemarrer } = monter(t);
+    const fichier = path.join(d.donnees, OMO_FICHIER_SUSPENSION);
+    // Lien pendant : suivi, il vaudrait « absent », donc aucune suspension ; jamais suivi, il vaut « illisible », donc suspendue.
+    fs.symlinkSync(path.join(d.racine, "absent.json"), fichier);
+    assert.equal(redemarrer().suspended(), true, "lien");
+    fs.rmSync(fichier);
+
+    if (process.getuid?.() === 0) return t.skip("root passe outre les droits du dossier");
+    const ctl = redemarrer();
+    ctl.suspend("tentatives-429");
+    await ctl.settled();
+    fs.chmodSync(d.donnees, 0o555);
+    try {
+      ctl.resume();
+      await ctl.settled();
+      assert.equal(ctl.suspended(), true, "fichier resté : la salle reste suspendue");
+      await assert.rejects(ctl.writePrecheckOk(FIXTURE.startId, []), refus("salle-suspendue"));
+    } finally {
+      fs.chmodSync(d.donnees, 0o755);
+    }
+    assert.ok(journal.lignes.some((l) => l.niveau === "warn" && l.message === "salle : suspension non levée (fichier non retiré)" && l.champs?.code === "EACCES"));
+    assert.equal(redemarrer().suspended(), true);
   });
 });
 

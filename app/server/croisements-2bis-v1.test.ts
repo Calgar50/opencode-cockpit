@@ -202,6 +202,20 @@ describe("croisements 2bis V1 : opencode.jsonc (L15a) et le filet (L24), mêmes 
       assert.notEqual(actionPour(regles("read"), temoin), "deny", `read ${temoin}`);
     }
   });
+
+  it("grep refusé des deux côtés : règle d'opencode évaluée sur l'EXPRESSION cherchée (grep.ts 1.18.30) → deny ; filet → « recherche »", () => {
+    const permission = objet(OPENCODE.permission);
+    assert.equal(permission.grep, "deny");
+    // Même lecture qu'opencode : `grep: "deny"` vaut la règle { "*": "deny" }, que l'expression cherchée ne peut contourner.
+    const regle = typeof permission.grep === "string" ? { "*": permission.grep } : (objet(permission.grep) as Record<string, string>);
+    for (const expression of ["SECRET", "PASSWORD|SECRET|TOKEN", "BEGIN .* PRIVATE KEY", ".env", "x"]) {
+      assert.equal(actionPour(regle, expression), "deny", `opencode.jsonc : grep ${expression}`);
+      const contexte = { dossier: "/workspace/projet", sortiesOutils: null, reel: (c: string) => c, lireEtat: () => ({ etat: "absent" as const }) };
+      assert.equal(garde.decider("grep", { pattern: expression }, contexte)?.categorie, "recherche", `filet : grep ${expression}`);
+    }
+    // Le grep de l'extension (qui remplacerait l'outil natif) reste coupé : seul l'outil natif, refusé, porterait ce nom.
+    assert.ok(textes(OMO.disabled_tools).includes("grep"));
+  });
 });
 
 // --- 3. Chemins : script (L15b) = Dockerfile (L15a) = contrat (T3a) = validate.mjs = supervisor.sh --------------------------------
@@ -323,8 +337,9 @@ function monterControle(t: TestContext, maintenant: number, options: { projets?:
     dataDir: path.join(racine, "oc-data"),
     projectsFile: path.join(racine, "hote", "omo-projets.json"),
     donneesSalle: path.join(racine, "salle-donnees"),
+    donneesCockpit: path.join(racine, "donnees-cockpit"),
   };
-  for (const dossier of [d.stateDir, d.dataDir, path.dirname(d.projectsFile)]) fs.mkdirSync(dossier, { recursive: true });
+  for (const dossier of [d.stateDir, d.dataDir, path.dirname(d.projectsFile), d.donneesCockpit]) fs.mkdirSync(dossier, { recursive: true });
   if (options.projets) fs.writeFileSync(d.projectsFile, JSON.stringify(options.projets));
   const journal = espion();
   const ctl = createOmoControl({
@@ -332,6 +347,7 @@ function monterControle(t: TestContext, maintenant: number, options: { projets?:
     stateDir: d.stateDir,
     authDir: d.authDir,
     opencodeDataDir: d.dataDir,
+    cockpitDataDir: d.donneesCockpit,
     projectsFile: options.projets ? d.projectsFile : null,
     clock: horlogeFigee(maintenant),
     actif: options.actif ?? (() => true),

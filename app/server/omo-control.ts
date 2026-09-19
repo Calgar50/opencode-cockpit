@@ -7,8 +7,9 @@
 // Trois règles tiennent ce module :
 // 1. **Rien sans `actif()`** : `actif` (COCKPIT_OMO=on ET COCKPIT_AUTONOMY=on ET SALLE_OUVERTE, fourni par l'appelant ; ce module
 //    ne lit aucune variable d'environnement et n'importe pas wiring-11.ts) est relu à CHAQUE écriture, au moment où elle se fait.
-//    Faux : aucun fichier écrit, aucun dossier créé ; le battement en cours s'arrête et `auth.json` est retiré. La salle, elle, ne
-//    démarre ni ne tient sans battement frais (homme mort, G9).
+//    Faux : aucun fichier écrit, aucun dossier créé dans les volumes de la salle ; le battement en cours s'arrête et `auth.json`
+//    est retiré. La salle, elle, ne démarre ni ne tient sans battement frais (homme mort, G9). Seule la suspension (D-2b-29) est
+//    gardée hors de ces volumes, dans le dossier de données du cockpit : un redémarrage du cockpit ne la lève pas.
 // 2. **Fermé en cas de doute** : un fichier lu (état, authentification, projets) absent, illisible, lien, trop gros ou mal formé vaut
 //    « inconnu » ; un texte que son lecteur relirait « inconnu » est refusé à l'écriture (erreur dite et journalisée, jamais avalée).
 // 3. **Aucun secret journalisé** : le contenu d'`auth.json` ne sort jamais de `publishAuth`, ni au journal, ni dans une erreur
@@ -18,12 +19,12 @@
 // Aucun branchement ici : wiring-11.ts, main.ts et app-factory.ts appartiennent à T3b (V2). Horloge injectée (battement testé sans
 // attente réelle).
 import crypto from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./fsutil.ts";
 import type { Logger } from "./log.ts";
-import type { OmoControlPort } from "./omo-contracts.ts";
+import { OMO_DETECTION_CAUSES, type OmoControlPort } from "./omo-contracts.ts";
 import {
   analyserEtat,
   analyserObjet,
@@ -64,6 +65,15 @@ export const OMO_AUTH_SOURCE_MAX_OCTETS = OMO_CONTROL_MAX_OCTETS;
 /** `omo-projets.json` : même borne que le superviseur (`OMO_PROJETS_MAX_OCTETS` de supervisor-lib.mjs, égalité testée). */
 export const OMO_PROJETS_MAX_OCTETS = 1024 * 1024;
 
+/**
+ * Suspension de la salle (D-2b-29), `{version: 1, raison, at}`, dans le dossier de données du cockpit (`cockpitDataDir`), jamais
+ * dans un volume de la salle : écrite par `suspend`, retirée par `resume`, relue à la création du service.
+ */
+export const OMO_FICHIER_SUSPENSION = "omo-suspension.json";
+
+/** 4 Kio : le format tient en moins de 100 octets ; au-delà, le fichier est illisible, donc la salle suspendue. */
+export const OMO_SUSPENSION_MAX_OCTETS = 4096;
+
 /** Droits des fichiers de contrôle : root de la salle (sans DAC_OVERRIDE) les lit en « autres » ; le masque ne décide pas. */
 const MODE_CONTROLE = 0o644;
 
@@ -95,6 +105,11 @@ export interface OmoControlDeps {
   authDir: string;
   /** Dossier de données de l'instance principale (`COCKPIT_OC_DATA_DIR`, monté en lecture seule) : source d'`auth.json`. */
   opencodeDataDir: string;
+  /**
+   * Dossier de données du cockpit (`COCKPIT_DATA_DIR`), hors des volumes de la salle : la suspension y est gardée
+   * (`OMO_FICHIER_SUSPENSION`), pour qu'un redémarrage du cockpit, de Docker ou du poste ne la lève pas (D-2b-29).
+   */
+  cockpitDataDir: string;
   /**
    * `omo-projets.json` généré par install.ps1 (`COCKPIT_OMO_PROJECTS_FILE`), déposé dans le volume de contrôle sous le nom du
    * contrat : c'est la seule liste des projets préparés que la salle croit. Absent : rien n'est déposé.
@@ -184,6 +199,39 @@ async function lireBorne(chemin: string, max: number): Promise<Lecture> {
   }
 }
 
+/**
+ * `lireBorne`, synchrone : mêmes drapeaux et mêmes bornes. Pour la seule suspension, relue à la création du service, avant toute
+ * réponse de `suspended()` (qui ne peut pas attendre).
+ */
+function lireBorneSync(chemin: string, max: number): Lecture {
+  let fd: number;
+  try {
+    fd = openSync(chemin, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+  } catch (err) {
+    return { etat: codeErreur(err) === "ENOENT" ? "absent" : "illisible" };
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return { etat: "illisible" };
+    const tampon = Buffer.alloc(max + 1);
+    let lus = 0;
+    for (;;) {
+      const n = readSync(fd, tampon, lus, tampon.length - lus, null);
+      if (n === 0) break;
+      lus += n;
+      if (lus > max) return { etat: "trop-gros" };
+    }
+    return { etat: "ok", texte: tampon.subarray(0, lus).toString("utf8") };
+  } catch {
+    return { etat: "illisible" };
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // Descripteur déjà fermé : rien à retenir, la lecture a déjà sa réponse.
+    }
+  }
+}
+
 // --- Formats propres au cockpit ------------------------------------------------------------------------------------------------
 
 const estObjet = (valeur: unknown): valeur is Record<string, unknown> => typeof valeur === "object" && valeur !== null && !Array.isArray(valeur);
@@ -210,6 +258,27 @@ export function analyserProjetsPrepares(texte: string | null | undefined): OmoPr
     gitProteges.push({ chemin: entree.chemin, forme: entree.forme });
   }
   return { version: 1, genereLe: brut.genereLe, projets, gitProteges };
+}
+
+/** Suspension gardée sur le disque du cockpit. */
+export interface OmoSuspension {
+  raison: OmoDetectionCause;
+  at: number;
+}
+
+/** Texte de `omo-suspension.json` : JSON sur une ligne, saut de ligne final. */
+export function ecrireSuspension(raison: OmoDetectionCause, at: number): string {
+  return `${JSON.stringify({ version: 1, raison, at })}\n`;
+}
+
+/** `omo-suspension.json` relu : `null` si le texte est vide, trop gros, mal formé ou d'une raison inconnue (l'appelant suspend). */
+export function analyserSuspension(texte: string | null | undefined): OmoSuspension | null {
+  const brut = analyserObjet(texte, OMO_SUSPENSION_MAX_OCTETS);
+  if (!brut || brut.version !== 1) return null;
+  const raison = OMO_DETECTION_CAUSES.find((cause) => cause === brut.raison);
+  const at = brut.at;
+  if (raison === undefined || typeof at !== "number" || !Number.isSafeInteger(at) || at < 0) return null;
+  return { raison, at };
 }
 
 /** Raison pour laquelle `auth.json` n'est pas publié (journal : jamais un contenu). */
@@ -294,6 +363,7 @@ export function createOmoControl(deps: OmoControlDeps): OmoControlService {
     etat: path.join(deps.stateDir, OMO_FICHIER_ETAT),
     authSource: path.join(deps.opencodeDataDir, OMO_AUTH_FICHIER),
     auth: path.join(deps.authDir, OMO_AUTH_FICHIER),
+    suspension: path.join(deps.cockpitDataDir, OMO_FICHIER_SUSPENSION),
   };
 
   /** Conditions relues à chaque écriture ; une exception de l'appelant vaut « faux » (fermé en cas de doute). */
@@ -319,7 +389,23 @@ export function createOmoControl(deps: OmoControlDeps): OmoControlService {
   let minuterie: unknown = null;
   let echecBattement: string | null = null;
 
-  let suspension: { raison: OmoDetectionCause; at: number } | null = null;
+  /**
+   * Suspension laissée par le cockpit d'avant (D-2b-29), relue une fois ici. Présente mais illisible, lien, trop grosse ou mal
+   * formée : la salle est suspendue (fermé en cas de doute), jusqu'à la réouverture confirmée d'une salle (`resume`).
+   */
+  const relireSuspension = (): { raison: OmoDetectionCause | "inconnue"; at: number } | null => {
+    const lecture = lireBorneSync(fichier.suspension, OMO_SUSPENSION_MAX_OCTETS);
+    if (lecture.etat === "absent") return null;
+    const relue = lecture.etat === "ok" ? analyserSuspension(lecture.texte) : null;
+    if (relue !== null) {
+      log.warn("salle : suspendue (relue au démarrage)", { raison: relue.raison });
+      return relue;
+    }
+    log.warn("salle : suspension illisible, tenue pour suspendue", { etat: lecture.etat === "ok" ? "invalide" : lecture.etat });
+    return { raison: "inconnue", at: clock.now() };
+  };
+
+  let suspension = relireSuspension();
 
   const arreterMinuterie = () => {
     if (minuterie === null) return;
@@ -500,16 +586,34 @@ export function createOmoControl(deps: OmoControlDeps): OmoControlService {
     readState,
 
     suspend(raison: OmoDetectionCause) {
-      suspension = { raison, at: clock.now() };
+      const at = clock.now();
+      suspension = { raison, at };
       log.warn("salle : suspendue", { raison });
+      // Gardée dans le dossier de données du cockpit, hors des volumes de la salle (la règle 1 ne la concerne pas) : un
+      // redémarrage du cockpit, de Docker ou du poste ne la lève pas. Un échec est dit : ce cockpit-ci reste suspendu.
+      enFile(() => writeFileAtomic(fichier.suspension, ecrireSuspension(raison, at))).catch((err: unknown) =>
+        log.warn("salle : suspension non gardée sur le disque", { code: codeErreur(err) }),
+      );
       // Un precheck-ok déjà écrit ne doit plus rien démarrer : retiré (retirer n'écrit rien, même salle coupée).
       enFile(() => retirer(fichier.precheck)).catch((err: unknown) => log.warn("salle : precheck-ok non retiré", { code: codeErreur(err) }));
     },
 
     resume() {
-      if (suspension === null) return;
+      const levee = suspension;
+      if (levee === null) return;
       suspension = null;
-      log.info("salle : suspension levée");
+      // Dans la file : après l'écriture d'une suspension demandée juste avant, et avant tout precheck-ok demandé ensuite.
+      enFile(async () => {
+        try {
+          await retirer(fichier.suspension);
+        } catch (err) {
+          // Fichier resté : il reviendrait au prochain démarrage. La salle reste suspendue, et c'est dit.
+          suspension ??= levee;
+          log.warn("salle : suspension non levée (fichier non retiré)", { code: codeErreur(err) });
+          return;
+        }
+        log.info("salle : suspension levée");
+      }).catch((err: unknown) => log.warn("salle : levée de la suspension en échec", { code: codeErreur(err) }));
     },
 
     suspended: () => suspension !== null,

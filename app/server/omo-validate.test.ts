@@ -332,11 +332,17 @@ describe("validate-core : opencode.jsonc de la salle", () => {
     refuse(verifierOpencode(e), "small_model hors github-copilot/*");
   });
 
-  it("permissions : webfetch, websearch et external_directory refusés ; edit, bash et task demandés", () => {
+  it("permissions : webfetch, websearch, external_directory et grep refusés ; edit, bash et task demandés", () => {
+    // grep : règles par motif d'autrefois (évaluées sur l'expression cherchée, jamais sur un fichier), « allow » ou absent → refusés.
+    const reglesGrep = { "*": "allow", ".env*": "deny", "*.pem": "deny", "*.env.example": "allow" };
     for (const [cle, valeur] of [
       ["webfetch", "allow"],
       ["websearch", "ask"],
       ["external_directory", undefined],
+      ["grep", "allow"],
+      ["grep", "ask"],
+      ["grep", undefined],
+      ["grep", reglesGrep],
       ["bash", "allow"],
       ["task", "allow"],
     ] as const) {
@@ -368,8 +374,8 @@ describe("validate-core : opencode.jsonc de la salle", () => {
     refuse(verifierOpencode(d), "permission.read : dernière règle attendue");
     refuse(verifierOpencode(d), "permission.read : .env.example devrait rester à allow");
     const e = opencode();
-    objet(e.permission).grep = "allow";
-    refuse(verifierOpencode(e), "permission.grep : règles par motif attendues");
+    objet(e.permission).glob = "allow";
+    refuse(verifierOpencode(e), "permission.glob : règles par motif attendues");
   });
 
   it("la dernière règle qui correspond l'emporte (portage d'opencode)", () => {

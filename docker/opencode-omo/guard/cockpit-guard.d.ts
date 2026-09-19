@@ -14,7 +14,7 @@ export interface EtatGarde {
 
 export type LectureEtatGarde = { etat: "absent" } | { etat: "valide"; garde: EtatGarde } | { etat: "invalide"; raison: string };
 
-export type CategorieRefus = "cle" | "hors-projet" | "reseau" | "delegation" | "etat-illisible" | "doute";
+export type CategorieRefus = "cle" | "hors-projet" | "reseau" | "recherche" | "delegation" | "etat-illisible" | "doute";
 
 export interface Refus {
   categorie: CategorieRefus;
@@ -73,6 +73,7 @@ export declare const ETAT_GARDE_MAX_OCTETS: number;
 export declare const OUTILS_DELEGATION: readonly OutilDelegation[];
 export declare const OUTILS_RESEAU: readonly string[];
 export declare const PREFIXES_RESEAU: readonly string[];
+export declare const OUTILS_RECHERCHE: readonly string[];
 export declare const OUTILS_ECRITURE: readonly string[];
 export declare const CLES_CHEMIN: readonly string[];
 export declare const CLES_MOTIF: readonly string[];

@@ -6,10 +6,14 @@
 //
 // Ce qu'il refuse :
 // - lecture et écriture des fichiers de clés et des `.env*` (sauf `.env.example`), pour tout outil qui porte un chemin (read,
-//   write, edit, apply_patch, grep, glob, list, lsp… reconnus par le NOM de l'argument, pour couvrir aussi les outils d'une
-//   extension), y compris quand un lien du projet y mène, et quand le motif d'un grep ou d'un glob ne vise que de tels fichiers ;
+//   write, edit, apply_patch, glob, list, lsp… reconnus par le NOM de l'argument, pour couvrir aussi les outils d'une
+//   extension), y compris quand un lien du projet y mène, et quand le motif d'un glob ou d'un `include` ne vise que de tels
+//   fichiers ;
 // - tout chemin hors du projet ouvert (décision M3 du 19/09 : `external_directory`, que l'extension remet à `allow`), sauf la
-//   lecture des sorties longues qu'opencode range dans son dossier `tool-output` ;
+//   lecture des sorties longues qu'opencode range dans son dossier `tool-output` ; un chemin absolu qui porte « . » ou « .. », un
+//   lien pendant ou un chemin réel introuvable valent « doute » (refusés) ;
+// - `grep`, en toutes circonstances : opencode 1.18.30 n'applique ses règles qu'à l'expression cherchée, jamais aux fichiers lus,
+//   et ripgrep lit tout fichier que git n'ignore pas (`.env` et clés compris) ; refusé aussi par `opencode.jsonc` ;
 // - `webfetch`, `websearch` et les outils des MCP réseau de la 4.19.4 (décision M3 : l'extension les remet à `allow`) ;
 // - `task` et `call_omo_agent` quand l'état de garde les bloque (plafond de délégations tenu par le cockpit).
 //
@@ -47,13 +51,20 @@ export const OUTILS_RESEAU = Object.freeze(["webfetch", "websearch"]);
 /** Outils des MCP réseau de la 4.19.4 (`websearch`, `context7`, `grep_app`), nommés « <serveur>_<outil> » par opencode. */
 export const PREFIXES_RESEAU = Object.freeze(["websearch_", "context7_", "grep_app_"]);
 
+/**
+ * Recherche dans le CONTENU des fichiers : toujours refusée dans la salle. grep.ts d'opencode 1.18.30 ne soumet aux règles que
+ * l'expression cherchée (`patterns: [params.pattern]`), et ripgrep (`--hidden`, sans `--no-ignore`) lit tout fichier que git
+ * n'ignore pas : un `.env` commité, ou tout `.env` d'un projet sans `.git`, partirait dans la conversation.
+ */
+export const OUTILS_RECHERCHE = Object.freeze(["grep"]);
+
 /** Outils qui écrivent : seuls les autres peuvent lire les sorties longues rangées par opencode hors du projet. */
 export const OUTILS_ECRITURE = Object.freeze(["write", "edit", "apply_patch", "patch", "multiedit", "hashline_edit"]);
 
-/** Noms d'arguments qui portent un chemin, casse ignorée (read, write, edit, lsp : filePath ; grep, glob, list : path ; bash : workdir). */
+/** Noms d'arguments qui portent un chemin, casse ignorée (read, write, edit, lsp : filePath ; glob, list : path ; bash : workdir). */
 export const CLES_CHEMIN = Object.freeze(["filepath", "file_path", "path", "paths", "file", "files", "workdir", "cwd", "directory", "dir"]);
 
-/** Noms d'arguments qui portent un motif de fichiers (grep : include) ; `pattern` n'en est un que pour l'outil glob. */
+/** Noms d'arguments qui portent un motif de fichiers (include, globs d'une extension) ; `pattern` n'en est un que pour l'outil glob. */
 export const CLES_MOTIF = Object.freeze(["include", "glob", "globs"]);
 
 /** Noms d'arguments qui portent un correctif (apply_patch : patchText). */
@@ -354,19 +365,35 @@ export function lireEtatGarde(chemin = CHEMIN_ETAT_GARDE) {
 
 // --- Chemins réels et dossiers --------------------------------------------------------------------------------------------------
 
+/** L'entrée existe-t-elle, sans suivre de lien au dernier composant ? `true`, `false` (absente), `null` si on ne peut le dire. */
+function existeSansSuivre(chemin) {
+  try {
+    fs.lstatSync(chemin);
+    return true;
+  } catch (err) {
+    return err?.code === "ENOENT" || err?.code === "ENOTDIR" ? false : null;
+  }
+}
+
 /**
  * Chemin réel d'un chemin absolu, liens résolus : le plus long préfixe existant passe par `realpath`, la suite (fichier à créer) y
- * est recollée. `null` si le chemin ne peut pas être résolu (boucle de liens, droits) : doute.
+ * est recollée. `null` si le chemin ne peut pas être résolu (boucle de liens, droits, lien pendant) : doute.
+ *
+ * `realpath` de la libc (`fs.realpathSync.native`), jamais `fs.realpathSync` : la version JS normalise la cible d'un lien
+ * (« a/../x ») avant de suivre « a », là où le système suit le lien puis remonte ; elle croirait lire un fichier du projet.
+ * Une entrée qui existe sans pouvoir être résolue est un lien PENDANT (sur le dernier composant ou plus haut) : écrire au travers
+ * créerait le fichier au bout du lien, peut-être hors du projet. On ne remonte donc au parent que si l'entrée n'existe pas.
  */
 export function cheminReel(chemin) {
   let courant = chemin;
   const suite = [];
   for (let i = 0; i < 256; i += 1) {
     try {
-      const reel = fs.realpathSync(courant);
+      const reel = fs.realpathSync.native(courant);
       return suite.length === 0 ? reel : posix.join(reel, ...suite.toReversed());
     } catch (err) {
       if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") return null;
+      if (existeSansSuivre(courant) !== false) return null;
       const parent = posix.dirname(courant);
       if (parent === courant) return null;
       suite.push(posix.basename(courant));
@@ -395,6 +422,8 @@ export const MESSAGES_FILET = Object.freeze({
   delegation: "Filet du cockpit : délégations suspendues par le cockpit pour cette demande ({outil}). Continuez sans déléguer.",
   "etat-illisible": "Filet du cockpit : état de garde illisible, délégation refusée par prudence ({outil}). Continuez sans déléguer.",
   doute: "Filet du cockpit : arguments impossibles à vérifier, outil refusé par prudence ({outil}).",
+  recherche:
+    "Filet du cockpit : recherche dans le contenu des fichiers refusée dans la salle ({outil}), car elle lirait aussi les fichiers de clés et les .env. Lisez les fichiers utiles un par un.",
 });
 
 const NOM_OUTIL_SUR = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -455,15 +484,23 @@ function examinerDelegation(outil, lecture) {
   return "etat-illisible";
 }
 
+/** Un segment « . » ou « .. » dans le texte même du chemin. */
+const aDesPoints = (chemin) => chemin.split("/").some((segment) => segment === "." || segment === "..");
+
 /**
- * Un chemin d'argument : `null` (dans le projet ouvert, ou sortie longue lue), « cle », « hors-projet » ou « doute ». Le chemin
- * est résolu comme opencode le fait (relatif au projet), puis son chemin réel est vérifié aussi : un lien du projet qui mène à une
- * clé, ou hors du projet, est refusé comme s'il y menait directement.
+ * Un chemin d'argument : `null` (dans le projet ouvert, ou sortie longue lue), « cle », « hors-projet » ou « doute ». Un chemin
+ * RELATIF est normalisé contre le projet, comme opencode 1.18.30 le fait lui-même (path.resolve de read.ts, path.join de write.ts et
+ * edit.ts) avant de le passer au système. Un chemin ABSOLU, lui, est passé tel quel : le système suit chaque lien AVANT le « .. »
+ * qui le suit, alors que la normalisation retire le « .. » d'abord (« <projet>/lien/../x » peut mener hors du projet sans que le
+ * texte le montre). Un chemin absolu qui porte « . » ou « .. » vaut donc « doute », sauf clé ou sortie évidente du projet. Le
+ * chemin réel est vérifié ensuite : un lien du projet qui mène à une clé, ou hors du projet, est refusé comme s'il y menait
+ * directement.
  */
 function examinerChemin(chemin, dossier, zones, reel) {
   if (chemin.length > 4096 || chemin.includes("\0") || dossier === null) return "doute";
   const lexical = posix.resolve(dossier, chemin);
   if (estCheminCle(lexical)) return "cle";
+  if (posix.isAbsolute(chemin) && aDesPoints(chemin)) return zones.some((zone) => estDans(lexical, zone)) ? "doute" : "hors-projet";
   const reelDuChemin = reel(lexical);
   if (reelDuChemin !== null && estCheminCle(reelDuChemin)) return "cle";
   const dedans = zones.some((zone) => {
@@ -486,6 +523,7 @@ const PRIORITE_CHEMINS = Object.freeze(["cle", "hors-projet", "doute"]);
 export function decider(outil, args, contexte) {
   const nom = typeof outil === "string" ? outil : "";
   if (OUTILS_RESEAU.includes(nom) || PREFIXES_RESEAU.some((prefixe) => nom.startsWith(prefixe))) return refus("reseau", nom);
+  if (OUTILS_RECHERCHE.includes(nom)) return refus("recherche", nom);
   if (OUTILS_DELEGATION.includes(nom)) {
     const categorie = examinerDelegation(nom, contexte.lireEtat());
     if (categorie !== null) return refus(categorie, nom);

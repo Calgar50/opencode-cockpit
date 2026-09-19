@@ -43,8 +43,11 @@
   "small_model": "github-copilot/gpt-5.4-mini",
 
   // Droits de l'instance. La DERNIÈRE règle qui correspond l'emporte : « * » d'abord, puis les refus, puis .env.example rendu
-  // à l'action de base (jamais refusé). Fichiers de clés et .env* refusés en lecture, modification, recherche et liste, avec
-  // les motifs du cockpit et les extensions P03, en minuscules et en majuscules (opencode respecte la casse sous Linux).
+  // à l'action de base (jamais refusé). Fichiers de clés et .env* refusés en lecture, modification et liste, avec les motifs
+  // du cockpit et les extensions P03, en minuscules et en majuscules (opencode respecte la casse sous Linux). Pour glob, la
+  // règle porte sur le MOTIF demandé, pas sur les fichiers trouvés (noms seuls, sans contenu). grep refusé en entier : ses
+  // règles ne voient que l'expression cherchée, et ripgrep lirait tout fichier que git n'ignore pas, .env et clés compris ;
+  // l'IA garde rg par une commande, soumise au portillon.
   // webfetch, websearch et external_directory refusés explicitement : l'extension les remet à « allow » si la clé manque
   // (audit L20). edit, bash et task demandés : chaque action concrète passe par le portillon du cockpit (décision M3).
   "permission": {
@@ -144,54 +147,7 @@
       "*.TFVARS": "deny",
       "*.env.example": "ask"
     },
-    "grep": {
-      "*": "allow",
-      "*.env": "deny",
-      "*.env.*": "deny",
-      ".env*": "deny",
-      "*/.env*": "deny",
-      "*.pfx": "deny",
-      "*.PFX": "deny",
-      "*.p12": "deny",
-      "*.P12": "deny",
-      "*.key": "deny",
-      "*.KEY": "deny",
-      "*.jks": "deny",
-      "*.JKS": "deny",
-      "*.keystore": "deny",
-      "*.KEYSTORE": "deny",
-      "*.kdbx": "deny",
-      "*.KDBX": "deny",
-      "*privkey*": "deny",
-      "*-key.pem": "deny",
-      "*_key.pem": "deny",
-      "*id_rsa*": "deny",
-      "*id_ecdsa*": "deny",
-      "*id_ed25519*": "deny",
-      "*kubeconfig*": "deny",
-      "*.kube/config": "deny",
-      "*.asc": "deny",
-      "*.ASC": "deny",
-      "*.cer": "deny",
-      "*.CER": "deny",
-      "*.crt": "deny",
-      "*.CRT": "deny",
-      "*.der": "deny",
-      "*.DER": "deny",
-      "*.gpg": "deny",
-      "*.GPG": "deny",
-      "*.ovpn": "deny",
-      "*.OVPN": "deny",
-      "*.p8": "deny",
-      "*.P8": "deny",
-      "*.pem": "deny",
-      "*.PEM": "deny",
-      "*.tfstate": "deny",
-      "*.TFSTATE": "deny",
-      "*.tfvars": "deny",
-      "*.TFVARS": "deny",
-      "*.env.example": "allow"
-    },
+    "grep": "deny",
     "glob": {
       "*": "allow",
       "*.env": "deny",

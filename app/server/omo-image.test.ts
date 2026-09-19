@@ -364,7 +364,8 @@ describe("image opencode-omo : manifest.sh", () => {
 describe("configurations de la salle : opencode.jsonc", () => {
   const config = lireJsonc(lire("opencode.jsonc")) as Json;
   const permission = objet(config.permission);
-  const FICHIERS = ["read", "edit", "grep", "glob", "list"] as const;
+  // grep n'en est pas : opencode 1.18.30 évalue sa règle sur l'expression cherchée, jamais sur un fichier (refusé en entier).
+  const FICHIERS = ["read", "edit", "glob", "list"] as const;
   const regles = (cle: string) => rulesFromConfig({ [cle]: permission[cle] });
 
   it("coupures d'instance : snapshot, lsp, formatter, partage, mise à jour (D-2b-36)", () => {
@@ -384,7 +385,16 @@ describe("configurations de la salle : opencode.jsonc", () => {
     }
   });
 
-  it(".env* et fichiers de clés refusés en lecture, modification, recherche et liste", () => {
+  it("grep refusé en entier : sa règle ne voit que l'EXPRESSION cherchée (grep.ts : patterns = [params.pattern]), jamais les fichiers lus", () => {
+    assert.equal(permission.grep, "deny");
+    const effectives = effectiveAgentRules(permission, {});
+    for (const expression of ["SECRET", "PASSWORD|SECRET|TOKEN", "BEGIN .* PRIVATE KEY", "x", ".env", "*"]) {
+      assert.equal(evaluate(regles("grep"), "grep", expression), "deny", `instance : grep ${expression}`);
+      assert.equal(evaluate(effectives, "grep", expression), "deny", `règles effectives : grep ${expression}`);
+    }
+  });
+
+  it(".env* et fichiers de clés refusés en lecture, modification et liste (glob : sur le motif demandé)", () => {
     const sondes = [
       ".env",
       ".env.local",

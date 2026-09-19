@@ -495,11 +495,19 @@ const OPENCODE_EPINGLE = Object.freeze({
  */
 const CHAMPS_MODELE_DECLARE = new Set(["name", "tool_call", "limit"]);
 
-/** Permissions portant sur des fichiers : action de base, puis refus des fichiers de clés et des `.env*`. */
-export const PERMISSIONS_FICHIERS = Object.freeze({ read: "allow", edit: "ask", grep: "allow", glob: "allow", list: "allow" });
+/**
+ * Permissions dont la règle porte sur un chemin (read, edit, list) ou sur un motif de fichiers (glob : la règle voit le MOTIF
+ * demandé, pas les fichiers trouvés, et l'outil ne rend que des noms) : action de base, puis refus des fichiers de clés et des
+ * `.env*`. Les sondes ci-dessous ne valent que pour elles.
+ */
+export const PERMISSIONS_FICHIERS = Object.freeze({ read: "allow", edit: "ask", glob: "allow", list: "allow" });
 
-/** Permissions à action unique. */
-const PERMISSIONS_SIMPLES = Object.freeze({ bash: "ask", task: "ask", webfetch: "deny", websearch: "deny", external_directory: "deny" });
+/**
+ * Permissions à action unique. `grep` refusé en entier : opencode 1.18.30 n'évalue sa règle que sur l'EXPRESSION cherchée
+ * (grep.ts : `patterns: [params.pattern]`), et ripgrep lit tout fichier que git n'ignore pas ; des règles par motif de fichiers
+ * n'y protégeraient ni les clés ni les `.env`.
+ */
+const PERMISSIONS_SIMPLES = Object.freeze({ grep: "deny", bash: "ask", task: "ask", webfetch: "deny", websearch: "deny", external_directory: "deny" });
 
 /**
  * Motifs refusés exigés dans chaque permission de fichiers (spéc. l.474) : `.env*` sous toutes ses formes, puis les motifs de
@@ -556,7 +564,7 @@ export const MOTIFS_REFUSES_EXIGES = Object.freeze([
 /** Motif remis à l'action de base, en DERNIER (la dernière règle qui correspond l'emporte) : `.env.example` jamais refusé. */
 export const MOTIF_EXEMPLE = "*.env.example";
 
-/** Chemins relatifs qui doivent être refusés pour chaque permission de fichiers. */
+/** Chemins relatifs qui doivent être refusés pour chaque permission de fichiers (PERMISSIONS_FICHIERS seulement). */
 export const SONDES_REFUSEES = Object.freeze([
   ".env",
   ".env.local",

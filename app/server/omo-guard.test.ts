@@ -18,7 +18,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import * as garde from "../../docker/opencode-omo/guard/cockpit-guard.js";
 import type { CategorieRefus, ContexteGarde, LectureEtatGarde } from "../../docker/opencode-omo/guard/cockpit-guard.js";
@@ -103,18 +103,36 @@ describe("filet : fichiers de clés et .env refusés, .env.example permis", () =
     assert.equal(categorie("lsp", { operation: "hover", filePath: "server.keystore", line: 1, character: 1 }), "cle");
   });
 
-  it("grep et glob : chemin de clé, ou motif qui ne vise que des clés → refus ; motif large ou ordinaire → permis", () => {
-    assert.equal(categorie("grep", { pattern: "SECRET", path: ".env" }), "cle");
+  it("glob et motifs de fichiers d'une extension (include, globs) : chemin de clé, ou motif qui ne vise que des clés → refus ; motif large ou ordinaire → permis", () => {
+    assert.equal(categorie("glob", { pattern: "*.ts", path: ".env" }), "cle");
     for (const motif of [".env*", ".env", "*.env", "**/.env.*", "*.pem", "*.{ts,env}", "id_*", "[.]env", "**/id_ed25519", "*.kube/config"]) {
-      assert.equal(categorie("grep", { pattern: "x", include: motif }), "cle", `include ${motif}`);
+      assert.equal(categorie("outil_extension", { pattern: "x", include: motif }), "cle", `include ${motif}`);
+      assert.equal(categorie("ast_grep_search", { pattern: "$A", globs: [motif] }), "cle", `globs ${motif}`);
       assert.equal(categorie("glob", { pattern: motif }), "cle", `glob ${motif}`);
     }
     for (const motif of ["*.ts", "*", "**/*", "*.*", "????", "src/**/*.{ts,tsx}", "*.env.example", "!.env", "*e*"]) {
-      assert.equal(categorie("grep", { pattern: "x", include: motif }), null, `include ${motif}`);
+      assert.equal(categorie("outil_extension", { pattern: "x", include: motif }), null, `include ${motif}`);
       assert.equal(categorie("glob", { pattern: motif }), null, `glob ${motif}`);
     }
-    // Le motif de grep est une expression régulière sur le CONTENU, jamais un nom de fichier.
-    assert.equal(categorie("grep", { pattern: ".env" }), null);
+    // Hors de l'outil glob, `pattern` est une expression sur le CONTENU, jamais un nom de fichier.
+    assert.equal(categorie("outil_extension", { pattern: ".env" }), null);
+  });
+
+  it("grep refusé en toutes circonstances (« recherche ») : opencode 1.18.30 n'applique ses règles qu'à l'expression cherchée, et ripgrep lit tout fichier que git n'ignore pas", () => {
+    // Sans chemin ni motif de fichiers, grep.ts cherche dans tout le projet, .env et fichiers de clés compris (rg --hidden).
+    const appels: unknown[] = [
+      { pattern: "PASSWORD|SECRET|TOKEN" },
+      { pattern: "BEGIN .* PRIVATE KEY" },
+      { pattern: "x", include: "*.ts" },
+      { pattern: "x", path: "src" },
+      { pattern: "SECRET", path: ".env" },
+      { pattern: "x", path: SORTIES },
+      {},
+      undefined,
+    ];
+    for (const args of appels) assert.equal(categorie("grep", args), "recherche", JSON.stringify(args));
+    assert.deepEqual([...garde.OUTILS_RECHERCHE], ["grep"]);
+    assert.deepEqual(garde.decider("grep", { pattern: "x" }, contexte()), { categorie: "recherche", message: message("recherche", "grep") });
   });
 
   it("motif illisible ou démesuré → refus (fermé en cas de doute)", () => {
@@ -122,7 +140,8 @@ describe("filet : fichiers de clés et .env refusés, .env.example permis", () =
     assert.equal(categorie("glob", { pattern: "x\\" }), "cle");
     assert.equal(categorie("glob", { pattern: "{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}" }), "cle");
     assert.equal(categorie("glob", { pattern: "a".repeat(5000) }), "cle");
-    assert.equal(categorie("grep", { pattern: "x", include: 42 }), "doute");
+    assert.equal(categorie("outil_extension", { pattern: "x", include: 42 }), "doute");
+    assert.equal(categorie("grep", { pattern: "x", include: 42 }), "recherche");
   });
 
   it("témoins des motifs : chaque témoin « clé » est une clé, aucun témoin ordinaire n'en est une", () => {
@@ -144,9 +163,9 @@ describe("filet : chemins hors du projet ouvert (décision M3, external_director
     assert.equal(categorie("read", { filePath: PROJET }), null);
   });
 
-  it("sorties longues d'opencode (tool-output) : lisibles par read et grep, jamais écrites", () => {
+  it("sorties longues d'opencode (tool-output) : lisibles par read et glob, jamais écrites", () => {
     assert.equal(categorie("read", { filePath: `${SORTIES}/tool_abc`, offset: 10 }), null);
-    assert.equal(categorie("grep", { pattern: "x", path: SORTIES }), null);
+    assert.equal(categorie("glob", { pattern: "tool_*", path: SORTIES }), null);
     assert.equal(categorie("write", { filePath: `${SORTIES}/tool_abc`, content: "x" }), "hors-projet");
     assert.equal(categorie("edit", { filePath: `${SORTIES}/tool_abc`, oldString: "a", newString: "b" }), "hors-projet");
   });
@@ -158,6 +177,30 @@ describe("filet : chemins hors du projet ouvert (décision M3, external_director
     // Un projet ouvert par un chemin qui est lui-même un lien : comparé à son chemin réel.
     const projetLie = { [PROJET]: "/donnees/projet", [`${PROJET}/a.ts`]: "/donnees/projet/a.ts" };
     assert.equal(categorie("read", { filePath: "a.ts" }, contexte({ liens: projetLie })), null);
+  });
+
+  it("chemin ABSOLU avec « . » ou « .. » → refus : opencode 1.18.30 le passe tel quel au système, qui résout un lien AVANT le « .. » qui le suit", () => {
+    // read.ts, write.ts et edit.ts ne normalisent qu'un chemin relatif. Même sans lien connu du filet, « <projet>/partage/../x »
+    // mène hors du projet dès que « partage » est un lien vers l'extérieur : le chemin lexical ne le montre pas.
+    const appels: [string, Record<string, unknown>][] = [
+      ["read", { filePath: `${PROJET}/partage/../src/code.ts` }],
+      ["write", { filePath: `${PROJET}/partage/../src/code.ts`, content: "x" }],
+      ["edit", { filePath: `${PROJET}/partage/../src/code.ts`, oldString: "a", newString: "b" }],
+      ["read", { filePath: `${PROJET}/racine/../etc/passwd` }],
+      ["read", { filePath: `${PROJET}/./src/code.ts` }],
+      ["read", { filePath: `${PROJET}/src/..` }],
+      ["bash", { command: "ls", workdir: `${PROJET}/partage/..` }],
+      ["glob", { pattern: "*.ts", path: `${PROJET}/partage/../src` }],
+      ["apply_patch", { patchText: `*** Begin Patch\n*** Add File: ${PROJET}/partage/../src/neuf.ts\n+x\n*** End Patch` }],
+    ];
+    for (const [outil, args] of appels) assert.equal(categorie(outil, args), "doute", `${outil} ${JSON.stringify(args)}`);
+    // Hors du projet même lu à la lettre : « hors-projet » ; vers une clé : « cle » (le dernier composant ne change pas).
+    assert.equal(categorie("read", { filePath: `${PROJET}/../autre/x.ts` }), "hors-projet");
+    assert.equal(categorie("read", { filePath: `${PROJET}/partage/../.env` }), "cle");
+    // Relatif : opencode le normalise lui-même (path.resolve, path.join) avant de le passer au système, comme le filet.
+    assert.equal(categorie("read", { filePath: "partage/../src/code.ts" }), null);
+    assert.equal(categorie("write", { filePath: "./src/code.ts", content: "x" }), null);
+    assert.equal(categorie("read", { filePath: `${PROJET}/src/code.ts` }), null);
   });
 
   it("chemin réel introuvable, projet inconnu, octet nul ou chemin démesuré → refus « doute »", () => {
@@ -503,6 +546,88 @@ describe("plugin : forme « v1 » d'opencode 1.18.30, crochet tool.execute.befor
   });
 });
 
+// --- Vrais liens (Linux) ----------------------------------------------------------------------------------------------------------
+
+const SAUT_LIENS = process.platform === "win32" ? "chemins POSIX du plugin et liens symboliques : joués sous Linux (conteneur, CI)" : false;
+
+/**
+ * Arborescence jetable : `projet` (projet ouvert) et `autre` (un autre projet préparé), liens RELATIFS comme ceux d'un dépôt ou
+ * d'un « ln -s » accepté par le portillon ; filet réel (chemins réels du disque, aucun état de garde).
+ */
+function monterLiens(t: TestContext) {
+  const racine = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "omo-l24-liens-"));
+  t.after(() => fs.rmSync(racine, { recursive: true, force: true }));
+  const projet = path.posix.join(racine, "projet");
+  const autre = path.posix.join(racine, "autre");
+  const poser = (chemin: string, contenu: string) => {
+    fs.mkdirSync(path.posix.dirname(chemin), { recursive: true });
+    fs.writeFileSync(chemin, contenu);
+  };
+  const lier = (cible: string, lien: string) => fs.symlinkSync(cible, path.posix.join(projet, lien));
+  poser(path.posix.join(projet, "src", "code.ts"), "PROJET\n");
+  poser(path.posix.join(autre, "src", "code.ts"), "AUTRE\n");
+  fs.mkdirSync(path.posix.join(autre, "sous"));
+  const g = garde.creerGarde({ dossier: projet, sortiesOutils: null, lireEtat: () => ({ etat: "absent" }) });
+  const cat = (outil: string, args: unknown): CategorieRefus | null => g.decider(outil, args)?.categorie ?? null;
+  return { projet, autre, poser, lier, cat };
+}
+
+describe("filet sur de vrais liens : chemin réel du système, fermé en cas de doute", { skip: SAUT_LIENS }, () => {
+  it("lien de dossier vers l'extérieur puis « .. » : read, write et edit de <projet>/partage/../src/code.ts refusés ; lien vers / aussi", (t) => {
+    const { projet, autre, lier, cat } = monterLiens(t);
+    lier("../autre/sous", "partage");
+    lier("/", "racine");
+    const detour = `${projet}/partage/../src/code.ts`;
+    // Le système suit le lien AVANT le « .. » : c'est le fichier de l'autre projet qui serait lu puis réécrit.
+    assert.equal(fs.readFileSync(detour, "utf8"), "AUTRE\n");
+    assert.equal(cat("read", { filePath: `${projet}/partage/x` }), "hors-projet", "témoin : le lien seul mène dehors");
+    assert.equal(cat("read", { filePath: detour }), "doute");
+    assert.equal(cat("write", { filePath: detour, content: "x" }), "doute");
+    assert.equal(cat("edit", { filePath: detour, oldString: "AUTRE", newString: "x" }), "doute");
+    assert.equal(cat("read", { filePath: `${projet}/racine/../etc/passwd` }), "doute");
+    assert.equal(fs.readFileSync(path.posix.join(autre, "src", "code.ts"), "utf8"), "AUTRE\n");
+    // Relatif : normalisé par opencode avant le système (path.join), donc le fichier du projet : permis.
+    assert.equal(cat("read", { filePath: "partage/../src/code.ts" }), null);
+  });
+
+  it("lien dont la cible passe par un autre lien puis « .. » : chemin réel de la libc (realpath native), jamais celui, lexical, de fs.realpathSync", (t) => {
+    const { projet, autre, poser, lier, cat } = monterLiens(t);
+    lier("../autre/sous", "a");
+    lier("a/../x", "lien");
+    poser(path.posix.join(autre, "x"), "AUTRE-X\n");
+    // Leurre : fs.realpathSync (JS) normalise « a/../x » avant de suivre « a », et croit lire <projet>/x.
+    poser(path.posix.join(projet, "x"), "PROJET-X\n");
+    assert.equal(fs.readFileSync(path.posix.join(projet, "lien"), "utf8"), "AUTRE-X\n", "le système lit le fichier de l'autre projet");
+    assert.equal(garde.cheminReel(path.posix.join(projet, "lien")), path.posix.join(autre, "x"));
+    assert.equal(cat("read", { filePath: "lien" }), "hors-projet");
+    assert.equal(cat("write", { filePath: `${projet}/lien`, content: "x" }), "hors-projet");
+  });
+
+  it("lien PENDANT du projet : write, edit en création et apply_patch « *** Add File: » refusés ; lien existant vers l'extérieur : « hors-projet »", (t) => {
+    const { projet, autre, poser, lier, cat } = monterLiens(t);
+    lier("../autre/.vscode/tasks.json", "lien-pendant");
+    lier("../autre/nouveau", "dossier-pendant");
+    poser(path.posix.join(autre, "existant.txt"), "AUTRE\n");
+    lier("../autre/existant.txt", "lien-existant");
+    // Preuve sur ce système : écrire par un lien pendant crée le fichier au bout du lien, hors du projet.
+    lier("../autre/preuve.txt", "preuve");
+    fs.writeFileSync(path.posix.join(projet, "preuve"), "x");
+    assert.equal(fs.existsSync(path.posix.join(autre, "preuve.txt")), true);
+
+    assert.equal(garde.cheminReel(path.posix.join(projet, "lien-pendant")), null);
+    assert.equal(garde.cheminReel(path.posix.join(projet, "dossier-pendant", "f.txt")), null);
+    assert.equal(cat("write", { filePath: `${projet}/lien-pendant`, content: "{}" }), "doute");
+    assert.equal(cat("write", { filePath: "lien-pendant", content: "{}" }), "doute");
+    assert.equal(cat("edit", { filePath: "lien-pendant", oldString: "", newString: "{}" }), "doute");
+    assert.equal(cat("apply_patch", { patchText: "*** Begin Patch\n*** Add File: lien-pendant\n+{}\n*** End Patch" }), "doute");
+    assert.equal(cat("write", { filePath: "dossier-pendant/f.txt", content: "x" }), "doute");
+    assert.equal(fs.existsSync(path.posix.join(autre, ".vscode")), false);
+    // Témoins : lien existant vers l'extérieur refusé comme avant ; fichier à créer sous un vrai dossier du projet, permis.
+    assert.equal(cat("write", { filePath: "lien-existant", content: "x" }), "hors-projet");
+    assert.equal(cat("write", { filePath: "src/neuf/fichier.ts", content: "x" }), null);
+  });
+});
+
 // --- Textes (T-L24-c) -----------------------------------------------------------------------------------------------------------
 
 /** Règle « mot entier » du test « textes » (textes.test.ts) : ni lettre ni trait d'union avant, ni lettre après, casse ignorée. */
@@ -540,7 +665,7 @@ const PROMESSES = /bloqu\p{L}*\s+(?:tout\s+)?toujours|toujours\s+bloqu|bloqu\p{L
 describe("textes du filet (T-L24-c)", () => {
   it("chaque message se présente comme un filet, ne porte que le gabarit {outil}, et aucun mot interdit", () => {
     const messages = Object.entries(garde.MESSAGES_FILET);
-    assert.deepEqual(messages.map(([cle]) => cle).sort(), ["cle", "delegation", "doute", "etat-illisible", "hors-projet", "reseau"]);
+    assert.deepEqual(messages.map(([cle]) => cle).sort(), ["cle", "delegation", "doute", "etat-illisible", "hors-projet", "recherche", "reseau"]);
     for (const [cle, texte] of messages) {
       assert.match(texte, /^Filet du cockpit : /, cle);
       assert.deepEqual([...texte.matchAll(/\{[^}]*\}/g)].map((m) => m[0]), ["{outil}"], cle);
@@ -744,7 +869,8 @@ describe("filet sur opencode 1.18.30 réel, sans l'extension (T-L24-a, T-L24-b)"
     assert.equal(refuse(avec, "a6-lien-dehors", "hors-projet", "read").marquesVues?.dehors, false);
     refuse(avec, "a7-hors-projet", "hors-projet", "read");
     refuse(avec, "a8-reseau", "reseau", "webfetch");
-    assert.equal(refuse(avec, "a9-grep-env", "cle", "grep").marquesVues?.env, false);
+    // grep refusé en toutes circonstances (« recherche ») : ses règles ne voient que l'expression cherchée.
+    assert.equal(refuse(avec, "a9-grep-env", "recherche", "grep").marquesVues?.env, false);
   });
 
   it("T-L24-b : task avec l'état « bloquer » → erreur ; absent → aucun blocage ; invalide, trop gros ou lien → blocage", () => {
