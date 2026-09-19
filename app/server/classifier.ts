@@ -7,9 +7,10 @@ import type { EventHub } from "./hub.ts";
 import type { Ledger } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import type { OcAssistantMessage, OcPart, OcSession, OpencodeClient } from "./opencode.ts";
-import { CLASSIFIER_TITLE_PREFIX, type SessionTracker } from "./sessions.ts";
+import type { SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
 import { providerOf } from "./shared/assistant-rules.ts";
+import { CLASSIFIER_TITLE } from "./shared/session-purpose.ts";
 
 export const CLASSIFIER_AGENT = "cockpit-classifier";
 
@@ -259,7 +260,7 @@ export class Classifier {
     const model = { providerID: modelKey.slice(0, slash), modelID: modelKey.slice(slash + 1) };
     const session = await this.#d.client.request<OcSession>("POST", "/session", {
       directory: this.#d.opencodeWorkspaceDir,
-      body: { title: `${CLASSIFIER_TITLE_PREFIX}classement`, metadata: { cockpit: "classifier" } },
+      body: { title: CLASSIFIER_TITLE, metadata: { cockpit: "classifier" } },
       timeoutMs: 15_000,
     });
     const row = this.#d.sessions.upsert(session, "classifier");

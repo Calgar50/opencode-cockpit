@@ -16,6 +16,7 @@ import {
   TIER_LABELS,
 } from "../../server/shared/assistant-rules.ts";
 import { pickRestorableAgent } from "../../server/shared/agent-choice.ts";
+import { isClassifierRoot } from "../../server/shared/session-purpose.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -200,7 +201,8 @@ export function ChatPage() {
       oc.commands(directory),
     ]);
     if (list.status === "fulfilled") {
-      setSessions(list.value.filter((s) => !s.parentID && !s.title.startsWith("[cockpit]")).sort((a, b) => b.time.updated - a.time.updated));
+      // Racines de classement seules : un titre « [cockpit] … » écrit par l'IA de titre d'opencode reste une conversation (P12).
+      setSessions(list.value.filter((s) => !s.parentID && !isClassifierRoot(s)).sort((a, b) => b.time.updated - a.time.updated));
     } else {
       toast.error("Conversations indisponibles", list.reason);
     }
@@ -406,7 +408,7 @@ export function ChatPage() {
           if (info.parentID === sessionRef.current) setChildren((list) => upsertById(list, info));
           break;
         }
-        if (info.title.startsWith("[cockpit]") || info.directory !== directory) break;
+        if (isClassifierRoot(info) || info.directory !== directory) break;
         setSessions((list) => upsertById(list, info).sort((a, b) => b.time.updated - a.time.updated));
         break;
       }

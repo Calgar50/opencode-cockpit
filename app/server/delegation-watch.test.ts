@@ -797,6 +797,56 @@ describe("L1e : surveillance sur le faux opencode", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("conversation titrée « [cockpit] … » par l'IA de titre d'opencode (session/prompt.ts, ensureTitle) : reste « chat », visible, arrêtable ; la 6e délégation lancée sans demande arrête tout ; relue par le rattrapage ; titre « [cockpit] … » refusé par le proxy ; P12", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts", "delegationWatch", "stopTree"] });
+    const relayed = new Set<string>();
+    t.after(
+      h.hub.subscribe((event) => {
+        if (event.kind === "opencode" && event.event.type !== "session.created") relayed.add(`${event.event.type} ${sessionIdOf(event.event)}`);
+      }),
+    );
+    // Créée sans titre, comme l'interface (api.ts, createSession) : opencode pose « New session - <date> ».
+    const created = await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: {} });
+    assert.equal(created.status, 200, created.body);
+    const root = created.json<FakeSession>();
+    assert.match(root.title, /^New session - /);
+    await until(() => h.sessions.get(root.id));
+    // Titre écrit par l'IA de titre d'opencode d'après le premier message, hors du proxy : session.updated.
+    const title = "[cockpit] Bouton Arrêter inopérant";
+    await h.deps.client.request("PATCH", `/session/${root.id}`, { body: { title } });
+    await until(() => h.sessions.get(root.id)?.title === title);
+    assert.deepEqual([h.sessions.get(root.id)?.purpose, h.sessions.isHidden(root.id)], ["chat", false]);
+
+    // Le proxy refuse un titre « [cockpit] … » à la création comme au renommage : rien n'est relayé.
+    for (const [method, path] of [
+      ["POST", "/api/oc/session"],
+      ["PATCH", `/api/oc/session/${root.id}`],
+    ] as const) {
+      const refused = await h.call(method, path, { headers: h.headers.mutating, body: { title: "[cockpit] classement" } });
+      assert.equal(refused.status, 403, refused.body);
+      assert.equal(refused.json<{ error: string }>().error, "forbidden-body");
+    }
+    assert.equal(h.fake.session(root.id)?.title, title);
+
+    // Plafond de délégations toujours appliqué : la 6e lancée sans demande arrête tout l'arbre.
+    h.fake.script(root.id, { tools: Array.from({ length: 6 }, (_, i) => allowTask(`Lot ${i + 1}`)) });
+    await sendThroughProxy(h, root.id, "Analyse en six morceaux.");
+    const stopped = await until(() => eventsOf(h, "conversation.arretee")[0], 10_000);
+    assert.deepEqual(stopped, { rootId: root.id, cause: "plafond-delegations", unconfirmed: [] });
+    assert.deepEqual(eventsOf(h, "delegation.plafond"), [{ rootId: root.id, kind: "nombre" }]);
+    await settledTree(h, root.id);
+    assert.ok(relayed.has(`message.updated ${root.id}`), [...relayed].join("\n"));
+    // « Arrêter » : arrêt de l'arbre par le cockpit (200), jamais le repli sur l'arrêt 1.0 (404).
+    const stop = await h.call("POST", `/api/conversations/${root.id}/stop`, { headers: h.headers.mutating });
+    assert.equal(stop.status, 200, stop.body);
+
+    // Rattrapage après une coupure du flux : relue comme une conversation, jamais écartée comme une racine de classement.
+    h.db.prepare("DELETE FROM sessions WHERE id = ?").run(root.id);
+    await h.processor.backfill();
+    assert.deepEqual([h.sessions.get(root.id)?.purpose, h.sessions.isHidden(root.id)], ["chat", false]);
+    h.assertNoGlobalRestart();
+  });
+
   it("6 contrôles de sécurité créés par le serveur sous la conversation : aucune délégation comptée ; témoin : 2 délégations lancées sans demande dépassent le plafond de 1", async (t) => {
     const h = await startCockpit(t, { modules: ["delegationWatch", "stopTree"], settings: { budget: { delegation: { maxPerRequest: 1 } } } });
     const root = await trackedRoot(h, "Contrôles");

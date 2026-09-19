@@ -150,7 +150,8 @@ describe("choix d'autonomie : racines seulement", () => {
     const root = await conversation(h);
     const child = await ocSession(h, { parentID: root.id, title: "Enfant" }, root.directory);
     assert.equal(child.root_id, root.id);
-    const classifier = await ocSession(h, { title: "[cockpit] Classement" });
+    // Session de classement créée comme par classifier.ts (titre exact et métadonnée).
+    const classifier = await ocSession(h, { title: "[cockpit] classement", metadata: { cockpit: "classifier" } });
     const controle = await ocSession(h, { title: "Contrôle", metadata: { cockpit: "controle" } });
     const deleted = await conversation(h, "Supprimée");
     h.sessions.markDeleted(deleted.id);

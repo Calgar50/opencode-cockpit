@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { params } from "./db.ts";
 import type { OcSession, OpencodeClient } from "./opencode.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
+import { CLASSIFIER_TITLE } from "./shared/session-purpose.ts";
 
 /** chat : conversations ; classifier : classement ; equipe / controle (1.1) : étapes d'équipe et contrôles de sécurité. */
 export type SessionPurpose = "chat" | "classifier" | "equipe" | "controle";
@@ -37,19 +38,19 @@ export interface SessionRow {
   deleted_at: number | null;
 }
 
-export const CLASSIFIER_TITLE_PREFIX = "[cockpit] ";
-
 /** Usages dont une session enfant hérite et qu'une mise à jour ne remplace jamais. */
 const STICKY_PURPOSES: readonly SessionPurpose[] = ["classifier", "equipe", "controle"];
 
 /**
- * Usage propre d'une session (sans l'héritage du parent). Le préfixe CLASSIFIER_TITLE_PREFIX ne vaut que pour une racine : les
- * sessions de classement sont des racines créées par le serveur (classifier.ts), alors que le titre d'un enfant de délégation
- * reprend la description écrite par l'IA (opencode tool/task.ts:160). Un enfant n'est donc jamais classé par son seul titre.
+ * Usage propre d'une session (sans l'héritage du parent). Le titre ne vaut que s'il est exactement CLASSIFIER_TITLE, pour une
+ * racine, et quand `byTitle` est vrai (session encore inconnue, voir upsert) : les sessions de classement sont des racines créées
+ * par le serveur (classifier.ts), alors que le titre d'une conversation est écrit par l'IA de titre d'opencode d'après le premier
+ * message (session/prompt.ts, ensureTitle) et celui d'un enfant de délégation reprend la description écrite par l'IA
+ * (tool/task.ts:160). Aucun préfixe n'est donc lu, et un enfant n'est jamais classé par son seul titre.
  */
-export function purposeOf(info: Pick<OcSession, "title" | "metadata">, parentId: string | null | undefined): SessionPurpose {
+export function purposeOf(info: Pick<OcSession, "title" | "metadata">, parentId: string | null | undefined, byTitle = true): SessionPurpose {
   const cockpit = info.metadata?.cockpit;
-  if (cockpit === "classifier" || (!parentId && info.title.startsWith(CLASSIFIER_TITLE_PREFIX))) return "classifier";
+  if (cockpit === "classifier" || (byTitle && !parentId && info.title === CLASSIFIER_TITLE)) return "classifier";
   // metadata.cockpit n'est posé que par le serveur du cockpit : le proxy le refuse dans les créations de session.
   if (cockpit === "equipe" || cockpit === "controle") return cockpit;
   return "chat";
@@ -80,8 +81,10 @@ export class SessionTracker {
     const parent = info.parentID ? this.get(info.parentID) : undefined;
     const rootId = info.parentID ? (parent?.root_id ?? info.parentID) : info.id;
     const inherited = parent && STICKY_PURPOSES.includes(parent.purpose) ? parent.purpose : null;
-    const purpose = forcedPurpose ?? inherited ?? purposeOf(info, info.parentID);
     const previous = this.get(info.id);
+    // Session déjà suivie : jamais reclassée par son titre, que l'IA de titre d'opencode peut réécrire (P12). Seuls l'usage forcé
+    // par le serveur (classifier.ts, control-ai.ts), metadata.cockpit et l'héritage la font changer d'usage.
+    const purpose = forcedPurpose ?? inherited ?? purposeOf(info, info.parentID, previous === undefined);
     this.#db
       .prepare(
         `INSERT INTO sessions (id, parent_id, root_id, directory, project_id, title, purpose, agent, created_at, updated_at)

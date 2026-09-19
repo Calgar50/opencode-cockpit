@@ -253,7 +253,7 @@ describe("Plan d'abord : POST /api/plans", () => {
     const deleted = await conversation(h);
     h.sessions.markDeleted(deleted.id);
     // Session interne du cockpit (classement) et conversation de la Salle OMO (P11) : jamais d'origine d'un plan.
-    const classifier = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "[cockpit] Classement" } });
+    const classifier = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "[cockpit] classement", metadata: { cockpit: "classifier" } } });
     await until(() => h.sessions.get(classifier.id));
     const omo = await conversation(h);
     h.db.prepare("UPDATE sessions SET instance = 'omo' WHERE id = ?").run(omo.id);
@@ -832,7 +832,7 @@ describe("Plan d'abord : POST /api/plans/:id/execution", () => {
     const deleted = await newPlan(h);
     h.sessions.markDeleted(deleted.rootId);
     // « plan » enregistré sur une session interne ou sur une conversation de la Salle OMO (écriture étrangère) : pas un plan.
-    const internal = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "[cockpit] Classement" } });
+    const internal = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "[cockpit] classement", metadata: { cockpit: "classifier" } } });
     await until(() => h.sessions.get(internal.id));
     store.setPlan(internal.id, null, Date.now());
     const omo = await newPlan(h);

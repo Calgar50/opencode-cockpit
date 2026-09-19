@@ -101,6 +101,7 @@ import {
 } from "./shared/assistant-rules.ts";
 import type { BootstrapAutonomy } from "./shared/autonomy-types.ts";
 import { ID, SESSION_ID_RE } from "./shared/ids.ts";
+import { isReservedTitle } from "./shared/session-purpose.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
@@ -299,6 +300,7 @@ const normalizeDomain = (url: string) => url.trim().toLowerCase().replace(/^http
  * - création ou renommage de conversation avec autre chose qu'un titre : une règle « permission » de session
  *   passerait avant les permissions globales ;
  * - demande de modèle portant « tools » ou « permission », pour la même raison ;
+ * - titre de conversation qui commence par « [cockpit] », réservé aux sessions du cockpit (shared/session-purpose.ts, P12) ;
  * - « Résumer » avec autre chose que providerID/modelID : `auto: true` ferait enchaîner par opencode un tour d'agent avec
  *   outils (« Continue if you have next steps », compaction.ts:468-548), hors de tout contrôle ;
  * - connexion GitHub Enterprise vers un domaine autre que COCKPIT_GITHUB_ENTERPRISE_DOMAIN : opencode y
@@ -319,6 +321,9 @@ export function forbiddenProxyBody(
   if ((method === "POST" && sub === "/session") || (method === "PATCH" && /^\/session\/[^/]+$/.test(sub))) {
     const extra = Object.keys(record).filter((key) => key !== "title");
     if (extra.length > 0) return `Champ non accepté pour une conversation : ${extra.join(", ").slice(0, 80)}.`;
+    if (typeof record.title === "string" && isReservedTitle(record.title)) {
+      return "Titre refusé : « [cockpit] » en début de titre est réservé au classement fait par le cockpit. Choisissez un autre titre.";
+    }
   }
   if (method === "POST" && /^\/session\/[^/]+\/summarize$/.test(sub)) {
     const extra = Object.keys(record).filter((key) => key !== "providerID" && key !== "modelID");
