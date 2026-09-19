@@ -71,6 +71,11 @@ export const TEXTES = {
       "non-controle": "arrêté : action passée sans contrôle",
       interrompue: "interrompu : opencode a redémarré",
     },
+    /**
+     * §6 l.1048, §4.10 : délégation lancée par un raccourci `subtask`, qu'opencode lance sans demande d'autorisation (capture p2 ;
+     * fait `consigne` de source « raccourci », délégation `sansConfirmation`). Dite dans les deux modes.
+     */
+    sansConfirmation: "lancé sans confirmation",
     depuis: "depuis {duree}",
     duree: "{duree}",
     repondre: "Répondre",
@@ -199,6 +204,16 @@ export function libelleEnPlus(n: number): { court: string; accessible: string } 
 
 export function libelleRaccourci(commande: string): string {
   return remplir(TEXTES.avance.raccourci, { commande });
+}
+
+/**
+ * Mentions d'une ligne lancée par un raccourci `subtask` (`commande` du fait `consigne`, source « raccourci ») : « lancé sans
+ * confirmation » dans les deux modes (§6 l.1048), précédé en mode Avancé du nom du raccourci. Aucune pour une autre ligne.
+ */
+export function mentionsRaccourci(commande: string | null, avance: boolean): string[] {
+  if (commande === null) return [];
+  const { sansConfirmation } = TEXTES.partout;
+  return avance ? [libelleRaccourci(commande), sansConfirmation] : [sansConfirmation];
 }
 
 function causeRetour(cause: ActivityAnnouncement["cause"]): string {

@@ -131,8 +131,48 @@ ni le faux.
 |---|---|
 | `E2E_NAVIGATEUR` | chemin du navigateur (sinon Edge puis Chromium, aux emplacements usuels) |
 | `E2E_MESURES_DIR` | dossier où lire `MX1.md` pour `--reel-hors-ligne` |
+| `E2E_ACCORD_FACTURE` | accord écrit pour une recette facturée : `it1-ui-m1-noreply.mjs` ne joue la mesure M1 qu'en `--reel` et si la valeur contient `M1` |
+| `E2E_M1_IA` | IA de la recette M1, séparées par des virgules (sinon la première IA Claude et la première IA GPT du catalogue) |
 
 Ces chemins sont lus par Node : sous Git Bash, écrivez-les à la mode Windows (`C:/…`) et non `/c/…`.
+
+## Scénarios de l'itération 1 (chantier 1.1)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it1-*' --project-prefix it11-e2e --image-tag it11
+scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it1-*' --project-prefix it11-e2e --image-tag it11
+```
+
+Un fichier `*-commun.mjs` porte les outils de sa famille et vérifie leurs préalables : le banc le joue comme un
+scénario. Les scénarios qui touchent opencode tournent sous le témoin P6 (aucun `PATCH /global/config`,
+`/global/dispose` ni `/instance/dispose`) et P4 (seulement `once` et `reject` envoyés). En `--reel-hors-ligne`, le
+faux fournisseur ne répond que du texte : ce qui demande qu'une IA appelle un outil (délégation, lecture d'un fichier)
+y est annoncé « non joué ».
+
+Par l'API du cockpit :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it1-api-commun.mjs` | préalables : mode Simple par défaut, opencode joint, IA du banc au catalogue, agents internes installés, témoin P6, outils du faux conformes à la mesure M2 |
+| `it1-api-arret.mjs` | « Arrêter » : demande en attente refusée, racine arrêtée la première, plus aucune session de l'arbre occupée ; « Autoriser une fois » tardif refusé |
+| `it1-api-m16.mjs` | mesure M16 : le plancher posé à la création ne change ni le titre ni l'archive |
+| `it1-api-pfx-explore.mjs` | un enfant `explore` hérite du plancher : `cle.pfx` refusé sans demande, `notes.txt` lu |
+| `it1-api-plan.mjs` | Plan d'abord : plancher PLAN, outils retirés pour la racine et pour l'enfant (mesure M2) |
+| `it1-api-plancher.mjs` | plancher de conversation posé et relu, aucun outil retiré, fichier de clés refusé sans demande |
+
+Par la page, en agissant comme un utilisateur (clic, clavier), avec captures 1440, 1024 et 400 dans les deux thèmes et
+console muette :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it1-ui-commun.mjs` | préalables : mode Simple par défaut, page en HTTP sous la CSP réelle (D-05), règles acceptées au clic, flux d'événements ouvert ; relevés installés dans la page (faisceaux, animations, violations de CSP) |
+| `it1-ui-delegation.mjs` | mode Avancé : carte « Détails de la délégation », « Autoriser une fois » cliqué, faisceau rose (préparation, consigne) puis bleu (résultat), dans l'ordre des faits |
+| `it1-ui-arreter.mjs` | « Arrêter » visible pendant le travail délégué ; le clic arrête tout l'arbre et la consigne est figée en gris |
+| `it1-ui-demonstration.mjs` | démonstration en Simple puis en Avancé : étiquette, avis du mode Simple, tous les moments parcourus, zéro requête de la page et d'opencode |
+| `it1-ui-p2-raccourci.mjs` | capture p2 : délégation d'un raccourci `subtask` lancée sans demande, enregistrée « sans confirmation », et « lancé sans confirmation » affiché |
+| `it1-ui-m25.mjs` | mesure M25 en HTTP : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
+| `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée |
+| `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
 
 ## Contrôle des types
 
