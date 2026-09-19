@@ -461,7 +461,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -473,6 +473,9 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
       { kind: "derivation", key: "taskGuard", module: "taskGuard" },
+      // L1e : surveillance des délégations lancées sans demande (dérivation et abonnement usage.updated), port toujours vide.
+      { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
+      { kind: "hub", key: "usage.updated", module: "delegationWatch" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "delegations", module: "taskGuard" },
@@ -490,8 +493,8 @@ describe("câblage 1.1 : ports neutres", () => {
       ],
       [1, 1, 1, 1, 1],
     );
-    assert.deepEqual(wiring.subscriptions, []);
-    assert.equal(wiring.derivations.length, 2);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated"]);
+    assert.equal(wiring.derivations.length, 3);
     assert.equal(wiring.startup.length, 1);
     assert.equal(wiring.routes.length, 5);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
