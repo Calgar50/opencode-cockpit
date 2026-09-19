@@ -637,6 +637,12 @@ export class FakeOpencode {
   providers: FakeProvider[] = defaultProviders();
   /** Champ « default » de GET /config/providers : IA par défaut de chaque fournisseur. */
   defaultModels: Record<string, string> = { "github-copilot": "gpt-5-mini" };
+  /**
+   * GET /experimental/capabilities → { backgroundSubagents } (handlers/experimental.ts:39-41) : drapeau du processus
+   * (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ou OPENCODE_EXPERIMENTAL), faux par défaut comme opencode sans ces variables.
+   * Demande de L1f (Diagnostic du travail délégué), ajoutée au train it1 V4.
+   */
+  backgroundSubagents = false;
   /** Contenus connus (chemins absolus) : état « avant » des métadonnées edit, write et apply_patch, mis à jour par chaque outil terminé. */
   readonly files = new Map<string, string>();
   /**
@@ -1018,6 +1024,7 @@ export class FakeOpencode {
       return json(200, { providers, default: this.defaultModels });
     }
     if (is("GET", "experimental", "session")) return this.#listSessions(res, url, directory);
+    if (is("GET", "experimental", "capabilities")) return json(200, { backgroundSubagents: this.backgroundSubagents });
     if (is("GET", "question")) return json(200, [...this.#questions.values()].filter((entry) => entry.directory === directory).map((entry) => entry.info));
     if (is("POST", "question", "*", "reply") || is("POST", "question", "*", "reject")) {
       const replying = seg[2] === "reply";

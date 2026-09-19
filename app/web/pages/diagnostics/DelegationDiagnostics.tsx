@@ -3,7 +3,8 @@
 // délégué et autonomie » : bandeaux relevés par le serveur (diagnostics-11.ts : subagent_depth > 1, sous-agents en arrière-plan,
 // extensions de la configuration ou de oc-config/plugin(s)/, agents `task: allow`) et état d'installation des agents internes
 // (agentsInternes, L1g). Chaque bandeau n'existe que si son relevé l'a constaté : aucune phrase ne dit « aucun » (un relevé
-// impossible est journalisé par le serveur). Noms rendus en TEXTE par React (échappés), déjà bornés par le serveur. En mode Simple,
+// impossible est journalisé par le serveur et dit par le dernier bandeau, « illisible », train it1 V4). Noms rendus en TEXTE par
+// React (échappés), déjà bornés par le serveur. En mode Simple,
 // ni « agent » ni « sous-agent » : textes de delegation-texts.ts, contrôlés par le test « textes ».
 // InternalAgentsStatus est exporté pour AutonomyDiagnostics (L12c, « installation des agents internes ») : une seule façon de dire
 // cet état. Propriétés figées dans ../chat/slots.ts ; s'annonce par onPresence(true) quand il affiche quelque chose.

@@ -19,13 +19,14 @@
 // - « Le cockpit arrête la conversation au-delà du plafond » : DelegationWatch (L1e), dans les deux modes, plafonds budget.delegation
 //   (nombre et dépense) d'une conversation du cockpit ;
 // - extensions : leurs outils ne sont visés par aucune règle d'autorisation (oc-uncontrolled.ts, §4.10), d'où « peuvent » ;
-// - bandeaux : chacun n'est affiché que si son relevé l'a constaté (diagnostics-11.ts) ; aucune phrase ne dit « aucun » ;
+// - bandeaux : chacun n'est affiché que si son relevé l'a constaté (diagnostics-11.ts) ; aucune phrase ne dit « aucun » ; un relevé
+//   impossible est dit par le bandeau « illisible » (train it1 V4), qui annonce qu'un bandeau « peut manquer », jamais qu'il manque ;
 // - agents internes : « installation en attente d'un moment sans réponse en cours » (§3.11) seulement avec une reprise planifiée ;
 //   « refusée par opencode » : échec sans reprise (retour arrière de L1g), nouvel essai au prochain ensureAll (démarrage du cockpit,
 //   redémarrage d'opencode).
 import type { DelegationDetailsView, DelegationRefusalCode, RuleActionLite } from "./activity-types.ts";
 import { formatUsd } from "./assistant-rules.ts";
-import type { DelegationBanner, InternalAgentStatus } from "./cockpit-event-types.ts";
+import type { DelegationBanner, DelegationCheck, InternalAgentStatus } from "./cockpit-event-types.ts";
 
 export const TEXTES = {
   simple: {
@@ -43,6 +44,8 @@ export const TEXTES = {
         "Extensions d'opencode installées : {noms}. Les outils qu'elles ajoutent ne sont visés par aucune règle d'autorisation du cockpit : ils peuvent s'exécuter sans vous demander.",
       "task-allow":
         "Assistants qui délèguent du travail sans vous demander : {noms}. Le cockpit arrête la conversation au-delà du plafond de délégations ou de dépense de la demande.",
+      illisible:
+        "Diagnostic incomplet : une partie des réglages d'opencode n'a pas pu être lue (opencode ne répond pas, ou sa réponse est inattendue). Un réglage qui laisse déléguer du travail sans vous demander peut manquer ici.",
     },
     /** Agents internes du cockpit (§3.11), sans le mot « agent ». */
     agentsInternes: {
@@ -67,7 +70,18 @@ export const TEXTES = {
         "Extensions (plugins) déclarées dans la configuration d'opencode ou déposées dans oc-config/plugin(s)/ : {noms}. Leurs outils ne sont visés par aucune règle du cockpit et peuvent s'exécuter sans demande d'autorisation.",
       "task-allow":
         "Agents dont la règle task vaut allow pour au moins un agent (délégation sans demande d'autorisation) : {noms}. Le cockpit compte ces délégations et arrête la conversation au-delà du plafond de délégations ou de dépense de la demande (budget.delegation).",
+      illisible:
+        "Relevés impossibles : {noms} (opencode muet, réponse inattendue ou dossier illisible ; détail dans le journal du cockpit). Les bandeaux qui en dépendent peuvent manquer.",
     },
+    /** Relevés nommés par le bandeau « illisible » (DelegationCheck). */
+    releves: {
+      configuration: "configuration effective (GET /config)",
+      profondeur: "subagent_depth",
+      "arriere-plan": "sous-agents en arrière-plan (GET /experimental/capabilities)",
+      extensions: "entrée plugin de la configuration",
+      "fichiers-extensions": "oc-config/plugin(s)/",
+      agents: "règles task des agents (GET /agent)",
+    } satisfies Record<DelegationCheck, string>,
     agentsInternes: {
       titre: "Agents internes du cockpit",
     },
@@ -247,15 +261,23 @@ export function titreDiagnostic(advanced: boolean): string {
   return advanced ? TEXTES.avance.titreDiagnostic : TEXTES.simple.titreDiagnostic;
 }
 
+/** Libellé d'un relevé du bandeau « illisible » (mode Avancé) ; relevé inconnu (serveur plus récent) : son code. */
+function libelleReleve(nom: string): string {
+  const releves: Readonly<Record<string, string>> = TEXTES.avance.releves;
+  return Object.hasOwn(releves, nom) ? (releves[nom] ?? nom) : nom;
+}
+
 /**
- * Phrase d'un bandeau du Diagnostic (§3.14) ; les noms (déjà bornés par le collecteur) sont joints par des virgules. null : code
- * inconnu de cette interface (serveur plus récent), rien n'est affiché pour lui.
+ * Phrase d'un bandeau du Diagnostic (§3.14) ; les noms (déjà bornés par le collecteur) sont joints par des virgules, et ceux d'un
+ * bandeau « illisible » (relevés impossibles) remplacés par leur libellé. null : code inconnu de cette interface (serveur plus
+ * récent), rien n'est affiché pour lui.
  */
 export function bandeauDiagnostic(banner: DelegationBanner, advanced: boolean): string | null {
   const textes: Readonly<Record<string, string>> = advanced ? TEXTES.avance.diagnostic : TEXTES.simple.diagnostic;
   const gabarit = Object.hasOwn(textes, banner.code) ? textes[banner.code] : undefined;
   if (gabarit === undefined) return null;
-  return remplir(gabarit, { noms: Array.isArray(banner.noms) ? banner.noms.join(", ") : "" });
+  const noms = Array.isArray(banner.noms) ? banner.noms : [];
+  return remplir(gabarit, { noms: (banner.code === "illisible" ? noms.map(libelleReleve) : noms).join(", ") });
 }
 
 /** Titre de la liste des agents internes. */

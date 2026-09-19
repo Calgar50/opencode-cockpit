@@ -58,13 +58,18 @@ export interface InternalAgentStatus {
 
 /**
  * Bandeaux du Diagnostic sur le travail délégué (§3.14) : subagent_depth > 1, sous-agents en arrière-plan, extensions dans
- * oc-config/plugin(s)/, agents `task: allow`.
+ * oc-config/plugin(s)/, agents `task: allow`. « illisible » (train it1 V4, demande de contrat de L1f) : un relevé n'a pas pu être
+ * fait (opencode muet, réponse inattendue, dossier illisible) ; le bandeau qu'il aurait donné peut manquer, ce qui est dit au lieu
+ * d'être tu (P3).
  */
-export type DelegationBannerCode = "profondeur" | "arriere-plan" | "extension" | "task-allow";
+export type DelegationBannerCode = "profondeur" | "arriere-plan" | "extension" | "task-allow" | "illisible";
+
+/** Relevés du Diagnostic du travail délégué (diagnostics-11.ts), dans l'ordre : noms d'un bandeau « illisible ». */
+export type DelegationCheck = "configuration" | "profondeur" | "arriere-plan" | "extensions" | "fichiers-extensions" | "agents";
 
 export interface DelegationBanner {
   code: DelegationBannerCode;
-  /** Noms concernés (agents, fichiers d'extension), sans chemin absolu. */
+  /** Noms concernés (agents, fichiers d'extension), sans chemin absolu ; « illisible » : relevés impossibles (DelegationCheck). */
   noms: string[];
 }
 

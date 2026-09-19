@@ -219,7 +219,10 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   const suivi = wiring.modules.includes("internalAgents") ? "en-attente" : "non-suivi";
   const controle = wiring.modules.includes("internalAgents") ? [{ nom: "cockpit-controle", etat: "en-attente", prochainEssai: null }] : [];
   assert.deepEqual(p.internalAgents.status(), [{ nom: "cockpit-classifier", etat: suivi, prochainEssai: null }, ...controle]);
-  assert.deepEqual(await p.diagnostics.delegation(), []);
+  // L1f : module réel → le client factice ne répond à rien : relevés impossibles, dits par le bandeau « illisible » (train it1 V4) ;
+  // port neutre → aucun bandeau.
+  const illisible = wiring.modules.includes("diagnostics") ? [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }] : [];
+  assert.deepEqual(await p.diagnostics.delegation(), illisible);
   assert.equal(wiring.c11.reloadBusy(), false);
   assert.equal(wiring.c11.activationOuverte, false);
 }
@@ -592,7 +595,8 @@ describe("câblage 1.1 : routes et cadre", () => {
     const res = await request("GET", "/api/diagnostic/activite", authed);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), {
-      delegation: [],
+      // L1f : client factice sans réponse → relevés impossibles, bandeau « illisible » (train it1 V4).
+      delegation: [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }],
       // L1g : module réel des agents internes, aucun ensureAll encore ; L11b : cockpit-controle suivi aussi.
       agentsInternes: [
         { nom: "cockpit-classifier", etat: "en-attente", prochainEssai: null },

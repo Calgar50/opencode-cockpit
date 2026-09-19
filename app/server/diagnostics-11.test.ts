@@ -1,7 +1,8 @@
 // Tests L1f : interface du portillon et Diagnostic du travail délégué (spécification §3.14, §3.11, §4.8.1 l.716, §6 l.1048 ; plan
 // d'exécution, fiche L1f). Collecteur du Diagnostic sur le faux opencode (GET /config et GET /global/config, GET /agent avec
-// `task: allow`, extensions de la configuration et de oc-config/plugin(s)/) et, pour GET /experimental/capabilities que le faux ne
-// sert pas, sur un client qui répond à sa place ; relevés impossibles journalisés sans bandeau ; port partagé et avertissements
+// `task: allow`, extensions de la configuration et de oc-config/plugin(s)/, GET /experimental/capabilities servi par le faux depuis
+// le train it1 V4) et sur un client qui répond à sa place (réponses inattendues) ; relevés impossibles journalisés et nommés par le
+// bandeau « illisible » (contrat complété au train it1 V4) ; port partagé et avertissements
 // espacés ; route T0 montée par le module ; textes de l'avis, de la carte détaillée et des agents internes ; garde-fous de
 // l'interface lus dans les sources (aucun HTML brut, avis sans [Voir les équipes], « Arrêter » relié à l'arbre).
 import assert from "node:assert/strict";
@@ -54,7 +55,7 @@ import type { FakeAgent } from "./test-support/fake-opencode.ts";
 const APP_DIR = path.join(import.meta.dirname, "..");
 const read = (relative: string) => fs.readFileSync(path.join(APP_DIR, relative), "utf8");
 
-const CODES = ["profondeur", "arriere-plan", "extension", "task-allow"] as const;
+const CODES = ["profondeur", "arriere-plan", "extension", "task-allow", "illisible"] as const;
 // Liste complète : un code ajouté au contrat sans phrase fait échouer la compilation (typecheck) de ce test.
 const CODES_COMPLETS: [Exclude<DelegationBannerCode, (typeof CODES)[number]>] extends [never] ? true : false = true;
 const REFUS: readonly DelegationRefusalCode[] = [
@@ -84,7 +85,7 @@ const fakeAgent = (name: string, mode: FakeAgent["mode"], permission: FakeAgent[
   ...extra,
 });
 
-/** Client qui sert GET /experimental/capabilities (absente du faux) et relaie le reste ; `calls` : requêtes reçues. */
+/** Client qui sert GET /experimental/capabilities (réponse choisie par le test) et relaie le reste ; `calls` : requêtes reçues. */
 function withCapabilities(client: Pick<OpencodeClient, "request">, capabilities: () => unknown, calls: string[] = []): Pick<OpencodeClient, "request"> {
   return {
     request: <T>(method: string, pathname: string, options?: RequestOptions): Promise<T> => {
@@ -258,7 +259,7 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     assert.deepEqual(await collect(), [{ code: "profondeur", noms: [] }], "configuration effective du dossier de travail");
   });
 
-  it("sous-agents en arrière-plan : capacité vraie → bandeau ; fausse → rien ; route absente (faux opencode) → rien et relevé impossible", async (t) => {
+  it("sous-agents en arrière-plan : capacité vraie → bandeau ; fausse → rien ; réponse inattendue → bandeau « illisible » ; faux opencode (1.18.30) lu tel quel", async (t) => {
     const h = await startCockpit(t);
     const collect = async (client: Pick<OpencodeClient, "request">) => {
       const w = warnings();
@@ -270,8 +271,15 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
       checks: [],
     });
     assert.deepEqual(await collect(withCapabilities(h.deps.client, () => ({ backgroundSubagents: false }))), { banners: [], checks: [] });
-    assert.deepEqual(await collect(withCapabilities(h.deps.client, () => ({ backgroundSubagents: "oui" }))), { banners: [], checks: ["arriere-plan"] });
-    assert.deepEqual(await collect(h.deps.client), { banners: [], checks: ["arriere-plan"] }, "le faux ne sert pas /experimental/capabilities (404)");
+    assert.deepEqual(await collect(withCapabilities(h.deps.client, () => ({ backgroundSubagents: "oui" }))), {
+      banners: [{ code: "illisible", noms: ["arriere-plan"] }],
+      checks: ["arriere-plan"],
+    });
+    // Faux opencode (train it1 V4) : GET /experimental/capabilities, faux par défaut comme opencode sans les variables expérimentales.
+    assert.deepEqual(await collect(h.deps.client), { banners: [], checks: [] });
+    h.fake.backgroundSubagents = true;
+    assert.deepEqual(await collect(h.deps.client), { banners: [{ code: "arriere-plan", noms: [] }], checks: [] });
+    assert.ok(h.fake.requests.some((r) => r.method === "GET" && r.pathname === "/experimental/capabilities"));
   });
 
   it("extensions : configuration (file://, npm) et oc-config/plugin(s)/, noms sans chemin, dédoublonnés, bornés", async (t) => {
@@ -338,7 +346,7 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     ]);
   });
 
-  it("relevés impossibles : aucun bandeau pour eux, un relevé impossible chacun ; les relevés lisibles restent servis", async (t) => {
+  it("relevés impossibles : pas de bandeau à eux, un relevé impossible chacun, nommés dans l'ordre par le dernier bandeau « illisible » ; les relevés lisibles restent servis", async (t) => {
     const dir = configDir(t);
     write(dir, "plugin/outil.ts");
     const failing: DelegationDiagnosticsDeps = {
@@ -347,8 +355,40 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
       env: { opencodeConfigDir: dir },
     };
     const w = warnings();
-    assert.deepEqual(await collectDelegationBanners({ ...failing, warn: w.warn }), [{ code: "extension", noms: ["outil.ts"] }]);
+    assert.deepEqual(await collectDelegationBanners({ ...failing, warn: w.warn }), [
+      { code: "extension", noms: ["outil.ts"] },
+      { code: "illisible", noms: ["configuration", "arriere-plan", "agents"] },
+    ]);
     assert.deepEqual(w.checks(), ["agents", "arriere-plan", "configuration"]);
+
+    // Dossier de configuration illisible : chemin refusé par le système de fichiers (octet nul, erreur ni ENOENT ni ENOTDIR), seul
+    // relevé impossible, nommé par le bandeau « illisible ».
+    const unreadable = warnings();
+    const notDir = path.join(dir, "plugin");
+    const banners0 = await collectDelegationBanners({
+      client: { request: async <T>(_m: string, pathname: string): Promise<T> => (pathname === "/config" ? {} : { backgroundSubagents: false }) as T },
+      lookup: { get: async () => ({ directory: null, agents: [], commands: [], loadedAt: 0 }) },
+      env: { opencodeConfigDir: `${notDir}${String.fromCharCode(0)}` },
+      warn: unreadable.warn,
+    });
+    assert.deepEqual(banners0, [{ code: "illisible", noms: ["fichiers-extensions"] }]);
+    assert.deepEqual(unreadable.checks(), ["fichiers-extensions"]);
+
+    // Ordre fixe, celui des relevés, quelle que soit l'heure des échecs : la configuration échoue ici la dernière.
+    const late = warnings();
+    const lateBanners = await collectDelegationBanners({
+      client: {
+        request: async <T>(_m: string, pathname: string): Promise<T> => {
+          if (pathname === "/config") await new Promise((resolve) => setTimeout(resolve, 20));
+          throw new Error("opencode ne répond pas");
+        },
+      },
+      lookup: { get: async () => Promise.reject(new Error("opencode ne répond pas")) },
+      env: { opencodeConfigDir: path.join(dir, "absent") },
+      warn: late.warn,
+    });
+    assert.equal(late.seen.at(-1)?.check, "configuration", "configuration en échec la dernière");
+    assert.deepEqual(lateBanners, [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }]);
 
     // Configuration lisible, subagent_depth illisible : pas de bandeau de profondeur, extensions de la configuration gardées, et les
     // sous-agents qui délèguent sont retenus (profondeur non relevée : le défaut n'est pas supposé).
@@ -371,18 +411,20 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     assert.deepEqual(banners, [
       { code: "extension", noms: ["x@1"] },
       { code: "task-allow", noms: ["explore"] },
+      { code: "illisible", noms: ["profondeur"] },
     ]);
     assert.deepEqual(partial.checks(), ["profondeur"]);
 
     // Réponse qui n'est pas un objet : configuration illisible.
     const odd = warnings();
-    await collectDelegationBanners({
+    const oddBanners = await collectDelegationBanners({
       client: { request: async <T>(): Promise<T> => [] as T },
       lookup: { get: async () => snapshot },
       env: { opencodeConfigDir: path.join(dir, "absent") },
       warn: odd.warn,
     });
     assert.deepEqual(odd.checks(), ["arriere-plan", "configuration"]);
+    assert.deepEqual(oddBanners.at(-1), { code: "illisible", noms: ["configuration", "arriere-plan"] });
   });
 
   it("port : un relevé à la fois (appels simultanés partagés, puis relevé neuf) ; relevé impossible journalisé au plus une fois par minute", async () => {
@@ -428,13 +470,13 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
       },
       { now: () => now },
     );
-    assert.deepEqual(await failingPort.delegation(), []);
+    assert.deepEqual(await failingPort.delegation(), [{ code: "illisible", noms: ["configuration", "arriere-plan"] }]);
     const releves = () => logged.map((entry) => String(entry.fields?.releve)).sort();
     assert.deepEqual(releves(), ["arriere-plan", "configuration"]);
     assert.ok(logged.every((entry) => entry.message === "Diagnostic du travail délégué : relevé impossible"));
     assert.ok(logged.every((entry) => entry.fields?.error === "opencode ne répond pas"));
     now += WARN_INTERVAL_MS - 1;
-    await failingPort.delegation();
+    assert.deepEqual(await failingPort.delegation(), [{ code: "illisible", noms: ["configuration", "arriere-plan"] }], "le bandeau reste, même sans journal");
     assert.equal(logged.length, 2, "dans la minute : rien de plus");
     now += 1;
     await failingPort.delegation();
@@ -448,13 +490,23 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     const res = await h.call("GET", "/api/diagnostic/activite", { headers: h.headers.authed });
     assert.equal(res.status, 200, res.body);
     const body = res.json<DiagnosticActiviteResponse>();
-    // Le faux ne sert pas /experimental/capabilities : pas de bandeau « arriere-plan » (relevé impossible, journalisé).
+    // Faux opencode sans sous-agents en arrière-plan (défaut) : aucun bandeau « arriere-plan », aucun relevé impossible.
     assert.deepEqual(body.delegation, [
       { code: "profondeur", noms: [] },
       { code: "extension", noms: ["outil.js"] },
       { code: "task-allow", noms: ["delegue-tout"] },
     ] satisfies DelegationBanner[]);
     assert.ok(Array.isArray(body.agentsInternes));
+    // Sous-agents en arrière-plan activés, puis configuration effective illisible (réponse inattendue du faux).
+    h.fake.backgroundSubagents = true;
+    h.fake.projectConfigs.set(h.fake.directory, { subagent_depth: "trois" });
+    const again = (await h.call("GET", "/api/diagnostic/activite", { headers: h.headers.authed })).json<DiagnosticActiviteResponse>();
+    assert.deepEqual(again.delegation, [
+      { code: "arriere-plan", noms: [] },
+      { code: "extension", noms: ["outil.js"] },
+      { code: "task-allow", noms: ["delegue-tout"] },
+      { code: "illisible", noms: ["profondeur"] },
+    ] satisfies DelegationBanner[]);
     assert.equal((await h.call("GET", "/api/diagnostic/activite")).status, 401, "sans cookie de session");
     h.assertNoGlobalRestart();
     assert.deepEqual(h.fake.failures, []);
@@ -485,6 +537,20 @@ describe("Interface du portillon : textes (delegation-texts.ts)", () => {
     assert.notEqual(titreDiagnostic(false), titreDiagnostic(true));
     assert.ok(!/agent/i.test(titreDiagnostic(false)) && !/agent/i.test(titreAgentsInternes(false)));
     assert.match(bandeauDiagnostic({ code: "profondeur", noms: [] }, true) ?? "", /subagent_depth/);
+
+    // « illisible » (train it1 V4) : en Avancé, relevés nommés par leur libellé (code gardé pour un relevé inconnu) ; en Simple, aucun
+    // nom technique ; dans les deux modes, « peut manquer », jamais « aucun ».
+    const illisible = { code: "illisible", noms: ["configuration", "agents", "nouveau-releve"] } satisfies DelegationBanner;
+    const avance = bandeauDiagnostic(illisible, true) ?? "";
+    assert.ok(avance.includes(`${TEXTES.avance.releves.configuration}, ${TEXTES.avance.releves.agents}, nouveau-releve`), avance);
+    const simple = bandeauDiagnostic(illisible, false) ?? "";
+    assert.equal(simple, TEXTES.simple.diagnostic.illisible);
+    assert.ok(!/configuration effective|GET \/|agents?\b/i.test(simple), simple);
+    for (const text of [avance, simple]) {
+      assert.match(text, /peut manquer|peuvent manquer/);
+      assert.ok(!/\baucun/i.test(text), text);
+    }
+    assert.equal(bandeauDiagnostic({ code: "illisible", noms: ["constructor"] }, true)?.includes("constructor"), true, "pas de propriété héritée");
   });
 
   it("agents internes : chaque agent installé a un libellé Simple ; nom réservé seulement en Avancé ; état en mots, heure du prochain essai", () => {

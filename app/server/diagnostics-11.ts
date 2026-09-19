@@ -19,10 +19,10 @@
 // Noms (agents, extensions) : entrées externes, jamais un chemin (dernier segment seulement) ni les identifiants ou paramètres d'une
 // adresse ; caractères de contrôle et invisibles retirés ; au plus NOMS_MAX noms de NOM_MAX caractères par bandeau (« … » en plus
 // quand la liste est coupée).
-// Relevé impossible (opencode muet, réponse illisible, dossier illisible) : ce relevé seul ne produit aucun bandeau, et un
-// avertissement est journalisé (au plus une fois par minute et par relevé : la page se relit toutes les 10 s) ; les autres relevés et
-// la route restent servis, les agents internes restent lisibles. Limite dite : le contrat DelegationBanner (T0) n'a pas de code
-// « relevé impossible » ; demande écrite à l'intégrateur. Un relevé à la fois : les appels simultanés partagent le même.
+// Relevé impossible (opencode muet, réponse illisible, dossier illisible) : ce relevé ne produit pas son bandeau, un avertissement est
+// journalisé (au plus une fois par minute et par relevé : la page se relit toutes les 10 s), et un dernier bandeau « illisible » nomme
+// les relevés impossibles (code ajouté au contrat au train it1 V4, demande de L1f : un risque n'est jamais tu). Les autres relevés et
+// la route restent servis, les agents internes restent lisibles. Un relevé à la fois : les appels simultanés partagent le même.
 // neutralDiagnostics reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -34,7 +34,7 @@ import { PLUGIN_DIRS } from "./oc-uncontrolled.ts";
 import type { OpencodeClient } from "./opencode.ts";
 import { registerDiagnostic11Routes } from "./routes-diagnostic-11.ts";
 import { evaluate, wildcardMatch } from "./shared/assistant-rules.ts";
-import type { DelegationBanner } from "./shared/cockpit-event-types.ts";
+import type { DelegationBanner, DelegationCheck } from "./shared/cockpit-event-types.ts";
 import { isInternalTarget } from "./task-once-guard.ts";
 
 export function neutralDiagnostics(): DiagnosticsPort {
@@ -65,8 +65,11 @@ const SCHEME_AUTHORITY_RE = /^[A-Za-z][A-Za-z0-9+.-]+:(?:\/\/[^/?#]*)?/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Relevés, pour le journal. */
-export type DiagnosticCheck = "configuration" | "profondeur" | "arriere-plan" | "extensions" | "fichiers-extensions" | "agents";
+/** Relevés, pour le journal et le bandeau « illisible » (contrat : DelegationCheck). */
+export type DiagnosticCheck = DelegationCheck;
+
+/** Ordre des relevés dans un bandeau « illisible ». */
+const CHECK_ORDER: readonly DiagnosticCheck[] = ["configuration", "profondeur", "arriere-plan", "extensions", "fichiers-extensions", "agents"];
 
 /** Nom affichable : caractères cachés retirés, espaces réduits, longueur bornée (« … ») ; null s'il ne reste rien. */
 export function nomAffichable(value: string): string | null {
@@ -184,15 +187,23 @@ export interface DelegationDiagnosticsDeps {
   env: Pick<AppEnv, "opencodeConfigDir">;
 }
 
-/** Relevé des bandeaux ; `warn` reçoit chaque relevé impossible (aucun bandeau pour lui). Ne lève jamais. */
+/**
+ * Relevé des bandeaux ; `warn` reçoit chaque relevé impossible, qui ne donne pas son bandeau mais est nommé par le dernier bandeau,
+ * « illisible ». Ne lève jamais.
+ */
 export async function collectDelegationBanners(
   deps: DelegationDiagnosticsDeps & { warn: (check: DiagnosticCheck, err: unknown) => void },
 ): Promise<DelegationBanner[]> {
+  const failed = new Set<DiagnosticCheck>();
+  const fail = (check: DiagnosticCheck, err: unknown): void => {
+    failed.add(check);
+    deps.warn(check, err);
+  };
   const read = async <T>(check: DiagnosticCheck, task: () => Promise<T>): Promise<T | null> => {
     try {
       return await task();
     } catch (err) {
-      deps.warn(check, err);
+      fail(check, err);
       return null;
     }
   };
@@ -200,7 +211,7 @@ export async function collectDelegationBanners(
     try {
       return task();
     } catch (err) {
-      deps.warn(check, err);
+      fail(check, err);
       return null;
     }
   };
@@ -229,6 +240,7 @@ export async function collectDelegationBanners(
   if (extensions.length > 0) banners.push({ code: "extension", noms: extensions });
   const delegating = agents === null ? [] : bornes(delegatingAgents(agents, depth).map(nomAffichable));
   if (delegating.length > 0) banners.push({ code: "task-allow", noms: delegating });
+  if (failed.size > 0) banners.push({ code: "illisible", noms: CHECK_ORDER.filter((check) => failed.has(check)) });
   return banners;
 }
 
