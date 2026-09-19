@@ -1,0 +1,39 @@
+{
+  // Banc du plugin de garde (L24) : opencode 1.18.30 SANS l'extension, faux fournisseur de la salle (L21a, --http), aucun secret.
+  // Tout est permis ici (« allow ») : si un appel est refusé, c'est par le filet, et par rien d'autre. Seul plugin : le filet.
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "lsp": false,
+  "formatter": false,
+  "snapshot": false,
+  "enabled_providers": ["faux"],
+  "provider": {
+    "faux": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Faux fournisseur du banc",
+      "options": { "baseURL": "http://banc:8080/v1", "apiKey": "aucun-secret-banc-l24" },
+      "models": {
+        "faux-m1": { "name": "Faux m1", "tool_call": true, "limit": { "context": 64000, "output": 4000 } },
+        "faux-titre": { "name": "Faux titre", "tool_call": false, "limit": { "context": 64000, "output": 4000 } }
+      }
+    }
+  },
+  "model": "faux/faux-m1",
+  "small_model": "faux/faux-titre",
+  "plugin": ["file:///opt/omo-guard/cockpit-guard.js"],
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "bash": "allow",
+    "task": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": "allow",
+    "todowrite": "allow",
+    "skill": "deny"
+  }
+}
