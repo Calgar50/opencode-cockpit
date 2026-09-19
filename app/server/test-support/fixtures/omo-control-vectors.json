@@ -1,0 +1,355 @@
+{
+  "version": 1,
+  "description": "Vecteurs du protocole de contrôle de la Salle OMO (L17a). Chaque vecteur est le CONTENU exact d'un fichier de contrôle et le résultat attendu de son analyse. Lus par app/server/shared/omo-control-protocol.ts (cockpit) et par docker/opencode-omo/supervisor-lib.mjs (image) : les formats marqués « cockpit » et « salle » doivent donner exactement le même résultat des deux côtés. Aucun secret, aucun chemin d'hôte : les chemins sont ceux du conteneur.",
+  "delais": { "battementS": 5, "perimeS": 20, "verificationS": 2, "killApresS": 3 },
+  "margeHommeMortS": 2,
+  "borneHommeMortS": 27,
+  "borneMaxS": 30,
+  "maxOctets": 65536,
+  "listeMax": 20,
+  "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+  "autreStartId": "a41b7e52-0c63-4f8d-9a25-6b8e0d31f7c4",
+  "vecteurs": [
+    {
+      "nom": "battement ordinaire",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000}\n",
+      "attendu": { "at": 1757000000000 }
+    },
+    {
+      "nom": "battement avec un champ en trop : gardé, seul `at` compte",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"version\":7}",
+      "attendu": { "at": 1757000000000 }
+    },
+    {
+      "nom": "battement sans `at`",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{}",
+      "attendu": null
+    },
+    {
+      "nom": "battement dont `at` est une chaîne",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":\"1757000000000\"}",
+      "attendu": null
+    },
+    {
+      "nom": "battement dont `at` est négatif",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":-1}",
+      "attendu": null
+    },
+    {
+      "nom": "battement dont `at` n'est pas entier",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000.5}",
+      "attendu": null
+    },
+    {
+      "nom": "battement dont `at` dépasse l'an 10 000",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":253402300800000}",
+      "attendu": null
+    },
+    {
+      "nom": "battement : JSON coupé en deux (écriture non atomique)",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":17570000",
+      "attendu": null
+    },
+    {
+      "nom": "battement : fichier vide",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "",
+      "attendu": null
+    },
+    {
+      "nom": "battement : tableau au premier niveau",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "[{\"at\":1757000000000}]",
+      "attendu": null
+    },
+    {
+      "nom": "battement : nombre au premier niveau",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "1757000000000",
+      "attendu": null
+    },
+    {
+      "nom": "battement de plus de 64 Kio",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "rembourrageOctets": 70000,
+      "attendu": null
+    },
+    {
+      "nom": "battement de 64 Kio pile : accepté",
+      "format": "battement",
+      "lecteurs": ["cockpit", "salle"],
+      "rembourrageOctets": 65536,
+      "attendu": { "at": 1757000000000 }
+    },
+    {
+      "nom": "arrêt demandé par l'utilisateur",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"vous\"}\n",
+      "attendu": { "at": 1757000000000, "cause": "vous" }
+    },
+    {
+      "nom": "arrêt sur plafond de coût",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"plafond-cout\"}",
+      "attendu": { "at": 1757000000000, "cause": "plafond-cout" }
+    },
+    {
+      "nom": "arrêt sur redémarrage du cockpit",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"redemarrage-cockpit\"}",
+      "attendu": { "at": 1757000000000, "cause": "redemarrage-cockpit" }
+    },
+    {
+      "nom": "arrêt de cause inconnue : on ne refuse jamais de s'arrêter",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"autre-chose\"}",
+      "attendu": { "at": 1757000000000, "cause": "vous" }
+    },
+    {
+      "nom": "arrêt sans cause",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000}",
+      "attendu": { "at": 1757000000000, "cause": "vous" }
+    },
+    {
+      "nom": "arrêt sans `at`",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"cause\":\"vous\"}",
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle sans projet ouvert",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"at\":1757000000000,\"projets\":[]}\n",
+      "attendu": { "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13", "at": 1757000000000, "projets": [] }
+    },
+    {
+      "nom": "pré-contrôle d'un projet",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"at\":1757000000000,\"projets\":[{\"chemin\":\"alpha\",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}",
+      "attendu": {
+        "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+        "at": 1757000000000,
+        "projets": [{ "chemin": "alpha", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }]
+      }
+    },
+    {
+      "nom": "pré-contrôle dont l'empreinte est en majuscules",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"at\":1757000000000,\"projets\":[{\"chemin\":\"alpha\",\"sha256\":\"0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef\"}]}",
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle dont l'empreinte est trop courte",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"at\":1757000000000,\"projets\":[{\"chemin\":\"alpha\",\"sha256\":\"0123\"}]}",
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle dont le démarrage n'est pas un identifiant",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"demarrage-1\",\"at\":1757000000000,\"projets\":[]}",
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle sans liste de projets",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"at\":1757000000000}",
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle de 21 projets : au-delà de la liste",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "projetsGeneres": 21,
+      "attendu": null
+    },
+    {
+      "nom": "pré-contrôle de 20 projets : liste pleine, acceptée",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "projetsGeneres": 20,
+      "attenduProjets": 20
+    },
+    {
+      "nom": "état de la garde : rien à bloquer",
+      "format": "garde",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"version\":1,\"at\":1757000000000,\"bloquer\":[]}\n",
+      "attendu": { "version": 1, "at": 1757000000000, "bloquer": [] }
+    },
+    {
+      "nom": "état de la garde : délégation bloquée",
+      "format": "garde",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"version\":1,\"at\":1757000000000,\"bloquer\":[\"task\",\"call_omo_agent\"]}",
+      "attendu": { "version": 1, "at": 1757000000000, "bloquer": ["task", "call_omo_agent"] }
+    },
+    {
+      "nom": "état de la garde : outil inconnu, tout l'état est « inconnu »",
+      "format": "garde",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"version\":1,\"at\":1757000000000,\"bloquer\":[\"task\",\"autre_outil\"]}",
+      "attendu": null
+    },
+    {
+      "nom": "état de la garde : version inattendue",
+      "format": "garde",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"version\":2,\"at\":1757000000000,\"bloquer\":[]}",
+      "attendu": null
+    },
+    {
+      "nom": "projets préparés : un projet avec dépôt, un sans",
+      "format": "projets",
+      "lecteurs": ["salle"],
+      "texte": "{\"version\":1,\"genereLe\":\"2026-09-17T10:00:00Z\",\"projets\":[{\"chemin\":\"alpha\",\"git\":\"dossier\"},{\"chemin\":\"beta\",\"git\":\"absent\"}],\"gitProteges\":[{\"chemin\":\"alpha\",\"forme\":\"dossier\"}]}\n",
+      "attendu": {
+        "version": 1,
+        "genereLe": "2026-09-17T10:00:00Z",
+        "projets": [
+          { "chemin": "alpha", "git": "dossier" },
+          { "chemin": "beta", "git": "absent" }
+        ],
+        "gitProteges": [{ "chemin": "alpha", "forme": "dossier" }]
+      }
+    },
+    {
+      "nom": "projets préparés : un `.git` lien n'est pas une forme acceptée",
+      "format": "projets",
+      "lecteurs": ["salle"],
+      "texte": "{\"version\":1,\"genereLe\":\"2026-09-17T10:00:00Z\",\"projets\":[{\"chemin\":\"alpha\",\"git\":\"lien\"}],\"gitProteges\":[]}",
+      "attendu": null
+    },
+    {
+      "nom": "projets préparés : version inattendue",
+      "format": "projets",
+      "lecteurs": ["salle"],
+      "texte": "{\"version\":2,\"genereLe\":\"2026-09-17T10:00:00Z\",\"projets\":[],\"gitProteges\":[]}",
+      "attendu": null
+    },
+    {
+      "nom": "état du superviseur : opencode lancé, tout protégé",
+      "format": "etat",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"phase\":\"opencode-lance\",\"imageId\":\"sha256:abc\",\"manifestSha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"manifesteReference\":\"ok\",\"validation\":\"ok\",\"dossiersConfig\":[{\"chemin\":\"/home/node/.omo\",\"ok\":true}],\"projets\":[{\"chemin\":\"alpha\",\"gitLectureSeule\":true}],\"workspaceGit\":{\"verifieLe\":1757000000000,\"limiteAtteinte\":false,\"nonProteges\":[]},\"startedAt\":1757000000000}",
+      "attendu": {
+        "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+        "phase": "opencode-lance",
+        "imageId": "sha256:abc",
+        "manifestSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "manifesteReference": "ok",
+        "validation": "ok",
+        "dossiersConfig": [{ "chemin": "/home/node/.omo", "ok": true }],
+        "projets": [{ "chemin": "alpha", "gitLectureSeule": true }],
+        "workspaceGit": { "verifieLe": 1757000000000, "limiteAtteinte": false, "nonProteges": [] },
+        "startedAt": 1757000000000
+      }
+    },
+    {
+      "nom": "état du superviseur : phase inconnue",
+      "format": "etat",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"phase\":\"repos\",\"imageId\":\"\",\"manifestSha256\":\"\",\"manifesteReference\":\"ok\",\"validation\":\"ok\",\"dossiersConfig\":[],\"projets\":[],\"workspaceGit\":{\"verifieLe\":1757000000000,\"limiteAtteinte\":false,\"nonProteges\":[]},\"startedAt\":1757000000000}",
+      "attendu": null
+    },
+    {
+      "nom": "état du superviseur : balayage absent",
+      "format": "etat",
+      "lecteurs": ["cockpit"],
+      "texte": "{\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\",\"phase\":\"attente\",\"imageId\":\"\",\"manifestSha256\":\"\",\"manifesteReference\":\"amorce\",\"validation\":\"echec\",\"dossiersConfig\":[],\"projets\":[],\"startedAt\":1757000000000}",
+      "attendu": null
+    }
+  ],
+  "fraicheur": [
+    { "nom": "battement de l'instant", "at": 1757000000000, "maintenant": 1757000000000, "frais": true },
+    { "nom": "battement de 19 s", "at": 1757000000000, "maintenant": 1757000019000, "frais": true },
+    { "nom": "battement de 20 s pile", "at": 1757000000000, "maintenant": 1757000020000, "frais": true },
+    { "nom": "battement de 20,001 s", "at": 1757000000000, "maintenant": 1757000020001, "frais": false },
+    { "nom": "battement de 25 s", "at": 1757000000000, "maintenant": 1757000025000, "frais": false },
+    { "nom": "battement de 20 s dans l'avenir : accepté", "at": 1757000020000, "maintenant": 1757000000000, "frais": true },
+    { "nom": "battement de 21 s dans l'avenir : horloge faussée", "at": 1757000021000, "maintenant": 1757000000000, "frais": false },
+    { "nom": "aucun battement", "at": null, "maintenant": 1757000000000, "frais": false }
+  ],
+  "precheckDemarrage": [
+    {
+      "nom": "pré-contrôle de ce démarrage",
+      "startIdFichier": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "at": 1757000000000,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "maintenant": 1757000005000,
+      "accepte": true
+    },
+    {
+      "nom": "pré-contrôle très ancien, mais de ce démarrage",
+      "startIdFichier": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "at": 1757000000000,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "maintenant": 1757003600000,
+      "accepte": true
+    },
+    {
+      "nom": "pré-contrôle d'un démarrage précédent",
+      "startIdFichier": "a41b7e52-0c63-4f8d-9a25-6b8e0d31f7c4",
+      "at": 1757000000000,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "maintenant": 1757000005000,
+      "accepte": false
+    },
+    {
+      "nom": "pré-contrôle daté de 21 s dans l'avenir",
+      "startIdFichier": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "at": 1757000021000,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "maintenant": 1757000000000,
+      "accepte": false
+    },
+    {
+      "nom": "aucun pré-contrôle",
+      "startIdFichier": null,
+      "at": 1757000000000,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "maintenant": 1757000000000,
+      "accepte": false
+    }
+  ],
+  "decisions": [
+    { "nom": "battement frais, aucun arrêt", "battementAt": 1757000000000, "arret": false, "maintenant": 1757000005000, "decision": "continuer" },
+    { "nom": "arrêt demandé, battement frais", "battementAt": 1757000000000, "arret": true, "maintenant": 1757000005000, "decision": "arret-demande" },
+    { "nom": "arrêt demandé, aucun battement", "battementAt": null, "arret": true, "maintenant": 1757000005000, "decision": "arret-demande" },
+    { "nom": "battement périmé", "battementAt": 1757000000000, "arret": false, "maintenant": 1757000025000, "decision": "battement-perime" },
+    { "nom": "aucun battement", "battementAt": null, "arret": false, "maintenant": 1757000005000, "decision": "battement-perime" }
+  ]
+}
