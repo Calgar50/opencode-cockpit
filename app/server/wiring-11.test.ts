@@ -211,10 +211,14 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   });
   assert.deepEqual(p.capWatch, {});
   const judge = await p.controlAi.judge({ rootId: ROOT, sessionId: ROOT, requestId: null, command: "jq . a.json", head: "jq", relativeDir: ".", directory: null });
-  assert.deepEqual(judge, { decision: "indisponible", raison: "a-venir" });
-  // L1g : module réel installé → agent suivi, en attente du premier ensureAll ; port neutre → « non suivi ».
+  // L11b : module réel → sans demande autonome, l'IA de contrôle n'est pas consultée (« desactive », aucun appel, contrôlé par
+  // control-ai.test.ts) ; port neutre → « a-venir ».
+  assert.deepEqual(judge, { decision: "indisponible", raison: livres.includes("controlAi") ? "desactive" : "a-venir" });
+  // L1g : module réel installé → agent suivi, en attente du premier ensureAll ; port neutre → « non suivi ». L11b : le module réel
+  // suit aussi cockpit-controle.
   const suivi = wiring.modules.includes("internalAgents") ? "en-attente" : "non-suivi";
-  assert.deepEqual(p.internalAgents.status(), [{ nom: "cockpit-classifier", etat: suivi, prochainEssai: null }]);
+  const controle = wiring.modules.includes("internalAgents") ? [{ nom: "cockpit-controle", etat: "en-attente", prochainEssai: null }] : [];
+  assert.deepEqual(p.internalAgents.status(), [{ nom: "cockpit-classifier", etat: suivi, prochainEssai: null }, ...controle]);
   assert.deepEqual(await p.diagnostics.delegation(), []);
   assert.equal(wiring.c11.reloadBusy(), false);
   assert.equal(wiring.c11.activationOuverte, false);
@@ -509,7 +513,8 @@ describe("câblage 1.1 : ports neutres", () => {
     });
     wiring.c11.ports.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { etat: "occupee" }, at: 1 }]);
     assert.equal(wiring.c11.ports.facts.since(ROOT, 0).facts.length, 1);
-    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts", "taskGuard"]);
+    // L11b : port réel de l'IA de contrôle (aucune inscription).
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts", "taskGuard", "controlAi"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
@@ -588,8 +593,11 @@ describe("câblage 1.1 : routes et cadre", () => {
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), {
       delegation: [],
-      // L1g : module réel des agents internes, aucun ensureAll encore.
-      agentsInternes: [{ nom: "cockpit-classifier", etat: "en-attente", prochainEssai: null }],
+      // L1g : module réel des agents internes, aucun ensureAll encore ; L11b : cockpit-controle suivi aussi.
+      agentsInternes: [
+        { nom: "cockpit-classifier", etat: "en-attente", prochainEssai: null },
+        { nom: "cockpit-controle", etat: "en-attente", prochainEssai: null },
+      ],
       interrupteur: true,
       controleIa: s.settings.get().budget.autonomie.controleIa,
       activationOuverte: false,
