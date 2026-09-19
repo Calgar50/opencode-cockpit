@@ -338,7 +338,8 @@ export async function run(ctx) {
   const bootstrap = await ctx.api.get("/api/bootstrap");
   exiger(bootstrap?.settings?.ui?.mode === "simple", `mode ${resume(bootstrap?.settings?.ui?.mode)} au lieu de « simple ».`);
 
-  // D-05 : HTTP explicite sur la boucle locale (contexte sûr pour le navigateur), sous la CSP réelle du cockpit.
+  // D-05 : HTTP explicite sur la boucle locale (contexte sûr pour le navigateur), sous la CSP réelle du cockpit : adresse en http://,
+  // CSP lue par un fetch brut vers ctx.url (refusé en HTTPS épinglé : R105b), protocole de la page vérifié plus bas.
   exiger(ctx.url.startsWith("http://127.0.0.1:"), `adresse du cockpit inattendue : ${ctx.url}`);
   const reponse = await fetch(`${ctx.url}/`, { headers: { cookie: ctx.api.cookie } });
   const csp = reponse.headers.get("content-security-policy") ?? "";
@@ -347,6 +348,7 @@ export async function run(ctx) {
 
   // Règles acceptées au clic (première visite de la pile), mode Simple affiché, flux d'événements ouvert.
   await preparerPage(ctx);
+  // D-05 : « http: » exigé tant que le banc sert en HTTP ; en HTTPS épinglé, le schéma servi est celui du banc.
   exiger(await page.evaluer("window.isSecureContext === true && location.protocol === 'http:'"), "page hors contexte sûr, ou servie autrement qu'en HTTP.");
   const accepte = (await ctx.api.get("/api/settings"))?.ui?.rulesAcceptedVersion;
   exiger(typeof accepte === "number" && accepte >= (bootstrap.rulesVersion ?? 0), `règles non enregistrées après « Commencer » (${resume(accepte)}).`);

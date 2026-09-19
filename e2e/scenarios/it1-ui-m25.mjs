@@ -14,12 +14,14 @@
 //      de même ;
 //   3. WAAPI : en mode Avancé, la bande néon suit un tour en direct ; chaque changement passe par une transition element.animate()
 //      d'environ 900 ms, sur transform et opacity, jouée une fois, jamais bloquée par la CSP ; aucune animation sans fin dans la page ;
-//   4. aucune violation de la CSP (écouteur securitypolicyviolation), console muette.
+//   4. aucune violation de la CSP (écouteur securitypolicyviolation), console muette ; P6 et P4 tenus (témoin ouvert avant le premier
+//      changement de mode, fermé après le retour au mode de départ).
 import {
   attendre,
   attendreFinDuTour,
   attendreIa,
   attendreModeAffiche,
+  avecTemoinP6,
   changerMode,
   exiger,
   exigerAucuneViolationCsp,
@@ -32,7 +34,7 @@ import {
 } from "./it1-ui-commun.mjs";
 
 export async function run(ctx) {
-  // 1. CSP réelle et HTTP explicite (D-05).
+  // 1. CSP réelle et HTTP explicite (D-05 : CSP lue par un fetch brut vers ctx.url, refusé en HTTPS épinglé ; à reprendre au rebase).
   const reponse = await fetch(`${ctx.url}/`, { headers: { cookie: ctx.api.cookie } });
   const csp = reponse.headers.get("content-security-policy") ?? "";
   await reponse.body?.cancel();
@@ -48,50 +50,53 @@ export async function run(ctx) {
   }
   exiger(!csp.includes("unsafe-eval"), "CSP : 'unsafe-eval' présent.");
   const page = await preparerPage(ctx);
+  // D-05 : « http: » exigé tant que le banc sert en HTTP ; en HTTPS épinglé, le schéma servi est celui du banc.
   exiger(await page.evaluer("location.protocol === 'http:' && window.isSecureContext === true"), "page hors HTTP ou hors contexte sûr.");
 
-  // 2. SSE : flux ouvert, réglage reçu par le flux et appliqué sans relecture.
-  await page.attendreQue("document.querySelector('.rail-footer .dot.good')", { libelle: "pastille du flux au vert" });
-  const flux = page.journalReseau().filter((l) => new URL(l.url).pathname === "/api/events");
-  exiger(flux.length >= 1 && flux.every((l) => l.etat !== "échouée" && (l.code === undefined || l.code === 200)), `flux d'événements : ${resume(flux)}`);
-  await attendreModeAffiche(page, "simple");
-  const avant = page.journalReseau().length;
-  const depuis = Date.now();
-  const modeAvant = await changerMode(ctx, "avance");
-  let latence = null;
-  try {
-    await attendreModeAffiche(page, "avance");
-    latence = Date.now() - depuis;
-    const relectures = page.journalReseau().slice(avant).filter((l) => /\/api\/(bootstrap|settings)$/.test(new URL(l.url).pathname));
-    exiger(relectures.length === 0, `la page a relu ${resume(relectures.map((l) => l.url))} au lieu de recevoir le réglage par le flux.`);
+  await avecTemoinP6(ctx, async () => {
+    // 2. SSE : flux ouvert, réglage reçu par le flux et appliqué sans relecture.
+    await page.attendreQue("document.querySelector('.rail-footer .dot.good')", { libelle: "pastille du flux au vert" });
+    const flux = page.journalReseau().filter((l) => new URL(l.url).pathname === "/api/events");
+    exiger(flux.length >= 1 && flux.every((l) => l.etat !== "échouée" && (l.code === undefined || l.code === 200)), `flux d'événements : ${resume(flux)}`);
+    await attendreModeAffiche(page, "simple");
+    const avant = page.journalReseau().length;
+    const depuis = Date.now();
+    const modeAvant = await changerMode(ctx, "avance");
+    let latence = null;
+    try {
+      await attendreModeAffiche(page, "avance");
+      latence = Date.now() - depuis;
+      const relectures = page.journalReseau().slice(avant).filter((l) => /\/api\/(bootstrap|settings)$/.test(new URL(l.url).pathname));
+      exiger(relectures.length === 0, `la page a relu ${resume(relectures.map((l) => l.url))} au lieu de recevoir le réglage par le flux.`);
 
-    // 3. WAAPI : un tour en direct dans la bande dépliée (mode Avancé).
-    const ia = await attendreIa(ctx);
-    const client = oc(ctx);
-    const racine = await client.creerConversation("it1-ui-m25");
-    if (ctx.faux) await ctx.faux.scripter(racine.id, { stepMs: 700, text: "Réponse du faux, en plusieurs temps." });
-    await ouvrirConversation(ctx, racine.id);
-    const envoi = await client.envoyer(racine.id, "Réponds en une phrase.", ia);
-    exiger(envoi.code === 204, `envoi refusé (${envoi.code}) : ${resume(envoi.corps)}`);
-    await attendreFinDuTour(client, racine.id);
-    await page.attendreQue(`document.querySelector('.neon-map .neon-noeud.is-termine')`, { libelle: "assistant de la conversation « terminé » sur la carte" });
-    await attendre(1_200);
-    const vus = await releves(page);
-    exiger(vus.animations.length > 0, "aucune transition WAAPI relevée sur la carte pendant le tour.");
-    const hors = vus.animations.filter((a) => a.duree < 800 || a.duree > 1_000 || a.iterations !== 1 || a.proprietes.some((p) => p !== "transform" && p !== "opacity"));
-    exiger(hors.length === 0, `transition(s) hors de la règle : ${resume(hors)}`);
-    const sansFin = await page.evaluer("document.getAnimations().filter((a) => a.effect && a.effect.getTiming().iterations === Infinity).length");
-    exiger(sansFin === 0, `${sansFin} animation(s) sans fin dans la page.`);
-    releve(
-      ctx,
-      `M25 en HTTP (D-05) : CSP « ${csp} » ; flux ouvert, réglage reçu par le flux en ${latence} ms ; ${vus.animations.length} transition(s) WAAPI ` +
-        `de ${[...new Set(vus.animations.map((a) => a.duree))].join(", ")} ms sur ${[...new Set(vus.animations.flatMap((a) => a.proprietes))].join(" et ")} ; ` +
-        `${vus.violations.length} violation de la CSP ; HTTPS épinglé : en attente de R105b dans chantier/1.1`,
-    );
-  } finally {
-    await changerMode(ctx, modeAvant === "avance" ? "avance" : "simple");
-  }
-  await attendreModeAffiche(page, "simple");
+      // 3. WAAPI : un tour en direct dans la bande dépliée (mode Avancé).
+      const ia = await attendreIa(ctx);
+      const client = oc(ctx);
+      const racine = await client.creerConversation("it1-ui-m25");
+      if (ctx.faux) await ctx.faux.scripter(racine.id, { stepMs: 700, text: "Réponse du faux, en plusieurs temps." });
+      await ouvrirConversation(ctx, racine.id);
+      const envoi = await client.envoyer(racine.id, "Réponds en une phrase.", ia);
+      exiger(envoi.code === 204, `envoi refusé (${envoi.code}) : ${resume(envoi.corps)}`);
+      await attendreFinDuTour(client, racine.id);
+      await page.attendreQue(`document.querySelector('.neon-map .neon-noeud.is-termine')`, { libelle: "assistant de la conversation « terminé » sur la carte" });
+      await attendre(1_200);
+      const vus = await releves(page);
+      exiger(vus.animations.length > 0, "aucune transition WAAPI relevée sur la carte pendant le tour.");
+      const hors = vus.animations.filter((a) => a.duree < 800 || a.duree > 1_000 || a.iterations !== 1 || a.proprietes.some((p) => p !== "transform" && p !== "opacity"));
+      exiger(hors.length === 0, `transition(s) hors de la règle : ${resume(hors)}`);
+      const sansFin = await page.evaluer("document.getAnimations().filter((a) => a.effect && a.effect.getTiming().iterations === Infinity).length");
+      exiger(sansFin === 0, `${sansFin} animation(s) sans fin dans la page.`);
+      releve(
+        ctx,
+        `M25 en HTTP (D-05) : CSP « ${csp} » ; flux ouvert, réglage reçu par le flux en ${latence} ms ; ${vus.animations.length} transition(s) WAAPI ` +
+          `de ${[...new Set(vus.animations.map((a) => a.duree))].join(", ")} ms sur ${[...new Set(vus.animations.flatMap((a) => a.proprietes))].join(" et ")} ; ` +
+          `${vus.violations.length} violation de la CSP ; HTTPS épinglé : en attente de R105b dans chantier/1.1`,
+      );
+    } finally {
+      await changerMode(ctx, modeAvant === "avance" ? "avance" : "simple");
+    }
+    await attendreModeAffiche(page, "simple");
+  });
   await exigerAucuneViolationCsp(page);
   ctx.expectNoConsoleErrors();
 }

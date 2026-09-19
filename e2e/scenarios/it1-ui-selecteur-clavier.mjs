@@ -17,9 +17,11 @@
 //   3. au clavier, « Plan d'abord (nouvelle conversation) » + Entrée crée la conversation de plan (POST /api/plans) et l'ouvre : son
 //      sélecteur affiche « Plan d'abord » ;
 //   4. dans cette conversation, Flèche haut ouvre le menu sur le dernier choix ; Tab le ferme et la tabulation continue hors du menu ;
-//   5. aucune violation de la CSP, console muette.
+//   5. aucune violation de la CSP, console muette ; P6 et P4 tenus (témoin ouvert avant la création de la conversation, fermé après
+//      celle de la conversation de plan).
 import {
   attendre,
+  avecTemoinP6,
   exiger,
   exigerAucuneViolationCsp,
   oc,
@@ -36,72 +38,74 @@ export async function run(ctx) {
   const page = ctx.navigateur;
   await accepterReglesAuClavier(page);
   await preparerPage(ctx);
-  const racine = await oc(ctx).creerConversation("it1-ui-selecteur-clavier");
-  await ouvrirConversation(ctx, racine.id);
-  await page.attendreQue(`document.querySelector(${JSON.stringify(BOUTON)})?.getAttribute("aria-label") === "Autonomie : Demander à chaque fois"`, {
-    libelle: "sélecteur de l'en-tête sur « Demander à chaque fois »",
-  });
+  await avecTemoinP6(ctx, async () => {
+    const racine = await oc(ctx).creerConversation("it1-ui-selecteur-clavier");
+    await ouvrirConversation(ctx, racine.id);
+    await page.attendreQue(`document.querySelector(${JSON.stringify(BOUTON)})?.getAttribute("aria-label") === "Autonomie : Demander à chaque fois"`, {
+      libelle: "sélecteur de l'en-tête sur « Demander à chaque fois »",
+    });
 
-  // 1. La tabulation atteint le bouton du sélecteur.
-  const tabulations = await tabulerJusquAuBouton(page);
-  exiger(await page.evaluer(`document.activeElement.getAttribute("aria-haspopup") === "menu"`), "le bouton du sélecteur n'annonce pas son menu.");
+    // 1. La tabulation atteint le bouton du sélecteur.
+    const tabulations = await tabulerJusquAuBouton(page);
+    exiger(await page.evaluer(`document.activeElement.getAttribute("aria-haspopup") === "menu"`), "le bouton du sélecteur n'annonce pas son menu.");
 
-  // 2. Menu au clavier.
-  await page.touche("ArrowDown");
-  await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
-  await page.touche("ArrowDown");
-  const modifications = await attendreFocusMenu(page, { libelle: "Modifications automatiques", coche: false, desactive: true, position: 2 });
-  exiger(modifications.raison !== "", "choix désactivé sans raison lue.");
-  const avant = page.journalReseau().length;
-  await page.touche("Enter");
-  await attendre(400);
-  exiger(await menuOuvert(page), "Entrée sur un choix désactivé a fermé le menu.");
-  // Seules comptent les écritures du sélecteur (choix, plan) : la page peut résoudre l'IA de la saisie au même moment.
-  const envoyees = page.journalReseau().slice(avant).filter((l) => /\/api\/(conversations\/[^/]+\/autonomie|plans)$/.test(new URL(l.url).pathname));
-  exiger(envoyees.length === 0, `Entrée sur un choix désactivé a envoyé ${resume(envoyees.map((l) => `${l.methode} ${l.url}`))}`);
-  await page.touche("End");
-  await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
-  await page.touche("Home");
-  await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
-  await page.taper("p");
-  await attendreFocusMenu(page, { libelle: "Plan d'abord (nouvelle conversation)", coche: false, desactive: false, position: 3 });
-  await page.touche("Escape");
-  await page.attendreQue(`!document.querySelector('[role="menu"]') && document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`, {
-    libelle: "Échap : menu fermé, focus rendu au bouton",
-  });
+    // 2. Menu au clavier.
+    await page.touche("ArrowDown");
+    await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
+    await page.touche("ArrowDown");
+    const modifications = await attendreFocusMenu(page, { libelle: "Modifications automatiques", coche: false, desactive: true, position: 2 });
+    exiger(modifications.raison !== "", "choix désactivé sans raison lue.");
+    const avant = page.journalReseau().length;
+    await page.touche("Enter");
+    await attendre(400);
+    exiger(await menuOuvert(page), "Entrée sur un choix désactivé a fermé le menu.");
+    // Seules comptent les écritures du sélecteur (choix, plan) : la page peut résoudre l'IA de la saisie au même moment.
+    const envoyees = page.journalReseau().slice(avant).filter((l) => /\/api\/(conversations\/[^/]+\/autonomie|plans)$/.test(new URL(l.url).pathname));
+    exiger(envoyees.length === 0, `Entrée sur un choix désactivé a envoyé ${resume(envoyees.map((l) => `${l.methode} ${l.url}`))}`);
+    await page.touche("End");
+    await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
+    await page.touche("Home");
+    await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
+    await page.taper("p");
+    await attendreFocusMenu(page, { libelle: "Plan d'abord (nouvelle conversation)", coche: false, desactive: false, position: 3 });
+    await page.touche("Escape");
+    await page.attendreQue(`!document.querySelector('[role="menu"]') && document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`, {
+      libelle: "Échap : menu fermé, focus rendu au bouton",
+    });
 
-  // 3. « Plan d'abord (nouvelle conversation) » au clavier : la conversation de plan est créée et ouverte.
-  await page.touche("ArrowDown");
-  await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
-  await page.taper("p");
-  await attendreFocusMenu(page, { libelle: "Plan d'abord (nouvelle conversation)", coche: false, desactive: false, position: 3 });
-  await page.touche("Enter");
-  await page.attendreQue(`location.hash.startsWith("#/chat/") && location.hash !== ${JSON.stringify(`#/chat/${racine.id}`)}`, {
-    delaiMs: 20_000,
-    libelle: "conversation de plan ouverte",
-  });
-  const plan = await page.evaluer("decodeURIComponent(location.hash.slice('#/chat/'.length))");
-  await page.attendreQue(`document.querySelector(${JSON.stringify(BOUTON)})?.getAttribute("aria-label") === "Autonomie : Plan d'abord"`, {
-    libelle: "sélecteur de la conversation de plan sur « Plan d'abord »",
-  });
-  const choix = await ctx.api.get(`/api/conversations/${encodeURIComponent(plan)}/autonomie`);
-  exiger(choix?.choix === "plan", `choix de la conversation de plan : ${resume(choix)}`);
+    // 3. « Plan d'abord (nouvelle conversation) » au clavier : la conversation de plan est créée et ouverte.
+    await page.touche("ArrowDown");
+    await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
+    await page.taper("p");
+    await attendreFocusMenu(page, { libelle: "Plan d'abord (nouvelle conversation)", coche: false, desactive: false, position: 3 });
+    await page.touche("Enter");
+    await page.attendreQue(`location.hash.startsWith("#/chat/") && location.hash !== ${JSON.stringify(`#/chat/${racine.id}`)}`, {
+      delaiMs: 20_000,
+      libelle: "conversation de plan ouverte",
+    });
+    const plan = await page.evaluer("decodeURIComponent(location.hash.slice('#/chat/'.length))");
+    await page.attendreQue(`document.querySelector(${JSON.stringify(BOUTON)})?.getAttribute("aria-label") === "Autonomie : Plan d'abord"`, {
+      libelle: "sélecteur de la conversation de plan sur « Plan d'abord »",
+    });
+    const choix = await ctx.api.get(`/api/conversations/${encodeURIComponent(plan)}/autonomie`);
+    exiger(choix?.choix === "plan", `choix de la conversation de plan : ${resume(choix)}`);
 
-  // 4. Dans la conversation de plan : focus resté sur le bouton, sinon tabulation jusqu'à lui ; Flèche haut ouvre sur le dernier
-  // choix ; Tab ferme le menu et la tabulation continue hors de lui.
-  const resteSurLeBouton = await page.evaluer(`document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`);
-  if (!resteSurLeBouton) await tabulerJusquAuBouton(page);
-  await page.touche("ArrowUp");
-  await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
-  await page.touche("Tab");
-  await page.attendreQue(`!document.querySelector('[role="menu"]') && document.activeElement !== document.body && !document.activeElement.closest('.autonomy-selector-header')`, {
-    libelle: "Tab : menu fermé, focus sur l'élément suivant de la page",
+    // 4. Dans la conversation de plan : focus resté sur le bouton, sinon tabulation jusqu'à lui ; Flèche haut ouvre sur le dernier
+    // choix ; Tab ferme le menu et la tabulation continue hors de lui.
+    const resteSurLeBouton = await page.evaluer(`document.activeElement === document.querySelector(${JSON.stringify(BOUTON)})`);
+    if (!resteSurLeBouton) await tabulerJusquAuBouton(page);
+    await page.touche("ArrowUp");
+    await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
+    await page.touche("Tab");
+    await page.attendreQue(`!document.querySelector('[role="menu"]') && document.activeElement !== document.body && !document.activeElement.closest('.autonomy-selector-header')`, {
+      libelle: "Tab : menu fermé, focus sur l'élément suivant de la page",
+    });
+    releve(
+      ctx,
+      `sélecteur atteint en ${tabulations} tabulation(s) ; menu parcouru, « Plan d'abord » choisi au clavier seul ; focus ${resteSurLeBouton ? "gardé" : "perdu"} ` +
+        "sur le bouton après l'ouverture de la conversation de plan",
+    );
   });
-  releve(
-    ctx,
-    `sélecteur atteint en ${tabulations} tabulation(s) ; menu parcouru, « Plan d'abord » choisi au clavier seul ; focus ${resteSurLeBouton ? "gardé" : "perdu"} ` +
-      "sur le bouton après l'ouverture de la conversation de plan",
-  );
 
   await exigerAucuneViolationCsp(page);
   ctx.expectNoConsoleErrors();

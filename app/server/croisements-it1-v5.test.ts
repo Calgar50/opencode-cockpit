@@ -6,16 +6,21 @@
 //      ouvert avant (direct, flux du hub) et un onglet rouvert après (GET …/facts) en tirent la même ligne (L4c) ; « Qui
 //      travaille ? » (L5b) dit la phrase dans les deux modes, précédée du nom du raccourci en mode Avancé, et seulement pour cette
 //      ligne ; les délégations de l'IA de p1 (avec et sans demande) ne la disent jamais ; la phrase que cherche le scénario
-//      it1-ui-p2-raccourci (L7b-2) est celle des textes, et ActorList la rend dans les deux modes ;
+//      it1-ui-p2-raccourci (L7b-2) est celle des textes, et ActorList la rend dans les deux modes ; un appel `task` dont l'IA a
+//      rempli elle-même `command` et qui a posé une demande, accordée « once », ne la dit jamais, ni le nom du raccourci, et le
+//      Déroulé le dit « décidé par l'IA » (relecture 1-vague-5) ;
 //   2. documentation (DOC1, L7a, L7b-1, L7b-2) : liens internes et ancres (calculées comme GitHub) de README.md,
 //      docs/RECAPITULATIF.md et e2e/README.md ; chaque scénario du banc est cité dans e2e/README.md et chaque scénario cité dans la
-//      documentation existe.
+//      documentation existe ; chaque scénario it1 qui agit sur opencode tourne sous le témoin P6 ; chaque endroit du banc qui
+//      suppose le HTTP porte la mention D-05 et est nommé par e2e/README.md et le RECAPITULATIF ; le RECAPITULATIF ne garde pas en
+//      « reste à faire » ce que son §10 donne pour fait (relecture 1-vague-5).
 // Le banc e2e lui-même (run-e2e.sh --faux sur tous les scénarios) est joué par l'intégrateur, hors de npm test (décision D-06).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { type ActivityClock, type ActivitySource, ActivityStore } from "../web/lib/useActivity.ts";
+import { plannedOf } from "../web/pages/chat/turn.ts";
 import type { ActivityFact, ActivityResponse, FactsResponse } from "./shared/activity-types.ts";
 import { emptyActivity, type LiveRow, liveRows, replayFacts } from "./shared/activity.ts";
 import { mentionsRaccourci, TEXTES } from "./shared/activity-texts.ts";
@@ -28,6 +33,10 @@ const ROOT = "ses_f618ff214ffevi6gfuGx6TvpTP";
 const P1 = "p1-delegation-parallele.jsonl";
 const P2 = "p2-commande-subtask.jsonl";
 const COMMANDE = "revue-croisee";
+/** Appel `task` de p1 qui passe par une demande d'autorisation (per_09e7…), accordée « once ». */
+const CALL_DEMANDE = "call_397a867685754eee8591b009";
+
+type CaptureRow = ReturnType<typeof readCapture>[number];
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const REPO_DIR = path.join(APP_DIR, "..");
@@ -66,16 +75,36 @@ async function openLiveTab(t: { after(fn: () => void): void }, h: CockpitHarness
   return store;
 }
 
-/** Capture rejouée sur le flux du faux jusqu'au repos de la racine ; lignes du direct et d'un onglet rouvert (faits relus). */
+/**
+ * p1 où l'IA remplit elle-même le paramètre facultatif `command` de l'outil `task` (opencode 1.18.30 : « The command that
+ * triggered this task ») sur l'appel qui passe par une demande (CALL_DEMANDE), accordée « once » : la demande dépend seulement de
+ * bypassAgentCheck, jamais de ce paramètre.
+ */
+function p1CommandeDeLIa(): CaptureRow[] {
+  let touched = 0;
+  const rows = readCapture(P1).map((row) => {
+    const payload = row.wire.payload as { type: string; properties?: { part?: { tool?: unknown; callID?: unknown; state?: { input?: unknown } } } };
+    const part = payload.properties?.part;
+    if (payload.type !== "message.part.updated" || part?.tool !== "task" || part.callID !== CALL_DEMANDE || typeof part.state?.input !== "object") return row;
+    touched += 1;
+    const copy = structuredClone(row);
+    (copy.wire.payload as unknown as { properties: { part: { state: { input: Record<string, unknown> } } } }).properties.part.state.input.command = COMMANDE;
+    return copy;
+  });
+  assert.equal(touched, 4, "parties `task` de l'appel demandé : en préparation, deux fois en cours, terminée");
+  return rows;
+}
+
+/** Capture(s) rejouée(s) sur le flux du faux jusqu'au repos de la racine ; lignes du direct et d'un onglet rouvert (faits relus). */
 async function replayCapture(
   t: { after(fn: () => void): void },
   h: CockpitHarness,
-  name: string,
+  capture: string | readonly CaptureRow[],
 ): Promise<{ direct: readonly LiveRow[]; reopened: readonly LiveRow[]; activity: ActivityResponse }> {
   const tab = await openLiveTab(t, h);
-  const rows = readCapture(name);
+  const rows = typeof capture === "string" ? readCapture(capture) : capture;
   // p2 commence sur une conversation déjà ouverte (même racine que p1) : sa création, celle de p1, précède le raccourci.
-  const created = (row: (typeof rows)[number]) => {
+  const created = (row: CaptureRow) => {
     const payload = row.wire.payload as { type: string; properties?: { info?: { id?: unknown } } };
     return payload.type === "session.created" && payload.properties?.info?.id === ROOT;
   };
@@ -85,8 +114,13 @@ async function replayCapture(
     h.fake.emitRaw(opening.wire);
   }
   for (const { wire } of rows) h.fake.emitRaw(wire);
+  // Un repos de la racine par capture rejouée (session.idle de la racine) : p1 suivie de p2 en compte deux.
+  const idles = rows.filter(({ wire }) => {
+    const payload = wire.payload as { type: string; properties?: { sessionID?: unknown } };
+    return payload.type === "session.idle" && payload.properties?.sessionID === ROOT;
+  }).length;
   const rootAtRest = (fact: ActivityFact) => fact.sessionId === ROOT && fact.kind === "statut" && fact.data.etat === "repos";
-  await until(() => h.cockpitEvents().some((e) => e.type === "activite.fait" && rootAtRest(e.data as ActivityFact)), 10_000);
+  await until(() => h.cockpitEvents().filter((e) => e.type === "activite.fait" && rootAtRest(e.data as ActivityFact)).length >= Math.max(1, idles), 10_000);
   const { facts } = await getJson<FactsResponse>(h, `/api/conversations/${ROOT}/facts?since=0`);
   await until(() => tab.getSnapshot().state.facts.length === facts.length, 5_000);
   const activity = await getJson<ActivityResponse>(h, `/api/conversations/${ROOT}/activity`);
@@ -94,8 +128,8 @@ async function replayCapture(
   return { direct: tab.getSnapshot().rows, reopened, activity };
 }
 
-/** Ce que « Qui travaille ? » écrit sous le nom de chaque ligne à propos d'un raccourci, par mode. */
-const mentions = (rows: readonly LiveRow[], avance: boolean) => rows.map((row) => mentionsRaccourci(row.commande, avance));
+/** Ce que « Qui travaille ? » écrit sous le nom de chaque ligne à propos d'un raccourci, par mode (comme ActorList). */
+const mentions = (rows: readonly LiveRow[], avance: boolean) => rows.map((row) => mentionsRaccourci(row.commande, row.sansConfirmation, avance));
 
 describe("croisements it1 V5 : « lancé sans confirmation » sur la capture p2 (L0, L4a, L4b, L4c, L5b, L7b-2)", () => {
   it("p2 sur le cockpit complet : délégation du raccourci enregistrée sans confirmation ; même ligne en direct et rouverte ; phrase dans les deux modes, nom du raccourci en Avancé, sur cette seule ligne", async (t) => {
@@ -119,10 +153,13 @@ describe("croisements it1 V5 : « lancé sans confirmation » sur la capture p2 
         [child],
         `${label} : aucune autre ligne ne porte de raccourci`,
       );
-      // L5b : les mentions, dans les deux modes.
-      assert.deepEqual(mentionsRaccourci(row?.commande ?? null, true), [`raccourci /${COMMANDE}`, "lancé sans confirmation"], label);
-      assert.deepEqual(mentionsRaccourci(row?.commande ?? null, false), ["lancé sans confirmation"], label);
+      // L5b : les mentions, dans les deux modes ; elles suivent l'absence de demande (sansConfirmation), pas la seule commande.
+      assert.equal(row?.sansConfirmation, true, `${label} : raccourci lancé sans demande`);
+      const sans = row?.sansConfirmation ?? false;
+      assert.deepEqual(mentionsRaccourci(row?.commande ?? null, sans, true), [`raccourci /${COMMANDE}`, "lancé sans confirmation"], label);
+      assert.deepEqual(mentionsRaccourci(row?.commande ?? null, sans, false), ["lancé sans confirmation"], label);
       assert.equal(mentions(rows, false).flat().length, 1, `${label} : une seule mention en mode Simple`);
+      assert.deepEqual(plannedOf(row ?? null), { kind: "prevu", text: `raccourci /${COMMANDE}` }, `${label} : Déroulé`);
     }
     assert.deepEqual(h.fake.failures, []);
     h.assertNoGlobalRestart();
@@ -144,17 +181,73 @@ describe("croisements it1 V5 : « lancé sans confirmation » sur la capture p2 
     }
   });
 
+  it("p1, `command` rempli par l'IA sur l'appel qui passe par une demande accordée « once » : enregistré avec confirmation ; ni « lancé sans confirmation » ni nom de raccourci, en direct comme rouvert ; Déroulé « décidé par l'IA »", async (t) => {
+    const h = await startCockpit(t, { modules: "tous", settings: { ui: { mode: "avance" } } });
+    const { direct, reopened, activity } = await replayCapture(t, h, p1CommandeDeLIa());
+    assert.deepEqual(
+      activity.delegations.map((d) => [d.callId, d.source, d.command, d.sansConfirmation, d.permissionId === null, d.state]),
+      [
+        ["call_d16cb6e832bd48ac81b65537", "ia", null, false, true, "terminee"],
+        [CALL_DEMANDE, "raccourci", COMMANDE, false, false, "terminee"],
+      ],
+    );
+    const child = activity.delegations.find((d) => d.callId === CALL_DEMANDE)?.childSessionId ?? null;
+    assert.ok(child !== null, "enfant de l'appel demandé");
+    for (const [label, rows] of [["direct", direct], ["rouvert", reopened]] as const) {
+      const row: LiveRow | undefined = rows.find((r) => r.sessionId === child && !r.sansSession);
+      assert.deepEqual([row?.commande, row?.sansConfirmation], [COMMANDE, false], `${label} : commande écrite par l'IA, demande vue`);
+      for (const avance of [true, false]) assert.deepEqual(mentions(rows, avance).flat(), [], `${label}, ${avance ? "Avancé" : "Simple"}`);
+      assert.deepEqual(plannedOf(row ?? null), { kind: "non-prevu", text: "non prévu : décidé par l'IA" }, `${label} : Déroulé`);
+    }
+    assert.deepEqual(h.fake.failures, []);
+    h.assertNoGlobalRestart();
+  });
+
+  it("p1 (commande de l'IA, demandée) puis p2 (raccourci `subtask`) dans la même conversation : seule la ligne du raccourci dit « lancé sans confirmation », en direct comme rouverte", async (t) => {
+    const h = await startCockpit(t, { modules: "tous", settings: { ui: { mode: "avance" } } });
+    const { direct, reopened, activity } = await replayCapture(t, h, [...p1CommandeDeLIa(), ...readCapture(P2)]);
+    assert.deepEqual(
+      activity.delegations.map((d) => [d.source, d.command, d.sansConfirmation, d.permissionId === null]),
+      [
+        ["ia", null, false, true],
+        ["raccourci", COMMANDE, false, false],
+        ["raccourci", COMMANDE, true, true],
+      ],
+    );
+    const shortcut = activity.delegations[2]?.childSessionId ?? null;
+    assert.ok(shortcut !== null, "enfant du raccourci");
+    for (const [label, rows] of [["direct", direct], ["rouvert", reopened]] as const) {
+      assert.equal(rows.filter((r) => r.commande !== null).length, 2, `${label} : deux lignes portent la même commande`);
+      assert.deepEqual(
+        rows.filter((r) => mentionsRaccourci(r.commande, r.sansConfirmation, false).length > 0).map((r) => r.sessionId),
+        [shortcut],
+        `${label} : la seule ligne du raccourci`,
+      );
+      assert.deepEqual(mentions(rows, false).flat(), ["lancé sans confirmation"], `${label} : mode Simple`);
+      assert.deepEqual(mentions(rows, true).flat(), [`raccourci /${COMMANDE}`, "lancé sans confirmation"], `${label} : mode Avancé`);
+    }
+    assert.deepEqual(h.fake.failures, []);
+    h.assertNoGlobalRestart();
+  });
+
   it("phrase du tableau d'honnêteté : celle que cherche it1-ui-p2-raccourci (L7b-2) ; ActorList la rend dans les deux modes", () => {
     assert.equal(TEXTES.partout.sansConfirmation, "lancé sans confirmation");
-    const commun = fs.readFileSync(path.join(SCENARIOS_DIR, "it1-ui-commun.mjs"), "utf8");
+    // Une commande seule ne dit rien (l'IA peut remplir `command` et passer par une demande) ; sans commande non plus.
+    for (const avance of [true, false]) {
+      assert.deepEqual(mentionsRaccourci(COMMANDE, false, avance), []);
+      assert.deepEqual(mentionsRaccourci(null, true, avance), []);
+    }
+    const commun =fs.readFileSync(path.join(SCENARIOS_DIR, "it1-ui-commun.mjs"), "utf8");
     assert.equal(/\bsansConfirmation: "([^"]+)"/.exec(commun)?.[1], TEXTES.partout.sansConfirmation, "PHRASES.sansConfirmation du banc");
     assert.match(fs.readFileSync(path.join(SCENARIOS_DIR, "it1-ui-p2-raccourci.mjs"), "utf8"), /includes\(PHRASES\.sansConfirmation\)/);
     // ActorList : les mentions sont rendues quel que soit le mode (jamais derrière « advanced ? »), celles du mode Simple comprises.
     const source = fs.readFileSync(ACTOR_LIST_FILE, "utf8");
     assert.match(source, /<ActorExtra row=\{row\} advanced=\{advanced\} \/>/);
     assert.doesNotMatch(source, /advanced \? <ActorExtra/);
-    assert.match(source, /: mentionsRaccourci\(row\.commande, false\)/);
-    assert.match(source, /\.\.\.mentionsRaccourci\(row\.commande, true\)/);
+    // … et suivent l'absence de demande (row.sansConfirmation), jamais la seule commande.
+    assert.match(source, /: mentionsRaccourci\(row\.commande, row\.sansConfirmation, false\)/);
+    assert.match(source, /\.\.\.mentionsRaccourci\(row\.commande, row\.sansConfirmation, true\)/);
+    assert.equal(source.match(/mentionsRaccourci\(/g)?.length, 2, "deux appels : les deux ci-dessus");
   });
 });
 
@@ -247,5 +340,65 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
     }
     assert.ok(cited.size >= scenarios.length - 1, `scénarios cités : ${[...cited].join(", ")}`);
     assert.deepEqual([...cited].filter((name) => !scenarios.includes(name)), [], "scénarios cités mais absents de e2e/scenarios");
+  });
+
+  it("témoin P6 et P4 : chaque scénario it1 qui agit sur opencode tourne sous avecTemoinP6, comme e2e/README.md l'annonce", () => {
+    const read = (name: string) => fs.readFileSync(path.join(SCENARIOS_DIR, name), "utf8");
+    // Agit sur opencode : conversation créée, message envoyé (proxy /api/oc/…), plan créé.
+    const agit = /\bcreerConversation\(|\benvoyer\(|\/api\/oc\/|\/api\/plans\b/;
+    const scenarios = fs.readdirSync(SCENARIOS_DIR).filter((name) => /^it1-.*\.mjs$/.test(name) && !name.endsWith("-commun.mjs"));
+    const touchent = scenarios.filter((name) => agit.test(read(name)));
+    for (const name of ["it1-ui-m25.mjs", "it1-ui-demonstration.mjs", "it1-ui-m1-noreply.mjs", "it1-ui-selecteur-clavier.mjs", "it1-api-arret.mjs"]) {
+      assert.ok(touchent.includes(name), `${name} agit sur opencode`);
+    }
+    assert.deepEqual(touchent.filter((name) => !/\bawait avecTemoinP6\(ctx, /.test(read(name))), [], "scénarios qui agissent sur opencode hors du témoin P6");
+    const readme = fs.readFileSync(path.join(REPO_DIR, "e2e", "README.md"), "utf8").replace(/\s+/g, " ");
+    assert.match(readme, /Chaque autre scénario qui agit sur opencode \(.*?\) le fait sous le témoin P6/);
+  });
+
+  it("écart D-05 : chaque endroit des scénarios qui suppose le HTTP porte la mention D-05 ; e2e/README.md et le RECAPITULATIF les nomment tous", () => {
+    // fetch brut vers l'adresse du cockpit, adresse ou protocole de la page exigés en HTTP.
+    const suppose = /fetch\(`\$\{ctx\.url\}|protocol === 'http:'|startsWith\("http:\/\/127\.0\.0\.1:"\)/;
+    const nonMarques: string[] = [];
+    const fichiers = new Set<string>();
+    for (const name of fs.readdirSync(SCENARIOS_DIR).filter((n) => n.endsWith(".mjs"))) {
+      const lines = fs.readFileSync(path.join(SCENARIOS_DIR, name), "utf8").split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (!suppose.test(line)) return;
+        fichiers.add(name);
+        if (!lines.slice(Math.max(0, i - 3), i + 1).some((l) => l.includes("D-05"))) nonMarques.push(`${name}:${i + 1}`);
+      });
+    }
+    assert.deepEqual([...fichiers].sort(), ["it1-api-commun.mjs", "it1-ui-commun.mjs", "it1-ui-m25.mjs"]);
+    assert.deepEqual(nonMarques, [], "endroits qui supposent le HTTP sans la mention D-05 (3 lignes au-dessus au plus)");
+    const paragraphes = (file: string) =>
+      fs
+        .readFileSync(path.join(REPO_DIR, file), "utf8")
+        .split(/\r?\n\s*\r?\n/)
+        .filter((p) => p.includes("D-05"))
+        .join("\n");
+    for (const doc of [path.join("e2e", "README.md"), path.join("docs", "RECAPITULATIF.md")]) {
+      const texte = paragraphes(doc);
+      assert.deepEqual([...fichiers].filter((name) => !texte.includes(`\`${name}\``)), [], `${doc} : fichiers à reprendre au rebase non nommés`);
+      assert.doesNotMatch(texte, /les deux endroits à reprendre/, `${doc} : « les deux endroits » seulement`);
+    }
+  });
+
+  it("RECAPITULATIF : ce que le §10 donne pour fait n'est plus dans les restes ; tests de croisement nommés jusqu'à la dernière vague", () => {
+    const recap = fs.readFileSync(path.join(REPO_DIR, "docs", "RECAPITULATIF.md"), "utf8");
+    const lines = recap.split(/\r?\n/);
+    const restes = lines.filter((l) => /Restent pour clore cette itération|Reste à faire pour clore l'itération 1/.test(l));
+    assert.equal(restes.length, 2, "état du chantier (en tête) et §9, étape 6");
+    const faits = lines.map((l) => /^\| (e2e [^(|]+?) \(/.exec(l)?.[1]).filter((f): f is string => f !== undefined);
+    assert.deepEqual(faits, ["e2e par l'API", "e2e de l'interface"], "résultats e2e du §10");
+    for (const fait of faits) {
+      for (const reste of restes) assert.ok(!reste.includes(fait), `« ${fait} » donné pour fait au §10 et encore à faire : ${reste.slice(0, 160)}`);
+    }
+    const vagues = fs
+      .readdirSync(import.meta.dirname)
+      .map((name) => /^croisements-it1-v(\d+)\.test\.ts$/.exec(name)?.[1])
+      .filter((v): v is string => v !== undefined)
+      .map(Number);
+    assert.ok(recap.includes(`(\`croisements-it1-v0\` à \`v${Math.max(...vagues)}\`)`), `tests de croisement jusqu'à v${Math.max(...vagues)}`);
   });
 });

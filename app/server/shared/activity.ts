@@ -611,6 +611,12 @@ export interface LiveRow extends ActivityRow {
   permissionId: string | null;
   source: DelegationSource | null;
   commande: string | null;
+  /**
+   * Lancée sans demande d'autorisation par un raccourci `subtask` (§6 l.1048) : appel `task` porteur d'une commande, et aucune
+   * attente vue pour lui (règle de delegations.sans_confirmation, fact-store). La commande seule ne prouve rien : l'IA peut remplir
+   * le paramètre `command` de l'outil `task` elle-même, et opencode pose alors la demande.
+   */
+  sansConfirmation: boolean;
   reprise: boolean;
   /** Enfant lancé alors que la session qui délègue ne travaillait plus (accord tardif) : son résultat ne revient nulle part. */
   detache: boolean;
@@ -620,6 +626,9 @@ export interface LiveRow extends ActivityRow {
   until: number | null;
   durationMs: number | null;
 }
+
+/** Raccourci lancé sans demande : commande portée par l'appel `task`, et aucune attente d'accord vue pour cet appel. */
+const lanceSansDemande = (call: CallModel | null): boolean => call !== null && call.commande !== null && call.permissionId === null;
 
 const ownOpenWait = (model: Model, node: NodeModel): WaitModel | null => {
   for (const wait of model.waits.values()) {
@@ -678,6 +687,7 @@ function sessionRow(state: ActivityState, model: Model, node: NodeModel, now: nu
     permissionId: node.busy ? (ownOpenWait(model, node)?.id ?? null) : null,
     source: call?.source ?? null,
     commande: call?.commande ?? null,
+    sansConfirmation: lanceSansDemande(call),
     reprise: call?.reprise ?? false,
     detache: node.role === "delegation" && call === null && !node.parentBusy,
     cause: node.stopped?.cause ?? null,
@@ -721,6 +731,7 @@ function callRow(state: ActivityState, model: Model, call: CallModel, now: numbe
     permissionId: rowState === "attente-accord" ? (wait?.id ?? null) : null,
     source: call.source,
     commande: call.commande,
+    sansConfirmation: lanceSansDemande(call),
     reprise: false,
     detache: false,
     cause: call.stopCause,

@@ -15,7 +15,9 @@
 // sous-agent) ; une demande n'expire que si son instance est libérée (server.instance.disposed, global.disposed : mesure M14,
 // demande disparue sans permission.replied). « Lancée sans confirmation » n'est posé que pour un raccourci (subtask) : l'absence
 // d'une demande vue dans le flux ne prouve rien (événements manqués pendant une coupure) ; pour un agent `task: allow`, c'est
-// l'évaluation de ses règles (garde des délégations, L1d) qui peut le dire, par ce même port.
+// l'évaluation de ses règles (garde des délégations, L1d) qui peut le dire, par ce même port. La source « raccourci » vient du
+// paramètre `command` de la partie `task`, que l'IA peut remplir elle-même (opencode 1.18.30) : seule l'absence de demande pour
+// l'appel prouve un lancement sans confirmation, et fact-store ne garde sans_confirmation qu'avec aucune demande connue.
 import type { Cockpit11, DelegationUpsert, EventDerivation, WaitUpsert } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import type { OcGlobalEvent } from "./opencode.ts";

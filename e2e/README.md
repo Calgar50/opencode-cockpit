@@ -69,8 +69,9 @@ docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2
   `/auth?t=`).
 
 Le cockpit sert en **HTTP** tant que la 1.0.5 n'est pas rebasée (décision D-05). Le rebase (paquet R105) passera le
-banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie : les deux endroits à reprendre portent
-la mention `D-05` dans `e2e/lib/cockpit.mjs`.
+banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie. Les endroits à reprendre portent la
+mention `D-05` : deux dans `e2e/lib/cockpit.mjs`, les autres dans les scénarios de l'itération 1
+([liste](#scénarios-de-litération-1-chantier-11)).
 
 ## Écrire un scénario
 
@@ -144,10 +145,17 @@ scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it1-*' --project-prefix it11-e
 ```
 
 Un fichier `*-commun.mjs` porte les outils de sa famille et vérifie leurs préalables : le banc le joue comme un
-scénario. Les scénarios qui touchent opencode tournent sous le témoin P6 (aucun `PATCH /global/config`,
-`/global/dispose` ni `/instance/dispose`) et P4 (seulement `once` et `reject` envoyés). En `--reel-hors-ligne`, le
-faux fournisseur ne répond que du texte : ce qui demande qu'une IA appelle un outil (délégation, lecture d'un fichier)
-y est annoncé « non joué ».
+scénario. Chaque autre scénario qui agit sur opencode (conversation créée, message envoyé, plan créé) le fait sous le
+témoin P6 (aucun `PATCH /global/config`, `/global/dispose` ni `/instance/dispose`, flux d'opencode jamais coupé) et P4
+(seulement `once` et `reject` envoyés), par `avecTemoinP6` ; un test de `npm test` (`croisements-it1-v5`) le vérifie.
+En `--reel-hors-ligne`, le faux fournisseur ne répond que du texte : ce qui demande qu'une IA appelle un outil
+(délégation, lecture d'un fichier) y est annoncé « non joué ».
+
+**HTTP (écart D-05).** Ces scénarios supposent un cockpit servi en HTTP, à des endroits marqués `D-05` :
+`it1-api-commun.mjs` (flux d'événements du témoin P6 lu par un `fetch` brut vers `ctx.url`), `it1-ui-commun.mjs`
+(adresse en `http://`, CSP lue par un `fetch` brut, page exigée en `http:`) et `it1-ui-m25.mjs` (CSP lue par un
+`fetch` brut, page exigée en `http:`). Ils sont à reprendre au rebase de la 1.0.5, en plus des deux endroits de
+`e2e/lib/cockpit.mjs` : un banc en HTTPS épinglé refuse un `fetch` sans épinglage.
 
 Par l'API du cockpit :
 

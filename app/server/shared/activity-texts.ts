@@ -73,7 +73,8 @@ export const TEXTES = {
     },
     /**
      * §6 l.1048, §4.10 : délégation lancée par un raccourci `subtask`, qu'opencode lance sans demande d'autorisation (capture p2 ;
-     * fait `consigne` de source « raccourci », délégation `sansConfirmation`). Dite dans les deux modes.
+     * fait `consigne` porteur d'une commande et aucune attente pour l'appel : LiveRow.sansConfirmation, délégation
+     * `sansConfirmation`). Dite dans les deux modes.
      */
     sansConfirmation: "lancé sans confirmation",
     depuis: "depuis {duree}",
@@ -207,13 +208,15 @@ export function libelleRaccourci(commande: string): string {
 }
 
 /**
- * Mentions d'une ligne lancée par un raccourci `subtask` (`commande` du fait `consigne`, source « raccourci ») : « lancé sans
- * confirmation » dans les deux modes (§6 l.1048), précédé en mode Avancé du nom du raccourci. Aucune pour une autre ligne.
+ * Mentions d'une ligne lancée par un raccourci `subtask` sans demande d'autorisation (LiveRow.sansConfirmation : `commande` du fait
+ * `consigne` et aucune attente pour l'appel) : « lancé sans confirmation » dans les deux modes (§6 l.1048), précédé en mode Avancé
+ * du nom du raccourci. Aucune pour une autre ligne, ni pour un appel `task` porteur d'une commande qui a posé une demande : l'IA
+ * peut remplir le paramètre `command` elle-même (nom choisi par elle), et opencode pose alors une demande d'autorisation.
  */
-export function mentionsRaccourci(commande: string | null, avance: boolean): string[] {
-  if (commande === null) return [];
-  const { sansConfirmation } = TEXTES.partout;
-  return avance ? [libelleRaccourci(commande), sansConfirmation] : [sansConfirmation];
+export function mentionsRaccourci(commande: string | null, sansConfirmation: boolean, avance: boolean): string[] {
+  if (commande === null || !sansConfirmation) return [];
+  const phrase = TEXTES.partout.sansConfirmation;
+  return avance ? [libelleRaccourci(commande), phrase] : [phrase];
 }
 
 function causeRetour(cause: ActivityAnnouncement["cause"]): string {

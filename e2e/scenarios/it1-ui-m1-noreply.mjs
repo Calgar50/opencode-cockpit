@@ -14,7 +14,8 @@
 // IA réelle vérifie la mécanique que la recette emploie, par le proxy du cockpit : deux envois noReply acceptés (204) qui n'ouvrent
 // aucun tour (aucune réponse, aucune session occupée), puis un envoi ordinaire qui obtient une réponse après les trois messages de
 // l'utilisateur, dans l'ordre. Elle ne mesure PAS M1 : ni le faux opencode ni le faux fournisseur ne sont une IA Copilot.
-import { attendreFinDuTour, attendreIa, exiger, exigerListe, nonJoue, oc, releve, resume } from "./it1-ui-commun.mjs";
+// La répétition et la recette tournent sous le témoin P6 et P4 ; l'annonce « non jouée » seule n'agit pas sur opencode.
+import { attendreFinDuTour, attendreIa, avecTemoinP6, exiger, exigerListe, nonJoue, oc, releve, resume } from "./it1-ui-commun.mjs";
 
 const TEXTES = ["Premier message déposé sans réponse.", "Second message déposé sans réponse.", "Réponds seulement : bien reçu."];
 
@@ -24,7 +25,7 @@ export async function run(ctx) {
     .map((s) => s.trim())
     .includes("M1");
   if (ctx.mode === "reel" && accord) {
-    await recette(ctx);
+    await avecTemoinP6(ctx, () => recette(ctx));
     return;
   }
   nonJoue(
@@ -34,7 +35,7 @@ export async function run(ctx) {
   );
   if (ctx.mode === "reel") return;
   const libelle = ctx.mode === "faux" ? "répétition sans IA (faux opencode)" : "répétition sans IA réelle (vrai opencode, faux fournisseur)";
-  await repetition(ctx, await attendreIa(ctx), libelle);
+  await avecTemoinP6(ctx, async () => repetition(ctx, await attendreIa(ctx), libelle));
 }
 
 /** Deux envois noReply, puis un envoi ordinaire ; rend les messages de la conversation à la fin du tour. */

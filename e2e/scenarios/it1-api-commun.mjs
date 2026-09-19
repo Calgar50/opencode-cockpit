@@ -293,6 +293,8 @@ export async function temoinP6(ctx) {
   const pret = new Promise((resolve) => (bonjour = resolve));
 
   // Cookie de session du client d'API du banc : aucune autre donnée d'authentification n'est lue ni écrite ici.
+  // D-05 : fetch brut vers ctx.url, possible tant que le banc sert en HTTP ; en HTTPS épinglé (R105b), ce flux devra passer par un
+  // transport épinglé du banc qui lise la réponse au fil de l'eau.
   const reponse = await fetch(`${ctx.url}/api/events`, { headers: { cookie: ctx.api.cookie, accept: "text/event-stream" }, signal: controleur.signal });
   exiger(reponse.ok && reponse.body, `flux d'événements du cockpit refusé (code ${reponse.status}).`);
 

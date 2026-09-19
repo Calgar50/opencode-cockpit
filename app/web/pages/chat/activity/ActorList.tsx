@@ -49,13 +49,20 @@ const ICONS: Readonly<Record<ActorState, IconName>> = {
 
 /**
  * Mode Avancé : titre de la conversation déléguée, raccourci, reprise, lancement détaché. Dans les deux modes, « lancé sans
- * confirmation » pour un travail délégué lancé par un raccourci `subtask` (§6 l.1048 : opencode ne demande rien).
+ * confirmation » pour un travail délégué lancé par un raccourci `subtask` sans demande d'autorisation (§6 l.1048 : opencode ne
+ * demande rien). La phrase et le nom du raccourci suivent row.sansConfirmation, jamais la seule commande : l'IA peut remplir le
+ * paramètre `command` de l'outil `task` (nom choisi par elle), et opencode pose alors une demande d'autorisation.
  */
 function ActorExtra({ row, advanced }: { row: LiveRow; advanced: boolean }) {
   const parts = (
     advanced
-      ? [row.title, ...mentionsRaccourci(row.commande, true), row.reprise ? TEXTES.avance.reprise : "", row.detache ? TEXTES.avance.detache : ""]
-      : mentionsRaccourci(row.commande, false)
+      ? [
+          row.title,
+          ...mentionsRaccourci(row.commande, row.sansConfirmation, true),
+          row.reprise ? TEXTES.avance.reprise : "",
+          row.detache ? TEXTES.avance.detache : "",
+        ]
+      : mentionsRaccourci(row.commande, row.sansConfirmation, false)
   ).filter((part) => part !== "");
   if (parts.length === 0) return null;
   return (

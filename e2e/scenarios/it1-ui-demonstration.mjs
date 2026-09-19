@@ -13,7 +13,8 @@
 //   3. ZÉRO requête : pendant toute la démonstration, la page n'envoie rien (journal réseau de l'onglet), et opencode ne reçoit ni
 //      requête sur la conversation ouverte, ni demande d'IA autre que celles du classement automatique du cockpit (tâche de fond du
 //      serveur, indépendante de la page, qui peut tomber pendant une longue exécution du banc) ;
-//   4. aucune violation de la CSP, console muette.
+//   4. aucune violation de la CSP, console muette ; P6 et P4 tenus (témoin ouvert avant la création de la conversation, fermé après
+//      la démonstration en mode Avancé).
 // Le lecteur ne dépend pas d'opencode : le scénario est joué dans tous les modes du banc ; les relevés du faux opencode ne sont
 // possibles qu'en « --faux ».
 import {
@@ -23,6 +24,7 @@ import {
   attendreModeAffiche,
   attendreReseauCalme,
   attendreTexte,
+  avecTemoinP6,
   cliquerBouton,
   enModeAvance,
   exiger,
@@ -47,24 +49,26 @@ export async function run(ctx) {
   const ia = await attendreIa(ctx);
   const client = oc(ctx);
 
-  // 1. Une conversation qui a travaillé (un tour de texte) : la bande néon a un fait à dessiner. Son archivage passé, la page est
-  // au calme.
-  const racine = await client.creerConversation("it1-ui-demonstration");
-  const envoi = await client.envoyer(racine.id, "Réponds en une phrase.", ia);
-  exiger(envoi.code === 204, `envoi refusé (${envoi.code}) : ${resume(envoi.corps)}`);
-  await attendreFinDuTour(client, racine.id);
-  await ouvrirConversation(ctx, racine.id);
-  await attendre(ARCHIVAGE_MS);
+  await avecTemoinP6(ctx, async () => {
+    // 1. Une conversation qui a travaillé (un tour de texte) : la bande néon a un fait à dessiner. Son archivage passé, la page est
+    // au calme.
+    const racine = await client.creerConversation("it1-ui-demonstration");
+    const envoi = await client.envoyer(racine.id, "Réponds en une phrase.", ia);
+    exiger(envoi.code === 204, `envoi refusé (${envoi.code}) : ${resume(envoi.corps)}`);
+    await attendreFinDuTour(client, racine.id);
+    await ouvrirConversation(ctx, racine.id);
+    await attendre(ARCHIVAGE_MS);
 
-  // Mode Simple (défaut) : bande repliée, [Afficher la carte], puis le bouton de la note.
-  await attendreModeAffiche(page, "simple");
-  await cliquerBouton(page, "Afficher la carte", { portee: ".neon-band" });
-  await jouerDemonstration(ctx, racine.id, { mode: "simple", bouton: "Voir une démonstration : deux assistants en même temps", captures: true });
+    // Mode Simple (défaut) : bande repliée, [Afficher la carte], puis le bouton de la note.
+    await attendreModeAffiche(page, "simple");
+    await cliquerBouton(page, "Afficher la carte", { portee: ".neon-band" });
+    await jouerDemonstration(ctx, racine.id, { mode: "simple", bouton: "Voir une démonstration : deux assistants en même temps", captures: true });
 
-  // Mode Avancé : bande dépliée, [Voir une démonstration] dans ses commandes.
-  await enModeAvance(ctx, async () => {
-    await attendreModeAffiche(page, "avance");
-    await jouerDemonstration(ctx, racine.id, { mode: "avance", bouton: "Voir une démonstration", captures: false });
+    // Mode Avancé : bande dépliée, [Voir une démonstration] dans ses commandes.
+    await enModeAvance(ctx, async () => {
+      await attendreModeAffiche(page, "avance");
+      await jouerDemonstration(ctx, racine.id, { mode: "avance", bouton: "Voir une démonstration", captures: false });
+    });
   });
   await exigerAucuneViolationCsp(page);
   ctx.expectNoConsoleErrors();

@@ -646,13 +646,16 @@ describe("Déroulé : « Prévu / Réel » et écarts (§5.1, P12)", () => {
     role: "delegation" as const,
     source: null,
     commande: null,
+    sansConfirmation: false,
     sansSession: false,
     ...fields,
   });
 
   it("prévu : votre demande, raccourci, décidé par l'IA (avec ou sans session), contrôle ; inconnu sans fait qui le dise", () => {
     assert.deepEqual(plannedOf(row({ depth: 0, role: "conversation" })), { kind: "prevu", text: "votre demande" });
-    assert.deepEqual(plannedOf(row({ source: "raccourci", commande: "revue-croisee" })), { kind: "prevu", text: "raccourci /revue-croisee" });
+    assert.deepEqual(plannedOf(row({ source: "raccourci", commande: "revue-croisee", sansConfirmation: true })), { kind: "prevu", text: "raccourci /revue-croisee" });
+    // `command` rempli par l'IA sur un appel task qui a posé une demande : écrit par l'IA, jamais un raccourci prévu.
+    assert.deepEqual(plannedOf(row({ source: "raccourci", commande: "revue-croisee" })), { kind: "non-prevu", text: "non prévu : décidé par l'IA" }, "commande de l'IA, demandée");
     assert.deepEqual(plannedOf(row({ source: "ia" })), { kind: "non-prevu", text: "non prévu : décidé par l'IA" });
     assert.deepEqual(plannedOf(row({ sansSession: true })), { kind: "non-prevu", text: "non prévu : décidé par l'IA" }, "appel task en attente");
     assert.deepEqual(plannedOf(row({ role: "controle" })), { kind: "controle", text: "contrôle du cockpit" });
