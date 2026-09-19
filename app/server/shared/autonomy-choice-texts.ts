@@ -3,8 +3,10 @@
 // d'indisponibilité par code et messages des routes d'autonomie. Convention TEXTES de T0 (contrôlée par textes.test.ts).
 // Module unique de ces phrases : repris tel quel, sans doublon, par L6s (sélecteur), L9b (phrases de l'autonomie), L10d
 // (activation) et L12a (sélecteur à quatre choix). Les raisons propres à l'activation (regle-allow, mcp-ou-extension,
-// profil-sans-confirmation, plancher-non-verifie) restent à écrire par L9b ; en attendant, raisonIndisponible rend la phrase
-// générique, vraie pour toute raison.
+// profil-sans-confirmation, plancher-non-verifie) sont écrites par L9b dans autonomy-texts.ts (raisonRefus, qui reprend les
+// raisons d'ici pour les autres codes) ; raisonIndisponible rend pour elles la phrase générique, vraie pour toute raison.
+// TEXTES_VARIANTES (L9b) : description d'« Autonome avec contrôle » avec et sans IA de contrôle (budget.autonomie.controleIa ;
+// repli §7.4 : sans elle, les commandes inconnues du cockpit attendent votre accord).
 import type { ActivationRefusalCode, AutonomyChoice } from "./autonomy-types.ts";
 
 export const TEXTES = {
@@ -61,6 +63,28 @@ export const TEXTES = {
   },
 };
 
+/**
+ * Description d'« Autonome avec contrôle » selon l'IA de contrôle : avec elle, la phrase exacte du §4.13 (reprise de TEXTES, sans
+ * doublon) ; sans elle, les commandes inconnues du cockpit attendent votre accord.
+ */
+export const TEXTES_VARIANTES = {
+  avecControleIa: {
+    simple: {},
+    avance: {},
+    partout: { descriptions: { autonome: TEXTES.partout.choix.autonome.description } },
+  },
+  sansControleIa: {
+    simple: {},
+    avance: {},
+    partout: {
+      descriptions: {
+        autonome:
+          "L'IA enchaîne le travail. Le cockpit laisse passer les actions que ses règles jugent sûres et vous demande pour tout le reste, dont les commandes qu'il ne connaît pas. Arrêt automatique aux plafonds.",
+      },
+    },
+  },
+};
+
 /** Phrase de la raison d'indisponibilité `code` ; null ou code sans phrase dans ce module : phrase générique. */
 export function raisonIndisponible(code: ActivationRefusalCode | null): string {
   const { raisons } = TEXTES.partout;
@@ -81,7 +105,8 @@ export function libelleChoix(choix: AutonomyChoice, nouvelleConversation = false
   return TEXTES.partout.choix[choix].libelle;
 }
 
-/** Description exacte du choix `choix` (§4.13). */
-export function descriptionChoix(choix: AutonomyChoice): string {
+/** Description exacte du choix `choix` (§4.13) ; « autonome » selon l'IA de contrôle (budget.autonomie.controleIa, vrai par défaut). */
+export function descriptionChoix(choix: AutonomyChoice, controleIa = true): string {
+  if (choix === "autonome") return TEXTES_VARIANTES[controleIa === true ? "avecControleIa" : "sansControleIa"].partout.descriptions.autonome;
   return TEXTES.partout.choix[choix].description;
 }
