@@ -329,10 +329,12 @@
 }
 /* Mode Avancé, une demande attend votre réponse (région .demande, clôture de l'itération 1) : rien ne se replie, la carte des agents
    montre l'attente de votre accord et la préparation (§5.1, §5.7.1, §5.7.3). Quand la hauteur manque, la carte de la demande cède
-   deux fois plus vite que la région d'activité (au prorata de leurs contenus), jusqu'à son plancher (titre et boutons, ci-dessus ;
-   son détail défile dans la carte) ; ensuite, seule la région cède, et défile (activity.css). Planchers inchangés. */
+   quatre fois plus vite que la région d'activité (au prorata de leurs contenus), jusqu'à son plancher (titre et boutons, ci-dessus ;
+   son détail défile dans la carte) ; ensuite, seule la région cède (activity.css : « Qui travaille ? » garde sa hauteur, la bande
+   prend le reste et y réduit la carte), et défile en dernier recours. Vérification de la clôture : au prorata double, la région
+   cédait trop tôt (257 px à 1440 × 900 : la carte des agents et « Qui travaille ? » n'y tenaient pas ensemble). Planchers inchangés. */
 .chat-center:has(> .activity-region.demande) > .interactions {
-  flex-shrink: 2;
+  flex-shrink: 4;
 }
 /* Boutons d'une demande ou d'une question : collés au bas de la zone des demandes quand la carte défile. Fond opaque : le fond
    translucide de la carte posé sur celui de la page. */

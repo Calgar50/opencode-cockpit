@@ -12,15 +12,20 @@
 //      région « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… » et « Arrêter » dans la fenêtre et non recouverts,
 //      zone principale ni défilée ni débordée, en-tête en vue ; panneau « Contexte » fermé de lui-même à 1280 px et au-dessous (il
 //      s'y pose sur la conversation), ouvert à 1440. Clôture de l'itération 1 : la carte des agents reste dépliée pendant la demande
-//      (défaut du mode Avancé, §5.1), « Qui travaille ? » aussi au-dessus de 400 px ; l'attente de votre accord (§5.7.1) et la
-//      préparation en pointillé fixe (§5.7.3) sont visibles sans défiler là où la hauteur suffit (1440 × 900, 1280 × 800) ; là où
-//      elle manque (1024 × 768 du banc : la saisie y prend 428 px), la région d'activité se borne et on les atteint en la faisant
-//      défiler, elle seule ; à 400 px, pas de carte (liste seule, §5.6). [Répondre] est atteignable, au besoin en faisant défiler la
-//      seule région d'activité ;
+//      (défaut du mode Avancé, §5.1), « Qui travaille ? » aussi au-dessus de 400 px. Vérification de la clôture : tout est relevé
+//      VU (elementFromPoint), pas seulement rendu. Le titre de « Qui travaille ? » est vu sans défiler à chaque taille. Là où la
+//      hauteur suffit (1440 × 900 panneau « Contexte » ouvert, 1280 × 800), sont vus sans défiler : chaque ligne de « Qui
+//      travaille ? » et [Répondre], l'attente de votre accord (§5.7.1) et la préparation en pointillé fixe (§5.7.3) sur la carte,
+//      réduite à la hauteur que la liste lui laisse. Là où elle manque (1024 × 768 du banc : la saisie y prend 428 px), on les
+//      atteint en faisant défiler la seule région d'activité et la bande des agents qu'elle contient. À 400 px, pas de carte (liste
+//      seule, §5.6) : le bandeau d'une ligne et son [Répondre] sont vus sans défiler ;
 //   2. [Répondre] de « Qui travaille ? » : focus sur « Autoriser une fois », atteignable, zone principale toujours en place ;
 //   3. « Autoriser une fois » cliqué, travail délégué en cours, à chaque taille : « Arrêter » atteignable, fil et « Qui travaille ? »
 //      visibles, zone principale en place ; la carte des agents reste dépliée (défaut du mode Avancé) ;
-//   4. « Arrêter » cliqué : plus aucune session de l'arbre occupée ; aucune violation de la CSP, console muette, P6 et P4 tenus.
+//   4. « Arrêter » cliqué : plus aucune session de l'arbre occupée ;
+//   5. modification en attente sur la racine, à 1440 : « Qui travaille ? » (titre, ligne de la conversation, [Répondre]) et l'attente
+//      de votre accord sur la carte vus sans défiler, boutons de la demande et « Arrêter » atteignables ; « Arrêter » cliqué. Aucune
+//      violation de la CSP, console muette, P6 et P4 tenus.
 // En « --reel-hors-ligne », le faux fournisseur ne délègue pas : le scénario le dit et ne joue rien.
 import {
   attendre,
@@ -52,10 +57,13 @@ import {
 
 const DESCRIPTION = "Relire les journaux de la nuit";
 const REFUSER = "Refuser…";
+/** Fichier de la modification demandée par la racine (étape 5). */
+const FICHIER = "notes-de-nuit.txt";
 /**
- * `signes` pendant la demande : « visibles » sans défiler ; « par-defilement » (la hauteur manque dans les conditions du banc : la
- * région d'activité, bornée, les montre quand on la fait défiler, elle seule ; visibles directement, c'est mieux encore) ;
- * « sans-carte » à 400 px (liste seule, §5.6).
+ * `signes` pendant la demande (carte des agents et lignes de « Qui travaille ? ») : « visibles » sans défiler ; « par-defilement »
+ * (la hauteur manque dans les conditions du banc : la région d'activité, bornée, et la bande qu'elle contient les montrent quand on
+ * les fait défiler, elles seules ; visibles directement, c'est mieux encore) ; « sans-carte » à 400 px (liste seule, §5.6). Le titre
+ * de « Qui travaille ? » est exigé vu sans défiler à toutes les tailles.
  */
 const TAILLES = [
   { nom: "1440", largeur: 1440, hauteur: 900, signes: "visibles" },
@@ -93,6 +101,16 @@ const MESURE = (boutons) => `(() => {
     demandes: visible(".interactions"),
     boutons: Object.fromEntries(${JSON.stringify(boutons)}.map(([t, p]) => [t, bouton(t, p)])),
     repondre: bouton("Répondre", ".activity-region"),
+    // Titre de « Qui travaille ? » vu sans défiler (elementFromPoint à son centre), et non seulement rendu.
+    quiTitre: (() => {
+      const t = document.querySelector(".who-banner .who-title");
+      if (!t) return "absent";
+      const r = t.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cy < 0 || cy > vh || cx < 0 || cx > vw) return "hors-fenetre(y=" + Math.round(cy) + ")";
+      const dessus = document.elementFromPoint(cx, cy);
+      return dessus && (dessus === t || t.contains(dessus)) ? "visible" : "recouvert(par " + String(dessus?.className ?? "?").slice(0, 40) + ")";
+    })(),
     // [Répondre] sous la carte des agents, dans la région bornée : défilée ELLE SEULE (molette au-dessus d'elle), mesuré, remise en place.
     repondreApresDefilement: (() => {
       const region = document.querySelector(".activity-region");
@@ -182,11 +200,20 @@ export async function run(ctx) {
         );
         // Clôture de l'itération 1 : jamais de repli pour une demande en Avancé ; les signes de la carte selon la hauteur disponible.
         exiger(m.carte === "true", `attente de votre accord, ${taille.nom} : carte des agents repliée pendant la demande (${m.carte}).`);
-        if (taille.signes === "sans-carte") continue;
+        // Vérification de la clôture : le titre de « Qui travaille ? » est VU sans défiler, à chaque taille.
+        exiger(m.quiTitre === "visible", `attente de votre accord, ${taille.nom} : titre de « Qui travaille ? » ${m.quiTitre} sans défiler.`);
+        if (taille.signes === "sans-carte") {
+          // 400 px : bandeau d'une ligne (§5.6), [Répondre] sur cette ligne, vu sans défiler.
+          exiger(m.repondre === "atteignable", `attente de votre accord, ${taille.nom} : [Répondre] ${m.repondre} sans défiler.`);
+          continue;
+        }
         const s = await signesPendantLaDemande(page, racine.id, { defiler: taille.signes === "par-defilement" });
-        releve(ctx, `attente de votre accord, ${taille.nom}, signes de la carte : ${JSON.stringify(s)}`);
+        releve(ctx, `attente de votre accord, ${taille.nom}, signes de la carte et « Qui travaille ? » : ${JSON.stringify(s)}`);
         exigerSignesDeLaDemande(s, `attente de votre accord, ${taille.nom}`);
-        if (taille.signes === "visibles") exiger(s.defilement === 0, `attente de votre accord, ${taille.nom} : signes vus après un défilement de ${s.defilement} px.`);
+        if (taille.signes === "visibles") {
+          exiger(s.defilement === 0, `attente de votre accord, ${taille.nom} : signes vus après un défilement de ${s.defilement} px.`);
+          exiger(s.defilementQui === 0, `attente de votre accord, ${taille.nom} : lignes de « Qui travaille ? » vues après un défilement de ${s.defilementQui} px.`);
+        }
       }
       await capturerConversation(ctx, "attente-accord");
       await panneauSelonLaTaille(page, TAILLES[0]);
@@ -226,6 +253,30 @@ export async function run(ctx) {
       await page.taille(LARGE);
       await cliquerBouton(page, PHRASES.arreter, { portee: ".composer" });
       await attendreQue(async () => (await occupees(client, [racine.id, enfant.id])).length === 0, { libelle: "arbre au repos après « Arrêter »" });
+
+      // 5. Modification en attente sur la racine (vérification de la clôture : sa ligne était cachée à 1440) : « Qui travaille ? »
+      //    (titre, la ligne de la conversation, [Répondre]) et l'attente de votre accord sur la carte, vus sans défiler ; puis « Arrêter ».
+      const autre = await client.creerConversation("it1-ui-mise-en-page-modification");
+      await ctx.faux.scripter(autre.id, {
+        tools: [{ tool: "edit", input: { filePath: FICHIER, oldString: "avant", newString: "après" }, ask: { permission: "edit", patterns: [FICHIER] }, askAfterMs: DEMANDE_APRES_MS }],
+        followUp: { text: "Modifié." },
+      });
+      await ouvrirConversation(ctx, autre.id);
+      await panneauSelonLaTaille(page, TAILLES[0]);
+      const envoiModification = await client.envoyer(autre.id, `Modifie ${FICHIER}.`, ia);
+      exiger(envoiModification.code === 204, `envoi refusé (${envoiModification.code}) : ${resume(envoiModification.corps)}`);
+      await attendreDemandes(client, (d) => d.sessionID === autre.id && d.permission === "edit", { libelle: "modification en attente sur la racine" });
+      await attendreEtatActeur(page, "Assistant de la conversation", "en attente de votre accord");
+      await attendre(1_000);
+      const mm = await page.evaluer(MESURE([[PHRASES.autoriser, ".interactions"], [REFUSER, ".interactions"], [PHRASES.arreter, ".composer"]]));
+      releve(ctx, `modification en attente sur la racine, 1440 : ${JSON.stringify(mm)}`);
+      exigerMesure(mm, TAILLES[0], [[PHRASES.autoriser], [REFUSER], [PHRASES.arreter]], "modification en attente sur la racine");
+      const sm = await signesPendantLaDemande(page, autre.id);
+      releve(ctx, `modification en attente sur la racine, 1440, signes de la carte et « Qui travaille ? » : ${JSON.stringify(sm)}`);
+      exigerSignesDeLaDemande(sm, "modification en attente sur la racine, 1440", { enfant: null, preparation: false });
+      exiger(sm.defilement === 0 && sm.defilementQui === 0, `modification en attente sur la racine, 1440 : vue après un défilement (${sm.defilement}, ${sm.defilementQui}).`);
+      await cliquerBouton(page, PHRASES.arreter, { portee: ".composer" });
+      await attendreQue(async () => (await occupees(client, [autre.id])).length === 0, { libelle: "conversation au repos après « Arrêter »" });
       await exigerAucuneViolationCsp(page);
     });
   });

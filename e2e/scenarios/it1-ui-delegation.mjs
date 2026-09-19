@@ -13,7 +13,8 @@
 //      réel). La page montre la demande avec sa carte « Détails de la délégation » ; « Qui travaille ? » affiche general « en attente
 //      de votre accord ». Sans aucun clic, pendant la demande (§5.1, §5.7.1, §5.7.3) : la carte des agents reste dépliée (défaut du
 //      mode Avancé) et montre, dans la fenêtre, l'attente de votre accord (hexagone hachuré, cadenas, ambre) et la préparation
-//      (pointillé rose fixe, sans animation en boucle) ; « Qui travaille ? » reste déplié, une ligne par acteur ;
+//      (pointillé rose fixe, sans animation en boucle) ; « Qui travaille ? » reste déplié, une ligne par acteur, et il est VU sans
+//      défiler (vérification de la clôture, elementFromPoint : son titre, chacune de ses lignes et [Répondre]) ;
 //   2. « Autoriser une fois » est cliqué dans la carte ; general « travaille », la bande dessine la consigne (rose), « Arrêter » est
 //      visible ; captures pendant le travail délégué ;
 //   3. general rend son résultat : la bande dessine le résultat (bleu) pendant que la conversation reprend (capture à 1440), la

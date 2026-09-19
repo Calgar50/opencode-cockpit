@@ -45,7 +45,8 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   // - Mode Simple : la carte des agents et « Qui travaille ? » se replient (NeonBand, WhoIsWorking), la région garde ses deux lignes
   //   de tête (.attente, activity.css) et la place va à la carte de la demande.
   // - Mode Avancé : jamais de repli pour une demande ; quand la hauteur manque, la carte de la demande cède plus vite que la région,
-  //   jusqu'à son titre et ses boutons (.demande, chat.css) ; ensuite la région se borne et défile, en gardant sa première ligne.
+  //   jusqu'à son titre et ses boutons (.demande, chat.css) ; dans la région, « Qui travaille ? » garde sa hauteur et la bande prend
+  //   le reste, sa carte réduite (activity.css, vérification de la clôture) ; ensuite la région se borne et défile.
   const repliPourLaDemande = replierPendantLaDemande(advanced, activity.rows);
   let classe = "activity-region";
   if (repliPourLaDemande) classe = "activity-region attente";
