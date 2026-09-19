@@ -15,7 +15,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { creerSurveillance } from "../web/pages/salle-controle/fluidite.ts";
 import type { ConsigneRevoirProps, LegendeBulleProps, ReplayBarProps } from "../web/pages/salle-controle/slots-3d.ts";
+import { creerControleFluidite } from "../web/pages/salle-controle/useFluidite.ts";
 import type { ActivityFact, FactsResponse } from "./shared/activity-types.ts";
 import * as fluidity from "./shared/fluidity.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
@@ -228,14 +230,53 @@ describe("croisements 3d V0 : types dupliqués (D-3d-27)", () => {
 });
 
 describe("croisements 3d V0 : valeurs des types partagés et leurs phrases", () => {
-  it("fluidité : chaque raison (référence) est dans RAISONS_FLUIDITE (L30) et a sa phrase propre (T3d-b)", () => {
+  it("fluidité : chaque raison (référence) est dans RAISONS_FLUIDITE (L30) et a sa phrase (T3d-b), l.1007 partagée par la sonde et la bascule", () => {
     assert.deepEqual([...fluidity.RAISONS_FLUIDITE].sort(), [...RAISONS].sort());
     const phrases = RAISONS.map((raison) => salle3dTexts.messageFluidite(raison));
-    assert.equal(new Set(phrases).size, RAISONS.length, "une phrase par raison");
+    // Seules la sonde lente et la bascule automatique partagent leur phrase (spéc. l.1007) ; toute autre paire est distincte.
+    assert.equal(new Set(phrases).size, RAISONS.length - 1, "une phrase par raison, l.1007 pour « sonde-lente » et « saccades »");
+    for (const [i, a] of RAISONS.entries()) {
+      for (const b of RAISONS.slice(i + 1)) {
+        const partagee = [a, b].sort().join(" ") === "saccades sonde-lente";
+        assert.equal(phrases[i] === salle3dTexts.messageFluidite(b), partagee, `${a} / ${b}`);
+      }
+    }
     for (const [i, phrase] of phrases.entries()) {
       assert.notEqual(phrase, salle3dTexts.TEXTES.partout.fluidite.autre, RAISONS[i]);
       assert.doesNotMatch(phrase, /[{}]/, RAISONS[i]);
     }
+  });
+
+  it("fluidité : proposition au présent pendant la 3D, phrase de spéc. l.1007 après la bascule automatique (L30 → T3d-b)", async () => {
+    let t = 1_000;
+    const controle = creerControleFluidite({
+      capacites: () => ({ mouvementReduit: false, couleursForcees: false, webgl2: true, contexteRefuse: false, moteur: "Radeon" }),
+      preference: () => fluidity.preferenceAuto(),
+      enregistrer: () => undefined,
+      sonder: () => Promise.resolve(Array.from({ length: 90 }, () => 12)),
+      surveillance: () => creerSurveillance(() => (t += 40)),
+      marquer: () => undefined,
+    });
+    controle.ouvrir();
+    controle.pret({ renderFrame: () => undefined });
+    await new Promise<void>((resoudre) => setImmediate(resoudre));
+    assert.deepEqual(controle.etat().verdict, { mode: "3d" }, "sonde fluide");
+    let proposee = false;
+    for (let i = 0; i < 400 && controle.etat().verdict.mode === "3d"; i++) {
+      controle.image(40, true);
+      if (controle.etat().proposition) {
+        proposee = true;
+        // Proposition : la vue est encore en 3D, la page montre le texte au présent avec [Passer en 2D] et [Rester en 3D].
+        assert.equal(controle.etat().verdict.mode, "3d");
+      }
+    }
+    assert.ok(proposee, "proposition avant la bascule");
+    const verdict = controle.etat().verdict;
+    assert.deepEqual(verdict, { mode: "2d", raison: "saccades" }, "bascule automatique");
+    if (verdict.mode !== "2d") return;
+    assert.equal(salle3dTexts.messageFluidite(verdict.raison), "La 3D n'était pas fluide sur ce poste");
+    assert.notEqual(salle3dTexts.messageFluidite(verdict.raison), salle3dTexts.TEXTES.partout.fluidite.saccades);
+    controle.fermer();
   });
 
   it("fluidité : tout verdict 2D de verdictCapacites (L30) et toute préférence relue ont une phrase (T3d-b)", () => {

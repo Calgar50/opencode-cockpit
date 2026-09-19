@@ -157,6 +157,9 @@ const PHRASES_SALLE3D: readonly PhraseSpec[] = [
   { ligne: 987, attendu: "extension active · actions non contrôlées avant exécution", obtenu: salle3d.TEXTES.avance.enceinte, prefixe: "Salle OMO · " },
   { ligne: 1068, attendu: "Affichage 2D : vos réglages d'accessibilité le demandent", obtenu: salle3d.messageFluidite("accessibilite") },
   { ligne: 1007, attendu: "La 3D n'était pas fluide sur ce poste", obtenu: salle3d.messageFluidite("sonde-lente") },
+  // Étape 4 (surveillance) : après la bascule automatique à 10 s, la vue est déjà en 2D ; la phrase de la proposition
+  // (« La 3D saccade sur ce poste. ») n'est plus vraie au présent.
+  { ligne: 1007, attendu: "La 3D n'était pas fluide sur ce poste", obtenu: salle3d.messageFluidite("saccades") },
 ];
 
 const PHRASES_REVOIR: readonly PhraseSpec[] = [
@@ -507,7 +510,7 @@ describe("textes de la 3D : modules salle3d-texts, revoir-texts et legendes-text
       MODULES.flatMap((m) => checkPhrases(m.fichier, m.phrases)),
       [],
     );
-    assert.equal(MODULES.reduce((n, m) => n + m.phrases.length, 0), 21);
+    assert.equal(MODULES.reduce((n, m) => n + m.phrases.length, 0), 22);
   });
 
   it("gabarits cohérents, texte par texte", () => {
@@ -538,7 +541,16 @@ describe("textes de la 3D : modules salle3d-texts, revoir-texts et legendes-text
 
   it("types recopiés (D-3d-27) : une phrase par raison de fluidité, par refus, par vitesse et par clé de légende", () => {
     const fluidite = RAISONS.map((r) => salle3d.messageFluidite(r));
-    assert.equal(new Set(fluidite).size, RAISONS.length);
+    // Une seule paire partage sa phrase : la sonde lente (étape 3) et la bascule automatique (étape 4) disent toutes deux la
+    // phrase de spéc. l.1007 ; toute autre paire de raisons a deux phrases distinctes.
+    assert.equal(new Set(fluidite).size, RAISONS.length - 1);
+    for (const [i, a] of RAISONS.entries()) {
+      for (const b of RAISONS.slice(i + 1)) {
+        const partagee = [a, b].sort().join(" ") === "saccades sonde-lente";
+        assert.equal(salle3d.messageFluidite(a) === salle3d.messageFluidite(b), partagee, `${a} / ${b}`);
+      }
+    }
+    assert.notEqual(salle3d.messageFluidite("saccades"), salle3d.TEXTES.partout.fluidite.saccades, "après la bascule, pas la proposition au présent");
     assert.ok(!fluidite.includes(salle3d.TEXTES.partout.fluidite.autre));
     assert.deepEqual(Object.keys(revoir.TEXTES.partout.refus).sort(), [...REFUS].sort());
     assert.deepEqual(Object.keys(revoir.TEXTES.partout.vitesses).sort(), VITESSES.map(String).sort());

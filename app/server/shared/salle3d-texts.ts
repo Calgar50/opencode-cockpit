@@ -54,13 +54,21 @@ export const TEXTES = {
     conversationsDuProjet: "Conversations de ce projet",
     liste: "Liste",
     tableau: "Tableau",
-    /** §5.8 l.1003-1008 et §6 l.1068 : une phrase par raison de l'affichage en 2D (messageFluidite), commandes de la bascule. */
+    /**
+     * §5.8 l.1003-1008 et §6 l.1068 : phrase de chaque raison de l'affichage en 2D (messageFluidite), proposition et commandes de
+     * la bascule.
+     */
     fluidite: {
       accessibilite: "Affichage 2D : vos réglages d'accessibilité le demandent",
+      /** §5.8 l.1007 : dite après une sonde lente (étape 3) et après la bascule automatique de la surveillance (étape 4). */
       sondeLente: "La 3D n'était pas fluide sur ce poste",
       reessayer: "Réessayer",
       renduLogiciel: "Affichage 2D : ce poste dessine la 3D sans carte graphique (bureau à distance ou machine virtuelle)",
       webglAbsent: "Affichage 2D : la 3D n'est pas disponible dans ce navigateur",
+      /**
+       * Proposition à 5 s, la vue encore en 3D (avec passer2d, rester3d et basculeProche) : lue telle quelle par la page tant que
+       * la proposition tient. Après la bascule automatique, messageFluidite("saccades") rend sondeLente (§5.8 l.1007).
+       */
       saccades: "La 3D saccade sur ce poste.",
       passer2d: "Passer en 2D",
       rester3d: "Rester en 3D",
@@ -107,13 +115,17 @@ export function libelleCompteurs(compteurs: CompteursTerritoire, formatUsd?: (us
   return [travail, attente, montant].join(` ${t.separateur} `);
 }
 
-/** Phrase de chaque raison de l'affichage en 2D (le crochet de fluidité rend des raisons, jamais des textes : D-3d-27). */
+/**
+ * Phrase de chaque raison de l'affichage en 2D (le crochet de fluidité rend des raisons, jamais des textes : D-3d-27).
+ * « saccades » n'est posée qu'après la bascule automatique à 10 s : la vue est déjà en 2D, la phrase est celle de §5.8 l.1007,
+ * au passé, et non la proposition au présent (« La 3D saccade sur ce poste. »), montrée seulement pendant la 3D.
+ */
 const PHRASE_FLUIDITE: Readonly<Record<FluidityReason, keyof typeof TEXTES.partout.fluidite>> = {
   accessibilite: "accessibilite",
   "webgl-absent": "webglAbsent",
   "rendu-logiciel": "renduLogiciel",
   "sonde-lente": "sondeLente",
-  saccades: "saccades",
+  saccades: "sondeLente",
   "preference-2d": "preference2d",
 };
 
