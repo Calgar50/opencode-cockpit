@@ -1,0 +1,360 @@
+// Scénarios e2e de l'interface de l'itération 1 (paquet L7b-2) : outils communs, et le scénario qui vérifie leurs préalables.
+//
+// Le banc lance chaque fichier « .mjs » de e2e/scenarios comme un scénario : ce module en est donc un aussi. Son run(ctx) vérifie ce
+// sur quoi reposent les autres scénarios « it1-ui-* » : mode Simple par défaut, page servie en HTTP sous la CSP réelle (D-05), règles
+// d'utilisation acceptées au clic comme le ferait un utilisateur, flux d'événements ouvert, console muette.
+//
+// Principe : on regarde la PAGE, pilotée par le banc (CDP), et on n'agit que par ce qu'un utilisateur ferait (clic, clavier). Les
+// préparations qui ne relèvent pas de l'interface passent par l'API du cockpit, comme dans les scénarios it1-api-* dont on reprend
+// les outils (conversations créées par le proxy, tours joués par le faux opencode, mode changé par PUT /api/settings, témoin P6).
+//
+// Relevés dans la page (instrumenter) : un observateur de mutations, installé par le banc après le chargement (hors CSP, comme
+// toute évaluation du protocole CDP), note
+//   - chaque faisceau de la bande néon (clé data-neon-cle, classes, couleur calculée du trait, instant de première apparition) ;
+//   - chaque animation WAAPI dont la cible est dans la carte (durée, répétitions, propriétés animées) ;
+//   - chaque violation de la CSP (événement securitypolicyviolation).
+// Rien n'est modifié dans la page : ni fonction remplacée, ni style, ni requête. Une violation survenue avant l'installation serait
+// écrite par le navigateur dans la console, que chaque scénario exige muette.
+import { attendre, attendreQue, exiger, iaDuBanc, resume } from "./it1-api-commun.mjs";
+
+// Outils des scénarios it1-api-* (L7b-1), repris tels quels par les scénarios it1-ui-*.
+export {
+  attendre,
+  attendreDemandes,
+  attendreFinDuTour,
+  attendreQue,
+  avecTemoinP6,
+  changerMode,
+  delegation,
+  demandeDeDelegation,
+  enModeAvance,
+  exiger,
+  exigerListe,
+  iaDuBanc,
+  nonJoue,
+  oc,
+  occupees,
+  releve,
+  resume,
+} from "./it1-api-commun.mjs";
+
+/**
+ * IA à envoyer (iaDuBanc), attendue au catalogue du cockpit : juste après le démarrage de la pile, le catalogue des IA se charge
+ * encore (catalog.ts, premier rafraîchissement) et un scénario lancé seul (mutations) le trouverait vide (essai du 19/09).
+ */
+export async function attendreIa(ctx, delaiMs = 60_000) {
+  return await attendreQue(
+    async () => {
+      try {
+        return iaDuBanc(await ctx.api.get("/api/bootstrap"));
+      } catch {
+        return false;
+      }
+    },
+    { delaiMs, pasMs: 500, libelle: "IA du banc au catalogue du cockpit" },
+  );
+}
+
+/** Largeur de travail des scénarios : la carte néon n'est dessinée qu'au-dessus de 900 px (mini-carte en dessous, neon.css). */
+export const LARGE = { largeur: 1440, hauteur: 900 };
+
+/** Phrases attendues, écrites ici en clair (c'est la spécification qu'on vérifie, pas ce que le code déclare). */
+export const PHRASES = {
+  /** §6 l.1064, §5.9 : étiquette de la démonstration. */
+  demonstration: "Démonstration enregistrée : aucune IA n'est appelée",
+  /** Décision n° 4 du 19/09 (option b de Q5) : avis du mode Simple sur la délégation. */
+  avisSimple: "En mode Simple, l'IA ne délègue pas : elle continue seule.",
+  /** §6 l.1048, §4.10 : délégation lancée par un raccourci `subtask`, sans demande d'autorisation. */
+  sansConfirmation: "lancé sans confirmation",
+  arreter: "Arrêter",
+  envoyer: "Envoyer",
+  autoriser: "Autoriser une fois",
+};
+
+// --- Page ------------------------------------------------------------------------------------------------------------------------
+
+/** Expression : bouton VISIBLE dont le texte (espaces réduits) vaut `texte`, dans `portee` (sélecteur CSS, facultatif). */
+export function exprBouton(texte, portee = null) {
+  const racine = portee === null ? "document" : `document.querySelector(${JSON.stringify(portee)})`;
+  return `(() => { const r = ${racine}; if (!r) return null; return [...r.querySelectorAll("button")].find((b) => b.textContent.replace(/\\s+/g, " ").trim() === ${JSON.stringify(texte)} && b.getClientRects().length > 0) ?? null; })()`;
+}
+
+/** Attend un bouton visible par son texte, puis clique dessus (événement de clic de l'élément, comme un clic de souris). */
+export async function cliquerBouton(page, texte, { portee = null, delaiMs = 15_000 } = {}) {
+  await page.attendreQue(exprBouton(texte, portee), { delaiMs, libelle: `bouton « ${texte} »${portee ? ` dans ${portee}` : ""}` });
+  await page.evaluer(`${exprBouton(texte, portee)}.click()`);
+}
+
+/** Vrai si un bouton visible porte ce texte. */
+export async function boutonVisible(page, texte, portee = null) {
+  return await page.evaluer(`Boolean(${exprBouton(texte, portee)})`);
+}
+
+/** Texte visible d'un élément (innerText, espaces réduits) ; "" s'il n'existe pas. */
+export async function texteVisible(page, selecteur = "body") {
+  return await page.evaluer(`(document.querySelector(${JSON.stringify(selecteur)})?.innerText ?? "").replace(/\\s+/g, " ").trim()`);
+}
+
+/** Attend que le texte visible de `selecteur` contienne `attendu`. */
+export async function attendreTexte(page, attendu, { selecteur = "body", delaiMs = 15_000 } = {}) {
+  await page.attendreQue(`(document.querySelector(${JSON.stringify(selecteur)})?.innerText ?? "").replace(/\\s+/g, " ").includes(${JSON.stringify(attendu)})`, {
+    delaiMs,
+    libelle: `texte « ${attendu} » dans ${selecteur}`,
+  });
+}
+
+/**
+ * Prépare l'onglet d'un scénario : grande fenêtre, cockpit chargé, règles d'utilisation acceptées au clic si la fenêtre bloquante
+ * est ouverte (première visite de la pile jetable), notice de la 1.0 fermée par [Compris], relevés installés.
+ */
+export async function preparerPage(ctx, taille = LARGE) {
+  const page = ctx.navigateur;
+  await page.taille(taille);
+  await page.attendreQue("document.querySelector('nav.rail')", { libelle: "barre de navigation du cockpit" });
+  if (await page.evaluer("Boolean(document.querySelector('.rules-modal'))")) {
+    await page.evaluer("document.querySelector('.rules-modal input[type=checkbox]').click()");
+    await cliquerBouton(page, "Commencer", { portee: ".rules-modal" });
+    await page.attendreQue("!document.querySelector('.rules-modal')", { libelle: "fenêtre des règles fermée après « Commencer »" });
+  }
+  if (await boutonVisible(page, "Compris", ".notice-panel")) {
+    await cliquerBouton(page, "Compris", { portee: ".notice-panel" });
+    await page.attendreQue("!document.querySelector('.notice-panel')", { libelle: "notice de la 1.0 fermée" });
+  }
+  await instrumenter(page);
+  return page;
+}
+
+/** Installe les relevés de la page (idempotent) : faisceaux, animations de la carte, violations de la CSP. */
+export async function instrumenter(page) {
+  return await page.evaluer(`(() => {
+    if (window.__e2e) return true;
+    const e2e = { violations: [], faisceaux: [], animations: [] };
+    window.__e2e = e2e;
+    const vues = new WeakSet();
+    document.addEventListener("securitypolicyviolation", (e) => {
+      e2e.violations.push({ directive: e.violatedDirective, bloque: String(e.blockedURI).slice(0, 120), t: performance.now() });
+    });
+    const relever = () => {
+      const t = performance.now();
+      for (const g of document.querySelectorAll(".neon-band .neon-map .neon-faisceau")) {
+        const cle = g.dataset.neonCle ?? "";
+        const etat = g.dataset.neonEtat ?? "";
+        if (e2e.faisceaux.some((f) => f.cle === cle && f.etat === etat)) continue;
+        const trait = g.querySelector(".neon-trait");
+        e2e.faisceaux.push({ cle, etat, classes: g.getAttribute("class") ?? "", couleur: trait ? getComputedStyle(trait).stroke : "", t });
+      }
+      for (const a of document.getAnimations()) {
+        if (vues.has(a)) continue;
+        const cible = a.effect && a.effect.target;
+        if (!cible || !cible.closest || !cible.closest(".neon-map")) continue;
+        vues.add(a);
+        const temps = a.effect.getTiming();
+        const proprietes = [...new Set(a.effect.getKeyframes().flatMap((k) => Object.keys(k)))].filter((p) => !["offset", "computedOffset", "easing", "composite"].includes(p));
+        e2e.animations.push({ cle: cible.dataset?.neonCle ?? cible.getAttribute("class") ?? "", duree: temps.duration, iterations: temps.iterations, proprietes, t });
+      }
+    };
+    new MutationObserver(relever).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "data-neon-etat"] });
+    relever();
+    return true;
+  })()`);
+}
+
+/** Relevés de la page depuis instrumenter. */
+export async function releves(page) {
+  return await page.evaluer("JSON.parse(JSON.stringify(window.__e2e ?? { violations: [], faisceaux: [], animations: [] }))");
+}
+
+/** Aucune violation de la CSP relevée dans la page. */
+export async function exigerAucuneViolationCsp(page) {
+  const { violations } = await releves(page);
+  exiger(violations.length === 0, `violation(s) de la CSP : ${resume(violations)}`);
+}
+
+/**
+ * Ouvre une conversation dans la page, par l'adresse (#/chat/<id>) comme un lien : le fragment change, la page n'est pas rechargée
+ * (les relevés restent en place). Attend l'en-tête de la conversation.
+ */
+export async function ouvrirConversation(ctx, rootId) {
+  const page = ctx.navigateur;
+  await page.evaluer(`location.hash = ${JSON.stringify(`#/chat/${rootId}`)}`);
+  await page.attendreQue("document.querySelector('.chat-thread') && document.querySelector('.chat-header h1') && document.querySelector('.chat-header h1').textContent !== 'Nouvelle conversation'", {
+    libelle: `conversation ${rootId} ouverte`,
+  });
+}
+
+/**
+ * Les six captures (1440, 1024 et 400, en clair et en sombre) d'une conversation ouverte. Le panneau « Contexte », ouvert par défaut
+ * depuis la 0.2.0, devient sous 1280 px une feuille posée sur la conversation (chat.css), qui cache la bande, « Qui travaille ? » et
+ * la saisie (constat du 19/09, mesures/L7b-2.md) : il est fermé par son bouton pour 1024 et 400, comme le ferait l'utilisateur, et
+ * rouvert pour 1440. La fenêtre de travail (1440) est rétablie après ; le panneau reste dans l'état de la dernière capture (fermé).
+ */
+export async function capturerConversation(ctx, nom) {
+  const page = ctx.navigateur;
+  const avant = async ({ taille }) => {
+    const voulu = taille.largeur > 1280;
+    const ouvert = await page.evaluer("document.querySelector('.chat')?.classList.contains('aside-open') === true");
+    if (ouvert === voulu) return;
+    const bouton = voulu ? "Afficher le contexte" : "Masquer le contexte";
+    await page.evaluer(`document.querySelector(${JSON.stringify(`.chat-header button[aria-label="${bouton}"]`)})?.click()`);
+    await page.attendreQue(`document.querySelector('.chat')?.classList.contains('aside-open') === ${voulu}`, { libelle: `panneau « Contexte » ${voulu ? "ouvert" : "fermé"}` });
+  };
+  // Transitions de la carte finies (≈ 900 ms, un signe apparaît depuis l'opacité 0) avant la première capture.
+  await attendre(1_000);
+  const faites = await ctx.screenshot(nom, { avant });
+  exiger(faites.length === 6, `6 captures attendues (${nom}), ${faites.length} faites.`);
+  await page.taille(LARGE);
+  return faites;
+}
+
+/** Attend que la page affiche le mode demandé (lien « Studio » de la barre, réservé au mode Avancé), changé par le flux. */
+export async function attendreModeAffiche(page, mode, delaiMs = 10_000) {
+  const studio = "[...document.querySelectorAll('nav.rail a.nav-item')].some((a) => a.textContent.includes('Studio'))";
+  await page.attendreQue(mode === "avance" ? studio : `!${studio}`, { delaiMs, libelle: `page en mode ${mode === "avance" ? "Avancé" : "Simple"}` });
+}
+
+/** Attend que le journal réseau de la page reste sans nouvelle requête pendant `calmeMs` ; rend sa longueur. */
+export async function attendreReseauCalme(page, { calmeMs = 1_500, delaiMs = 20_000 } = {}) {
+  const limite = Date.now() + delaiMs;
+  let longueur = page.journalReseau().length;
+  let depuis = Date.now();
+  while (Date.now() < limite) {
+    await attendre(100);
+    const n = page.journalReseau().length;
+    const enCours = page.journalReseau().filter((l) => l.etat === "envoyée" && !String(l.url).endsWith("/api/events")).length;
+    if (n !== longueur || enCours > 0) {
+      longueur = n;
+      depuis = Date.now();
+    } else if (Date.now() - depuis >= calmeMs) return n;
+  }
+  throw new Error(`le réseau de la page ne se calme pas en ${Math.round(delaiMs / 1000)} s.`);
+}
+
+// --- Carte néon ------------------------------------------------------------------------------------------------------------------
+
+/** Teinte (0-360) et saturation (0-1) d'une couleur « rgb(r, g, b) » calculée par le navigateur ; null si illisible. */
+export function teinte(couleur) {
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(String(couleur));
+  if (!m) return null;
+  const [r, g, b] = [m[1], m[2], m[3]].map((v) => Number(v) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  const l = (max + min) / 2;
+  const saturation = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  if (d === 0) return { teinte: null, saturation };
+  let h;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { teinte: Math.round(h), saturation };
+}
+
+/** Rose de la consigne (§5.7.1 : #FF3DA6 en néon sombre, #C2187A en néon clair) : teinte 300 à 345, couleur franche. */
+export function estRose(couleur) {
+  const t = teinte(couleur);
+  return t !== null && t.teinte !== null && t.teinte >= 300 && t.teinte <= 345 && t.saturation >= 0.4;
+}
+
+/** Bleu du résultat (§5.7.1 : #3DA9FF en néon sombre, #1560BD en néon clair) : teinte 195 à 235, couleur franche. */
+export function estBleu(couleur) {
+  const t = teinte(couleur);
+  return t !== null && t.teinte !== null && t.teinte >= 195 && t.teinte <= 235 && t.saturation >= 0.4;
+}
+
+/** Gris d'un faisceau figé par un arrêt : couleur sans teinte franche. */
+export function estGris(couleur) {
+  const t = teinte(couleur);
+  return t !== null && t.saturation < 0.25;
+}
+
+/** Première apparition, dans la page, du faisceau de clé `f:<id>` (relevés), ou null. */
+export function apparition(relevesPage, idFaisceau) {
+  return relevesPage.faisceaux.find((f) => f.cle === `f:${idFaisceau}`) ?? null;
+}
+
+/** Faits de la conversation (GET …/facts?since=0), dans l'ordre d'écriture. */
+export async function faits(ctx, rootId) {
+  const reponse = await ctx.api.get(`/api/conversations/${encodeURIComponent(rootId)}/facts?since=0`);
+  exiger(Array.isArray(reponse?.facts), `faits illisibles : ${resume(reponse)}`);
+  return [...reponse.facts].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+}
+
+/** Activité de la conversation (GET …/activity) : délégations, attentes d'accord. */
+export async function activite(ctx, rootId) {
+  return await ctx.api.get(`/api/conversations/${encodeURIComponent(rootId)}/activity`);
+}
+
+/**
+ * Faisceaux qu'ouvrent les faits, dans leur ordre (grammaire de neon-scene.ts, §5.7.1) : préparation et consigne d'un appel `task`
+ * de la session qui délègue, résultat rendu par l'enfant. `id` est celui du faisceau (data-neon-cle sans « f: »).
+ */
+export function faisceauxDesFaits(liste) {
+  const ouverts = [];
+  for (const fait of liste) {
+    const callId = fait.data?.callId;
+    if (typeof callId !== "string") continue;
+    if (fait.kind === "consigne" && fait.data.etat === "prepare") ouverts.push({ id: `preparation:${fait.sessionId}:${callId}`, genre: "preparation", fait: fait.id });
+    else if (fait.kind === "consigne" && fait.data.etat === "envoyee") ouverts.push({ id: `consigne:${fait.sessionId}:${callId}`, genre: "consigne", fait: fait.id });
+    else if (fait.kind === "resultat" && typeof fait.data.enfant === "string" && fait.data.etat !== "interrompu") {
+      ouverts.push({ id: `resultat:${fait.data.enfant}:${callId}`, genre: "resultat", fait: fait.id });
+    }
+  }
+  return ouverts;
+}
+
+// --- Chat ------------------------------------------------------------------------------------------------------------------------
+
+/** Ligne de « Qui travaille ? » dont le nom vaut `nom` : état affiché, ou null si la ligne n'existe pas. */
+export async function etatActeur(page, nom) {
+  return await page.evaluer(`(() => {
+    const ligne = [...document.querySelectorAll(".actor-row")].find((l) => l.querySelector(".actor-name")?.textContent.trim() === ${JSON.stringify(nom)});
+    return ligne ? (ligne.querySelector(".actor-state")?.textContent ?? "").trim() : null;
+  })()`);
+}
+
+/** Attend qu'une ligne de « Qui travaille ? » (nom) affiche un état qui commence par `etat`. */
+export async function attendreEtatActeur(page, nom, etat, delaiMs = 15_000) {
+  await page.attendreQue(
+    `(() => { const l = [...document.querySelectorAll(".actor-row")].find((x) => x.querySelector(".actor-name")?.textContent.trim() === ${JSON.stringify(nom)}); return l && (l.querySelector(".actor-state")?.textContent ?? "").trim().startsWith(${JSON.stringify(etat)}); })()`,
+    { delaiMs, libelle: `« Qui travaille ? » : ${nom} « ${etat} »` },
+  );
+}
+
+/** « Qui travaille ? » replié par défaut en fin de demande : le déplie (clic sur son bouton), s'il ne l'est pas. */
+export async function deplierQuiTravaille(page) {
+  await page.attendreQue("document.querySelector('.who-toggle')", { libelle: "bandeau « Qui travaille ? »" });
+  if ((await page.evaluer("document.querySelector('.who-toggle').getAttribute('aria-expanded')")) !== "true") {
+    await page.evaluer("document.querySelector('.who-toggle').click()");
+  }
+  await page.attendreQue("document.querySelector('.who-toggle').getAttribute('aria-expanded') === 'true'", { libelle: "« Qui travaille ? » déplié" });
+}
+
+// --- Scénario : préalables des scénarios it1-ui ----------------------------------------------------------------------------------
+
+export async function run(ctx) {
+  const page = ctx.navigateur;
+  const bootstrap = await ctx.api.get("/api/bootstrap");
+  exiger(bootstrap?.settings?.ui?.mode === "simple", `mode ${resume(bootstrap?.settings?.ui?.mode)} au lieu de « simple ».`);
+
+  // D-05 : HTTP explicite sur la boucle locale (contexte sûr pour le navigateur), sous la CSP réelle du cockpit.
+  exiger(ctx.url.startsWith("http://127.0.0.1:"), `adresse du cockpit inattendue : ${ctx.url}`);
+  const reponse = await fetch(`${ctx.url}/`, { headers: { cookie: ctx.api.cookie } });
+  const csp = reponse.headers.get("content-security-policy") ?? "";
+  exiger(reponse.ok && /default-src 'self'/.test(csp) && /script-src 'self'(;|$)/.test(csp) && /connect-src 'self'/.test(csp), `CSP de la page inattendue : « ${csp} »`);
+  await reponse.body?.cancel();
+
+  // Règles acceptées au clic (première visite de la pile), mode Simple affiché, flux d'événements ouvert.
+  await preparerPage(ctx);
+  exiger(await page.evaluer("window.isSecureContext === true && location.protocol === 'http:'"), "page hors contexte sûr, ou servie autrement qu'en HTTP.");
+  const accepte = (await ctx.api.get("/api/settings"))?.ui?.rulesAcceptedVersion;
+  exiger(typeof accepte === "number" && accepte >= (bootstrap.rulesVersion ?? 0), `règles non enregistrées après « Commencer » (${resume(accepte)}).`);
+  await attendreModeAffiche(page, "simple");
+  await page.attendreQue("document.querySelector('.rail-footer .dot.good')", { libelle: "pastille du flux au vert (opencode joint, flux ouvert)" });
+  const flux = page.journalReseau().filter((l) => String(l.url).startsWith(`${ctx.url}/api/events`));
+  exiger(flux.length >= 1 && flux.every((l) => l.etat !== "échouée"), `flux d'événements : ${resume(flux)}`);
+
+  await exigerAucuneViolationCsp(page);
+  ctx.expectNoConsoleErrors();
+}
