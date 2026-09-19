@@ -1,0 +1,10 @@
+{
+  "name": "opencode-cockpit-salle-omo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Image opencode-omo de la Salle OMO : extension epinglee, installee sans script par npm ci --ignore-scripts. Jamais publiee (P13).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "oh-my-openagent": "4.19.4"
+  }
+}

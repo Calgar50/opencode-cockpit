@@ -1,0 +1,189 @@
+// Configuration figée d'Oh My OpenAgent 4.19.4 dans la Salle OMO (spéc. §3.15.1 point 6 ; plan D-2b-10, D-2b-47).
+// Copiée dans l'image en lecture seule : /etc/opencode-omo/omo/omo.jsonc (root, dans le périmètre du manifeste).
+//
+// Chaque nom et chaque valeur viennent de l'audit de L20 (docs/omo-audit-4.19.4.md, docker/opencode-omo/enums-4.19.4.json) ;
+// validate.mjs exige ce fichier à l'identique à la construction et à chaque démarrage (G14) : un nom hors énumération, une
+// coupure retirée, une valeur épinglée changée, une clé en plus ou une IA hors github-copilot/* font tout refuser.
+// Les listes disabled_* sont additives : une couche de projet ne peut pas les vider (F-z), d'où le pré-contrôle (§3.15.2).
+{
+  // Système de tâches natif d'opencode seulement : les outils task_* restent hors du jeu.
+  "new_task_system_enabled": false,
+  // Aucune définition d'agent lue depuis des fichiers.
+  "agent_definitions": [],
+
+  // Les cinq serveurs MCP intégrés sortent sur le réseau ou lancent npm.
+  "disabled_mcps": ["codegraph", "context7", "grep_app", "lsp", "websearch"],
+  // Recherche distante et envoi de fichiers à une IA multimodale (JS-3).
+  "disabled_agents": ["librarian", "multimodal-looker"],
+  // Navigateur, réseau, Team Mode ou écriture de l'historique git.
+  "disabled_skills": [
+    "agent-browser",
+    "dev-browser",
+    "git-master",
+    "playwright",
+    "security-research",
+    "security-review",
+    "team-mode",
+    "visual-qa"
+  ],
+  // Les 23 hooks coupés par l'audit (JS-9, D-2b-47). « ralph-loop » n'est pas un nom de hook de la 4.19.4 : la boucle se
+  // coupe par le hook goal et goal.enabled à false (décision du 19/09). Restent actifs, justifiés dans l'audit :
+  // keyword-detector, atlas, start-work, todo-continuation-enforcer.
+  "disabled_hooks": [
+    "anthropic-context-window-limit-recovery",
+    "ast-grep-sg-provision",
+    "auto-slash-command",
+    "auto-update-checker",
+    "claude-code-hooks",
+    "codegraph-bootstrap",
+    "comment-checker",
+    "directory-agents-injector",
+    "directory-readme-injector",
+    "goal",
+    "hashline-read-enhancer",
+    "hephaestus-agents-md-injector",
+    "interactive-bash-session",
+    "legacy-plugin-toast",
+    "model-fallback",
+    "monitor-status-injector",
+    "non-interactive-env",
+    "rules-injector",
+    "runtime-fallback",
+    "session-notification",
+    "stop-continuation-guard",
+    "team-tool-gating",
+    "webfetch-redirect-guard"
+  ],
+  "disabled_commands": ["goal", "stop-continuation"],
+  // Noms énumérés un par un, sans joker (R1) : session_* et team_* compris. « edit » n'y est pas : l'éditeur hashline se
+  // coupe par hashline_edit à false.
+  "disabled_tools": [
+    "grep",
+    "glob",
+    "session_list",
+    "session_read",
+    "session_search",
+    "session_info",
+    "look_at",
+    "skill_mcp",
+    "create_goal",
+    "update_goal",
+    "get_goal",
+    "interactive_bash",
+    "team_create",
+    "team_delete",
+    "team_shutdown_request",
+    "team_approve_shutdown",
+    "team_reject_shutdown",
+    "team_send_message",
+    "team_task_create",
+    "team_task_list",
+    "team_task_update",
+    "team_task_get",
+    "team_status",
+    "team_list",
+    "monitor_start",
+    "monitor_stop",
+    "monitor_list",
+    "monitor_output",
+    "task_create",
+    "task_get",
+    "task_list",
+    "task_update"
+  ],
+  // Seconde barrière derrière enabled_providers de l'instance : tous les fournisseurs cités par le paquet, sauf Copilot.
+  "disabled_providers": [
+    "aihubmix",
+    "alibaba-token-plan",
+    "alibaba-token-plan-cn",
+    "anthropic",
+    "anthropic-api",
+    "bailian-coding-plan",
+    "deepseek",
+    "firmware",
+    "google",
+    "kimi-for-coding",
+    "minimax-cn-coding-plan",
+    "minimax-coding-plan",
+    "moonshotai",
+    "moonshotai-cn",
+    "ollama-cloud",
+    "openai",
+    "opencode",
+    "opencode-go",
+    "quotio-openai",
+    "qwen-token-plan",
+    "qwen-token-plan-cn",
+    "vercel",
+    "xai",
+    "xiaomi",
+    "zai-coding-plan"
+  ],
+  "mcp_env_allowlist": [],
+
+  // Outil « edit » natif d'opencode, soumis au portillon du cockpit (décision M3 du 19/09).
+  "hashline_edit": false,
+  // Télémétrie coupée ; l'image pose aussi OMO_DISABLE_POSTHOG=1 et OMO_SEND_ANONYMOUS_TELEMETRY=0.
+  "telemetry": false,
+  // Aucun changement d'IA silencieux (JS-11, G3).
+  "model_fallback": false,
+
+  // IA de chaque agent : github-copilot/* seulement (JS-11, G3), parmi les IA recommandées par le cockpit (DEFAULT_TIERS).
+  // Présence au catalogue du compte : recette G3 (en attente). Prometheus : permission épinglée (JS-3).
+  "agents": {
+    "build": { "model": "github-copilot/claude-sonnet-5" },
+    "plan": { "model": "github-copilot/claude-sonnet-5" },
+    "sisyphus": { "model": "github-copilot/claude-sonnet-5" },
+    // Exécutant prévu pour une IA GPT (avis no-hephaestus-non-gpt).
+    "hephaestus": { "model": "github-copilot/gpt-5.3-codex" },
+    "sisyphus-junior": { "model": "github-copilot/claude-sonnet-5" },
+    "OpenCode-Builder": { "model": "github-copilot/claude-sonnet-5" },
+    "prometheus": {
+      "model": "github-copilot/claude-sonnet-5",
+      "permission": { "edit": "ask", "bash": "deny", "webfetch": "deny" }
+    },
+    "metis": { "model": "github-copilot/claude-sonnet-5" },
+    "momus": { "model": "github-copilot/claude-sonnet-5" },
+    "oracle": { "model": "github-copilot/claude-opus-5" },
+    "librarian": { "model": "github-copilot/gpt-5.4-mini" },
+    "explore": { "model": "github-copilot/gpt-5.4-mini" },
+    "multimodal-looker": { "model": "github-copilot/gpt-5.4-mini" },
+    "atlas": { "model": "github-copilot/claude-sonnet-5" }
+  },
+  // IA de chaque catégorie intégrée de la 4.19.4 : github-copilot/* seulement (G3).
+  "categories": {
+    "artistry": { "model": "github-copilot/claude-sonnet-5" },
+    "deep": { "model": "github-copilot/gpt-5.3-codex" },
+    "quick": { "model": "github-copilot/gpt-5.4-mini" },
+    "ultrabrain": { "model": "github-copilot/claude-opus-5" },
+    "unspecified-high": { "model": "github-copilot/claude-sonnet-5" },
+    "unspecified-low": { "model": "github-copilot/gpt-5.4-mini" },
+    "visual-engineering": { "model": "github-copilot/claude-sonnet-5" },
+    "writing": { "model": "github-copilot/claude-sonnet-5" }
+  },
+
+  // Plus rien n'est lu ni exécuté depuis .claude/ (C2-1) ; l'image pose aussi OPENCODE_DISABLE_CLAUDE_CODE=1.
+  "claude_code": { "mcp": false, "commands": false, "skills": false, "agents": false, "hooks": false, "plugins": false },
+  // Aucune mise à jour de l'extension à l'exécution : l'image est reconstruite pour changer de version.
+  "auto_update": false,
+  // Objectif persistant coupé ; c'est aussi ce qui coupe l'ancienne boucle (aucune clé ralph_loop, alias déprécié).
+  "goal": { "enabled": false, "auto_start": false },
+  "runtime_fallback": { "enabled": false },
+  // Deux tâches de fond au plus à la fois (§4.8.2).
+  "background_task": { "defaultConcurrency": 2 },
+  "notification": { "force_enable": false },
+  // Le rafraîchissement irait chercher un catalogue distant.
+  "model_capabilities": { "enabled": false, "auto_refresh_on_start": false },
+  "openclaw": { "enabled": false },
+  "monitor": { "enabled": false, "live_mode_enabled": false },
+  // Quatre défauts à true dans le paquet : indexation, provisionnement, service permanent, avec téléchargement.
+  "codegraph": { "enabled": false, "auto_init": false, "auto_provision": false, "daemon": false, "telemetry": false },
+  // Team Mode coupé (Q5) : les douze outils team_* partent avec.
+  "team_mode": { "enabled": false, "tmux_visualization": false },
+  // Aucune signature ajoutée : l'historique git est en lecture seule.
+  "git_master": { "commit_footer": false, "include_co_authored_by": false, "git_env_prefix": "" },
+  "tmux": { "enabled": false },
+  // Défaut du paquet à true : un commit automatique échouerait sur un historique git en lecture seule.
+  "start_work": { "auto_commit": false },
+  "default_mode": { "ultrawork": false, "goal": false }
+}
