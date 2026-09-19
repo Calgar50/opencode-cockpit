@@ -325,12 +325,31 @@ async function creerOnglet(client, sessionId, targetId) {
       await envoyer("Network.setCookie", cookie);
     },
 
+    /** Retire un cookie de l'onglet (`name`, `url`) : la session du navigateur tombe, celle du client d'API reste. */
+    async effacerCookie(cookie) {
+      await envoyer("Network.deleteCookies", cookie);
+    },
+
     async taille({ largeur, hauteur }) {
       await envoyer("Emulation.setDeviceMetricsOverride", { width: largeur, height: hauteur, deviceScaleFactor: 1, mobile: false });
     },
 
     async theme(nom) {
       await envoyer("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: nom === "sombre" ? "dark" : "light" }] });
+    },
+
+    /**
+     * Coupe (true) ou rétablit (false) le réseau de l'onglet, comme un Wi-Fi perdu : toute requête nouvelle échoue
+     * (ERR_INTERNET_DISCONNECTED), `navigator.onLine` suit et la page reçoit « offline » puis « online ». Un flux
+     * d'événements déjà ouvert n'est pas coupé (mesuré en M25).
+     */
+    async horsLigne(coupe) {
+      await envoyer("Network.emulateNetworkConditions", { offline: Boolean(coupe), latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    },
+
+    /** Fait échouer les requêtes dont l'adresse correspond à l'un des motifs (« * » joker) ; `[]` les laisse toutes passer. */
+    async bloquer(motifs) {
+      await envoyer("Network.setBlockedURLs", { urls: motifs });
     },
 
     async capture(fichier) {

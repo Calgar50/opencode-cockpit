@@ -1,11 +1,12 @@
 // Coquille de l'application : amorçage, connexion, navigation, bandeaux d'alerte, règles d'utilisation.
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { isDefaultProviders, MESSAGES } from "../../server/shared/assistant-rules.ts";
+import type { BootView } from "../../server/shared/boot-recovery.ts";
 import { authErrorText, certificateRenewalDue, localAccessNotice, loginMode } from "../../server/shared/local-access-notice.ts";
 import { Icon, type IconName } from "../components/Icon.tsx";
 import { ToastProvider, useToast } from "../components/Toast.tsx";
 import { Button, ConfirmProvider, EmptyState, IconButton, Meter, Spinner } from "../components/ui.tsx";
-import { ApiError, api, errorText, onUnauthorized } from "../lib/api.ts";
+import { api, errorText } from "../lib/api.ts";
 import { cockpitEvent, eventBus, useEvents, useStreamStatus } from "../lib/events.ts";
 import { formatPercent, formatUsd } from "../lib/format.ts";
 import { navigate, routeHref, useRoute } from "../lib/router.ts";
@@ -18,8 +19,10 @@ import { DiagnosticsPage } from "../pages/DiagnosticsPage.tsx";
 import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
 import { AppProvider, type ThemeChoice, useApp } from "./AppContext.tsx";
+import { BootErrorScreen, RecoveryBanner } from "./BootRecovery.tsx";
 import { FirstRunRules, needsRules, UPGRADE_NOTICE_VERSION, UpgradeNotice } from "./FirstRunRules.tsx";
 import { LocalHttpBanner } from "./LocalHttpNotice.tsx";
+import { useBootRecovery } from "./useBootRecovery.ts";
 
 const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean }> = [
   { id: "chat", label: "Chat", icon: "chat" },
@@ -32,56 +35,27 @@ const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boo
 ];
 
 export function App() {
-  const [phase, setPhase] = useState<"loading" | "login" | "ready" | "error">("loading");
-  const [boot, setBoot] = useState<Bootstrap | null>(null);
-  const [error, setError] = useState("");
-
-  const load = useCallback(async () => {
-    try {
-      const data = await api.bootstrap();
-      setBoot(data);
-      setPhase("ready");
-      eventBus.connect();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setPhase("login");
-      } else {
-        setError(errorText(err));
-        setPhase("error");
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    return onUnauthorized(() => {
-      eventBus.disconnect();
-      setPhase("login");
-    });
-  }, [load]);
+  // Amorçage et reprise automatique après un échec (1.1, décision U4) : une interface déjà chargée n'est plus remplacée par
+  // l'écran « Le cockpit ne répond pas » ; un bandeau signale la reprise, qui se fait seule (web/app/useBootRecovery.ts).
+  const { view, load } = useBootRecovery();
+  const boot = view.data;
+  const retry = () => void load();
 
   return (
     <ToastProvider>
       <ConfirmProvider>
-        {phase === "loading" ? (
+        {view.phase === "loading" ? (
           <div className="empty" style={{ height: "100%" }}>
             <Spinner large />
             <p>Démarrage du cockpit…</p>
           </div>
-        ) : phase === "login" ? (
+        ) : view.phase === "login" ? (
           <LoginScreen onSuccess={load} />
-        ) : phase === "error" || !boot ? (
-          <div className="empty" style={{ height: "100%" }}>
-            <Icon name="alert" size={32} />
-            <h3>Le cockpit ne répond pas</h3>
-            <p>{error}</p>
-            <Button variant="primary" icon="refresh" onClick={() => void load()}>
-              Réessayer
-            </Button>
-          </div>
+        ) : view.phase === "error" || !boot ? (
+          <BootErrorScreen view={view} onRetry={retry} />
         ) : (
           <AppProvider boot={boot} refresh={load}>
-            <Shell />
+            <Shell recovery={view} onRetry={retry} />
           </AppProvider>
         )}
       </ConfirmProvider>
@@ -199,7 +173,7 @@ function AdvancedOnlyPage({ title }: { title: string }) {
   );
 }
 
-function Shell() {
+function Shell({ recovery, onRetry }: { recovery: BootView<Bootstrap>; onRetry: () => void }) {
   const route = useRoute();
   const section = route[0] ?? "chat";
   const { boot, patchBoot, refresh, theme, setTheme, ui, advanced, applySettings } = useApp();
@@ -367,6 +341,7 @@ function Shell() {
               </Button>
             </div>
           ) : null}
+          <RecoveryBanner view={recovery} masque={streamStatus === "lost"} onRetry={onRetry} />
           {accessNotice ? <LocalHttpBanner notice={accessNotice} onDetails={() => navigate("diagnostic")} /> : null}
           {certDaysLeft !== null && certificateRenewalDue(certDaysLeft) ? (
             <div className="banner warning" role="status">
