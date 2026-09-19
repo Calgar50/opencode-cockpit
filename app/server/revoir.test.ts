@@ -529,22 +529,26 @@ describe("pureté et aucune chaîne affichable (D-3d-21, D-3d-27)", () => {
     for (const file of MODULES) assert.deepEqual(problemes(lire_(file)), [], file);
   });
 
-  it("imports : activity-types.ts et neon-scene.ts seulement, jamais salle3d-types.ts ni un module de textes (D-3d-27)", () => {
+  it("imports : activity-types.ts, neon-scene.ts et les types partagés de salle3d-types.ts seulement, jamais un module de textes (D-3d-27)", () => {
     for (const file of MODULES) {
-      const imports = [...lire_(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1] ?? "");
+      const source = lire_(file);
+      const imports = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1] ?? "");
       assert.ok(imports.length > 0, file);
-      for (const spec of imports) assert.ok(spec === "./activity-types.ts" || spec === "./neon-scene.ts", `${file} : ${spec}`);
+      for (const spec of imports) assert.ok(spec === "./activity-types.ts" || spec === "./neon-scene.ts" || spec === "./salle3d-types.ts", `${file} : ${spec}`);
+      assert.doesNotMatch(source, /^\s*import\s+(?!type\b)[^;]*from\s*["']\.\/salle3d-types\.ts["']/m, `${file} : salle3d-types.ts en types seulement`);
     }
   });
 
-  it("types recopiés à l'identique du §4.1.1, chacun sous le commentaire de copie (D-3d-27)", () => {
-    const copies: Array<[string, string]> = [
-      ["revoir.ts", "export type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4;"],
-      ["revoir.ts", 'export type ReplayBadge = { etat: "direct" } | { etat: "differe"; vitesse: ReplaySpeed; heure: number };'],
-      ["legendes.ts", 'export type LegendeKey = "neuf" | "reprise" | "carnet" | "tache-de-fond" | "reveil" | "relance";'],
-      ["revoir-access.ts", 'export type RevoirRefus = "racine-inconnue" | "salle-demande-en-cours" | "salle-fin-inconnue";'],
+  it("types partagés réexportés de salle3d-types.ts depuis le train de V0 (D-3d-27), plus aucune copie", () => {
+    const reexports: Array<[string, string]> = [
+      ["revoir.ts", 'export type { ReplayBadge, ReplaySpeed } from "./salle3d-types.ts";'],
+      ["legendes.ts", 'export type { LegendeKey } from "./salle3d-types.ts";'],
+      ["revoir-access.ts", 'export type { RevoirRefus } from "./salle3d-types.ts";'],
     ];
-    for (const [file, declaration] of copies) assert.ok(lire_(file).includes(`// copie D-3d-27, remplacée au train de V0\n${declaration}`), `${file} : ${declaration}`);
+    for (const [file, ligne] of reexports) {
+      assert.ok(lire_(file).includes(ligne), `${file} : ${ligne}`);
+      assert.doesNotMatch(lire_(file), /\btype\s+(?:ReplaySpeed|ReplayBadge|LegendeKey|RevoirRefus)\s*=/, `${file} : copie restante`);
+    }
     // Égalité des types (vérifiée par typecheck) : aucune valeur de plus ni de moins que le §4.1.1.
     type Egal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
     const vitesses: Egal<ReplaySpeed, 0.25 | 0.5 | 1 | 2 | 4> = true;

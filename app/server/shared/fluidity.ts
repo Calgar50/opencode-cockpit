@@ -10,10 +10,10 @@
 // Aucun texte affiché : les raisons (FluidityReason) sont mises en phrases par la page (messageFluidite de salle3d-texts.ts). Les
 // noms de RENDUS_LOGICIELS sont des motifs de comparaison, jamais affichés (D-3d-21).
 
-// copie D-3d-27, remplacée au train de V0
-export type FluidityReason = "accessibilite" | "webgl-absent" | "rendu-logiciel" | "sonde-lente" | "saccades" | "preference-2d";
-// copie D-3d-27, remplacée au train de V0
-export type FluidityVerdict = { mode: "3d" } | { mode: "2d"; raison: FluidityReason };
+import type { FluidityReason, FluidityVerdict } from "./salle3d-types.ts";
+
+// Types partagés de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexportés depuis le train de V0.
+export type { FluidityReason, FluidityVerdict } from "./salle3d-types.ts";
 
 /** Les six raisons d'un affichage 2D, dans l'ordre du type (validation de la préférence lue). */
 export const RAISONS_FLUIDITE = [

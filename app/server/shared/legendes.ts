@@ -12,9 +12,10 @@
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { ActivityFact } from "./activity-types.ts";
 import { moments, visibleCount } from "./neon-scene.ts";
+import type { LegendeKey } from "./salle3d-types.ts";
 
-// copie D-3d-27, remplacée au train de V0
-export type LegendeKey = "neuf" | "reprise" | "carnet" | "tache-de-fond" | "reveil" | "relance";
+// Type partagé de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexporté depuis le train de V0.
+export type { LegendeKey } from "./salle3d-types.ts";
 
 /** Élément de la scène qui porte la légende : nœud (sessionId) ou faisceau (id de NeonBeam). */
 export interface LegendeAncre {

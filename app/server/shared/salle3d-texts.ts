@@ -7,11 +7,10 @@
 // au mode Avancé et ne liste que des conversations terminées, à revoir (D-3d-14).
 // Module pur (server/shared) : aucune horloge, aucun module node.
 import { remplir } from "./neon-texts.ts";
+import type { FluidityReason } from "./salle3d-types.ts";
 
-// copie D-3d-27, remplacée au train de V0
-export type FluidityReason = "accessibilite" | "webgl-absent" | "rendu-logiciel" | "sonde-lente" | "saccades" | "preference-2d";
-// copie D-3d-27, remplacée au train de V0
-export type FluidityVerdict = { mode: "3d" } | { mode: "2d"; raison: FluidityReason };
+// Types partagés de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexportés depuis le train de V0.
+export type { FluidityReason, FluidityVerdict } from "./salle3d-types.ts";
 
 export const TEXTES = {
   simple: {

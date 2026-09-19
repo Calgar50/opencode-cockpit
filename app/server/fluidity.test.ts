@@ -321,11 +321,13 @@ describe("fluidity : contrat (D-3d-27) et pureté", () => {
     assert.ok(Object.isFrozen(SURVEILLANCE_INITIALE));
   });
 
-  it("types recopiés à l'identique avec leur commentaire, aucun import (ni salle3d-types.ts, ni salle3d-texts.ts, ni three)", () => {
-    const marque = "// copie D-3d-27, remplacée au train de V0\n";
-    assert.ok(SOURCE.includes(`${marque}export type FluidityReason = "accessibilite" | "webgl-absent" | "rendu-logiciel" | "sonde-lente" | "saccades" | "preference-2d";`));
-    assert.ok(SOURCE.includes(`${marque}export type FluidityVerdict = { mode: "3d" } | { mode: "2d"; raison: FluidityReason };`));
-    assert.equal(/^\s*(?:import|export)\b[^;]*\bfrom\s*["']/m.test(SOURCE), false, "aucun import");
+  it("types partagés réexportés de salle3d-types.ts depuis le train de V0 (D-3d-27) ; seul import : ces types (ni textes, ni three)", () => {
+    assert.ok(SOURCE.includes('import type { FluidityReason, FluidityVerdict } from "./salle3d-types.ts";'));
+    assert.ok(SOURCE.includes('export type { FluidityReason, FluidityVerdict } from "./salle3d-types.ts";'));
+    assert.doesNotMatch(SOURCE, /\btype\s+(?:FluidityReason|FluidityVerdict)\s*=/, "plus aucune copie");
+    const sources = [...SOURCE.matchAll(/^\s*(?:import|export)\b[^;]*\bfrom\s*["']([^"']+)["']/gm)].map((m) => m[1]);
+    assert.deepEqual([...new Set(sources)], ["./salle3d-types.ts"], "seul import");
+    assert.equal(/^\s*import\s+(?!type\b)/m.test(SOURCE), false, "aucun import de valeur");
     assert.equal(/\bimport\s*\(/.test(SOURCE), false, "aucun import dynamique");
   });
 

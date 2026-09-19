@@ -2,7 +2,8 @@
 // web/**/*.{ts,tsx}, commentaires, chaînes et gabarits ignorés :
 // - un spécificateur qui commence par « three » (import statique, dynamique, export … from, require) n'est permis que dans
 //   web/pages/salle-controle/three/**, et seulement égal à « three » : jamais three/webgpu, three/tsl, three/addons ni
-//   three/src/… ; un `import type` de « three » est permis partout (effacé), sous ce seul nom ;
+//   three/src/… ; un `import type` de « three » est permis partout (effacé), sous ce seul nom ; dans ce dossier, jamais par
+//   import("three") dynamique (train de V0, MX-3D M3D-3 : non élagué, +30,8 % en gzip) ;
 // - hors de ce dossier, un chemin vers web/pages/salle-controle/three/ n'est permis que dans
 //   web/pages/salle-controle/moteur-chargeur.ts, par import("./three/moteur.ts") dynamique ; un `import type` est permis partout ;
 // - un import dynamique non littéral (gabarit à substitution, variable) qui cite three est refusé ; import.meta.glob compte comme
@@ -236,6 +237,9 @@ function violationsWeb(fichier: string, imports: readonly ImportTrouve[]): strin
     } else if (specificateur.startsWith("three")) {
       if (specificateur !== "three") violations.push(`${ou} : « ${specificateur} » interdit, seul « three » est permis`);
       else if (forme !== "type" && !dansThree) violations.push(`${ou} : three importé hors de ${DOSSIER_THREE}`);
+      // Train de V0 (MX-3D, M3D-3) : dans three/, import("three") n'est pas élagué par Rolldown (+30,8 % en gzip) ; le morceau
+      // paresseux vient de moteur-chargeur.ts, three s'y importe par imports nommés statiques (D-3d-05).
+      else if (forme === "dynamique") violations.push(`${ou} : import("three") dynamique interdit dans ${DOSSIER_THREE} : imports nommés statiques (M3D-3)`);
     } else if (!dansThree && forme !== "type" && versDossierThree(cible(fichier, specificateur))) {
       const frontiere = fichier === CHARGEUR && forme === "dynamique" && sansExtension(cible(fichier, specificateur) ?? "") === MOTEUR;
       if (!frontiere) violations.push(`${ou} : « ${specificateur} » franchit la frontière de ${DOSSIER_THREE} (seul ${CHARGEUR}, par import("./three/moteur.ts"))`);
@@ -335,9 +339,12 @@ describe("three-import : lecteur", () => {
 });
 
 describe("three-import : règle (contrôles discriminants)", () => {
-  it("dans three/ : « three » permis sous toutes ses formes ; three/webgpu, three/tsl, three/addons, three/src refusés", () => {
-    for (const texte of ['import { Scene, Group } from "three";', 'import * as T from "three";', 'export { Mesh } from "three";', 'const t = await import("three");', 'import { a } from "./sol.ts";', 'import { b } from "../camera-3d.ts";']) {
+  it("dans three/ : « three » permis en import statique ; import(\"three\") dynamique refusé (M3D-3) ; three/webgpu, three/tsl, three/addons, three/src refusés", () => {
+    for (const texte of ['import { Scene, Group } from "three";', 'import * as T from "three";', 'export { Mesh } from "three";', 'import { a } from "./sol.ts";', 'import { b } from "../camera-3d.ts";']) {
       assert.deepEqual(web(GRAPHE, texte), [], texte);
+    }
+    for (const texte of ['const t = await import("three");', 'const { Mesh } = await import("three");']) {
+      assert.deepEqual(web(GRAPHE, texte), [`${GRAPHE}:1 : import("three") dynamique interdit dans ${DOSSIER_THREE} : imports nommés statiques (M3D-3)`], texte);
     }
     for (const spec of ["three/webgpu", "three/tsl", "three/addons/controls/OrbitControls.js", "three/src/Three.js", "three/examples/jsm/Addons.js"]) {
       assert.deepEqual(web(GRAPHE, `import { X } from "${spec}";`), [`${GRAPHE}:1 : « ${spec} » interdit, seul « three » est permis`], spec);

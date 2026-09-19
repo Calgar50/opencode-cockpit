@@ -14,11 +14,10 @@
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { ActivityFact } from "./activity-types.ts";
 import { moments as momentsDesFaits, type NeonScene } from "./neon-scene.ts";
+import type { ReplayBadge, ReplaySpeed } from "./salle3d-types.ts";
 
-// copie D-3d-27, remplacée au train de V0
-export type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4;
-// copie D-3d-27, remplacée au train de V0
-export type ReplayBadge = { etat: "direct" } | { etat: "differe"; vitesse: ReplaySpeed; heure: number };
+// Types partagés de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexportés depuis le train de V0.
+export type { ReplayBadge, ReplaySpeed } from "./salle3d-types.ts";
 
 /** Vitesses du lecteur, dans l'ordre du menu (D-3d-11) ; ×1 par défaut. */
 export const VITESSES: readonly ReplaySpeed[] = Object.freeze([0.25, 0.5, 1, 2, 4]);

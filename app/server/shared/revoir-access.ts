@@ -13,9 +13,10 @@
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { ActivityFact, SessionInstance } from "./activity-types.ts";
 import type { NeonMode } from "./neon-scene.ts";
+import type { RevoirRefus } from "./salle3d-types.ts";
 
-// copie D-3d-27, remplacée au train de V0
-export type RevoirRefus = "racine-inconnue" | "salle-demande-en-cours" | "salle-fin-inconnue";
+// Type partagé de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexporté depuis le train de V0.
+export type { RevoirRefus } from "./salle3d-types.ts";
 
 export interface RevoirAccesEntree {
   /** La racine est une conversation connue du cockpit (ligne `sessions`). */

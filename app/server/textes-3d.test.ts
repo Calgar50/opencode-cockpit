@@ -545,12 +545,14 @@ describe("textes de la 3D : modules salle3d-texts, revoir-texts et legendes-text
     for (const cle of CLES) for (const mode of ["simple", "avance"] as const) assert.equal(legendes.phrasesLegende([cle], mode).length, 1, `${cle} ${mode}`);
   });
 
-  it("aucun import d'un fichier créé par un autre paquet de V0 (D-3d-27) : seuls neon-texts.ts et neon-scene.ts", () => {
+  it("imports : neon-texts.ts, neon-scene.ts et les types partagés de salle3d-types.ts (réexportés depuis le train de V0, D-3d-27)", () => {
     for (const m of MODULES) {
       const source = fs.readFileSync(path.join(SHARED_DIR, m.fichier), "utf8");
       const imports = [...source.matchAll(/\bfrom\s*["']([^"']+)["']/g)].map((x) => x[1] ?? "");
-      for (const spec of imports) assert.ok(spec === "./neon-texts.ts" || spec === "./neon-scene.ts", `${m.fichier} : ${spec}`);
-      assert.equal((source.match(/\/\/ copie D-3d-27, remplacée au train de V0\r?\nexport type /g) ?? []).length, (source.match(/^export type /gm) ?? []).length, m.fichier);
+      for (const spec of imports) assert.ok(spec === "./neon-texts.ts" || spec === "./neon-scene.ts" || spec === "./salle3d-types.ts", `${m.fichier} : ${spec}`);
+      assert.doesNotMatch(source, /^\s*import\s+(?!type\b)[^;]*from\s*["']\.\/salle3d-types\.ts["']/m, `${m.fichier} : salle3d-types.ts en types seulement`);
+      assert.match(source, /^export type \{[^}]+\} from "\.\/salle3d-types\.ts";$/m, `${m.fichier} : réexportation`);
+      assert.equal((source.match(/^export type \w+\s*=/gm) ?? []).length, 0, `${m.fichier} : plus aucune copie de type`);
     }
   });
 });

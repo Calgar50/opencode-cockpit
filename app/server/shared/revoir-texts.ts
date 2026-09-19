@@ -8,13 +8,10 @@
 // message reste « Texte non affiché pendant « Revoir » ». U1 : en mode Simple, aucune phrase ne propose une équipe.
 // Module pur (server/shared) : aucune horloge ; l'heure affichée est calculée avec le décalage fourni par l'appelant.
 import { remplir } from "./neon-texts.ts";
+import type { ReplayBadge, ReplaySpeed, RevoirRefus } from "./salle3d-types.ts";
 
-// copie D-3d-27, remplacée au train de V0
-export type ReplaySpeed = 0.25 | 0.5 | 1 | 2 | 4;
-// copie D-3d-27, remplacée au train de V0
-export type ReplayBadge = { etat: "direct" } | { etat: "differe"; vitesse: ReplaySpeed; heure: number };
-// copie D-3d-27, remplacée au train de V0
-export type RevoirRefus = "racine-inconnue" | "salle-demande-en-cours" | "salle-fin-inconnue";
+// Types partagés de la vague 0 (D-3d-27) : référence salle3d-types.ts (T3d-a), réexportés depuis le train de V0.
+export type { ReplayBadge, ReplaySpeed, RevoirRefus } from "./salle3d-types.ts";
 
 export const TEXTES = {
   simple: {
