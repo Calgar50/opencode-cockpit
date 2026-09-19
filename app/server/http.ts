@@ -106,6 +106,9 @@ import { StudioApplyError, type StudioScope, type StudioService, StudioValidatio
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
 import { ACTIVATION_OUVERTE, type Cockpit11Wiring } from "./wiring-11.ts";
+// --- équipes (it4) : début ---
+import type { TeamProxyGuard } from "./contracts-eq.ts";
+// --- équipes (it4) : fin ---
 
 /** Niveaux d'IA utilisés par l'API (TierService les fournit). */
 export interface TierPort {
@@ -157,6 +160,10 @@ export interface AppDeps {
   routes?: Array<(app: Hono) => void>;
   /** 1.1 : portillon des accords partagé (app-factory) ; absent : une instance propre à cette application. */
   gate?: PermissionGate;
+  // --- équipes (it4) : début ---
+  /** Équipes (D-eq-04) : verrou appelé en tête du proxy et avant DELETE /api/archive/:id (app-factory) ; absent : rien ne change. */
+  teamGuard?: TeamProxyGuard;
+  // --- équipes (it4) : fin ---
   /** 1.1 : crochets du proxy rangés par wiring-11 (app-factory) ; absents : comportement 1.0. */
   proxyHooks?: ProxyHooks;
   /** 1.1 : agents internes (ports.internalAgents), installés après un redémarrage réussi ; absent : agent de classement seul. */
@@ -997,6 +1004,22 @@ export function createApp(deps: AppDeps): Hono {
     const method = c.req.method.toUpperCase();
     const matched = PROXY_RULES.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
+    // --- équipes (it4) : début ---
+    // Verrous des équipes (D-eq-04), avant la lecture du corps et avant toute demande comptée en vol : un refus est rendu tel quel,
+    // rien n'est relayé. Dossier hors du workspace : null (la route répond 403 ensuite).
+    if (deps.teamGuard) {
+      const asked = new URL(c.req.url).searchParams.get("directory");
+      const locked = await deps.teamGuard({
+        entree: "proxy",
+        method,
+        sub,
+        directory: asked !== null && projects.isAllowedDirectory(asked) ? asked : null,
+        sessionId: SESSION_ROUTE.exec(sub)?.[1] ?? null,
+        permissionId: PERMISSION_REPLY_ROUTE.exec(sub)?.[1] ?? null,
+      });
+      if (locked) return locked;
+    }
+    // --- équipes (it4) : fin ---
     // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée. Adresse de l'API Copilot en
     // cours d'écriture ou à revérifier (« synchro due », flux coupé compris) : opencode peut tourner sur l'adresse d'office, que le
     // réseau bloque peut-être. Garde globale : le dossier d'une demande ne dit pas quelle adresse opencode y utilisera.
@@ -1336,6 +1359,26 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(refreshed.conversation);
   });
 
+  // --- équipes (it4) : début ---
+  // Suppression d'une conversation par les Archives (D-eq-04) : verrou des équipes AVANT la purge (textes d'équipe compris).
+  // Identifiant invalide pour shared/ids.ts : rien, la route répond comme avant.
+  const { teamGuard } = deps;
+  if (teamGuard) {
+    app.use(
+      "/api/archive/:id",
+      forMethods(["DELETE"], async (c, next) => {
+        const id = c.req.param("id");
+        const locked =
+          id !== undefined && SESSION_ID_RE.test(id)
+            ? await teamGuard({ entree: "archive", method: "DELETE", sub: "", directory: null, sessionId: id, permissionId: null })
+            : null;
+        if (locked) return locked;
+        await next();
+        return undefined;
+      }),
+    );
+  }
+  // --- équipes (it4) : fin ---
   app.delete("/api/archive/:id", async (c) => {
     const deleted = await archive.remove(c.req.param("id"));
     if (deleted) hub.cockpit("conversation.deleted", { sessionId: c.req.param("id") });
