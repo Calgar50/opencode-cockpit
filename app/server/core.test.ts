@@ -868,7 +868,7 @@ describe("droits effectifs", () => {
     assert.equal(readOnlyWith({ "*": "allow" }), "Conseiller");
     const locked = plan("autonome", { edit: "deny", bash: "deny", task: "deny" });
     assert.deepEqual(lines(locked), ["modification:non", "commande:non"]);
-    assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Réfléchit et propose un plan, sans rien modifier." });
+    assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Prépare un plan, sans rien modifier." });
     // Sans configuration globale : refus propre du Conseiller, dossier des plans modifiable, aucune règle de commande.
     const bare = effectiveBuiltinRules("plan", {});
     assert.equal(evaluate(bare, "edit", "scripts/x.ps1"), "deny");

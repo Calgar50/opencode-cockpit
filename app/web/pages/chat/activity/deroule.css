@@ -1,0 +1,314 @@
+/* Propriétaire : L5t.
+   Déroulé (panneau de contexte et Archives), carte d'un travail délégué, séparateur « Reprise dans la conversation » et repère non
+   facturé de la transcription (spécification §5.1, §5.5, §5.6). Aucune animation : les états se lisent en mots et en icônes, la
+   hachure et le mot « vous » disent l'attente, jamais la couleur seule. Mode contrasté (forced-colors) : hachures et bordures. */
+
+/* --- Déroulé ------------------------------------------------------------------------------------------------------------- */
+
+.deroule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.aside-section .deroule-head h4 {
+  margin-bottom: 0;
+}
+.deroule-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.deroule-pick select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.deroule-note {
+  margin: 0;
+}
+.deroule-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.deroule-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.deroule-who {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.deroule-name {
+  font-weight: 600;
+  min-width: 0;
+}
+.deroule-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.deroule-track {
+  position: relative;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.deroule-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+/* Génération : pleine. */
+.deroule-bar--generation {
+  background: var(--series-1);
+}
+/* Attente de délégation : claire, bordée. */
+.deroule-bar--attente-delegation {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* Attente de vous : hachure + « vous ». */
+.deroule-bar--attente-vous {
+  background: repeating-linear-gradient(135deg, var(--warning-soft) 0 4px, var(--surface-1) 4px 8px);
+  box-shadow: inset 0 0 0 1px var(--warning-ink);
+  font-weight: 600;
+}
+.deroule-legend {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.deroule-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.deroule-swatch {
+  position: static;
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+}
+.deroule-figure {
+  margin: 0;
+}
+.deroule-table th,
+.deroule-table td {
+  font-size: 12px;
+}
+.deroule-cell-who {
+  font-weight: 600;
+  text-align: left;
+}
+.deroule-journal {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+.deroule-journal h4,
+.deroule-journal h5 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.deroule-journal:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Archives : le Déroulé a sa zone dans la grille de la fiche, entre le résumé et la transcription (même ordre que la page). */
+.archive-grid:has(> .deroule--archives) {
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    "summary side"
+    "deroule side"
+    "transcript side";
+}
+.deroule--archives {
+  grid-area: deroule;
+}
+@media (max-width: 1100px) {
+  .archive-grid:has(> .deroule--archives) {
+    grid-template-rows: auto;
+    grid-template-areas:
+      "summary"
+      "side"
+      "deroule"
+      "transcript";
+  }
+}
+
+/* --- Transcription : travail délégué, reprise, repère non facturé --------------------------------------------------------- */
+
+.delegation-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  min-width: 0;
+}
+.delegation-card--echec {
+  border-left-color: var(--critical);
+}
+.delegation-card--arrete,
+.delegation-card--jamais-demarre {
+  border-left-style: dashed;
+  border-left-color: var(--border-strong);
+}
+.delegation-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.delegation-head:hover {
+  background: var(--surface-2);
+}
+.delegation-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.delegation-title {
+  font-weight: 600;
+}
+.delegation-desc {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.delegation-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.delegation-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 0 10px 6px 32px;
+}
+.delegation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+  min-width: 0;
+}
+.delegation-text-body {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn-resume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.turn-resume::before,
+.turn-resume::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px dashed var(--border-strong);
+}
+.reply-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-3);
+}
+
+/* Tiroir d'un travail délégué : « Voir la consigne ». */
+.instruction-panel {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+.instruction-panel .delegation-text-body {
+  max-height: 240px;
+}
+
+/* --- Mode contrasté ------------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .deroule-track {
+    border-color: CanvasText;
+  }
+  .deroule-bar {
+    forced-color-adjust: none;
+    color: CanvasText;
+  }
+  .deroule-bar--generation {
+    background: CanvasText;
+  }
+  .deroule-bar--attente-delegation {
+    background: Canvas;
+    box-shadow: inset 0 0 0 1px CanvasText;
+  }
+  .deroule-bar--attente-vous {
+    background: repeating-linear-gradient(135deg, CanvasText 0 1px, Canvas 1px 5px);
+    box-shadow: inset 0 0 0 1px CanvasText;
+  }
+  .deroule-swatch {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+  .delegation-card {
+    border-left-color: CanvasText;
+  }
+  .turn-resume::before,
+  .turn-resume::after {
+    border-top-color: CanvasText;
+  }
+}

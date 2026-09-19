@@ -16,7 +16,8 @@
 // - phrases fixées par un contrat (commentaire « phrase affichée … : « … » » d'un server/shared/*-types.ts, reprises telles quelles
 //   par un module de textes) : contrôlées comme « partout » d'un module soumis à « un sens par mot » ;
 // - MESSAGES (assistant-rules.ts) : mots interdits en Simple permis seulement par la liste nominative d'exceptions ci-dessous.
-// Tolérances « réfléchit » datées : chacune porte le paquet qui la retire ; une tolérance devenue inutile fait échouer le test.
+// « Réfléchit » (état) : plus aucune occurrence tolérée dans l'interface ni dans assistant-rules.ts (retirées par T2 et L5t). Le
+// mécanisme de tolérance datée reste testé (contrôles discriminants) ; une tolérance devenue inutile ferait échouer le test.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -132,11 +133,12 @@ interface Tolerance {
   paquet: string;
 }
 
-/** « Réfléchit » (état) devient « Travaille » (§2.2) : occurrences connues, tolérées jusqu'au train de V3 (plan §4.6). */
-const TOLERANCES_REFLECHIT: readonly Tolerance[] = [
-  { fichier: "server/shared/assistant-rules.ts", extrait: "Réfléchit et propose un plan. Ses droits suivent vos réglages", paquet: "L5t" },
-  { fichier: "server/shared/assistant-rules.ts", extrait: "Réfléchit et propose un plan, sans rien modifier.", paquet: "L5t" },
-];
+/**
+ * « Réfléchit » (état) devient « Travaille » (§2.2) : les occurrences connues ont été retirées (« L'assistant réfléchit… » par T2,
+ * les deux aides du Conseiller par L5t, devenues « Prépare un plan »). Aucune tolérance ne reste (plan §4.6, péremption au train
+ * de V3) : le contrôle du code du cockpit n'en passe aucune.
+ */
+const TOLERANCES_REFLECHIT: readonly Tolerance[] = [];
 
 // --- Contrôles --------------------------------------------------------------------------------------------------------------------
 
@@ -674,7 +676,8 @@ describe("textes : code du cockpit", () => {
     assert.deepEqual(checkMessages(MESSAGES, MESSAGES_EXCEPTIONS), []);
   });
 
-  it("« réfléchit » : seulement les occurrences tolérées, chacune retirée par son paquet", () => {
+  it("« réfléchit » : aucune occurrence dans l'interface ni dans assistant-rules.ts, aucune tolérance restante", () => {
+    assert.equal(TOLERANCES_REFLECHIT.length, 0, "toutes les tolérances « réfléchit » sont périmées depuis T2 et L5t");
     assert.deepEqual(checkReflechit(reflechitSources(), TOLERANCES_REFLECHIT), []);
   });
 });
