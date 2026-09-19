@@ -19,6 +19,7 @@ import {
   OMO_FICHIERS_CONTROLE,
   OMO_LISTE_MAX,
   OMO_MARGE_HOMME_MORT_S,
+  OmoControlInvalideError,
   OmoControlTropGrosError,
   analyserArret,
   analyserBattement,
@@ -26,6 +27,7 @@ import {
   analyserGuardState,
   analyserPrecheckOk,
   ageBattementMs,
+  arretDuDemarrage,
   battementFrais,
   borneHommeMort,
   cheminTemporaire,
@@ -68,6 +70,7 @@ interface Fixture {
   vecteurs: Vecteur[];
   fraicheur: { nom: string; at: number | null; maintenant: number; frais: boolean }[];
   precheckDemarrage: { nom: string; startIdFichier: string | null; at: number; startIdCourant: string; maintenant: number; accepte: boolean }[];
+  arretDemarrage: { nom: string; arret: { at: number; startId: string | null } | null; startIdCourant: string; startedAt: number; vise: boolean }[];
   decisions: { nom: string; battementAt: number | null; arret: boolean; maintenant: number; decision: string }[];
 }
 
@@ -215,10 +218,32 @@ describe("protocole de contrôle : homme mort (D-2b-25, §7.5 l.1145)", () => {
     }
   });
 
+  it("un stop-request ne vise que le démarrage qu'il arrête, des deux côtés", () => {
+    assert.ok(FIXTURE.arretDemarrage.length >= 6, `${FIXTURE.arretDemarrage.length} cas`);
+    for (const cas of FIXTURE.arretDemarrage) {
+      const arret = cas.arret === null ? null : { at: cas.arret.at, cause: "fin-de-demande" as const, startId: cas.arret.startId };
+      assert.equal(arretDuDemarrage(arret, cas.startIdCourant, cas.startedAt), cas.vise, cas.nom);
+      assert.equal(salle.arretDuDemarrage(arret, cas.startIdCourant, cas.startedAt), cas.vise, `${cas.nom} (salle)`);
+    }
+  });
+
+  it("stop-request écrit par le cockpit, relu par la salle : il arrête son démarrage, jamais la relance qui le suit", () => {
+    const texte = ecrireArret(1757000010000, "fin-de-demande", FIXTURE.startId);
+    const lu = salle.analyserArret(texte);
+    assert.deepEqual(lu, analyserArret(texte));
+    assert.equal(salle.arretDuDemarrage(lu, FIXTURE.startId, 1757000000000), true);
+    // La relance à neuf tire un autre startId : le même fichier, toujours là, ne la fait plus sortir.
+    assert.equal(salle.arretDuDemarrage(lu, FIXTURE.autreStartId, 1757000020000), false);
+    // Écrit sans démarrage connu (state.json illisible) : il vaut pour le démarrage en cours, pas pour celui d'après.
+    const sansDemarrage = salle.analyserArret(ecrireArret(1757000010000, "vous", null));
+    assert.equal(salle.arretDuDemarrage(sansDemarrage, FIXTURE.startId, 1757000000000), true);
+    assert.equal(salle.arretDuDemarrage(sansDemarrage, FIXTURE.autreStartId, 1757000020000), false);
+  });
+
   it("la décision du superviseur est la même des deux côtés", () => {
     for (const cas of FIXTURE.decisions) {
       const battement = cas.battementAt === null ? null : { at: cas.battementAt };
-      const arret = cas.arret ? { at: cas.maintenant, cause: "vous" as const } : null;
+      const arret = cas.arret ? { at: cas.maintenant, cause: "vous" as const, startId: null } : null;
       assert.equal(decisionSuperviseur(battement, arret, cas.maintenant), cas.decision, cas.nom);
       assert.equal(salle.decisionSuperviseur(battement, arret, cas.maintenant), cas.decision, `${cas.nom} (salle)`);
     }
@@ -231,9 +256,12 @@ describe("protocole de contrôle : écriture", () => {
     assert.deepEqual(analyserBattement(texteBattement), { at: 1757000000000 });
     assert.deepEqual(salle.analyserBattement(texteBattement), { at: 1757000000000 });
 
-    const texteArret = ecrireArret(1757000000000, "plafond-duree");
-    assert.deepEqual(analyserArret(texteArret), { at: 1757000000000, cause: "plafond-duree" });
-    assert.deepEqual(salle.analyserArret(texteArret), { at: 1757000000000, cause: "plafond-duree" });
+    const texteArret = ecrireArret(1757000000000, "plafond-duree", FIXTURE.startId);
+    assert.deepEqual(analyserArret(texteArret), { at: 1757000000000, cause: "plafond-duree", startId: FIXTURE.startId });
+    assert.deepEqual(salle.analyserArret(texteArret), { at: 1757000000000, cause: "plafond-duree", startId: FIXTURE.startId });
+    const texteArretSansDemarrage = ecrireArret(1757000000000, "vous", null);
+    assert.deepEqual(analyserArret(texteArretSansDemarrage), { at: 1757000000000, cause: "vous", startId: null });
+    assert.deepEqual(salle.analyserArret(texteArretSansDemarrage), analyserArret(texteArretSansDemarrage));
 
     const textePrecheck = ecrirePrecheckOk(FIXTURE.startId, 1757000000000, [{ chemin: "alpha", sha256: "0".repeat(64) }]);
     assert.deepEqual(salle.analyserPrecheckOk(textePrecheck), analyserPrecheckOk(textePrecheck));
@@ -244,7 +272,7 @@ describe("protocole de contrôle : écriture", () => {
   });
 
   it("chaque écriture finit par un saut de ligne et tient sur une ligne", () => {
-    for (const texte of [ecrireBattement(1), ecrireArret(1, "vous"), ecrirePrecheckOk(FIXTURE.startId, 1, []), ecrireGuardState(1, [])]) {
+    for (const texte of [ecrireBattement(1), ecrireArret(1, "vous", FIXTURE.startId), ecrirePrecheckOk(FIXTURE.startId, 1, []), ecrireGuardState(1, [])]) {
       assert.equal(texte.endsWith("\n"), true);
       assert.equal(texte.trimEnd().includes("\n"), false);
     }
@@ -255,6 +283,70 @@ describe("protocole de contrôle : écriture", () => {
     assert.throws(() => ecrirePrecheckOk(FIXTURE.startId, 1757000000000, enorme), OmoControlTropGrosError);
     // Sans la borne, ce fichier serait écrit puis relu comme « inconnu » : un pré-contrôle perdu sans que personne ne le sache.
     assert.equal(analyserPrecheckOk(JSON.stringify({ startId: FIXTURE.startId, at: 1, projets: enorme })), null);
+  });
+
+  it("precheck-ok : tout texte accepté par l'écrivain est relu non null des deux côtés, 21 projets compris", () => {
+    const projets = (n: number) => Array.from({ length: n }, (_, i) => ({ chemin: `projets/depot-${i}`, sha256: (i % 16).toString(16).repeat(64) }));
+    /** Écrit puis relit des deux côtés ; `null` si l'écrivain refuse (erreur explicite, jamais un fichier illisible). */
+    const allerRetour = (n: number): number | null => {
+      let texte: string;
+      try {
+        texte = ecrirePrecheckOk(FIXTURE.startId, 1757000000000, projets(n));
+      } catch (err) {
+        assert.ok(err instanceof OmoControlTropGrosError, `refus inattendu à ${n} projets : ${String(err)}`);
+        return null;
+      }
+      const cockpit = analyserPrecheckOk(texte);
+      const cote = salle.analyserPrecheckOk(texte);
+      assert.notEqual(cockpit, null, `${n} projets : écrit par le cockpit, relu « inconnu » par le cockpit`);
+      assert.notEqual(cote, null, `${n} projets : écrit par le cockpit, relu « inconnu » par la salle (elle attendrait sans fin)`);
+      assert.deepEqual(cote, cockpit);
+      return cockpit?.projets.length ?? -1;
+    };
+    // Un dossier de travail de 21 dépôts préparés (portée « prepares », D-2b-35) : cas courant, pas un inventaire.
+    assert.equal(allerRetour(OMO_LISTE_MAX + 1), OMO_LISTE_MAX + 1);
+    for (const n of [0, 1, OMO_LISTE_MAX, 100, 300]) assert.equal(allerRetour(n), n);
+    // Le plus grand nombre qui tient dans 64 Kio : accepté et relu ; un de plus est refusé À L'ÉCRITURE.
+    let bas = 0;
+    let haut = 5000;
+    while (bas + 1 < haut) {
+      const milieu = Math.floor((bas + haut) / 2);
+      if (allerRetour(milieu) === null) haut = milieu;
+      else bas = milieu;
+    }
+    assert.ok(bas > 300, `${bas} projets au plus : la borne des 64 Kio doit en tenir plusieurs centaines`);
+    assert.equal(allerRetour(bas), bas);
+    assert.equal(allerRetour(bas + 1), null);
+  });
+
+  it("un texte que son propre lecteur relirait « inconnu » est refusé À L'ÉCRITURE, jamais écrit", () => {
+    const etat: OmoSupervisorState = {
+      startId: FIXTURE.startId,
+      phase: "attente",
+      imageId: "",
+      manifestSha256: "",
+      manifesteReference: "ok",
+      validation: "ok",
+      dossiersConfig: [],
+      projets: [],
+      workspaceGit: { verifieLe: 1, limiteAtteinte: false, nonProteges: [] },
+      startedAt: 1,
+    };
+    const refus: [string, () => string][] = [
+      ["battement négatif", () => ecrireBattement(-1)],
+      ["battement non entier", () => ecrireBattement(1.5)],
+      ["arrêt négatif", () => ecrireArret(-1, "vous", null)],
+      ["pré-contrôle sans identifiant de démarrage", () => ecrirePrecheckOk("demarrage-1", 1, [])],
+      ["pré-contrôle au chemin trop long", () => ecrirePrecheckOk(FIXTURE.startId, 1, [{ chemin: "x".repeat(4097), sha256: "0".repeat(64) }])],
+      ["pré-contrôle à l'empreinte en majuscules", () => ecrirePrecheckOk(FIXTURE.startId, 1, [{ chemin: "a", sha256: "A".repeat(64) }])],
+      ["garde négative", () => ecrireGuardState(-1, [])],
+      ["état sans identifiant de démarrage", () => ecrireEtat({ ...etat, startId: "demarrage-1" })],
+      ["état à 21 .git non protégés", () => ecrireEtat({ ...etat, workspaceGit: { ...etat.workspaceGit, nonProteges: Array.from({ length: OMO_LISTE_MAX + 1 }, (_, i) => `p${i}/.git`) } })],
+    ];
+    for (const [nom, ecrire] of refus) assert.throws(ecrire, OmoControlInvalideError, nom);
+    // Les mêmes écrivains, sur des valeurs valides, écrivent : le refus vient bien de la relecture, pas d'un refus général.
+    assert.doesNotThrow(() => ecrireEtat(etat));
+    assert.doesNotThrow(() => ecrirePrecheckOk(FIXTURE.startId, 1, [{ chemin: "x".repeat(4096), sha256: "0".repeat(64) }]));
   });
 
   it("l'état publié par la salle est relu par le cockpit", () => {

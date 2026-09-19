@@ -6,7 +6,8 @@
 // publié en sens inverse par le superviseur dans `omo-state` :
 // - `heartbeat` : le cockpit le réécrit toutes les `battementS` secondes tant qu'il est vivant ; passé `perimeS`, le superviseur
 //   arrête opencode (homme mort, G9) ;
-// - `stop-request` : arrêt immédiat demandé par le cockpit, avec sa cause (§3.12.1 l.404) ;
+// - `stop-request` : arrêt immédiat demandé par le cockpit, avec sa cause (§3.12.1 l.404), pour le démarrage qu'il arrête
+//   (`startId`) : la relance à neuf qui suit a un autre `startId`, et le même fichier, resté là, ne la fait pas sortir ;
 // - `precheck-ok` : le pré-contrôle des projets ouverts est passé, pour CE démarrage (`startId`) et pour lui seul ;
 // - `guard-state.json` : ce que le plugin de garde (filet, L24) doit refuser ;
 // - `state.json` : ce que le superviseur a constaté, republié à chaque phase.
@@ -16,7 +17,9 @@
 //    « inconnu » ne démarre ni ne maintient jamais rien. Un `heartbeat` daté de l'avenir de plus de `perimeS` est refusé aussi :
 //    sans cela, une horloge faussée tiendrait l'homme mort en échec pour toujours.
 // 2. **Écriture atomique** : on écrit dans un fichier voisin puis on renomme (`cheminTemporaire`). Un lecteur ne voit donc jamais
-//    un fichier à moitié écrit, et n'a pas à distinguer « en cours d'écriture » de « corrompu ».
+//    un fichier à moitié écrit, et n'a pas à distinguer « en cours d'écriture » de « corrompu ». Et l'écrivain ne rend un texte
+//    qu'après l'avoir relu avec le lecteur de son format : ce que le lecteur dirait « inconnu » est refusé à l'écriture, jamais
+//    écrit (sinon, un pré-contrôle perdu sans que personne ne le sache, et une salle qui attend sans fin).
 //
 // Les fonctions d'écriture rendent le TEXTE à écrire ; l'écriture elle-même (atomique, bornée) appartient aux modules qui touchent
 // au disque : `omo-control.ts` côté cockpit (L17b) et `supervisor-lib.mjs` côté image.
@@ -26,7 +29,11 @@
 /** 64 Kio : au-delà, un fichier de contrôle vaut « inconnu ». Le lecteur borne AUSSI sa lecture, il ne lit jamais 64 Kio de plus. */
 export const OMO_CONTROL_MAX_OCTETS = 65_536;
 
-/** 20 projets au plus dans `precheck-ok` et dans `workspaceGit.nonProteges` : une liste, pas un inventaire. */
+/**
+ * 20 chemins au plus dans `workspaceGit.nonProteges` : une liste, pas un inventaire. `precheck-ok` n'a PAS cette borne : la portée
+ * « prepares » (D-2b-35) y met tous les projets préparés, souvent plus de 20 ; seuls les 64 Kio et la longueur de chaque chemin
+ * le bornent (plusieurs centaines de projets).
+ */
 export const OMO_LISTE_MAX = 20;
 
 /** Délais de l'homme mort, en secondes (D-2b-25). Mêmes valeurs dans `supervisor-lib.mjs` (égalité vérifiée par un test). */
@@ -117,10 +124,15 @@ export const OMO_ARRET_CAUSES: readonly OmoArretCause[] = [
   "fin-de-demande",
 ];
 
-/** `stop-request` : arrêt demandé par le cockpit. */
+/**
+ * `stop-request` : arrêt demandé par le cockpit pour UN démarrage. `startId` est celui que le cockpit a lu dans `state.json` ; `null`
+ * quand l'état est inconnu (absent, illisible) : l'arrêt vaut alors pour le démarrage en cours à sa date (`arretDuDemarrage`).
+ * Rien n'efface ce fichier : c'est ce lien qui empêche un arrêt déjà honoré de faire sortir chaque relance à neuf (D-2b-29).
+ */
 export interface OmoArret {
   at: number;
   cause: OmoArretCause;
+  startId: string | null;
 }
 
 /** Empreinte d'un projet contrôlé, écrite dans `precheck-ok` (relue par le cockpit, jamais par la salle). */
@@ -233,13 +245,15 @@ export function analyserArret(texte: string | null | undefined): OmoArret | null
   const cause = brut.cause;
   // Cause inconnue : l'arrêt reste un arrêt (on ne refuse jamais de s'arrêter), la cause devient « vous ».
   const connue = OMO_ARRET_CAUSES.find((c) => c === cause);
-  return { at: brut.at, cause: connue ?? "vous" };
+  // Démarrage absent ou mal formé : l'arrêt reste un arrêt, rattaché au démarrage par sa date.
+  return { at: brut.at, cause: connue ?? "vous", startId: estStartId(brut.startId) ? brut.startId : null };
 }
 
 export function analyserPrecheckOk(texte: string | null | undefined): OmoPrecheckOk | null {
   const brut = analyserObjet(texte);
   if (!brut || !estHorodatage(brut.at) || !estStartId(brut.startId)) return null;
-  if (!Array.isArray(brut.projets) || brut.projets.length > OMO_LISTE_MAX) return null;
+  // Aucune borne en nombre : les 64 Kio d'`analyserObjet` et les 4 096 caractères de chaque chemin suffisent (D-2b-35).
+  if (!Array.isArray(brut.projets)) return null;
   const projets: OmoPrecheckOkProjet[] = [];
   for (const entree of brut.projets) {
     if (!estObjet(entree) || !estTexte(entree.chemin, 4096) || !estSha256(entree.sha256)) return null;
@@ -318,25 +332,42 @@ export class OmoControlTropGrosError extends Error {
   }
 }
 
-/** JSON sur une ligne, saut de ligne final, taille vérifiée : ce que le module d'écriture pose dans le fichier temporaire. */
-function rendre(nom: string, valeur: unknown): string {
+/**
+ * Un texte de contrôle que son propre lecteur relirait « inconnu » (horodatage négatif, identifiant de démarrage mal formé, chemin
+ * trop long, empreinte en majuscules…) : refusé à l'écriture, avec une erreur explicite, plutôt qu'écrit puis ignoré en silence.
+ */
+export class OmoControlInvalideError extends Error {
+  constructor(nom: string) {
+    super(`fichier de contrôle « ${nom} » : contenu que son lecteur ne relirait pas`);
+    this.name = "OmoControlInvalideError";
+  }
+}
+
+/**
+ * JSON sur une ligne, saut de ligne final, taille vérifiée, puis relu par le lecteur du format : ce que le module d'écriture pose
+ * dans le fichier temporaire est donc toujours relu tel quel, par le cockpit comme par la salle (vecteurs communs).
+ */
+function rendre(nom: string, valeur: unknown, lecteur: (texte: string) => unknown): string {
   const texte = `${JSON.stringify(valeur)}\n`;
   const octets = tailleOctets(texte);
   if (octets > OMO_CONTROL_MAX_OCTETS) throw new OmoControlTropGrosError(nom, octets);
+  if (lecteur(texte) === null) throw new OmoControlInvalideError(nom);
   return texte;
 }
 
-export const ecrireBattement = (at: number): string => rendre(OMO_FICHIERS_CONTROLE.battement, { at } satisfies OmoBattement);
+export const ecrireBattement = (at: number): string => rendre(OMO_FICHIERS_CONTROLE.battement, { at } satisfies OmoBattement, analyserBattement);
 
-export const ecrireArret = (at: number, cause: OmoArretCause): string => rendre(OMO_FICHIERS_CONTROLE.arret, { at, cause } satisfies OmoArret);
+/** `startId` : celui du démarrage à arrêter, lu dans `state.json` ; `null` si l'état est inconnu (arrêt rattaché par sa date). */
+export const ecrireArret = (at: number, cause: OmoArretCause, startId: string | null): string =>
+  rendre(OMO_FICHIERS_CONTROLE.arret, { at, cause, startId } satisfies OmoArret, analyserArret);
 
 export const ecrirePrecheckOk = (startId: string, at: number, projets: readonly OmoPrecheckOkProjet[]): string =>
-  rendre(OMO_FICHIERS_CONTROLE.precheck, { startId, at, projets: [...projets] } satisfies OmoPrecheckOk);
+  rendre(OMO_FICHIERS_CONTROLE.precheck, { startId, at, projets: [...projets] } satisfies OmoPrecheckOk, analyserPrecheckOk);
 
 export const ecrireGuardState = (at: number, bloquer: readonly OmoGuardTool[]): string =>
-  rendre(OMO_FICHIERS_CONTROLE.garde, { version: 1, at, bloquer: [...bloquer] } satisfies OmoGuardState);
+  rendre(OMO_FICHIERS_CONTROLE.garde, { version: 1, at, bloquer: [...bloquer] } satisfies OmoGuardState, analyserGuardState);
 
-export const ecrireEtat = (etat: OmoSupervisorState): string => rendre(OMO_FICHIER_ETAT, etat);
+export const ecrireEtat = (etat: OmoSupervisorState): string => rendre(OMO_FICHIER_ETAT, etat, analyserEtat);
 
 /**
  * Chemin du fichier temporaire d'une écriture atomique : `<chemin>.<marque>.tmp`, puis `rename` sur `<chemin>`. La marque est
@@ -374,10 +405,26 @@ export function precheckDuDemarrage(precheck: OmoPrecheckOk | null, startId: str
   return maintenantMs - precheck.at >= -delais.perimeS * 1000;
 }
 
+/**
+ * Le `stop-request` lu vise-t-il le démarrage en cours (`startId`, commencé à `startedAt`) ? Nommé : seulement s'il nomme CE
+ * démarrage. Sans démarrage nommé (le cockpit ne connaissait pas l'état) : s'il date de ce démarrage ou d'après — les deux
+ * conteneurs lisent l'horloge du même noyau. Un arrêt d'un démarrage précédent a déjà été honoré par la sortie de celui-ci ;
+ * le relire ferait sortir chaque relance à neuf, sans fin (D-2b-29). Rien de sûr ne se perd : un démarrage exige toujours un
+ * battement frais et le `precheck-ok` de son propre `startId`.
+ */
+export function arretDuDemarrage(arret: OmoArret | null, startId: string, startedAt: number): boolean {
+  if (!arret) return false;
+  if (arret.startId !== null) return arret.startId === startId;
+  return arret.at >= startedAt;
+}
+
 /** Ce que le superviseur doit faire après avoir relu le volume de contrôle. */
 export type OmoDecision = "continuer" | "arret-demande" | "battement-perime";
 
-/** Décision du superviseur : un `stop-request` l'emporte sur tout, puis le battement. Les deux mènent à TERM puis KILL. */
+/**
+ * Décision du superviseur : un `stop-request` l'emporte sur tout, puis le battement. Les deux mènent à TERM puis KILL. `arret` est
+ * celui du démarrage en cours (déjà passé par `arretDuDemarrage`), `null` sinon.
+ */
 export function decisionSuperviseur(
   battement: OmoBattement | null,
   arret: OmoArret | null,

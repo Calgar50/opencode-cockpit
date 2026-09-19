@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import * as salle from "../../docker/opencode-omo/supervisor-lib.mjs";
-import { analyserEtat } from "./shared/omo-control-protocol.ts";
+import { analyserEtat, ecrireArret as texteArret, ecrireBattement as texteBattement, ecrirePrecheckOk as textePrecheckOk } from "./shared/omo-control-protocol.ts";
 
 const RACINE = path.join(import.meta.dirname, "..", "..");
 const DOCKER_OMO = path.join(RACINE, "docker", "opencode-omo");
@@ -115,6 +115,72 @@ describe("superviseur : battement et pré-contrôle du démarrage en cours", () 
   });
 });
 
+describe("superviseur : un stop-request n'arrête que le démarrage qu'il vise (D-2b-29)", () => {
+  /** Volume d'état et volume de contrôle de test : les sous-commandes `pret` et `verifier` les lisent comme dans l'image. */
+  function volumes(t: { after: (fn: () => void) => void }) {
+    const etat = dossierTemporaire();
+    const controle = dossierTemporaire();
+    t.after(() => {
+      fs.rmSync(etat, { recursive: true, force: true });
+      fs.rmSync(controle, { recursive: true, force: true });
+    });
+    const ecrire = (nom: string, texte: string) => fs.writeFileSync(path.join(controle, nom), texte);
+    return { dossiers: { etat, controle }, ecrire };
+  }
+
+  /** Tout ce que le superviseur a vérifié est propre : seul le volume de contrôle décide. */
+  const propre = {
+    dossiersConfig: salle.DOSSIERS_CONFIG_HOME.map((chemin) => ({ chemin, ok: true })),
+    projets: [{ chemin: "alpha", gitLectureSeule: true }],
+    workspaceGit: { verifieLe: 1757000000000, limiteAtteinte: false, nonProteges: [] },
+  };
+
+  it("après un arrêt, la relance à neuf (nouveau startId) démarre malgré le stop-request resté dans le volume", (t) => {
+    const { dossiers, ecrire } = volumes(t);
+    const premier = salle.initTravail(dossiers.etat, Date.now() - 60_000);
+    salle.majTravail(dossiers.etat, propre);
+    ecrire(salle.FICHIERS_CONTROLE.battement, texteBattement(Date.now()));
+    ecrire(salle.FICHIERS_CONTROLE.precheck, textePrecheckOk(premier.startId, Date.now(), []));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.ok);
+
+    // Fin de demande : le cockpit écrit stop-request pour CE démarrage ; l'attente comme la boucle sortent sur « arrêt demandé ».
+    ecrire(salle.FICHIERS_CONTROLE.arret, texteArret(Date.now(), "fin-de-demande", premier.startId));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.arret);
+    assert.equal(salle.executer(["verifier"], dossiers), salle.CODES.arret);
+
+    // Docker relance le conteneur (restart: unless-stopped) : nouveau superviseur, nouveau startId. Rien n'a effacé stop-request.
+    const second = salle.initTravail(dossiers.etat, Date.now());
+    assert.notEqual(second.startId, premier.startId);
+    salle.majTravail(dossiers.etat, propre);
+    // Sans le pré-contrôle de la relance : « pas prêt », et surtout pas « arrêt demandé », qui ferait relancer Docker sans fin.
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.pasPret);
+    ecrire(salle.FICHIERS_CONTROLE.precheck, textePrecheckOk(second.startId, Date.now(), []));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.ok);
+    // Le stop-request périmé n'arrête pas non plus l'opencode de la relance : la boucle passe à ses autres contrôles (ici des
+    // montages jamais figés, 13), elle ne sort pas sur « arrêt demandé ».
+    assert.equal(salle.executer(["verifier"], dossiers), salle.CODES.montage);
+
+    // Un arrêt pour la relance, lui, la fait sortir, dans l'attente comme dans la boucle.
+    ecrire(salle.FICHIERS_CONTROLE.arret, texteArret(Date.now(), "vous", second.startId));
+    assert.equal(salle.executer(["verifier"], dossiers), salle.CODES.arret);
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.arret);
+  });
+
+  it("un stop-request sans démarrage (état inconnu du cockpit) arrête le démarrage en cours, jamais le suivant", (t) => {
+    const { dossiers, ecrire } = volumes(t);
+    const debut = Date.now() - 60_000;
+    salle.initTravail(dossiers.etat, debut);
+    salle.majTravail(dossiers.etat, propre);
+    ecrire(salle.FICHIERS_CONTROLE.battement, texteBattement(Date.now()));
+    ecrire(salle.FICHIERS_CONTROLE.arret, texteArret(debut + 1000, "vous", null));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.arret, "on ne refuse jamais de s'arrêter");
+    const relance = salle.initTravail(dossiers.etat, debut + 2000);
+    salle.majTravail(dossiers.etat, propre);
+    ecrire(salle.FICHIERS_CONTROLE.precheck, textePrecheckOk(relance.startId, Date.now(), []));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.ok);
+  });
+});
+
 // --- Signaux et présence d'opencode (mesure L17a : root sans CAP_KILL) -----------------------------------------------------------
 
 describe("superviseur : présence d'opencode et signaux", () => {
@@ -203,6 +269,8 @@ describe("superviseur : présence d'opencode et signaux", () => {
       /^executer \$SETPRIV node "\$LIB" preparation /,
       /node "\$LIB" publier attente/,
       /node "\$LIB" pret$/,
+      // Second balayage (constat 2bis-vague-0) : l'attente de l'étape 7 n'a pas de limite, les .git sont revus juste avant.
+      /^rebalayer$/,
       /node "\$LIB" figer-montages /,
       /^\$SETPRIV opencode serve /,
       /node "\$LIB" verifier /,
@@ -277,7 +345,7 @@ describe("superviseur : un tour de la boucle de l'homme mort", () => {
   });
 
   it("stop-request, puis battement périmé, puis montage déplacé, puis opencode arrêté", () => {
-    assert.equal(salle.decisionBoucle({ ...base, arret: { at: maintenant, cause: "vous" }, empreinte: "autre", enfantVivant: false }), salle.CODES.arret);
+    assert.equal(salle.decisionBoucle({ ...base, arret: { at: maintenant, cause: "vous", startId: null }, empreinte: "autre", enfantVivant: false }), salle.CODES.arret);
     assert.equal(salle.decisionBoucle({ ...base, battement: { at: maintenant - 21_000 }, empreinte: "autre" }), salle.CODES.perime);
     assert.equal(salle.decisionBoucle({ ...base, empreinte: "autre", enfantVivant: false }), salle.CODES.montage);
     assert.equal(salle.decisionBoucle({ ...base, enfantVivant: false }), salle.CODES.fini);
@@ -440,7 +508,8 @@ describe("superviseur : balayage git du dossier de travail", () => {
   function workspace(t: { after: (fn: () => void) => void }): string {
     const dir = dossierTemporaire();
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    fs.mkdirSync(path.join(dir, "protege", ".git"), { recursive: true });
+    // Le vrai dossier git du sous-module vit dans le .git (monté en lecture seule) du projet qui le contient, comme le range git.
+    fs.mkdirSync(path.join(dir, "protege", ".git", "modules", "sous-module"), { recursive: true });
     fs.mkdirSync(path.join(dir, "ouvert", ".git", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(dir, "sous-module"), { recursive: true });
     fs.writeFileSync(path.join(dir, "sous-module", ".git"), "gitdir: ../protege/.git/modules/sous-module\n");
@@ -543,6 +612,101 @@ describe("superviseur : balayage git du dossier de travail", () => {
     assert.equal(balayage.limiteAtteinte, false);
   });
 
+  /** Dépôt nu, comme `git clone --bare` : HEAD, objects/, refs/ (et hooks/, que git exécute). */
+  function depotNu(dir: string, relatif: string): void {
+    fs.mkdirSync(path.join(dir, relatif, "objects", "pack"), { recursive: true });
+    fs.mkdirSync(path.join(dir, relatif, "refs", "heads"), { recursive: true });
+    fs.mkdirSync(path.join(dir, relatif, "hooks"), { recursive: true });
+    fs.writeFileSync(path.join(dir, relatif, "HEAD"), "ref: refs/heads/principale\n");
+  }
+
+  const nonProtegesDe = (balayage: salle.Balayage) => balayage.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")).sort();
+
+  it("un sous-module dont le gitdir: est dans un .git monté en lecture seule reste protégé", (t) => {
+    const dir = workspace(t);
+    const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
+    assert.equal(nonProtegesDe(balayage).includes("sous-module/.git"), false);
+    assert.equal(balayage.gits.some((git) => git.chemin.replace(/\\/g, "/") === "sous-module/.git" && git.forme === "fichier"), true);
+  });
+
+  it("un .git fichier (gitdir: ./.bare, bare + worktrees) n'est protégé que si le vrai dossier git l'est aussi", (t) => {
+    const dir = workspace(t);
+    depotNu(dir, "outil/.bare");
+    fs.writeFileSync(path.join(dir, "outil", ".git"), "gitdir: ./.bare\n");
+    // Seul le fichier pointeur est lié en lecture seule (surcharge d'aujourd'hui) : .bare reste inscriptible par node, et git
+    // exécuterait ses hooks et sa configuration sur le poste au premier « git status ».
+    const pointeurMonte = [...tousMontes(dir), ...montagesDe(dir, "outil/.git")];
+    const bareOuvert = (chemin: string) => chemin.replace(/\\/g, "/").includes("/outil/.bare");
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: bareOuvert, montages: pointeurMonte })), ["outil/.bare", "outil/.git"]);
+    // Non inscriptible aujourd'hui mais monté par personne (MO-3) : pas protégé non plus.
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: pointeurMonte })), ["outil/.bare", "outil/.git"]);
+    // .bare monté en lecture seule lui aussi : le pointeur et sa cible sont protégés.
+    const toutMonte = [...pointeurMonte, ...montagesDe(dir, "outil/.bare")];
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: toutMonte })), []);
+  });
+
+  it("un .git fichier dont la cible est absente, hors du dossier de travail, absolue de l'hôte ou illisible n'est pas protégé", (t) => {
+    const dir = workspace(t);
+    const pointeurs: Record<string, string> = {
+      absente: "gitdir: ./inexistant\n",
+      "hors-dossier": "gitdir: ../..\n",
+      "chemin-hote": "gitdir: C:/inexistant-omo/depot/.git/worktrees/x\n",
+      "pas-un-pointeur": "ceci n'est pas un pointeur git\n",
+      vide: "",
+    };
+    for (const [nom, contenu] of Object.entries(pointeurs)) {
+      fs.mkdirSync(path.join(dir, nom), { recursive: true });
+      fs.writeFileSync(path.join(dir, nom, ".git"), contenu);
+    }
+    // Le parent du dossier de travail est lui-même un montage en lecture seule, comme « / » dans le conteneur (--read-only) : une
+    // cible hors du dossier de travail n'est pas « protégée » pour autant, le poste la lit ailleurs.
+    const montages = [...tousMontes(dir), ...montagesDe(dir, ...Object.keys(pointeurs).map((nom) => `${nom}/.git`)), path.dirname(dir).replaceAll("\\", "/")];
+    const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages });
+    assert.deepEqual(
+      nonProtegesDe(balayage),
+      Object.keys(pointeurs)
+        .map((nom) => `${nom}/.git`)
+        .sort(),
+    );
+  });
+
+  it("un .git fichier dont le gitdir: passe par un lien n'est pas protégé (le chemin réel n'est pas celui qu'on lit)", (t) => {
+    const dir = workspace(t);
+    if (!lienDossier(path.join(dir, "protege", ".git", "modules"), path.join(dir, "raccourci-modules"))) {
+      t.skip("lien de dossier non créable sur ce système ; joué en CI Linux");
+      return;
+    }
+    fs.mkdirSync(path.join(dir, "detour"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "detour", ".git"), "gitdir: ../raccourci-modules/sous-module\n");
+    // Le chemin lu passe SOUS un montage protégé, le chemin réel en sort : un lien posé dans le .git monté vers un dossier ouvert.
+    fs.mkdirSync(path.join(dir, "vrai-git-ouvert"), { recursive: true });
+    if (!lienDossier(path.join(dir, "vrai-git-ouvert"), path.join(dir, "protege", ".git", "modules", "detourne"))) {
+      t.skip("lien de dossier non créable sur ce système ; joué en CI Linux");
+      return;
+    }
+    fs.mkdirSync(path.join(dir, "masque"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "masque", ".git"), "gitdir: ../protege/.git/modules/detourne\n");
+    const ouvertEnVrai = (chemin: string) => chemin.replace(/\\/g, "/").includes("/vrai-git-ouvert");
+    const balayage = salle.balayerGit(dir, { accesEcriture: ouvertEnVrai, montages: [...tousMontes(dir), ...montagesDe(dir, "detour/.git", "masque/.git")] });
+    assert.deepEqual(nonProtegesDe(balayage), ["detour/.git", "masque/.git"]);
+  });
+
+  it("un dépôt nu (HEAD, objects/, refs/) est un dépôt à protéger, et son intérieur n'est pas parcouru", (t) => {
+    const dir = workspace(t);
+    depotNu(dir, "remotes/outil.git");
+    fs.mkdirSync(path.join(dir, "remotes", "outil.git", "objects", "cache", ".git"), { recursive: true });
+    // Un fichier HEAD seul ne fait pas un dépôt : aucun faux positif sur un dossier ordinaire.
+    fs.mkdirSync(path.join(dir, "docs", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "docs", "HEAD"), "titre\n");
+    const nuOuvert = (chemin: string) => chemin.replace(/\\/g, "/").includes("/remotes/outil.git");
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: nuOuvert, montages: tousMontes(dir) })), ["remotes/outil.git"]);
+    // Monté en lecture seule : protégé, et rien de son intérieur (objects/cache/.git) n'est listé.
+    const monte = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...montagesDe(dir, "remotes/outil.git")] });
+    assert.deepEqual(nonProtegesDe(monte), []);
+    assert.equal(monte.gits.some((git) => git.chemin.replace(/\\/g, "/") === "remotes/outil.git"), true);
+    assert.equal(monte.gits.some((git) => git.chemin.includes("cache")), false);
+  });
+
   it("le plafond d'entrées atteint vaut « limite atteinte », pas « tout va bien »", (t) => {
     const dir = workspace(t);
     const balayage = salle.balayerGit(dir, { accesEcriture: () => false, plafond: 3 });
@@ -558,12 +722,56 @@ describe("superviseur : balayage git du dossier de travail", () => {
     assert.equal(salle.BALAYAGE_PROFONDEUR_MAX, 256);
   });
 
-  it("un dossier illisible est compté, jamais pris pour un dossier vide", (t) => {
+  /** Verdict publié d'un balayage, projets préparés tous en lecture seule : seul le balayage décide. */
+  const verdictPublie = (balayage: salle.Balayage) => salle.gitProtege({ workspaceGit: salle.resumeWorkspaceGit(balayage), projets: [{ gitLectureSeule: true }] });
+
+  it("un dossier de travail illisible (ou absent) ferme le verdict, jamais pris pour un dossier vide", (t) => {
     const dir = workspace(t);
     const balayage = salle.balayerGit(path.join(dir, "absent"), { accesEcriture: () => false });
     assert.equal(balayage.illisibles, 1);
     assert.equal(balayage.gits.length, 0);
+    // L'état publié ne doit pas être celui d'un dossier vide : « balayage incomplet », donc git non protégé.
+    assert.equal(balayage.limiteAtteinte, true);
+    assert.equal(verdictPublie(balayage), false);
   });
+
+  it("un sous-dossier illisible qui cache un .git inscriptible ferme le verdict (EACCES : ACL refusée, chmod 000)", (t) => {
+    const dir = workspace(t);
+    fs.mkdirSync(path.join(dir, "cache", "p", ".git"), { recursive: true });
+    const montages = [...tousMontes(dir), ...montagesDe(dir, "cache/p/.git")];
+    // Lisible, et tout monté : propre. C'est bien l'illisibilité, et elle seule, qui ferme le verdict plus bas.
+    assert.equal(verdictPublie(salle.balayerGit(dir, { accesEcriture: () => false, montages })), true);
+    const lireDossier = (chemin: string) => {
+      if (chemin.replaceAll("\\", "/").endsWith("/cache")) throw Object.assign(new Error("permission refusée"), { code: "EACCES" });
+      return fs.readdirSync(chemin, { withFileTypes: true });
+    };
+    // « cache/p/.git » inscriptible par node, mais invisible : sans la règle, nonProteges vide et « protégé ».
+    const balayage = salle.balayerGit(dir, { accesEcriture: (chemin) => chemin.replaceAll("\\", "/").includes("/cache/"), montages, lireDossier });
+    assert.equal(balayage.illisibles, 1);
+    assert.deepEqual(balayage.nonProteges, []);
+    assert.equal(balayage.limiteAtteinte, true);
+    assert.equal(verdictPublie(balayage), false);
+  });
+
+  it(
+    "un sous-dossier en chmod 000 ferme le verdict, sans injection (Linux hors root)",
+    { skip: process.platform === "win32" ? "droits POSIX absents sous Windows : joué en CI Linux et dans le conteneur" : process.getuid?.() === 0 ? "root lit un dossier en 000 : lancer hors root" : false },
+    (t) => {
+      const dir = workspace(t);
+      fs.mkdirSync(path.join(dir, "cache", "p", ".git"), { recursive: true });
+      fs.chmodSync(path.join(dir, "cache"), 0o000);
+      let balayage: salle.Balayage;
+      try {
+        balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...montagesDe(dir, "cache/p/.git")] });
+      } finally {
+        // Rendu lisible avant le nettoyage du dossier de test, qui ne saurait pas le retirer sinon.
+        fs.chmodSync(path.join(dir, "cache"), 0o755);
+      }
+      assert.equal(balayage.illisibles, 1);
+      assert.equal(balayage.limiteAtteinte, true);
+      assert.equal(verdictPublie(balayage), false);
+    },
+  );
 
   it("le résumé publié ne porte que les trois champs du contrat", (t) => {
     const dir = workspace(t);
@@ -606,6 +814,92 @@ describe("superviseur : balayage git du dossier de travail", () => {
     const horsMontage = salle.controlerProjetsPrepares(prepares, dir, () => false, montagesDe(dir, "ouvert/.git"));
     assert.deepEqual(horsMontage[0], { chemin: "protege", gitLectureSeule: false });
     assert.deepEqual(salle.controlerProjetsPrepares(null, dir), []);
+  });
+
+  it("projet préparé dont le .git est devenu un fichier : en lecture seule seulement si sa cible gitdir: l'est", (t) => {
+    const dir = workspace(t);
+    depotNu(dir, "outil/.bare");
+    fs.writeFileSync(path.join(dir, "outil", ".git"), "gitdir: ./.bare\n");
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-19T10:00:00Z", projets: [{ chemin: "outil", git: "dossier" }], gitProteges: [{ chemin: "outil", forme: "fichier" }] }),
+    );
+    const pointeurMonte = [...tousMontes(dir), ...montagesDe(dir, "outil/.git")];
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, pointeurMonte), [{ chemin: "outil", gitLectureSeule: false }]);
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, [...pointeurMonte, ...montagesDe(dir, "outil/.bare")]), [
+      { chemin: "outil", gitLectureSeule: true },
+    ]);
+  });
+});
+
+// --- Second balayage, juste avant le lancement (étape 7) -----------------------------------------------------------------------------
+
+describe("superviseur : les .git sont balayés de nouveau juste avant le lancement", () => {
+  it("un .git inscriptible cloné pendant l'attente (profondeur 2) : vu, publié, et opencode n'est pas lancé", (t) => {
+    const ws = dossierTemporaire();
+    const etat = dossierTemporaire();
+    const controle = dossierTemporaire();
+    t.after(() => {
+      for (const dir of [ws, etat, controle]) fs.rmSync(dir, { recursive: true, force: true });
+    });
+    const dossiers = { etat, controle };
+    fs.mkdirSync(path.join(ws, "alpha", ".git"), { recursive: true });
+    const montages = [`${ws.replaceAll("\\", "/")}/alpha/.git`];
+    // Seul alpha/.git est monté en lecture seule par la surcharge ; tout le reste du dossier de travail est à node.
+    const acces = (chemin: string) => !chemin.replaceAll("\\", "/").endsWith("/alpha/.git");
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-19T10:00:00Z", projets: [{ chemin: "alpha", git: "dossier" }], gitProteges: [{ chemin: "alpha", forme: "dossier" }] }),
+    );
+    const fichier = path.join(etat, ".etape.json");
+    const absorber = (constat: object) => {
+      fs.writeFileSync(fichier, JSON.stringify(constat));
+      return salle.absorber(etat, fichier);
+    };
+
+    // Étapes 4 à 6 : dossier de travail propre, état publié ; le cockpit écrit battement et pré-contrôle : prêt.
+    const travail = salle.initTravail(etat, Date.now() - 1000);
+    salle.majTravail(etat, { dossiersConfig: salle.DOSSIERS_CONFIG_HOME.map((chemin) => ({ chemin, ok: true })) });
+    const premier = salle.constatGit(prepares, { racine: ws, montages, acces });
+    assert.equal(premier.ok, true);
+    assert.equal(absorber({ etape: "preparation", ...premier }).ok, true);
+    fs.writeFileSync(path.join(controle, salle.FICHIERS_CONTROLE.battement), texteBattement(Date.now()));
+    fs.writeFileSync(path.join(controle, salle.FICHIERS_CONTROLE.precheck), textePrecheckOk(travail.startId, Date.now(), []));
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.ok);
+
+    // L'attente a duré (démarrage de la machine, salle fermée) : un dépôt est cloné dans un sous-dossier, hors de toute surcharge.
+    fs.mkdirSync(path.join(ws, "clients", "outil", ".git", "hooks"), { recursive: true });
+    const second = salle.constatGit(prepares, { racine: ws, montages, acces });
+    assert.equal(second.ok, false);
+    assert.deepEqual(second.workspaceGit.nonProteges, ["clients/outil/.git"]);
+    const verdict = absorber({ etape: "rebalayage", ...second });
+    assert.deepEqual(verdict, { ok: true, raison: "rebalayage", gitProtege: false });
+    // L'état republié le dit au cockpit (qui refuse l'activation), et le second verrou tient : jamais prêt.
+    const publie = salle.publierEtat(etat, salle.lireTravail(etat), "attente");
+    assert.deepEqual(publie.workspaceGit.nonProteges, ["clients/outil/.git"]);
+    assert.equal(salle.executer(["pret"], dossiers), salle.CODES.pasPret);
+  });
+
+  it("supervisor.sh refait le balayage en tant que node après « pret », l'absorbe, le publie, et relit « pret » avant de lancer", () => {
+    const lignes = fs
+      .readFileSync(path.join(DOCKER_OMO, "supervisor.sh"), "utf8")
+      .split("\n")
+      .map((ligne) => ligne.trim())
+      .filter((ligne) => ligne !== "" && !ligne.startsWith("#"));
+    const debut = lignes.findIndex((ligne) => /^rebalayer\(\) \{$/.test(ligne));
+    assert.ok(debut >= 0, "fonction rebalayer absente");
+    const corps = lignes.slice(debut, lignes.indexOf("}", debut) + 1);
+    const ordre = [/^executer \$SETPRIV node "\$LIB" rebalayage > "\$ETAPE"$/, /^executer node "\$LIB" absorber "\$ETAPE"$/, /^\[ "\$CODE" -eq 0 \] \|\| refus /, /node "\$LIB" publier attente/].map(
+      (motif) => corps.findIndex((ligne) => motif.test(ligne)),
+    );
+    assert.ok(
+      ordre.every((i, k) => i >= 0 && (k === 0 || i > (ordre[k - 1] ?? -1))),
+      `ordre du second balayage : ${JSON.stringify(ordre)}\n${corps.join("\n")}`,
+    );
+    // Dans la boucle d'attente : « pret » rend 0, puis rebalayer, puis « pret » de nouveau, et seulement alors « break ».
+    const boucle = lignes.slice(lignes.findIndex((ligne) => ligne === "rebalayer"));
+    assert.equal(boucle[0], "rebalayer");
+    assert.equal(boucle[1], 'executer node "$LIB" pret');
+    assert.equal(boucle[2], 'if [ "$CODE" -eq 0 ]; then');
+    assert.equal(boucle[3], "break");
   });
 });
 
@@ -1150,9 +1444,12 @@ function ecrirePrecheck(cas: Cas, startId: string): void {
   assert.equal(res.code, 0, `precheck-ok : ${res.stderr}`);
 }
 
-/** Écrit un `stop-request` dans le volume de contrôle, comme le fera `stopTreeOmo` (§3.12.1 l.404). */
-function ecrireArret(cas: Cas): void {
-  const contenu = JSON.stringify({ at: Date.now(), cause: "vous" });
+/**
+ * Écrit un `stop-request` dans le volume de contrôle, comme le fera `stopTreeOmo` (§3.12.1 l.404) : pour le démarrage donné, ou sans
+ * démarrage (état inconnu du cockpit), rattaché alors au démarrage en cours par sa date.
+ */
+function ecrireArret(cas: Cas, startId: string | null = null): void {
+  const contenu = texteArret(Date.now(), "vous", startId);
   const script = `printf %s '${Buffer.from(contenu, "utf8").toString("base64")}' | base64 -d > /control/stop-request.tmp\nmv -f /control/stop-request.tmp /control/stop-request\n`;
   const res = docker(["run", "--rm", "-i", "-v", `${cas.volume("control")}:/control`, IMAGE_BASE, "sh", "-s"], script);
   assert.equal(res.code, 0, `stop-request : ${res.stderr}`);
@@ -1315,6 +1612,37 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     assert.equal(etatPublie(c)?.phase, "arret");
   });
 
+  it("stop-request puis relance à neuf : le même fichier, resté dans le volume, ne fait pas sortir la relance (D-2b-29)", async (t) => {
+    const c = nouveauCas("relance");
+    preparer(c, {});
+    lancerBattement(c);
+    const salleNom = lancerSuperviseur(c, {});
+    const premier = await attendre(() => etatPublie(c), 60_000, "état publié");
+    ecrirePrecheck(c, premier.startId);
+    await attendre(() => capacitesDuFaux(c), 60_000, "faux opencode lancé");
+    ecrireArret(c, premier.startId);
+    await attendre(() => inspecter(salleNom, "{{.State.Status}}") === "exited", 30_000, `arrêt demandé\n${journal(salleNom)}`);
+    assert.equal(inspecter(salleNom, "{{.State.ExitCode}}"), "10", "sortie « arrêt demandé »");
+
+    // Ce que fait « restart: unless-stopped » : le même conteneur, les mêmes volumes, un nouveau superviseur et un nouveau startId.
+    assert.equal(docker(["start", salleNom]).code, 0, "relance du conteneur");
+    const second = await attendre(
+      () => {
+        const etat = etatPublie(c);
+        return etat && etat.startId !== premier.startId && etat.phase === "attente" ? etat : null;
+      },
+      60_000,
+      `état de la relance\n${journal(salleNom)}`,
+    );
+    t.diagnostic(`relance ${second.startId} ; stop-request du démarrage ${premier.startId} toujours dans le volume`);
+    assert.notEqual(lireDansVolume(c, "control", "/control", "/control/stop-request"), null, "rien n'efface stop-request");
+    // Deux tours d'attente : la relance ne sort pas sur l'arrêt déjà honoré (sans le lien au startId, elle sortait au premier).
+    await resterFaux(() => inspecter(salleNom, "{{.State.Status}}") === "exited", `relance sortie sur l'arrêt précédent\n${journal(salleNom)}`);
+    ecrirePrecheck(c, second.startId);
+    await attendre(() => capacitesDuFaux(c), 60_000, `faux opencode de la relance\n${journal(salleNom)}`);
+    assert.equal(inspecter(salleNom, "{{.State.Status}}"), "running");
+  });
+
   it("T-L17-b : aucun démarrage sans battement, ni avec le pré-contrôle d'un autre démarrage", async () => {
     const c = nouveauCas("b");
     preparer(c, {});
@@ -1379,6 +1707,28 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     ecrirePrecheck(c, etat.startId);
     await resterFaux(() => capacitesDuFaux(c), "opencode lancé alors qu'un .git est inscriptible");
     assert.equal(etatPublie(c)?.phase, "attente");
+  });
+
+  it("second balayage : un .git inscriptible cloné pendant l'attente (profondeur 2) empêche le lancement, et l'état le dit", async () => {
+    const c = nouveauCas("rebalayage");
+    preparer(c, {});
+    const salleNom = lancerSuperviseur(c, {});
+    const etat = await attendre(() => (etatPublie(c)?.phase === "attente" ? etatPublie(c) : null), 60_000, `attente\n${journal(salleNom)}`);
+    assert.deepEqual(etat.workspaceGit.nonProteges, []);
+    // Ce que ferait un « git clone » sur le poste pendant l'attente : un dépôt neuf, à node, hors de toute surcharge.
+    const res = docker(["exec", "-u", "1000:1000", salleNom, "mkdir", "-p", "/workspace/clients/outil/.git/hooks"]);
+    assert.equal(res.code, 0, `clone simulé refusé : ${res.stderr}`);
+    lancerBattement(c);
+    ecrirePrecheck(c, etat.startId);
+    await attendre(
+      () => etatPublie(c)?.workspaceGit.nonProteges.includes("clients/outil/.git") === true,
+      60_000,
+      `second balayage publié\n${journal(salleNom)}`,
+    );
+    await resterFaux(() => capacitesDuFaux(c), "opencode lancé sur un balayage périmé");
+    assert.equal(etatPublie(c)?.phase, "attente");
+    assert.equal(etatPublie(c)?.startId, etat.startId, "même démarrage : seul le balayage a changé");
+    assert.match(journal(salleNom), /second balayage/);
   });
 
   for (const [nom, options, attendu] of [

@@ -95,7 +95,10 @@ export const OMO_CONFIG_NOMS: readonly string[] = [
   ".agents",
 ];
 
-/** Fichiers et dossiers d'IDE et de CI (§4.14.5 n° 7), à la racine de chaque dossier contrôlé, casse ignorée. */
+/**
+ * Fichiers et dossiers d'IDE et de CI (§4.14.5 n° 7), à la racine de chaque dossier contrôlé, casse ignorée. Liste fixe ; les cibles
+ * de la configuration git de chaque projet (hooks hors de `.git`) s'y ajoutent par `OmoDiskSnapshot.ideCiDynamiques`.
+ */
 export const OMO_IDE_CI_NOMS: readonly string[] = [
   ".vscode",
   ".idea",
@@ -141,6 +144,13 @@ export interface OmoDiskSnapshot {
   elements: ReadonlyMap<string, OmoDiskElement>;
   /** Borne atteinte ou lecture impossible : le relevé ne peut pas conclure. */
   incomplet: boolean;
+  /**
+   * Cibles de la configuration git dans l'arbre de travail (core.hooksPath, core.fsmonitor, fichiers inclus), relevées par L19a
+   * dans `.git/config` (`ReleveEmpreintes.ideCiDynamiques`) : traitées comme des fichiers d'IDE et de CI en plus de la liste fixe
+   * du §4.14.5 n° 7, car le poste les exécute ou les lit comme des hooks. Chemins relatifs à /workspace, dossier (avec tout son
+   * contenu) ou fichier. Absent : aucune. Un chemin invalide est un doute.
+   */
+  ideCiDynamiques?: readonly string[];
 }
 
 /**
@@ -460,11 +470,39 @@ function gits(elements: ReadonlyMap<string, OmoDiskElement>): Map<string, Git> {
 
 const ORDRE_GENRE: Record<OmoSignale["genre"], number> = { "git-quarantaine": 0, "ide-ci": 1, programme: 2 };
 
+/**
+ * Cibles de la configuration git des deux relevés (une cible listée d'un seul côté compte : un fichier inclus peut en avoir ajouté
+ * une), en minuscules, et le doute qu'un chemin invalide y laisse.
+ */
+function ciblesGit(avant: OmoDiskSnapshot, apres: OmoDiskSnapshot): { cibles: string[]; doute: boolean } {
+  const cibles = new Set<string>();
+  let doute = false;
+  for (const snapshot of [avant, apres]) {
+    const liste: unknown = snapshot?.ideCiDynamiques;
+    if (liste === undefined) continue;
+    if (!Array.isArray(liste)) {
+      doute = true;
+      continue;
+    }
+    for (const cible of liste) {
+      const n = normaliser(cible, false);
+      if (n === null) doute = true;
+      else cibles.add(n.toLowerCase());
+    }
+  }
+  return { cibles: [...cibles], doute };
+}
+
 function disque(etat: OmoDetectionState, e: Extract<OmoDetectionInput, { type: "disque" }>): OmoDetectionResult {
   const dossiers = new Set<string>();
   const avant = releve(e.avant, dossiers);
   const apres = releve(e.apres, dossiers);
-  const doute = avant.doute || apres.doute || dossiers.size === 0;
+  const git = ciblesGit(e.avant, e.apres);
+  const doute = avant.doute || apres.doute || dossiers.size === 0 || git.doute;
+  const sousCibleGit = (chemin: string) => {
+    const bas = chemin.toLowerCase();
+    return git.cibles.some((cible) => couvre(bas, cible));
+  };
 
   const config: string[] = [];
   const ideCi: string[] = [];
@@ -476,7 +514,7 @@ function disque(etat: OmoDetectionState, e: Extract<OmoDetectionInput, { type: "
     const rel = relatifs(chemin, dossiers);
     // Une configuration disparue ne configure plus rien ; un fichier d'IDE ou de CI supprimé compte (fermé en cas de doute).
     if (b !== undefined && rel.some(estConfig)) config.push(chemin);
-    if (rel.some(estIdeCi)) {
+    if (rel.some(estIdeCi) || sousCibleGit(chemin)) {
       ideCi.push(chemin);
       if (b !== undefined) signales.push({ chemin, genre: "ide-ci" });
     }

@@ -77,9 +77,13 @@ export interface OmoControlPort {
   /** Battement toutes les 5 s (D-2b-25), seulement si COCKPIT_OMO=on, COCKPIT_AUTONOMY=on et SALLE_OUVERTE. */
   startHeartbeat(): void;
   stopHeartbeat(): void;
-  /** Écrit stop-request {at, cause} : une cause d'arrêt, ou « fin-de-demande » pour la relance à neuf de fin de demande (D-2b-29). */
+  /**
+   * Écrit stop-request {at, cause, startId} : une cause d'arrêt, ou « fin-de-demande » pour la relance à neuf de fin de demande
+   * (D-2b-29). `startId` : celui de state.json (readState), null si l'état est inconnu ; la relance qui suit a un autre startId et
+   * n'est pas arrêtée par ce fichier, que rien n'efface (ecrireArret, arretDuDemarrage d'omo-control-protocol.ts).
+   */
   requestStop(cause: OmoRecreationRaison): Promise<void>;
-  /** Écrit precheck-ok lié au démarrage en cours ; jamais si la salle est suspendue. */
+  /** Écrit precheck-ok lié au démarrage en cours (tous les projets préparés, sans borne de 20) ; jamais si la salle est suspendue. */
   writePrecheckOk(startId: string, projets: readonly OmoPrecheckOkProject[]): Promise<void>;
   /** Écrit guard-state.json, lu par le plugin de garde (filet). */
   writeGuardState(state: OmoGuardState): Promise<void>;

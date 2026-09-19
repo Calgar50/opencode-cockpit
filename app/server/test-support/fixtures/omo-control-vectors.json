@@ -106,42 +106,56 @@
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000,\"cause\":\"vous\"}\n",
-      "attendu": { "at": 1757000000000, "cause": "vous" }
+      "attendu": { "at": 1757000000000, "cause": "vous", "startId": null }
+    },
+    {
+      "nom": "arrêt lié au démarrage qu'il arrête",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"vous\",\"startId\":\"3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13\"}\n",
+      "attendu": { "at": 1757000000000, "cause": "vous", "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13" }
+    },
+    {
+      "nom": "arrêt dont le démarrage n'est pas un identifiant : reste un arrêt, lié par sa date",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"vous\",\"startId\":\"demarrage-1\"}",
+      "attendu": { "at": 1757000000000, "cause": "vous", "startId": null }
     },
     {
       "nom": "arrêt sur plafond de coût",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000,\"cause\":\"plafond-cout\"}",
-      "attendu": { "at": 1757000000000, "cause": "plafond-cout" }
+      "attendu": { "at": 1757000000000, "cause": "plafond-cout", "startId": null }
     },
     {
       "nom": "arrêt sur redémarrage du cockpit",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000,\"cause\":\"redemarrage-cockpit\"}",
-      "attendu": { "at": 1757000000000, "cause": "redemarrage-cockpit" }
+      "attendu": { "at": 1757000000000, "cause": "redemarrage-cockpit", "startId": null }
     },
     {
       "nom": "arrêt de fin de demande : relance à neuf (D-2b-29), cause gardée des deux côtés",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000,\"cause\":\"fin-de-demande\"}",
-      "attendu": { "at": 1757000000000, "cause": "fin-de-demande" }
+      "attendu": { "at": 1757000000000, "cause": "fin-de-demande", "startId": null }
     },
     {
       "nom": "arrêt de cause inconnue : on ne refuse jamais de s'arrêter",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000,\"cause\":\"autre-chose\"}",
-      "attendu": { "at": 1757000000000, "cause": "vous" }
+      "attendu": { "at": 1757000000000, "cause": "vous", "startId": null }
     },
     {
       "nom": "arrêt sans cause",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],
       "texte": "{\"at\":1757000000000}",
-      "attendu": { "at": 1757000000000, "cause": "vous" }
+      "attendu": { "at": 1757000000000, "cause": "vous", "startId": null }
     },
     {
       "nom": "arrêt sans `at`",
@@ -197,18 +211,25 @@
       "attendu": null
     },
     {
-      "nom": "pré-contrôle de 21 projets : au-delà de la liste",
+      "nom": "pré-contrôle de 21 projets : accepté, la portée « prepares » contrôle tous les projets préparés (D-2b-35)",
       "format": "precheck",
       "lecteurs": ["cockpit", "salle"],
       "projetsGeneres": 21,
-      "attendu": null
+      "attenduProjets": 21
     },
     {
-      "nom": "pré-contrôle de 20 projets : liste pleine, acceptée",
+      "nom": "pré-contrôle de 20 projets : accepté",
       "format": "precheck",
       "lecteurs": ["cockpit", "salle"],
       "projetsGeneres": 20,
       "attenduProjets": 20
+    },
+    {
+      "nom": "pré-contrôle de 600 projets : seule la borne des 64 Kio compte",
+      "format": "precheck",
+      "lecteurs": ["cockpit", "salle"],
+      "projetsGeneres": 600,
+      "attenduProjets": 600
     },
     {
       "nom": "état de la garde : rien à bloquer",
@@ -350,6 +371,64 @@
       "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
       "maintenant": 1757000000000,
       "accepte": false
+    }
+  ],
+  "arretDemarrage": [
+    {
+      "nom": "arrêt de ce démarrage",
+      "arret": { "at": 1757000010000, "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13" },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": true
+    },
+    {
+      "nom": "arrêt d'un démarrage précédent : déjà honoré par la sortie de celui-ci, il ne bloque pas la relance à neuf",
+      "arret": { "at": 1757000010000, "startId": "a41b7e52-0c63-4f8d-9a25-6b8e0d31f7c4" },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": false
+    },
+    {
+      "nom": "arrêt d'un autre démarrage, même daté d'après celui-ci",
+      "arret": { "at": 1757000090000, "startId": "a41b7e52-0c63-4f8d-9a25-6b8e0d31f7c4" },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": false
+    },
+    {
+      "nom": "arrêt de ce démarrage, daté d'avant lui (horloges décalées) : le démarrage nommé l'emporte",
+      "arret": { "at": 1756999990000, "startId": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13" },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": true
+    },
+    {
+      "nom": "arrêt sans démarrage (état inconnu du cockpit), écrit pendant ce démarrage",
+      "arret": { "at": 1757000010000, "startId": null },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": true
+    },
+    {
+      "nom": "arrêt sans démarrage, écrit à l'instant même du démarrage",
+      "arret": { "at": 1757000000000, "startId": null },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": true
+    },
+    {
+      "nom": "arrêt sans démarrage, écrit avant ce démarrage : périmé",
+      "arret": { "at": 1756999999999, "startId": null },
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": false
+    },
+    {
+      "nom": "aucun arrêt",
+      "arret": null,
+      "startIdCourant": "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13",
+      "startedAt": 1757000000000,
+      "vise": false
     }
   ],
   "decisions": [

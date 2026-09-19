@@ -25,7 +25,10 @@ import { pathToFileURL } from "node:url";
 /** 64 Kio : au-delà, un fichier de contrôle vaut « inconnu » (omo-control-protocol.ts). */
 export const OMO_CONTROL_MAX_OCTETS = 65_536;
 
-/** 20 chemins au plus dans une liste publiée. */
+/**
+ * 20 chemins au plus dans une liste publiée (`workspaceGit.nonProteges`, rapports de purge). `precheck-ok` n'a pas cette borne :
+ * tous les projets préparés y sont (D-2b-35), seuls les 64 Kio et la longueur de chaque chemin le bornent.
+ */
 export const OMO_LISTE_MAX = 20;
 
 /** Manifeste : une ligne par fichier du périmètre, donc bien plus gros qu'un fichier de contrôle. */
@@ -186,17 +189,38 @@ const ARRET_CAUSES = [
   "fin-de-demande",
 ];
 
+/**
+ * `stop-request` : `{at, cause, startId}`. `startId` est celui du démarrage que le cockpit veut arrêter ; absent ou mal formé, il
+ * vaut `null` et l'arrêt est rattaché au démarrage par sa date (`arretDuDemarrage`). Cause inconnue : l'arrêt reste un arrêt ; on
+ * ne refuse jamais de s'arrêter.
+ */
 export function analyserArret(texte) {
   const brut = analyserObjet(texte);
   if (!brut || !estHorodatage(brut.at)) return null;
-  // Cause inconnue : l'arrêt reste un arrêt ; on ne refuse jamais de s'arrêter.
-  return { at: brut.at, cause: ARRET_CAUSES.includes(brut.cause) ? brut.cause : "vous" };
+  return {
+    at: brut.at,
+    cause: ARRET_CAUSES.includes(brut.cause) ? brut.cause : "vous",
+    startId: estStartId(brut.startId) ? brut.startId : null,
+  };
+}
+
+/**
+ * Le `stop-request` vise-t-il le démarrage en cours ? Nommé : seulement s'il nomme CE démarrage. Sans démarrage nommé : s'il date
+ * de ce démarrage ou d'après (cockpit et salle lisent l'horloge du même noyau). Rien n'efface `stop-request` : sans ce lien, un
+ * arrêt déjà honoré ferait sortir chaque relance à neuf dès son premier tour d'attente, et Docker la relancerait sans fin
+ * (D-2b-29). Rien de sûr ne se perd : un démarrage exige toujours un battement frais et le `precheck-ok` de son `startId`.
+ */
+export function arretDuDemarrage(arret, startId, startedAt) {
+  if (!arret) return false;
+  if (arret.startId !== null) return arret.startId === startId;
+  return arret.at >= startedAt;
 }
 
 export function analyserPrecheckOk(texte) {
   const brut = analyserObjet(texte);
   if (!brut || !estHorodatage(brut.at) || !estStartId(brut.startId)) return null;
-  if (!Array.isArray(brut.projets) || brut.projets.length > OMO_LISTE_MAX) return null;
+  // Aucune borne en nombre : les 64 Kio d'`analyserObjet` et les 4 096 caractères de chaque chemin suffisent (D-2b-35).
+  if (!Array.isArray(brut.projets)) return null;
   const projets = [];
   for (const entree of brut.projets) {
     if (!estObjet(entree) || !estTexte(entree.chemin, 4096) || !estSha256(entree.sha256)) return null;
@@ -238,10 +262,27 @@ export function precheckDuDemarrage(precheck, startId, maintenantMs, delais = OM
   return maintenantMs - precheck.at >= -delais.perimeS * 1000;
 }
 
-/** Décision après relecture du volume de contrôle : `stop-request` l'emporte, puis le battement. */
+/**
+ * Décision après relecture du volume de contrôle : `stop-request` l'emporte, puis le battement. `arret` est celui du démarrage en
+ * cours (passé par `arretDuDemarrage`), `null` sinon.
+ */
 export function decisionSuperviseur(battement, arret, maintenantMs, delais = OMO_DELAIS) {
   if (arret) return "arret-demande";
   return battementFrais(battement, maintenantMs, delais) ? "continuer" : "battement-perime";
+}
+
+/**
+ * Étape 7, sans lecture : l'appelant fournit ce qu'il a lu (`arret` tel quel : le tri par démarrage est fait ici). Rend le code
+ * que `supervisor.sh` lira. Ordre : arrêt de CE démarrage, dossier de travail protégé (second verrou), battement frais,
+ * `precheck-ok` de CE démarrage.
+ */
+export function decisionPret({ travail, arret, battement, precheck, maintenantMs }, delais = OMO_DELAIS) {
+  if (arretDuDemarrage(arret, travail.startId, travail.startedAt)) return CODES.arret;
+  // Second verrou : sans un dossier de travail entièrement protégé, on n'est jamais prêt, même si un precheck-ok apparaissait.
+  if (!gitProtege(travail)) return CODES.pasPret;
+  if (!battementFrais(battement, maintenantMs, delais)) return CODES.pasPret;
+  if (!precheckDuDemarrage(precheck, travail.startId, maintenantMs, delais)) return CODES.pasPret;
+  return CODES.ok;
 }
 
 /**
@@ -319,11 +360,13 @@ export function decisionBoucle({ battement, arret, maintenantMs, empreinte, empr
  * (un tube nommé ne fige jamais le superviseur), vérifié sur le descripteur ouvert (aucun échange entre la vérification et la
  * lecture), puis lu au plus `maxOctets + 1` octets : un fichier de 4 Gio n'est jamais chargé, même s'il grossit pendant la lecture.
  * La taille annoncée n'est pas consultée : les fichiers de /proc annoncent 0 octet, seule la borne de lecture fait foi.
+ * `suivreLiens: false` : un lien au dernier composant refuse l'ouverture elle-même (O_NOFOLLOW), pas seulement un `lstat` d'avant.
  */
-export function lireTexteBorne(chemin, maxOctets = OMO_CONTROL_MAX_OCTETS) {
+export function lireTexteBorne(chemin, maxOctets = OMO_CONTROL_MAX_OCTETS, { suivreLiens = true } = {}) {
   let fd;
   try {
-    fd = fs.openSync(chemin, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+    const sansLien = suivreLiens ? 0 : (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(chemin, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | sansLien);
     if (!fs.fstatSync(fd).isFile()) return null;
     const tampon = Buffer.alloc(maxOctets + 1);
     let lus = 0;
@@ -372,6 +415,12 @@ export function ecrireAtomique(chemin, texte, mode = 0o644) {
 
 export const lireBattement = (dossierControle = CHEMINS.controle) => analyserBattement(lireTexteBorne(path.join(dossierControle, FICHIERS_CONTROLE.battement)));
 export const lireArret = (dossierControle = CHEMINS.controle) => analyserArret(lireTexteBorne(path.join(dossierControle, FICHIERS_CONTROLE.arret)));
+
+/** `stop-request` du démarrage décrit par `travail`, `null` s'il n'y en a pas ou s'il vise un autre démarrage. */
+export function lireArretDuDemarrage(dossierControle, travail) {
+  const arret = lireArret(dossierControle);
+  return arretDuDemarrage(arret, travail.startId, travail.startedAt) ? arret : null;
+}
 export const lirePrecheckOk = (dossierControle = CHEMINS.controle) => analyserPrecheckOk(lireTexteBorne(path.join(dossierControle, FICHIERS_CONTROLE.precheck)));
 export const lireProjetsPrepares = (dossierControle = CHEMINS.controle) =>
   analyserProjetsPrepares(lireTexteBorne(path.join(dossierControle, FICHIER_PROJETS), OMO_PROJETS_MAX_OCTETS));
@@ -476,16 +525,72 @@ function formeDeLEntree(entree) {
   return "lien";
 }
 
+/** Cible d'un `.git` fichier (« gitdir: <chemin> », première ligne), lue bornée et sans suivre de lien ; `null` si douteuse. */
+export function lireGitdir(cheminGit) {
+  const texte = lireTexteBorne(cheminGit, 4096, { suivreLiens: false });
+  if (texte === null) return null;
+  const premiere = texte.split("\n")[0].replace(/\r$/, "");
+  const trouve = /^gitdir:[ \t]*(\S(?:.*\S)?)[ \t]*$/.exec(premiere);
+  return trouve ? trouve[1] : null;
+}
+
 /**
- * Balaye le dossier de travail en tant que `node` et rend l'état de protection de chaque `.git` (D-2b-28) :
- * - les liens ne sont jamais suivis (`readdir` avec les types, `lstat` seulement), `node_modules` et l'intérieur des `.git` sont
- *   sautés, la profondeur et le nombre d'entrées sont bornés ;
+ * Le vrai dossier git d'un `.git` FICHIER (sous-module, worktree, `--separate-git-dir`, bare + worktrees) est-il protégé ? Un
+ * fichier pointeur lié en `:ro` ne protège rien par lui-même : git écrit et exécute ce qui est au bout (config, hooks). Protégé
+ * seulement si la cible, relative ou absolue du conteneur :
+ * - existe, et son chemin réel est celui qu'on lit (aucun lien sur le chemin : on ne juge pas un détour) ;
+ * - est DANS le dossier de travail ;
+ * - est dans un point de montage (ou en est un) non inscriptible par `node` : le premier point de montage rencontré en remontant
+ *   décide (le `.git` dossier monté du projet qui contient un sous-module, ou la cible montée elle-même).
+ * Cible absolue de l'hôte (C:/… d'un worktree de Git for Windows), absente, illisible, hors du dossier de travail ou inscriptible :
+ * non protégé. Le conteneur ne peut pas trancher, donc fermé en cas de doute.
+ */
+export function cibleGitdirProtegee(cheminGit, racine, montages, acces) {
+  const gitdir = lireGitdir(cheminGit);
+  if (gitdir === null) return false;
+  let base;
+  let cible;
+  let racineReelle;
+  try {
+    base = fs.realpathSync(path.dirname(cheminGit));
+    cible = path.resolve(base, gitdir);
+    if (fs.realpathSync(cible) !== cible) return false;
+    racineReelle = fs.realpathSync(racine);
+  } catch {
+    return false;
+  }
+  const relatif = path.relative(racineReelle, cible);
+  if (relatif === "" || relatif.startsWith("..") || path.isAbsolute(relatif)) return false;
+  for (let courant = cible; courant !== racineReelle; courant = path.dirname(courant)) {
+    if (estPointDeMontage(courant, montages)) return !acces(courant);
+    if (path.dirname(courant) === courant) return false;
+  }
+  return false;
+}
+
+/**
+ * Dépôt nu (`git clone --bare`, `.bare` d'un montage bare + worktrees, `x.git` servant de dépôt distant local) : à la fois un
+ * fichier `HEAD`, un dossier `objects` et un dossier `refs`, comme git lui-même les reconnaît. Ses hooks et sa configuration
+ * s'exécutent sur le poste comme ceux d'un `.git`.
+ */
+function estDepotNu(entrants) {
+  const type = new Map(entrants.map((entree) => [entree.name, entree]));
+  return Boolean(type.get("HEAD")?.isFile() && type.get("objects")?.isDirectory() && type.get("refs")?.isDirectory());
+}
+
+/**
+ * Balaye le dossier de travail en tant que `node` et rend l'état de protection de chaque dépôt git (D-2b-28) :
+ * - les liens ne sont jamais suivis (`readdir` avec les types, `lstat` seulement), `node_modules` et l'intérieur des `.git` et des
+ *   dépôts nus sont sautés, la profondeur et le nombre d'entrées sont bornés ;
  * - un `.git` est « protégé » s'il est un dossier ou un fichier NON inscriptible par `node` ET un point de montage (bind `:ro` posé
  *   par la surcharge) : un `.git` que personne n'a monté n'est protégé que par ses droits, et un parent renommé suffit à le
- *   remplacer par un `.git` inscriptible (MO-3) ;
- * - un `.git` lien, inscriptible, ou hors montage, est listé dans `nonProteges` : un seul suffit à refuser l'activation ;
- * - plafond atteint ou profondeur dépassée : `limiteAtteinte`, donc « git non protégé » aussi — on ne déduit rien de ce qu'on n'a
- *   pas fini de regarder.
+ *   remplacer par un `.git` inscriptible (MO-3). Un `.git` FICHIER ne l'est en plus que si sa cible `gitdir:` l'est
+ *   (`cibleGitdirProtegee`) ;
+ * - un dépôt nu (`HEAD`, `objects/`, `refs/`) est protégé aux mêmes conditions qu'un `.git` dossier ;
+ * - un `.git` lien, inscriptible, ou hors montage, et un dépôt nu non protégé, sont listés dans `nonProteges` : un seul suffit à
+ *   refuser l'activation ;
+ * - plafond atteint, profondeur dépassée ou dossier illisible (racine comprise) : `limiteAtteinte`, donc « git non protégé »
+ *   aussi — on ne déduit rien de ce qu'on n'a pas fini de regarder, et un dossier qu'on ne peut pas lire peut cacher un `.git`.
  */
 export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   const plafond = options.plafond ?? BALAYAGE_PLAFOND;
@@ -495,6 +600,7 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   const montages = options.montages ?? pointsDeMontage();
   const maintenant = options.maintenant ?? Date.now();
   const gitsMax = options.gitsMax ?? 200;
+  const lireDossier = options.lireDossier ?? ((chemin) => fs.readdirSync(chemin, { withFileTypes: true }));
 
   const gits = [];
   const nonProteges = [];
@@ -502,6 +608,17 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   let illisibles = 0;
   let limiteAtteinte = false;
   const pile = [{ relatif: "", profondeur: 0 }];
+
+  /** Inscrit un dépôt trouvé ; faux quand la liste ne peut plus tout dire (plus de 20 dépôts ouverts). */
+  const inscrire = (chemin, forme, inscriptible, montage, protege) => {
+    if (gits.length < gitsMax) gits.push({ chemin, forme, inscriptible, montage });
+    if (protege) return true;
+    if (nonProteges.length < OMO_LISTE_MAX) {
+      nonProteges.push(chemin);
+      return true;
+    }
+    return false;
+  };
 
   while (pile.length > 0 && !limiteAtteinte) {
     const { relatif, profondeur } = pile.pop();
@@ -512,9 +629,18 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
     const absolu = relatif === "" ? racine : path.join(racine, relatif);
     let entrants;
     try {
-      entrants = fs.readdirSync(absolu, { withFileTypes: true });
+      entrants = lireDossier(absolu);
     } catch {
+      // Illisible (EACCES, ACL refusée) ou absent : il peut cacher un `.git` inscriptible. Balayage incomplet, verdict fermé.
       illisibles++;
+      limiteAtteinte = true;
+      break;
+    }
+    if (estDepotNu(entrants)) {
+      const inscriptible = acces(absolu);
+      const montage = estPointDeMontage(absolu, montages);
+      if (!inscrire(relatif === "" ? "." : relatif, "dossier", inscriptible, montage, !inscriptible && montage)) limiteAtteinte = true;
+      // Comme l'intérieur d'un `.git` : jamais parcouru.
       continue;
     }
     for (const entree of entrants) {
@@ -527,13 +653,12 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
       if (entree.name === ".git") {
         const forme = formeDeLEntree(entree);
         // Un lien n'est pas protégeable par un bind : il vaut « inscriptible », sans même tenter l'accès (jamais suivi).
-        const absolu = path.join(racine, cheminRelatif);
-        const inscriptible = forme === "lien" ? true : acces(absolu);
-        const montage = estPointDeMontage(absolu, montages);
-        const protege = !inscriptible && montage;
-        if (gits.length < gitsMax) gits.push({ chemin: cheminRelatif, forme, inscriptible, montage });
-        if (!protege && nonProteges.length < OMO_LISTE_MAX) nonProteges.push(cheminRelatif);
-        else if (!protege) limiteAtteinte = true; // Plus de 20 `.git` ouverts : la liste ne dit plus tout.
+        const cheminGit = path.join(racine, cheminRelatif);
+        const inscriptible = forme === "lien" ? true : acces(cheminGit);
+        const montage = estPointDeMontage(cheminGit, montages);
+        const protege = !inscriptible && montage && (forme !== "fichier" || cibleGitdirProtegee(cheminGit, racine, montages, acces));
+        // Plus de 20 `.git` ouverts : la liste ne dit plus tout.
+        if (!inscrire(cheminRelatif, forme, inscriptible, montage, protege)) limiteAtteinte = true;
         continue;
       }
       if (entree.isSymbolicLink() || !entree.isDirectory()) continue;
@@ -545,7 +670,10 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   return { verifieLe: maintenant, limiteAtteinte, nonProteges, gits, entrees, illisibles };
 }
 
-/** Partie publiée de `state.json` : les trois champs d'`OmoWorkspaceGit`, rien de plus. */
+/**
+ * Partie publiée de `state.json` : les trois champs d'`OmoWorkspaceGit`, rien de plus. Un dossier illisible n'y a pas de champ à
+ * lui : il pose `limiteAtteinte` (balayage incomplet), que le cockpit lit comme `workspace-non-verifie`.
+ */
 export const resumeWorkspaceGit = (balayage) => ({
   verifieLe: balayage.verifieLe,
   limiteAtteinte: balayage.limiteAtteinte,
@@ -554,7 +682,7 @@ export const resumeWorkspaceGit = (balayage) => ({
 
 /**
  * État des `.git` des projets préparés, vu par `node` : `test -w` doit échouer sur chacun (M32), et chacun doit être un point de
- * montage (MO-3).
+ * montage (MO-3). Un `.git` devenu fichier ne l'est en plus que si sa cible `gitdir:` l'est (`cibleGitdirProtegee`).
  */
 export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, acces = accesEcriture, montages = pointsDeMontage()) {
   const projets = [];
@@ -562,10 +690,9 @@ export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, a
   for (const projet of prepares.projets) {
     const cheminGit = path.join(racine, projet.chemin, ".git");
     const forme = formeGit(cheminGit);
+    const formeProtegee = forme === "dossier" || (forme === "fichier" && cibleGitdirProtegee(cheminGit, racine, montages, acces));
     const gitLectureSeule =
-      projet.git === "absent"
-        ? forme === "absent"
-        : (forme === "dossier" || forme === "fichier") && !acces(cheminGit) && estPointDeMontage(cheminGit, montages);
+      projet.git === "absent" ? forme === "absent" : formeProtegee && !acces(cheminGit) && estPointDeMontage(cheminGit, montages);
     projets.push({ chemin: projet.chemin, gitLectureSeule });
   }
   return projets;
@@ -833,27 +960,41 @@ export function gitProtege(etat) {
   return (etat.projets ?? []).every((projet) => projet?.gitLectureSeule === true);
 }
 
+/**
+ * Constat de `node` sur les dépôts git : `.git` des projets préparés et balayage du dossier de travail, sur UNE vue de la table des
+ * montages. Sert à l'étape 5 et au second balayage de l'étape 7 (`rebalayage`).
+ */
+export function constatGit(prepares, { racine = CHEMINS.workspace, montages = pointsDeMontage(), acces = accesEcriture, maintenant } = {}) {
+  const projets = controlerProjetsPrepares(prepares, racine, acces, montages);
+  const balayage = balayerGit(racine, { montages, accesEcriture: acces, maintenant });
+  const workspaceGit = resumeWorkspaceGit(balayage);
+  return {
+    ok: gitProtege({ workspaceGit, projets }),
+    projets,
+    workspaceGit,
+    projetsPrepares: prepares === null ? null : prepares.projets.length,
+    balayage: { entrees: balayage.entrees, illisibles: balayage.illisibles, gits: balayage.gits.length },
+  };
+}
+
 /** Constat de `node` sur les étapes 4 et 5 : purge, copie d'`auth.json`, `.git` des projets préparés, balayage du dossier de travail. */
 function etapePreparation(dossierControle) {
   // Une seule lecture de la table des montages pour toute l'étape : purge, projets et balayage jugent sur la même vue.
   const montages = pointsDeMontage();
   const purge = purger({ montages });
   const auth = copierAuth();
-  const prepares = lireProjetsPrepares(dossierControle);
-  const projets = controlerProjetsPrepares(prepares, CHEMINS.workspace, accesEcriture, montages);
-  const balayage = balayerGit(CHEMINS.workspace, { montages });
-  const workspaceGit = resumeWorkspaceGit(balayage);
-  const ok = gitProtege({ workspaceGit, projets });
-  return {
-    etape: "preparation",
-    ok,
-    purge,
-    auth,
-    projets,
-    workspaceGit,
-    projetsPrepares: prepares === null ? null : prepares.projets.length,
-    balayage: { entrees: balayage.entrees, illisibles: balayage.illisibles, gits: balayage.gits.length },
-  };
+  const git = constatGit(lireProjetsPrepares(dossierControle), { montages });
+  return { etape: "preparation", ok: git.ok, purge, auth, ...git };
+}
+
+/**
+ * Second balayage (étape 7, juste avant le lancement) : l'attente d'un battement et du `precheck-ok` n'a pas de limite (démarrage
+ * de la machine, salle fermée ou suspendue, cockpit absent), et un dépôt cloné pendant ce temps n'était pas dans le premier
+ * balayage. Mêmes contrôles que l'étape 5, sans purge ni copie : rien de ce qu'a préparé l'étape 4 n'est refait. Opencode ne tourne
+ * pas encore : aucun processus de `node` ne peut fausser ce constat.
+ */
+function etapeRebalayage(dossierControle) {
+  return { etape: "rebalayage", ...constatGit(lireProjetsPrepares(dossierControle)) };
 }
 
 /**
@@ -872,23 +1013,23 @@ export function absorber(dossierEtat, fichier) {
     const volumesFermes = VOLUMES_FERMES_A_NODE.every((chemin) => volumes.get(chemin) === true);
     return { ok: dossiersConfig.every((d) => d.ok) && volumesFermes, raison: "dossiers de configuration et volumes fermes a node" };
   }
-  if (constat.etape === "preparation") {
+  if (constat.etape === "preparation" || constat.etape === "rebalayage") {
     const travail = majTravail(dossierEtat, { projets: constat.projets ?? [], workspaceGit: constat.workspaceGit });
     // Absorber a REUSSI même si le dossier de travail n'est pas protégé : ce fait est publié, il ne refuse pas le démarrage ici.
-    return { ok: true, raison: "preparation", gitProtege: gitProtege(travail) };
+    return { ok: true, raison: constat.etape, gitProtege: gitProtege(travail) };
   }
   return { ok: false, raison: "etape inconnue" };
 }
 
 /**
  * Sous-commandes de `supervisor.sh`. Les chemins ne sont JAMAIS pris dans l'environnement : ils viennent du contrat, et d'ailleurs
- * la salle n'a qu'une liste blanche fermée de variables (D-2b-39). Les tests appellent les fonctions exportées, ou montent les
- * volumes aux chemins réels.
+ * la salle n'a qu'une liste blanche fermée de variables (D-2b-39). `dossiers` ne sert qu'aux tests, qui passent un volume d'état et
+ * un volume de contrôle temporaires ; `supervisor.sh` ne le passe jamais (les chemins du contrat s'appliquent).
  */
-function principal(argv) {
+function principal(argv, dossiers) {
   const [commande, ...reste] = argv;
-  const dossierEtat = CHEMINS.etat;
-  const dossierControle = CHEMINS.controle;
+  const dossierEtat = dossiers.etat;
+  const dossierControle = dossiers.controle;
   switch (commande) {
     case "delais-sh": {
       ecrire(1, delaisShell());
@@ -945,6 +1086,11 @@ function principal(argv) {
       sortie(constat);
       return constat.ok ? CODES.ok : CODES.refus;
     }
+    case "rebalayage": {
+      const constat = etapeRebalayage(dossierControle);
+      sortie(constat);
+      return constat.ok ? CODES.ok : CODES.refus;
+    }
     case "absorber": {
       const verdict = absorber(dossierEtat, reste[0] ?? "");
       sortie(verdict);
@@ -957,13 +1103,14 @@ function principal(argv) {
     }
     case "pret": {
       const travail = lireTravail(dossierEtat);
-      const maintenant = Date.now();
-      if (lireArret(dossierControle)) return CODES.arret;
-      // Second verrou : sans un dossier de travail entierement protege, on n'est jamais pret, meme si un precheck-ok apparaissait.
-      if (!gitProtege(travail)) return CODES.pasPret;
-      if (!battementFrais(lireBattement(dossierControle), maintenant)) return CODES.pasPret;
-      if (!precheckDuDemarrage(lirePrecheckOk(dossierControle), travail.startId, maintenant)) return CODES.pasPret;
-      return CODES.ok;
+      return decisionPret({
+        travail,
+        // decisionPret ne retient que l'arrêt de CE démarrage : celui d'un démarrage précédent, resté dans le volume, a déjà été honoré.
+        arret: lireArret(dossierControle),
+        battement: lireBattement(dossierControle),
+        precheck: lirePrecheckOk(dossierControle),
+        maintenantMs: Date.now(),
+      });
     }
     case "figer-montages": {
       // Juste avant le lancement d'opencode, par root : la vue que la boucle défendra (MO-3). Aucune table lisible : refus.
@@ -977,7 +1124,7 @@ function principal(argv) {
       const travail = lireTravail(dossierEtat);
       return decisionBoucle({
         battement: lireBattement(dossierControle),
-        arret: lireArret(dossierControle),
+        arret: lireArretDuDemarrage(dossierControle, travail),
         maintenantMs: Date.now(),
         empreinte: empreinteMontages(pointsDeMontage()),
         empreinteAttendue: travail.montagesSha256,
@@ -994,10 +1141,13 @@ function principal(argv) {
   }
 }
 
-/** Point d'entrée, exporté pour les tests ; rend le code de sortie au lieu de le poser. Toute erreur vaut « refus ». */
-export function executer(argv) {
+/**
+ * Point d'entrée, exporté pour les tests ; rend le code de sortie au lieu de le poser. Toute erreur vaut « refus ». `dossiers` :
+ * volume d'état et volume de contrôle, ceux du contrat par défaut (le shell ne passe jamais rien d'autre).
+ */
+export function executer(argv, dossiers = { etat: CHEMINS.etat, controle: CHEMINS.controle }) {
   try {
-    return principal(argv);
+    return principal(argv, dossiers);
   } catch (err) {
     ecrire(2, `omo-supervisor: ${err?.message ?? String(err)}\n`);
     return CODES.refus;

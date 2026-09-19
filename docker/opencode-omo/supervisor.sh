@@ -12,7 +12,8 @@
 #   4. EN TANT QUE node : purge de /tmp, du HOME et du dossier de donnees sauf opencode.db* (MO-2), copie d'auth.json en 0600 ;
 #   5. EN TANT QUE node : etat des .git des projets prepares et balayage de /workspace (D-2b-28, MO-3) ;
 #   6. publication de state.json (root) ;
-#   7. attente d'un battement frais ET du precheck-ok de CE demarrage ;
+#   7. attente d'un battement frais ET du precheck-ok de CE demarrage (un stop-request d'un autre demarrage ne compte pas),
+#      puis second balayage des .git en tant que node et nouvelle verification, juste avant le lancement ;
 #   8. points de montage figes, puis opencode lance par setpriv vers node ;
 #   9. toutes les OMO_VERIFICATION_S secondes : stop-request, battement perime, point de montage deplace (MO-3) ou opencode
 #      arrete -> TERM, KILL plus tard, sortie non nulle.
@@ -156,8 +157,9 @@ executer node "$LIB" absorber "$ETAPE"
 log "cinq dossiers de configuration et volumes de controle en lecture seule"
 
 # --- Etapes 4 et 5 : purge, auth.json, .git des projets, balayage de /workspace (D-2b-27, D-2b-28, D-2b-36) -----------------------
-# Un .git inscriptible ou un balayage incomplet n'est PAS un refus ici : D-2b-28 partage les roles, le superviseur publie l'etat et
-# le cockpit refuse l'activation. Le superviseur, lui, ne se declarera jamais pret (etape 7) tant que ce n'est pas propre.
+# Un .git inscriptible ou un balayage incomplet (plafond, profondeur, dossier illisible) n'est PAS un refus ici : D-2b-28 partage
+# les roles, le superviseur publie l'etat et le cockpit refuse l'activation. Le superviseur, lui, ne se declarera jamais pret
+# (etape 7) tant que ce n'est pas propre.
 # shellcheck disable=SC2086
 executer $SETPRIV node "$LIB" preparation > "$ETAPE"
 code_preparation="$CODE"
@@ -171,12 +173,32 @@ log "purge faite, auth.json pose, dossier de travail balaye"
 # --- Etape 6 : publication de l'etat ----------------------------------------------------------------------------------------------
 node "$LIB" publier attente || refus "etat non publie"
 
+# Second balayage, EN TANT QUE node, juste avant le lancement : l'attente de l'etape 7 n'a pas de limite (demarrage de la machine,
+# salle fermee ou suspendue, cockpit absent) et un depot clone pendant ce temps n'etait pas dans le premier balayage. Memes
+# controles que l'etape 5, sans purge ni copie ; l'etat est republie, puis "pret" est relu : un .git non protege, un dossier
+# illisible ou un balayage incomplet et rien ne demarre (second verrou). Opencode ne tourne pas encore : rien ne fausse ce constat.
+rebalayer() {
+  # shellcheck disable=SC2086
+  executer $SETPRIV node "$LIB" rebalayage > "$ETAPE"
+  code_rebalayage="$CODE"
+  executer node "$LIB" absorber "$ETAPE"
+  [ "$CODE" -eq 0 ] || refus "constat du second balayage illisible"
+  node "$LIB" publier attente || refus "etat non publie"
+  if [ "$code_rebalayage" -ne 0 ]; then
+    log "ATTENTION: dossier de travail non protege au second balayage (un .git ou un depot nu inscriptible ou hors montage, ou balayage incomplet) : rien ne demarrera"
+  fi
+}
+
 # --- Etape 7 : attente du battement et du precheck-ok de CE demarrage -------------------------------------------------------------
 log "attente d'un battement frais et du precheck-ok du demarrage en cours"
 while [ "$arret_signal" -eq 0 ]; do
   executer node "$LIB" pret
   if [ "$CODE" -eq 0 ]; then
-    break
+    rebalayer
+    executer node "$LIB" pret
+    if [ "$CODE" -eq 0 ]; then
+      break
+    fi
   fi
   if [ "$CODE" -ge 10 ]; then
     log "arret demande pendant l'attente"

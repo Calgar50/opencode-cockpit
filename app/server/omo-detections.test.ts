@@ -495,6 +495,38 @@ describe("disque : tous les projets préparés, /workspace et son premier niveau
     assert.deepEqual([casse.detection, casse.quarantaine], [null, []]);
   });
 
+  it("cible de la configuration git (core.hooksPath = .githooks) : un hook modifié → ide-ci-modifie ; sans la cible relevée, rien", () => {
+    const depart = { ...DEPART, "ouvert/.githooks/pre-commit": fichier(H1) };
+    const cibles = { ideCiDynamiques: ["ouvert/.githooks"] };
+    const avant = { ...releve(depart), ...cibles };
+    const apres = { ...releve({ ...depart, "ouvert/.githooks/pre-commit": fichier(H2) }), ...cibles };
+    const r = detect(etatInitial(), { type: "disque", avant, apres });
+    assert.deepEqual(r.detection, { cause: "ide-ci-modifie", detail: { rootId: null, sessionId: null, chemins: ["ouvert/.githooks/pre-commit"] } });
+    assert.deepEqual(r.signales, [{ chemin: "ouvert/.githooks/pre-commit", genre: "ide-ci" }]);
+    // La liste fixe du §4.14.5 n° 7 ne connaît pas .githooks : c'est la cible relevée dans .git/config qui fait la différence.
+    const sans = detect(etatInitial(), { type: "disque", avant: releve(depart), apres: releve({ ...depart, "ouvert/.githooks/pre-commit": fichier(H2) }) });
+    assert.equal(sans.detection, null);
+    // Inchangé : rien (zéro faux positif, G13).
+    assert.equal(detect(etatInitial(), { type: "disque", avant, apres: avant }).detection, null);
+  });
+
+  it("fichier inclus par la configuration git créé (git l'ignorait absent) → ide-ci-modifie, casse ignorée ; cible douteuse → ide-ci-modifie", () => {
+    const cibles = { ideCiDynamiques: ["autre/.gitconfig"] };
+    const cree = detect(etatInitial(), { type: "disque", avant: { ...releve(DEPART), ...cibles }, apres: { ...releve({ ...DEPART, "autre/.GitConfig": fichier(H1) }), ...cibles } });
+    assert.equal(cree.detection?.cause, "ide-ci-modifie");
+    // Cible listée seulement après coup (le fichier inclus en a ajouté une) : comptée quand même.
+    const tardive = detect(etatInitial(), {
+      type: "disque",
+      avant: { ...releve({ ...DEPART, "autre/outils/hooks/post-checkout": fichier(H1) }) },
+      apres: { ...releve({ ...DEPART, "autre/outils/hooks/post-checkout": fichier(H2) }), ideCiDynamiques: ["autre/outils/hooks"] },
+    });
+    assert.equal(tardive.detection?.cause, "ide-ci-modifie");
+    for (const douteuse of ["../evade", "/abs", "ouvert/./x", ""]) {
+      const r = detect(etatInitial(), { type: "disque", avant: releve(DEPART), apres: { ...releve(DEPART), ideCiDynamiques: [douteuse] } });
+      assert.equal(r.detection?.cause, "ide-ci-modifie", JSON.stringify(douteuse));
+    }
+  });
+
   it(".git présent au démarrage dont la forme change → git-cree sans quarantaine", () => {
     const r = disque({ "ouvert/.git": fichier(H1) });
     assert.deepEqual([r.detection, r.quarantaine], [{ cause: "git-cree", detail: { rootId: null, sessionId: null, chemins: ["ouvert/.git"] } }, []]);

@@ -8,12 +8,15 @@
 //    donc un refus : le cockpit ne peut pas savoir ce qu'il y a au bout sans le suivre.
 // 2. **Tout est borné** : profondeur de la remontée, nombre de fichiers et taille d'un fichier pour les empreintes, nombre de
 //    chemins listés. Une borne atteinte refuse le projet (`profondeur`, `empreinte-impossible`) au lieu de tronquer en silence.
+//    Seule exception : la descente des fichiers signalés (package.json, Makefile, *.ps1 sous la racine), qui n'arrêtent rien ;
+//    une borne y rend la liste à relire incomplète (`signalesIncomplet`), jamais un projet ordinaire refusé.
 // 3. **Aucune suppression, aucun écrasement** : `renommerSansSuivreLiens` ne fait que renommer, et seulement vers un nom libre.
 import crypto from "node:crypto";
 import { type Dirent, constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  analyserConfigGit,
   decidePrecheck,
   estDossierEtatOmo,
   nomDansListe,
@@ -37,9 +40,17 @@ export const DOSSIERS_IDE_CI: readonly string[] = Object.freeze([".devcontainer"
 const FICHIERS_CI_RACINE: readonly string[] = Object.freeze([".gitlab-ci.yml", ".pre-commit-config.yaml", "Jenkinsfile"]);
 const MOTIFS_CI_RACINE: readonly RegExp[] = Object.freeze([/^azure-pipelines.*\.yml$/iu]);
 
-/** Fichiers signalés après une détection (§4.14.5, D-2b-37) : relevés à la racine du dossier contrôlé. */
-const FICHIERS_SIGNALES_RACINE: readonly string[] = Object.freeze(["Makefile", "package.json"]);
-const MOTIFS_SIGNALES_RACINE: readonly RegExp[] = Object.freeze([/\.ps1$/iu]);
+/**
+ * Fichiers signalés à relire (§4.14.5, D-2b-37) : relevés à TOUTE profondeur du dossier contrôlé, comme la détection les juge
+ * (omo-detections.ts, `estProgramme`) : à la racine avec les fichiers d'IDE et de CI, puis par une descente à part (sans suivre
+ * les liens, `node_modules` et `.git` exclus) qui ne refuse jamais un projet : une borne atteinte y rend seulement la liste à
+ * relire incomplète (`signalesIncomplet`).
+ */
+const FICHIERS_SIGNALES: readonly string[] = Object.freeze(["Makefile", "package.json"]);
+const MOTIFS_SIGNALES: readonly RegExp[] = Object.freeze([/\.ps1$/iu]);
+
+/** Dossiers jamais descendus pour les fichiers signalés, casse ignorée (mêmes exclusions que la détection). */
+const EXCLUS_DES_SIGNALES: readonly string[] = Object.freeze(["node_modules", ".git"]);
 
 /** Forme du `.git` d'un dossier contrôlé (D-2b-28) : relevée sans suivre le lien. */
 export type FormeGit = "dossier" | "fichier" | "lien" | "absent";
@@ -63,6 +74,17 @@ export interface ReleveEmpreintes {
   illisibles: string[];
   /** Bornes atteintes : la référence est incomplète → raison `empreinte-impossible`. */
   impossible: boolean;
+  /**
+   * La descente des fichiers signalés n'a pas tout vu (borne, dossier illisible, lien au nom d'un fichier signalé, fichier trop
+   * gros) : la liste « à relire » de fin de demande doit dire qu'elle est incomplète. Jamais un refus, jamais un arrêt.
+   */
+  signalesIncomplet: boolean;
+  /**
+   * Cibles de la configuration git dans l'arbre de travail (core.hooksPath, core.fsmonitor, fichiers inclus), relatives à la
+   * racine relevée, triées : traitées comme des fichiers d'IDE et de CI par la détection (`OmoDiskSnapshot.ideCiDynamiques`),
+   * présentes ou non (git lirait une cible dès qu'elle apparaît). `.husky` et les autres dossiers de la liste fixe n'y sont pas.
+   */
+  ideCiDynamiques: string[];
 }
 
 // --- Options -------------------------------------------------------------------------------------------------------------------
@@ -255,17 +277,33 @@ async function scanDossierOmo(
 
 // --- Empreintes ------------------------------------------------------------------------------------------------------------------
 
+/** Relevé vide d'un dossier : point de départ, et relevé d'un dossier qu'on n'a pas pu lire du tout. */
+function releveVide(racine: string): ReleveEmpreintes {
+  return { racine, git: "absent", fichiers: [], liens: [], illisibles: [], impossible: false, signalesIncomplet: false, ideCiDynamiques: [] };
+}
+
+export interface ReleverEmpreintesOptions {
+  /**
+   * Faux : fichiers signalés relevés à la racine seulement. Sert au relevé du dossier de travail lui-même, dont chaque dossier de
+   * premier niveau est relevé à part, en profondeur : descendre deux fois ne verrait rien de plus.
+   */
+  signalesEnProfondeur?: boolean;
+}
+
 /**
- * Empreintes SHA-256 d'un dossier contrôlé : fichiers d'IDE et de CI (dossiers parcourus récursivement), fichiers de CI et
- * fichiers signalés de la racine, et forme de `.git`. Bornes : `empreintesMaxFichiers` fichiers et `empreinteTailleMaxOctets`
- * par fichier ; au-delà, `impossible` est vrai et le projet est refusé (`empreinte-impossible`).
+ * Empreintes SHA-256 d'un dossier contrôlé : fichiers d'IDE et de CI (dossiers parcourus récursivement), fichiers de CI de la
+ * racine, fichiers signalés à toute profondeur, cibles de la configuration git dans l'arbre de travail, et forme de `.git`.
+ * Bornes : `empreintesMaxFichiers` fichiers et `empreinteTailleMaxOctets` par fichier pour tout ce qui arrête une demande ;
+ * au-delà, `impossible` est vrai et le projet est refusé (`empreinte-impossible`). Les fichiers signalés SOUS la racine ont leurs
+ * propres bornes, qui ne refusent rien (`signalesIncomplet`).
  */
 export async function releverEmpreintes(
   dossier: string,
   racineAffichee: string,
   bornes: Readonly<PrecheckBornes> = PRECHECK_BORNES,
+  options: ReleverEmpreintesOptions = {},
 ): Promise<ReleveEmpreintes> {
-  const releve: ReleveEmpreintes = { racine: racineAffichee, git: "absent", fichiers: [], liens: [], illisibles: [], impossible: false };
+  const releve = releveVide(racineAffichee);
   releve.git = await formeGit(dossier);
   const candidats: string[] = [];
   const lecture = await lireEntreesBornees(dossier, bornes);
@@ -276,15 +314,234 @@ export async function releverEmpreintes(
   }
   if (lecture.tronque) releve.impossible = true;
   for (const entree of lecture.entrees) await entreeRacine(dossier, entree, releve, candidats, bornes);
-  if (candidats.length > bornes.empreintesMaxFichiers) releve.impossible = true;
-  for (const chemin of candidats.slice(0, bornes.empreintesMaxFichiers).sort(comparerChemins)) {
+  const dynamiques = new Set<string>();
+  if (releve.git === "dossier" && !releve.impossible) await releverConfigGit(dossier, releve, candidats, dynamiques, bornes);
+  releve.ideCiDynamiques = [...dynamiques].sort(comparerChemins);
+  const uniques = [...new Set(candidats)];
+  if (uniques.length > bornes.empreintesMaxFichiers) releve.impossible = true;
+  for (const chemin of uniques.slice(0, bornes.empreintesMaxFichiers).sort(comparerChemins)) {
     const empreinte = await empreinteDe(path.join(dossier, chemin), bornes);
     if (empreinte.etat === "trop-gros") releve.impossible = true;
     else if (empreinte.etat === "illisible") releve.illisibles.push(chemin);
     else releve.fichiers.push({ chemin, sha256: empreinte.sha256 });
   }
+  if (options.signalesEnProfondeur !== false) {
+    const signales: string[] = [];
+    await collecterSignales(dossier, lecture.entrees, releve, signales, bornes);
+    for (const chemin of signales.sort(comparerChemins)) {
+      const empreinte = await empreinteDe(path.join(dossier, chemin), bornes);
+      if (empreinte.etat === "ok") releve.fichiers.push({ chemin, sha256: empreinte.sha256 });
+      else releve.signalesIncomplet = true;
+    }
+  }
   releve.fichiers.sort((a, b) => comparerChemins(a.chemin, b.chemin));
   return releve;
+}
+
+/** Fichier signalé à relire (package.json, Makefile, *.ps1), casse ignorée. */
+function estFichierSignale(nom: string): boolean {
+  return nomDansListe(nom, FICHIERS_SIGNALES) || MOTIFS_SIGNALES.some((re) => re.test(nom));
+}
+
+/**
+ * Descente des fichiers signalés SOUS la racine (la racine elle-même est relevée par `entreeRacine`) : aucun lien suivi,
+ * `node_modules` et `.git` exclus, dossiers d'IDE et de CI de la racine laissés à `collecter`. Rien de ce qu'elle rencontre ne
+ * passe dans `liens`, `illisibles` ni `impossible` : un dépôt ordinaire (liens hors des dossiers d'IDE, dossier très peuplé) ne
+ * doit pas être refusé au pré-contrôle pour un fichier qui n'arrête rien. Tout manque rend `signalesIncomplet`.
+ */
+async function collecterSignales(
+  dossier: string,
+  entreesRacine: readonly Dirent[],
+  releve: ReleveEmpreintes,
+  signales: string[],
+  bornes: Readonly<PrecheckBornes>,
+): Promise<void> {
+  const pile: { relatif: string; profondeur: number }[] = [];
+  for (const entree of entreesRacine) {
+    if (!entree.isDirectory() || nomDansListe(entree.name, DOSSIERS_IDE_CI) || nomDansListe(entree.name, EXCLUS_DES_SIGNALES)) continue;
+    pile.push({ relatif: entree.name, profondeur: 1 });
+  }
+  let entreesLues = 0;
+  while (pile.length > 0) {
+    const { relatif, profondeur } = pile.pop() ?? { relatif: "", profondeur: 0 };
+    if (profondeur > bornes.profondeurRelevesMax) {
+      releve.signalesIncomplet = true;
+      continue;
+    }
+    const lecture = await lireEntreesBornees(path.join(dossier, relatif), bornes);
+    if (lecture === null || lecture.tronque) releve.signalesIncomplet = true;
+    for (const entree of lecture?.entrees ?? []) {
+      entreesLues++;
+      if (entreesLues > bornes.signalesEntreesMax) {
+        releve.signalesIncomplet = true;
+        return;
+      }
+      const chemin = `${relatif}/${entree.name}`;
+      if (entree.isSymbolicLink()) {
+        // Jamais suivi. Un lien au nom d'un fichier signalé est un fichier qu'on ne peut pas relever : la liste est incomplète.
+        if (estFichierSignale(entree.name)) releve.signalesIncomplet = true;
+        continue;
+      }
+      if (entree.isDirectory()) {
+        if (!nomDansListe(entree.name, EXCLUS_DES_SIGNALES)) pile.push({ relatif: chemin, profondeur: profondeur + 1 });
+        continue;
+      }
+      if (!entree.isFile() || !estFichierSignale(entree.name)) continue;
+      if (signales.length >= bornes.signalesMaxFichiers) {
+        releve.signalesIncomplet = true;
+        return;
+      }
+      signales.push(chemin);
+    }
+  }
+}
+
+// --- Cibles de la configuration git dans l'arbre de travail (S6/G04, §4.5 ; hooks hors de .git) ---------------------------------
+
+/** Où tombe un chemin désigné par la configuration git, vu depuis le dossier contrôlé. */
+type SituationCible = { ou: "arbre"; relatif: string } | { ou: "git"; absolu: string; relatif: string } | { ou: "doute" };
+
+/**
+ * Situe une valeur de la configuration git : relative à `base`, elle doit rester dans le dossier contrôlé. Absolue (du conteneur ou
+ * de l'hôte), dans le HOME (« ~ »), vide, ou hors du dossier : doute. Le cockpit ne sait pas où tombe un chemin de l'hôte.
+ */
+function situerCible(dossier: string, base: string, valeur: string): SituationCible {
+  if (valeur === "" || valeur.startsWith("~") || valeur.startsWith("/") || valeur.startsWith("\\") || /^[A-Za-z]:/.test(valeur) || path.isAbsolute(valeur)) {
+    return { ou: "doute" };
+  }
+  const absolu = path.resolve(base, valeur);
+  const relatif = path.relative(dossier, absolu);
+  if (relatif === "" || relatif.startsWith("..") || path.isAbsolute(relatif)) return { ou: "doute" };
+  const posix = relatif.split(path.sep).join("/");
+  if ((posix.split("/")[0] ?? "").toLowerCase() === ".git") return { ou: "git", absolu, relatif: posix };
+  return { ou: "arbre", relatif: posix };
+}
+
+/** Nature d'un chemin de l'arbre, relevée composant par composant sans jamais suivre un lien. */
+async function natureSansLien(dossier: string, relatif: string): Promise<"absent" | "lien" | "dossier" | "fichier" | "illisible"> {
+  let courant = dossier;
+  const segments = relatif.split("/");
+  for (const [index, segment] of segments.entries()) {
+    courant = path.join(courant, segment);
+    let info;
+    try {
+      info = await fs.lstat(courant);
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "illisible";
+    }
+    if (info.isSymbolicLink()) return "lien";
+    if (index < segments.length - 1 && !info.isDirectory()) return "absent";
+    if (index === segments.length - 1) return info.isDirectory() ? "dossier" : info.isFile() ? "fichier" : "illisible";
+  }
+  return "illisible";
+}
+
+type LectureConfig = { etat: "ok"; texte: string } | { etat: "absent" | "lien" | "illisible" | "trop-gros" };
+
+/** Fichier de configuration git lu borné, sans suivre de lien (vérifié au `lstat`, puis refusé à l'ouverture par O_NOFOLLOW). */
+async function lireConfigBornee(fichier: string, bornes: Readonly<PrecheckBornes>): Promise<LectureConfig> {
+  let handle;
+  try {
+    const info = await fs.lstat(fichier);
+    if (info.isSymbolicLink()) return { etat: "lien" };
+    if (!info.isFile()) return { etat: "illisible" };
+    handle = await fs.open(fichier, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    return { etat: (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "illisible" };
+  }
+  try {
+    const tampon = Buffer.alloc(bornes.configGitTailleMaxOctets + 1);
+    let lus = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(tampon, lus, tampon.length - lus, lus);
+      if (bytesRead === 0) break;
+      lus += bytesRead;
+      if (lus > bornes.configGitTailleMaxOctets) return { etat: "trop-gros" };
+    }
+    return { etat: "ok", texte: tampon.subarray(0, lus).toString("utf8") };
+  } catch {
+    return { etat: "illisible" };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Cibles de la configuration git d'un dossier contrôlé dont `.git` est un dossier (lecture seule dans la salle). Le `.git:ro`
+ * protège `.git/hooks` et `.git/config`, pas ce qu'ils désignent dans l'arbre de travail : un dossier de hooks (`core.hooksPath`,
+ * par exemple `.githooks`), un programme `core.fsmonitor`, un fichier inclus (`[include]`, `[includeIf]`, par exemple
+ * `../.gitconfig`). La salle peut les modifier, et le poste les exécuterait au prochain `git commit` ou `git status`. Ils sont
+ * donc relevés comme des fichiers d'IDE et de CI (leur modification arrête la demande) et listés dans `ideCiDynamiques`, même
+ * absents. Les fichiers inclus sont lus à leur tour, bornés. Fermé en cas de doute : configuration trop grosse ou trop de fichiers
+ * inclus (`impossible`), non analysable ou illisible (`illisibles`), lien (`liens`), cible hors du dossier contrôlé, absolue ou
+ * dans le HOME (`impossible`). Un `.git` fichier n'est pas lu : son dossier git est ailleurs, protégé ou refusé par le balayage.
+ */
+async function releverConfigGit(
+  dossier: string,
+  releve: ReleveEmpreintes,
+  candidats: string[],
+  dynamiques: Set<string>,
+  bornes: Readonly<PrecheckBornes>,
+): Promise<void> {
+  const aLire: { absolu: string; relatif: string }[] = [{ absolu: path.join(dossier, ".git", "config"), relatif: ".git/config" }];
+  const vus = new Set<string>();
+  while (aLire.length > 0) {
+    const { absolu, relatif } = aLire.shift() ?? { absolu: "", relatif: "" };
+    if (vus.has(absolu)) continue;
+    vus.add(absolu);
+    if (vus.size > bornes.configGitFichiersMax) {
+      releve.impossible = true;
+      return;
+    }
+    const lecture = await lireConfigBornee(absolu, bornes);
+    if (lecture.etat === "absent") continue;
+    if (lecture.etat === "lien") {
+      releve.liens.push(relatif);
+      continue;
+    }
+    if (lecture.etat === "trop-gros") {
+      releve.impossible = true;
+      return;
+    }
+    const cibles = lecture.etat === "ok" ? analyserConfigGit(lecture.texte) : null;
+    if (cibles === null) {
+      releve.illisibles.push(relatif);
+      continue;
+    }
+    const executables = [...cibles.hooksPath, ...cibles.fsmonitor].map((valeur) => situerCible(dossier, dossier, valeur));
+    const inclus = cibles.includes.map((valeur) => situerCible(dossier, path.dirname(absolu), valeur));
+    for (const situation of [...executables, ...inclus]) {
+      if (situation.ou === "doute") {
+        releve.impossible = true;
+        return;
+      }
+    }
+    for (const situation of executables) {
+      // Dans .git : en lecture seule, rien à surveiller. Sous un dossier de la liste fixe (.husky/_) : déjà relevé en entier.
+      if (situation.ou !== "arbre" || nomDansListe(situation.relatif.split("/")[0] ?? "", DOSSIERS_IDE_CI)) continue;
+      dynamiques.add(situation.relatif);
+      const nature = await natureSansLien(dossier, situation.relatif);
+      if (nature === "lien") releve.liens.push(situation.relatif);
+      else if (nature === "illisible") releve.illisibles.push(situation.relatif);
+      else if (nature === "dossier") await collecter(dossier, situation.relatif, releve, candidats, bornes);
+      else if (nature === "fichier") candidats.push(situation.relatif);
+    }
+    for (const situation of inclus) {
+      if (situation.ou === "git") {
+        aLire.push({ absolu: situation.absolu, relatif: situation.relatif });
+        continue;
+      }
+      if (situation.ou !== "arbre") continue;
+      dynamiques.add(situation.relatif);
+      const nature = await natureSansLien(dossier, situation.relatif);
+      if (nature === "lien") releve.liens.push(situation.relatif);
+      else if (nature === "illisible" || nature === "dossier") releve.illisibles.push(situation.relatif);
+      else if (nature === "fichier") {
+        candidats.push(situation.relatif);
+        aLire.push({ absolu: path.join(dossier, situation.relatif), relatif: situation.relatif });
+      }
+    }
+  }
 }
 
 function comparerChemins(a: string, b: string): number {
@@ -342,18 +599,82 @@ export async function releverEmpreintesSalle(options: PrecheckOptions): Promise<
  * lu, mais il n'est pas oublié non plus : son relevé porte `impossible` (fermé en cas de doute), comme un projet absent.
  */
 async function releverDossierSalle(racine: string, nom: string, bornes: Readonly<PrecheckBornes>): Promise<ReleveEmpreintes> {
-  if (nom === ".") return releverEmpreintes(racine, nom, bornes);
+  // Le dossier de travail à sa racine seulement pour les fichiers signalés : chacun de ses dossiers de premier niveau est relevé
+  // en profondeur juste après, descendre deux fois ne verrait rien de plus.
+  if (nom === ".") return releverEmpreintes(racine, nom, bornes, { signalesEnProfondeur: false });
   const dossier = path.resolve(racine, nom);
-  if (!dansLaRacine(racine, dossier)) return { racine: nom, git: "absent", fichiers: [], liens: [], illisibles: ["."], impossible: true };
+  if (!dansLaRacine(racine, dossier)) return { ...releveVide(nom), illisibles: ["."], impossible: true };
   const douteux = await composantDouteux(racine, nom.split("/"));
   if (douteux === null) return releverEmpreintes(dossier, nom, bornes);
   const lienTrouve = douteux.raison === "lien-symbolique";
-  return { racine: nom, git: "absent", fichiers: [], liens: lienTrouve ? ["."] : [], illisibles: lienTrouve ? [] : ["."], impossible: true };
+  return { ...releveVide(nom), liens: lienTrouve ? ["."] : [], illisibles: lienTrouve ? [] : ["."], impossible: true };
+}
+
+// --- Dépôts git du dossier de travail, relevés par le cockpit (activation, D-2b-28, §4.14.2) ------------------------------------
+
+/** Dépôts git du dossier de travail : chemins relatifs (« / »), triés ; `limiteAtteinte` quand le relevé n'a pas tout vu. */
+export interface ReleveGitsWorkspace {
+  depots: string[];
+  limiteAtteinte: boolean;
+}
+
+/** Dépôt nu, comme git le reconnaît : un fichier HEAD, un dossier objects et un dossier refs (mêmes règles que la salle). */
+function estDepotNu(entrees: readonly Dirent[]): boolean {
+  const parNom = new Map(entrees.map((entree) => [entree.name, entree]));
+  return Boolean(parNom.get("HEAD")?.isFile() && parNom.get("objects")?.isDirectory() && parNom.get("refs")?.isDirectory());
+}
+
+/**
+ * Dépôts git du dossier de travail, relevés par le cockpit lui-même à chaque activation (fiche L22c) : le `workspaceGit` de
+ * state.json date du démarrage de la salle, et opencode reste lancé au repos entre deux demandes ; un dépôt cloné entre-temps
+ * n'y est pas, et son `.git`, hors de toute surcharge, est inscriptible par la salle. Mêmes règles que le balayage du
+ * superviseur (`balayerGit`) : aucun lien suivi, `node_modules` exclu, intérieur des `.git` et des dépôts nus sauté, bornes ;
+ * un `.git` de toute forme (dossier, fichier `gitdir:`, lien) et un dépôt nu sont des dépôts. Dossier illisible, dossier trop
+ * peuplé, profondeur ou plafond atteint : `limiteAtteinte` (fermé en cas de doute). Le cockpit ne juge pas les droits de `node` :
+ * il compare à `gitProteges` d'omo-projets.json (`gitsHorsProtection`), liste que la salle ne peut pas réécrire.
+ */
+export async function releverGitsWorkspace(options: PrecheckOptions): Promise<ReleveGitsWorkspace> {
+  const bornes = bornesDe(options);
+  const depots: string[] = [];
+  let racine: string;
+  try {
+    racine = await fs.realpath(options.workspace);
+  } catch {
+    return { depots, limiteAtteinte: true };
+  }
+  let entreesLues = 0;
+  const pile: { relatif: string; profondeur: number }[] = [{ relatif: "", profondeur: 0 }];
+  while (pile.length > 0) {
+    const { relatif, profondeur } = pile.pop() ?? { relatif: "", profondeur: 0 };
+    if (profondeur > bornes.profondeurMax) return { depots: trier(depots), limiteAtteinte: true };
+    const lecture = await lireEntreesBornees(relatif === "" ? racine : path.join(racine, relatif), bornes);
+    if (lecture === null || lecture.tronque) return { depots: trier(depots), limiteAtteinte: true };
+    if (estDepotNu(lecture.entrees)) {
+      depots.push(relatif === "" ? "." : relatif);
+      continue;
+    }
+    for (const entree of lecture.entrees) {
+      entreesLues++;
+      if (entreesLues > bornes.balayageGitEntreesMax) return { depots: trier(depots), limiteAtteinte: true };
+      const chemin = relatif === "" ? entree.name : `${relatif}/${entree.name}`;
+      if (entree.name === ".git") {
+        depots.push(chemin);
+        continue;
+      }
+      if (entree.isSymbolicLink() || !entree.isDirectory() || entree.name === "node_modules") continue;
+      pile.push({ relatif: chemin, profondeur: profondeur + 1 });
+    }
+  }
+  return { depots: trier(depots), limiteAtteinte: false };
+}
+
+function trier(chemins: string[]): string[] {
+  return [...chemins].sort(comparerChemins);
 }
 
 function estFichierRacineReleve(nom: string): boolean {
-  if (nomDansListe(nom, FICHIERS_CI_RACINE) || nomDansListe(nom, FICHIERS_SIGNALES_RACINE)) return true;
-  return MOTIFS_CI_RACINE.some((re) => re.test(nom)) || MOTIFS_SIGNALES_RACINE.some((re) => re.test(nom));
+  if (nomDansListe(nom, FICHIERS_CI_RACINE) || estFichierSignale(nom)) return true;
+  return MOTIFS_CI_RACINE.some((re) => re.test(nom));
 }
 
 async function formeGit(dossier: string): Promise<FormeGit> {

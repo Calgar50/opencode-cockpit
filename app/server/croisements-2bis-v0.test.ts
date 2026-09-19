@@ -144,11 +144,12 @@ describe("croisements 2bis V0 : unions de T3a = codes des modules purs", () => {
 
   it("stop-request : chaque raison de relance de T3a écrite par le cockpit est relue telle quelle, côté cockpit et côté salle", () => {
     const at = 1_757_000_000_000;
+    const startId = "3f2a1c88-9d4e-4b6a-8f01-2c7d5e9a4b13";
     const raisons: readonly OmoRecreationRaison[] = [...OMO_STOP_CAUSES, "fin-de-demande"];
     for (const raison of raisons) {
-      const texte = ecrireArret(at, raison);
-      assert.deepEqual(analyserArret(texte), { at, cause: raison }, `cockpit : ${raison}`);
-      assert.deepEqual(salle.analyserArret(texte), { at, cause: raison }, `salle : ${raison}`);
+      const texte = ecrireArret(at, raison, startId);
+      assert.deepEqual(analyserArret(texte), { at, cause: raison, startId }, `cockpit : ${raison}`);
+      assert.deepEqual(salle.analyserArret(texte), { at, cause: raison, startId }, `salle : ${raison}`);
     }
   });
 

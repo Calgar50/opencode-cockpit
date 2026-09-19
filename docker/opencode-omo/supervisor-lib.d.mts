@@ -65,6 +65,8 @@ export interface Battement {
 export interface Arret {
   at: number;
   cause: string;
+  /** Démarrage visé ; `null` : état inconnu du cockpit, l'arrêt est rattaché au démarrage par sa date. */
+  startId: string | null;
 }
 
 export interface PrecheckOk {
@@ -103,6 +105,8 @@ export interface BalayageOptions {
   gitsMax?: number;
   /** Points de montage (chemins POSIX) ; par défaut, ceux de /proc/self/mountinfo. */
   montages?: string[];
+  /** Lecture d'un dossier (tests : échec injecté) ; par défaut `readdirSync` avec les types, sans suivre les liens. */
+  lireDossier?: (chemin: string) => import("node:fs").Dirent[];
 }
 
 export interface DossierConfigVerdict {
@@ -177,6 +181,18 @@ export declare function analyserProjetsPrepares(texte: string | null | undefined
 
 export declare function battementFrais(battement: Battement | null, maintenantMs: number, delais?: OmoDelais): boolean;
 export declare function precheckDuDemarrage(precheck: PrecheckOk | null, startId: string, maintenantMs: number, delais?: OmoDelais): boolean;
+export declare function arretDuDemarrage(arret: Arret | null, startId: string, startedAt: number): boolean;
+export declare function lireArretDuDemarrage(dossierControle: string, travail: { startId: string; startedAt: number }): Arret | null;
+export declare function decisionPret(
+  entree: {
+    travail: { startId: string; startedAt: number; workspaceGit?: WorkspaceGit; projets?: { gitLectureSeule: boolean }[] };
+    arret: Arret | null;
+    battement: Battement | null;
+    precheck: PrecheckOk | null;
+    maintenantMs: number;
+  },
+  delais?: OmoDelais,
+): number;
 export declare function decisionSuperviseur(
   battement: Battement | null,
   arret: Arret | null,
@@ -187,7 +203,7 @@ export declare function decisionSuperviseur(
 export declare function vivant(pid: number | string, racineProc?: string): boolean;
 export declare function capacitesNulles(texteStatut: string | null | undefined): boolean;
 export declare function decisionBoucle(entree: DecisionBoucleEntree, delais?: OmoDelais): number;
-export declare function lireTexteBorne(chemin: string, maxOctets?: number): string | null;
+export declare function lireTexteBorne(chemin: string, maxOctets?: number, options?: { suivreLiens?: boolean }): string | null;
 export declare function cheminTemporaire(chemin: string, marque: string): string;
 export declare function ecrireAtomique(chemin: string, texte: string, mode?: number): void;
 export declare function lireBattement(dossierControle?: string): Battement | null;
@@ -215,9 +231,22 @@ export declare function controlerDossierConfigNode(chemin: string, acces?: (chem
 export declare function accesEcriture(chemin: string): boolean;
 
 export declare function formeGit(chemin: string): GitForme;
+export declare function lireGitdir(cheminGit: string): string | null;
+export declare function cibleGitdirProtegee(cheminGit: string, racine: string, montages: string[], acces: (chemin: string) => boolean): boolean;
 export declare function balayerGit(racine?: string, options?: BalayageOptions): Balayage;
 export declare function resumeWorkspaceGit(balayage: Balayage): WorkspaceGit;
 export declare function gitProtege(etat: { workspaceGit?: WorkspaceGit; projets?: { gitLectureSeule: boolean }[] } | null | undefined): boolean;
+export interface ConstatGit {
+  ok: boolean;
+  projets: { chemin: string; gitLectureSeule: boolean }[];
+  workspaceGit: WorkspaceGit;
+  projetsPrepares: number | null;
+  balayage: { entrees: number; illisibles: number; gits: number };
+}
+export declare function constatGit(
+  prepares: ProjetsPrepares | null,
+  options?: { racine?: string; montages?: string[]; acces?: (chemin: string) => boolean; maintenant?: number },
+): ConstatGit;
 export declare function controlerProjetsPrepares(
   prepares: ProjetsPrepares | null,
   racine?: string,
@@ -240,4 +269,5 @@ export declare function majTravail(dossierEtat: string, changements: Partial<Tra
 export declare function lireImageId(chemin?: string): string;
 export declare function publierEtat(dossierEtat: string, travail: EtatPublie, phase: string): EtatPublie;
 export declare function delaisShell(delais?: OmoDelais): string;
-export declare function executer(argv: string[]): number;
+/** `dossiers` : volume d'état et volume de contrôle ; ceux du contrat par défaut (tests seulement). */
+export declare function executer(argv: string[], dossiers?: { etat: string; controle: string }): number;

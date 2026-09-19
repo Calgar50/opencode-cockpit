@@ -64,6 +64,19 @@ export interface PrecheckBornes {
   profondeurRelevesMax: number;
   /** Chemins listés dans le refus. */
   trouvesMax: number;
+  /** Entrées lues par le relevé des dépôts git du dossier de travail (activation) : même plafond que le balayage de la salle. */
+  balayageGitEntreesMax: number;
+  /**
+   * Fichiers signalés (package.json, Makefile, *.ps1) relevés SOUS la racine d'un dossier contrôlé. Au-delà, la liste à relire est
+   * dite incomplète (`signalesIncomplet`) : un fichier signalé n'arrête rien, il ne doit pas non plus refuser un projet ordinaire.
+   */
+  signalesMaxFichiers: number;
+  /** Entrées lues par la descente des fichiers signalés, par dossier contrôlé ; au-delà, liste incomplète, jamais un refus. */
+  signalesEntreesMax: number;
+  /** Taille d'un fichier de configuration git lu (.git/config et fichiers inclus) ; au-delà, empreinte impossible (refus). */
+  configGitTailleMaxOctets: number;
+  /** Fichiers de configuration git lus par dossier contrôlé, inclusions comprises ; au-delà, empreinte impossible (refus). */
+  configGitFichiersMax: number;
 }
 
 export const PRECHECK_BORNES: Readonly<PrecheckBornes> = Object.freeze({
@@ -73,6 +86,11 @@ export const PRECHECK_BORNES: Readonly<PrecheckBornes> = Object.freeze({
   entreesMaxParDossier: 200_000,
   profondeurRelevesMax: 64,
   trouvesMax: 20,
+  balayageGitEntreesMax: 200_000,
+  signalesMaxFichiers: 2000,
+  signalesEntreesMax: 100_000,
+  configGitTailleMaxOctets: 64 * 1024,
+  configGitFichiersMax: 10,
 });
 
 // --- Noms refusés (F-t, F-u, F-z, JS-4, D-2b-34) -------------------------------------------------------------------------------
@@ -301,6 +319,186 @@ export function decidePrecheck(faits: PrecheckFaits, bornes: Readonly<PrecheckBo
     if (chemins.length >= bornes.trouvesMax) break;
   }
   return { projet: faits.projet, verdict: "refuse", raison, trouves: chemins };
+}
+
+// --- Configuration git : ce qui désigne des fichiers de l'arbre de travail (S6/G04, §4.5) ------------------------------------------
+
+/**
+ * Ce qu'une configuration git fait exécuter ou lire HORS de `.git` : le `.git` en lecture seule ne protège pas ces cibles, qui sont
+ * des fichiers ordinaires du projet. Valeurs brutes, dans l'ordre du fichier (git retient la dernière ; toutes sont surveillées).
+ */
+export interface ConfigGitCibles {
+  /** core.hooksPath : dossier des hooks, relatif à la racine de l'arbre de travail. */
+  hooksPath: string[];
+  /** core.fsmonitor quand c'est un programme (pas un booléen) : lancé à chaque `git status`. */
+  fsmonitor: string[];
+  /** include.path et includeIf.<condition>.path, quelle que soit la condition : relatifs au fichier qui les porte. */
+  includes: string[];
+}
+
+const NOM_SECTION = /^[A-Za-z0-9.-]+$/;
+const NOM_CLE = /^[A-Za-z][A-Za-z0-9-]*/;
+const BOOLEENS_GIT = new Set(["", "true", "false", "yes", "no", "on", "off", "1", "0"]);
+/** Marque d'ordre des octets qu'un éditeur Windows peut poser en tête du fichier ; git l'ignore. */
+const MARQUE_ORDRE_OCTETS = String.fromCharCode(0xfeff);
+const ECHAPPEMENTS_GIT: Readonly<Record<string, string>> = { n: "\n", t: "\t", b: "\b", "\\": "\\", '"': '"' };
+
+/** En-tête de section : « [nom] », « [nom "sous-section"] » ou « [nom.sous] » ; rend la section et la suite de la ligne. */
+function lireEnTete(ligne: string): { section: string; sous: string | null; reste: string } | null {
+  let i = ligne.indexOf("[") + 1;
+  let nom = "";
+  while (i < ligne.length && ligne[i] !== "]" && ligne[i] !== " " && ligne[i] !== "\t") nom += ligne[i++];
+  if (!NOM_SECTION.test(nom)) return null;
+  let sous: string | null = null;
+  const point = nom.indexOf(".");
+  if (point >= 0) {
+    sous = nom.slice(point + 1);
+    nom = nom.slice(0, point);
+  }
+  while (ligne[i] === " " || ligne[i] === "\t") i++;
+  if (ligne[i] === '"') {
+    if (sous !== null) return null;
+    sous = "";
+    i++;
+    for (;;) {
+      const c = ligne[i++];
+      if (c === undefined) return null;
+      if (c === '"') break;
+      if (c === "\\") {
+        const suivant = ligne[i++];
+        if (suivant === undefined) return null;
+        sous += suivant;
+      } else sous += c;
+    }
+  }
+  if (ligne[i] !== "]") return null;
+  return { section: nom.toLowerCase(), sous, reste: ligne.slice(i + 1) };
+}
+
+/**
+ * Valeur d'une clé, à partir de `debut` dans `lignes[indice]` : guillemets, échappements de git, commentaires « # » et « ; » hors
+ * guillemets, blancs de fin retirés, suite sur la ligne suivante après une barre oblique inverse finale. `null` si mal formée.
+ */
+function lireValeur(lignes: readonly string[], indice: number, debut: number): { valeur: string; derniere: number } | null {
+  let valeur = "";
+  let blancs = "";
+  let guillemets = false;
+  let ligne = lignes[indice] ?? "";
+  let i = debut;
+  let courante = indice;
+  for (;;) {
+    if (i >= ligne.length) {
+      if (guillemets) return null;
+      return { valeur, derniere: courante };
+    }
+    const c = ligne[i++] ?? "";
+    if (c === "\\") {
+      if (i >= ligne.length) {
+        // Suite sur la ligne suivante.
+        courante++;
+        if (courante >= lignes.length) return null;
+        ligne = lignes[courante] ?? "";
+        i = 0;
+        continue;
+      }
+      const echappe = ECHAPPEMENTS_GIT[ligne[i++] ?? ""];
+      if (echappe === undefined) return null;
+      valeur += blancs + echappe;
+      blancs = "";
+      continue;
+    }
+    if (c === '"') {
+      guillemets = !guillemets;
+      valeur += blancs;
+      blancs = "";
+      continue;
+    }
+    if (!guillemets && (c === "#" || c === ";")) return { valeur, derniere: courante };
+    if (!guillemets && (c === " " || c === "\t")) {
+      if (valeur !== "") blancs += c;
+      continue;
+    }
+    valeur += blancs + c;
+    blancs = "";
+  }
+}
+
+/**
+ * Lecture PURE d'un fichier de configuration git (format de `git config`, noms de section et de clé sans casse, sous-sections
+ * avec) : rend les cibles qui désignent des fichiers hors de `.git`. `null` si le texte n'est pas analysable (section ou clé mal
+ * formée, guillemet non fermé, échappement inconnu, clé hors section) : le lecteur en fait un doute, donc un refus.
+ */
+export function analyserConfigGit(texte: string): ConfigGitCibles | null {
+  const cibles: ConfigGitCibles = { hooksPath: [], fsmonitor: [], includes: [] };
+  const lignes = (texte.startsWith(MARQUE_ORDRE_OCTETS) ? texte.slice(1) : texte).split(/\r?\n/);
+  let section: { nom: string; sous: string | null } | null = null;
+  for (let indice = 0; indice < lignes.length; indice++) {
+    let ligne = (lignes[indice] ?? "").replace(/^[ \t]+/, "");
+    if (ligne === "" || ligne.startsWith("#") || ligne.startsWith(";")) continue;
+    if (ligne.startsWith("[")) {
+      const entete = lireEnTete(ligne);
+      if (entete === null) return null;
+      section = { nom: entete.section, sous: entete.sous };
+      ligne = entete.reste.replace(/^[ \t]+/, "");
+      if (ligne === "" || ligne.startsWith("#") || ligne.startsWith(";")) continue;
+    }
+    const cle = NOM_CLE.exec(ligne)?.[0];
+    if (cle === undefined || section === null) return null;
+    let apres = ligne.slice(cle.length).replace(/^[ \t]+/, "");
+    let valeur: string | null = null;
+    if (apres.startsWith("=")) {
+      apres = apres.slice(1);
+      const debut = (lignes[indice] ?? "").length - apres.length;
+      const lue = lireValeur(lignes, indice, debut);
+      if (lue === null) return null;
+      valeur = lue.valeur;
+      indice = lue.derniere;
+    } else if (apres !== "" && !apres.startsWith("#") && !apres.startsWith(";")) {
+      return null;
+    }
+    const nomCle = cle.toLowerCase();
+    if (valeur === null) continue; // Clé booléenne sans valeur : ne désigne aucun fichier.
+    if (section.nom === "core" && section.sous === null && nomCle === "hookspath") cibles.hooksPath.push(valeur);
+    else if (section.nom === "core" && section.sous === null && nomCle === "fsmonitor" && !BOOLEENS_GIT.has(valeur.toLowerCase())) cibles.fsmonitor.push(valeur);
+    else if (section.nom === "include" && section.sous === null && nomCle === "path") cibles.includes.push(valeur);
+    else if (section.nom === "includeif" && section.sous !== null && nomCle === "path") cibles.includes.push(valeur);
+  }
+  return cibles;
+}
+
+// --- Dépôts git hors de la protection d'install.ps1 (D-2b-28, §4.14.2, fiche L22c) ----------------------------------------------
+
+/** Chemin relatif normalisé : séparateurs « / », sans « ./ » ni « / » en tête ou en fin. */
+function normaliserRelatif(chemin: string): string {
+  return chemin
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".")
+    .join("/");
+}
+
+/**
+ * Dépôts git trouvés dans le dossier de travail (`.git` de toute forme, dépôts nus) qu'aucune entrée de `gitProteges`
+ * (omo-projets.json, écrit par install.ps1, que la salle ne peut pas réécrire) ne couvre. Une entrée nomme le dossier du dépôt
+ * (« alpha ») ou son `.git` (« alpha/.git ») : les deux formes sont acceptées tant que L15c n'a pas fixé la sienne. Comparaison
+ * exacte, casse comprise (fermé en cas de doute). Sert à l'activation (§4.14.2) : le `workspaceGit` de state.json date du
+ * démarrage de la salle, et un dépôt cloné depuis n'y est pas. Rend les chemins triés, sans doublon.
+ */
+export function gitsHorsProtection(trouves: readonly string[], gitProteges: readonly { chemin: string; forme: "dossier" | "fichier" }[]): string[] {
+  const couverts = new Set<string>();
+  for (const entree of gitProteges) {
+    const chemin = normaliserRelatif(entree.chemin);
+    if (chemin === "") continue;
+    couverts.add(chemin);
+    couverts.add(`${chemin}/.git`);
+  }
+  const hors = new Set<string>();
+  for (const trouve of trouves) {
+    const chemin = normaliserRelatif(trouve);
+    if (!couverts.has(chemin)) hors.add(chemin);
+  }
+  // Tri par unités UTF-16, comme `<` : l'ordre ne dépend d'aucune langue.
+  return [...hors].sort();
 }
 
 /** Le plus près du projet d'abord, puis par raison (ordre de nomination), puis par nom : liste stable d'une fois sur l'autre. */
