@@ -13,14 +13,17 @@
 //   prochain rechargement d'opencode, même motif que config/plugin.ts et oc-uncontrolled.ts) ;
 // - « task-allow » : agents dont les règles effectives (GET /agent, cache de lookup) donnent `allow` à `task` pour au moins un
 //   agent existant (F-a : la dernière règle qui correspond l'emporte, evaluate ; opencode ne refuse aucune cible par son mode) :
-//   délégation sans demande d'autorisation, surveillée par DelegationWatch (L1e). Appelants retenus : agents visibles et non
-//   internes (isInternalTarget), en mode primary ou all ; en mode subagent seulement si un sous-agent peut déléguer (profondeur > 1,
-//   ou profondeur non relevée : on ne suppose pas le défaut).
+//   délégation sans demande d'autorisation, surveillée par DelegationWatch (L1e). Appelants retenus : agents non internes
+//   (isInternalTarget), cachés compris (hidden ne fait que retirer un agent des menus d'opencode : il reste appelable par l'outil
+//   task, et un sous-agent qui a sa propre règle task le garde), en mode primary ou all ; en mode subagent seulement si un
+//   sous-agent peut déléguer (profondeur > 1, ou profondeur non relevée : on ne suppose pas le défaut). Au-delà de AGENTS_MAX
+//   agents, les premiers sont examinés et le relevé « agents » est dit impossible (jamais un « aucun » deviné).
 // Noms (agents, extensions) : entrées externes, jamais un chemin (dernier segment seulement) ni les identifiants ou paramètres d'une
 // adresse ; caractères de contrôle et invisibles retirés ; au plus NOMS_MAX noms de NOM_MAX caractères par bandeau (« … » en plus
 // quand la liste est coupée).
 // Relevé impossible (opencode muet, réponse illisible, dossier illisible) : ce relevé ne produit pas son bandeau, un avertissement est
-// journalisé (au plus une fois par minute et par relevé : la page se relit toutes les 10 s), et un dernier bandeau « illisible » nomme
+// journalisé (au plus une fois par minute et par relevé : la page se relit toutes les 10 s ; seulement la nature de l'échec,
+// natureEchec, jamais le texte renvoyé par opencode), et un dernier bandeau « illisible » nomme
 // les relevés impossibles (code ajouté au contrat au train it1 V4, demande de L1f : un risque n'est jamais tu). Les autres relevés et
 // la route restent servis, les agents internes restent lisibles. Un relevé à la fois : les appels simultanés partagent le même.
 // neutralDiagnostics reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
@@ -31,7 +34,7 @@ import type { AppEnv } from "./env.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import type { OcAgentInfo, OcLookup } from "./oc-lookup.ts";
 import { PLUGIN_DIRS } from "./oc-uncontrolled.ts";
-import type { OpencodeClient } from "./opencode.ts";
+import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import { registerDiagnostic11Routes } from "./routes-diagnostic-11.ts";
 import { evaluate, wildcardMatch } from "./shared/assistant-rules.ts";
 import type { DelegationBanner, DelegationCheck } from "./shared/cockpit-event-types.ts";
@@ -165,7 +168,8 @@ export function delegatingAgents(agents: readonly OcAgentInfo[], depth: number |
   const subagentsDelegate = depth === null || depth > 1;
   const out: string[] = [];
   for (const agent of list) {
-    if (agent.hidden === true || isInternalTarget(agent.name)) continue;
+    // Un agent caché reste un appelant possible : seuls les agents internes sont écartés.
+    if (isInternalTarget(agent.name)) continue;
     if (agent.mode === "subagent" && !subagentsDelegate) continue;
     // Seules les règles qui visent `task` comptent (la dernière qui correspond l'emporte, parmi elles comme parmi toutes).
     const taskRules = agent.permission.filter((rule) => wildcardMatch("task", rule.permission));
@@ -230,6 +234,10 @@ export async function collectDelegationBanners(
     read("agents", async () => (await deps.lookup.get(null)).agents),
     read("fichiers-extensions", () => pluginFileNames(deps.env.opencodeConfigDir)),
   ]);
+  // Au-delà de la borne, les premiers agents restent examinés, mais le relevé n'est pas complet : il est dit, jamais tu.
+  if (agents !== null && agents.length > AGENTS_MAX) {
+    fail("agents", new Error(`plus de ${AGENTS_MAX} agents : les suivants ne sont pas examinés`));
+  }
   const depth = config === null ? null : readSync("profondeur", () => subagentDepth(config));
   const configured = config === null ? null : readSync("extensions", () => configuredExtensions(config.plugin));
 
@@ -244,6 +252,32 @@ export async function collectDelegationBanners(
   return banners;
 }
 
+/** Longueur au plus, en caractères, du message d'une erreur sans code ni statut, dans le journal. */
+export const ECHEC_MAX = 120;
+/** Nom d'erreur d'opencode (ConfigJsonError…) ou code système (ECONNREFUSED…) : un identifiant, jamais un texte. */
+const IDENTIFIANT_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+const identifiant = (value: unknown): string | null => (typeof value === "string" && IDENTIFIANT_RE.test(value) ? value : null);
+
+/**
+ * Nature d'un relevé impossible, pour le journal : jamais le texte renvoyé par opencode (un JSONC mal formé y est recopié en entier,
+ * secrets compris : config/parse.ts:28 d'opencode 1.18.30, repris par describeOpencodeError). OpencodeError → « opencode <statut>
+ * <nom> » (ConfigJsonError…), ou son message quand opencode n'a rien renvoyé (message écrit par le cockpit) ; sinon le code système
+ * de l'erreur ou de sa cause (ECONNREFUSED…) ; sinon son message, sans caractères cachés et raccourci à ECHEC_MAX caractères (les
+ * erreurs levées par ce module et par oc-lookup.ts n'ont que des phrases du cockpit).
+ */
+export function natureEchec(err: unknown): string {
+  if (err instanceof OpencodeError) {
+    if (err.body === null || err.body === undefined) return err.message;
+    const name = isRecord(err.body) ? identifiant(err.body.name) : null;
+    return name === null ? `opencode ${err.status}` : `opencode ${err.status} ${name}`;
+  }
+  const code = identifiant((err as { code?: unknown } | null)?.code) ?? identifiant((err as { cause?: { code?: unknown } } | null)?.cause?.code);
+  if (code !== null) return code;
+  const chars = Array.from(errorMessage(err).replace(HIDDEN_RE, " ").replace(/\s+/g, " ").trim());
+  return chars.length <= ECHEC_MAX ? chars.join("") : `${chars.slice(0, ECHEC_MAX - 1).join("")}…`;
+}
+
 /** Port `diagnostics` : un relevé à la fois (appels simultanés partagés), avertissements espacés par relevé. */
 export function createDelegationDiagnostics(
   deps: DelegationDiagnosticsDeps & { log: Pick<Logger, "warn"> },
@@ -256,7 +290,7 @@ export function createDelegationDiagnostics(
     const last = warnedAt.get(check);
     if (last !== undefined && at - last < WARN_INTERVAL_MS) return;
     warnedAt.set(check, at);
-    deps.log.warn("Diagnostic du travail délégué : relevé impossible", { releve: check, error: errorMessage(err) });
+    deps.log.warn("Diagnostic du travail délégué : relevé impossible", { releve: check, error: natureEchec(err) });
   };
   let running: Promise<DelegationBanner[]> | null = null;
   return {

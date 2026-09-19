@@ -7,17 +7,22 @@
 // - Exécuter : POST /api/plans/:id/execution sans en-tête. Sur 428 (choix automatique), <AutonomyConfirm> (propriétés de
 //   ../slots.ts ; squelette T2 jusqu'à L12a), puis nouvel appel avec x-cockpit-confirm: 1 et les plafonds confirmés ; sur 403 ou
 //   409, la raison dans la carte ; réussite : onOpenConversation(nouvelle racine, brouillon), l'utilisateur relit et envoie.
+//   Réussite arrivée après un changement de conversation ou de page (carte démontée) : ni navigation ni saisie remplacée ; le
+//   brouillon est gardé sous la conversation d'exécution et remis à la saisie quand elle s'ouvre (notification avec [Ouvrir]).
 // - Boutons indisponibles (porte I1 fermée, COCKPIT_AUTONOMY=off) : aria-disabled, focalisables, décrits par leur raison.
 // - Continuer à planifier : le focus revient à la saisie ; rien n'est envoyé.
 // Modèle pur (affichage, raisons, suite d'un refus, réponse terminée) : ./plan-card.ts ; textes : server/shared/plan-texts.ts et
 // autonomy-*-texts.ts, sans doublon ici. Aucune animation, aucun raccourci clavier.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { TEXTES as PLAN_TEXTES } from "../../../../server/shared/plan-texts.ts";
 import { useApp } from "../../../app/AppContext.tsx";
 import { Icon } from "../../../components/Icon.tsx";
+import { useToast } from "../../../components/Toast.tsx";
 import { errorText, oc } from "../../../lib/api.ts";
 import { autonomyApi, autonomyError } from "../../../lib/api-autonomy.ts";
 import { planApi } from "../../../lib/api-plans.ts";
 import { cockpitEvent, opencodeEvent, useEvents } from "../../../lib/events.ts";
+import { navigate } from "../../../lib/router.ts";
 import type { ActivationRefusalCode, AutomaticChoice, AutonomyCaps, ConversationAutonomyView, PlanExecutionBody } from "../../../lib/types.ts";
 import { AutonomyConfirm } from "../autonomy/AutonomyConfirm.tsx";
 import type { PlanCardProps } from "../slots.ts";
@@ -42,8 +47,30 @@ const VARIANTS: Readonly<Record<PlanCardAction, string>> = {
   continuer: "btn ghost",
 };
 
+const PLAN = PLAN_TEXTES.partout;
+
+/** Brouillons gardés au plus (exécutions créées pendant que vous étiez ailleurs, jamais ouvertes depuis) ; les plus anciens oubliés. */
+const PENDING_DRAFTS_MAX = 20;
+
+/**
+ * Brouillons d'exécutions créées pendant que vous étiez sur une autre conversation ou une autre page, par conversation d'exécution :
+ * la carte, montée dans toute conversation ouverte, les remet à la saisie quand vous ouvrez la leur, une seule fois.
+ */
+const pendingDrafts = new Map<string, string>();
+
+function keepDraft(rootId: string, draft: string): void {
+  pendingDrafts.delete(rootId);
+  pendingDrafts.set(rootId, draft);
+  while (pendingDrafts.size > PENDING_DRAFTS_MAX) {
+    const oldest = pendingDrafts.keys().next().value;
+    if (oldest === undefined) break;
+    pendingDrafts.delete(oldest);
+  }
+}
+
 export function PlanCard({ rootId, directory, busy, onOpenConversation }: PlanCardProps) {
   const { boot } = useApp();
+  const toast = useToast();
   const baseId = useId();
 
   const [view, setView] = useState<ConversationAutonomyView | null>(null);
@@ -57,9 +84,17 @@ export function PlanCard({ rootId, directory, busy, onOpenConversation }: PlanCa
   /** Choix automatique en attente de confirmation (428). */
   const [confirm, setConfirm] = useState<AutomaticChoice | null>(null);
 
+  /** Brouillon gardé pour la conversation affichée (elle vient d'être créée ailleurs) : relecture de pendingDrafts demandée. */
+  const [draftTick, setDraftTick] = useState(0);
+
   /** Conversation affichée, lue après un appel : une réponse arrivée après un changement de conversation n'y est pas affichée. */
   const rootRef = useRef(rootId);
   rootRef.current = rootId;
+  /** Dernier rappel reçu de ChatPage : celui du rendu courant, jamais celui d'un clic ancien. */
+  const openRef = useRef(onOpenConversation);
+  openRef.current = onOpenConversation;
+  /** Carte montée : une exécution qui répond après son démontage (autre page) n'ouvre rien. */
+  const mounted = useRef(false);
   /** Exécution en cours (garde synchrone contre un double clic, avant le rendu suivant). */
   const inflight = useRef(false);
   const viewSeq = useRef(0);
@@ -87,6 +122,21 @@ export function PlanCard({ rootId, directory, busy, onOpenConversation }: PlanCa
       },
     );
   }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // Conversation d'exécution créée pendant que vous étiez ailleurs : son brouillon remplit la saisie quand vous l'ouvrez.
+  useEffect(() => {
+    const draft = pendingDrafts.get(rootId);
+    if (draft === undefined) return;
+    pendingDrafts.delete(rootId);
+    openRef.current(rootId, draft);
+  }, [rootId, draftTick]);
 
   // Changement de conversation : rien de l'ancienne ne reste (vue, réponse lue, phrase, confirmation).
   useEffect(() => {
@@ -154,6 +204,19 @@ export function PlanCard({ rootId, directory, busy, onOpenConversation }: PlanCa
     try {
       const body: PlanExecutionBody = plafonds === null ? { choix: action } : { choix: action, plafonds };
       const created = await planApi.execute(planRoot, body, { confirm: confirmed });
+      // Conversation changée ou page quittée pendant l'appel (même garde que l'échec) : ni navigation, ni saisie remplacée. Le
+      // brouillon attend l'ouverture de la conversation d'exécution, annoncée avec [Ouvrir] ; déjà affichée : remis tout de suite.
+      if (!mounted.current || rootRef.current !== planRoot) {
+        keepDraft(created.rootId, created.brouillon);
+        if (mounted.current && rootRef.current === created.rootId) setDraftTick((tick) => tick + 1);
+        else {
+          toast.success(PLAN.executionCreee.titre, PLAN.executionCreee.message, {
+            label: PLAN.executionCreee.ouvrir,
+            onClick: () => navigate("chat", created.rootId),
+          });
+        }
+        return;
+      }
       setConfirm(null);
       onOpenConversation(created.rootId, created.brouillon);
     } catch (err) {

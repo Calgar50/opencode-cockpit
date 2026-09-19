@@ -77,7 +77,10 @@ export interface ActivitySessionInfo {
   parentId: string | null;
   /** Titre donné par opencode, ACTIVITY_TITLE_MAX caractères au plus ; "" si inconnu. */
   title: string;
-  /** Assistant du dernier message utilisateur (la racine n'en a pas dans session.created). */
+  /**
+   * Assistant de la session : celui de ses informations (opencode 1.18.30 : l'assistant de sa dernière demande ; la racine n'en a pas
+   * dans session.created) ou de son dernier message utilisateur, le plus récent reçu.
+   */
   agent: string | null;
   /** Dernier message utilisateur lu : clé (id, time.completed) et heure de création. */
   message: { key: string; created: number } | null;
@@ -170,9 +173,12 @@ function withSession(state: ActivityState, info: Record<string, unknown>): Activ
   const known = state.sessions.get(id);
   if (!known && state.sessions.size >= ACTIVITY_MAX_SESSIONS * 2) return state;
   const title = typeof info.title === "string" ? info.title.slice(0, ACTIVITY_TITLE_MAX) : (known?.title ?? "");
-  if (known && known.parentId === parentId && known.title === title) return state;
+  // Assistant de la session (opencode 1.18.30 : celui de sa dernière demande, absent de session.created pour la racine) : le même
+  // qu'en direct pour un onglet rouvert, qui relit les informations de la conversation sans relire ses messages.
+  const agent = nameOf(info.agent) ?? known?.agent ?? null;
+  if (known && known.parentId === parentId && known.title === title && known.agent === agent) return state;
   const sessions = new Map(state.sessions);
-  sessions.set(id, { parentId, title, agent: known?.agent ?? null, message: known?.message ?? null });
+  sessions.set(id, { parentId, title, agent, message: known?.message ?? null });
   return { ...state, sessions };
 }
 

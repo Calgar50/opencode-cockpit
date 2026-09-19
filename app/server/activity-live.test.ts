@@ -97,9 +97,13 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-/** Source factice : chaque lecture des faits attend sa réponse (`pending`) ; enfants et messages par session (asSource). */
+/**
+ * Source factice : chaque lecture des faits attend sa réponse (`pending`) ; informations, enfants et messages par session
+ * (asSource). Informations d'une session non déclarée : son identifiant seul ; une Error déclarée : lecture en échec.
+ */
 class FakeSource {
   pending: Array<Deferred<FactsResponse>> = [];
+  sessions = new Map<string, unknown>();
   children = new Map<string, unknown[]>();
   messages = new Map<string, unknown[]>();
   calls: string[] = [];
@@ -108,6 +112,12 @@ class FakeSource {
     const next = deferred<FactsResponse>();
     this.pending.push(next);
     return next.promise;
+  };
+  readonly sessionOf = async (sessionId: string) => {
+    this.calls.push(`session:${sessionId}`);
+    const info = this.sessions.get(sessionId) ?? { id: sessionId };
+    if (info instanceof Error) throw info;
+    return info;
   };
   readonly childrenOf = async (sessionId: string) => {
     this.calls.push(`children:${sessionId}`);
@@ -118,7 +128,7 @@ class FakeSource {
     return this.messages.get(sessionId) ?? [];
   };
   asSource(): ActivitySource {
-    return { facts: this.facts, children: this.childrenOf, messages: this.messagesOf };
+    return { facts: this.facts, session: this.sessionOf, children: this.childrenOf, messages: this.messagesOf };
   }
 }
 
@@ -155,8 +165,10 @@ const rowOf = (store: ActivityStore, sessionId: string) => store.getSnapshot().r
 // --- Magasin ----------------------------------------------------------------------------------------------------------------------
 
 describe("useActivity : relecture", () => {
-  it("à l'ouverture : faits persistés, titres de l'arbre ; aucun message lu pour une conversation qui a des faits", async () => {
+  it("à l'ouverture : faits persistés, titres de l'arbre, titre et assistant de la conversation elle-même ; aucun message lu pour une conversation qui a des faits", async () => {
     const env = setup();
+    // GET /session/:id d'opencode 1.18.30 : titre et assistant de la dernière demande (ceux que session.updated donne en direct).
+    env.source.sessions.set(ROOT, { id: ROOT, title: "Analyse des journaux", agent: "orchestrateur" });
     env.source.children.set(ROOT, [{ id: CHILD, parentID: ROOT, title: "Recherche" }]);
     env.store.start();
     assert.equal(env.store.getSnapshot().loaded, false);
@@ -169,12 +181,50 @@ describe("useActivity : relecture", () => {
     assert.deepEqual(
       view.rows.map((row) => [row.sessionId, row.state, row.title]),
       [
-        [ROOT, "travaille", ""],
+        [ROOT, "travaille", "Analyse des journaux"],
         [CHILD, "travaille", "Recherche"],
       ],
     );
+    assert.equal(rowOf(env.store, ROOT)?.agent, "orchestrateur");
     assert.equal(view.working, true);
-    assert.deepEqual(env.source.calls, [`facts:${ROOT}`, `children:${ROOT}`, `children:${CHILD}`]);
+    assert.deepEqual(env.source.calls, [`facts:${ROOT}`, `session:${ROOT}`, `children:${ROOT}`, `children:${CHILD}`]);
+  });
+
+  it("rouvert = direct pour la conversation elle-même : même titre et même assistant qu'un onglet ouvert avant (session.updated, message.updated)", async () => {
+    const info = { id: ROOT, title: "Analyse des journaux", agent: "orchestrateur" };
+    const persisted = [occupee(ROOT, T0 - 5_000)];
+    const live = await opened([]);
+    live.store.push(opencode("session.updated", { info }));
+    live.store.push(opencode("message.updated", { info: { id: "msg_u", sessionID: ROOT, role: "user", agent: "orchestrateur", time: { created: T0 - 5_000 } } }));
+    for (const fact of persisted) live.store.push(factEvent(fact));
+    live.clock.advance(RENDER_MIN_INTERVAL_MS);
+    const env = setup();
+    env.source.sessions.set(ROOT, info);
+    env.store.start();
+    env.source.pending.shift()?.resolve({ facts: persisted, partial: false });
+    await flush();
+    env.clock.advance(RENDER_MIN_INTERVAL_MS);
+    const strip = (rows: readonly LiveRow[]) => rows.map(({ durationMs: _durationMs, ...row }) => row);
+    assert.deepEqual(strip(env.store.getSnapshot().rows), strip(live.store.getSnapshot().rows));
+    assert.deepEqual([rowOf(env.store, ROOT)?.title, rowOf(env.store, ROOT)?.agent], ["Analyse des journaux", "orchestrateur"]);
+  });
+
+  it("informations de la conversation illisibles : seulement sautées (ni échec ni [Réessayer]), comme les titres de l'arbre", async (t) => {
+    const warn = t.mock.method(console, "warn", () => undefined);
+    const env = setup();
+    env.source.sessions.set(ROOT, new Error("opencode ne répond pas"));
+    env.source.children.set(ROOT, [{ id: CHILD, parentID: ROOT, title: "Recherche" }]);
+    env.store.start();
+    env.source.pending.shift()?.resolve({ facts: [occupee(ROOT, T0 - 5_000), creee(CHILD, T0 - 4_000)], partial: false });
+    await flush();
+    env.clock.advance(RENDER_MIN_INTERVAL_MS);
+    const view = env.store.getSnapshot();
+    assert.deepEqual([view.loaded, view.failed], [true, false]);
+    assert.deepEqual(view.rows.map((row) => [row.sessionId, row.title]), [
+      [ROOT, ""],
+      [CHILD, "Recherche"],
+    ]);
+    assert.equal(warn.mock.callCount(), 1);
   });
 
   it("conversation sans faits (avant la 1.1) : reconstruite depuis les messages de la racine et des sessions déléguées", async () => {

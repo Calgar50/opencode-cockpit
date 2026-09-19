@@ -14,13 +14,14 @@
 //      du module diagnostics sur le faux aligné sur 1.18.30 (aucun bandeau « illisible » parasite), carte toujours présente.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { type ActivityClock, type ActivitySource, ActivityStore } from "../web/lib/useActivity.ts";
 import { formatTime } from "../web/lib/format.ts";
 import { buildPlanCard, clickEffect, type PlanCardModel, planAnswered } from "../web/pages/chat/plan/plan-card.ts";
 import { CLASSIFIER_AGENT } from "./classifier.ts";
 import type { ActivityFact, FactsResponse } from "./shared/activity-types.ts";
-import { activityStatus, type ActivityState, liveRows, timeline, totals } from "./shared/activity.ts";
+import { activityStatus, type ActivityState, emptyActivity, liveRows, replayFacts, replayMessages, timeline, totals } from "./shared/activity.ts";
 import type { ActivationRefusalCode, BootstrapAutonomy, ConversationAutonomyView, PlanCreateResponse } from "./shared/autonomy-types.ts";
 import { raisonRefus } from "./shared/autonomy-texts.ts";
 import type { DiagnosticActiviteResponse } from "./shared/cockpit-event-types.ts";
@@ -34,6 +35,7 @@ import { DEMO_P1_CAPTURE, DEMO_P1_FILE, DEMO_P1_ROOT, DEMO_P1_SENT, DEMO_SCENE, 
 import { bash, until, within } from "./test-support/helpers.ts";
 
 const MODEL = { providerID: "github-copilot", modelID: "gpt-5-mini" };
+const DEROULE_FILE = path.join(import.meta.dirname, "..", "web", "pages", "chat", "activity", "Deroule.tsx");
 
 /** Conversation créée par le proxy (plancher posé par L3), suivie par le cockpit. */
 async function trackedRoot(h: CockpitHarness, title: string): Promise<FakeSession> {
@@ -67,16 +69,43 @@ function eagerClock(): ActivityClock {
   return { now: () => (t += 1_000), setTimer: () => null, clearTimer: () => undefined };
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
 /**
- * Lectures du navigateur par les routes du cockpit : GET …/facts, puis le proxy opencode (enfants, messages). `replay` : capture
- * rejouée sur le flux, dont le faux ne connaît pas les sessions (opencode, lui, les servirait) : aucune lecture par le proxy.
+ * Ce qu'opencode servirait d'une capture rejouée, que le faux ne garde pas : informations de session (dernier session.created ou
+ * session.updated) et messages (dernier message.updated, sans leurs parties) de ce que le faux a diffusé jusqu'à la lecture. Une
+ * session pas encore diffusée n'est pas connue (null : rien à relire).
+ */
+function replayed(h: CockpitHarness): { sessions: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> } {
+  const sessions = new Map<string, Record<string, unknown>>();
+  const messages = new Map<string, Record<string, unknown>>();
+  for (const { payload } of h.fake.emitted) {
+    if (!("properties" in payload)) continue;
+    const info: unknown = isRecord(payload.properties) ? payload.properties.info : undefined;
+    if (!isRecord(info) || typeof info.id !== "string") continue;
+    if (payload.type === "session.created" || payload.type === "session.updated") sessions.set(info.id, info);
+    else if (payload.type === "message.updated") messages.set(info.id, info);
+  }
+  return { sessions: [...sessions.values()], messages: [...messages.values()] };
+}
+
+/**
+ * Lectures du navigateur par les routes du cockpit : GET …/facts, puis le proxy opencode (conversation, enfants, messages).
+ * `replay` : capture rejouée sur le flux ; opencode est lu dans ce que le faux a diffusé (replayed).
  */
 function cockpitSource(h: CockpitHarness, replay = false): ActivitySource {
+  const facts = async (rootId: string) => getJson<FactsResponse>(h, `/api/conversations/${rootId}/facts?since=0`);
   if (replay) {
-    return { facts: async (rootId) => getJson<FactsResponse>(h, `/api/conversations/${rootId}/facts?since=0`), children: async () => [], messages: async () => [] };
+    return {
+      facts,
+      session: async (sessionId) => replayed(h).sessions.find((info) => info.id === sessionId) ?? null,
+      children: async (sessionId) => replayed(h).sessions.filter((info) => info.parentID === sessionId),
+      messages: async (sessionId) => replayed(h).messages.filter((info) => info.sessionID === sessionId).map((info) => ({ info, parts: [] })),
+    };
   }
   return {
-    facts: async (rootId) => getJson<FactsResponse>(h, `/api/conversations/${rootId}/facts?since=0`),
+    facts,
+    session: async (sessionId, directory) => getJson<unknown>(h, `/api/oc/session/${sessionId}?directory=${encodeURIComponent(directory)}`),
     children: async (sessionId, directory) => getJson<unknown[]>(h, `/api/oc/session/${sessionId}/children?directory=${encodeURIComponent(directory)}`),
     messages: async (sessionId, directory) => getJson<unknown[]>(h, `/api/oc/session/${sessionId}/message?directory=${encodeURIComponent(directory)}`),
   };
@@ -96,14 +125,12 @@ async function openTab(t: { after(fn: () => void): void }, h: CockpitHarness, ro
 }
 
 /**
- * Lignes de « Qui travaille ? » sans les durées (seules à dépendre de l'heure de lecture), ni les titres, ni l'assistant de la
- * conversation : ils viennent d'opencode et non des faits. Le faux ne connaît pas les sessions d'une capture rejouée (aucun titre
- * relu), et, constat du train it1 V4 remis à la relecture, un onglet rouvert ne relit ni le titre ni l'assistant de la conversation
- * elle-même (useActivity ne lit que ses enfants, et ses messages seulement sans faits) : « Conversation · orchestrateur » en direct,
- * « Conversation » après réouverture (Déroulé, et titre en mode Avancé). États, acteurs délégués, compteurs et bande sont comparés.
+ * Lignes de « Qui travaille ? » et du Déroulé sans les durées (seules à dépendre de l'heure de lecture) : titres (mode Avancé) et
+ * assistants compris, celui de la conversation elle-même aussi (« Conversation · orchestrateur ») : un onglet rouvert relit ses
+ * informations (GET /session/:id : titre et assistant de la dernière demande, comme session.updated en direct). Une reconnexion garde
+ * ce que l'onglet a appris en direct : elle n'est pas en cause.
  */
-const rowsOf = (state: ActivityState) =>
-  liveRows(state, Number.MAX_SAFE_INTEGER).map(({ durationMs: _durationMs, title: _title, ...row }) => ({ ...row, agent: row.depth === 0 ? null : row.agent }));
+const rowsOf = (state: ActivityState) => liveRows(state, Number.MAX_SAFE_INTEGER).map(({ durationMs: _durationMs, ...row }) => row);
 
 /** Forme d'un fait sans son numéro ni son heure (le démonstrateur garde les heures de la capture). */
 const shape = ({ rootId, sessionId, kind, ref, data }: ActivityFact) => ({ rootId, sessionId, kind, ref, data });
@@ -166,6 +193,18 @@ describe("croisements it1 V4 : « différé = direct » sur p1 (L4c, L5a, L5d)",
       // L5a : la bande (NeonBand lit activity.state.facts) est la même, dans tous les modes et zooms, à chaque moment.
       for (const options of SCENES) assert.deepEqual(scene(state.facts, null, options), scene(direct.facts, null, options), `${label} ${JSON.stringify(options)}`);
     }
+    const root = rowsOf(reopened).find((row) => row.depth === 0);
+    assert.deepEqual([root?.title, root?.agent], ["ocgraph - delegation", "orchestrateur"], "conversation rouverte : son titre et son assistant");
+    // Déroulé rouvert (Deroule.tsx, ConversationStore.reload, branche avec faits) : faits relus, puis informations de la conversation
+    // et de ses enfants, par le même réducteur ; mêmes lignes (titres, « Conversation · orchestrateur ») que le direct.
+    const source = cockpitSource(h, true);
+    const infos = [await source.session(DEMO_P1_ROOT, h.fake.directory), ...(await source.children(DEMO_P1_ROOT, h.fake.directory))];
+    const deroule = replayMessages(replayFacts(emptyActivity(DEMO_P1_ROOT), stored), { sessions: infos, messages: [] });
+    assert.deepEqual(rowsOf(deroule), rowsOf(direct), "Déroulé rouvert");
+    const reload = /async reload\(\): Promise<void> \{([\s\S]*?)\n {2}\}\n/.exec(fs.readFileSync(DEROULE_FILE, "utf8"))?.[1] ?? "";
+    const withFacts = reload.slice(reload.indexOf("if (persisted.facts.length > 0) {"), reload.indexOf("} else {"));
+    assert.ok(withFacts.includes("const sessions = await this.#sessions();"), withFacts);
+    assert.ok(withFacts.includes("replayMessages(replayFacts(base, persisted.facts), { sessions, messages: [] })"), withFacts);
     assert.equal(before.getSnapshot().working, false, "conversation au repos : « Arrêter » n'est plus affiché");
 
     // L5d : après k faits reçus en direct, la bande dessine ce que le lecteur montre après ses k premiers faits (même scène que le

@@ -708,6 +708,24 @@ describe("applyEvent", () => {
     assert.equal(liveRows(flooded, 10).length, ACTIVITY_MAX_SESSIONS);
     assert.equal(activityStatus(flooded).partial, true);
   });
+
+  it("informations de session : leur assistant (opencode 1.18.30 : celui de la dernière demande) est celui de la ligne ; absent ou illisible, le précédent reste ; relu = direct", () => {
+    const state = facts(emptyActivity(R), [busy(R, 1)]);
+    const session = (info: Record<string, unknown>) => ({ kind: "opencode" as const, event: { type: "session.updated", properties: { info } } });
+    // session.created de la racine : sans assistant (opencode 1.18.30) ; session.updated de la demande : avec.
+    const bare = applyEvent(state, session({ id: R, title: "Plan" }));
+    assert.equal(liveRows(bare, 10)[0]?.agent, null);
+    const prompted = applyEvent(bare, session({ id: R, title: "Plan", agent: "orchestrateur" }));
+    assert.deepEqual([liveRows(prompted, 10)[0]?.agent, liveRows(prompted, 10)[0]?.title], ["orchestrateur", "Plan"]);
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan", agent: "orchestrateur" })), prompted, "mêmes informations : même état");
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan" })), prompted, "assistant absent : le précédent reste");
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan", agent: "Assistant libre\nx" })), prompted, "nom illisible : ignoré");
+    assert.equal(liveRows(applyEvent(prompted, session({ id: R, title: "Plan", agent: "build" })), 10)[0]?.agent, "build");
+    // Relecture des seules informations de la racine (conversation avec des faits) : même ligne qu'en direct, sans aucun message.
+    const reread = replayMessages(state, { sessions: [{ id: R, title: "Plan", agent: "orchestrateur" }], messages: [] });
+    assert.deepEqual(liveRows(reread, 10), liveRows(prompted, 10));
+    assert.equal(reread.facts, state.facts, "faits inchangés");
+  });
 });
 
 describe("annonces", () => {

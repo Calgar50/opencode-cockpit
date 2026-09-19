@@ -477,6 +477,7 @@ function cardPhrases(): string[] {
     else if (value && typeof value === "object") for (const inner of Object.values(value)) walk(inner);
   };
   walk(TEXTES.partout.carte);
+  walk(TEXTES.partout.executionCreee);
   walk(TEXTES.partout.honnetete);
   walk(CHOIX.partout.choix.plan);
   walk(CHOIX.partout.raisons);
@@ -540,6 +541,32 @@ describe("carte de plan : textes (sans doublon), contrat du composant, feuille d
     ]) {
       assert.ok(source.includes(needle), `absent : ${needle}`);
     }
+  });
+
+  it("composant : exécution créée après un changement de conversation ou de page → ni navigation ni saisie remplacée ; brouillon gardé pour son ouverture, notification [Ouvrir]", () => {
+    const source = withoutComments(read(COMPONENT_FILE));
+    const call = source.indexOf("planApi.execute(planRoot, body, { confirm: confirmed })");
+    const guard = source.indexOf("if (!mounted.current || rootRef.current !== planRoot) {", call);
+    const open = source.indexOf("onOpenConversation(created.rootId, created.brouillon)", call);
+    assert.ok(call > 0 && guard > call && open > guard, "la garde de la réussite suit l'appel et précède l'ouverture");
+    // Branche gardée : brouillon rangé sous la conversation d'exécution, notification (ou brouillon remis si elle est déjà affichée).
+    const branch = /if \(!mounted\.current \|\| rootRef\.current !== planRoot\) \{([\s\S]*?)\n {8}return;\n {6}\}/.exec(source)?.[1] ?? "";
+    assert.ok(branch.includes("keepDraft(created.rootId, created.brouillon);"), branch);
+    assert.ok(branch.includes("if (mounted.current && rootRef.current === created.rootId) setDraftTick((tick) => tick + 1);"), branch);
+    assert.match(branch, /toast\.success\(PLAN\.executionCreee\.titre, PLAN\.executionCreee\.message, \{\s*label: PLAN\.executionCreee\.ouvrir,\s*onClick: \(\) => navigate\("chat", created\.rootId\),\s*\}\);/);
+    assert.doesNotMatch(branch, /onOpenConversation|setConfirm|setMessage|navigate\("chat", created\.rootId\)\s*;/);
+    // Carte démontée (autre page) : référence posée à faux au démontage.
+    assert.match(source, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{\s*mounted\.current = false;\s*\};\s*\}, \[\]\);/);
+    // Brouillon remis à la saisie à l'ouverture de SA conversation, une seule fois (retiré avant d'être remis).
+    assert.match(
+      source,
+      /useEffect\(\(\) => \{\s*const draft = pendingDrafts\.get\(rootId\);\s*if \(draft === undefined\) return;\s*pendingDrafts\.delete\(rootId\);\s*openRef\.current\(rootId, draft\);\s*\}, \[rootId, draftTick\]\);/,
+    );
+    assert.match(source, /const PENDING_DRAFTS_MAX = \d+;/);
+    assert.match(source, /while \(pendingDrafts\.size > PENDING_DRAFTS_MAX\)/);
+    // Textes de la notification : plan-texts.ts, jamais recopiés.
+    assert.match(source, /import \{ TEXTES as PLAN_TEXTES \} from "\.\.\/\.\.\/\.\.\/\.\.\/server\/shared\/plan-texts\.ts";/);
+    for (const phrase of Object.values(TEXTES.partout.executionCreee)) assert.equal(source.includes(phrase), false, phrase);
   });
 
   it("composant : boutons focalisables même indisponibles (aria-disabled, jamais disabled), décrits par leur raison ; aucun raccourci", () => {

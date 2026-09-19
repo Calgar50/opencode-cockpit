@@ -27,6 +27,15 @@ export const TEXTES = {
       executerAutonome: "Exécuter en autonome avec contrôle",
       continuer: "Continuer à planifier",
     },
+    /**
+     * Carte de plan (L6c) : conversation d'exécution créée pendant que vous étiez sur une autre conversation ou une autre page ;
+     * rien n'est ouvert ni remplacé, son brouillon remplit la saisie quand vous l'ouvrez ([Ouvrir] de la notification).
+     */
+    executionCreee: {
+      titre: "Conversation d'exécution créée",
+      message: "Rien n'a été envoyé : son brouillon vous attend quand vous l'ouvrez.",
+      ouvrir: "Ouvrir",
+    },
     /** §4.9, point 5 : première ligne du brouillon d'exécution, suivie du dernier texte du plan (texte simple). */
     brouillon: "Exécute le plan suivant.",
     /** 409 budget-guard de POST /api/plans : budget du mois atteint, création confirmée par x-cockpit-confirm: 1. */

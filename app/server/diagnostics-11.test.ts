@@ -26,9 +26,9 @@ import {
   WARN_INTERVAL_MS,
 } from "./diagnostics-11.ts";
 import { INSTALLED_AGENTS } from "./internal-agents.ts";
-import type { Logger } from "./log.ts";
+import { createLogger, type Logger } from "./log.ts";
 import type { OcAgentInfo, OcLookupSnapshot } from "./oc-lookup.ts";
-import type { OpencodeClient, RequestOptions } from "./opencode.ts";
+import { OpencodeError, type OpencodeClient, type RequestOptions } from "./opencode.ts";
 import type { DelegationRefusalCode, RuleActionLite } from "./shared/activity-types.ts";
 import type { Rule } from "./shared/assistant-rules.ts";
 import type { DelegationBanner, DelegationBannerCode, DiagnosticActiviteResponse } from "./shared/cockpit-event-types.ts";
@@ -189,7 +189,7 @@ describe("Diagnostic du travail délégué : lectures (diagnostics-11.ts)", () =
     assert.deepEqual(await pluginFileNames(notADir), [], "plugin est un fichier : aucun");
   });
 
-  it("task-allow : la dernière règle l'emporte, sur une cible existante ; appelants visibles et non internes ; sous-agents selon la profondeur", () => {
+  it("task-allow : la dernière règle l'emporte, sur une cible existante ; appelants non internes, cachés compris ; sous-agents selon la profondeur", () => {
     const agents: OcAgentInfo[] = [
       agent("build", "primary", [rule("*", "*", "allow"), rule("task", "*", "ask")]),
       agent("libre", "primary", [rule("task", "*", "allow")]),
@@ -198,17 +198,20 @@ describe("Diagnostic du travail délégué : lectures (diagnostics-11.ts)", () =
       agent("fantome", "primary", [rule("task", "*", "ask"), rule("task", "inexistant", "allow")]),
       agent("revoque", "primary", [rule("task", "*", "allow"), rule("task", "*", "deny")]),
       agent("autre-droit", "primary", [rule("bash", "*", "allow"), rule("task", "*", "ask")]),
+      // Caché (hidden) : seulement retiré des menus d'opencode ; il reste appelable, et appelant (describeTask ne filtre pas hidden).
       agent("cache", "primary", [rule("task", "*", "allow")], { hidden: true }),
       agent("cockpit-controle", "primary", [rule("task", "*", "allow")]),
       agent("compaction", "primary", [rule("task", "*", "allow")]),
       agent("polyvalent", "all", [rule("task", "*", "allow")]),
       agent("explore", "subagent", [rule("task", "*", "allow")]),
+      // Sous-agent caché avec sa propre règle task : opencode ne lui retire pas l'outil task (childToolDenies, tool/task.ts).
+      agent("orchestrateur", "subagent", [rule("task", "*", "allow")], { hidden: true }),
     ];
-    const primaires = ["libre", "joker", "cible-seule", "polyvalent"];
+    const primaires = ["libre", "joker", "cible-seule", "cache", "polyvalent"];
     assert.deepEqual(delegatingAgents(agents, 1), primaires, "profondeur 1 : un sous-agent ne délègue pas");
     assert.deepEqual(delegatingAgents(agents, 0), primaires);
-    assert.deepEqual(delegatingAgents(agents, 2), [...primaires, "explore"]);
-    assert.deepEqual(delegatingAgents(agents, null), [...primaires, "explore"], "profondeur non relevée : sous-agents retenus");
+    assert.deepEqual(delegatingAgents(agents, 2), [...primaires, "explore", "orchestrateur"]);
+    assert.deepEqual(delegatingAgents(agents, null), [...primaires, "explore", "orchestrateur"], "profondeur non relevée : sous-agents retenus");
     assert.deepEqual(delegatingAgents([], 1), []);
     // Borne : au-delà de AGENTS_MAX, rien n'est examiné (ni appelant, ni cible).
     const many = Array.from({ length: AGENTS_MAX + 5 }, (_, i) => agent(`a${i}`, "primary", [rule("task", `a${AGENTS_MAX + 4}`, "allow")]));
@@ -316,7 +319,7 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     assert.equal(noms.at(-1), "…");
   });
 
-  it("agents task: allow (faux GET /agent) : bandeau avec leurs noms ; sous-agent retenu seulement quand la profondeur le permet", async (t) => {
+  it("agents task: allow (faux GET /agent) : bandeau avec leurs noms ; sous-agent, même caché, retenu seulement quand la profondeur le permet", async (t) => {
     const h = await startCockpit(t);
     h.fake.setAgents([
       fakeAgent("build", "primary", [
@@ -325,6 +328,7 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
       ]),
       fakeAgent("delegue-tout", "primary", [{ permission: "task", pattern: "*", action: "allow" }]),
       fakeAgent("explore", "subagent", [{ permission: "task", pattern: "*", action: "allow" }]),
+      fakeAgent("orchestrateur", "subagent", [{ permission: "task", pattern: "*", action: "allow" }], { hidden: true }),
       fakeAgent("cockpit-classifier", "primary", [{ permission: "task", pattern: "*", action: "allow" }], { hidden: true }),
     ]);
     const collect = async () => {
@@ -342,7 +346,7 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     h.fake.globalConfig = { ...h.fake.globalConfig, subagent_depth: 2 };
     assert.deepEqual(await collect(), [
       { code: "profondeur", noms: [] },
-      { code: "task-allow", noms: ["delegue-tout", "explore"] },
+      { code: "task-allow", noms: ["delegue-tout", "explore", "orchestrateur"] },
     ]);
   });
 
@@ -425,6 +429,73 @@ describe("Diagnostic du travail délégué : collecteur sur le faux opencode", (
     });
     assert.deepEqual(odd.checks(), ["arriere-plan", "configuration"]);
     assert.deepEqual(oddBanners.at(-1), { code: "illisible", noms: ["configuration", "arriere-plan"] });
+  });
+
+  it("plus de AGENTS_MAX agents : les premiers sont examinés, et le relevé « agents » est nommé par le bandeau « illisible » (jamais tu)", async () => {
+    const many = [
+      agent("a0", "primary", [rule("task", "*", "allow")]),
+      ...Array.from({ length: AGENTS_MAX }, (_, i) => agent(`b${i}`, "primary", [rule("task", "*", "ask")])),
+    ];
+    const deps = (agents: OcAgentInfo[], warn: (check: DiagnosticCheck, err: unknown) => void) => ({
+      client: { request: async <T>(_m: string, pathname: string): Promise<T> => (pathname === "/config" ? {} : { backgroundSubagents: false }) as T },
+      lookup: { get: async () => ({ directory: null, agents, commands: [], loadedAt: 0 }) },
+      env: { opencodeConfigDir: path.join(os.tmpdir(), "cockpit-l1f-absent-", String(process.pid)) },
+      warn,
+    });
+    const over = warnings();
+    assert.deepEqual(await collectDelegationBanners(deps(many, over.warn)), [
+      { code: "task-allow", noms: ["a0"] },
+      { code: "illisible", noms: ["agents"] },
+    ]);
+    assert.deepEqual(over.checks(), ["agents"]);
+    assert.match(over.seen[0]?.error ?? "", new RegExp(`plus de ${AGENTS_MAX} agents`));
+    // Exactement à la borne : tout est examiné, rien n'est illisible.
+    const at = warnings();
+    assert.deepEqual(await collectDelegationBanners(deps(many.slice(0, AGENTS_MAX), at.warn)), [{ code: "task-allow", noms: ["a0"] }]);
+    assert.deepEqual(at.seen, []);
+  });
+
+  it("journal : un relevé impossible dit sa nature (statut et nom de l'erreur d'opencode), jamais le texte renvoyé par opencode", async () => {
+    // opencode 1.18.30, JSONC mal formé (config/parse.ts:28) : le texte entier du fichier est recopié dans data.message, secrets compris.
+    const jsonc = [
+      "--- JSONC Input ---",
+      '{ "mcp": { "outil": { "type": "remote", "url": "https://mcp.exemple", "headers": { "Authorization": "Bearer FAUXjetonMCP0123456789" } } }',
+      '  "provider": { "compagnie": { "options": { "apiKey": "FAUXcleAPI0123456789abcdef" } } } }',
+    ].join("\n");
+    const configError = new OpencodeError(400, { name: "ConfigJsonError", data: { path: "/workspace/opencode.jsonc", message: jsonc } });
+    assert.ok(configError.message.includes("FAUXjetonMCP0123456789"), "l'erreur recopie bien le texte d'opencode");
+    const lines: string[] = [];
+    const logger = createLogger("warn", (line) => void lines.push(line));
+    const logged: Array<Record<string, unknown> | undefined> = [];
+    const port = createDelegationDiagnostics({
+      client: {
+        request: async <T>(_m: string, pathname: string): Promise<T> => {
+          if (pathname === "/config") throw configError;
+          throw new OpencodeError(500, "texte brut FAUXcleAPI0123456789abcdef");
+        },
+      },
+      lookup: {
+        get: async () => {
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4096"), { code: "ECONNREFUSED" }) });
+        },
+      },
+      env: { opencodeConfigDir: path.join(os.tmpdir(), "cockpit-l1f-absent-", String(process.pid)) },
+      log: {
+        warn: (message, fields) => {
+          logged.push(fields);
+          logger.warn(message, fields);
+        },
+      },
+    });
+    assert.deepEqual(await port.delegation(), [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }]);
+    const byCheck = Object.fromEntries(logged.map((fields) => [String(fields?.releve), fields?.error]));
+    assert.deepEqual(byCheck, { configuration: "opencode 400 ConfigJsonError", "arriere-plan": "opencode 500", agents: "ECONNREFUSED" });
+    assert.equal(lines.length, 3);
+    for (const line of lines) {
+      for (const secret of ["FAUXjetonMCP0123456789", "FAUXcleAPI0123456789abcdef", "JSONC Input"]) {
+        assert.equal(line.includes(secret), false, `journal : « ${secret} » dans ${line}`);
+      }
+    }
   });
 
   it("port : un relevé à la fois (appels simultanés partagés, puis relevé neuf) ; relevé impossible journalisé au plus une fois par minute", async () => {
