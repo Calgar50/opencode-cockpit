@@ -71,7 +71,9 @@ const patchesOf = (h: CockpitHarness, sessionId: string) => h.fake.requests.filt
 
 describe("croisements it1 V2 : arrêt de l'arbre sur le câblage complet", () => {
   it("« Arrêter » (proxy) sur une conversation suivie avec plancher : stopTree refuse la demande, arrête l'arbre ; « once » tardif 409 ; délégations par l'écrivain unique, fait statut arret relu par L4c et L5a ; plancher encore tenu ; P6", async (t) => {
-    const h = await startCockpit(t, { modules: "tous" });
+    // Mode Avancé : en Simple, la délégation qui attend votre accord serait refusée d'office par la garde du « task once » (L1d,
+    // décision n° 4) ; seul l'Avancé garde cette attente pour « Arrêter ».
+    const h = await startCockpit(t, { modules: "tous", settings: { ui: { mode: "avance" } } });
     const root = await trackedRoot(h, "Arrêt croisé");
     // L3 : plancher CONVERSATION posé à la création, écho vérifié, marque enregistrée.
     assert.equal(await h.cockpit.c11.ports.floors.verified(root.id), true);
