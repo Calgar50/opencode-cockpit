@@ -12,7 +12,10 @@
 // - `patterns` : relatifs au WORKTREE d'opencode (dossier du dépôt git, « / » hors git ; GET /path), jamais au dossier de la
 //   conversation. Chacun est résolu depuis ce worktree et examiné comme un chemin touché : un motif qui désignerait un autre
 //   fichier que les métadonnées ne passe pas sans contrôle ;
-// - diffs, suppression ou déplacement : editDiffs, applyPatchDeletesOrMoves (E3, E4).
+// - diffs, suppression ou déplacement : editDiffs, applyPatchDeletesOrMoves (E3, E4) ;
+// - « add » d'apply_patch sur un fichier qui existe déjà (relecture 2-vague-1) : opencode l'écrase sans lire le disque, et son
+//   patch « @@ -0,0 » ne montre rien de ce qui disparaît. deletesOrMoves vaut alors vrai (E3) ; seule une absence prouvée (lstat
+//   en ENOENT, plus proche parent présent qui est un dossier) laisse le « add » automatique.
 //
 // Deux vues d'un même disque (F-o) : opencode et le cockpit montent le projet en /workspace (docker-compose.yml). Un chemin
 // d'opencode est traduit par projects.toLocalPath, résolu par realpath côté cockpit, puis rendu dans la vue d'opencode
@@ -196,6 +199,57 @@ async function scopeOf(projects: EditFactsProjects, conversationDir: string): Pr
   return { projects, realRoot, localConversation: isDirectory ? localConversation : null, realConversation: contained ? realConversation : null };
 }
 
+/**
+ * Cibles des entrées `type: "add"` d'apply_patch, telles qu'opencode les présente ; une entrée illisible donne "" (jamais une
+ * cible absente prouvée). opencode 1.18.30 (tool/apply_patch.ts) écrit un « add » sans lire le disque, avec un patch
+ * « @@ -0,0 +1,n @@ » : s'il vise un fichier existant, celui-ci est remplacé sans que le diff montre ce qui disparaît.
+ */
+function addTargets(metadata: unknown): string[] {
+  const files = isRecord(metadata) ? own(metadata, "files") : undefined;
+  if (!Array.isArray(files)) return [];
+  return files.flatMap((file) => {
+    if (!isRecord(file) || own(file, "type") !== "add") return [];
+    const filePath = own(file, "filePath");
+    return [typeof filePath === "string" ? filePath : ""];
+  });
+}
+
+/**
+ * Absence prouvée d'un chemin local : lstat en ENOENT (liens non suivis : un lien, même pendant, est un élément présent), et
+ * plus proche parent présent qui est un dossier (Windows rend ENOENT pour « a.txt/x », Linux ENOTDIR). Toute autre lecture :
+ * non prouvée.
+ */
+async function provenAbsent(local: string): Promise<boolean> {
+  try {
+    await fs.lstat(local);
+    return false;
+  } catch (err) {
+    if (errorCode(err) !== "ENOENT") return false;
+  }
+  for (let child = local, parent = path.dirname(local); parent !== child; child = parent, parent = path.dirname(parent)) {
+    try {
+      return (await fs.stat(parent)).isDirectory();
+    } catch (err) {
+      if (errorCode(err) !== "ENOENT") return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * E3 : un « add » remplace-t-il un fichier ? Vrai si la cible existe déjà ou si son absence n'est pas prouvée (chemin non
+ * absolu, « .. », « \ », hors du workspace, erreur de lecture, parent qui n'est pas un dossier). Seule une absence prouvée laisse
+ * le « add » automatique.
+ */
+async function addOverwrites(projects: EditFactsProjects, targets: readonly string[]): Promise<boolean> {
+  for (const presented of targets) {
+    if (!presented.startsWith("/") || presented.includes("\\") || presented.split("/").includes("..")) return true;
+    const local = projects.toLocalPath(path.posix.normalize(presented));
+    if (local === null || !(await provenAbsent(local))) return true;
+  }
+  return false;
+}
+
 /** E6 : dossier absolu du workspace, sans « .. » ni « \ » (même lecture que pour les chemins touchés). */
 function isConversationDirectory(projects: EditFactsProjects, conversationDir: unknown): conversationDir is string {
   if (typeof conversationDir !== "string" || !conversationDir.startsWith("/") || conversationDir.includes("\\")) return false;
@@ -235,13 +289,22 @@ export async function collectEditFacts(
   const targets = own(record, "permission") === "edit" ? editTargetPaths(metadata) : null;
   const directoryAllowed = isConversationDirectory(projects, conversationDir);
   const soFar = typeof filesSoFar === "number" ? filesSoFar : filesSoFar.size;
-  const base = { directoryAllowed, patterns, deletesOrMoves: applyPatchDeletesOrMoves(metadata), diffs: editDiffs(metadata), filesSoFar: soFar };
+  // Un « add » dont on ne sait pas s'il remplace un fichier compte comme un remplacement (E3) tant que le disque n'a pas été lu.
+  const adds = addTargets(metadata);
+  const base = {
+    directoryAllowed,
+    patterns,
+    deletesOrMoves: applyPatchDeletesOrMoves(metadata) || adds.length > 0,
+    diffs: editDiffs(metadata),
+    filesSoFar: soFar,
+  };
 
   // Aucun accès au disque : E6 décide d'abord ; métadonnées illisibles, sans chemin touché, ou demande trop grande : E1.
   if (!directoryAllowed) return { ...base, paths: [], newFiles: 0, touchedFiles: [] };
   if (targets === null || targets.length === 0 || targets.length + patterns.length > EDIT_PATHS_MAX) {
     return { ...base, paths: [unresolved("")], newFiles: 0, touchedFiles: [] };
   }
+  base.deletesOrMoves = applyPatchDeletesOrMoves(metadata) || (await addOverwrites(projects, adds));
 
   const scope = await scopeOf(projects, conversationDir);
   const facts = new Map<string, EditPathFacts>();

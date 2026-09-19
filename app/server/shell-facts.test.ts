@@ -4,18 +4,27 @@
 // (T-L8-f) ; boucle, 40 liens, 4 096 étapes ; alias de nom (8.3), lecture de dossier bornée ; sous-arbres des recherches
 // récursives ; six dépôts piégés (T-L8-b), les autres pièges de la sonde git et leurs voisins ; borne de lecture de .git/config ;
 // dossier de la conversation douteux ; questions imprévues ; U01 ; aucune exécution de git.
+// Relecture 2-vague-1 : hooks et sous-modules (G04 sans clé de configuration), index git (chemins suivis sensibles, liens de
+// sous-module ; versions 2 à 4, SHA-1 et SHA-256, formes refusées), historique (git show, révisions), existence des arguments.
+// L'index est écrit octet par octet ; quand git est installé, un index produit par le vrai git est relu aussi (seul usage de git
+// ici : git init, git add, git update-index, jamais une consultation).
 // Liens : sous Windows sans le droit d'en créer (EPERM), un lien de dossier devient une jonction et un lien de fichier saute le cas
 // avec sa raison. Sous Linux, aucun cas n'est sauté.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { ProjectsService } from "./projects.ts";
 import {
   collectShellContext,
+  parseGitIndex,
   SHELL_DIR_SCAN_MAX_ENTRIES,
   SHELL_GIT_CONFIG_MAX_BYTES,
+  SHELL_GIT_HOOKS_MAX_ENTRIES,
+  SHELL_GIT_INDEX_MAX_BYTES,
   SHELL_RESOLVE_MAX_STEPS,
   SHELL_SYMLINK_MAX_HOPS,
   SHELL_WALK_MAX_ENTRIES,
@@ -392,7 +401,13 @@ describe("faits du disque : .git (S6, F-m ; M10, M11)", () => {
   it("dépôt propre : les quatre consultations git sont automatiques ; .git/config est lu tel quel", async (t) => {
     const b = bench(t);
     for (const [command, regle] of GIT_AUTOS) await expectRule(b, command, `auto ${regle}`);
-    assert.deepEqual((await collectShellContext("git status", DIR, b.projects)).git, { gitIsDirectory: true, configText: CLEAN_GIT_CONFIG });
+    // Ni hook, ni sous-module ; index absent (dépôt sans aucun fichier ajouté) : vide, comme git le lit.
+    assert.deepEqual((await collectShellContext("git status", DIR, b.projects)).git, {
+      gitIsDirectory: true,
+      configText: CLEAN_GIT_CONFIG,
+      launcher: null,
+      trackedSensitive: [],
+    });
   });
 
   it("T-L8-b : six dépôts piégés réels → attente (G04) pour git status, log, diff et show", async (t) => {
@@ -498,8 +513,338 @@ describe("faits du disque : .git (S6, F-m ; M10, M11)", () => {
   it("M11 : seule la configuration du dépôt est lue ; git n'est lu que si la porte le demande", async (t) => {
     const b = bench(t);
     // cat README.md ne demande rien de git : dépôt propre ou non, aucun fait git relevé.
-    assert.deepEqual((await collectShellContext("cat README.md", DIR, b.projects)).git, { gitIsDirectory: false, configText: null });
-    assert.deepEqual((await collectShellContext("git diff --stat", DIR, b.projects)).git, { gitIsDirectory: true, configText: CLEAN_GIT_CONFIG });
+    assert.deepEqual((await collectShellContext("cat README.md", DIR, b.projects)).git, {
+      gitIsDirectory: false,
+      configText: null,
+      launcher: null,
+      trackedSensitive: null,
+    });
+    assert.deepEqual((await collectShellContext("git diff --stat", DIR, b.projects)).git, {
+      gitIsDirectory: true,
+      configText: CLEAN_GIT_CONFIG,
+      launcher: null,
+      trackedSensitive: [],
+    });
+  });
+});
+
+// --- Hooks, sous-modules, index et historique (relecture 2-vague-1) ----------------------------------------------------------------
+
+const MODE_FILE = 0o100644;
+const MODE_GITLINK = 0o160000;
+
+interface IndexEntry {
+  path: string;
+  mode?: number;
+  /** Bit « étendu » (version 3 et 4) : deux octets d'indicateurs de plus (skip-worktree ici). */
+  extended?: boolean;
+}
+
+interface IndexOptions {
+  version?: 2 | 3 | 4;
+  hashSize?: 20 | 32;
+  extensions?: ReadonlyArray<readonly [string, Buffer]>;
+}
+
+/** Index git (gitformat-index) écrit octet par octet : métadonnées nulles, empreintes fictives, somme finale nulle. */
+function gitIndexBytes(entries: readonly IndexEntry[], options: IndexOptions = {}): Buffer {
+  const version = options.version ?? 2;
+  const hashSize = options.hashSize ?? 20;
+  const header = Buffer.alloc(12);
+  header.write("DIRC", 0, "latin1");
+  header.writeUInt32BE(version, 4);
+  header.writeUInt32BE(entries.length, 8);
+  const parts: Buffer[] = [header];
+  let previous = Buffer.alloc(0);
+  for (const entry of entries) {
+    const name = Buffer.from(entry.path, "utf8");
+    const fixed = Buffer.alloc(40 + hashSize + 2 + (entry.extended ? 2 : 0));
+    fixed.writeUInt32BE(entry.mode ?? MODE_FILE, 24);
+    fixed.fill(0x11, 40, 40 + hashSize);
+    fixed.writeUInt16BE((entry.extended ? 0x4000 : 0) | Math.min(name.length, 0xfff), 40 + hashSize);
+    if (entry.extended) fixed.writeUInt16BE(0x4000, 40 + hashSize + 2);
+    if (version === 4) {
+      let common = 0;
+      while (common < previous.length && common < name.length && previous[common] === name[common]) common++;
+      const strip = previous.length - common;
+      assert.ok(strip < 128, "préfixe à retirer sur un octet");
+      parts.push(fixed, Buffer.from([strip]), name.subarray(common), Buffer.from([0]));
+    } else {
+      const size = (fixed.length + name.length + 8) & ~7;
+      parts.push(fixed, name, Buffer.alloc(size - fixed.length - name.length));
+    }
+    previous = name;
+  }
+  for (const [signature, data] of options.extensions ?? []) {
+    const head = Buffer.alloc(8);
+    head.write(signature, 0, "latin1");
+    head.writeUInt32BE(data.length, 4);
+    parts.push(head, data);
+  }
+  parts.push(Buffer.alloc(hashSize));
+  return Buffer.concat(parts);
+}
+
+function writeIndex(b: Bench, entries: readonly IndexEntry[], options: IndexOptions = {}): void {
+  fs.writeFileSync(path.join(b.proj, ".git", "index"), gitIndexBytes(entries, options));
+}
+
+const TRACKED_CLEAN: readonly IndexEntry[] = [{ path: "README.md" }, { path: "package.json" }, { path: "src/a.ts" }, { path: "src/app.ts" }];
+const TRACKED_ENV: readonly IndexEntry[] = [{ path: ".env" }, ...TRACKED_CLEAN];
+
+/** git, si la machine l'a, sans configuration de l'utilisateur ni du système ; null sinon. */
+function realGit(t: TestContext, cwd: string): ((...args: string[]) => string) | null {
+  const empty = path.join(cwd, "..", "gitconfig-vide");
+  fs.writeFileSync(empty, "");
+  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: empty, GIT_TERMINAL_PROMPT: "0" };
+  const run = (...args: string[]) => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    run("--version");
+  } catch {
+    t.skip("git absent de cette machine : l'index écrit octet par octet reste testé");
+    return null;
+  }
+  return run;
+}
+
+describe("faits du disque : hooks et sous-modules (G04 sans clé de configuration, relecture 2-vague-1)", () => {
+  const CONSULTATIONS = [...GIT_AUTOS.map(([command]) => command), "git status", "git diff", "git log --oneline", "git ls-files", "git grep -n TODO"];
+
+  async function expectG04(b: Bench, detail: string, label: string): Promise<void> {
+    for (const command of CONSULTATIONS) {
+      const result = await decide(b, command);
+      assert.deepEqual([result.verdict, result.regle, result.detail], ["attente", "G04", detail], `${label} : ${command}`);
+    }
+  }
+
+  it("hook post-index-change dans un dépôt à la configuration propre → G04 ; hooks tous en .sample → consultations automatiques", async (t) => {
+    const b = bench(t);
+    writeIndex(b, TRACKED_CLEAN);
+    for (const sample of ["pre-commit.sample", "post-update.sample", "fsmonitor-watchman.sample"]) write(b.proj, `.git/hooks/${sample}`, `#!/bin/sh${NL}`);
+    for (const command of CONSULTATIONS) assert.equal((await decide(b, command)).verdict, "auto", `témoin : ${command}`);
+    write(b.proj, ".git/hooks/post-index-change", `#!/bin/sh${NL}echo lance > /tmp/temoin${NL}`);
+    await expectG04(b, "hook:post-index-change", "post-index-change");
+    // Tout hook actif compte (pre-commit compris) : premier nom par ordre alphabétique.
+    write(b.proj, ".git/hooks/pre-commit", `#!/bin/sh${NL}`);
+    await expectG04(b, "hook:post-index-change", "deux hooks");
+    assert.equal((await collectShellContext("git status", DIR, b.projects)).git.launcher, "hook:post-index-change");
+  });
+
+  it(`.git/hooks illisible : fichier, lien, plus de ${SHELL_GIT_HOOKS_MAX_ENTRIES} entrées → G04`, async (t) => {
+    const b = bench(t);
+    write(b.proj, ".git/hooks", "pas un dossier");
+    await expectG04(b, "hooks-illisibles", "fichier");
+    fs.rmSync(path.join(b.proj, ".git", "hooks"));
+    for (let k = 0; k < SHELL_GIT_HOOKS_MAX_ENTRIES; k++) write(b.proj, `.git/hooks/h${k}.sample`, "");
+    assert.equal((await decide(b, "git status")).verdict, "auto", `${SHELL_GIT_HOOKS_MAX_ENTRIES} entrées : lues`);
+    write(b.proj, `.git/hooks/h${SHELL_GIT_HOOKS_MAX_ENTRIES}.sample`, "");
+    await expectG04(b, "hooks-illisibles", "une entrée de trop");
+    fs.rmSync(path.join(b.proj, ".git", "hooks"), { recursive: true });
+    // Lecture du dossier refusée (EACCES simulée) : jamais « aucun hook ».
+    const hooks = path.join(b.proj, ".git", "hooks");
+    write(b.proj, ".git/hooks/pre-commit.sample", "");
+    const opendir = fsp.opendir;
+    const refused = t.mock.method(fsp, "opendir", (async (dir: string, ...rest: unknown[]) => {
+      if (path.resolve(dir) === hooks) throw Object.assign(new Error("EACCES (simulée)"), { code: "EACCES" });
+      return (opendir as (...args: unknown[]) => Promise<unknown>)(dir, ...rest);
+    }) as typeof fsp.opendir);
+    await expectG04(b, "hooks-illisibles", "lecture refusée");
+    refused.mock.restore();
+    fs.rmSync(hooks, { recursive: true });
+    fs.mkdirSync(path.join(b.proj, "crochets"));
+    link(t, "../crochets", path.join(b.proj, ".git", "hooks"), "dir");
+    await expectG04(b, "hooks-illisibles", "lien");
+  });
+
+  it("lien de sous-module peuplé sans .gitmodules, dont la configuration lance un programme → G04 (git status le visiterait)", async (t) => {
+    const b = bench(t);
+    write(b.proj, "sub/.git/config", `${CLEAN_GIT_CONFIG}[core]${NL}${TAB}fsmonitor = /tmp/temoin.sh${NL}`);
+    write(b.proj, "sub/.git/HEAD", `ref: refs/heads/main${NL}`);
+    writeIndex(b, [...TRACKED_CLEAN, { path: "sub", mode: MODE_GITLINK }]);
+    await expectG04(b, "sous-module:sub", "lien de sous-module");
+    assert.deepEqual((await collectShellContext("git status", DIR, b.projects)).git.trackedSensitive, []);
+  });
+
+  it(".gitmodules ou .git/modules présents → G04, même sans lien de sous-module dans l'index", async (t) => {
+    const b = bench(t);
+    writeIndex(b, TRACKED_CLEAN);
+    write(b.proj, ".gitmodules", `[submodule ${DQ}sub${DQ}]${NL}${TAB}path = sub${NL}`);
+    await expectG04(b, "sous-module:.gitmodules", ".gitmodules");
+    fs.rmSync(path.join(b.proj, ".gitmodules"));
+    write(b.proj, ".git/modules/sub/config", `${CLEAN_GIT_CONFIG}[core]${NL}${TAB}fsmonitor = /tmp/temoin.sh${NL}`);
+    await expectG04(b, "sous-module:.git/modules", ".git/modules");
+  });
+
+  it("index illisible (forme inattendue, index scindé) → G04 ; git diff et git grep, qui en montreraient le contenu : P03 d'abord", async (t) => {
+    const b = bench(t);
+    const content = ["git diff", "git grep -n TODO"];
+    for (const [label, corrupt] of [
+      ["texte", () => fs.writeFileSync(path.join(b.proj, ".git", "index"), "pas un index")],
+      ["extension link", () => writeIndex(b, TRACKED_CLEAN, { extensions: [["link", Buffer.alloc(20)]] })],
+    ] as const) {
+      corrupt();
+      for (const command of CONSULTATIONS) {
+        const result = await decide(b, command);
+        const expected = content.includes(command) ? ["attente", "P03", "index-illisible"] : ["attente", "G04", "index-illisible"];
+        assert.deepEqual([result.verdict, result.regle, result.detail], expected, `${label} : ${command}`);
+      }
+    }
+  });
+});
+
+describe("faits du disque : contenu montré par git diff, git show, git grep (P03, relecture 2-vague-1)", () => {
+  it("dépôt dont le .env est suivi : git diff et git grep attendent, même .env supprimé du disque ; noms seuls automatiques", async (t) => {
+    const b = bench(t);
+    write(b.proj, ".env", `CLE=valeur${NL}`);
+    writeIndex(b, TRACKED_ENV);
+    assert.deepEqual((await collectShellContext("git diff", DIR, b.projects)).git.trackedSensitive, [".env"]);
+    for (const command of ["git diff", "git diff src", "git diff -- src", "git grep -n TODO", "git grep -n TODO -- src"]) {
+      assert.equal((await expectRule(b, command, "attente P03")).detail, "environnement:.env", command);
+    }
+    for (const [command, regle] of [
+      ["git diff --stat", "A-git-diff"],
+      ["git diff --name-only", "A-git-diff"],
+      ["git show --stat", "A-git-show"],
+      ["git show HEAD:package.json", "A-git-show"],
+      ["git status --short", "A-git-status"],
+      ["git log --oneline -n 20", "A-git-log"],
+    ] as const) {
+      await expectRule(b, command, `auto ${regle}`);
+    }
+    // .env supprimé du disque, toujours suivi : aucun parcours ne le voit, l'index si.
+    fs.rmSync(path.join(b.proj, ".env"));
+    assert.deepEqual((await collectShellContext("git grep -n TODO", DIR, b.projects)).paths.sensitiveEntries("."), [".git"]);
+    assert.equal((await expectRule(b, "git grep -n TODO", "attente P03")).detail, "environnement:.env");
+    assert.equal((await expectRule(b, "git diff", "attente P03")).detail, "environnement:.env");
+    // Témoin : index sans chemin sensible.
+    writeIndex(b, TRACKED_CLEAN);
+    for (const command of ["git diff", "git diff src", "git diff -- src", "git grep -n TODO"]) await expectRule(b, command, `auto ${command.startsWith("git diff") ? "A-git-diff" : "A-git-grep"}`);
+  });
+
+  it("historique : git show sans rév:chemin, révision absente du disque, argument avant « -- », --cached → P03", async (t) => {
+    const b = bench(t);
+    writeIndex(b, TRACKED_CLEAN);
+    const cases: Array<[string, string]> = [
+      ["git show", "historique:HEAD"],
+      ["git show HEAD", "historique:HEAD"],
+      ["git diff HEAD", "historique:HEAD"],
+      ["git diff main src", "historique:main"],
+      ["git diff src -- README.md", "historique:src"],
+      ["git diff --cached", "historique:--cached"],
+      ["git grep -n TODO main", "historique:main"],
+      ["git grep -n TODO HEAD:src", "historique:HEAD:src"],
+    ];
+    for (const [command, detail] of cases) assert.equal((await expectRule(b, command, "attente P03")).detail, detail, command);
+    // Un argument qui existe sur le disque est un chemin pour git (un nom à la fois chemin et révision est refusé par git).
+    const facts = await collectShellContext("git diff src README.md main", DIR, b.projects);
+    assert.deepEqual(["src", "README.md", "main"].map((arg) => facts.paths.exists?.(arg)), [true, true, false]);
+    await expectRule(b, "git diff src README.md", "auto A-git-diff");
+    await expectRule(b, "git grep -n TODO src", "auto A-git-grep");
+  });
+
+  it("index illisible pour git diff : P03 avant G04 ; .git qui n'est pas un dossier : G04", async (t) => {
+    const b = bench(t);
+    writeIndex(b, TRACKED_CLEAN, { extensions: [["sdir", Buffer.alloc(0)]] });
+    assert.equal((await expectRule(b, "git diff", "attente P03")).detail, "index-illisible");
+    assert.equal((await expectRule(b, "git status", "attente G04")).detail, "index-illisible");
+    fs.rmSync(path.join(b.proj, ".git"), { recursive: true, force: true });
+    assert.equal((await expectRule(b, "git diff", "attente G04")).detail, "git-pas-un-dossier");
+  });
+
+  it(`index lu sans suivre de lien et borné à ${SHELL_GIT_INDEX_MAX_BYTES} octets ; index absent : vide`, async (t) => {
+    const b = bench(t);
+    assert.deepEqual((await collectShellContext("git diff", DIR, b.projects)).git.trackedSensitive, [], "absent");
+    const big = path.join(b.proj, ".git", "index");
+    fs.writeFileSync(big, Buffer.alloc(SHELL_GIT_INDEX_MAX_BYTES + 1));
+    assert.equal((await collectShellContext("git diff", DIR, b.projects)).git.trackedSensitive, null, "trop grand");
+    fs.rmSync(big);
+    fs.writeFileSync(path.join(b.proj, "index-propre"), gitIndexBytes(TRACKED_CLEAN));
+    if (!link(t, "../index-propre", big, "file")) return;
+    assert.equal((await collectShellContext("git diff", DIR, b.projects)).git.trackedSensitive, null, "lien");
+    await expectRule(b, "git diff", "attente P03");
+  });
+});
+
+describe("faits du disque : lecture de l'index git (parseGitIndex, relecture 2-vague-1)", () => {
+  const paths = (buffer: Buffer) => parseGitIndex(buffer)?.paths ?? null;
+
+  it("versions 2, 3 et 4, SHA-1 et SHA-256, bit étendu, liens de sous-module, extensions facultatives", () => {
+    const entries: IndexEntry[] = [
+      { path: ".env" },
+      { path: "src/a.ts", extended: true },
+      { path: "src/app.ts" },
+      { path: "sub", mode: MODE_GITLINK },
+      { path: `docs/${"x".repeat(5000)}` },
+    ];
+    const expected = entries.map((entry) => entry.path);
+    for (const version of [3, 4] as const) {
+      for (const hashSize of [20, 32] as const) {
+        const parsed = parseGitIndex(gitIndexBytes(entries, { version, hashSize, extensions: [["TREE", Buffer.from("abc")], ["UNTR", Buffer.alloc(0)]] }));
+        assert.deepEqual(parsed?.paths, expected, `v${version}, ${hashSize} octets`);
+        assert.deepEqual(parsed?.gitlinks, ["sub"], `v${version}, ${hashSize} octets`);
+      }
+    }
+    const plain = entries.filter((entry) => !entry.extended);
+    assert.deepEqual(paths(gitIndexBytes(plain)), plain.map((entry) => entry.path), "v2");
+    assert.deepEqual(paths(gitIndexBytes([])), [], "index vide");
+  });
+
+  it("formes refusées : signature, version, entrée tronquée, bourrage, longueur du nom, dossier clairsemé, extension obligatoire, octets en trop", () => {
+    const good = gitIndexBytes(TRACKED_CLEAN);
+    assert.ok(parseGitIndex(good));
+    const altered = (at: number, byte: number) => {
+      const copy = Buffer.from(good);
+      copy[at] = byte;
+      return copy;
+    };
+    // package.json (12 octets) : nom, octet nul, puis 5 octets de bourrage ; l'octet de poids faible des indicateurs précède le nom.
+    const packageName = good.indexOf("package.json");
+    const refused: Array<[string, Buffer]> = [
+      ["signature", altered(0, 0x45)],
+      ["version 1", altered(7, 1)],
+      ["version 5", altered(7, 5)],
+      ["tronqué", good.subarray(0, 60)],
+      ["plus d'entrées annoncées", altered(11, 9)],
+      ["bourrage non nul", altered(packageName + "package.json".length + 2, 0x41)],
+      ["longueur du nom", altered(packageName - 1, "package.json".length + 1)],
+      ["dossier clairsemé", gitIndexBytes([{ path: "src", mode: 0o40000 }])],
+      ["bit étendu en version 2", gitIndexBytes([{ path: "a", extended: true }], { version: 2 })],
+      ["extension obligatoire link", gitIndexBytes(TRACKED_CLEAN, { extensions: [["link", Buffer.alloc(4)]] })],
+      ["extension obligatoire sdir", gitIndexBytes(TRACKED_CLEAN, { extensions: [["sdir", Buffer.alloc(0)]] })],
+      ["extension qui dépasse", Buffer.concat([gitIndexBytes(TRACKED_CLEAN, { extensions: [["TREE", Buffer.alloc(4)]] }).subarray(0, -22), Buffer.alloc(20)])],
+      ["octets en trop", Buffer.concat([good.subarray(0, -20), Buffer.from([1, 2, 3]), good.subarray(-20)])],
+      ["nom UTF-8 invalide", Buffer.from(gitIndexBytes([{ path: "a-b" }]).toString("latin1").replace("a-b", "a" + String.fromCharCode(0xff) + "b"), "latin1")],
+    ];
+    for (const [label, buffer] of refused) assert.equal(parseGitIndex(buffer), null, label);
+  });
+
+  it("index produit par le vrai git (v2, v4, SHA-256) : chemins suivis et lien de sous-module relus à l'identique", async (t) => {
+    const b = bench(t);
+    const git = realGit(t, b.proj);
+    if (git === null) return;
+    fs.rmSync(path.join(b.proj, ".git"), { recursive: true, force: true });
+    git("init", "-q");
+    write(b.proj, ".env", `CLE=valeur${NL}`);
+    write(b.proj, "src/cles/dev.key", "x");
+    git("add", "-A");
+    git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},sub`);
+    const listed = git("ls-files", "-s").split(NL).filter(Boolean).map((line) => line.split(TAB)[1]);
+    for (const version of ["2", "4"]) {
+      git("update-index", "--index-version", version);
+      const facts = await collectShellContext("git diff", DIR, b.projects);
+      assert.deepEqual(parseGitIndex(fs.readFileSync(path.join(b.proj, ".git", "index")))?.paths, listed, `v${version}`);
+      assert.deepEqual(facts.git.trackedSensitive, [".env", "src/cles/dev.key"], `v${version}`);
+      assert.equal(facts.git.launcher, "sous-module:sub", `v${version}`);
+    }
+    fs.rmSync(path.join(b.proj, ".git"), { recursive: true, force: true });
+    try {
+      git("init", "-q", "--object-format=sha256");
+    } catch {
+      t.diagnostic("git sans SHA-256 : cas sauté");
+      return;
+    }
+    git("add", "-A");
+    assert.deepEqual((await collectShellContext("git diff", DIR, b.projects)).git.trackedSensitive, [".env", "src/cles/dev.key"], "SHA-256");
   });
 });
 

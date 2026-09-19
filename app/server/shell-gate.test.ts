@@ -68,6 +68,16 @@ interface FakeOptions {
   /** Chemins sensibles rapportés par le parcours d'un sous-arbre, par argument ; [] par défaut. */
   walk?: Record<string, unknown>;
   walkThrows?: string[];
+  /** Arguments absents du disque (révisions possibles pour git diff et git grep) ; tout autre argument existe. */
+  missing?: string[];
+  /** Existence rendue telle quelle pour un argument (valeur mal formée comprise). */
+  existence?: Record<string, unknown>;
+  /** Sans méthode `exists` (appelant qui ne la fournit pas). */
+  withoutExists?: boolean;
+  /** Hook ou sous-module relevé par le serveur ; null par défaut. */
+  launcher?: unknown;
+  /** Chemins suivis sensibles de l'index ; [] par défaut. */
+  trackedSensitive?: unknown;
 }
 
 type FakeContext = ShellContext & { calls: string[]; walks: string[] };
@@ -87,8 +97,21 @@ function fakeCtx(options: FakeOptions = {}): FakeContext {
     conversationDir,
     workdir: options.workdir ?? null,
     allowJudge: options.allowJudge ?? false,
-    git: { gitIsDirectory: options.gitIsDirectory ?? true, configText: options.configText === undefined ? CLEAN_GIT_CONFIG : options.configText },
+    git: {
+      gitIsDirectory: options.gitIsDirectory ?? true,
+      configText: options.configText === undefined ? CLEAN_GIT_CONFIG : options.configText,
+      launcher: (Object.hasOwn(options, "launcher") ? options.launcher : null) as string | null,
+      trackedSensitive: (Object.hasOwn(options, "trackedSensitive") ? options.trackedSensitive : []) as readonly string[] | null,
+    },
     paths: {
+      ...(options.withoutExists
+        ? {}
+        : {
+            exists(arg: string): boolean | null {
+              if (options.existence !== undefined && Object.hasOwn(options.existence, arg)) return options.existence[arg] as boolean | null;
+              return !(options.missing ?? []).includes(arg);
+            },
+          }),
       resolve(arg: string): ShellPathFacts | null {
         calls.push(arg);
         if (options.throws?.includes(arg)) throw new Error("lecture refusée");
@@ -720,6 +743,115 @@ describe("porte shell : S5 chemins", () => {
     assert.equal(classifyCommand("rg -n x", withoutWalk).detail, "parcours-impossible:.");
     assert.equal(classifyCommand("cat README.md", withoutWalk).regle, "A-cat");
   });
+
+  it("P03 contenu git : le patch de git show vient de l'historique, jamais lu par le cockpit → attente (relecture 2-vague-1)", () => {
+    const cases: Array<[string, string]> = [
+      ["git show", "historique:HEAD"],
+      ["git show HEAD", "historique:HEAD"],
+      ["git show --oneline", "historique:HEAD"],
+      ["git show --no-color --format=%h main", "historique:main"],
+      ["git show HEAD:package.json HEAD", "historique:HEAD"],
+      ["git show -- src", "historique:--"],
+      ["git show HEAD:package.json -- src", "historique:--"],
+      // Chemin de l'index ou motif (« :chemin », « :(glob)… », « :!… », caractère de motif) : git montrerait le patch de HEAD.
+      ["git show :src/app.ts", "historique::src/app.ts"],
+      [`git show ${SQ}:(glob)**${SQ}`, "historique::(glob)**"],
+      [`git show ${SQ}:!README.md${SQ}`, "historique::!README.md"],
+      [`git show ${SQ}HEAD:*${SQ}`, "historique:HEAD:*"],
+    ];
+    for (const [text, detail] of cases) assert.equal(expectWait(text, "P03").detail, detail, text);
+    // `rév:chemin` (un fichier, ou la liste d'un dossier) et les options de noms seuls restent des consultations.
+    for (const text of ["git show HEAD:package.json", "git show HEAD:", "git show main:src HEAD:README.md", "git show --stat", "git show --name-only HEAD", "git show --shortstat main", "git show --name-status -- src"]) {
+      expectAuto(text, "A-git-show");
+    }
+    // Le contrôle lexical du chemin passe toujours avant.
+    expectWait("git show HEAD:.env", "P03");
+    assert.equal(classify("git show HEAD:.env").detail, "environnement:HEAD:.env");
+    // « :N:chemin » : entrée de l'index à l'étape N, dont le chemin suit le second « : » ; même avec les options de noms seuls,
+    // git show montre ce fichier.
+    for (const [text, detail] of [
+      ["git show --stat :0:.ssh/config", "dossier::0:.ssh/config"],
+      ["git show --name-only :2:.env", "environnement::2:.env"],
+      ["git show --stat :3:certs/dev.key", "cle::3:certs/dev.key"],
+      ["git grep -n x :1:secrets/a", "dossier::1:secrets/a"],
+      ["git log --oneline :0:.aws/credentials", "dossier::0:.aws/credentials"],
+    ] as const) {
+      assert.equal(expectWait(text, "P03").detail, detail, text);
+    }
+    expectAuto("git show --stat :0:src/app.ts", "A-git-show");
+  });
+
+  it("P03 contenu git : git diff lit l'index, ou l'historique avec une révision ou --cached → attente (relecture 2-vague-1)", () => {
+    const cases: Array<[string, string, FakeOptions?]> = [
+      ["git diff --cached", "historique:--cached"],
+      ["git diff --staged --no-color", "historique:--staged"],
+      ["git diff HEAD", "historique:HEAD", { missing: ["HEAD"] }],
+      [`git diff ${SQ}HEAD~3${SQ}`, "historique:HEAD~3", { missing: ["HEAD~3"] }],
+      ["git diff main src", "historique:main", { missing: ["main"] }],
+      ["git diff main:src", "historique:main:src"],
+      // Avant « -- », git ne lit que des révisions, même un nom qui existe sur le disque.
+      ["git diff src -- README.md", "historique:src"],
+      // Existence inconnue, en erreur ou mal formée : révision possible.
+      ["git diff src", "historique:src", { existence: { src: null } }],
+      ["git diff src", "historique:src", { existence: { src: "oui" } }],
+      ["git diff src", "historique:src", { withoutExists: true }],
+    ];
+    for (const [text, detail, options] of cases) assert.equal(expectWait(text, "P03", options).detail, detail, text);
+    // Sans révision : l'index. Un chemin suivi sensible (même absent du disque) ou un index illisible font attendre.
+    for (const text of ["git diff", "git diff src", "git diff src README.md", "git diff -- src", "git diff -w -- .", `git diff -- ${SQ}*env${SQ}`]) {
+      expectAuto(text, "A-git-diff");
+      assert.equal(expectWait(text, "P03", { trackedSensitive: [".env", "config/id_rsa"] }).detail, "environnement:.env", text);
+      assert.equal(expectWait(text, "P03", { trackedSensitive: null }).detail, "index-illisible", text);
+      assert.equal(expectWait(text, "P03", { trackedSensitive: "oui" }).detail, "index-illisible", text);
+    }
+    assert.equal(expectWait("git diff", "P03", { trackedSensitive: ["coffre.bin"] }).detail, "signale:coffre.bin");
+    assert.equal(expectWait("git diff", "P03", { trackedSensitive: [42] }).detail, "signale:?");
+    // Noms seuls : aucun contenu, même avec une révision ou --cached.
+    for (const text of ["git diff --stat", "git diff --stat --cached", "git diff --name-only HEAD", "git diff --shortstat main -- src", "git diff --name-status"]) {
+      expectAuto(text, "A-git-diff", { missing: ["HEAD", "main"], trackedSensitive: null });
+    }
+    // .git qui n'est pas un dossier : G04 décide (S6), pas l'index.
+    assert.equal(expectWait("git diff", "G04", { gitIsDirectory: false, trackedSensitive: null }).detail, "git-pas-un-dossier");
+  });
+
+  it("P03 contenu git : git grep lit les fichiers suivis (index) ; une révision lit l'historique → attente (relecture 2-vague-1)", () => {
+    const cases: Array<[string, string, FakeOptions?]> = [
+      ["git grep TODO HEAD", "historique:HEAD", { missing: ["HEAD"] }],
+      ["git grep -n TODO main src", "historique:main", { missing: ["main"] }],
+      ["git grep TODO main:src", "historique:main:src"],
+      ["git grep -e TODO HEAD", "historique:HEAD", { missing: ["HEAD"] }],
+      ["git grep TODO src -- README.md", "historique:src"],
+      // Un « -- » avant le motif est sauté par git : l'argument suivant le motif reste une révision possible.
+      ["git grep -- TODO main", "historique:main", { missing: ["main"] }],
+      ["git grep -- TODO main -- src", "historique:main"],
+    ];
+    for (const [text, detail, options] of cases) assert.equal(expectWait(text, "P03", options).detail, detail, text);
+    for (const text of ["git grep TODO", "git grep -n TODO src", "git grep --cached TODO", "git grep TODO -- src", "git grep -e TODO -- src", "git grep -- TODO src"]) {
+      expectAuto(text, "A-git-grep", { missing: ["TODO"] });
+      assert.equal(expectWait(text, "P03", { missing: ["TODO"], trackedSensitive: ["secrets/prod.txt"] }).detail, "dossier:secrets/prod.txt", text);
+      assert.equal(expectWait(text, "P03", { missing: ["TODO"], trackedSensitive: null }).detail, "index-illisible", text);
+    }
+    // Le motif n'est jamais une révision ; le parcours du disque reste fait d'abord.
+    const ctx = fakeCtx({ missing: ["TODO"] });
+    assert.equal(classifyCommand("git grep -n TODO", ctx).regle, "A-git-grep");
+    assert.deepEqual(ctx.walks, ["."]);
+    assert.equal(expectWait("git grep TODO", "P03", { walk: { ".": [".env"] }, trackedSensitive: null }).detail, "environnement:.env");
+  });
+
+  it("P03 contenu git : les autres consultations git ne montrent aucun contenu hors des chemins cités", () => {
+    const options: FakeOptions = { missing: ["HEAD", "main"], trackedSensitive: null };
+    for (const [text, regle] of [
+      ["git status", "A-git-status"],
+      ["git log --oneline -n 5 main", "A-git-log"],
+      ["git log --stat HEAD -- src", "A-git-log"],
+      ["git ls-files -m", "A-git-ls-files"],
+      ["git rev-parse --short HEAD", "A-git-rev-parse"],
+      ["git branch --list", "A-git-branch"],
+      ["git blame -L 1,10 src/app.ts", "A-git-blame"],
+    ] as const) {
+      expectAuto(text, regle, options);
+    }
+  });
 });
 
 // --- S6 ------------------------------------------------------------------------------------------------------------------------
@@ -829,6 +961,19 @@ describe("porte shell : S6 git (F-m)", () => {
     expectAuto("ls", "A-ls", { gitIsDirectory: false, configText: null });
     expectWait("git log ../x", "P02", { gitIsDirectory: false });
     expectWait("git status", "G04", { configText: cfg("[core]", "fsmonitor = x"), allowJudge: true });
+  });
+
+  it("G04 : hook actif, sous-module ou fait illisible relevés par le serveur, pour toute consultation git (relecture 2-vague-1)", () => {
+    const commands = ["git status", "git status --short", "git log --oneline", "git diff", "git diff --stat", "git show HEAD:package.json", "git ls-files", "git grep -n TODO"];
+    for (const launcher of ["hook:post-index-change", "sous-module:sub", "sous-module:.gitmodules", "hooks-illisibles", "index-illisible"]) {
+      for (const text of commands) assert.equal(expectWait(text, "G04", { launcher }).detail, launcher, `${launcher} : ${text}`);
+    }
+    // Relevé absent ou mal formé : attente, jamais une consultation automatique.
+    for (const launcher of [undefined, 7, {}]) assert.equal(expectWait("git status", "G04", { launcher }).detail, "illisible", String(launcher));
+    // La configuration passe avant ; S6 ne concerne que git.
+    assert.equal(expectWait("git status", "G04", { configText: cfg("[core]", "fsmonitor = x"), launcher: "hook:pre-commit" }).detail, "core.fsmonitor");
+    expectAuto("cat README.md", "A-cat", { launcher: "hook:pre-commit" });
+    for (const text of commands) expectAuto(text, text.startsWith("git show") ? "A-git-show" : `A-git-${text.split(" ")[1]}`, { launcher: null });
   });
 });
 

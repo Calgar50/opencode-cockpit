@@ -4,7 +4,8 @@
 // obligatoire ailleurs), chemin absolu /workspace, diff absent, apply_patch avec suppression et déplacement ; en plus, lien
 // physique (opencode réécrit sur place, realpath ne montre pas l'autre nom), obligatoire partout. Cas du report MX1 :
 // déplacement vers un chemin protégé et hors du dossier, dossier hors git (worktree « / », GET /path du faux opencode). Les 14
-// demandes mesurées sont rejouées sur disque. Chaque garde du module a au moins un test qui échoue sans elle.
+// demandes mesurées sont rejouées sur disque. Relecture 2-vague-1 : « add » d'apply_patch sur un fichier existant, ou dont
+// l'absence n'est pas prouvée → E3. Chaque garde du module a au moins un test qui échoue sans elle.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -407,6 +408,65 @@ describe("collectEditFacts : apply_patch, suppression et déplacement", () => {
     const facts = await collect(patchRequest([{ filePath: source, type: "move", movePath: destination }], ["a-deplacer.txt"]));
     assert.deepEqual(facts.paths, [inner(source), { path: destination, resolved: destination, inside: false, symlinkOut: false }]);
     assert.deepEqual(decide(facts), attente("E1"));
+  });
+
+  it("« add » sur un fichier qui existe déjà : opencode l'écraserait sans lire le disque → E3 ; sur un fichier absent → auto (relecture 2-vague-1)", async () => {
+    const existing = `${CONV}/existant.txt`;
+    const fresh = `${CONV}/ajout-neuf.txt`;
+    const overwrite = await collect(patchRequest([{ filePath: existing, type: "add" }], ["existant.txt"]));
+    // Le chemin est intérieur et le patch « @@ -0,0 » ne retire rien : seul le disque montre ce qui disparaîtrait.
+    assert.deepEqual(overwrite.paths, [inner(existing)]);
+    assert.deepEqual(overwrite.diffs, [diffOf(existing, ...CREATE)]);
+    assert.equal(overwrite.deletesOrMoves, true);
+    assert.deepEqual(decide(overwrite), attente("E3"));
+    const created = await collect(patchRequest([{ filePath: fresh, type: "add" }], ["ajout-neuf.txt"]));
+    assert.equal(created.deletesOrMoves, false);
+    assert.deepEqual(decide(created), AUTO);
+    assert.equal(fs.existsSync(local("proj/ajout-neuf.txt")), false, "rien n'est créé");
+    // Un seul « add » qui remplace suffit, parmi des ajouts et des mises à jour.
+    const mixed = await collect(
+      patchRequest(
+        [
+          { filePath: fresh, type: "add" },
+          { filePath: `${CONV}/src/app.ts`, type: "update" },
+          { filePath: existing, type: "add" },
+        ],
+        ["ajout-neuf.txt", "src/app.ts", "existant.txt"],
+      ),
+    );
+    assert.deepEqual(decide(mixed), attente("E3"));
+    // Un dossier existant visé par un « add » : E1 d'abord (cible qui n'est pas un fichier), et jamais un ajout.
+    const onDirectory = await collect(patchRequest([{ filePath: `${CONV}/src`, type: "add" }], ["src"]));
+    assert.equal(onDirectory.deletesOrMoves, true);
+    assert.deepEqual(decide(onDirectory), attente("E1"));
+  });
+
+  it("« add » dont l'existence ne peut pas être lue (lien pendant, parent qui est un fichier, erreur de lecture, aucun accès au disque) : jamais automatique", async (t) => {
+    const underFile = await collect(patchRequest([{ filePath: `${CONV}/existant.txt/x.txt`, type: "add" }], ["existant.txt/x.txt"]));
+    assert.equal(underFile.deletesOrMoves, true, "parent qui est un fichier (ENOTDIR sous Linux, ENOENT sous Windows)");
+    assert.notDeepEqual(decide(underFile), AUTO);
+
+    const lstat = fsp.lstat;
+    const locked = local("proj/verrou-ajout.txt");
+    t.mock.method(fsp, "lstat", (async (file: string, ...rest: unknown[]) => {
+      if (path.resolve(file) === locked) throw Object.assign(new Error("EACCES (simulée)"), { code: "EACCES" });
+      return (lstat as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
+    }) as typeof fsp.lstat);
+    const unreadable = await collect(patchRequest([{ filePath: `${CONV}/verrou-ajout.txt`, type: "add" }], ["verrou-ajout.txt"]));
+    assert.equal(unreadable.deletesOrMoves, true, "EACCES");
+    assert.notDeepEqual(decide(unreadable), AUTO);
+    t.mock.restoreAll();
+
+    const count = spyDisk(t);
+    const refused = await collect(patchRequest([{ filePath: `${CONV}/ajout-neuf.txt`, type: "add" }], ["ajout-neuf.txt"]), "/etc");
+    assert.equal(refused.deletesOrMoves, true, "E6 : existence jamais lue");
+    assert.deepEqual(decide(refused), attente("E6"));
+    assert.equal(count(), 0, "aucun accès au disque");
+
+    if (!link(path.join(outside, "absent-ajout.txt"), local("proj/pendant-ajout.txt"), "file")) return t.skip(LINK_SKIP);
+    const dangling = await collect(patchRequest([{ filePath: `${CONV}/pendant-ajout.txt`, type: "add" }], ["pendant-ajout.txt"]));
+    assert.equal(dangling.deletesOrMoves, true, "lien pendant : un élément présent");
+    assert.notDeepEqual(decide(dangling), AUTO);
   });
 
   it("metadata.filepath d'apply_patch jamais résolu, même quand il sort du dossier", async () => {

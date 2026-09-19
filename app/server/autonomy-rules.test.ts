@@ -111,7 +111,7 @@ function shellCtx(allow: boolean): ShellContext {
       },
       sensitiveEntries: () => [],
     },
-    git: { gitIsDirectory: true, configText: "[core]\n\tbare = false\n" },
+    git: { gitIsDirectory: true, configText: "[core]\n\tbare = false\n", launcher: null, trackedSensitive: [] },
   };
 }
 
@@ -709,7 +709,8 @@ describe("phrases des règles (« Règle : {phrase} », Journal)", () => {
     assert.equal(SHELL_CONSULTATION_RULES.length, SHELL_CONSULTATION_PROGRAMS.length + 1 + GIT_CONSULTATION_SUBCOMMANDS.length);
 
     const args: Record<string, string> = { cat: " a.txt", head: " a.txt", tail: " a.txt", wc: " a.txt", stat: " a.txt", grep: " x a.txt", rg: " x" };
-    const gitArgs: Record<string, string> = { blame: " a.txt", grep: " x" };
+    // git show sans `rév:chemin` montre le patch de HEAD, tiré de l'historique : attente P03 (relecture 2-vague-1).
+    const gitArgs: Record<string, string> = { blame: " a.txt", grep: " x", show: " HEAD:a.txt" };
     const commands = [
       ...SHELL_CONSULTATION_PROGRAMS.map((program) => `${program}${args[program] ?? ""}`),
       "find . -name x",

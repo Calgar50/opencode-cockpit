@@ -3,14 +3,14 @@
 // pour `export GIT_CONFIG_COUNT=1 …; git status`, seulement « git status » [M]).
 // Sept étapes, dans l'ordre ; la première qui échoue décide :
 //   S1 lexique (B01-B05) · S2 tête (C01-C03) · S3 consultation, liste blanche d'options (O01-O05) · S4 interdits par catégorie
-//   (attente, IA de contrôle jamais consultée : décisions n° 6 et 7) · S5 dossier de travail, chemins et sous-arbre d'une
-//   recherche récursive (P01-P03) · S6 git (G04, F-m) · S7 programme non listé (U01 ; « à juger » seulement si l'appelant
-//   l'autorise : Autonome avec contrôle par IA).
+//   (attente, IA de contrôle jamais consultée : décisions n° 6 et 7) · S5 dossier de travail, chemins, sous-arbre d'une
+//   recherche récursive et contenu montré par git diff, git show ou git grep (P01-P03) · S6 git (G04, F-m ; hooks et
+//   sous-modules) · S7 programme non listé (U01 ; « à juger » seulement si l'appelant l'autorise : Autonome avec contrôle par IA).
 // Listes blanches d'options reprises de la sonde `autonomy-probe/probe.mjs` (corpus de 116 commandes, 11 automatiques).
 // Les codes de règle et le détail sont des DONNÉES (journal du contrôle) : les phrases affichées vivent dans un module de textes.
-// Module pur (server/shared) : les faits du disque (realpath, liens, `.git`, texte de `.git/config`, chemins sensibles d'un
-// sous-arbre) sont fournis par l'appelant dans `ShellContext` ; aucun module node, aucun accès à process (test de pureté de
-// core.test.ts).
+// Module pur (server/shared) : les faits du disque (realpath, liens, existence, `.git`, texte de `.git/config`, hooks,
+// sous-modules, chemins suivis de l'index, chemins sensibles d'un sous-arbre) sont fournis par l'appelant dans `ShellContext` ;
+// aucun module node, aucun accès à process (test de pureté de core.test.ts).
 import { redactSecrets } from "../redact.ts";
 
 // --- Contrat -------------------------------------------------------------------------------------------------------------------
@@ -54,6 +54,12 @@ export interface ShellPaths {
    * faire ou dépasse le plafond du serveur → attente (P03).
    */
   sensitiveEntries(arg: string): readonly string[] | null;
+  /**
+   * `arg` (tel qu'écrit, déjà contrôlé par `resolve`) existe sur le disque. Sans « -- », git diff et git grep lisent un argument
+   * comme un CHEMIN s'il existe (un nom à la fois chemin et révision est alors refusé par git), sinon comme une RÉVISION, dont le
+   * contenu vient de l'historique, que personne ne vérifie. false, null ou méthode absente : révision possible → attente (P03).
+   */
+  exists?(arg: string): boolean | null;
 }
 
 export interface ShellGitFacts {
@@ -61,6 +67,19 @@ export interface ShellGitFacts {
   gitIsDirectory: boolean;
   /** Texte de `.git/config` lu par le cockpit ; null si illisible. Jamais d'exécution de git pour l'obtenir. */
   configText: string | null;
+  /**
+   * Ce qui, sans aucune clé de `.git/config`, fait lancer un programme par une consultation (relecture 2-vague-1) : hook actif
+   * (« hook:<nom> », toute entrée de `.git/hooks` hors `*.sample`), sous-module (« sous-module:<chemin> » : `.gitmodules`,
+   * `.git/modules` ou lien de sous-module dans l'index, que git status et git diff visitent avec SA configuration), ou fait
+   * illisible (« hooks-illisibles », « index-illisible », « illisible:<nom> »). null : rien de tel.
+   */
+  launcher: string | null;
+  /**
+   * Chemins suivis par git (index `.git/index`, relatifs au dépôt) que sensitivePath juge sensibles ; [] : aucun ; null : index
+   * illisible. git diff montre le contenu de l'index et git grep celui des fichiers suivis : un `.env` suivi y apparaît, même
+   * supprimé du disque, où aucun parcours ne le voit.
+   */
+  trackedSensitive: readonly string[] | null;
 }
 
 export interface ShellContext {
@@ -279,11 +298,28 @@ interface RecursiveRead {
   ignoreGitDirs: boolean;
 }
 
+/**
+ * Contenu de fichiers que montrent git diff, git show et git grep (relecture 2-vague-1). Le cockpit ne lit ni l'historique ni les
+ * objets de git : un contenu qui en vient attend (P03). L'index, lui, est lu par le serveur (`trackedSensitive`).
+ */
+interface GitContentRead {
+  /**
+   * Premier mot qui fait lire l'historique, ou null : argument placé avant « -- » (git n'y lit que des révisions), `rév:chemin`
+   * de git diff ou git grep, --cached, patch de git show.
+   */
+  history: string | null;
+  /** Sans « -- », arguments de git diff ou git grep : chemins s'ils existent sur le disque, révisions possibles sinon (ShellPaths.exists). */
+  revisionCandidates: string[];
+  /** Contenu de l'index ou des fichiers suivis (git diff sans révision, git grep) : un chemin suivi sensible fait attendre. */
+  readsIndex: boolean;
+}
+
 interface ConsultationPlan {
   regle: string;
   paths: PathCheck[];
   git: boolean;
   recursive: RecursiveRead | null;
+  gitContent: GitContentRead | null;
 }
 
 interface ParsedOptions {
@@ -291,6 +327,8 @@ interface ParsedOptions {
   positionals: ShellWord[];
   /** Valeurs des options `fileValues`, dans l'ordre. */
   fileValues: string[];
+  /** Nombre d'arguments positionnels lus avant le premier « -- » ; null : pas de « -- ». */
+  dashDashAt: number | null;
 }
 
 function parseOptions(args: readonly ShellWord[], spec: OptionSpec): ParsedOptions | ShellVerdict {
@@ -298,12 +336,14 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): ParsedOptio
   const positionals: ShellWord[] = [];
   const fileValues: string[] = [];
   let endOfOptions = false;
+  let dashDashAt: number | null = null;
   for (let k = 0; k < args.length; k++) {
     const word = args[k] as ShellWord;
     // Les guillemets ne changent pas ce que reçoit le programme : « '-p' » reste une option.
     const v = word.value;
     if (!endOfOptions && v === "--") {
       endOfOptions = true;
+      dashDashAt = positionals.length;
       continue;
     }
     if (endOfOptions || !v.startsWith("-") || v.length === 1) {
@@ -349,7 +389,7 @@ function parseOptions(args: readonly ShellWord[], spec: OptionSpec): ParsedOptio
     }
     return attente("O01", v);
   }
-  return { flags, positionals, fileValues };
+  return { flags, positionals, fileValues, dashDashAt };
 }
 
 function pathsOfPositionals(spec: OptionSpec, flags: Set<string>, positionals: readonly ShellWord[], name: string): PathCheck[] | ShellVerdict {
@@ -360,9 +400,17 @@ function pathsOfPositionals(spec: OptionSpec, flags: Set<string>, positionals: r
   const rest = patternFirst ? positionals.slice(1) : positionals;
   const splitRevision = spec.pos === "revs+paths" || spec.pos === "pattern+revs+paths";
   return rest.map((word) => {
-    const colon = splitRevision ? word.value.indexOf(":") : -1;
+    const colon = splitRevision ? revisionColon(word.value) : -1;
     return { word: word.value, path: colon >= 0 ? word.value.slice(colon + 1) || "." : word.value };
   });
+}
+
+/**
+ * Position du « : » qui précède le chemin d'un `rév:chemin`, ou -1. « :N:chemin » (N de 0 à 3) désigne l'entrée de l'index à
+ * l'étape N : le chemin suit le second « : » (relecture 2-vague-1).
+ */
+function revisionColon(value: string): number {
+  return /^:[0-3]:/.test(value) ? 2 : value.indexOf(":");
 }
 
 function findPlan(args: readonly ShellWord[]): ConsultationPlan | ShellVerdict {
@@ -384,7 +432,55 @@ function findPlan(args: readonly ShellWord[]): ConsultationPlan | ShellVerdict {
     k++;
   }
   // find ne lit que des noms, jamais le contenu des fichiers : aucune lecture récursive à contrôler.
-  return { regle: "A-find", paths, git: false, recursive: null };
+  return { regle: "A-find", paths, git: false, recursive: null, gitContent: null };
+}
+
+/** Options de git diff et git show qui ne montrent que des noms ou des nombres, jamais le contenu des fichiers. */
+const GIT_NAMES_ONLY: readonly string[] = ["--stat", "--shortstat", "--name-only", "--name-status"];
+/**
+ * `rév:chemin` que git show lit sans l'historique d'un commit : un fichier, ou la liste d'un dossier, d'un chemin contrôlé en S5.
+ * Révision non vide (« :chemin », « :(glob)… », « :!… » sont des chemins de l'index ou des motifs, qui feraient montrer le patch
+ * de HEAD) et aucun caractère de motif (`* ? [ \`) : un mot que git ne résout pas redevient un motif de chemins.
+ */
+const GIT_REV_PATH = /^[^:*?[\\]+:[^*?[\\]*$/;
+
+/**
+ * Contenu que montrerait git diff, git show ou git grep (relecture 2-vague-1) ; null pour les autres sous-commandes et pour
+ * git diff ou git show limités aux noms (GIT_NAMES_ONLY). git log ne montre aucun contenu sans `-p` (refusé en S3) ; git blame
+ * ne montre que les chemins cités, contrôlés en S5.
+ */
+function gitContentRead(sub: string, parsed: ParsedOptions): GitContentRead | null {
+  if (sub !== "diff" && sub !== "show" && sub !== "grep") return null;
+  if (sub !== "grep" && GIT_NAMES_ONLY.some((flag) => parsed.flags.has(flag))) return null;
+  const words = parsed.positionals.map((word) => word.value);
+  if (sub === "show") return showContent(words, parsed.dashDashAt);
+  // git grep : le motif vient d'abord (sans -e).
+  const { before, dashDash } = revisionArguments(words, sub === "grep" && !parsed.flags.has("-e") ? 1 : 0, parsed.dashDashAt);
+  // git diff --cached compare l'index au dernier commit : le contenu de ce commit vient de l'historique.
+  const cached = sub === "diff" ? ["--cached", "--staged"].find((flag) => parsed.flags.has(flag)) : undefined;
+  // Avant un « -- », git ne lit QUE des révisions (un nom qui existe aussi sur le disque compris) ; sans « -- », un argument est
+  // une révision s'il n'existe pas sur le disque (`rév:chemin` n'existe jamais comme tel).
+  if (dashDash) return { history: cached ?? before[0] ?? null, revisionCandidates: [], readsIndex: true };
+  return { history: cached ?? before.find((word) => word.includes(":")) ?? null, revisionCandidates: before, readsIndex: true };
+}
+
+/** git show sans `rév:chemin` montre le patch d'un commit (HEAD par défaut) ; après « -- », des chemins limitent ce patch. */
+function showContent(words: readonly string[], dashDashAt: number | null): GitContentRead {
+  let history = words.find((word) => !GIT_REV_PATH.test(word)) ?? null;
+  if (words.length === 0) history = "HEAD";
+  if (dashDashAt !== null) history = "--";
+  return { history, revisionCandidates: [], readsIndex: false };
+}
+
+/**
+ * Arguments de git diff ou git grep placés à partir de `start` et avant le « -- » qui sépare les chemins. git grep saute un
+ * « -- » placé avant son motif (dashDashAt < start) : c'est alors le « -- » suivant, resté parmi les arguments, qui sépare.
+ */
+function revisionArguments(words: readonly string[], start: number, dashDashAt: number | null): { before: string[]; dashDash: boolean } {
+  if (dashDashAt === null) return { before: words.slice(start), dashDash: false };
+  if (dashDashAt >= start) return { before: words.slice(start, dashDashAt), dashDash: true };
+  const second = words.indexOf("--", start);
+  return second >= 0 ? { before: words.slice(start, second), dashDash: true } : { before: words.slice(start), dashDash: false };
 }
 
 /** S3 : null si le programme n'est pas une consultation listée ; sinon le verdict O0x qui la refuse, ou ce qu'il reste à contrôler. */
@@ -398,10 +494,10 @@ function consultationPlan(program: string, args: readonly ShellWord[]): Consulta
     if ("verdict" in parsed) return parsed;
     const paths = pathsOfPositionals(spec, parsed.flags, parsed.positionals, `git ${sub.value}`);
     if (!Array.isArray(paths)) return paths;
-    // git grep lit tous les fichiers suivis. Un argument peut être une révision, dont git lit tout l'arbre : faute de savoir
-    // lequel, le parcours porte toujours sur le dossier entier.
+    // git grep lit tous les fichiers suivis : le parcours porte toujours sur le dossier entier (un motif de chemin peut viser
+    // n'importe quel fichier). Une révision, dont git lirait l'arbre, relève de gitContent.
     const recursive = sub.value === "grep" ? { targets: ["."], ignoreGitDirs: true } : null;
-    return { regle: `A-git-${sub.value}`, paths, git: true, recursive };
+    return { regle: `A-git-${sub.value}`, paths, git: true, recursive, gitContent: gitContentRead(sub.value, parsed) };
   }
   if (!Object.hasOwn(SIMPLE_COMMANDS, program)) return null;
   const spec = SIMPLE_COMMANDS[program] as OptionSpec;
@@ -416,7 +512,7 @@ function consultationPlan(program: string, args: readonly ShellWord[]): Consulta
   const recursive = readsTree ? { targets: targets.length > 0 ? targets : ["."], ignoreGitDirs: false } : null;
   // Motifs de noms de fichiers (--include=.env, -g id_rsa) : contrôle lexical P03 du mot, comme pour un chemin.
   for (const value of parsed.fileValues) paths.push({ word: value, path: null });
-  return { regle: `A-${program}`, paths, git: false, recursive };
+  return { regle: `A-${program}`, paths, git: false, recursive, gitContent: null };
 }
 
 // --- S4 interdits --------------------------------------------------------------------------------------------------------------
@@ -647,6 +743,37 @@ function checkRecursive(read: RecursiveRead, ctx: ShellContext): ShellVerdict | 
   return null;
 }
 
+function existsOf(ctx: ShellContext, arg: string): boolean | null {
+  const exists = ctx?.paths?.exists;
+  if (typeof exists !== "function") return null;
+  try {
+    const found: unknown = exists.call(ctx.paths, arg);
+    return typeof found === "boolean" ? found : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * S5, en dernier (relecture 2-vague-1) : contenu montré par git diff, git show ou git grep. L'historique n'est jamais lu par le
+ * cockpit : révision, `--cached`, patch de git show → attente (P03). Sans « -- », un argument est une révision possible tant que
+ * le disque ne prouve pas qu'il existe. L'index (git diff sans révision, git grep) : un chemin suivi sensible, même absent du
+ * disque, ou un index illisible → attente. `.git` qui n'est pas un dossier : G04 (S6) décide.
+ */
+function checkGitContent(read: GitContentRead, ctx: ShellContext): ShellVerdict | null {
+  if (read.history !== null) return attente("P03", `historique:${read.history}`);
+  for (const word of read.revisionCandidates) {
+    if (existsOf(ctx, word) !== true) return attente("P03", `historique:${word}`);
+  }
+  const git = ctx?.git;
+  if (!read.readsIndex || git === null || typeof git !== "object" || git.gitIsDirectory !== true) return null;
+  const tracked: unknown = git.trackedSensitive;
+  if (!Array.isArray(tracked)) return attente("P03", "index-illisible");
+  if (tracked.length === 0) return null;
+  const text = typeof tracked[0] === "string" ? tracked[0] : "?";
+  return attente("P03", `${sensitivePath(text) ?? "signale"}:${text}`);
+}
+
 // --- S6 git (F-m) --------------------------------------------------------------------------------------------------------------
 
 /** Sections dont toute clé fait lire une autre configuration ou lancer un programme. */
@@ -764,6 +891,10 @@ export function classifyCommand(text: string, ctx: ShellContext): ShellVerdict {
     const recursiveVerdict = checkRecursive(plan.recursive, ctx);
     if (recursiveVerdict !== null) return recursiveVerdict;
   }
+  if (plan !== null && plan.gitContent !== null) {
+    const contentVerdict = checkGitContent(plan.gitContent, ctx);
+    if (contentVerdict !== null) return contentVerdict;
+  }
 
   // S6 git
   if (plan !== null && plan.git) {
@@ -771,6 +902,9 @@ export function classifyCommand(text: string, ctx: ShellContext): ShellVerdict {
     if (git === null || typeof git !== "object" || git.gitIsDirectory !== true) return attente("G04", "git-pas-un-dossier");
     const risk = gitConfigRisk(typeof git.configText === "string" ? git.configText : null);
     if (risk !== null) return attente("G04", risk);
+    // Hook actif ou sous-module : git lance un programme sans aucune clé de .git/config (relecture 2-vague-1).
+    const launcher: unknown = git.launcher;
+    if (launcher !== null) return attente("G04", typeof launcher === "string" ? launcher : "illisible");
   }
   if (plan !== null) return verdict("auto", plan.regle, "");
 

@@ -132,7 +132,8 @@ const enc = encodeURIComponent;
 
 /**
  * Verdict de la porte shell dans le contexte le plus favorable : dossier de travail = dossier de la conversation, chaque chemin
- * cité résolu lexicalement sans lien, recherche récursive sans chemin sensible, `.git` sain. Les faits réels ne peuvent que
+ * cité résolu lexicalement sans lien et existant, recherche récursive sans chemin sensible, `.git` sain (configuration, hooks,
+ * sous-modules, index sans chemin suivi sensible). Les faits réels ne peuvent que
  * resserrer (attente) : une commande qui n'est pas « à juger » ici ne l'est jamais. L'appelant (L10a) a déjà classé la commande
  * avec les faits du disque (L8b) ; cette seconde lecture empêche seulement tout appel pour S1-S4, U01 et les chemins lexicaux.
  */
@@ -143,8 +144,9 @@ export function favorableShellVerdict(command: string, conversationDir: string):
     paths: {
       resolve: (arg) => ({ inside: true, symlinkOut: false, real: path.posix.resolve(conversationDir, arg) }),
       sensitiveEntries: () => [],
+      exists: () => true,
     },
-    git: { gitIsDirectory: true, configText: "" },
+    git: { gitIsDirectory: true, configText: "", launcher: null, trackedSensitive: [] },
     allowJudge: true,
   };
   return classifyCommand(command, ctx);

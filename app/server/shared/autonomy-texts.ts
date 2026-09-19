@@ -15,6 +15,8 @@
 // - M5 (MX2 §2) : la partie bash est publiée 3 à 4 ms avant son effet, mais un arrêt n'empêche pas l'effet : « le cockpit les
 //   repère après coup et arrête la demande » est gardée telle quelle ;
 // - « au plus » seulement avec un plafond d'arrêt, dépassement annoncé (§6 l.1049) ;
+// - E1, P02, P03 et G04 attendent aussi quand le cockpit n'a pas pu vérifier les faits (lien en boucle, alias de nom, fichier à
+//   deux noms, dossier trop grand ou illisible, historique ou index git) : leur phrase le dit (relecture 2-vague-1) ;
 // - {raison} d'une décision de l'IA de contrôle et {dossier} sont des données : l'interface les échappe à l'affichage.
 // Module pur (server/shared).
 import type { UiMode } from "./assistant-rules.ts";
@@ -69,9 +71,9 @@ export const TEXTES = {
       "A-task": "Travail délégué conforme, dans les plafonds",
       "A-skill": "Lecture d'une fiche de l'assistant",
       // Modification, E1 à E6 (§4.4) ; E2 : phrase exacte de la spécification.
-      E1: "Fichier hors du dossier de la conversation, ou lien qui en sort",
+      E1: "Fichier hors du dossier de la conversation, lien qui en sort, ou fichier que le cockpit n'a pas pu vérifier",
       E2: "Fichier protégé (configuration, CI/CD, infrastructure ou consignes d'IA)",
-      E3: "Suppression, déplacement ou vidage d'un fichier",
+      E3: "Suppression, déplacement, vidage ou remplacement d'un fichier",
       E4: "Modification illisible : le cockpit ne peut pas voir ce qui change",
       E5: "Plafond de fichiers modifiés atteint : retour à « {demander} »",
       E6: "Conversation hors des dossiers de travail du cockpit",
@@ -98,9 +100,9 @@ export const TEXTES = {
       "S4-declarations": "Déclaration ou commande interne du shell",
       "S4-git": "Commande git qui n'est pas une consultation, ou option globale de git",
       P01: "Chemin dans le dossier personnel (« ~ »)",
-      P02: "Chemin hors du dossier de la conversation, ou lien qui en sort",
-      P03: "Fichier ou dossier sensible : clés, secrets, .env, .git ou configuration d'outils",
-      G04: "Dépôt git dont la configuration peut lancer un programme, ou .git qui n'est pas un dossier",
+      P02: "Chemin hors du dossier de la conversation, lien qui en sort, ou chemin que le cockpit n'a pas pu vérifier",
+      P03: "Fichier ou dossier sensible (clés, secrets, .env, .git ou configuration d'outils), ou contenu que le cockpit n'a pas pu vérifier",
+      G04: "Dépôt git qui peut lancer un programme (configuration, hook ou sous-module) ou que le cockpit n'a pas pu vérifier, ou .git qui n'est pas un dossier",
       U01: "Adresse réseau dans la commande (URL, hôte ou adresse IP)",
       // Délégation, D2 à D7 (§4.7) ; D1 dépend du mode.
       D2: "Reprise d'un travail délégué d'une autre conversation",
