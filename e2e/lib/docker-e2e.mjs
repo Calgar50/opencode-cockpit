@@ -360,7 +360,8 @@ export async function preparerPlan(options) {
 
 /** Écrit le fichier d'environnement de la pile jetable. Aucune de ses valeurs n'est affichée ni journalisée. */
 export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "contexte")) {
-  const jeton = secret(32);
+  // Format généré par install.ps1 (64 hexadécimaux) : sans lui, la 1.0.5 ne sert ni preuve ni ticket de connexion.
+  const jeton = crypto.randomBytes(32).toString("hex");
   const motDePasse = secret(24);
   const jetonControle = secret(24);
   const lignes = [
@@ -369,6 +370,9 @@ export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "co
     `COCKPIT_PORT=${plan.portCockpit}`,
     `COCKPIT_TOKEN=${jeton}`,
     `COCKPIT_VERSION=e2e-${plan.id}`,
+    // 1.0.5 : mode HTTP explicite (D-05 : bascule en HTTPS épinglé restant à faire), confirmé à l'instant au format strict.
+    "COCKPIT_LOCAL_SCHEME=http",
+    `COCKPIT_LOCAL_HTTP_CONFIRMED=${new Date().toISOString().slice(0, 19)}Z`,
     // Mode test d'origine, mesuré par M-B1 : seul « --reel-hors-ligne » parle à un faux fournisseur.
     `COCKPIT_ALLOWED_PROVIDERS=${plan.mode === "reel-hors-ligne" ? "banc" : "github-copilot"}`,
     "COCKPIT_COPILOT_API_URL=",

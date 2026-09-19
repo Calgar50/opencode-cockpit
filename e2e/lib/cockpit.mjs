@@ -1,10 +1,17 @@
 // Banc e2e (L7a) : parler au cockpit de la pile jetable, et relever ce que le faux opencode a reçu.
 //
-// Le cockpit sert en HTTP jusqu'au rebase sur la 1.0.5 (D-05) ; R105 remplacera fetch par une vérification épinglée
-// et le cookie par « __Host-cockpit_session ». Les deux endroits à reprendre portent la mention D-05.
+// Depuis R105 (intégration de la 1.0.5), le cockpit du banc sert dans le mode HTTP explicite de la 1.0.5 (date de
+// confirmation posée par docker-e2e.mjs) : connexion par ticket à usage unique, cookie « __Host-cockpit_session ». La
+// bascule en HTTPS épinglé (D-05) reste à faire : les endroits à reprendre portent la mention D-05.
 import crypto from "node:crypto";
 
 const attendre = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Signature HMAC-SHA256 du contrat 1.0.5 (« opencode-cockpit/<usage>/v1\n<valeur> »), en hexadécimal. */
+const signer = (jeton, usage, valeur) => crypto.createHmac("sha256", jeton).update(`opencode-cockpit/${usage}/v1\n${valeur}`).digest("hex");
+
+/** Seul nom de cookie de session lu par le cockpit depuis la 1.0.5. */
+const COOKIE_SESSION = "__Host-cockpit_session";
 
 /** Attend que le cockpit réponde à /api/health (le conteneur démarre avant d'écouter). */
 export async function attendreSante(url, delaiMs = 120_000) {
@@ -12,7 +19,7 @@ export async function attendreSante(url, delaiMs = 120_000) {
   let derniere = "aucune réponse";
   while (Date.now() < limite) {
     try {
-      // D-05 : HTTP tant que la 1.0.5 n'est pas rebasée ; ensuite HTTPS épinglé, jamais « -k ».
+      // D-05 : mode HTTP explicite de la 1.0.5 ; plus tard HTTPS épinglé, jamais « -k ».
       const reponse = await fetch(`${url}/api/health`);
       if (reponse.ok) return await reponse.json();
       derniere = `code ${reponse.status}`;
@@ -31,23 +38,43 @@ export async function attendreSante(url, delaiMs = 120_000) {
 export function creerClientCockpit(url, jeton) {
   let cookie = null;
 
-  const appeler = async (methode, chemin, corps) => {
+  const appeler = async (methode, chemin, corps, options = {}) => {
     const entetes = { "x-cockpit-csrf": "1", origin: url };
     if (cookie) entetes.cookie = cookie;
     if (corps !== undefined) entetes["content-type"] = "application/json";
-    const reponse = await fetch(`${url}${chemin}`, { method: methode, headers: entetes, body: corps === undefined ? undefined : JSON.stringify(corps) });
+    const reponse = await fetch(`${url}${chemin}`, {
+      method: methode,
+      headers: entetes,
+      body: corps === undefined ? undefined : JSON.stringify(corps),
+      ...options,
+    });
     const brut = reponse.headers.getSetCookie?.() ?? [];
     for (const valeur of brut) {
-      if (valeur.startsWith("cockpit_session=") || valeur.startsWith("__Host-cockpit_session=")) cookie = valeur.split(";")[0];
+      // Seul le nom préfixé compte : la 1.0.5 envoie aussi l'effacement de l'ancien nom (« cockpit_session=; Max-Age=0 »).
+      const [paire] = valeur.split(";");
+      if (paire.startsWith(`${COOKIE_SESSION}=`) && paire.length > COOKIE_SESSION.length + 1) cookie = paire;
     }
     return reponse;
   };
 
   return {
-    /** Ouvre la session du banc. Le jeton ne sort jamais d'ici. */
+    /**
+     * Ouvre la session du banc comme « cockpit.ps1 open » (1.0.5) : défi et demande de ticket signés par le jeton sur
+     * /api/health, preuve du jeton vérifiée, puis /auth?k= avec le ticket signé. POST /api/login est refusé en mode HTTP.
+     * Le jeton ne sort jamais d'ici : seules des signatures partent sur le réseau.
+     */
     async connecter() {
-      const reponse = await appeler("POST", "/api/login", { token: jeton });
-      if (!reponse.ok) throw new Error(`connexion au cockpit refusée (code ${reponse.status}).`);
+      const defi = crypto.randomBytes(32).toString("hex");
+      const sante = await appeler("GET", `/api/health?challenge=${defi}&ticket=${signer(jeton, "auth-ticket-request", defi)}`);
+      if (!sante.ok) throw new Error(`demande de ticket refusée (code ${sante.status}).`);
+      const corps = await sante.json();
+      if (corps?.proof !== signer(jeton, "health-proof", defi)) throw new Error("le cockpit n'a pas prouvé connaître le jeton du banc.");
+      const ticket = typeof corps.ticket === "string" ? corps.ticket : "";
+      if (!/^[0-9a-f]{64}$/.test(ticket)) throw new Error("ticket de connexion absent de /api/health.");
+      const reponse = await appeler("GET", `/auth?k=${ticket}.${signer(jeton, "auth-ticket", ticket)}`, undefined, { redirect: "manual" });
+      if (reponse.status !== 303 || reponse.headers.get("location") !== "/") {
+        throw new Error(`connexion au cockpit refusée (code ${reponse.status}, retour ${reponse.headers.get("location") ?? "aucun"}).`);
+      }
       if (!cookie) throw new Error("connexion au cockpit sans cookie de session.");
       return true;
     },
@@ -112,7 +139,7 @@ export async function connecterNavigateur(onglet, url, cookie) {
     url,
     path: "/",
     httpOnly: true,
-    // D-05 : le cookie est déjà « Secure » en HTTP sur 127.0.0.1, que les navigateurs tiennent pour une origine sûre.
+    // D-05 : cookie « __Host- » donc « Secure », accepté en HTTP sur 127.0.0.1, que les navigateurs tiennent pour une origine sûre.
     secure: true,
     sameSite: "Strict",
   });

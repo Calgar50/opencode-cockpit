@@ -200,7 +200,8 @@ describe("croisements it1 V1 : pureté de tout server/shared", () => {
       const source = fs.readFileSync(path.join(dir, file), "utf8");
       assert.equal(source.includes('"node:'), false, file);
       assert.equal(/\bprocess\./.test(source), false, file);
-      assert.equal(/\bDate\.now\b|new Date\b|Math\.random|\bfetch\s*\(|\bsetTimeout\b|\bperformance\./.test(source), false, file);
+      // Horloge : Date.now, new Date() et new Date sans argument. new Date(valeur) (lecture d'une date reçue, 1.0.5) reste pur.
+      assert.equal(/\bDate\.now\b|new Date\s*\(\s*\)|new Date\b(?!\s*\()|Math\.random|\bfetch\s*\(|\bsetTimeout\b|\bperformance\./.test(source), false, file);
       const imports = [...source.matchAll(/\bfrom\s*["']([^"']+)["']/g)].map((m) => m[1] ?? "");
       // Un module partagé ne remonte que vers des modules purs du serveur, tous nommés ici.
       for (const spec of imports) assert.ok(spec === "../redact.ts" || spec === "../pricing.ts" || /^\.\/[\w.-]+\.ts$/.test(spec), `${file} : ${spec}`);

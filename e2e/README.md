@@ -65,12 +65,16 @@ docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2
 - **Secrets** : jeton du cockpit, mot de passe d'opencode et jeton de pilotage sont fabriqués par
   `crypto.randomBytes` à chaque exécution, écrits dans le seul fichier d'environnement (0600), supprimés à la fin
   (interruption comprise), et **jamais affichés** — ni dans les commandes montrées par `--dry-run`, ni dans un
-  message d'erreur, ni dans l'adresse de la page (le banc ouvre la session par `POST /api/login`, jamais par
-  `/auth?t=`).
+  message d'erreur, ni dans l'adresse de la page (le banc ouvre la session comme `cockpit.ps1 open` de la 1.0.5 :
+  défi et demande de ticket signés par le jeton sur `/api/health`, puis `/auth?k=` avec un ticket à usage unique ;
+  seules des signatures HMAC partent sur le réseau). Le jeton a le format généré par `install.ps1` (64 hexadécimaux),
+  sans lequel la 1.0.5 ne sert ni preuve ni ticket.
 
-Le cockpit sert en **HTTP** tant que la 1.0.5 n'est pas rebasée (décision D-05). Le rebase (paquet R105) passera le
-banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie : les deux endroits à reprendre portent
-la mention `D-05` dans `e2e/lib/cockpit.mjs`.
+Depuis l'intégration de la 1.0.5 (R105), le cockpit du banc sert dans le **mode HTTP explicite** de la 1.0.5
+(`COCKPIT_LOCAL_SCHEME=http` et date de confirmation dans le fichier d'environnement) : `POST /api/login` y est refusé,
+d'où la connexion par ticket, et le cookie de session s'appelle `__Host-cockpit_session`. La bascule du banc en HTTPS
+épinglé (`--pinnedpubkey`, jamais `-k`) prévue par la décision D-05 reste à faire : les endroits à reprendre portent la
+mention `D-05` dans `e2e/lib/cockpit.mjs`.
 
 ## Écrire un scénario
 
