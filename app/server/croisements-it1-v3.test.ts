@@ -310,7 +310,8 @@ describe("croisements it1 V3 : interfaces entre paquets web", () => {
 
   it("ActivityRegion (L5b) rend la bande néon (L5c) avec le dossier de la conversation (relecture des textes du zoom 3)", () => {
     const source = read("../web/pages/chat/activity/ActivityRegion.tsx");
-    assert.match(source, /<NeonBand rootId=\{rootId\} facts=\{[^}]+\} advanced=\{advanced\} directory=\{directory\} \/>/);
+    // Entrée [Voir une démonstration] (L5d) permise après le dossier ; son câblage est vérifié dans demo-p1.test.ts.
+    assert.match(source, /<NeonBand\s+rootId=\{rootId\}\s+facts=\{[^}]+\}\s+advanced=\{advanced\}\s+directory=\{directory\}(?:\s+onDemonstration=\{\w+\})?\s*\/>/);
     assert.match(read("../web/pages/chat/activity/NeonBand.tsx"), /oc\.messages\(sessionId, directory\)/);
   });
 

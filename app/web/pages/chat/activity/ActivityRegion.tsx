@@ -6,7 +6,8 @@
 // - bande néon au-dessus de la liste des acteurs, qui reste la vérité ;
 // - annonces des transitions par l'annonceur de la page (une région aria-live, au plus une annonce toutes les 2 s), coupées par
 //   `ui.activityAnnouncements` ;
-// - premier bandeau : phrase d'accueil, puis `ui.seenOnboarding` écrit par l'API des réglages (PUT /api/settings).
+// - premier bandeau : phrase d'accueil, puis `ui.seenOnboarding` écrit par l'API des réglages (PUT /api/settings) ;
+// - [Voir une démonstration] de la bande : DemoPlayer (L5d), démonstration enregistrée, sans aucune requête.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { phrasesAnnonces, TEXTES } from "../../../../server/shared/activity-texts.ts";
 import type { ActivityAnnouncement } from "../../../../server/shared/activity.ts";
@@ -17,6 +18,7 @@ import { formatDuration } from "../../../lib/format.ts";
 import type { ActivityFact } from "../../../lib/types.ts";
 import { bannerVisible, onboardingToSave, useActivity } from "../../../lib/useActivity.ts";
 import type { ActivityRegionProps } from "../slots.ts";
+import { DemoPlayer } from "./DemoPlayer.tsx";
 import { NeonBand } from "./NeonBand.tsx";
 import { WhoIsWorking } from "./WhoIsWorking.tsx";
 import "./activity.css";
@@ -52,11 +54,23 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
     });
   }, [visible, saveUi, ui.seenOnboarding]);
 
+  // Démonstration (L5d) : rappels stables, sinon la boîte de dialogue reprendrait le focus à chaque rendu.
+  const [demonstration, setDemonstration] = useState(false);
+  const ouvrirDemonstration = useCallback(() => setDemonstration(true), []);
+  const fermerDemonstration = useCallback(() => setDemonstration(false), []);
+
   return (
     <div className="activity-region">
       {/* Faits lus seulement (jamais modifiés) : le même tableau tant que rien ne change, pour la mémoïsation de la bande. Le dossier
           sert à relire les textes du zoom 3 dans la bonne instance d'opencode (train it1 V3, demande de L5c). */}
-      <NeonBand rootId={rootId} facts={activity.state.facts as ActivityFact[]} advanced={advanced} directory={directory} />
+      <NeonBand
+        rootId={rootId}
+        facts={activity.state.facts as ActivityFact[]}
+        advanced={advanced}
+        directory={directory}
+        onDemonstration={ouvrirDemonstration}
+      />
+      {demonstration ? <DemoPlayer advanced={advanced} onClose={fermerDemonstration} /> : null}
       {visible ? (
         <WhoIsWorking
           rows={activity.rows}
