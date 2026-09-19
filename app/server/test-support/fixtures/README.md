@@ -36,6 +36,12 @@ Rejouée par `croisements-it2-v0.test.ts` : contre `isNoRequestShellForm` et la 
 
 Les autres mesures de MX2 (M5 : partie `bash` publiée avant l'effet disque, mais prévention impossible ; M11 : configuration git globale du conteneur opencode, illisible par le cockpit) ne donnent pas de fixture : leur conséquence est une phrase de la spécification et une limite à documenter (DOC2, « G04 limité au dépôt »).
 
+## Corpus de la porte shell
+
+`shell-corpus.json` : les 116 commandes de la sonde « autonomy-probe » du 2026-09-14 (`results.json`, opencode 1.18.30 ; décision D-08 : 116 et non 110), portées telles quelles, plus un champ `attendu` par ligne (verdict et règle de la porte 1.1). Exactement 11 consultations automatiques. Son en-tête `nettoyage` décrit l'analyse de secrets faite avant la copie (deux concordances bénignes : le mot cherché par `grep-abs` et l'adresse privée de `redirect-dev-tcp`).
+
+Rejoué sur un vrai dossier par `shell-corpus.test.ts` (L8b : faits du disque puis porte, dépôt piégé, formes F-l, analyse de secrets à chaque exécution) et par `croisements-it2-v1.test.ts` (matrice des choix, phrases, IA de contrôle sur le câblage complet).
+
 ## Réductions
 
 - p1 et p2 : fenêtres extraites de la capture continue p1-p5, du début de la capture au repos de la racine (p1), puis de l'envoi à `command.executed` (p2).
