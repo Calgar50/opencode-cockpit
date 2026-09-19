@@ -87,8 +87,10 @@ export interface OmoBattement {
 }
 
 /**
- * Cause d'un arrêt de la salle (union propre à ce module, comparée à `OmoStopCause` de T3a au train de V0). Seul le cockpit écrit
- * `stop-request` ; « homme-mort » n'y figure que pour un arrêt décidé par le cockpit après avoir vu l'homme mort du côté salle.
+ * Cause d'un arrêt de la salle (union propre à ce module) : `OmoStopCause` de T3a, plus « fin-de-demande », la relance à neuf de
+ * la fin de chaque demande (D-2b-29), que le port de contrôle écrit aussi (`requestStop(cause: OmoRecreationRaison)`). Égalité avec
+ * `OmoRecreationRaison` vérifiée au train de V0 (croisements-2bis-v0.test.ts). Seul le cockpit écrit `stop-request` ;
+ * « homme-mort » n'y figure que pour un arrêt décidé par le cockpit après avoir vu l'homme mort du côté salle.
  */
 export type OmoArretCause =
   | "vous"
@@ -99,7 +101,8 @@ export type OmoArretCause =
   | "seuil-mensuel"
   | "hors-controle"
   | "homme-mort"
-  | "redemarrage-cockpit";
+  | "redemarrage-cockpit"
+  | "fin-de-demande";
 
 export const OMO_ARRET_CAUSES: readonly OmoArretCause[] = [
   "vous",
@@ -111,6 +114,7 @@ export const OMO_ARRET_CAUSES: readonly OmoArretCause[] = [
   "hors-controle",
   "homme-mort",
   "redemarrage-cockpit",
+  "fin-de-demande",
 ];
 
 /** `stop-request` : arrêt demandé par le cockpit. */
@@ -155,7 +159,7 @@ export interface OmoWorkspaceGit {
   verifieLe: number;
   /** Plafond d'entrées atteint : le balayage n'a pas tout vu, donc « git non protégé ». */
   limiteAtteinte: boolean;
-  /** `.git` inscriptibles par `node` : `OMO_LISTE_MAX` chemins au plus, relatifs à `/workspace`. */
+  /** `.git` non protégés (lien, inscriptible par `node`, ou hors d'un point de montage, MO-3) : `OMO_LISTE_MAX` chemins au plus, relatifs à `/workspace`. */
   nonProteges: string[];
 }
 

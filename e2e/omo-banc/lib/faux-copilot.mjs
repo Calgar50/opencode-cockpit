@@ -3,7 +3,9 @@
 // Deux modes, un seul à la fois :
 // - « --http --port <p> » : API compatible OpenAI (/v1/models, /v1/chat/completions), pour un opencode de test sans extension ;
 // - « --tls --cert <f> --key <f> --port <p> » : chemins du fournisseur github-copilot (/models, /chat/completions), lus dans le
-//   code d'opencode 1.18.30 (plugin/github-copilot : base(), CopilotModels.get, copilot-provider) ; MO-9 les confirme au train de V0.
+//   code d'opencode 1.18.30 (plugin/github-copilot : base(), CopilotModels.get, copilot-provider) et confirmés par MO-9 (MX-OMO,
+//   18/09) : GET /models puis POST /chat/completions, rien d'autre. MO-9 a aussi relevé que l'identifiant de session d'opencode part
+//   dans x-session-id (et x-interaction-id, x-session-affinity) : le journal le garde, pour rattacher chaque appel à sa session.
 // Le catalogue porte les deux formes (champs Copilot et champs OpenAI) : un client ignore ce qu'il ne connaît pas.
 //
 // Un second port sert le pilotage : file de réponses par ordre d'arrivée ou par IA demandée, journal, remise à zéro, arrêt.
@@ -241,6 +243,8 @@ const journaliser = (req) => {
       interaction: valeurSure(h["x-interaction-type"]),
       vision: valeurSure(h["copilot-vision-request"]),
       agentUtilisateur: valeurSure(h["user-agent"]),
+      /** Identifiant de session d'opencode (MO-9) : pas un secret, il sert à compter les appels par session sur le banc. */
+      session: valeurSure(h["x-session-id"]),
     },
     ia: null,
     messages: 0,

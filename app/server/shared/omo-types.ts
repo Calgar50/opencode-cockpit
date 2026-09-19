@@ -66,7 +66,7 @@ export interface OmoWorkspaceGit {
   verifieLe: number;
   /** Plafond d'entrées atteint : état « git non protégé », activation refusée. */
   limiteAtteinte: boolean;
-  /** .git inscriptibles par node : 20 chemins au plus, relatifs à /workspace. */
+  /** .git non protégés (lien, inscriptible par node, ou hors d'un point de montage, MO-3) : 20 chemins au plus, relatifs à /workspace. */
   nonProteges: string[];
 }
 
@@ -331,6 +331,8 @@ export interface OmoSalleContract {
     referenceManifeste: string;
     garde: string;
     configuration: string;
+    /** Identifiant de l'image, écrit à la construction (L15a), lu par le superviseur pour state.json. */
+    imageId: string;
     extension: string;
     licence: string;
   };
@@ -340,8 +342,11 @@ export interface OmoSalleContract {
   dossiersConfigHome: string[];
   /** Noms refusés au pré-contrôle, relatifs à un dossier (projet, parent ; racine / de l'image pour validate.mjs). */
   nomsPrecontrole: { fichiers: string[]; dossiers: string[] };
-  /** Noms des fichiers du dossier de contrôle (écrits par le cockpit seul). */
-  fichiersControle: { battement: "heartbeat"; arret: "stop-request"; precheck: "precheck-ok"; garde: "guard-state.json" };
+  /**
+   * Noms des fichiers du dossier de contrôle, écrits par le cockpit seul ; `projets` (omo-projets.json, généré par install.ps1) y est
+   * déposé par le cockpit : c'est la seule liste des projets préparés que la salle croit (/control en lecture seule).
+   */
+  fichiersControle: { battement: "heartbeat"; arret: "stop-request"; precheck: "precheck-ok"; garde: "guard-state.json"; projets: "omo-projets.json" };
   /** Nom du fichier d'état publié par le superviseur. */
   etat: "state.json";
   egress: { port: 3128 };

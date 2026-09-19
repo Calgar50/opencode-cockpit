@@ -303,7 +303,13 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
     assert.deepEqual(contrat.services, { salle: "opencode-omo", egress: "egress", cockpit: "cockpit", principale: "opencode" });
     assert.equal(contrat.profil, "omo");
     assert.equal(contrat.reseau, "omo-internal");
-    assert.deepEqual(contrat.fichiersControle, { battement: "heartbeat", arret: "stop-request", precheck: "precheck-ok", garde: "guard-state.json" });
+    assert.deepEqual(contrat.fichiersControle, {
+      battement: "heartbeat",
+      arret: "stop-request",
+      precheck: "precheck-ok",
+      garde: "guard-state.json",
+      projets: "omo-projets.json",
+    });
     assert.equal(contrat.etat, "state.json");
     assert.equal(contrat.egress.port, 3128);
     for (const nom of [...Object.values(contrat.fichiersControle), contrat.etat]) assert.doesNotMatch(nom, /[\\/]/u, nom);
@@ -327,10 +333,11 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
     assert.equal(par("omo-vide")?.ecrivain, null);
   });
 
-  it("chemins de l'image : les onze chemins attendus, tous absolus", () => {
+  it("chemins de l'image : les douze chemins attendus, tous absolus (identifiant d'image ajouté au train de V0)", () => {
     assert.deepEqual(Object.values(contrat.cheminsImage).sort(), [
       "/etc/omo-reference/omo-manifest.sha256",
       "/etc/opencode-omo",
+      "/etc/opencode-omo/image-id",
       "/opt/omo",
       "/opt/omo-check/enums-4.19.4.json",
       "/opt/omo-check/manifest.sh",
@@ -341,7 +348,7 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
       "/usr/local/bin/omo-supervisor",
       "/usr/share/doc/oh-my-openagent/LICENSE.md",
     ]);
-    assert.equal(Object.keys(contrat.cheminsImage).length, 11);
+    assert.equal(Object.keys(contrat.cheminsImage).length, 12);
     assert.deepEqual(contrat.perimetreManifeste, ["/opt/omo", "/opt/omo-check", "/opt/omo-guard", "/etc/opencode-omo", "/usr/local/bin/omo-supervisor"]);
   });
 

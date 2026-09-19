@@ -64,7 +64,14 @@ export const OMO_REGLES_PERMISSION = ["toute-modification", "ajout-allow-ou-ask"
 
 export type OmoReglePermission = (typeof OMO_REGLES_PERMISSION)[number];
 
-/** Variante retenue. Provisoire : fixée au train de V0 d'après MO-5 (la règle de la spécification, l.844, en attendant). */
+/**
+ * Variante retenue au train de V0 d'après MO-5 (MX-OMO, 18/09) : « toute-modification », la règle de la spécification (l.844).
+ * MO-5 a mesuré qu'un `prompt_async` portant `tools` REMPLACE la liste entière (un retrait n'est visible que par la différence) et
+ * que `tools: {x: true}` pose un `allow` : le repli du plan ne supprimerait donc pas les délégations de l'extension, qui passent
+ * elles aussi des outils à vrai, et il perdrait les retraits. Le tri des délégations de l'extension (G13, zéro faux positif) reste
+ * à régler sur la capture R16 du banc (L21) et dans le service de détections (L23c) ; la variante « ajout-allow-ou-ask » reste
+ * disponible par l'option.
+ */
 export const OMO_REGLE_PERMISSION: OmoReglePermission = "toute-modification";
 
 /**

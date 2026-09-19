@@ -123,6 +123,13 @@
       "attendu": { "at": 1757000000000, "cause": "redemarrage-cockpit" }
     },
     {
+      "nom": "arrêt de fin de demande : relance à neuf (D-2b-29), cause gardée des deux côtés",
+      "format": "arret",
+      "lecteurs": ["cockpit", "salle"],
+      "texte": "{\"at\":1757000000000,\"cause\":\"fin-de-demande\"}",
+      "attendu": { "at": 1757000000000, "cause": "fin-de-demande" }
+    },
+    {
       "nom": "arrêt de cause inconnue : on ne refuse jamais de s'arrêter",
       "format": "arret",
       "lecteurs": ["cockpit", "salle"],

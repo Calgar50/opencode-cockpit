@@ -454,6 +454,7 @@ describe("faux fournisseur scripté de la salle (L21a)", () => {
         "x-initiator": "agent",
         "openai-intent": "conversation-edits",
         "x-github-api-version": "2026-06-01",
+        "x-session-id": "ses_banc0001",
       },
       `/v1/chat/completions?cle=${MARQUE}`,
     );
@@ -468,6 +469,8 @@ describe("faux fournisseur scripté de la salle (L21a)", () => {
     assert.equal(entree.copilot.initiateur, "agent");
     assert.equal(entree.copilot.intention, "conversation-edits");
     assert.equal(entree.copilot.agentUtilisateur, "opencode/1.18.30");
+    // MO-9 (train de V0) : l'identifiant de session d'opencode, porté par x-session-id, rattache l'appel à sa session.
+    assert.equal(entree.copilot.session, "ses_banc0001");
     assert.ok(entree.entetes.includes("authorization") && entree.entetes.includes("x-api-key"), "les noms d'en-têtes sont relevés");
     assert.ok(!JSON.stringify(vue).includes(MARQUE), "aucune valeur secrète au journal");
   });

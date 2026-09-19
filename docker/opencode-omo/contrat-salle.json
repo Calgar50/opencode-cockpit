@@ -75,6 +75,7 @@
     "referenceManifeste": "/etc/omo-reference/omo-manifest.sha256",
     "garde": "/opt/omo-guard/cockpit-guard.js",
     "configuration": "/etc/opencode-omo",
+    "imageId": "/etc/opencode-omo/image-id",
     "extension": "/opt/omo",
     "licence": "/usr/share/doc/oh-my-openagent/LICENSE.md"
   },
@@ -104,7 +105,8 @@
     "battement": "heartbeat",
     "arret": "stop-request",
     "precheck": "precheck-ok",
-    "garde": "guard-state.json"
+    "garde": "guard-state.json",
+    "projets": "omo-projets.json"
   },
   "etat": "state.json",
   "egress": { "port": 3128 },
@@ -136,6 +138,6 @@
     "cap_add": ["SETUID", "SETGID"],
     "security_opt": ["no-new-privileges:true"],
     "read_only": true,
-    "tmpfs": ["/home/node:exec", "/tmp:exec"]
+    "tmpfs": ["/home/node:exec,mode=0755,uid=1000,gid=1000", "/tmp:exec,mode=1777"]
   }
 }

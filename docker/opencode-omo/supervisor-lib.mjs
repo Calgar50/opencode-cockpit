@@ -78,6 +78,7 @@ export const CHEMINS = {
   referenceManifeste: "/etc/omo-reference/omo-manifest.sha256",
   garde: "/opt/omo-guard/cockpit-guard.js",
   configuration: "/etc/opencode-omo",
+  imageId: "/etc/opencode-omo/image-id",
   extension: "/opt/omo",
   licence: "/usr/share/doc/oh-my-openagent/LICENSE.md",
 };
@@ -168,6 +169,10 @@ export function analyserBattement(texte) {
   return brut && estHorodatage(brut.at) ? { at: brut.at } : null;
 }
 
+/**
+ * Causes d'un `stop-request` : celles d'`OmoStopCause`, plus « fin-de-demande » (relance à neuf à la fin de chaque demande,
+ * D-2b-29 ; `requestStop(cause: OmoRecreationRaison)` du port de contrôle, T3a). Égalité avec le cockpit vérifiée au train de V0.
+ */
 const ARRET_CAUSES = [
   "vous",
   "plafond-cout",
@@ -178,6 +183,7 @@ const ARRET_CAUSES = [
   "hors-controle",
   "homme-mort",
   "redemarrage-cockpit",
+  "fin-de-demande",
 ];
 
 export function analyserArret(texte) {
@@ -741,7 +747,7 @@ export function majTravail(dossierEtat, changements) {
  * Identifiant de l'image, publié par la construction dans `/etc/opencode-omo/image-id` (L15a). Absent : chaîne vide. Le cockpit
  * compare de son côté l'identifiant relevé par `install.ps1` : ce champ sert au Diagnostic, il ne décide de rien ici.
  */
-export function lireImageId(chemin = path.join(CHEMINS.configuration, "image-id")) {
+export function lireImageId(chemin = CHEMINS.imageId) {
   const texte = lireTexteBorne(chemin, 4096);
   return texte === null ? "" : texte.trim().slice(0, 256);
 }

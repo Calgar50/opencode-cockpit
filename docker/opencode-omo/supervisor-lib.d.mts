@@ -41,6 +41,7 @@ export declare const CHEMINS: {
   referenceManifeste: string;
   garde: string;
   configuration: string;
+  imageId: string;
   extension: string;
   licence: string;
 };
