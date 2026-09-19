@@ -118,6 +118,12 @@ export function setNavigationGuard(next: NavigationGuard): () => void {
 export const CHAT_ASSISTANT_PARAM = "assistant";
 
 export type AssistantsView =
+  // --- équipes (it4) : début ---
+  | { mode: "equipes" }
+  | { mode: "equipe-nouvelle" }
+  | { mode: "equipe-modifier"; id: string }
+  | { mode: "carte"; element: string | null }
+  // --- équipes (it4) : fin ---
   | { mode: "liste" }
   | { mode: "nouveau" }
   | { mode: "modifier" | "completer" | "detail"; name: string };
@@ -126,6 +132,16 @@ const LIST_VIEW: AssistantsView = Object.freeze({ mode: "liste" });
 
 /** #/assistants, #/assistants/nouveau, #/assistants/modifier/<nom>, #/assistants/completer/<nom>, #/assistants/detail/<nom>. */
 export function assistantsHref(view: AssistantsView = LIST_VIEW): string {
+  // --- équipes (it4) : début ---
+  // #/assistants/equipes, #/assistants/equipes/nouvelle, #/assistants/equipes/modifier/<id>, #/assistants/carte?element=<nom>.
+  if (view.mode === "equipes") return routeHref("assistants", "equipes");
+  if (view.mode === "equipe-nouvelle") return routeHref("assistants", "equipes", "nouvelle");
+  if (view.mode === "equipe-modifier") return routeHref("assistants", "equipes", "modifier", view.id);
+  if (view.mode === "carte") {
+    const query = view.element ? `?${new URLSearchParams({ [CARTE_ELEMENT_PARAM]: view.element }).toString()}` : "";
+    return `${routeHref("assistants", "carte")}${query}`;
+  }
+  // --- équipes (it4) : fin ---
   if (view.mode === "liste") return routeHref("assistants");
   if (view.mode === "nouveau") return routeHref("assistants", "nouveau");
   return routeHref("assistants", view.mode, view.name);
@@ -135,8 +151,65 @@ export function openAssistants(view: AssistantsView = LIST_VIEW): void {
   goTo(assistantsHref(view));
 }
 
+// --- équipes (it4) : début ---
+/** Identifiant d'une équipe ou nom d'un élément de la carte lu dans l'adresse ; toute autre valeur donne la vue par défaut. */
+const ASSISTANTS_ROUTE_ID = /^[a-z0-9-]{1,40}$/;
+
+/** Paramètre de la carte qui choisit l'élément montré : #/assistants/carte?element=<nom>. */
+export const CARTE_ELEMENT_PARAM = "element";
+
+/** Onglets de la page Assistants, dans l'ordre affiché. La création et la modification (assistant, équipe) n'en ont pas. */
+export const ASSISTANTS_TABS = ["assistants", "equipes", "carte"] as const;
+export type AssistantsTab = (typeof ASSISTANTS_TABS)[number];
+
+/** Onglet actif d'une vue ; null : vue en pleine page, sans onglets (assistant de création, éditeur d'équipe). */
+export function assistantsTabOf(view: AssistantsView): AssistantsTab | null {
+  if (view.mode === "liste" || view.mode === "detail") return "assistants";
+  if (view.mode === "equipes" || view.mode === "carte") return view.mode;
+  return null;
+}
+
+/** Adresse d'un onglet : #/assistants, #/assistants/equipes, #/assistants/carte. */
+export function assistantsTabHref(tab: AssistantsTab): string {
+  if (tab === "equipes") return assistantsHref({ mode: "equipes" });
+  if (tab === "carte") return assistantsHref({ mode: "carte", element: null });
+  return assistantsHref(LIST_VIEW);
+}
+
+/** Élément de la carte lu dans l'adresse : null s'il est absent ou vide ; undefined s'il est invalide, trop long ou répété. */
+function carteElementOf(query: URLSearchParams): string | null | undefined {
+  const elements = query.getAll(CARTE_ELEMENT_PARAM);
+  if (elements.length > 1) return undefined;
+  const element = elements[0];
+  if (element === undefined || element === "") return null;
+  return ASSISTANTS_ROUTE_ID.test(element) ? element : undefined;
+}
+
+/**
+ * Vues des équipes et de la carte (segments « equipes » et « carte »), identifiants validés ; null : autre adresse, lue ensuite
+ * comme avant. Segment en trop, identifiant absent, invalide ou trop long, élément répété : vue par défaut (liste).
+ */
+function teamsViewOf(route: readonly string[], query: URLSearchParams): AssistantsView | null {
+  const [section, sub, third, id, ...rest] = route;
+  if (section !== "assistants" || (sub !== "equipes" && sub !== "carte")) return null;
+  if (sub === "carte") {
+    const element = third === undefined ? carteElementOf(query) : undefined;
+    return element === undefined ? LIST_VIEW : { mode: "carte", element };
+  }
+  if (third === undefined) return { mode: "equipes" };
+  if (third === "nouvelle" && id === undefined) return { mode: "equipe-nouvelle" };
+  if (third === "modifier" && id !== undefined && rest.length === 0 && ASSISTANTS_ROUTE_ID.test(id)) return { mode: "equipe-modifier", id };
+  return LIST_VIEW;
+}
+
+// --- équipes (it4) : fin ---
 /** Lit la vue de la page Assistants depuis la route (segments après « assistants »). */
-export function assistantsViewOf(route: readonly string[]): AssistantsView {
+// --- équipes (it4) : début ---
+// Paramètres de l'adresse en plus (élément de la carte) ; vues des équipes et de la carte lues en premier.
+export function assistantsViewOf(route: readonly string[], query: URLSearchParams = new URLSearchParams()): AssistantsView {
+  const equipes = teamsViewOf(route, query);
+  if (equipes) return equipes;
+  // --- équipes (it4) : fin ---
   const [section, sub, name] = route;
   if (section !== "assistants") return LIST_VIEW;
   if (sub === "nouveau") return { mode: "nouveau" };
