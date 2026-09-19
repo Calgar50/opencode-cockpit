@@ -93,6 +93,11 @@ export const TEXTES = {
     },
     /** Fiche ouverte après votre accord (consulte-fiche, confirmation « demandee »). */
     consulteApresAccord: "« {source} » peut ouvrir la fiche « {cible} » après votre accord (règle d'opencode).",
+    /**
+     * Raccourci qui n'est pas une sous-tâche : arête « lance » de code « utilise » (L39a, liste fermée inchangée). La phrase de
+     * « utilise » est celle de Vous ; celle-ci dit ce que fait le raccourci (train de V0, intégrateur).
+     */
+    raccourciFaitRepondre: "Le raccourci « {source} » fait répondre « {cible} » dans la conversation (règle d'opencode).",
     /** MapNoteCode. */
     notes: {
       "profondeur-un": "ne confie pas de travail plus loin (règle d'opencode)",
@@ -136,9 +141,14 @@ export function remplir(gabarit: string, valeurs: Readonly<Record<string, string
   return gabarit.replace(/\{(\w+)\}/g, (brut, nom: string) => valeurs[nom] ?? brut);
 }
 
-/** Phrase d'une arête ; null pour un code hors de la liste. Une fiche ouverte après votre accord le dit. */
-export function phraseArete(code: string, source: string, cible: string, confirmation: string): string | null {
+/**
+ * Phrase d'une arête ; null pour un code hors de la liste. Une fiche ouverte après votre accord le dit. `kind` (MapEdge.kind) :
+ * une arête « lance » de code « utilise » (raccourci qui n'est pas une sous-tâche) dit que le raccourci fait répondre son assistant ;
+ * les vues de la carte (L39b) passent toujours le genre de l'arête.
+ */
+export function phraseArete(code: string, source: string, cible: string, confirmation: string, kind?: string): string | null {
   if (code === "consulte-fiche" && confirmation === "demandee") return remplir(P.consulteApresAccord, { source, cible });
+  if (code === "utilise" && kind === "lance") return remplir(P.raccourciFaitRepondre, { source, cible });
   return Object.hasOwn(P.aretes, code) ? remplir(P.aretes[code as keyof typeof P.aretes], { source, cible }) : null;
 }
 
