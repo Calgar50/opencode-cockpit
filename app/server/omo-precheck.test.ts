@@ -304,6 +304,24 @@ describe("pré-contrôle : fermé en cas de doute (T-L19-d)", () => {
     assert.deepEqual(decision.trouves, ["./.omo"]);
   });
 
+  it("un lien posé dans .omo refuse le projet quel que soit son nom (l'extension y écrit elle-même)", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    poser(workspace, "projet/.omo/boulder.json", "{}");
+    poser(workspace, "voisin/src/index.ts", "export const x = 1;\n");
+    poser(workspace, "voisin/etat.json", "{}");
+    assert.equal((await precontrolerProjet("projet", { workspace })).verdict, "conforme");
+    const plans = lien(path.join(workspace, "voisin", "src"), path.join(workspace, "projet", ".omo", "plans"), "dir");
+    const boulder = lien(path.join(workspace, "voisin", "etat.json"), path.join(workspace, "projet", ".omo", "boulder-2.json"), "file");
+    if (!plans || !boulder) {
+      t.skip("ce disque ne crée pas de lien symbolique (Windows sans mode développeur) ; obligatoire en CI Linux");
+      return;
+    }
+    const decision = await precontrolerProjet("projet", { workspace });
+    assert.equal(decision.raison, "lien-symbolique");
+    assert.deepEqual(decision.trouves, ["./.omo/boulder-2.json", "./.omo/plans"]);
+  });
+
   it("un dossier parent illisible refuse le projet", async (t) => {
     const workspace = atelier(t);
     fabriquerProjet(workspace, "equipe/projet");
@@ -542,6 +560,22 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
     assert.equal((await precontrolerProjet("fichier-juste-assez", { workspace })).verdict, "conforme");
   });
 
+  it("borne de production : 2 000 fichiers sont relevés, le 2 001e rend l'empreinte impossible", async (t) => {
+    const workspace = atelier(t);
+    fabriquerProjet(workspace, "projet");
+    const workflows = path.join(workspace, "projet", ".github", "workflows");
+    fs.mkdirSync(workflows, { recursive: true });
+    const borne = PRECHECK_BORNES.empreintesMaxFichiers;
+    for (let index = 0; index < borne; index++) fs.writeFileSync(path.join(workflows, `w${index}.yml`), `# [synthétique] ${index}\n`);
+    const juste = await releverEmpreintes(path.join(workspace, "projet"), "projet");
+    assert.equal(juste.impossible, false);
+    assert.equal(juste.fichiers.length, borne);
+    fs.writeFileSync(path.join(workflows, `w${borne}.yml`), `# [synthétique] ${borne}\n`);
+    const decision = await precontrolerProjet("projet", { workspace });
+    assert.equal(decision.raison, "empreinte-impossible");
+    assert.deepEqual(decision.trouves, []);
+  });
+
   it("les fichiers de la racine comptent eux aussi dans la borne du nombre", async (t) => {
     const workspace = atelier(t);
     fabriquerProjet(workspace, "projet");
@@ -629,6 +663,23 @@ describe("pré-contrôle : empreintes des fichiers d'IDE et de CI", () => {
       assert.deepEqual(
         releves.find((releve) => releve.racine === nom),
         { racine: nom, git: "absent", fichiers: [], liens: ["."], illisibles: [], impossible: true },
+        nom,
+      );
+    }
+  });
+
+  it("un projet préparé hors du dossier de travail n'est pas oublié : son relevé est impossible, rien n'est lu", async (t) => {
+    const workspace = atelier(t);
+    const dehors = atelier(t, "omo-dehors-");
+    poser(dehors, ".vscode/tasks.json", '{"[synthétique]": "tâche du dehors"}');
+    poser(dehors, "package.json", '{"name": "dehors"}');
+    fabriquerProjet(workspace, "equipe");
+    const relatif = path.relative(workspace, dehors).split(path.sep).join("/");
+    const releves = await releverEmpreintesSalle({ workspace, prepares: [relatif, `equipe/../${relatif}`] });
+    for (const nom of [relatif, `equipe/../${relatif}`]) {
+      assert.deepEqual(
+        releves.find((releve) => releve.racine === nom),
+        { racine: nom, git: "absent", fichiers: [], liens: [], illisibles: ["."], impossible: true },
         nom,
       );
     }

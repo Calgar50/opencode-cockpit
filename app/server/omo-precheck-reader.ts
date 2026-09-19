@@ -225,7 +225,11 @@ async function scanDossier(dossier: string, remontee: number, trouves: PrecheckT
   }
 }
 
-/** Entrées de `.omo` (nom du disque, casse comprise) : seule la configuration de l'extension y est refusée. */
+/**
+ * Entrées de `.omo` (nom du disque, casse comprise) : seule la configuration de l'extension y est refusée. Un lien, quel que soit
+ * son nom, est un doute : l'extension écrit elle-même dans `boulder*.json`, `plans/` et `notepads/`, et ses écritures partiraient
+ * au bout du lien, hors du projet.
+ */
 async function scanDossierOmo(
   parent: string,
   nomOmo: string,
@@ -239,10 +243,13 @@ async function scanDossierOmo(
     if (lecture === null) return;
   }
   for (const entree of lecture.entrees) {
-    const raison = raisonDansDossierOmo(entree.name);
-    if (raison === null) continue;
     const nom = `${nomOmo}/${entree.name}`;
-    trouves.push({ remontee, nom, raison: entree.isSymbolicLink() ? "lien-symbolique" : raison });
+    if (entree.isSymbolicLink()) {
+      trouves.push({ remontee, nom, raison: "lien-symbolique" });
+      continue;
+    }
+    const raison = raisonDansDossierOmo(entree.name);
+    if (raison !== null) trouves.push({ remontee, nom, raison });
   }
 }
 
@@ -309,7 +316,8 @@ async function entreeRacine(
 /**
  * Empreintes de TOUS les dossiers contrôlés avant un démarrage (D-2b-35) : le dossier de travail, ses dossiers de premier
  * niveau et chaque projet préparé. Un même dossier n'est relevé qu'une fois. Un projet préparé atteint par un lien (lui-même
- * ou l'un de ses parents), ou qui ne se lit pas, n'est pas relevé : son relevé porte `impossible`, rien n'est lu au bout.
+ * ou l'un de ses parents), qui ne se lit pas ou qui sort du dossier de travail n'est pas relevé : son relevé porte
+ * `impossible`, rien n'est lu au bout. Chaque dossier demandé a donc toujours son relevé.
  */
 export async function releverEmpreintesSalle(options: PrecheckOptions): Promise<ReleveEmpreintes[]> {
   const bornes = bornesDe(options);
@@ -325,18 +333,18 @@ export async function releverEmpreintesSalle(options: PrecheckOptions): Promise<
     if (!noms.includes(nom)) noms.push(nom);
   }
   const releves: ReleveEmpreintes[] = [];
-  for (const nom of noms) {
-    const releve = await releverDossierSalle(racine, nom, bornes);
-    if (releve !== null) releves.push(releve);
-  }
+  for (const nom of noms) releves.push(await releverDossierSalle(racine, nom, bornes));
   return releves;
 }
 
-/** Relevé d'un dossier de la salle, `null` s'il sort du dossier de travail. Aucun lien n'est suivi pour l'atteindre. */
-async function releverDossierSalle(racine: string, nom: string, bornes: Readonly<PrecheckBornes>): Promise<ReleveEmpreintes | null> {
+/**
+ * Relevé d'un dossier de la salle. Aucun lien n'est suivi pour l'atteindre. Un dossier qui sort du dossier de travail n'est pas
+ * lu, mais il n'est pas oublié non plus : son relevé porte `impossible` (fermé en cas de doute), comme un projet absent.
+ */
+async function releverDossierSalle(racine: string, nom: string, bornes: Readonly<PrecheckBornes>): Promise<ReleveEmpreintes> {
   if (nom === ".") return releverEmpreintes(racine, nom, bornes);
   const dossier = path.resolve(racine, nom);
-  if (!dansLaRacine(racine, dossier)) return null;
+  if (!dansLaRacine(racine, dossier)) return { racine: nom, git: "absent", fichiers: [], liens: [], illisibles: ["."], impossible: true };
   const douteux = await composantDouteux(racine, nom.split("/"));
   if (douteux === null) return releverEmpreintes(dossier, nom, bornes);
   const lienTrouve = douteux.raison === "lien-symbolique";
