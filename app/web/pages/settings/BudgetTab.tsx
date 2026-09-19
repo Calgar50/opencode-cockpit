@@ -10,6 +10,9 @@ import { formatCredits, formatDateTime, formatPercent, formatUsd, relativeTime }
 import type { QuotaSnapshot } from "../../lib/types.ts";
 import { NumberInput, TokenListEditor } from "../studio/widgets.tsx";
 import { fmtNumber, SectionFooter, useDraft, useSettingsSave } from "./common.tsx";
+// --- équipes (it4) : début ---
+import { TeamsBudgetSettings } from "./TeamsBudgetSettings.tsx";
+// --- équipes (it4) : fin ---
 
 function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const { boot, advanced } = useApp();
@@ -321,6 +324,9 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
         </div>
       </Card>
 
+      {/* --- équipes (it4) : début --- */}
+      {advanced ? <TeamsBudgetSettings /> : null}
+      {/* --- équipes (it4) : fin --- */}
       <QuotaSection onDirty={setQuotaDirty} />
     </div>
   );

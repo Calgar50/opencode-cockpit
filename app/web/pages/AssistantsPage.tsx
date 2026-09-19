@@ -18,9 +18,36 @@ import { CatalogueGrid } from "./assistants/CatalogueGrid.tsx";
 import { IdentityCard, identityOfBuiltin, identityOfView } from "./assistants/IdentityCard.tsx";
 import { useRealign } from "./assistants/realign.tsx";
 import "./assistants/assistants.css";
+// --- équipes (it4) : début ---
+import { useRouteQuery } from "../lib/router.ts";
+import { AssistantsTabs, AssistantsTabsPage } from "./assistants/AssistantsTabs.tsx";
+import { CarteTab } from "./assistants/carte/CarteTab.tsx";
+import { TeamEditor } from "./assistants/teams/TeamEditor.tsx";
+import { TeamsTab } from "./assistants/teams/TeamsTab.tsx";
+// --- équipes (it4) : fin ---
 
 export function AssistantsPage() {
   const route = useRoute();
+  // --- équipes (it4) : début ---
+  // Onglets « Équipes » et « Carte » (page à onglets) ; éditeur d'équipe en pleine page, comme l'assistant de création.
+  const { advanced, directory } = useApp();
+  const teamView = assistantsViewOf(route, useRouteQuery());
+  if (teamView.mode === "equipe-nouvelle") return <TeamEditor key="nouvelle" mode="nouvelle" id={null} advanced={advanced} />;
+  if (teamView.mode === "equipe-modifier") {
+    return <TeamEditor key={`modifier/${teamView.id}`} mode="modifier" id={teamView.id} advanced={advanced} />;
+  }
+  if (teamView.mode === "equipes" || teamView.mode === "carte") {
+    return (
+      <AssistantsTabsPage current={teamView.mode}>
+        {teamView.mode === "equipes" ? (
+          <TeamsTab advanced={advanced} />
+        ) : (
+          <CarteTab directory={directory} advanced={advanced} element={teamView.element} />
+        )}
+      </AssistantsTabsPage>
+    );
+  }
+  // --- équipes (it4) : fin ---
   const view = assistantsViewOf(route);
   if (view.mode === "nouveau") return <AssistantWizard key="nouveau" mode="nouveau" name={null} />;
   if (view.mode === "modifier" || view.mode === "completer") {
@@ -155,6 +182,9 @@ function AssistantsList({ detail }: { detail: string | null }) {
           {createButton}
         </header>
 
+        {/* --- équipes (it4) : début --- */}
+        <AssistantsTabs current="assistants">
+        {/* --- équipes (it4) : fin --- */}
         {data.error && !res ? (
           <div className="callout critical" role="alert">
             <Icon name="alert" size={18} />
@@ -300,6 +330,9 @@ function AssistantsList({ detail }: { detail: string | null }) {
             <CatalogueGrid items={catalogue.data} onChanged={reloadAll} />
           )}
         </Section>
+        {/* --- équipes (it4) : début --- */}
+        </AssistantsTabs>
+        {/* --- équipes (it4) : fin --- */}
       </div>
 
       <AdoptDialog item={adopting} onClose={closeAdopt} onDone={reloadAll} />
