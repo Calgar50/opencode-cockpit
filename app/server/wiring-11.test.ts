@@ -469,6 +469,9 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
+      // L1e : surveillance des délégations lancées sans demande (dérivation et abonnement usage.updated), port toujours vide.
+      { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
+      { kind: "hub", key: "usage.updated", module: "delegationWatch" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "activity", module: "facts" },
@@ -479,8 +482,9 @@ describe("câblage 1.1 : ports neutres", () => {
       [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
       [1, 1, 1, 1],
     );
-    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.subscriptions], [[], []]);
-    assert.equal(wiring.derivations.length, 1);
+    assert.deepEqual(wiring.hooks.beforeOnceRelay, []);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated"]);
+    assert.equal(wiring.derivations.length, 2);
     assert.equal(wiring.startup.length, 1);
     assert.equal(wiring.routes.length, 4);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
