@@ -73,11 +73,14 @@ export interface TeamEditorProps {
   advanced: boolean;
 }
 
-/** `<CarteTab/>` : onglet « Carte » (#/assistants/carte?element=<nom>) : carte des assistants (L39b). */
+/** `<CarteTab/>` : onglet « Carte » (#/assistants/carte?element=<id de nœud>) : carte des assistants (L39b). */
 export interface CarteTabProps {
   directory: string;
   advanced: boolean;
-  /** Élément choisi par l'adresse (nom validé par la route) ; null : élément par défaut. */
+  /**
+   * Élément choisi par l'adresse : identifiant de nœud de la carte (mapNodeId de server/shared/agent-map.ts : `vous`,
+   * `agent:<nom>`, `raccourci:<nom>`, `fiche:<nom>`, `equipe:<id>`), validé par la route ; null : élément par défaut.
+   */
   element: string | null;
 }
 

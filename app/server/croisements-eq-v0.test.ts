@@ -8,7 +8,9 @@
 //      receivedFrom (T4) ordonnent et relient comme prévu, dans les bornes de T4 ;
 //   3. carte ↔ textes : clés d'agent-map-texts = listes fermées d'agent-map.ts, identiques à la fiche L39a ; toute arête dérivée
 //      a une phrase qui nomme sa source et sa cible et dit qui l'applique (dont le raccourci qui n'est pas une sous-tâche, écart 2
-//      de L39a, corrigé au train) ; toute note, tout avertissement et tout genre ont leur phrase ;
+//      de L39a, corrigé au train) ; toute note, tout avertissement et tout genre ont leur phrase ; carte ↔ route (L39a × T4w) :
+//      tout identifiant de nœud dérivé (mapNodeId) passe par l'adresse de la carte et revient identique, homonymes et noms longs
+//      compris (C §9.8 element=<id> ; correction du train de V0, relecture 4-vague-0) ;
 //   4. contrats ↔ migration 4 : formes des lignes de contracts-eq = colonnes créées par db.ts ;
 //   5. harnais avec les modules 1.1 de production : sans `equipes` = avec tous les squelettes (proxy, rechargement,
 //      réalignement, arrêt, DELETE /api/archive/:id) ; c11.reloadBusy composé seulement si teamRunner est installé ; arrêt décoré
@@ -18,6 +20,7 @@
 //      D-eq-14 inchangées.
 import assert from "node:assert/strict";
 import { describe, it, type TestContext } from "node:test";
+import { assistantsHref, assistantsViewOf, parseRoute, parseRouteQuery } from "../web/lib/router.ts";
 import { AssistantService } from "./assistants.ts";
 import type { ConfigWriteQueue } from "./config-queue.ts";
 import type { EventRow, RunRow, StepRow, TeamRow, TeamRunnerPort } from "./contracts-eq.ts";
@@ -34,6 +37,8 @@ import {
   MAP_WARNING_CODES,
   type MapEdge,
   mapAsList,
+  mapNodeId,
+  neighbours,
 } from "./shared/agent-map.ts";
 import * as carte from "./shared/agent-map-texts.ts";
 import { evaluate, type Rule, type TaskSize, truncateGlob } from "./shared/assistant-rules.ts";
@@ -356,6 +361,34 @@ describe("croisement it4 V0 : clés d'agent-map-texts = listes fermées d'agent-
       if (mode === "simple") assert.equal(map.notes.includes("profondeur-plus"), false, "aucune mention de profondeur en Simple");
     });
   }
+
+  it("carte ↔ route (L39a × T4w) : tout identifiant de nœud passe par l'adresse et revient identique, homonymes et noms longs compris", () => {
+    const input = sampleMap("avance");
+    // 43 caractères : accepté par le Studio (nameSchema, 64 au plus), plus long que la règle des identifiants d'équipe.
+    const long = "revue-des-requetes-sql-du-reporting-mensuel";
+    const map = deriveAgentMap({
+      ...input,
+      agents: [
+        ...input.agents,
+        { name: "revue", mode: "subagent", origine: "assistant", rules: [] },
+        { name: long, mode: "primary", origine: "studio", rules: [] },
+        { name: "Relecteur_v2.1", mode: "primary", origine: "studio", rules: [] },
+      ],
+      fiches: [...input.fiches, "revue"],
+      equipes: [...input.equipes, { id: "e".repeat(40), titre: "Équipe au plus long identifiant", etapes: [{ assistant: "revue", niveau: null }] }],
+    });
+    // Un agent, un raccourci et une fiche nommés « revue » : trois nœuds, que seul l'identifiant distingue.
+    assert.deepEqual(sorted(map.nodes.filter((node) => node.name === "revue").map((node) => node.id)), ["agent:revue", "fiche:revue", "raccourci:revue"]);
+    for (const id of [MAP_VOUS_ID, mapNodeId("agent", long), mapNodeId("agent", "Relecteur_v2.1"), mapNodeId("equipe", "e".repeat(40))]) {
+      assert.ok(map.nodes.some((node) => node.id === id), id);
+    }
+    for (const node of map.nodes) {
+      const hash = assistantsHref({ mode: "carte", element: node.id });
+      assert.deepEqual(assistantsViewOf(parseRoute(hash), parseRouteQuery(hash)), { mode: "carte", element: node.id }, `${node.id} (${hash})`);
+      assert.equal(neighbours(map, node.id)?.element.id, node.id, node.id);
+      assert.deepEqual(mapAsList(map, node.id).map((section) => section.node.id), [node.id], node.id);
+    }
+  });
 });
 
 // --- 4. Formes des lignes (contracts-eq, T4) ↔ migration 4 (db.ts) -------------------------------------------------------------

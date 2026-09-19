@@ -6,7 +6,8 @@
 // - branchements des fichiers partagés (ChatPage, Composer, AssistantsPage, router, Deroule, BudgetTab, web-animations.test.ts)
 //   entre les balises « équipes (it4) », appariées, et à leur place ;
 // - routes de la page Assistants (assistantsViewOf, assistantsHref) : cas valides, identifiant invalide ou trop long → vue par
-//   défaut ; onglets ;
+//   défaut ; élément de la carte = identifiant de nœud (C §9.8 element=<id>, mapNodeId de L39a ; correction du train de V0) ;
+//   onglets ;
 // - onglets « Assistants · Équipes · Carte » : motif APG, position annoncée, focus jamais pris, libellés seuls textes, onglet actif
 //   marqué par une bordure (jamais par la couleur seule) ;
 // - contraste forcé (U9) : un bloc @media (forced-colors: active) non vide dans chaque feuille des périmètres des équipes et de la
@@ -135,6 +136,7 @@ const BRANCHEMENTS: Readonly<Record<string, readonly RegExp[]>> = {
     /\bassistantsTabHref\b/,
     /\bteamsViewOf\b/,
     /\[a-z0-9-\]\{1,40\}/,
+    /\bCARTE_ELEMENT_ID\b/,
   ],
   "web/pages/chat/activity/Deroule.tsx": [/\bTeamDeroule\b/],
   "web/pages/settings/BudgetTab.tsx": [/\bTeamsBudgetSettings\b/],
@@ -380,9 +382,15 @@ describe("emplacements des équipes : squelettes", () => {
 const LISTE: AssistantsView = { mode: "liste" };
 const viewOf = (hash: string) => assistantsViewOf(parseRoute(hash), parseRouteQuery(hash));
 const ID_40 = "a".repeat(20) + "-".repeat(10) + "0".repeat(10);
+/** Nom d'assistant accepté par le Studio (nameSchema : 64 caractères au plus) et plus long que 40 caractères (43). */
+const NOM_43 = "revue-des-requetes-sql-du-reporting-mensuel";
+/** Nom d'agent d'opencode de 64 caractères (règle des agents de la 1.1 : fact-store.ts, task-once-guard.ts). */
+const NOM_64 = "A" + "b".repeat(30) + "_." + "9".repeat(30) + "-";
 
 describe("emplacements des équipes : routes de la page Assistants", () => {
   it("vues des équipes et de la carte lues et validées", () => {
+    assert.equal(NOM_43.length, 43);
+    assert.equal(NOM_64.length, 64);
     const cases: Array<[string, AssistantsView]> = [
       ["#/assistants/equipes", { mode: "equipes" }],
       ["#/assistants/equipes/", { mode: "equipes" }],
@@ -391,12 +399,41 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
       [`#/assistants/equipes/modifier/${ID_40}`, { mode: "equipe-modifier", id: ID_40 }],
       ["#/assistants/equipes/modifier/7", { mode: "equipe-modifier", id: "7" }],
       ["#/assistants/carte", { mode: "carte", element: null }],
-      ["#/assistants/carte?element=relire-script", { mode: "carte", element: "relire-script" }],
-      [`#/assistants/carte?element=${ID_40}`, { mode: "carte", element: ID_40 }],
       ["#/assistants/carte?element=", { mode: "carte", element: null }],
       ["#/assistants/carte?autre=1", { mode: "carte", element: null }],
     ];
     for (const [hash, view] of cases) assert.deepEqual(viewOf(hash), view, hash);
+  });
+
+  it("élément de la carte : identifiant de nœud de L39a (C §9.8 element=<id>), écrit en clair ou encodé", () => {
+    const elements = [
+      "vous",
+      "agent:relire-script",
+      "agent:build",
+      "agent:Build",
+      "agent:mon_agent.v2",
+      `agent:${NOM_43}`,
+      `agent:${NOM_64}`,
+      "raccourci:revue",
+      `raccourci:${NOM_64}`,
+      "fiche:standards-scripts",
+      `fiche:${NOM_43}`,
+      "equipe:revue-sql",
+      `equipe:${ID_40}`,
+    ];
+    for (const element of elements) {
+      const view: AssistantsView = { mode: "carte", element };
+      assert.deepEqual(viewOf(`#/assistants/carte?element=${element}`), view, element);
+      assert.deepEqual(viewOf(`#/assistants/carte?element=${encodeURIComponent(element)}`), view, element);
+      assert.deepEqual(viewOf(`#/assistants/carte?autre=1&element=${encodeURIComponent(element)}`), view, element);
+    }
+    // Homonymes : un agent, un raccourci et une fiche nommés « revue » restent trois éléments distincts.
+    const revue = ["agent:revue", "raccourci:revue", "fiche:revue"].map((element) => viewOf(`#/assistants/carte?element=${element}`));
+    assert.deepEqual(revue, [
+      { mode: "carte", element: "agent:revue" },
+      { mode: "carte", element: "raccourci:revue" },
+      { mode: "carte", element: "fiche:revue" },
+    ]);
   });
 
   it("identifiant absent, invalide ou trop long, segment en trop, élément répété : vue par défaut (liste)", () => {
@@ -413,13 +450,66 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
       "#/assistants/equipes/nouvelle/abc",
       "#/assistants/equipes/autre",
       "#/assistants/carte/relire-script",
+      "#/assistants/carte/agent:relire-script",
       `#/assistants/carte?element=${ID_40}b`,
       "#/assistants/carte?element=Build",
       "#/assistants/carte?element=%3Cscript%3E",
       "#/assistants/carte?element=a%2Fb",
       "#/assistants/carte?element=a&element=b",
+      "#/assistants/carte?element=agent:a&element=agent:a",
+      "#/assistants/carte?element=vous&element=agent:relire-script",
     ];
     for (const hash of invalid) assert.deepEqual(viewOf(hash), LISTE, hash);
+  });
+
+  it("élément de la carte sans famille, de famille inconnue, au nom invalide ou trop long : vue par défaut (liste)", () => {
+    const invalid = [
+      // Nom sans famille (ambigu : agent, raccourci ou fiche) ; famille inconnue ou mal écrite ; « vous » seul.
+      "relire-script",
+      "revue",
+      `${ID_40}b`,
+      "inconnu:x",
+      "Agent:relire-script",
+      "agents:relire-script",
+      "vous:x",
+      "Vous",
+      "vous-meme",
+      ":relire-script",
+      "agent",
+      "agent:",
+      "raccourci:",
+      "fiche:",
+      "equipe:",
+      // Noms refusés par la règle des agents d'opencode : premier caractère, caractères, longueur.
+      "agent:../x",
+      "agent:..%2Fx",
+      "agent%3A..%2F..%2Fx",
+      "agent:.cache",
+      "agent:-x",
+      "agent:_x",
+      "agent:a b",
+      "agent:a%20b",
+      "agent:a/b",
+      "agent:a%2Fb",
+      "agent:a:b",
+      "agent:agent:x",
+      "agent:%C3%A9quipe",
+      "agent:%3Cscript%3E",
+      "agent:a%0A",
+      `agent:${NOM_64}b`,
+      `raccourci:${NOM_64}b`,
+      `fiche:${NOM_64}b`,
+      // Équipe : règle des identifiants d'équipe (minuscules, chiffres, tirets, 40 caractères au plus).
+      `equipe:${ID_40}b`,
+      `equipe:${NOM_43}`,
+      "equipe:Revue",
+      "equipe:revue_sql",
+      "equipe:revue.sql",
+    ];
+    for (const element of invalid) assert.deepEqual(viewOf(`#/assistants/carte?element=${element}`), LISTE, element);
+    for (const element of invalid) {
+      assert.deepEqual(viewOf(`#/assistants/carte?element=${encodeURIComponent(decodeURIComponent(element))}`), LISTE, element);
+    }
   });
 
   it("vues existantes inchangées ; appel sans paramètres d'adresse permis", () => {
@@ -444,7 +534,13 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
       { mode: "equipe-nouvelle" },
       { mode: "equipe-modifier", id: "revue-sql" },
       { mode: "carte", element: null },
-      { mode: "carte", element: "relire-script" },
+      { mode: "carte", element: "vous" },
+      { mode: "carte", element: "agent:relire-script" },
+      { mode: "carte", element: `agent:${NOM_43}` },
+      { mode: "carte", element: `agent:${NOM_64}` },
+      { mode: "carte", element: "raccourci:revue" },
+      { mode: "carte", element: "fiche:revue" },
+      { mode: "carte", element: `equipe:${ID_40}` },
       LISTE,
       { mode: "nouveau" },
       { mode: "detail", name: "build" },
@@ -454,7 +550,8 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
     assert.equal(assistantsHref({ mode: "equipe-nouvelle" }), "#/assistants/equipes/nouvelle");
     assert.equal(assistantsHref({ mode: "equipe-modifier", id: "revue-sql" }), "#/assistants/equipes/modifier/revue-sql");
     assert.equal(assistantsHref({ mode: "carte", element: null }), "#/assistants/carte");
-    assert.equal(assistantsHref({ mode: "carte", element: "relire-script" }), "#/assistants/carte?element=relire-script");
+    assert.equal(assistantsHref({ mode: "carte", element: "vous" }), "#/assistants/carte?element=vous");
+    assert.equal(assistantsHref({ mode: "carte", element: "agent:relire-script" }), "#/assistants/carte?element=agent%3Arelire-script");
   });
 
   it("onglets : ordre, adresse de chaque onglet, onglet actif de chaque vue (aucun pour les vues en pleine page)", () => {
@@ -468,7 +565,7 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
       [LISTE, "assistants"],
       [{ mode: "detail", name: "build" }, "assistants"],
       [{ mode: "equipes" }, "equipes"],
-      [{ mode: "carte", element: "build" }, "carte"],
+      [{ mode: "carte", element: "agent:build" }, "carte"],
       [{ mode: "nouveau" }, null],
       [{ mode: "modifier", name: "x" }, null],
       [{ mode: "completer", name: "x" }, null],

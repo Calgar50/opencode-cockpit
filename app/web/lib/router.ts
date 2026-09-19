@@ -133,7 +133,8 @@ const LIST_VIEW: AssistantsView = Object.freeze({ mode: "liste" });
 /** #/assistants, #/assistants/nouveau, #/assistants/modifier/<nom>, #/assistants/completer/<nom>, #/assistants/detail/<nom>. */
 export function assistantsHref(view: AssistantsView = LIST_VIEW): string {
   // --- équipes (it4) : début ---
-  // #/assistants/equipes, #/assistants/equipes/nouvelle, #/assistants/equipes/modifier/<id>, #/assistants/carte?element=<nom>.
+  // #/assistants/equipes, #/assistants/equipes/nouvelle, #/assistants/equipes/modifier/<id>,
+  // #/assistants/carte?element=<id de nœud>.
   if (view.mode === "equipes") return routeHref("assistants", "equipes");
   if (view.mode === "equipe-nouvelle") return routeHref("assistants", "equipes", "nouvelle");
   if (view.mode === "equipe-modifier") return routeHref("assistants", "equipes", "modifier", view.id);
@@ -152,10 +153,18 @@ export function openAssistants(view: AssistantsView = LIST_VIEW): void {
 }
 
 // --- équipes (it4) : début ---
-/** Identifiant d'une équipe ou nom d'un élément de la carte lu dans l'adresse ; toute autre valeur donne la vue par défaut. */
+/** Identifiant d'une équipe lu dans l'adresse (…/equipes/modifier/<id>) ; toute autre valeur donne la vue par défaut. */
 const ASSISTANTS_ROUTE_ID = /^[a-z0-9-]{1,40}$/;
 
-/** Paramètre de la carte qui choisit l'élément montré : #/assistants/carte?element=<nom>. */
+/**
+ * Élément de la carte lu dans l'adresse : identifiant de nœud (C §9.8, mapNodeId de server/shared/agent-map.ts), jamais un nom
+ * seul (un agent, un raccourci et une fiche peuvent porter le même). « vous » ; `agent:`, `raccourci:` ou `fiche:` suivi d'un nom
+ * conforme à la règle des noms d'opencode de la 1.1 (fact-store.ts, task-once-guard.ts : 64 caractères au plus) ; `equipe:` suivi
+ * d'un identifiant d'équipe. Toute autre valeur donne la vue par défaut.
+ */
+const CARTE_ELEMENT_ID = /^(?:vous|(?:agent|raccourci|fiche):[A-Za-z0-9][A-Za-z0-9_.-]{0,63}|equipe:[a-z0-9-]{1,40})$/;
+
+/** Paramètre de la carte qui choisit l'élément montré : #/assistants/carte?element=<id de nœud> (agent:relire-script, vous…). */
 export const CARTE_ELEMENT_PARAM = "element";
 
 /** Onglets de la page Assistants, dans l'ordre affiché. La création et la modification (assistant, équipe) n'en ont pas. */
@@ -182,7 +191,7 @@ function carteElementOf(query: URLSearchParams): string | null | undefined {
   if (elements.length > 1) return undefined;
   const element = elements[0];
   if (element === undefined || element === "") return null;
-  return ASSISTANTS_ROUTE_ID.test(element) ? element : undefined;
+  return CARTE_ELEMENT_ID.test(element) ? element : undefined;
 }
 
 /**
