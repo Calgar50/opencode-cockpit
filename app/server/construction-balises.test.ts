@@ -45,6 +45,9 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   // sont balisées pour que la grande fusion les retrouve.
   "app/server/croisements-it1-v0.test.ts",
   "app/server/croisements-it1-v1.test.ts",
+  // Ajouté par L50a : le banc de la construction ajoute une FAMILLE de scénarios (`c5a-*`) à `e2e/scenarios`, que
+  // l'inventaire des scénarios cités dans la documentation (croisements it1 V5) doit reconnaître.
+  "app/server/croisements-it1-v5.test.ts",
   // Ajouté aux corrections de la relecture de V1 : la Seconde lecture requalifie une ligne `chat_turns`, que la dérivation des
   // faits d'activité de l'itération 1 relit (`noteSentMessage`). Le genre nouveau y est reconnu entre balises `c5:`.
   "app/server/activity-deriver.ts",
