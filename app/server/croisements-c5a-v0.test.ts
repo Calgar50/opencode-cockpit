@@ -22,6 +22,7 @@ import { CATALOGUE } from "./assistants-catalogue.ts";
 import type { Cockpit11Module } from "./contracts-11.ts";
 import { METHODS } from "./methods-catalogue.ts";
 import { applyEvent, emptyActivity } from "./shared/activity.ts";
+import { EventMemory, type FactContext, FactDeduper, type FactEvent, type FactSession, factsFromEvent } from "./shared/activity-facts.ts";
 import {
   CHRONO_MAX_ROWS,
   EQUIPIER_ROLE,
@@ -33,7 +34,7 @@ import {
   SECOND_READING_CATALOG_ID,
 } from "./shared/construction-constants.ts";
 import { TEXTES } from "./shared/construction-texts.ts";
-import type { ChronologieView, MethodsResponse, MethodView, SecondReadingEstimate } from "./shared/construction-types.ts";
+import type { ChronologieUsageRow, ChronologieView, MethodsResponse, MethodView, SecondReadingEstimate } from "./shared/construction-types.ts";
 import { chronologie } from "./shared/chronologie.ts";
 import { type Method, METHOD_LIMITS, methodTextProblem } from "./shared/methods.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
@@ -60,6 +61,55 @@ const entree = (id: string) => {
   return trouvee;
 };
 
+const isRecord = (valeur: unknown): valeur is Record<string, unknown> =>
+  typeof valeur === "object" && valeur !== null && !Array.isArray(valeur);
+
+/**
+ * Rejeu d'une capture par le CHEMIN DES FAITS, celui de la production (L4a, L4b) : sans lui, `timeline` ne rend ni appel ni
+ * repère, et la chronologie n'aurait rien à montrer. Même montage que le test de L47a, repris ici pour que le croisement porte
+ * sur le code fusionné.
+ */
+function rejouer(capture: string): { state: ReturnType<typeof emptyActivity>; now: number } {
+  const sessions = new Map<string, FactSession>([[ROOT, { rootId: ROOT, parentId: null, purpose: "chat", instance: "principale" }]]);
+  const memory = new EventMemory();
+  const store = new FactDeduper();
+  const resoudre = (id: string, info?: Readonly<Record<string, unknown>>): FactSession | null => {
+    const connue = sessions.get(id);
+    if (connue) return connue;
+    const parentId = typeof info?.parentID === "string" ? info.parentID : null;
+    const parent = parentId === null ? undefined : sessions.get(parentId);
+    if (!info || info.id !== id || !parent) return null;
+    return { rootId: parent.rootId, parentId, purpose: "chat", instance: parent.instance };
+  };
+  const ctx = (receivedAt: number): FactContext => ({
+    receivedAt,
+    session: (id, info) => resoudre(id, info),
+    messageRole: (id) => memory.messageRole(id),
+    promptKind: () => null,
+    firstUserMessage: (id) => memory.firstUserMessage(id),
+    userMessageParts: (id) => memory.userMessageParts(id),
+    unansweredUserMessages: (id) => memory.unansweredUserMessages(id),
+  });
+
+  let state = emptyActivity(ROOT);
+  let now = 0;
+  for (const { recv, wire } of readCapture(capture)) {
+    const event = wire.payload as FactEvent;
+    now = Math.max(now, recv);
+    memory.observe(event);
+    const info = event.properties?.info;
+    if ((event.type === "session.created" || event.type === "session.updated") && isRecord(info) && typeof info.id === "string") {
+      const session = resoudre(info.id, info);
+      if (session) sessions.set(info.id, session);
+    }
+    state = applyEvent(state, { kind: "opencode", event });
+    for (const fait of factsFromEvent(event, ctx(recv)).filter((f) => store.accept(f))) {
+      state = applyEvent(state, { kind: "cockpit", type: "activite.fait", data: fait });
+    }
+  }
+  return { state, now: now + 1_000 };
+}
+
 // --- 1. Câblage -------------------------------------------------------------------------------------------------------------
 
 describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
@@ -74,7 +124,10 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
     }
     // Les couples et le crochet de wiring-construction.ts sont ceux que porte le câblage de la 1.1.
     assert.deepEqual(STEP_ORDER.routes.slice(-CONSTRUCTION_ROUTES.length), CONSTRUCTION_ROUTES.map((couple) => [...couple]));
-    for (const module of CONSTRUCTION_HOOKS.beforeBilledSend) assert.ok(STEP_ORDER.hooks.beforeBilledSend.includes(module), module);
+    // Seconde lecture : un seul crochet, et le DERNIER de beforeBilledSend (D-5-06 : il ne requalifie que la ligne qu'enforceTurn
+    // vient d'écrire). Une liste vide passerait une boucle sans rien prouver, d'où l'égalité.
+    assert.deepEqual([...CONSTRUCTION_HOOKS.beforeBilledSend], ["secondReading"]);
+    assert.equal(STEP_ORDER.hooks.beforeBilledSend.at(-1), "secondReading");
   });
 
   it("squelettes inertes : avec tous les modules réels, aucune inscription de la construction, et GET /api/methods → 404", async (t) => {
@@ -161,7 +214,13 @@ describe("croisement 5a V0 : les contrats de T5a sont ceux du code livré", () =
       parMessage: METHOD_LIMITS.parMessage,
       parEtape: METHOD_LIMITS.parEtape,
     };
-    assert.deepEqual(limites, { parAssistant: METHODS_PER_ASSISTANT, parMessage: METHODS_PER_MESSAGE, parEtape: METHODS_PER_STEP });
+    // Valeurs du plan §4.2, écrites ici en toutes lettres : depuis la bascule, comparer METHOD_LIMITS aux constantes importées
+    // serait une tautologie. Ce sont les cinq valeurs décidées qui sont vérifiées, des deux côtés.
+    assert.deepEqual(limites, { parAssistant: 2, parMessage: 2, parEtape: 2 });
+    assert.deepEqual(
+      [METHODS_PER_ASSISTANT, METHODS_PER_MESSAGE, METHODS_PER_STEP, METHOD_BLOCK_MAX_CHARS, METHOD_BLOCK_MAX_WORDS],
+      [2, 2, 2, 900, 120],
+    );
     assert.equal(METHOD_LIMITS.blocMaxCaracteres, METHOD_BLOCK_MAX_CHARS);
     assert.equal(METHOD_LIMITS.blocMaxMots, METHOD_BLOCK_MAX_WORDS);
     // Les valeurs ne sont plus recopiées : une seule source, celle de T5a.
@@ -171,29 +230,62 @@ describe("croisement 5a V0 : les contrats de T5a sont ceux du code livré", () =
   });
 
   it("ChronologieView du contrat est le type rendu par chronologie() : captures p1, p2, p6 et p7 relues sans exception", () => {
+    let appelsVus = 0;
     for (const capture of CAPTURES) {
-      let state = emptyActivity(ROOT);
-      let now = 0;
-      for (const { recv, wire } of readCapture(capture)) {
-        now = Math.max(now, recv);
-        state = applyEvent(state, { kind: "opencode", event: wire.payload as never });
-      }
+      const { state, now } = rejouer(capture);
       // Le type est celui de T5a, pas celui de L47a : la ligne ne compile que si les deux disent la même chose.
-      const vue: ChronologieView = chronologie(state, [], now + 1_000);
+      const vue: ChronologieView = chronologie(state, [], now);
       assert.ok(Array.isArray(vue.rows) && Array.isArray(vue.groupes), capture);
       assert.equal(typeof vue.partiel, "boolean", capture);
+      assert.ok(vue.rows.length > 0, `${capture} : aucune ligne`);
       for (const ligne of vue.rows) {
         assert.equal(typeof ligne.key, "string", capture);
+        appelsVus += ligne.calls.length;
         for (const appel of ligne.calls) {
           // Honnêteté : sans ligne `usage`, les jetons et l'IA sont « non enregistrés », jamais 0 ni un nom inventé.
-          assert.equal(appel.tokensIn, null, `${capture} / ${appel.messageId}`);
-          assert.equal(appel.tokensOut, null, `${capture} / ${appel.messageId}`);
-          assert.equal(appel.model, null, `${capture} / ${appel.messageId}`);
+          assert.equal(appel.tokensIn, null, `${capture} / ${appel.messageId} : jetons d'entrée`);
+          assert.equal(appel.tokensOut, null, `${capture} / ${appel.messageId} : jetons de sortie`);
+          assert.equal(appel.model, null, `${capture} / ${appel.messageId} : IA`);
         }
       }
       // Bornes cohérentes quand elles existent (une conversation sans aucune ligne les laisse à null).
       if (vue.start !== null && vue.end !== null) assert.ok(vue.end >= vue.start, capture);
     }
+    // Sans appel relu, les trois contrôles d'honnêteté ci-dessus ne prouveraient rien : le rejeu doit en produire.
+    assert.ok(appelsVus >= 5, `captures relues sans appel d'IA (${appelsVus})`);
+  });
+
+  it("une ligne `usage` du registre remplit les jetons de son appel, et elle seule", () => {
+    const { state, now } = rejouer("p1-delegation-parallele.jsonl");
+    const sans = chronologie(state, [], now);
+    const premier = sans.rows.flatMap((ligne) => ligne.calls.map((appel) => ({ appel, sessionId: ligne.sessionId })))[0];
+    assert.ok(premier, "aucun appel dans p1");
+    const ligneUsage: ChronologieUsageRow = {
+      messageId: premier.appel.messageId,
+      sessionId: premier.sessionId,
+      agent: "orchestrateur",
+      providerId: "github-copilot",
+      modelId: "ia-de-croisement",
+      variant: null,
+      tokensInput: 100,
+      tokensOutput: 10,
+      tokensReasoning: 1,
+      tokensCacheRead: 5,
+      tokensCacheWrite: 2,
+      cost: 0.5,
+      createdAt: 1,
+      completedAt: 2,
+    };
+    const avec = chronologie(state, [ligneUsage], now);
+    const tous = avec.rows.flatMap((ligne) => ligne.calls);
+    const rempli = tous.find((appel) => appel.messageId === premier.appel.messageId);
+    assert.ok(rempli);
+    // Entrée = input + cache lu + cache écrit ; sortie = output + réflexion (mêmes règles que ledger.summary).
+    assert.equal(rempli.tokensIn, 107);
+    assert.equal(rempli.tokensOut, 11);
+    assert.equal(rempli.model, "ia-de-croisement");
+    // Les autres appels restent « non enregistrés » : une ligne `usage` ne déborde jamais sur son voisin.
+    for (const appel of tous.filter((a) => a.messageId !== premier.appel.messageId)) assert.equal(appel.tokensIn, null, appel.messageId);
     // La borne de troncature appartient à la route (L47b) : le module pur ne la lit pas.
     assert.equal(typeof CHRONO_MAX_ROWS, "number");
   });
