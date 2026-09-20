@@ -1,0 +1,137 @@
+/* Propriétaire : L12b. Carte d'une demande en examen ou en attente (DecisionStatus) et bandeau d'« Autonome avec contrôle »
+   (AutonomyBanner) — spécification §4.3 étape 7, §4.12, §4.13, §5.5, §5.6, P7.
+   - icône + mot partout, jamais la couleur seule : la teinte de l'état ne porte aucune information à elle seule ;
+   - aucune animation, donc aucune animation infinie (web-animations) ;
+   - textes secondaires en --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes), jamais une opacité ;
+   - à 400 px, le bandeau tient sur UNE ligne : les segments repliés sont rendus dans .visually-hidden par le composant, la ligne
+     ne défile pas horizontalement et les boutons passent sous le résumé quand la place manque ;
+   - @media (forced-colors: active) : bordures et focus en couleurs système. */
+
+/* --- Carte d'une demande (dans .interaction) ------------------------------------------------------------------------------ */
+
+.decision-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.decision-status[data-etat="examen"] {
+  border-left-color: var(--accent);
+}
+.decision-status[data-etat="attente"] {
+  border-left-color: var(--warning-ink);
+}
+
+.decision-status-titre {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.decision-status-titre .icon {
+  flex: none;
+}
+.decision-status-ligne {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- Bandeau de la demande ------------------------------------------------------------------------------------------------ */
+
+.autonomy-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.autonomy-banner-resume {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.autonomy-banner-resume .icon {
+  flex: none;
+}
+.autonomy-banner-segment {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.autonomy-banner-plus {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.autonomy-banner-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.autonomy-banner-fin,
+.autonomy-banner-vide {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* §5.6 : une seule ligne pour le résumé ; les boutons passent dessous, le bandeau ne défile jamais de côté. */
+@media (max-width: 400px) {
+  .autonomy-banner {
+    padding: 6px 8px;
+  }
+  .autonomy-banner-resume {
+    flex: 1 0 100%;
+  }
+  .autonomy-banner-actions {
+    flex: 1 0 100%;
+  }
+}
+
+@media (forced-colors: active) {
+  .decision-status,
+  .autonomy-banner,
+  .autonomy-banner-plus {
+    border-color: CanvasText;
+  }
+  .decision-status[data-etat="examen"],
+  .decision-status[data-etat="attente"] {
+    border-left-color: CanvasText;
+  }
+  .decision-status-ligne,
+  .autonomy-banner-fin,
+  .autonomy-banner-vide,
+  .autonomy-banner-plus {
+    color: CanvasText;
+  }
+}
