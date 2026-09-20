@@ -1,0 +1,178 @@
+/* 1.1 (L31c) : zooms 2 et 3 de la salle de contrôle — sélecteur des conversations, vue 3D ou repli 2D, liste des assistants,
+   panneau du zoom 3 et légendes (spécification §5.5, §5.6 l.928, §5.8 ; plan d'exécution it3, fiche L31c, D-3d-17, D-3d-22).
+   - Mouvement : AUCUNE animation infinie ; la seule animation déclarée est sous
+     @media (prefers-reduced-motion: no-preference), avec un nombre d'itérations écrit (salle3d-animations.test.ts). La pulsation
+     des nœuds est réservée à la 3D, dans le moteur three : rien ne pulse ici.
+   - Couleurs : jetons de styles.css seulement, pour suivre le thème clair et le thème sombre ; les couleurs forcées sont
+     traitées par L33 (blocs forced-colors), qui n'entre pas ici.
+   - 900 px : le tableau passe sous la vue. 400 px (§5.6 l.928) : LISTE SEULE — la carte 2D, le tableau et la scène 3D sont
+     retirés, la liste des assistants reste la vérité. */
+
+.zoom-conv {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.zoom-conv-tete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.zoom-conv-choix {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zoom-conv-choix label {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.zoom-conv-note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.zoom-conv-bandeau {
+  margin: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+
+.zoom-conv-corps {
+  display: grid;
+  gap: 10px;
+  min-height: 2rem;
+}
+
+.zoom-conv-vue {
+  position: relative;
+}
+
+.zoom-conv-3d {
+  min-height: 240px;
+}
+
+.zoom-conv-tableau {
+  overflow-x: auto;
+}
+
+/* Liste des assistants : la vérité de la vue (P7), toujours montrée, à côté de la carte ou de la scène. */
+.zoom-conv-liste ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.zoom-conv-panneau {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.zoom-conv-panneau-tete {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.zoom-conv-panneau-tete p {
+  flex: 1 1 auto;
+  margin: 0;
+  font-weight: 600;
+}
+
+.zoom-conv-panneau dl {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.zoom-conv-panneau dt {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.zoom-conv-panneau dd {
+  margin: 0;
+}
+
+.zoom-conv-panneau dd ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.zoom-conv-panneau-texte {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.zoom-conv-legendes {
+  display: grid;
+  gap: 8px;
+}
+
+.zoom-conv-consigne:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.zoom-conv-simple {
+  display: grid;
+  gap: 8px;
+}
+
+/* Apparition du panneau du zoom 3 : UNE seule fois, et seulement si le mouvement est permis (§5.5 ; JP-13). */
+@media (prefers-reduced-motion: no-preference) {
+  .zoom-conv-panneau {
+    animation-name: zoom-conv-apparition;
+    animation-duration: 160ms;
+    animation-iteration-count: 1;
+    animation-timing-function: ease-out;
+  }
+
+  @keyframes zoom-conv-apparition {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+}
+
+@media (width <= 900px) {
+  .zoom-conv-3d {
+    min-height: 180px;
+  }
+}
+
+/* 400 px : liste seule (§5.6 l.928). La carte 2D, la scène 3D et le tableau disparaissent ; la liste reste la vérité. */
+@media (width <= 400px) {
+  .zoom-conv-vue,
+  .zoom-conv-tableau {
+    display: none;
+  }
+
+  .zoom-conv-panneau dl {
+    grid-template-columns: 1fr;
+  }
+}
