@@ -2,6 +2,13 @@
 // Sous-routes : #/assistants/nouveau, /modifier/<nom>, /completer/<nom> (assistant de création), /detail/<nom> (fenêtre).
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { MESSAGES } from "../../server/shared/assistant-rules.ts";
+// <c5:imports>
+import { EQUIPIER_ROLE } from "../../server/shared/construction-constants.ts";
+import { TEXTES as TEXTES_C5 } from "../../server/shared/construction-texts.ts";
+import { methodLabels, texteAssistantsEquipe } from "../../server/shared/methods-view.ts";
+import { getMethods } from "../lib/api-construction.ts";
+import { MethodsLibrary } from "./assistants/methods/MethodsLibrary.tsx";
+// </c5:imports>
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -61,10 +68,19 @@ function AssistantsList({ detail }: { detail: string | null }) {
   const guardReload = useReloadGuard();
   const data = useAsync(() => api.assistants(), []);
   const catalogue = useAsync(() => api.assistantsCatalogue(), []);
+  // <c5:methodes-chargement>
+  // Catalogue des méthodes (GET /api/methods, L44b), lu une fois pour toute la page : il sert à la bibliothèque et aux
+  // libellés des méthodes de la fiche d'identité. Lecture seule, aucun appel d'IA, aucun coût.
+  const methodes = useAsync(() => getMethods(), []);
+  // </c5:methodes-chargement>
   const reloadRef = useRef<() => void>(() => undefined);
   reloadRef.current = () => {
     data.reload();
     catalogue.reload();
+    // <c5:methodes-relecture>
+    // « Utilisée par » et « déjà appliquée » sont lus dans les fichiers d'agent : ils changent dès qu'un assistant change.
+    methodes.reload();
+    // </c5:methodes-relecture>
   };
   const reloadAll = useCallback(() => reloadRef.current(), []);
   const timer = useRef<number | undefined>(undefined);
@@ -136,6 +152,14 @@ function AssistantsList({ detail }: { detail: string | null }) {
   };
 
   const res = data.data;
+  // <c5:equipiers>
+  // Assistants d'équipe (rôle « equipier », L45a) : ils ont leur propre groupe plus bas, avec sa phrase ; « Mes assistants »
+  // ne les répète donc pas. Les trois expressions de ce groupe (nombre, état vide, grille) lisent `mesAssistants`.
+  const equipiers = res ? res.assistants.filter((view) => view.role === EQUIPIER_ROLE) : [];
+  const mesAssistants = res ? res.assistants.filter((view) => view.role !== EQUIPIER_ROLE) : [];
+  /** Libellés des méthodes d'un assistant, pour sa fiche d'identité : titres du catalogue, sinon identifiants du fichier. */
+  const libellesMethodes = (view: AssistantView) => methodLabels(view.methods, methodes.data?.methods ?? null);
+  // </c5:equipiers>
   const detailView = detail && res ? (res.assistants.find((a) => a.name === detail) ?? null) : null;
   const detailBuiltin = detail && res && !detailView ? (res.builtins.find((b) => b.name === detail) ?? null) : null;
   const createButton = (
@@ -165,12 +189,12 @@ function AssistantsList({ detail }: { detail: string | null }) {
           </div>
         ) : null}
 
-        <Section title="Mes assistants" count={res?.assistants.length}>
+        <Section title="Mes assistants" count={res ? mesAssistants.length : undefined}>
           {!res ? (
             data.loading ? (
               <Spinner />
             ) : null
-          ) : res.assistants.length === 0 ? (
+          ) : mesAssistants.length === 0 ? (
             <div className="card">
               <EmptyState icon="sparkle" title="Aucun assistant pour l'instant" action={createButton}>
                 Installez un assistant prêt à l'emploi ou créez le vôtre en 5 écrans.
@@ -178,7 +202,7 @@ function AssistantsList({ detail }: { detail: string | null }) {
             </div>
           ) : (
             <div className="ast-grid">
-              {res.assistants.map((view) => (
+              {mesAssistants.map((view) => (
                 <AssistantCard
                   key={view.name}
                   view={view}
@@ -193,6 +217,27 @@ function AssistantsList({ detail }: { detail: string | null }) {
             </div>
           )}
         </Section>
+
+        {/* <c5:equipiers-groupe> */}
+        {equipiers.length > 0 ? (
+          <Section title={texteAssistantsEquipe(equipiers.length)} subtitle={TEXTES_C5.partout.assistantsEquipe.phrase}>
+            <div className="ast-grid">
+              {equipiers.map((view) => (
+                <AssistantCard
+                  key={view.name}
+                  view={view}
+                  busy={busyKey === view.name || realign.busy}
+                  onUse={() => openChatWithAssistant(view.name)}
+                  onDetail={() => openAssistants({ mode: "detail", name: view.name })}
+                  onEdit={() => openAssistants({ mode: "modifier", name: view.name })}
+                  onDelete={() => void remove(view)}
+                  onSwitch={(update) => void realign.run([update])}
+                />
+              ))}
+            </div>
+          </Section>
+        ) : null}
+        {/* </c5:equipiers-groupe> */}
 
         {res && res.toComplete.length > 0 ? (
           <Section title="À compléter" count={res.toComplete.length}>
@@ -300,6 +345,21 @@ function AssistantsList({ detail }: { detail: string | null }) {
             <CatalogueGrid items={catalogue.data} onChanged={reloadAll} />
           )}
         </Section>
+
+        {/* <c5:methodes-section> */}
+        {/* Bibliothèque des méthodes (L44d). L44f la déplacera dans l'onglet « Méthodes » en 5b : la section entière bouge alors d'un bloc. */}
+        <Section title="Méthodes">
+          <MethodsLibrary
+            catalogue={methodes.data}
+            erreur={methodes.error}
+            chargement={methodes.loading}
+            onReessayer={methodes.reload}
+            assistants={res?.assistants ?? null}
+            onChanged={reloadAll}
+            avance={advanced}
+          />
+        </Section>
+        {/* </c5:methodes-section> */}
       </div>
 
       <AdoptDialog item={adopting} onClose={closeAdopt} onDone={reloadAll} />
@@ -336,7 +396,14 @@ function AssistantsList({ detail }: { detail: string | null }) {
           )
         ) : detailView ? (
           <div className="stack">
-            <IdentityCard data={identityOfView(detailView, detailView.origin === "catalogue" ? MESSAGES.catalogueReview : null)} />
+            <IdentityCard
+              data={{
+                ...identityOfView(detailView, detailView.origin === "catalogue" ? MESSAGES.catalogueReview : null),
+                // <c5:methodes-fiche>
+                methods: libellesMethodes(detailView),
+                // </c5:methodes-fiche>
+              }}
+            />
             {advanced ? (
               <p className="tiny muted">
                 <Badge>{detailView.name}</Badge>

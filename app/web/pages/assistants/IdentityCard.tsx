@@ -1,6 +1,10 @@
 // Carte d'identité d'un assistant (§9.4) : ce qu'il peut faire, IA, coût, fiches, raccourcis et « À savoir ».
 // Utilisée par le détail, l'aperçu d'installation et l'aperçu en direct de l'assistant de création.
 import { budgetShareText, RIGHT_LINE_SYMBOLS, RIGHTS_INFO, TIER_LABELS, variantLabel } from "../../../server/shared/assistant-rules.ts";
+// <c5:methodes-import>
+import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
+import { texteFicheMethodes } from "../../../server/shared/methods-view.ts";
+// </c5:methodes-import>
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Badge, Spinner } from "../../components/ui.tsx";
@@ -40,6 +44,13 @@ export interface IdentityData {
   /** Bandeau « Exemple à relire avec votre équipe ». */
   review?: string | null;
   examples?: string[];
+  // <c5:methodes-champ>
+  /**
+   * Libellés des méthodes attachées, dans l'ordre du fichier d'agent (D-5-07) : titre du catalogue quand il est connu, sinon
+   * l'identifiant écrit dans le fichier (`methodLabels`). Absent ou vide : la ligne et sa phrase ne sont pas affichées.
+   */
+  methods?: readonly string[];
+  // </c5:methodes-champ>
 }
 
 export const KNOW_TEXT =
@@ -133,6 +144,10 @@ export function IdentityCard({ data, updating = false, className }: { data: Iden
   const monthly = boot.settings.budget.monthlyUsd;
   const { estimate } = data;
   const status = data.tierStatus && data.tierStatus !== "ok" ? data.tierStatus : null;
+  // <c5:methodes-ligne>
+  // « Méthodes : {liste} », null sans méthode : la ligne et sa phrase n'apparaissent alors pas du tout (fiche L44d).
+  const ligneMethodes = texteFicheMethodes(data.methods ?? []);
+  // </c5:methodes-ligne>
 
   return (
     <section className={`idc${className ? ` ${className}` : ""}`} aria-busy={updating} aria-label={`Carte d'identité : ${data.title || "nouvel assistant"}`}>
@@ -209,6 +224,14 @@ export function IdentityCard({ data, updating = false, className }: { data: Iden
         <span className="idc-label">Fiches consultées : </span>
         {data.fiches.length > 0 ? data.fiches.join(" · ") : "aucune"}
       </p>
+      {/* <c5:methodes> */}
+      {ligneMethodes ? (
+        <div className="stack tight" style={{ gap: 2 }}>
+          <p>{ligneMethodes}</p>
+          <p className="small secondary">{TEXTES_C5.partout.methodes.fiche.phrase}</p>
+        </div>
+      ) : null}
+      {/* </c5:methodes> */}
       {data.usedBy !== null ? (
         <p>
           <span className="idc-label">Utilisé par les raccourcis : </span>
