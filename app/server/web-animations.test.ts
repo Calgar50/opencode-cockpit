@@ -18,6 +18,13 @@ const WEB_DIR = path.join(import.meta.dirname, "..", "web");
 
 /** Dossiers de l'interface 1.1 soumis aux règles de mouvement (relatifs à web/). */
 const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics"];
+// <c5:perimetre>
+// Itération 5 (T5a) : dossiers de la construction déjà présents, où les coûts par équipe (L46b) et les archives d'équipe (L46b,
+// L44f) ajoutent des vues. Ce sont des PRÉFIXES de dossiers, seule forme reconnue par inScope. Les dossiers neufs
+// pages/assistants/methods (L44d) et pages/chat/methods (L44e) sont ajoutés par l'intégrateur du train de V2, quand ils existent ;
+// pages/chat/activity couvre déjà la chronologie (L47b).
+SCOPES.push("pages/costs", "pages/archives");
+// </c5:perimetre>
 
 /** Fichiers sans aucune boucle (nom de fichier, où qu'il soit sous web/). */
 const NO_LOOP_FILES = new Set(["NeonBand.tsx", "neon.css", "DemoPlayer.tsx"]);
