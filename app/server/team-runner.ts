@@ -10,6 +10,10 @@
 // - l.1037 : rien n'est envoyé ni facturé avant le CONTRÔLE DE FRAÎCHEUR (A4, D-eq-17) : `preflight.check` n'émet aucune requête
 //   et le runner n'en émet aucune pour un refus ; `preflight.recheck` est refait APRÈS l'acceptation, avant toute injection et
 //   avant toute session d'étape ;
+// - D-eq-05 : après un arrêt (ou une interruption par rechargement), PLUS AUCUNE étape n'est lancée. `runStepInner` relit donc
+//   l'arrêt à CHACUNE de ses attentes — revérification, création de la session, lecture des résultats précédents — et sa
+//   transition vers « en-cours » est bloquante : la fenêtre qui va de la place réservée à `prompt_async` est fermée par
+//   construction, et une session créée puis abandonnée est supprimée (dropStepSession) ;
 // - U2, D-eq-26 : `message_text` (consigne réelle d'une étape) n'est JAMAIS journalisé ; un journal ne cite que `message_sha256`.
 //   La demande, les pièces jointes et les précisions ne sortent d'ici que dans le message d'une étape ou dans l'injection
 //   (D-eq-27 : aucune colonne ne les garde ; après un redémarrage elles sont relues localement par `requestFromStepMessage`).
@@ -538,8 +542,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       steps: base.steps.map((step) => ({ ...step, ia: { ...step.ia, label: step.ia.model === null ? null : modelName(step.ia.model, lite) } })),
       pause: pauseView(run, row.state, row.cause),
       suite: row.state === "terminee" || row.state === "arretee" ? null : suiteOf(run),
-      // D-eq-27 : un lancement dont la demande n'est plus reconstituable (textes purgés, aucune étape envoyée) n'est pas relançable.
-      relancable: base.relancable && (run.demande !== null || readRequest(runId) !== null),
+      // D-eq-27 : un lancement dont la demande n'est plus reconstituable (textes purgés, aucune étape envoyée) n'est pas
+      // relançable. Seule la BASE fait foi, comme pour la route de relance : la mémoire du processus n'est qu'un cache de
+      // lecture, que la purge de la conversation ne touche pas — l'écran dirait sinon « relançable » jusqu'au redémarrage.
+      relancable: base.relancable && readRequest(runId) !== null,
     };
   };
 
@@ -793,11 +799,13 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   };
 
   /**
-   * Contrôle de fraîcheur (A4, D-eq-17), puis injection de la demande et boucle. RIEN n'est envoyé ni facturé avant ce contrôle :
-   * une modification met l'équipe en « attente-modification », un autre écart en pause « À vérifier ».
+   * Préparation d'un lancement : contrôle de fraîcheur (A4, D-eq-17), puis injection de la demande. RIEN n'est envoyé ni facturé
+   * avant ce contrôle : une modification met l'équipe en « attente-modification », un autre écart en pause « À vérifier ».
+   * Rend vrai quand la boucle de l'ordonnanceur peut partir. Séparée de `tick` pour que [Continuer] n'attende QUE cette partie
+   * (la réponse de POST …/continue ne doit pas rester ouverte jusqu'à la fin de toute l'équipe).
    */
-  const startRun = async (run: RunMemory, options: { injecter: boolean }): Promise<void> => {
-    if (closed || run.stopping) return;
+  const prepareRun = async (run: RunMemory, options: { injecter: boolean }): Promise<boolean> => {
+    if (closed || run.stopping) return false;
     let outcome: RecheckOutcome;
     try {
       outcome = await recheckPlan(run);
@@ -805,6 +813,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       warn("contrôle de fraîcheur impossible : équipe en pause", { runId: run.runId, error: errorMessage(err) });
       outcome = { ok: false, genre: "changement", code: "opencode-injoignable" };
     }
+    // Arrêt ou interruption pendant le contrôle : plus rien n'est injecté dans la conversation ni lancé (D-eq-05, spéc. §6).
+    // L'état final a déjà été enregistré par `stopped` ou `interrupt` : aucune pause ne doit l'écraser.
+    if (closed || run.stopping) return false;
     if (!outcome.ok) {
       run.attenteFraicheur = true;
       if (outcome.genre === "modification") {
@@ -816,7 +827,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
         setRunState(run, "attente-verification", "changement");
         audit(run.runId, "fraicheur", { genre: "changement", code: outcome.code });
       }
-      return;
+      return false;
     }
     run.attenteFraicheur = false;
     run.changement = null;
@@ -833,8 +844,12 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
         audit(run.runId, "injection-refusee", { genre: "demande" });
       }
     }
-    if (!setRunState(run, "en-cours")) return;
-    await tick(run);
+    return setRunState(run, "en-cours");
+  };
+
+  /** Préparation puis boucle de l'ordonnanceur, en une tâche (lancement et relance : la réponse HTTP est déjà partie). */
+  const startRun = async (run: RunMemory, options: { injecter: boolean }): Promise<void> => {
+    if (await prepareRun(run, options)) await tick(run);
   };
 
   // --- Ordonnanceur -----------------------------------------------------------------------------------------------------------
@@ -885,6 +900,19 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     store.steps.setState(key, "echec", { cause: propre });
     emitStep(run, key, "echec", sessionId);
     audit(run.runId, "etape-echec", { etape: key.stepId, tentative: key.tentative, cause: propre });
+  };
+
+  /**
+   * Session d'étape créée puis ABANDONNÉE avant tout envoi (arrêt, interruption, plafond, étape déjà close) : elle est
+   * supprimée comme le fait la branche « plancher d'étape non vérifié », et rien n'est envoyé ni facturé (D-eq-05, spéc. §6).
+   */
+  const dropStepSession = async (run: RunMemory, stepId: string, sessionId: string): Promise<void> => {
+    audit(run.runId, "etape-abandonnee", { etape: stepId, sessionId });
+    try {
+      await c11.client.request("DELETE", `/session/${enc(sessionId)}`, { directory: run.directory, timeoutMs: STEP_TIMEOUT_MS });
+    } catch (err) {
+      warn("session d'étape abandonnée non supprimée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
+    }
   };
 
   const recheckStep = async (run: RunMemory, planned: PlannedStep): Promise<StepVerdict> => {
@@ -963,6 +991,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
     // (1) Revérifications, avant toute création de session et avant tout envoi.
     const verdict = await recheckStep(run, planned);
+    // Arrêt ou interruption pendant la revérification (elle lit les règles de l'assistant, donc elle attend) : aucune session
+    // n'est créée, aucune pause n'écrase l'état final déjà enregistré (D-eq-05, spéc. §6 : « plus aucune étape lancée »).
+    if (closed || run.stopping) return;
     if (verdict.kind === "modification") {
       run.changement = { code: "assistant-absent", details: { nom: verdict.nom } };
       run.attenteFraicheur = false;
@@ -1042,6 +1073,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     } catch (err) {
       warn("session d'étape vérifiée mais non enregistrée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
     }
+    // Arrêt ou interruption pendant la création de la session : elle est supprimée et RIEN n'est envoyé (D-eq-05).
+    if (closed || run.stopping) {
+      await dropStepSession(run, stepId, sessionId);
+      return;
+    }
 
     // (3) Envoi : la consigne réelle est gardée en base (U2) et n'est JAMAIS journalisée (D-eq-26, un journal cite l'empreinte).
     const texte = stepMessage(run.flow, stepId, {
@@ -1056,6 +1092,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       precisions: run.precisions,
       resultats: await resultsFor(run),
     });
+    // Arrêt ou interruption pendant la lecture des résultats précédents : dernière attente avant l'envoi (D-eq-05).
+    if (closed || run.stopping) {
+      await dropStepSession(run, stepId, sessionId);
+      return;
+    }
     const empreinte = sha256(texte);
     store.steps.patch(key, {
       sessionId,
@@ -1069,7 +1110,15 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       messageText: texte,
       messageSha256: empreinte,
     });
-    if (store.steps.setState(key, "en-cours")) emitStep(run, key, "en-cours", sessionId);
+    // Transition BLOQUANTE : un refus signifie que l'étape a déjà été close ailleurs (« non-lancee » par `stopped`,
+    // « interrompue » par `interrupt`, « arretee », plafond). La fenêtre qui va de la place réservée à l'envoi est ainsi
+    // fermée par construction : plus aucun `prompt_async` ne part après un arrêt, et la session créée est supprimée.
+    if (!store.steps.setState(key, "en-cours")) {
+      store.steps.patch(key, { sessionId: null });
+      await dropStepSession(run, stepId, sessionId);
+      return;
+    }
+    emitStep(run, key, "en-cours", sessionId);
     const watch = watchStep(run, key, sessionId);
     const ref = modelRef(planned.model);
     const end = c11.configQueue.beginBilled();
@@ -1308,8 +1357,12 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     }
     audit(runId, "reprise", { depuis: row.state }, "vous");
     // Pause du contrôle de fraîcheur : `recheck` est refait, et l'équipe reste en pause tant qu'il échoue (raison mise à jour).
+    // La réponse n'attend QUE ce contrôle : la boucle part derrière, sur la même file, et la feuille suit la progression par
+    // les événements. Sans cela, [Continuer] resterait ouvert jusqu'à la fin de toute l'équipe.
     if (run.attenteFraicheur) {
-      await schedule(run, () => startRun(run, { injecter: true }));
+      await schedule(run, async () => {
+        if (await prepareRun(run, { injecter: true })) void schedule(run, () => tick(run));
+      });
       return view(runId) ?? refusal(404, "not-found");
     }
     if (!setRunState(run, "en-cours")) return refusal(409, "etat-incompatible");
@@ -1358,9 +1411,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     if (!row) return refusal(404, "not-found");
     const run = runs.get(runId) ?? reattach(runId);
     if (!run) return refusal(404, "pas-relancable");
-    // D-eq-27 : sans demande reconstituable, la relance passe par la saisie.
-    const request = run.demande === null ? readRequest(runId) : { demande: run.demande, fichiers: run.fichiers };
-    if (request === null) return refusal(409, "pas-relancable");
+    // D-eq-27 : sans demande reconstituable EN BASE, la relance passe par la saisie — même porte que la vue et que la route
+    // (rebuildRunBody, L37c). La mémoire du processus, qui garde la demande telle que l'utilisateur l'a écrite, sert ensuite.
+    const enBase = readRequest(runId);
+    if (enBase === null) return refusal(409, "pas-relancable");
+    const request = run.demande === null ? enBase : { demande: run.demande, fichiers: run.fichiers };
     await hydrateResults(run);
     // Transition d'abord (table de T4 : « terminee » et « arretee » sont finaux) : rien n'est touché en mémoire ni en base
     // quand elle est refusée. Une pause (dont celle d'un redémarrage) et les états en échec admettent une nouvelle tentative ;
@@ -1531,10 +1586,14 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
         }
       }
       const depense = store.spentOfRun(run.runId);
-      const plafond = store.runs.get(run.runId)?.plafond ?? null;
-      // Arrêt au plafond : la cause transmise par le décorateur le dit (`guards.stopForCap`, D-eq-05) ; la dépense arrivée au
-      // plafond le dit aussi, quand l'arrêt vient d'ailleurs pendant la dernière étape.
-      const parPlafond = causeOfStop(cause) === "plafond" || (plafond !== null && depense >= plafond);
+      const row = store.runs.get(run.runId);
+      const plafond = row?.plafond ?? null;
+      // Arrêt au plafond, trois signes. Le premier est le CHEMIN NOMINAL : `guards.stopForCap` mémorise la cause en base AVANT
+      // l'arrêt (D-eq-05, contrat de team-run-guards.ts), puis arrête l'arbre au nom de l'ÉQUIPE — le décorateur transmet donc
+      // « equipe », et le plafond posé par `recheckStep` s'arrête AVANT dépassement, donc la dépense n'y suffit pas. Les deux
+      // autres : la cause transmise par le décorateur (« plafond-cout », « plafond-delegations ») et la dépense arrivée au
+      // plafond, quand l'arrêt vient d'ailleurs pendant la dernière étape.
+      const parPlafond = causeOfStop(cause) === "plafond" || row?.cause === "plafond" || (plafond !== null && depense >= plafond);
       store.runs.patch(run.runId, { cost: depense });
       setRunState(run, parPlafond ? "plafond" : "arretee", parPlafond ? "plafond" : causeOfStop(cause));
       audit(run.runId, "arret", { cause, arretees: result === null ? null : result.aborted.length, plafond: parPlafond });

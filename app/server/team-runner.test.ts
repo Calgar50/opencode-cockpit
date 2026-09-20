@@ -23,11 +23,13 @@ import { buildFloor, canonicalRules, parseFloorMark } from "./shared/session-flo
 import { stepMessage } from "./shared/flow.ts";
 import { planSteps } from "./shared/team-limits.ts";
 import type { Flow, FlowEstimate, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
+import { remplir, TEXTES } from "./shared/team-texts.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent, FakeSession } from "./test-support/fake-opencode.ts";
 import { until } from "./test-support/helpers.ts";
 import { createTeamRunnerModule, type TeamRunner } from "./team-runner.ts";
 import { createTeamStore } from "./team-store.ts";
+import { messageFinal } from "../web/pages/chat/team/team-view-model.ts";
 
 const MODEL = "github-copilot/gpt-5-mini";
 const AGENT_SQL = "relire-requete-sql";
@@ -153,6 +155,12 @@ interface OpenOptions {
   iaConversation?: { model: string; variant: string | null } | null;
   /** Délais raccourcis (TESTS SEULEMENT). */
   runnerOptions?: { pollMs?: number; retryMs?: number; usageWaitMs?: number };
+  /**
+   * Module `teamGuards` RÉEL à la place de l'espion `stopForCap` (et module 1.1 `stopTree`) : le plafond d'arrêt est alors joué
+   * par le chemin complet (recheckStep → stopForCap → cause mémorisée en base → stopTree décoré → stopRequested/stopped), et les
+   * routes d'incident (estimate, relancer, fermer) sont montées.
+   */
+  guardsReels?: boolean;
 }
 
 /** Harnais complet : faux opencode, modules `floors` (plancher CONVERSATION) et équipes, ports d'équipe surchargés. */
@@ -183,9 +191,9 @@ async function openTeam(t: TestContext, options: OpenOptions): Promise<Ctx> {
 
   const h = await startCockpit(t, {
     settings: { ui: { mode: "avance" }, ...(options.settings ?? {}) },
-    modules: ["floors"],
-    equipes: ["teams", "teamPreflight", runnerModule],
-    eqPorts: { preflight, teams, guards },
+    modules: options.guardsReels ? ["floors", "stopTree"] : ["floors"],
+    equipes: options.guardsReels ? ["teams", "teamPreflight", runnerModule, "teamGuards"] : ["teams", "teamPreflight", runnerModule],
+    eqPorts: options.guardsReels ? { preflight, teams } : { preflight, teams, guards },
     deps: (base) => {
       // Espion sur TOUTES les lignes de journal (U2, D-eq-26) : aucune consigne, demande, précision ni extrait ne doit y passer.
       const note = (niveau: string) => (message: string, data?: Record<string, unknown>) => void warnings.push({ message: `${niveau} ${message}`, data });
@@ -779,6 +787,33 @@ describe("runner d'équipes : contrôle de fraîcheur (A4, D-eq-17)", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("[Continuer] depuis une pause de fraîcheur : la réponse revient sans attendre la fin de l'équipe", async (t) => {
+    const ctx = await openTeam(t, { flow: duoFlow() });
+    const { h } = ctx;
+    // Étapes lentes : avec de vraies IA elles durent des minutes. La réponse de POST …/continue ne doit pas les attendre.
+    h.fake.scriptWhen(() => true, { text: "Fait.", cost: 0.01, stepMs: 400 });
+    ctx.recheck = [{ ok: false, genre: "changement", code: "extension-configuree" }, { ok: true }];
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    await ctx.waitRun(runId, (v) => v.state === "attente-verification", "pause de fraîcheur");
+
+    const reprise = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.mutating, body: {} });
+    assert.equal(reprise.status, 200, reprise.body);
+    const rendue = reprise.json<TeamRunView>();
+    assert.notEqual(rendue.state, "terminee", "la réponse de [Continuer] attend la fin de toute l'équipe");
+    assert.ok(["preparation", "en-cours"].includes(rendue.state), `état rendu : ${rendue.state}`);
+    assert.ok(
+      rendue.steps.some((step) => step.state !== "terminee"),
+      "au moins une étape reste à faire quand la réponse revient",
+    );
+    // L'équipe se poursuit normalement derrière, et [Arrêter l'équipe] reste possible pendant ce temps.
+    assert.equal(ctx.runner.stepsBusy(), true, "les étapes continuent après la réponse");
+    const fin = await ctx.waitRun(runId, (v) => v.state === "terminee", "équipe terminée ensuite");
+    assert.deepEqual(fin.steps.map((step) => step.state), ["terminee", "terminee"]);
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+
   it("règles changées au contrôle de fraîcheur : « attente-modification » sans rien envoyer", async (t) => {
     const ctx = await openTeam(t, { flow: suiteFlow() });
     const { h } = ctx;
@@ -1212,6 +1247,185 @@ describe("runner d'équipes : redémarrage, relance et lectures", () => {
     assert.deepEqual(await ctx.runner.continue(runId, {}, false), { ok: false, status: 409, code: "etat-incompatible" });
     assert.deepEqual(await ctx.runner.relaunch(runId, ctx.plan), { ok: false, status: 409, code: "pas-relancable" });
     assert.deepEqual(ctx.runner.close(runId), { ok: false, status: 409, code: "etat-incompatible" });
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+});
+
+describe("runner d'équipes : arrêt pendant qu'une étape est en vol (D-eq-05, spéc. §6)", () => {
+  /**
+   * Déroulé « À la suite » dont la SECONDE étape est retenue au moment de `POST /session` : l'arrêt part pendant que la requête
+   * est en vol, c'est-à-dire dans la fenêtre qui va de `recheckStep` à `prompt_async`. Rend le contexte et l'identifiant de la
+   * session créée pour cette étape — celle qui ne doit RIEN recevoir.
+   */
+  async function arretEnVol(
+    t: TestContext,
+    arreter: (ctx: Ctx, ids: { runId: string; rootId: string }) => void,
+  ): Promise<{ ctx: Ctx; sessionEtape2: () => string | null }> {
+    const retenue: { pendant: (() => void) | null } = { pendant: null };
+    let sessionEtape2: string | null = null;
+    const ctx = await openTeam(t, {
+      flow: duoFlow(),
+      deps: (base) => ({
+        client: new Proxy(base.client, {
+          get(target, prop, receiver) {
+            if (prop !== "request") {
+              const value = Reflect.get(target, prop, receiver) as unknown;
+              return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+            }
+            return async (method: string, pathname: string, opts?: Record<string, unknown>) => {
+              const metadata = (opts?.body as { metadata?: { etape?: string } } | undefined)?.metadata;
+              const creation = method === "POST" && pathname === "/session" && metadata?.etape === "securite";
+              if (creation && retenue.pendant !== null) {
+                const arret = retenue.pendant;
+                retenue.pendant = null;
+                arret();
+              }
+              const reponse = await target.request<unknown>(method, pathname, opts as never);
+              if (creation) sessionEtape2 = (reponse as { id?: string }).id ?? null;
+              return reponse;
+            };
+          },
+        }),
+      }),
+    });
+    ctx.h.fake.scriptWhen(() => true, { text: "Fait.", cost: 0.01, stepMs: 5 });
+    // Posé AVANT le lancement : aucune course avec la première étape.
+    retenue.pendant = () => {
+      const row = ctx.h.db.prepare("SELECT id, root_session_id FROM team_runs ORDER BY created_at, id LIMIT 1").get() as
+        | { id: string; root_session_id: string }
+        | undefined;
+      assert.ok(row, "lancement enregistré quand la seconde étape crée sa session");
+      arreter(ctx, { runId: row.id, rootId: row.root_session_id });
+    };
+    return { ctx, sessionEtape2: () => sessionEtape2 };
+  }
+
+  /** Session d'étape créée avant l'arrêt : attendue puis vérifiée supprimée (aucune session orpheline). */
+  async function attendreSessionSupprimee(ctx: Ctx, sessionEtape2: () => string | null): Promise<string> {
+    const id = await until(() => sessionEtape2() ?? undefined, 8_000).catch(() => {
+      assert.fail("la seconde étape n'a jamais créé sa session : la fenêtre visée n'a pas été ouverte");
+    });
+    await until(() => (ctx.h.fake.session(id) === undefined ? true : undefined), 8_000).catch(() => {
+      assert.fail("la session d'étape créée avant l'arrêt n'a pas été supprimée");
+    });
+    return id;
+  }
+
+  it("[Arrêter] pendant POST /session : aucun prompt_async ensuite, session supprimée, étape « non-lancee »", async (t) => {
+    const { ctx, sessionEtape2 } = await arretEnVol(t, (c, ids) => {
+      c.runner.stopRequested(ids.rootId, "vous");
+      c.runner.stopped(ids.rootId, "vous", { rootId: ids.rootId, rejected: 0, aborted: [], unconfirmed: [], durationMs: 1 });
+    });
+    const { h } = ctx;
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const session = await attendreSessionSupprimee(ctx, sessionEtape2);
+    // Laisser au runner le temps de reprendre son cours : c'est là que l'envoi facturé partait.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(h.fake.requests.filter((req) => req.pathname.endsWith("/prompt_async")).length, 1, "un envoi facturé est parti APRÈS l'arrêt");
+    assert.equal(h.fake.requests.filter((req) => req.pathname === `/session/${session}/prompt_async`).length, 0, "la session de l'étape arrêtée n'a rien reçu");
+    const vue = ctx.view(runId);
+    assert.equal(vue.state, "arretee");
+    assert.equal(vue.steps.find((step) => step.stepId === "standards")?.state, "terminee");
+    assert.equal(vue.steps.find((step) => step.stepId === "securite")?.state, "non-lancee");
+    assert.equal(vue.steps.find((step) => step.stepId === "securite")?.sessionId, null, "aucune session gardée pour l'étape arrêtée");
+    const lignes = h.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE session_id = ?").get(session) as { n: number };
+    assert.equal(lignes.n, 0, "aucune ligne usage pour l'étape arrêtée");
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+
+  it("rechargement d'opencode pendant POST /session : même fenêtre fermée, aucun envoi facturé", async (t) => {
+    const { ctx, sessionEtape2 } = await arretEnVol(t, (c, ids) => c.runner.interrupt(ids.runId, "rechargement"));
+    const { h } = ctx;
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const session = await attendreSessionSupprimee(ctx, sessionEtape2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(h.fake.requests.filter((req) => req.pathname.endsWith("/prompt_async")).length, 1, "un envoi facturé est parti APRÈS l'interruption");
+    assert.equal(h.fake.requests.filter((req) => req.pathname === `/session/${session}/prompt_async`).length, 0, "la session de l'étape interrompue n'a rien reçu");
+    const vue = ctx.view(runId);
+    assert.equal(vue.state, "interrompue");
+    assert.equal(vue.steps.find((step) => step.stepId === "securite")?.state, "non-lancee");
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+});
+
+describe("runner d'équipes : plafond d'arrêt par le chemin réel (D-eq-05, spéc. §6 l.1036)", () => {
+  it("recheckStep → guards.stopForCap : état « plafond », cause « plafond », relançable, carte du plafond", async (t) => {
+    const ctx = await openTeam(t, { flow: duoFlow(), guardsReels: true });
+    const { h } = ctx;
+    // Plafond serré : la première étape tient dessous (0 + 0,20 ≤ 0,25), la seconde ne tient plus (0,10 + 0,20 > 0,25). La
+    // dépense reste STRICTEMENT sous le plafond : c'est le cas nominal, celui où le plafond s'arrête AVANT dépassement (P3).
+    ctx.plan.plafond = 0.25;
+    h.fake.scriptWhen(() => true, { text: "Fait.", cost: 0.1, stepMs: 5 });
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const vue = await ctx.waitRun(runId, (v) => v.state === "plafond" || v.state === "arretee", "arrêt au plafond");
+
+    assert.equal(vue.state, "plafond", "l'arrêt vient du plafond, pas de vous");
+    assert.equal(vue.cause, "plafond");
+    assert.ok(vue.cost < 0.25, `l'arrêt a eu lieu sous le plafond (${vue.cost})`);
+    assert.equal(vue.steps.find((step) => step.stepId === "securite")?.state, "non-lancee");
+    assert.equal(vue.relancable, true, "après avoir relevé son plafond, l'utilisateur reprend la suite");
+    const enBase = h.db.prepare("SELECT state, cause FROM team_runs WHERE id = ?").get(runId) as { state: string; cause: string | null };
+    assert.deepEqual([enBase.state, enBase.cause], ["plafond", "plafond"], "cause mémorisée avant l'arrêt, gardée après");
+    // La carte rendue est celle du plafond, jamais « Équipe arrêtée par vous » (team-view-model.ts, L38b).
+    assert.equal(messageFinal(vue), remplir(TEXTES.partout.cartes.plafond, { depense: vue.cost, plafond: vue.plafond ?? 0 }));
+    assert.notEqual(messageFinal(vue), messageFinal({ ...vue, state: "arretee" }));
+
+    // La route de relance l'accepte : la suite repart, puis retombe sur le même plafond (nouvelle tentative de l'étape).
+    const relance = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: ctx.plan.estimateSha256 },
+    });
+    assert.equal(relance.status, 200, relance.body);
+    await ctx.waitRun(
+      runId,
+      (v) => v.state === "plafond" && v.steps.filter((step) => step.stepId === "securite").length === 2,
+      "reprise arrêtée de nouveau au plafond",
+    );
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+});
+
+describe("runner d'équipes : conversation purgée (D-eq-27, spéc. §3.5)", () => {
+  it("après la purge, la vue ne promet plus [Relancer la suite] — même réponse qu'après un redémarrage", async (t) => {
+    const ctx = await openTeam(t, { flow: suiteFlow(), guardsReels: true });
+    const { h } = ctx;
+    h.fake.scriptWhen(() => true, { text: "Fait.", cost: 0.01, stepMs: 5 });
+    const started = await ctx.run();
+    const { runId, rootId } = started.json<TeamRunStarted>();
+    await ctx.waitRun(runId, (v) => v.state === "attente-verification", "pause");
+    ctx.runner.interrupt(runId, "rechargement");
+    assert.equal(ctx.view(runId).relancable, true, "avant la purge, la demande est reconstituable");
+
+    // Suppression de la conversation aux Archives : les textes d'équipe sont purgés avec elle (point unique, D-07).
+    const archivee = await h.call("POST", `/api/archive/${rootId}/refresh`, { headers: h.headers.mutating, body: {} });
+    assert.equal(archivee.status, 200, archivee.body);
+    const supprimee = await h.call("DELETE", `/api/archive/${rootId}`, { headers: h.headers.mutating });
+    assert.equal(supprimee.status, 200, supprimee.body);
+    assert.equal(supprimee.json<{ deleted: boolean }>().deleted, true);
+    const restants = h.db.prepare("SELECT COUNT(*) AS n FROM team_run_steps WHERE run_id = ? AND message_text IS NOT NULL").get(runId) as { n: number };
+    assert.equal(restants.n, 0, "consignes purgées");
+
+    // La vue dit la même chose que la route, dans le MÊME processus : la mémoire n'est qu'un cache de lecture.
+    assert.equal(ctx.view(runId).relancable, false);
+    const lue = await h.call("GET", `/api/team-runs/${runId}`, { headers: h.headers.authed });
+    assert.equal(lue.status, 200, lue.body);
+    assert.equal(lue.json<TeamRunView>().relancable, false);
+    const refus = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: ctx.plan.estimateSha256 },
+    });
+    assert.equal(refus.status, 409, refus.body);
+    assert.equal(refus.json<{ error: string }>().error, "pas-relancable");
+    assert.deepEqual(await ctx.runner.relaunch(runId, ctx.plan), { ok: false, status: 409, code: "pas-relancable" });
     assertNoLooseRules(ctx);
     h.assertNoGlobalRestart();
   });
