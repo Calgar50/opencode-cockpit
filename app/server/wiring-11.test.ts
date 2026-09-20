@@ -468,7 +468,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), plafonds et redémarrages (L10c), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -487,9 +487,13 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
       // L10a : cycle d'une décision (dérivation permission.asked) et relecture de GET /permission à la reconnexion d'opencode.
       { kind: "derivation", key: "autonomy", module: "autonomy" },
+      // L10c : plafonds, « Passé sans contrôle » et redémarrages d'opencode (dérivation, abonnement usage.updated, reprise).
+      { kind: "derivation", key: "capWatch", module: "capWatch" },
       { kind: "hub", key: "usage.updated", module: "delegationWatch" },
       { kind: "hub", key: "opencode.connection", module: "autonomy" },
+      { kind: "hub", key: "usage.updated", module: "capWatch" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
+      { kind: "startup", key: "startup", module: "capWatch" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "delegations", module: "taskGuard" },
       { kind: "routes", key: "activity", module: "facts" },
@@ -507,9 +511,9 @@ describe("câblage 1.1 : ports neutres", () => {
       ],
       [1, 1, 3, 1, 1],
     );
-    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection"]);
-    assert.equal(wiring.derivations.length, 4);
-    assert.equal(wiring.startup.length, 1);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
+    assert.equal(wiring.derivations.length, 5);
+    assert.equal(wiring.startup.length, 2);
     assert.equal(wiring.routes.length, 6);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.

@@ -279,7 +279,8 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // la garde du « task once » (L1d) inscrit son crochet, sa dérivation (refus Simple) et les routes « delegations » ; la
     // surveillance des délégations (L1e) sa dérivation et son abonnement usage.updated ; les plans (L6b) leur crochet d'envoi,
     // après le plancher, et leurs routes. Itération 2 : les demandes autonomes (L10a) inscrivent leur crochet d'envoi, après
-    // l'activation, et le cycle d'autonomie (L10a) sa dérivation et son abonnement opencode.connection. Le reste reste au repos.
+    // l'activation, le cycle d'autonomie (L10a) sa dérivation et son abonnement opencode.connection, et la surveillance des
+    // plafonds (L10c) sa dérivation, son abonnement usage.updated et sa reprise au démarrage. Le reste reste au repos.
     const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 3, beforeOnceRelay: 1, abort: 1 };
     assert.deepEqual(wiring.registrations, [
       ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
@@ -291,9 +292,12 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "derivation", key: "taskGuard", module: "taskGuard" },
       { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
       { kind: "derivation", key: "autonomy", module: "autonomy" },
+      { kind: "derivation", key: "capWatch", module: "capWatch" },
       { kind: "hub", key: "usage.updated", module: "delegationWatch" },
       { kind: "hub", key: "opencode.connection", module: "autonomy" },
+      { kind: "hub", key: "usage.updated", module: "capWatch" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
+      { kind: "startup", key: "startup", module: "capWatch" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "delegations", module: "taskGuard" },
       { kind: "routes", key: "activity", module: "facts" },
@@ -302,7 +306,7 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
     for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked[step] ?? 0, step);
-    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [4, 2, 1]);
+    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [5, 3, 2]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, false);
     assert.equal(wiring.c11.reloadBusy(), false);
