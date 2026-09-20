@@ -159,6 +159,9 @@ sortie est le nombre d'échecs.
 | `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, lecture de l'épinglage sur le volume et contre-épreuves, déroulé, et leurs propres vérifications (`--gardes`) |
 | `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux |
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
+<!-- c5:fichiers -->
+| `e2e/lib/a11y.mjs` | banc de captures d'accessibilité (itération 5) : réglages système émulés, 3 modes × 2 thèmes × 3 tailles, animations en cours, focus visible |
+<!-- /c5:fichiers -->
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
 | `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable |
@@ -227,6 +230,50 @@ console muette :
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
 
+<!-- c5:scenarios -->
+## Scénarios de l'itération 5 (construction : méthodes, Seconde lecture, chronologie)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios c5a- --project-prefix c511-e2e --image-tag c511
+scripts/run-e2e.sh --reel-hors-ligne --dry-run --scenarios c5a- --project-prefix c511-e2e --image-tag c511
+```
+
+**Le préfixe `c511-e2e` est obligatoire** : le préfixe par défaut `cockpit-e2e` est celui du banc de l'itération 1-2,
+qui tourne en même temps sur une autre branche. Le nettoyage ne vise que `c511-e2e-*` et les images `c511-e2e/*`.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `c5a-methodes.mjs` | un assistant avec deux méthodes : « Utilisée par » au catalogue, troisième méthode refusée dans la bibliothèque (« 2 méthodes au maximum … »), ligne « Méthodes : … » sur sa fiche d'identité ; la puce « + Méthode » AU CLAVIER SEUL (APG : flèche bas ouvre, Entrée coche et décoche, Échap ferme et rend le focus au bouton), méthodes déjà dans l'assistant désactivées ; à l'envoi, le faux opencode reçoit le BLOC à la fin du texte écrit ; bulle repliée « Méthode demandée : … » sans le marqueur ; « Méthode appliquée » puis « Méthode non détectée dans la réponse » ; raccourci « /… » : puce désactivée avec sa raison |
+| `c5a-seconde-lecture.mjs` | Relecteur absent : la phrase et [Installer], aucun montant ; installation au clic par le catalogue ; bouton « Seconde lecture (≈ … $) » sans « au moins », infobulle qui nomme l'IA du Relecteur puis la base de l'estimation ; au clic, UN seul envoi, avec l'agent du Relecteur et la phrase exacte du §4.3 ; pied « Relecture par un autre assistant … » ; à la réouverture, le composeur a gardé l'assistant précédent |
+| `c5a-chronologie.mjs` | en Avancé : bascule « Déroulé \| Chronologie » (radiogroup, un seul bouton dans l'ordre de tabulation), lignes, colonne « Jetons (entrée / sortie / cache) », repères d'outil, curseur « maintenant » PENDANT le travail ; à 400 px la figure disparaît et le tableau reste seul ; en Simple : aucune bascule, aucune chronologie, et le mot « jeton » nulle part |
+| `c5a-a11y.mjs` | banc de captures d'accessibilité : six vues (bibliothèque, écran « Consignes et fiches », popover de la puce, bulle, chronologie, Coûts par équipe vides) × 3 modes × 2 thèmes × 3 tailles = 108 fichiers ; en mouvement réduit, zéro animation en cours ; en contraste forcé, focus visible |
+
+### Banc de captures d'accessibilité (`e2e/lib/a11y.mjs`)
+
+Trois modes, parce que ce sont les trois qui changent le dessin : `normal`, `contraste-force`
+(`forced-colors: active`, mode contrasté de Windows) et `gris-mouvement-reduit`
+(`prefers-reduced-motion: reduce` avec une vue sans couleurs). Chacun dans les deux thèmes et aux trois tailles :
+`<scénario>-<vue>-<mode>-<taille>-<thème>.png`.
+
+L'émulation passe par l'envoi brut de `cdp.mjs` (`navigateur.client.envoyer(methode, params, onglet.sessionId)`) :
+`Emulation.setEmulatedMedia` pour les trois réglages de média EN UN SEUL APPEL (il remplace toute la liste) et
+`Emulation.setEmulatedVisionDeficiency` pour les couleurs. `e2e/lib/cdp.mjs` n'est jamais écrit par l'itération 5.
+Le contexte d'un scénario ne porte que l'ONGLET : `ouvrirNavigateurEpingle(ctx)` ouvre un navigateur propre au
+scénario, avec le même épinglage et la même isolation, fermé dans un `finally`.
+
+### Ce que le banc dit au faux opencode
+
+Les réponses sont scriptées par les scénarios (`ctx.faux.scripter`, `ctx.faux.tourParDefaut`) : en-tête de méthode
+(« ### Méthode : … ») pour la détection, et lignes `usage` à jetons pour la chronologie et pour la base
+« conversation » de l'estimation de la Seconde lecture.
+
+Les AGENTS servis par `GET /agent` se déclarent par la conversation réservée `banc:agents`
+(`ctx.faux.scripter("banc:agents", { agents: [{ name, description, model }] })`, section `c5:agents-du-banc` de
+`e2e/fake-opencode-server.ts`) : le faux ne lit aucun fichier, alors que le cockpit ne propose une seconde lecture,
+et ne propose un assistant au composeur, que si opencode le lui rend. La déclaration se fait **après** l'installation :
+avant, le nom serait déjà pris et le cockpit en choisirait un autre (« relecteur-critique-2 »).
+
+<!-- /c5:scenarios -->
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`

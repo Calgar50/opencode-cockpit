@@ -338,6 +338,12 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
       for (const m of text.matchAll(/(?<![\w-])(it\d-(?:api|ui)-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) {
         cited.add(m[1]?.endsWith(".mjs") ? m[1] : `${m[1]}.mjs`);
       }
+      // <c5:scenarios-cites>
+      // Itération 5 (L50a) : la famille `c5a-*` (et `c5b-*` en 5b) du banc de la construction, citée dans e2e/README.md
+      // comme les autres familles. Sans cette ligne, le compte des scénarios cités ne les verrait pas, et ce test
+      // tomberait pour la seule raison qu'une famille nouvelle a été ajoutée au banc.
+      for (const m of text.matchAll(/(?<![\w-])(c5[ab]-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) cited.add(m[1] as string);
+      // </c5:scenarios-cites>
     }
     assert.ok(cited.size >= scenarios.length - 1, `scénarios cités : ${[...cited].join(", ")}`);
     assert.deepEqual([...cited].filter((name) => !scenarios.includes(name)), [], "scénarios cités mais absents de e2e/scenarios");
