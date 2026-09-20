@@ -45,6 +45,9 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   // sont balisées pour que la grande fusion les retrouve.
   "app/server/croisements-it1-v0.test.ts",
   "app/server/croisements-it1-v1.test.ts",
+  // Ajouté aux corrections de la relecture de V1 : la Seconde lecture requalifie une ligne `chat_turns`, que la dérivation des
+  // faits d'activité de l'itération 1 relit (`noteSentMessage`). Le genre nouveau y est reconnu entre balises `c5:`.
+  "app/server/activity-deriver.ts",
   // Contrats et câblage 1.1 : l'intégrateur seul les écrit (D-5-04).
   "app/server/contracts-11.ts",
   "app/server/wiring-11.ts",

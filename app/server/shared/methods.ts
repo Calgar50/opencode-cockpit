@@ -66,8 +66,21 @@ const MESSAGE_BLOCK_END = "<!-- /cockpit:methode-message -->";
 /** Identifiant d'une méthode dans un marqueur : minuscules, chiffres et traits d'union. */
 const ID = "[\\w-]+";
 
-const BLOCK_RE = new RegExp(`<!-- cockpit:methode (${ID}) v(\\d+) -->[\\s\\S]*?${BLOCK_END}`, "g");
-const BLOCK_ORPHAN_LINE_RE = new RegExp(`^(?:<!-- cockpit:methode ${ID} v\\d+ -->|${BLOCK_END})$`);
+/** Ligne d'ouverture d'un bloc, SEULE sur sa ligne : la forme que `renderMethodBlock` écrit toujours. */
+const BLOCK_START_LINE = `<!-- cockpit:methode ${ID} v\\d+ -->`;
+/**
+ * Corps d'un bloc : tout, SAUF une ligne qui serait elle-même une ouverture. Sans cette garde, un marqueur d'ouverture resté sans
+ * fin (ligne effacée à la main dans le Studio) se refermait sur la fin du bloc RÉEL qui suit : le texte écrit par l'utilisateur
+ * entre les deux disparaissait au premier enregistrement, et `methodIdsIn` nommait la méthode orpheline en taisant la vraie.
+ */
+const BLOCK_BODY = `(?:(?!^${BLOCK_START_LINE}$)[\\s\\S])*?`;
+/**
+ * Bloc complet : ouverture et fermeture chacune seule sur sa ligne (`^…$`, mode multiligne), sans ouverture imbriquée. Un
+ * marqueur écrit au milieu d'une phrase n'est donc plus reconnu du tout : il reste dans le texte de l'utilisateur, intact, au
+ * lieu de tout emporter. Sans danger côté CRLF : `lf()` normalise avant chaque lecture.
+ */
+const BLOCK_RE = new RegExp(`^<!-- cockpit:methode (${ID}) v(\\d+) -->$\\n${BLOCK_BODY}^${BLOCK_END}$`, "gm");
+const BLOCK_ORPHAN_LINE_RE = new RegExp(`^(?:${BLOCK_START_LINE}|${BLOCK_END})$`);
 /** En-tête posé par le cockpit : « (ajoutée par le cockpit) » le distingue de l'en-tête d'une étape ou d'un message. */
 const BLOCK_HEADER_ORPHAN_RE = /^## Méthode : .* \(ajoutée par le cockpit\)$/;
 /** Début du bloc de règles communes (assistant-rules.ts), qui doit rester le DERNIER bloc du corps (D-5-07). */

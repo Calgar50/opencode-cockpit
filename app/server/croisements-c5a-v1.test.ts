@@ -42,6 +42,7 @@ import { methodMarkers } from "./shared/methods.ts";
 import { StudioService } from "./studio.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { nativeAgents } from "./test-support/fake-opencode.ts";
+import { until } from "./test-support/helpers.ts";
 import type { TierService } from "./tiers.ts";
 
 /** IA du test et table de prix fixe à quatre tarifs distincts (un montant ne peut pas tomber juste par hasard). */
@@ -189,6 +190,15 @@ const envoyer = (h: CockpitHarness, sessionId: string, agent: string, text: stri
 const genres = (h: CockpitHarness, sessionId: string): string[] =>
   (h.db.prepare("SELECT kind FROM chat_turns WHERE session_id = ? ORDER BY id").all(sessionId) as unknown as { kind: string }[]).map((t) => t.kind);
 
+/** Faits « origine » dérivés pour cette conversation (L4b), dans l'ordre : origine retenue et numéro du cas du §5.7.2. */
+const origines = (h: CockpitHarness, sessionId: string): { origine: string; cas: number }[] =>
+  (h.db.prepare("SELECT data FROM activity_facts WHERE session_id = ? AND kind = 'origine' ORDER BY at, id").all(sessionId) as unknown as {
+    data: string;
+  }[]).map((row) => {
+    const data = JSON.parse(row.data) as { origine: string; cas: number };
+    return { origine: data.origine, cas: data.cas };
+  });
+
 /** Ligne `usage` terminée de la conversation : c'est elle qui donne la base « conversation » de l'estimation. */
 function semerUsageChat(h: CockpitHarness, id: string, sessionId: string, contexte: number): void {
   const now = Date.now();
@@ -326,6 +336,34 @@ describe("croisement 5a V1 : Seconde lecture (L44c)", () => {
     // P5 : la seconde lecture est un envoi ordinaire, passé par le proxy — aucun chemin facturé propre ne s'est ouvert.
     const recus = c.h.fake.requests.filter((r) => r.method === "POST" && r.pathname.endsWith("/prompt_async"));
     assert.deepEqual(recus.map((r) => (r.body as { agent?: string }).agent), ["build", RELECTEUR, "build"]);
+    c.h.assertNoGlobalRestart();
+  });
+
+  it("le Journal garde « Vous » : envoi ordinaire puis seconde lecture donnent deux faits « demande » (cas 1), et le composeur rend toujours l'assistant précédent", async (t) => {
+    // Croisement L44c × L4b (faits d'activité) : la requalification de la ligne `chat_turns` ne doit pas faire perdre au message
+    // son origine « Vous » (spéc. §5.7.2, cas 1). Les deux propriétés tiennent ENSEMBLE : `lastChatChoice` ne lit que
+    // `kind = 'message'` (c'est le but de la requalification), pendant que la dérivation reconnaît aussi « seconde-lecture ».
+    // « Corriger » du mauvais côté (renoncer à la requalification) ferait tomber l'assertion du composeur.
+    const c = await croisement(t);
+    installerRelecteur(c.h);
+    const ses = await conversation(c.h, "Incident de production");
+
+    assert.equal((await envoyer(c.h, ses, "build", "Analyse ce journal.")).status, 204);
+    await until(() => origines(c.h, ses).length === 1);
+
+    const texte = `${secondReadingPrefix("reponse")}« Analyser un incident ». Vérifie-la.`;
+    assert.equal((await envoyer(c.h, ses, RELECTEUR, texte)).status, 204);
+    assert.deepEqual(genres(c.h, ses), ["message", SECOND_READING_TURN_KIND], "la ligne de la seconde lecture n'a pas été requalifiée");
+    await until(() => origines(c.h, ses).length === 2);
+
+    // Aucun « origine-inconnue » : la demande de seconde lecture vient du bouton de l'utilisateur, pas d'ailleurs (JP-1, JS-13).
+    assert.deepEqual(origines(c.h, ses), [
+      { origine: "demande", cas: 1 },
+      { origine: "demande", cas: 1 },
+    ]);
+
+    const apres = await c.h.call("GET", `/api/chat/choices/${ses}`, { headers: c.h.headers.authed });
+    assert.equal(apres.json<{ agent: string }>().agent, "build", "le composeur ne retrouve plus l'assistant précédent");
     c.h.assertNoGlobalRestart();
   });
 

@@ -9,7 +9,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { CATALOGUE } from "./assistants-catalogue.ts";
 import { METHODS } from "./methods-catalogue.ts";
-import { assistantBody, COMMON_RULES_START } from "./shared/assistant-rules.ts";
+import { assistantBody, COMMON_RULES_START, stripCommonRules } from "./shared/assistant-rules.ts";
 import {
   applyMethodBlocks,
   type Method,
@@ -163,6 +163,65 @@ describe("méthodes : blocs d'un fichier d'agent", () => {
     assert.equal(renderMethodBlock(bavarde), "");
     assert.equal(renderMessageMethodBlock(bavarde), "");
     assert.equal(applyMethodBlocks("Consignes.", [bavarde]), "Consignes.");
+  });
+});
+
+/**
+ * Un marqueur d'OUVERTURE laissé sans fin (ligne effacée à la main dans le Studio) ou écrit au milieu d'une phrase ne doit jamais
+ * se refermer sur la fin du bloc RÉEL qui suit : il emporterait avec lui le texte de l'utilisateur écrit entre les deux, et
+ * `methodIdsIn` nommerait une méthode absente en taisant celle qui est là. Correction de la relecture 5a-vague-1.
+ */
+describe("méthodes : marqueur de bloc non refermé", () => {
+  const ORPHELIN = methodMarkers(preMortem.id, preMortem.version).debut;
+  const PARAGRAPHE = "Paragraphe écrit par l'utilisateur entre les deux blocs.";
+
+  /** Corps abîmé : le premier bloc a perdu sa ligne de fin, le second (clarifier-d-abord) est intact. */
+  const abime = (): string =>
+    [
+      "Consignes de l'assistant.",
+      "",
+      ORPHELIN,
+      `## Méthode : ${preMortem.titre} (ajoutée par le cockpit)`,
+      "Texte du premier bloc, privé de sa ligne de fin.",
+      "",
+      PARAGRAPHE,
+      "",
+      renderMethodBlock(clarifier),
+    ].join("\n");
+
+  it("(a) le bloc intact qui suit n'est pas avalé : methodIdsIn le rend, et lui seul", () => {
+    assert.deepEqual(methodIdsIn(abime()), [{ id: clarifier.id, version: clarifier.version }]);
+  });
+
+  it("(b) stripMethodBlocks garde intégralement le texte de l'utilisateur situé après le marqueur orphelin", () => {
+    const propre = stripMethodBlocks(abime());
+    assert.ok(propre.includes(PARAGRAPHE), propre);
+    assert.ok(propre.startsWith("Consignes de l'assistant."), propre);
+    assert.equal(propre.includes("cockpit:methode"), false, propre);
+    assert.equal(propre.includes("(ajoutée par le cockpit)"), false, propre);
+  });
+
+  it("(c) marqueur écrit au milieu d'une ligne de consignes : la ligne est gardée entière et n'est pas une méthode", () => {
+    const ligne = `Écris le marqueur ${ORPHELIN} tel quel dans ta réponse.`;
+    const corps = [ligne, "", renderMethodBlock(clarifier)].join("\n");
+    assert.deepEqual(methodIdsIn(corps), [{ id: clarifier.id, version: clarifier.version }]);
+    assert.ok(stripMethodBlocks(corps).includes(ligne), stripMethodBlocks(corps));
+  });
+
+  it("(d) aller-retour vue → enregistrement : le texte de l'utilisateur est encore dans le fichier, la méthode attachée ne change pas", () => {
+    // Fichier d'agent réel : corps abîmé, puis les règles communes en dernier bloc.
+    const fichier = assistantBody("CONSIGNES", []).replace("CONSIGNES", abime());
+    // Ce que `AssistantService.#viewOf` sert au Studio (section c5:methodes-vue).
+    const vueInstructions = stripMethodBlocks(stripCommonRules(fichier));
+    const vueMethods = methodIdsIn(fichier).map((m) => m.id);
+    assert.deepEqual(vueMethods, [clarifier.id]);
+    assert.ok(vueInstructions.includes(PARAGRAPHE), vueInstructions);
+
+    // Enregistrement suivant (un simple changement de titre suffit) : le corps est reconstruit depuis la vue.
+    const reecrit = assistantBody(vueInstructions, [], renderMethodBlock(clarifier));
+    assert.ok(reecrit.includes(PARAGRAPHE), reecrit);
+    assert.deepEqual(methodIdsIn(reecrit), [{ id: clarifier.id, version: clarifier.version }]);
+    assert.ok(reecrit.indexOf(methodMarkers(clarifier.id, clarifier.version).debut) < reecrit.indexOf(COMMON_RULES_START), reecrit);
   });
 });
 

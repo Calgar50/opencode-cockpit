@@ -10,6 +10,9 @@
 // message utilisateur n'est dit envoyé par le cockpit que s'il suit une ligne chat_turns écrite par le proxy AVANT le relais
 // (même session, message ou raccourci, 30 s au plus avant, 2 s au plus après) ; chaque ligne ne vaut que pour un seul message.
 // Cas 2 (équipes) : itération 4.
+// <c5:origine-seconde-lecture>
+// Itération 5 (D-5-06) : le genre « seconde-lecture » compte lui aussi comme une ligne écrite par le proxy — voir noteSentMessage.
+// </c5:origine-seconde-lecture>
 // Délégations et attentes : seuls des faits observés font avancer un état. Une partie `task` interrompue n'expire pas la demande
 // d'autorisation qu'elle avait posée (captures p6 puis p7 : la demande reste en attente et un « once » tardif lance encore un
 // sous-agent) ; une demande n'expire que si son instance est libérée (server.instance.disposed, global.disposed : mesure M14,
@@ -33,6 +36,10 @@ import {
   factsFromEvent,
 } from "./shared/activity-facts.ts";
 import type { ActivityFact, DelegationState, ReponseFactData } from "./shared/activity-types.ts";
+// <c5:origine-seconde-lecture>
+// Seule source du genre requalifié (construction-constants.ts, module pur) : jamais recopié ici.
+import { SECOND_READING_TURN_KIND } from "./shared/construction-constants.ts";
+// </c5:origine-seconde-lecture>
 import { ID_RE } from "./shared/ids.ts";
 
 /** Recherche d'une session inconnue (sessions.ensure) : 5 s au plus (§3.10 point 2). */
@@ -194,10 +201,16 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     checkedMessages.set(id, true);
     const turns = c11.db
       .prepare(
-        `SELECT id FROM chat_turns WHERE session_id = ? AND kind IN ('message', 'raccourci') AND created_at BETWEEN ? AND ?
+        // <c5:origine-seconde-lecture>
+        // Troisième genre reconnu : « seconde-lecture » (D-5-06). Le crochet de la Seconde lecture requalifie la ligne que le
+        // proxy vient d'écrire, pour que le composeur retrouve l'assistant précédent ; c'est toujours une demande écrite par
+        // l'utilisateur, donc le cas 1 du §5.7.2, et non le cas 7 réservé aux messages venus d'ailleurs que du cockpit. Genre
+        // lié en paramètre (SQL paramétré), jamais interpolé dans le texte de la requête.
+        `SELECT id FROM chat_turns WHERE session_id = ? AND kind IN ('message', 'raccourci', ?) AND created_at BETWEEN ? AND ?
          ORDER BY created_at, id LIMIT 16`,
+        // </c5:origine-seconde-lecture>
       )
-      .all(sessionId, created - SENT_MESSAGE_WINDOW_MS, created + SENT_MESSAGE_SKEW_MS) as Array<{ id: number }>;
+      .all(sessionId, SECOND_READING_TURN_KIND, created - SENT_MESSAGE_WINDOW_MS, created + SENT_MESSAGE_SKEW_MS) as Array<{ id: number }>;
     const turn = turns.find((row) => !usedTurns.has(String(row.id)));
     if (!turn) return;
     usedTurns.set(String(turn.id), true);
