@@ -41,6 +41,11 @@ import {
   within,
   writeTool,
 } from "./test-support/helpers.ts";
+// --- équipes (it4) : début ---
+import { assistantPermission, effectiveAgentRules } from "./shared/assistant-rules.ts";
+import { buildFloor } from "./shared/session-floors.ts";
+import { type FakeWireEvent, isSync, MAXIMUM_STEPS_NOTICE } from "./test-support/fake-opencode.ts";
+// --- équipes (it4) : fin ---
 
 const PASSWORD = "p".repeat(24);
 const FIXTURES = ["p1-delegation-parallele.jsonl", "p2-commande-subtask.jsonl", "p6-arret-global.jsonl", "p7-autorisation-orpheline.jsonl"];
@@ -1902,3 +1907,215 @@ describe("faux opencode : métadonnées des demandes de modification", () => {
     assert.deepEqual((await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id)).properties.metadata, {});
   });
 });
+// --- équipes (it4) : début ---
+/**
+ * Fidélité du faux aux mesures MX-EQ (L37s, report du train de V0, §2 « L37s (V1) : faux opencode ») : outils d'une session
+ * d'étape (ME-2), `steps` qui n'arrête rien (ME-2), refus d'une demande de l'agent (ME-2), `?limit=` (ME-7), écho de
+ * `POST /session` (ME-1), injection `noReply` (ME-3), arrêt d'une racine au repos (ME-6), et `scriptWhen` pour scripter une
+ * session que le cockpit créera lui-même.
+ */
+describe("faux opencode : fidélité mesurée pour les équipes (MX-EQ)", () => {
+  /** Règles effectives que sert opencode pour un assistant de lecture du catalogue (défauts + profil « lecture »). */
+  const lectureRules = (fiches: string[] = ["standards-scripts"]) => effectiveAgentRules({}, assistantPermission("lecture", false, fiches)) as PermissionRule[];
+
+  const etapeAgent = (steps?: number) => ({
+    name: "relire-script",
+    mode: "all" as const,
+    options: {},
+    permission: lectureRules(),
+    ...(steps === undefined ? {} : { steps }),
+  });
+
+  it("scriptWhen : script posé d'avance pour une session créée ensuite (metadata, titre), les autres gardent le tour par défaut", async (t) => {
+    const { fake, oc } = await startFake(t);
+    fake.scriptWhen((session) => (session.metadata?.cockpit as string | undefined) === "equipe" && session.metadata?.etape === 1, { text: "Avis 1 rendu." });
+    fake.scriptWhen((session) => session.title.includes("(etape 2"), { text: "Avis 2 rendu." });
+    fake.scriptWhen(() => {
+      throw new Error("prédicat qui lève");
+    }, { text: "jamais" });
+
+    const etape1 = await newSession(oc, { title: "Exactitude (etape 1 de l'equipe Revue)", metadata: { cockpit: "equipe", etape: 1 } });
+    const etape2 = await newSession(oc, { title: "Performance (etape 2 de l'equipe Revue)", metadata: { cockpit: "equipe", etape: 2 } });
+    const autre = await newSession(oc, { title: "Conversation ordinaire" });
+    for (const session of [etape1, etape2, autre]) {
+      await promptAsync(oc, session.id, "Travaille.");
+      await fake.waitForEvent("session.idle", (p) => p.sessionID === session.id);
+    }
+    assert.deepEqual(
+      [etape1, etape2, autre].map((s) => fake.messages(s.id).flatMap((m) => m.parts).filter((p) => p.type === "text").map((p) => (p as unknown as { text: string }).text).at(-1)),
+      ["Avis 1 rendu.", "Avis 2 rendu.", "Réponse du faux opencode."],
+    );
+    // Un prédicat qui lève est compté dans failures et ne script rien : trois sessions créées, trois échecs.
+    assert.equal(fake.failures.length, 3);
+    assert.ok(fake.failures.every((err) => err instanceof Error && err.message === "prédicat qui lève"));
+  });
+
+  it("ME-2 : outils d'une session d'étape = glob grep read ; témoin sans plancher = glob grep read skill todowrite", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const agentRules = lectureRules();
+    fake.setAgents([etapeAgent()]);
+    const etape = await newSession(oc, { title: "Étape", agent: "relire-script", permission: buildFloor("ETAPE", { agentRules }) });
+    const temoin = await newSession(oc, { title: "Témoin", agent: "relire-script" });
+    assert.deepEqual(fake.toolsFor(etape.id), ["glob", "grep", "read"]);
+    assert.deepEqual(fake.toolsFor(temoin.id), ["glob", "grep", "read", "skill", "todowrite"]);
+  });
+
+  it("ME-2 : `steps` est une consigne, pas un arrêt — « MAXIMUM STEPS » à la requête n° steps, outils gardés", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const agentRules = lectureRules();
+    fake.setAgents([etapeAgent(3)]);
+    const etape = await newSession(oc, { title: "Étape", agent: "relire-script", permission: buildFloor("ETAPE", { agentRules }) });
+    assert.equal(fake.maximumStepsNotice(etape.id), null, "première requête");
+    fake.script(etape.id, { text: "Un." }, { text: "Deux." }, { text: "Trois." });
+    for (const attendu of [null, MAXIMUM_STEPS_NOTICE, MAXIMUM_STEPS_NOTICE]) {
+      await promptAsync(oc, etape.id, "Continue.", { agent: "relire-script" });
+      await fake.waitForEvent("session.idle", (p) => p.sessionID === etape.id, { since: fake.emitted.length - 1 });
+      assert.equal(fake.maximumStepsNotice(etape.id), attendu);
+      // Aucun arrêt dur : les outils restent offerts et les appels suivants sont exécutés.
+      assert.deepEqual(fake.toolsFor(etape.id), ["glob", "grep", "read"]);
+    }
+    assert.equal(assistants(fake.messages(etape.id)).length, 3);
+    // Le message n'est pas enregistré dans la session (ME-7) : il est ajouté à la requête.
+    assert.equal(JSON.stringify(fake.messages(etape.id)).includes("MAXIMUM STEPS"), false);
+    // Sans `steps` sur l'agent, aucune consigne.
+    fake.setAgents([etapeAgent()]);
+    assert.equal(fake.maximumStepsNotice(etape.id), null);
+  });
+
+  it("ME-2 : doom_loop refusé sous ETAPE — erreur, premier repos, puis clôture du message et second repos ; « once » : un seul repos", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const agentRules = lectureRules();
+    fake.setAgents([etapeAgent()]);
+    const etape = await newSession(oc, { title: "Étape", agent: "relire-script", permission: buildFloor("ETAPE", { agentRules }) });
+    const glob = (): FakeToolScript => ({
+      tool: "glob",
+      input: { pattern: "**/*.ps1" },
+      ask: { permission: "doom_loop", patterns: ["glob"] },
+      agentRules,
+      output: "trois fichiers",
+    });
+
+    fake.script(etape.id, { tools: [glob()], followUp: { text: "Suite." } });
+    let since = fake.emitted.length;
+    await promptAsync(oc, etape.id, "Cherche.");
+    const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === etape.id, { since });
+    // La demande est posée bien que le plancher refuse tout : elle est évaluée sur les règles de l'assistant seules.
+    assert.equal("tool" in asked.properties, false);
+
+    // Chaque repos est relevé au moment où il est publié : la clôture du message ne doit pas précéder le premier.
+    const reposVus: Array<{ clos: boolean; parties: Array<string | undefined> }> = [];
+    since = fake.emitted.length;
+    const deuxRepos = fake.waitForEvent(
+      "session.idle",
+      (p) => {
+        if (p.sessionID !== etape.id) return false;
+        const message = assistants(fake.messages(etape.id)).at(-1);
+        reposVus.push({
+          clos: message?.time.completed !== undefined,
+          parties: toolParts(fake.messages(etape.id).at(-1) as OcMessageWithParts).map((part) => String(part.state.status)),
+        });
+        return reposVus.length === 2;
+      },
+      { since },
+    );
+    assert.equal(await reply(oc, String(asked.properties.id), { reply: "reject" }), true);
+    await deuxRepos;
+
+    const erreurs = fake.emitted.slice(since).filter((w) => w.payload.type === "session.error").map((w) => props(w).error);
+    assert.deepEqual(erreurs, [{ name: "UnknownError", data: { message: REJECTED } }]);
+    assert.deepEqual(reposVus, [
+      { clos: false, parties: ["running"] },
+      { clos: true, parties: ["error"] },
+    ]);
+    const message = assistants(fake.messages(etape.id)).at(-1);
+    assert.deepEqual(message?.error, { name: "UnknownError", data: { message: REJECTED } });
+    assert.equal(message?.finish, undefined, "le message n'est pas clos par « tool-calls »");
+    assert.deepEqual(toolParts(fake.messages(etape.id).at(-1) as OcMessageWithParts).map((p) => p.state.error), [REJECTED]);
+    assert.equal(assistants(fake.messages(etape.id)).length, 1, "aucune reprise après le refus");
+
+    // « once » : suite normale, un seul repos.
+    fake.script(etape.id, { tools: [glob()], followUp: { text: "Suite." } });
+    since = fake.emitted.length;
+    await promptAsync(oc, etape.id, "Cherche encore.");
+    const seconde = await fake.waitForEvent("permission.asked", (p) => p.sessionID === etape.id, { since });
+    await reply(oc, String(seconde.properties.id), { reply: "once" });
+    await fake.waitForEvent("session.idle", (p) => p.sessionID === etape.id, { since });
+    assert.equal(fake.emitted.slice(since).filter((w) => w.payload.type === "session.idle").length, 1);
+    assert.deepEqual(assistants(fake.messages(etape.id)).slice(1).map((m) => m.finish), ["tool-calls", "stop"]);
+    assert.deepEqual(fake.failures, []);
+  });
+
+  it("ME-7 : GET /session/:id/message?limit=N rend les N DERNIERS messages, dans l'ordre chronologique", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const session = await newSession(oc, { title: "Lecture" });
+    fake.script(session.id, { text: "Un." }, { text: "Deux." }, { text: "Trois." });
+    for (const texte of ["a", "b", "c"]) {
+      await promptAsync(oc, session.id, texte);
+      await fake.waitForEvent("session.idle", (p) => p.sessionID === session.id, { since: fake.emitted.length - 1 });
+    }
+    const roles = (list: OcMessageWithParts[]) => list.map((m) => m.info.role);
+    const tous = await oc.request<OcMessageWithParts[]>("GET", `/session/${session.id}/message`);
+    assert.deepEqual(roles(tous), ["user", "assistant", "user", "assistant", "user", "assistant"]);
+    const deux = await oc.request<OcMessageWithParts[]>("GET", `/session/${session.id}/message?limit=2`);
+    assert.deepEqual(
+      deux.map((m) => m.info.id),
+      tous.slice(-2).map((m) => m.info.id),
+    );
+    assert.deepEqual((await oc.request<OcMessageWithParts[]>("GET", `/session/${session.id}/message?limit=99`)).length, 6);
+    assert.deepEqual((await oc.request<OcMessageWithParts[]>("GET", `/session/${session.id}/message?limit=0`)).length, 0);
+    for (const limite of ["-1", "1.5", "abc", ""]) {
+      await assert.rejects(oc.request("GET", `/session/${session.id}/message?limit=${limite}`), statusIs(400), `limit=${limite}`);
+    }
+  });
+
+  it("ME-1 et ME-3 : POST /session recopie permission, parentID et metadata (un enfant sans permission n'hérite de rien) ; noReply n'appelle aucune IA", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const agentRules = lectureRules();
+    const floor = buildFloor("ETAPE", { agentRules }) as PermissionRule[];
+    const racine = await newSession(oc, { title: "Racine", permission: buildFloor("CONVERSATION") });
+    const metadata = { cockpit: "equipe", run: "run_1", etape: 1, tentative: 1, tour: 1, imbrique: { a: [1, 2] } };
+    const etape = await newSession(oc, { parentID: racine.id, title: "Étape 1", permission: floor, metadata });
+    assert.equal(JSON.stringify(etape.permission), JSON.stringify(floor), "plancher recopié à l'octet");
+    assert.deepEqual(etape.metadata, metadata);
+    assert.equal(etape.parentID, racine.id);
+    assert.deepEqual((await oc.request<FakeSession>("GET", `/session/${etape.id}`)).permission, floor);
+    const sansPlancher = await newSession(oc, { parentID: racine.id, title: "Enfant nu" });
+    assert.equal(sansPlancher.permission, undefined, "aucun héritage des règles de la racine");
+
+    // Injection : message utilisateur enregistré, aucune réponse, aucun état « occupée ».
+    const since = fake.emitted.length;
+    const injection = await oc.request<OcMessageWithParts>("POST", `/session/${racine.id}/message`, {
+      body: { noReply: true, agent: "build", parts: [{ type: "text", text: "Demande transmise à l'équipe." }] },
+    });
+    assert.equal(injection.info.role, "user");
+    assert.deepEqual(injection.parts.map((p) => (p as { text?: string }).text), ["Demande transmise à l'équipe."]);
+    const publie = fake.emitted.slice(since).filter((w) => !isSync(w.payload)).map((w) => w.payload.type);
+    assert.equal(publie.includes("session.status"), false);
+    assert.equal(publie.includes("session.idle"), false);
+    assert.equal(
+      String(props(fake.emitted.slice(since).find((w) => !isSync(w.payload) && w.payload.type === "message.updated") as FakeWireEvent).info),
+      String(injection.info),
+      "info.id du message.updated = celui de la réponse",
+    );
+    assert.deepEqual(assistants(fake.messages(racine.id)), [], "aucune requête au fournisseur");
+  });
+
+  it("ME-6 : abort d'une racine au repos publie session.status idle puis session.idle pour elle seule", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const racine = await newSession(oc, { title: "Racine" });
+    const enfant = await newSession(oc, { parentID: racine.id, title: "Étape" });
+    const since = fake.emitted.length;
+    assert.equal(await oc.request<boolean>("POST", `/session/${racine.id}/abort`), true);
+    assert.deepEqual(
+      fake.emitted.slice(since).filter((w) => !isSync(w.payload)).map((w) => [w.payload.type, props(w).sessionID]),
+      [
+        ["session.status", racine.id],
+        ["session.idle", racine.id],
+      ],
+    );
+    assert.equal(props(fake.emitted.slice(since)[0] as FakeWireEvent).status !== undefined, true);
+    assert.equal(fake.emitted.slice(since).some((w) => props(w).sessionID === enfant.id), false, "aucun effet sur les enfants");
+    assert.deepEqual(fake.failures, []);
+  });
+});
+// --- équipes (it4) : fin ---

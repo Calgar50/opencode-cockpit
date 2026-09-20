@@ -144,6 +144,10 @@ interface Run {
   quiet: boolean;
   /** Boucle terminée, repos publié (fin normale ou tour en erreur). */
   finished: boolean;
+  // --- équipes (it4) : début ---
+  /** ME-2 : refus d'une demande posée sur les règles de l'agent (doom_loop) ; le tour s'arrête avant la clôture (#haltRejected). */
+  halted: boolean;
+  // --- équipes (it4) : fin ---
   queue: Array<{ user: OcMessageWithParts; turn: FakeTurnScript }>;
   assistant: OcMessageWithParts | null;
   last: OcMessageWithParts | null;
@@ -194,6 +198,14 @@ const DEFAULT_CONFIG = {
 };
 /** Tour de résumé (POST /session/:id/summarize) quand aucun script n'attend. */
 const SUMMARY_TURN: FakeTurnScript = { text: "Résumé de la conversation par le faux opencode.", cost: 0.001, tokens: { input: 40, output: 12 } };
+// --- équipes (it4) : début ---
+/**
+ * Consigne qu'opencode 1.18.30 ajoute EN FIN DE REQUÊTE quand la session arrive à la requête n° `steps` de son agent (mesure
+ * MX-EQ, ME-2 ; texte relevé, abrégé). Elle n'est pas enregistrée dans la session (ME-7) : les outils restent offerts et les
+ * appels suivants sont exécutés. `steps` est une consigne donnée à l'IA, jamais un arrêt dur.
+ */
+export const MAXIMUM_STEPS_NOTICE = "CRITICAL - MAXIMUM STEPS REACHED. Tools are disabled until next user input. Respond with text only.";
+// --- équipes (it4) : fin ---
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const jsonClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -271,6 +283,10 @@ export interface FakeAgent {
   variant?: string;
   options: Record<string, unknown>;
   permission: PermissionRule[];
+  // --- équipes (it4) : début ---
+  /** Actions maximum de l'agent (`steps`) : à la requête n° `steps`, opencode ajoute MAXIMUM_STEPS_NOTICE (ME-2, L37s). */
+  steps?: number;
+  // --- équipes (it4) : fin ---
 }
 
 /** Raccourci de GET /command (Command.Info) ; « $ARGUMENTS » de `template` remplacé à l'envoi. */
@@ -633,6 +649,10 @@ export class FakeOpencode {
   readonly #approved = new Map<string, PermissionRule[]>();
   readonly #runs = new Map<string, Run>();
   readonly #scripts = new Map<string, FakeTurnScript[]>();
+  // --- équipes (it4) : début ---
+  /** Scripts posés d'avance, par prédicat (scriptWhen) : lus à chaque création de session. */
+  readonly #whenScripts: Array<{ test: (session: FakeSession) => boolean; turns: FakeTurnScript[] }> = [];
+  // --- équipes (it4) : fin ---
   readonly #seq = new Map<string, number>();
   readonly #waiters = new Set<Waiter>();
   /** Instances chargées (instance-store.ts) : dossiers des requêtes d'instance et des sessions, retirés à leur libération. */
@@ -717,6 +737,32 @@ export class FakeOpencode {
   script(sessionID: string, ...turns: FakeTurnScript[]): void {
     this.#scripts.set(sessionID, [...(this.#scripts.get(sessionID) ?? []), ...turns]);
   }
+
+  // --- équipes (it4) : début ---
+  /**
+   * File de tours pour toute session créée ENSUITE qui satisfait `predicat` (L37s) : le runner des équipes crée lui-même ses
+   * sessions d'étape, dont le test ne connaît pas l'identifiant d'avance. Le prédicat lit la session créée (`metadata.cockpit`,
+   * titre, agent, parent). Chaque inscription vaut pour chaque session qui lui correspond, dans l'ordre d'inscription ; un
+   * prédicat qui lève est compté dans `failures` et ne script rien.
+   */
+  scriptWhen(predicat: (session: FakeSession) => boolean, ...turns: FakeTurnScript[]): void {
+    this.#whenScripts.push({ test: predicat, turns: [...turns] });
+  }
+
+  /**
+   * Consigne « MAXIMUM STEPS » qu'opencode ajouterait à la PROCHAINE requête de la session, ou null (ME-2). Les outils restent
+   * offerts (toolsFor ne change pas) et les appels suivants sont exécutés : `steps` n'est pas un arrêt dur. Le compte des
+   * requêtes est celui des messages d'assistant de la session, plus celle qui vient.
+   */
+  maximumStepsNotice(sessionID: string, options: { agent?: string } = {}): string | null {
+    const session = this.#sessions.get(sessionID);
+    if (!session) throw new Error(`session inconnue du faux opencode : ${sessionID}`);
+    const agentName = options.agent ?? session.agent ?? "build";
+    const steps = this.agents(session.directory).find((candidate) => candidate.name === agentName)?.steps;
+    if (typeof steps !== "number" || steps <= 0) return null;
+    return this.messages(sessionID).filter((message) => message.info.role === "assistant").length + 1 >= steps ? MAXIMUM_STEPS_NOTICE : null;
+  }
+  // --- équipes (it4) : fin ---
 
   session(id: string): FakeSession | undefined {
     return this.#sessions.get(id);
@@ -1107,7 +1153,17 @@ export class FakeOpencode {
     }
     if (is("POST", "session", "*", "command")) return this.#command(res, session, input);
     if (is("POST", "session", "*", "summarize")) return this.#summarize(res, session, input);
-    if (is("GET", "session", "*", "message")) return json(200, this.messages(id));
+    if (is("GET", "session", "*", "message")) {
+      // --- équipes (it4) : début ---
+      // ME-7 : « limit » rend les N DERNIERS messages, dans l'ordre chronologique (le faux l'ignorait). Une valeur qui n'est pas
+      // un entier positif est refusée, comme le schéma de la route.
+      const raw = url.searchParams.get("limit");
+      const limit = raw === null ? null : Number(raw);
+      if (limit !== null && (raw?.trim() === "" || !Number.isSafeInteger(limit) || limit < 0)) return bad();
+      const all = this.messages(id);
+      return json(200, limit === null ? all : all.slice(Math.max(0, all.length - limit)));
+      // --- équipes (it4) : fin ---
+    }
     if (is("GET", "session", "*", "message", "*")) {
       const message = this.messages(id).find((m) => m.info.id === seg[3]);
       return message ? json(200, message) : notFound(`Message not found: ${seg[3]}`);
@@ -1206,6 +1262,16 @@ export class FakeOpencode {
     this.#directories.set(session.id, session.directory);
     this.#instances.add(session.directory);
     this.#messages.set(session.id, []);
+    // --- équipes (it4) : début ---
+    // Scripts posés d'avance (scriptWhen) : appliqués avant session.created, donc avant tout envoi possible.
+    for (const entry of this.#whenScripts) {
+      try {
+        if (entry.test(session)) this.script(session.id, ...entry.turns);
+      } catch (err) {
+        this.failures.push(err);
+      }
+    }
+    // --- équipes (it4) : fin ---
     this.#emitSessionInfo("session.created", session);
     return session;
   }
@@ -1408,6 +1474,9 @@ export class FakeOpencode {
       aborted: false,
       quiet: false,
       finished: false,
+      // --- équipes (it4) : début ---
+      halted: false,
+      // --- équipes (it4) : fin ---
       queue: [],
       assistant: null,
       last: null,
@@ -1551,6 +1620,10 @@ export class FakeOpencode {
     }
     const outcomes = await Promise.all(tools.map((tool) => this.#tool(run, session, first, tool, stepMs)));
     if (run.aborted || this.#closed) return;
+    // --- équipes (it4) : début ---
+    // ME-2 : demande de l'agent refusée (doom_loop) → erreur et premier repos, clôture et second repos ensuite.
+    if (run.halted) return this.#haltRejected(run, session, first, stepMs);
+    // --- équipes (it4) : fin ---
     // Un message qui délègue ne se clôt qu'à la fin de ses outils (research-events §0.3).
     this.#finishStep(session, first, turn, "tool-calls");
     run.assistant = null;
@@ -1572,6 +1645,34 @@ export class FakeOpencode {
     run.assistant = null;
     run.last = reprise;
   }
+
+  // --- équipes (it4) : début ---
+  /**
+   * ME-2 : refus d'une demande posée sur les règles de l'agent seules (doom_loop). Le tour s'arrête AVANT la clôture : erreur
+   * publiée et premier repos, puis les parties encore en cours passent en erreur, le message est clos avec l'erreur et un second
+   * repos suit. Un arrêt pendant l'attente laisse le message tel quel, comme tout tour interrompu.
+   */
+  async #haltRejected(run: Run, session: FakeSession, message: OcMessageWithParts, stepMs: number): Promise<void> {
+    const error = { name: "UnknownError", data: { message: REJECTED } };
+    run.queue.length = 0;
+    this.#emitFor(session.id, "session.error", { sessionID: session.id, error });
+    this.#setStatus(session.id, { type: "idle" });
+    if (!(await this.#live(run, stepMs))) return;
+    for (const part of [...message.parts]) {
+      const state = isRecord(part.state) ? part.state : {};
+      if (part.type !== "tool" || (state.status !== "pending" && state.status !== "running")) continue;
+      const time = isRecord(state.time) ? state.time : {};
+      this.#putPart(message, { ...part, state: { ...state, status: "error", error: REJECTED, time: { ...time, end: Date.now() } } });
+    }
+    const info = message.info as OcAssistantMessage;
+    info.error = jsonClone(error);
+    info.time.completed = Date.now();
+    this.#putMessage(message);
+    run.assistant = null;
+    run.last = message;
+    this.#settle(run);
+  }
+  // --- équipes (it4) : fin ---
 
   async #tool(run: Run, session: FakeSession, message: OcMessageWithParts, tool: FakeToolScript, stepMs: number): Promise<"ok" | "blocked" | "continue"> {
     const callID = tool.callID ?? `call_${randomBytes(12).toString("hex")}`;
@@ -1626,6 +1727,16 @@ export class FakeOpencode {
     if (outcome.reply === "reject") {
       // Sans message : RejectedError (arrête la boucle) ; avec message : CorrectedError (la boucle continue).
       if (!outcome.message) {
+        // --- équipes (it4) : début ---
+        // ME-2 : une demande évaluée sur les règles de l'agent seules (doom_loop) est posée HORS de l'appel d'outil ; son refus
+        // remonte avant la clôture. opencode publie session.error UnknownError et un premier repos, puis, environ 270 ms plus
+        // tard, les parties en erreur, le message clos avec l'erreur et un second repos (#haltRejected ; le délai est le pas du
+        // tour). Une demande d'outil garde la suite mesurée en itération 1 : parties en erreur, message clos « tool-calls ».
+        if (agentScope) {
+          run.halted = true;
+          return "blocked";
+        }
+        // --- équipes (it4) : fin ---
         fail(REJECTED);
         return "blocked";
       }
