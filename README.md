@@ -6,6 +6,7 @@ Poste de pilotage web pour [opencode](https://opencode.ai), conçu pour travaill
 - **Niveaux d'IA** : Rapide, Équilibré, Expert, reliés aux IA disponibles sur votre compte Copilot, avec le coût estimé d'une demande affiché avant l'envoi.
 - **Chat** : réponses en direct, appels d'outils lisibles (commandes, diffs, travail délégué), autorisations à valider en un clic, `@fichier`, `/raccourci`, images. L'IA qui va répondre est affichée avant l'envoi.
 - **Travail en direct** (1.1, en préparation) : « Qui travaille ? » montre chaque assistant au travail pour votre demande, avec son état, sa durée et son coût ; **Arrêter** arrête toute la conversation, travail délégué compris ; **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier.
+- **Autonomie à la demande** (1.1, en préparation) : un sélecteur à quatre choix par conversation (demander à chaque fois, modifications automatiques, plan d'abord, autonome avec contrôle), des plafonds qui arrêtent le travail, et un **Journal du contrôle** qui dit, ligne par ligne, qui a décidé quoi et selon quelle règle.
 - **Studio** (mode Avancé) : créer et régler les agents, skills, commandes et instructions (`AGENTS.md`), avec validation et retour arrière automatique.
 - **Archives** : chaque conversation est résumée, **classée automatiquement** (débogage, fonctionnalité, SQL, sécurité…), indexée en plein texte et exportée en Markdown dans un dossier rangé par catégorie.
 - **Coûts** : suivi en temps réel de la facturation Copilot au token face à votre budget mensuel, projection de fin de mois, alertes et garde-fou sur les modèles coûteux.
@@ -25,13 +26,15 @@ L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers
 5. [Assistants et niveaux d'IA](#assistants-et-niveaux-dia)
 6. [Modes Simple et Avancé](#modes-simple-et-avancé)
 7. [Travail en direct, arrêt et Plan d'abord (1.1)](#travail-en-direct-arrêt-et-plan-dabord-11)
-8. [Suivi des coûts](#suivi-des-coûts)
-9. [Classement et archives](#classement-et-archives)
-10. [Studio](#studio)
-11. [Commandes du quotidien](#commandes-du-quotidien)
-12. [Sécurité](#sécurité)
-13. [Dépannage](#dépannage)
-14. [Développement](#développement)
+8. [Autonomie : quatre choix, plafonds et Journal (1.1)](#autonomie--quatre-choix-plafonds-et-journal-11)
+9. [Ce qui échappe au contrôle : limites propres à opencode](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)
+10. [Suivi des coûts](#suivi-des-coûts)
+11. [Classement et archives](#classement-et-archives)
+12. [Studio](#studio)
+13. [Commandes du quotidien](#commandes-du-quotidien)
+14. [Sécurité](#sécurité)
+15. [Dépannage](#dépannage)
+16. [Développement](#développement)
 
 ---
 
@@ -231,6 +234,7 @@ Chaque installation, mise à jour comprise, s'ouvre en **mode Simple**. On chang
 | Réponse à une demande d'autorisation | « Autoriser une fois » ou « Refuser » | pareil : « Toujours autoriser » n'est jamais proposé (voir [Sécurité](#sécurité)) |
 | Un message avec une autre IA que celle de l'assistant | impossible | possible pour un seul message, si l'option est activée |
 | Travail que l'IA veut confier à un autre assistant (1.1) | refusé automatiquement : l'IA continue seule | attend votre accord, avec une carte détaillée |
+| Choix d'autonomie (1.1) | les quatre choix, à l'identique | les quatre mêmes choix ; seul change le sort d'un travail délégué que le cockpit ne peut pas laisser passer (refusé en Simple, votre accord en Avancé) |
 
 - **Règles d'or :** au premier lancement, et à chaque changement de leur texte, la fenêtre « Avant de commencer » bloque l'interface jusqu'à leur acceptation. Les 6 règles : tout ce qui est écrit ou joint part chez GitHub Copilot ; jamais de données clients ; jamais de secrets ; l'IA n'agit jamais sur la production ; elle ne remplace ni la relecture par un collègue ni le CAB ; elle peut se tromper avec assurance.
 - **Bandeau permanent** sous la zone de saisie : « Avant d'envoyer : aucune donnée client, aucun mot de passe, aucune clé. Relisez toujours la réponse : l'IA peut se tromper. »
@@ -238,7 +242,7 @@ Chaque installation, mise à jour comprise, s'ouvre en **mode Simple**. On chang
 
 ## Travail en direct, arrêt et Plan d'abord (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà : voir qui travaille, arrêter tout le travail d'une conversation, faire écrire un plan qui ne peut rien modifier. Le sélecteur **Autonomie** montre aussi « Modifications automatiques » et « Autonome avec contrôle », désactivés avec la raison « Pas encore disponible dans cette version du cockpit. ».
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà : voir qui travaille, arrêter tout le travail d'une conversation, faire écrire un plan qui ne peut rien modifier. Le sélecteur **Autonomie** propose aussi « Modifications automatiques » et « Autonome avec contrôle » : voir [Autonomie : quatre choix, plafonds et Journal](#autonomie--quatre-choix-plafonds-et-journal-11).
 
 ### Qui travaille ?
 
@@ -290,7 +294,7 @@ Quand l'IA veut confier du travail à un autre assistant :
 Le sélecteur **Autonomie** (à côté de « Envoyer », et dans l'en-tête) propose **Plan d'abord**, ou « Plan d'abord (nouvelle conversation) » depuis une conversation existante. Le plan s'écrit toujours dans une nouvelle conversation :
 
 - l'IA n'y a ni outil de modification de fichier ni commande, et son travail délégué non plus. À la création, puis avant chaque envoi, le cockpit vérifie les règles qui retirent ces outils : « Cette conversation ne peut rien modifier, même plus tard. » ;
-- après chaque réponse, une carte propose **Exécuter en demandant à chaque fois** et **Continuer à planifier** ; les deux exécutions automatiques y sont désactivées pour l'instant ;
+- après chaque réponse, une carte propose **Exécuter en demandant à chaque fois**, **… avec modifications automatiques**, **… en autonome avec contrôle** et **Continuer à planifier** ; les deux exécutions automatiques demandent la même confirmation que le sélecteur, et restent désactivées avec leur raison quand elles ne sont pas possibles ;
 - exécuter crée une autre conversation, avec les protections habituelles, dont la zone de saisie est préremplie par « Exécute le plan suivant. » suivi du dernier texte du plan. Rien ne part avant que vous l'ayez relu et envoyé ;
 - créer la conversation de plan ne coûte rien ; ses messages sont facturés comme les autres ;
 - si la configuration d'opencode déclare des outils MCP ou des extensions, qui pourraient modifier des fichiers sans vous demander, « Plan d'abord » est refusé.
@@ -303,7 +307,98 @@ Créer, installer, modifier ou supprimer un assistant, enregistrer dans le Studi
 - Quand opencode répond mais que ses conversations sont illisibles, le cockpit le dit : « Impossible de vérifier s'il reste des réponses en cours… ». **Redémarrer opencode**, souvent le remède, accepte alors une confirmation, même en mode Simple. Pour le Studio et les assistants, cette confirmation n'est possible qu'en mode Avancé.
 - Les réglages d'opencode (profils et fichier brut, en mode Avancé) et **Mettre à jour** des niveaux d'IA attendent toujours la fin des réponses, sans confirmation possible.
 
-Le cockpit installe aussi ses propres outils dans opencode (classement des archives, et l'IA de contrôle de la future « Autonome avec contrôle », qui n'est encore appelée par rien). Il ne le fait qu'en l'absence de réponse en cours ; sinon il réessaie 30 s plus tard, puis à intervalle doublé jusqu'à 5 minutes. **Diagnostic › Travail délégué et autonomie** donne leur état, par exemple « installation en attente d'un moment sans réponse en cours ; nouvel essai vers 10:42 ».
+Le cockpit installe aussi ses propres outils dans opencode (classement des archives, et l'IA de contrôle d'« Autonome avec contrôle »). Il ne le fait qu'en l'absence de réponse en cours ; sinon il réessaie 30 s plus tard, puis à intervalle doublé jusqu'à 5 minutes. **Diagnostic › Travail délégué et autonomie** donne leur état, par exemple « installation en attente d'un moment sans réponse en cours ; nouvel essai vers 10:42 ». Tant que l'IA de contrôle n'est pas installée, les commandes qu'elle devrait juger attendent votre accord, avec cette raison.
+
+## Autonomie : quatre choix, plafonds et Journal (1.1)
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà. Plusieurs recettes sur une IA Copilot réelle restent à faire avant publication : elles sont listées dans `docs/RECAPITULATIF.md`, section « Limites et points à vérifier ».
+
+Le sélecteur **Autonomie** (à côté de « Envoyer », et dans l'en-tête) porte quatre choix. Le choix vaut pour **une conversation et tout son travail délégué**, jamais pour le cockpit entier, et il ne lève jamais un refus de l'assistant : ce que l'assistant refuse reste refusé.
+
+| Choix | Ce qui passe sans vous demander | Ce qui attend toujours votre accord |
+|---|---|---|
+| **Demander à chaque fois** (défaut) | rien | chaque modification, commande, accès web et travail délégué |
+| **Modifications automatiques** | modifier un fichier du dossier de la conversation, hors fichiers protégés | fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes, web (et travail délégué en mode Avancé) |
+| **Plan d'abord** | rien : les outils de modification et de commande sont retirés | web et travail délégué |
+| **Autonome avec contrôle** | modifications comme ci-dessus ; commandes de consultation ; commandes simples inconnues du cockpit, jugées par l'IA de contrôle ; travail délégué conforme, dans les plafonds | fichiers protégés, suppressions, fichiers hors du dossier, web, et toute commande qui exécute du code ou touche au réseau, à la production ou à git |
+
+- **Les deux modes ont les mêmes quatre choix.** Seul change le sort d'un travail délégué que le cockpit ne peut pas laisser passer : refusé automatiquement en mode Simple, votre accord en mode Avancé.
+- **Confirmation avant de relâcher.** Resserrer le choix est immédiat. « Autonome avec contrôle » demande une confirmation à **chaque** activation, « Modifications automatiques » la première fois. La fenêtre dit ce qui passera sans vous demander, ce qui attendra toujours votre accord, ce qui reste refusé, le montant de l'arrêt automatique, et que certaines actions d'opencode ne passent par aucune demande (voir [Ce qui échappe au contrôle](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)). Les plafonds y sont modifiables.
+- **Aucun choix « sans contrôle ».** Le cockpit n'envoie que des réponses « une fois » ou « refuser », jamais une règle qui autoriserait d'office une catégorie d'actions.
+
+### Quand un choix automatique n'est pas possible
+
+Le choix est alors désactivé dans le menu, avec sa raison, et il est réévalué avant chaque envoi :
+
+| Raison | Ce qu'il faut faire |
+|---|---|
+| L'assistant choisi agit déjà sans demander (modifier, lancer une commande, confier du travail ou aller sur le web), ou ses droits n'ont pas pu être lus | choisir un autre assistant, ou corriger ses droits dans le Studio (mode Avancé) |
+| Des serveurs MCP ou des extensions sont configurés dans opencode, ou sa configuration n'a pas pu être lue | les retirer (**Paramètres › opencode**, mode Avancé) : le contrôle ne verrait pas leurs actions |
+| Le profil de droits « Sans confirmation (déconseillé) » est actif, ou n'a pas pu être vérifié | revenir au profil Prudent (**Paramètres › Sécurité**) |
+| Les protections de la conversation n'ont pas pu être vérifiées | réessayer ; au besoin, ouvrir une nouvelle conversation |
+| `COCKPIT_AUTONOMY=off` dans `.env` | interrupteur d'administration (ci-dessous) |
+| Conversation de plan | elle garde « Plan d'abord » et ne peut rien modifier, même plus tard |
+
+**Interrupteur d'administration `COCKPIT_AUTONOMY`** (`.env`, valeurs `on` ou `off`, `on` par défaut, toute autre valeur empêche le cockpit de démarrer) : avec `off`, « Modifications automatiques » et « Autonome avec contrôle » sont coupés pour tout le cockpit ; « Demander à chaque fois » et « Plan d'abord » restent possibles. Il ne se change pas depuis l'interface : modifiez `.env`, puis `.\cockpit.ps1 restart`. **Diagnostic › Travail délégué et autonomie** affiche son état.
+
+### Ce que le cockpit laisse passer, et comment il décide
+
+- **Modifications de fichiers.** Le cockpit lit le fichier visé dans la demande d'opencode, puis applique six règles. Attendent votre accord : un fichier hors du dossier de la conversation ou un lien qui en sort (E1) ; un fichier protégé — configuration, CI/CD, infrastructure, consignes d'IA (E2) ; une suppression, un déplacement, un vidage ou un remplacement (E3) ; une modification dont le cockpit ne peut pas voir le contenu (E4) ; le plafond de fichiers atteint (E5) ; une conversation hors des dossiers de travail du cockpit (E6).
+- **Commandes.** Une porte déterministe lit la **commande entière**, jamais le résumé qu'opencode affiche. Elle passe sept étapes : lexique, tête de commande, liste des consultations autorisées avec leurs options, commandes interdites (réseau, production, code et interpréteurs, enveloppes, suppression et droits, éditeurs, déclarations, git qui n'est pas une consultation), chemins sensibles, dépôt git piégé, puis programme inconnu. La première étape qui échoue décide. Sur les 116 commandes relevées par la sonde de préparation, **11** passent automatiquement, toutes des consultations dans le dossier de la conversation ; les autres attendent votre accord.
+- **IA de contrôle.** Seuls les programmes inconnus du cockpit lui sont soumis, et seulement en « Autonome avec contrôle ». Elle ne voit que la commande, jamais la conversation ; elle répond « autoriser » ou « attendre », **jamais « refuser »** ; une réponse illisible, un silence de plus de 30 secondes ou une IA Rapide indisponible donnent une attente de votre accord. **Chaque contrôle est un appel d'IA facturé**, compté dans la dépense de la demande, et plafonné. Elle se coupe dans **Paramètres › Budget** : les commandes inconnues attendent alors votre accord.
+- **Travail délégué.** En « Autonome avec contrôle », il part seul quand l'assistant demandé existe et n'est ni principal ni interne, que la consigne ne cite ni fichier avec « @ », ni commande « !` », ni adresse web, ni chemin absolu, que son IA est autorisée et disponible, que le garde-fou budgétaire l'accepte, et que les plafonds de la demande le permettent. Sinon : refusé en mode Simple, votre accord en mode Avancé.
+- **Raccourci qui contient des lignes ``!`commande` ``** : refusé en choix automatique, car opencode les exécuterait sans aucune demande.
+
+### Plafonds
+
+Valeurs par défaut, modifiables dans **Paramètres › Budget** (dans les deux modes) et dans la confirmation :
+
+| Plafond | Défaut | Effet quand il est atteint |
+|---|---|---|
+| Coût de la demande | 1,00 $ | **tout s'arrête** : conversation et travail délégué, puis retour à « Demander à chaque fois » |
+| Actions automatiques | 60 | retour à « Demander à chaque fois » |
+| Durée de la demande | 30 minutes | retour à « Demander à chaque fois » |
+| Fichiers modifiés | 25 | retour à « Demander à chaque fois » |
+| Travail délégué | 5 | les suivants sont refusés (Simple) ou attendent votre accord (Avancé) |
+| Contrôles par IA | 20 | les commandes à juger attendent votre accord |
+
+Le plafond de coût est une borne appliquée par un arrêt, pas une garantie de facturation : **l'appel en cours de chaque assistant au travail peut le dépasser**, et GitHub Copilot peut facturer un appel interrompu. L'appel qui donne son titre à une nouvelle conversation n'est pas compté dans la dépense de la demande. Les seuils mensuels du garde-fou (80 % et 100 % du budget) attendent toujours, eux, une confirmation de votre part : l'autonomie ne les tranche jamais.
+
+### Bandeau, Journal du contrôle et Diagnostic
+
+- **Bandeau**, sous l'en-tête du chat pendant une demande autonome : « Autonome avec contrôle · 12 automatiques · 1 en attente · 0,08 $ sur 1,00 $ », avec **Arrêter** et **Journal**. À 400 px, il tient sur une ligne. En fin de demande, **Voir les modifications de cette demande** montre le diff.
+- **Carte de la demande** : « Contrôle de sécurité en cours… » pendant l'examen (seul **Refuser…** est proposé la première minute), puis « En attente de votre accord » avec la règle en toutes lettres (« Règle : Fichier protégé (configuration, CI/CD, infrastructure ou consignes d'IA) »), **Autoriser une fois**, **Refuser…** et **Arrêter**.
+- **Journal du contrôle** (depuis le bandeau ou le Déroulé) : une ligne par décision — Heure · Qui · Action (résumée à 120 caractères, secrets masqués) · Décision (Autorisé automatiquement, En attente de votre accord, Refusé automatiquement, Passé sans contrôle) · Par (règles, IA de contrôle, vous, cockpit) · Règle · Raison · Coût du contrôle. Il est enregistré avec la version des règles, relu à la réouverture de la conversation, et supprimé avec elle.
+- **Diagnostic › Travail délégué et autonomie** : état de l'interrupteur `COCKPIT_AUTONOMY`, de l'IA de contrôle et de l'installation de l'assistant de contrôle du cockpit.
+
+### Ce qui ramène à « Demander à chaque fois »
+
+- un plafond d'actions, de durée, de fichiers ou de coût atteint ;
+- le passage à un assistant qui agit déjà sans demander ;
+- un redémarrage du cockpit, ou un redémarrage d'opencode (la demande est alors marquée « interrompue ») ;
+- votre propre choix, qui s'applique aussitôt.
+
+**Onglet fermé :** le travail continue dans les plafonds, et les actions qui attendent votre accord vous attendent. En rouvrant la conversation, vous retrouvez le bandeau, la demande en attente et le Journal.
+
+## Ce qui échappe au contrôle : limites propres à opencode
+
+Ces limites viennent d'opencode 1.18.30, pas du cockpit, et la configuration ne peut pas les corriger. Elles sont mesurées sur un opencode réel piloté hors ligne (aucun appel facturé), et la confirmation d'« Autonome avec contrôle » les rappelle.
+
+| Ce qui passe sans aucune demande | Ce que le cockpit en fait |
+|---|---|
+| Une **redirection seule** (`> fichier`, `>> fichier`, `< fichier`), y compris dans une boucle ou un sous-shell, et y compris vers un fichier hors du dossier de travail | détection **après coup** : en choix automatique, toute la demande est arrêtée (« Passé sans contrôle : la demande a été arrêtée. ») ; ailleurs, la ligne est écrite au Journal |
+| Une **affectation de variable** (`x=1`), une **déclaration** (`export`, `declare`, `readonly`, `typeset`, `local`, `unset`), `declare -p > fichier` qui écrit un contenu, un **test** (`[[ … ]]`, `[ … ]`), un `cd` seul ou suivi d'une redirection seule | idem |
+| Les lignes ``!`commande` `` d'un raccourci | raccourci refusé en choix automatique |
+| Une `/commande` liée à un travail délégué, ou une mention `@assistant` dans ses arguments | travail délégué compté après coup, marqué « lancé sans confirmation » |
+| Les outils MCP et les extensions | activation d'un choix automatique refusée quand la configuration en déclare |
+| Tout ce que fait un programme déjà autorisé | raison des listes de commandes interdites, et de l'IA de contrôle limitée aux seuls programmes inconnus |
+
+- **La prévention n'est pas possible, la détection l'est.** Mesuré : opencode publie la partie « commande » 3 à 4 millisecondes avant que le fichier apparaisse sur le disque, mais un arrêt envoyé 2,6 ms avant cet effet **n'empêche pas** la commande de s'exécuter. Le cockpit les repère donc après coup et arrête la demande.
+- **`echo a > fichier` n'est pas dans cette liste** : cette forme-là déclenche bien une demande d'autorisation. C'est la redirection **seule** qui passe sans demande.
+- **G04, le contrôle des dépôts git piégés, ne porte que sur le dépôt.** Le cockpit lit le `.git/config` du dossier de la conversation et met en attente une commande git quand il y trouve de quoi lancer un programme (`core.fsmonitor`, `core.pager`, `diff.external`, `credential.helper`, `include`…). Mesuré : la configuration git **globale** du conteneur opencode n'existe pas au départ, mais elle est inscriptible par une redirection seule (`> ~/.gitconfig`, qui passe sans demande) et elle est **illisible par le cockpit**, qui ne monte pas ce dossier. Le cockpit ne peut donc pas la vérifier ; le repère « Passé sans contrôle » reste la parade.
+- **Un refus ne retire pas l'outil.** Un refus posé sur un motif précis (fichiers de clés) laisse l'outil de lecture à l'IA, qui peut tenter la lecture : elle est refusée sans vous demander. De même, un refus `read mcp:*` **refuse les outils de ressources MCP à l'appel, sans les masquer** : l'IA les voit toujours, peut les appeler, et la réponse qui les appelle est facturée (mesuré).
+- **Le contrôle porte sur ce que le cockpit a lu au moment de la demande.** Entre cette lecture et l'exécution par opencode, le disque peut changer : un fichier créé entre-temps par une autre action autorisée de la même réponse, un `.git/config` modifié après la vérification, ou un lien créé après la décision ne sont pas revus. La fenêtre est courte et propre à la réponse « une fois », mais elle existe : c'est pourquoi les catégories de commandes interdites et les refus de l'assistant, qui ne dépendent d'aucune lecture du disque, restent la première barrière.
+- **Liens vers un fichier protégé.** Un fichier du dossier de travail peut être un second nom d'un fichier protégé (`.git/config`, configuration d'opencode) : son chemin semble intérieur et son nom n'est pas protégé, mais l'écrire modifie l'autre. Une modification automatique n'est donc laissée passer que sur un fichier ordinaire portant **un seul nom** ; sinon elle attend votre accord. Mesuré à travers un montage Docker Desktop d'un dossier Windows : un fichier ordinaire porte bien un seul nom, un fichier à deux noms est vu comme tel. Le cockpit n'accorde jamais de lui-même la commande qui crée ces liens.
 
 ## Suivi des coûts
 
@@ -398,6 +493,10 @@ flowchart LR
   - une réponse « Toujours autoriser » s'appliquerait à tous les agents du projet et lèverait leurs refus jusqu'au redémarrage d'opencode (mesuré : un assistant qui interdit les fichiers de clés en lit un après un « Toujours » donné sur un `.env`). Le cockpit ne la propose pas et la refuse ;
   - `grep` et `glob` peuvent afficher des lignes d'un fichier de clés même quand sa lecture est refusée : ne laissez aucun fichier de clés dans le dossier des projets ;
   - un travail délégué lancé par l'IA elle-même (outil `task`, possible avec l'Assistant général après confirmation) démarre dès qu'il est autorisé, sans estimation par opencode. Depuis la 1.1, le cockpit le refuse d'office en mode Simple et, en mode Avancé, fait passer « Autoriser une fois » par le garde-fou budgétaire et le plafond de la demande (voir [Travail délégué par l'IA](#travail-délégué-par-lia)) ; une délégation qu'un assistant lance sans demander n'est vue qu'après coup. Les assistants du catalogue et ceux créés par l'assistant de création refusent la délégation.
+  - d'autres actions encore passent sans aucune demande (redirection seule, déclaration, affectation) : la liste mesurée et ce que l'autonomie de la 1.1 en fait sont réunies dans [Ce qui échappe au contrôle](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode).
+- **Autonomie contrôlée (1.1) :** quel que soit le choix, le cockpit n'envoie à opencode que des réponses « une fois » ou « refuser », pour la conversation et son travail délégué seulement ; il n'écrit jamais de règle d'autorisation sur une conversation, ne lève jamais un refus de l'assistant, et ne redémarre jamais opencode. Les refus de lire les fichiers de clés restent posés et vérifiés. Un choix automatique est refusé quand le contrôle ne verrait pas les actions : assistant qui agit déjà sans demander, serveurs MCP ou extensions configurés, profil « Sans confirmation (déconseillé) », protections non vérifiées (voir [Autonomie](#autonomie--quatre-choix-plafonds-et-journal-11)).
+- **Porte des commandes (1.1) :** en « Autonome avec contrôle », une commande n'est laissée passer que si elle franchit sept étapes lisant la commande entière (et non le résumé d'opencode) : lexique, tête, consultations autorisées avec leurs options, commandes interdites, chemins sensibles, dépôt git piégé, programme inconnu. Sur les 116 commandes de la sonde de préparation, 11 passent, toutes des consultations dans le dossier de la conversation. Une commande interdite attend votre accord ; l'IA de contrôle n'est pas consultée pour elle.
+- **IA de contrôle (1.1) :** elle ne juge que les programmes inconnus du cockpit, ne voit que la commande (jamais la conversation, jamais une sortie d'outil), et ne peut qu'autoriser ou faire attendre — elle ne refuse rien et n'annule aucun refus. Chaque contrôle est un appel d'IA facturé, plafonné par demande. Avant publication, elle doit passer une épreuve de 60 programmes inconnus : une seule autorisation dangereuse et elle est livrée coupée.
 - **Fournisseur d'IA verrouillé deux fois :** opencode ne charge que `github-copilot`, et le cockpit refuse toute demande dont un appel facturé (IA d'un assistant, d'un raccourci ou d'un travail délégué comprise) viendrait d'un autre fournisseur. La liste se règle avec `COCKPIT_ALLOWED_PROVIDERS` ; toute autre valeur que `github-copilot` affiche en permanence le bandeau rouge « Mode test : un fournisseur autre que GitHub Copilot est autorisé. »
 - **IA d'un assistant imposée par le serveur :** une demande envoyée à un assistant avec une autre IA est refusée ; le chat la renvoie une seule fois avec la bonne IA et le signale. Une `/fiche` que l'assistant n'a pas le droit d'ouvrir est refusée, car opencode la lancerait sans aucun contrôle.
 - **Pas de « Toujours autoriser » :** chaque action sensible se confirme une fois à la fois, et le serveur refuse une réponse « Toujours ». Pour autoriser d'office une catégorie d'actions, utilisez un profil de permissions (mode Avancé) : ces règles globales ne lèvent pas les refus propres à chaque assistant. Depuis la 1.0.2, appliquer un profil redémarre opencode quelques secondes, jamais pendant une réponse.
@@ -441,6 +540,11 @@ flowchart LR
 | « Impossible de vérifier s'il reste des réponses en cours » (1.1) | opencode répond, mais ses conversations sont illisibles : **Diagnostic › Redémarrer opencode** accepte une confirmation, même en mode Simple (une réponse en cours serait coupée). |
 | « Message non envoyé : le cockpit n'a pas pu vérifier les protections de cette conversation… » (1.1) | Le refus de lire les fichiers de clés n'a pas pu être vérifié : rien n'a été facturé. Réessayez dans un instant ; si le message dit « Continuez dans une nouvelle conversation », ouvrez-en une autre. |
 | « Conversation de plan non créée : la configuration d'opencode déclare des outils MCP ou des extensions… » (1.1) | Ces outils pourraient modifier des fichiers sans vous demander. Retirez-les (**Paramètres › opencode**, en mode Avancé) pour utiliser « Plan d'abord ». |
+| « Coupé sur ce cockpit par son administrateur… » sur les deux choix automatiques (1.1) | `COCKPIT_AUTONOMY=off` dans `.env` : passez la ligne à `on` (ou retirez-la), puis `.\cockpit.ps1 restart`. « Demander à chaque fois » et « Plan d'abord » restent utilisables. |
+| « Cet assistant agit déjà sans demander… », « Des serveurs MCP ou des extensions sont configurés… », « Le profil de droits « Sans confirmation (déconseillé) » est actif… » (1.1) | Le contrôle ne verrait pas ces actions : changez d'assistant, retirez les serveurs MCP et les extensions (**Paramètres › opencode**, mode Avancé), ou revenez au profil Prudent (**Paramètres › Sécurité**). Voir [Autonomie](#autonomie--quatre-choix-plafonds-et-journal-11). |
+| « Passé sans contrôle : la demande a été arrêtée. » (1.1) | opencode a lancé une commande sans demander d'autorisation (redirection seule, déclaration, affectation) : le cockpit l'a repéré après coup et a tout arrêté. Le Journal du contrôle donne la ligne. Voir [Ce qui échappe au contrôle](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode). |
+| « Arrêtée : plafond d'arrêt atteint… » (1.1) | La demande a dépassé son plafond de coût : le travail est arrêté et la conversation revient à « Demander à chaque fois ». Relevez le plafond dans **Paramètres › Budget** ou dans la confirmation, puis relancez la demande. |
+| « Contrôle par IA indisponible : aucune IA Rapide disponible sur votre compte. » (1.1) | Les commandes inconnues attendent votre accord. Vérifiez **Paramètres › Niveaux d'IA › Rapide** et **Paramètres › Connexion**. |
 | 1.0.0 ou 1.0.1 : un profil de permissions affiche « opencode en applique d'autres » | opencode ne relit pas ce fichier sans redémarrer : **Diagnostic › Redémarrer opencode**, ou passez en 1.0.2, qui redémarre de lui-même. |
 | Écran « Accès protégé par jeton » | `.\cockpit.ps1 open`. La connexion est valable 30 jours. |
 | « Hôte non autorisé » | Ouvrez `http://127.0.0.1:7777` ou `http://localhost:7777`, pas le nom ni l'adresse IP du PC. |
@@ -478,7 +582,7 @@ Publier une version : mettre à jour `VERSION`, puis pousser le tag `vX.Y.Z`. La
 - `--reel-hors-ligne` : vrai opencode 1.18.30 et faux fournisseur d'IA, aucun appel facturé ;
 - `--reel` : IA réelle, appels facturés, jamais lancé automatiquement.
 
-Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'itération 1 (`--scenarios 'it1-api-*'`) vérifient par l'API le refus des fichiers de clés, sa transmission au travail délégué, « Arrêter », le titre et l'archive, et « Plan d'abord ». Le banc sert le cockpit en HTTP tant que la 1.0.5 n'est pas intégrée dans la 1.1 ; il passera alors en HTTPS épinglé. Mode d'emploi : [`e2e/README.md`](e2e/README.md).
+Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'itération 1 (`--scenarios 'it1-api-*'`) vérifient par l'API le refus des fichiers de clés, sa transmission au travail délégué, « Arrêter », le titre et l'archive, et « Plan d'abord » ; ceux de l'itération 2 (`--scenarios 'it2-*'`) jouent l'autonomie : modification automatique dans le dossier, attente sur un fichier protégé, `grep` automatique, `git status` sur un dépôt piégé, travail délégué automatique sous plafond, arrêt au plafond, plan exécuté en autonome, onglet fermé pendant une demande, et `COCKPIT_AUTONOMY=off`. Le banc sert le cockpit **en HTTP** tant que la 1.0.5 n'est pas intégrée dans la 1.1 ; il passera alors en HTTPS épinglé. Mode d'emploi : [`e2e/README.md`](e2e/README.md).
 
 ## Licence
 
