@@ -369,7 +369,10 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
         if (!lines.slice(Math.max(0, i - 3), i + 1).some((l) => l.includes("D-05"))) nonMarques.push(`${name}:${i + 1}`);
       });
     }
-    assert.deepEqual([...fichiers].sort(), ["it1-api-commun.mjs", "it1-ui-commun.mjs", "it1-ui-m25.mjs"]);
+    // Liste figée : tout nouvel endroit qui suppose le HTTP doit être ajouté ici ET nommé dans les deux documents.
+    // `it2-api-commun.mjs` est entré à la vague 4 de l'itération 2 : la confirmation exige l'en-tête `x-cockpit-confirm: 1`
+    // (§4.11) et le client d'API du banc ne sait pas poser d'en-tête, d'où deux `fetch` bruts, réunis dans une seule section.
+    assert.deepEqual([...fichiers].sort(), ["it1-api-commun.mjs", "it1-ui-commun.mjs", "it1-ui-m25.mjs", "it2-api-commun.mjs"]);
     assert.deepEqual(nonMarques, [], "endroits qui supposent le HTTP sans la mention D-05 (3 lignes au-dessus au plus)");
     const paragraphes = (file: string) =>
       fs

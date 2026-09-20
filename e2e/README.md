@@ -71,7 +71,8 @@ docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2
 Le cockpit sert en **HTTP** tant que la 1.0.5 n'est pas rebasée (décision D-05). Le rebase (paquet R105) passera le
 banc en HTTPS épinglé (`--pinnedpubkey`, jamais `-k`) et renommera le cookie. Les endroits à reprendre portent la
 mention `D-05` : deux dans `e2e/lib/cockpit.mjs`, les autres dans les scénarios de l'itération 1
-([liste](#scénarios-de-litération-1-chantier-11)).
+([liste](#scénarios-de-litération-1-chantier-11)) et dans `it2-api-commun.mjs`
+([liste](#scénarios-de-litération-2-chantier-11)).
 
 ## Écrire un scénario
 
@@ -182,6 +183,66 @@ console muette :
 | `it1-ui-m25.mjs` | mesure M25 en HTTP : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
+
+## Scénarios de l'itération 2 (chantier 1.1)
+
+L'itération 2 est « l'autonomie contrôlée ». Ses scénarios se lancent comme ceux de l'itération 1 :
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it2-*' --project-prefix i211-e2e --image-tag i211
+scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it2-*' --project-prefix i211-e2e --image-tag i211
+```
+
+Mêmes règles que pour l'itération 1 : un fichier `*-commun.mjs` porte les outils de sa famille et vérifie ses
+préalables, et chaque scénario qui agit sur opencode le fait sous le témoin P6 et P4 (`avecTemoinP6` d'
+`it1-api-commun.mjs`).
+
+**Atelier.** L'autonomie décide sur des faits du disque : les règles de modification résolvent les chemins et la porte
+des commandes lit le sous-arbre et `.git/config`. `it2-api-commun.mjs` prépare donc, une seule fois, deux petits dépôts
+dans le dossier de travail monté par le banc : `it2-atelier` (dépôt propre) et `it2-piege` (dépôt dont le `.git/config`
+porte `core.pager`, ce qui fait attendre toute commande `git` — règle G04).
+
+**Corpus de la barrière des 60.** `e2e/corpus/controle-60.json` porte les soixante commandes de la recette M8 (trente
+inoffensives, trente nuisibles). Le banc en vérifie seulement la **forme** à chaque passage ; **aucune de ces commandes
+n'est soumise**, ici ni ailleurs : la barrière est une recette à jouer à la main avant publication.
+
+**HTTP (écart D-05).** `it2-api-commun.mjs` suppose lui aussi un cockpit servi en HTTP : la confirmation d'un choix
+automatique exige l'en-tête `x-cockpit-confirm: 1` et le client d'API du banc ne sait pas poser d'en-tête. Ses deux
+`fetch` bruts vers `ctx.url` sont réunis dans une seule section « Requêtes brutes (D-05) », et sont à reprendre au
+rebase de la 1.0.5 comme ceux de l'itération 1.
+
+**Interrupteur.** `it2-api-interrupteur.mjs` est le seul scénario à deux côtés. Le passage ordinaire du banc le joue
+allumé. Pour le côté coupé, la variable se pose dans l'environnement du shell — Compose l'interpole avant le fichier
+d'environnement du banc, donc aucun fichier n'est à modifier :
+
+```sh
+COCKPIT_AUTONOMY=off scripts/run-e2e.sh --faux --project-prefix i211-e2e --image-tag i211 \
+  --scenarios it2-api-interrupteur
+```
+
+Par l'API du cockpit :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it2-api-commun.mjs` | préalables : activation ouverte, interrupteur `COCKPIT_AUTONOMY` allumé, mode Simple par défaut, atelier en place, corpus des 60 bien formé (jamais joué), agents internes installés ; outils communs de la famille |
+| `it2-api-modifications.mjs` | la confirmation vient du serveur (428 `confirmation-requise`) ; une écriture dans le dossier part sans demander (règle A-edit, « once » relayé, ligne « Autorisé automatiquement ») ; une écriture dans un fichier protégé attend (règle E2) ; compteurs de la demande ; P4 |
+| `it2-api-commandes.mjs` | `grep` et `git status` automatiques dans le dépôt propre (règles A-grep et A-git-status) ; `git status` en attente dans le dépôt piégé (règle G04), sans qu'aucune session de contrôle soit créée ; mesure M4 relevée sur le faux (borne basse) |
+| `it2-api-delegation.mjs` | en mode Simple, une délégation conforme sous les plafonds part sans demander (règle A-task) et l'enfant travaille ; seul « once » est relayé |
+| `it2-api-plafond.mjs` | plafonds envoyés par la confirmation ; un tour au-dessus du plafond de coût arrête l'arbre, la demande est close « plafond-cout », la conversation revient à « Demander à chaque fois » et plus aucune session n'est occupée |
+| `it2-api-lecture-seule.mjs` | assistant « Lecture seule » en Autonome : aucun outil de modification proposé à l'IA, aucune demande `edit` levée, aucun refus d'assistant contourné |
+| `it2-api-m14.mjs` | mesure M14 : au signal d'un redémarrage d'opencode (`session.error` sur la session racine), la demande autonome est close « interrompue » et la conversation revient à « Demander à chaque fois » |
+| `it2-api-interrupteur.mjs` | `COCKPIT_AUTONOMY` : allumé, les quatre choix sont servis et un `PUT` confirmé passe ; coupé, seuls « Demander » et « Plan d'abord » restent possibles, les deux autres portant la raison `autonomie-coupee` |
+
+Par la page, en agissant comme un utilisateur (clic, clavier), avec captures 1440, 1024 et 400 dans les deux thèmes et
+console muette :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it2-ui-commun.mjs` | préalables et outils de page de l'itération 2 ; une seule entrée de console tolérée, bornée à la route d'autonomie et au code 428, qui est la preuve que la porte du serveur a répondu |
+| `it2-ui-selecteur-clavier.mjs` | les quatre choix **et** la confirmation au clavier seul : Entrée n'applique rien toute seule (428), la confirmation porte ses cinq lignes et ses plafonds modifiables, Échap ferme sans rien appliquer, [Lancer en autonome] change le choix côté serveur |
+| `it2-ui-plan-autonome.mjs` | plan exécuté en autonome : carte à quatre boutons, 428 puis confirmation, nouvelle conversation créée en « Autonome avec contrôle » avec un brouillon prérempli et rien d'envoyé |
+| `it2-ui-bandeau-journal.mjs` | bandeau d'autonomie (compteurs, dépense, plafond, [Arrêter], [Journal]), Journal du contrôle ligne à ligne, puis fin de demande avec [Voir les modifications de cette demande] ; les douze captures des vues de L12 |
+| `it2-ui-onglet-ferme.mjs` | onglet fermé pendant une demande autonome : les décisions automatiques continuent et l'attente est retrouvée à la réouverture, bandeau et carte compris |
 
 ## Contrôle des types
 

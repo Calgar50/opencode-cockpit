@@ -164,7 +164,7 @@ export async function exigerP6SurRequetes(ctx, depuis = 0) {
  * PUT /api/conversations/:rootId/autonomie, avec ou sans la confirmation (« x-cockpit-confirm: 1 »). Le client d'API du banc ne
  * pose pas d'en-tête : requête brute avec le seul cookie de session du banc, comme le flux du témoin P6.
  * D-05 : `fetch` brut vers ctx.url, possible tant que le banc sert en HTTP ; en HTTPS épinglé (R105b), à reprendre par le transport
- * épinglé du banc — c'est le seul endroit de l'itération 2.
+ * épinglé du banc — avec `postExecutionDePlan` ci-dessous, ce sont les deux seuls endroits de l'itération 2, réunis ici.
  */
 export async function putAutonomie(ctx, rootId, corps, { confirme = false } = {}) {
   const entetes = {
@@ -174,6 +174,7 @@ export async function putAutonomie(ctx, rootId, corps, { confirme = false } = {}
     "x-cockpit-csrf": "1",
     ...(confirme ? { "x-cockpit-confirm": "1" } : {}),
   };
+  // D-05 : `fetch` brut vers ctx.url (voir l'en-tête de cette fonction).
   const reponse = await fetch(`${ctx.url}/api/conversations/${encodeURIComponent(rootId)}/autonomie`, {
     method: "PUT",
     headers: entetes,
