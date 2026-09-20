@@ -88,6 +88,16 @@ const AUTRES_PAQUETS_V0: Readonly<Record<string, readonly string[]>> = {
   ],
 };
 
+/**
+ * Croisements permis, une fois un squelette rempli par le paquet qui en est propriétaire : D-3d-27 interdit aux fichiers de la
+ * vague 0 de se lire entre eux, pas à un paquet plus tardif d'importer les modules dont sa fiche dépend. Chaque ligne cite le
+ * paquet qui l'apporte.
+ */
+const CROISEMENTS_PERMIS: readonly string[] = [
+  // [L31a] Le service des territoires applique la politique d'accès à « Revoir » et compte les sessions occupées selon les faits.
+  "server/territoires-service.ts → L28a : server/shared/revoir-access.ts",
+];
+
 /** Squelettes : « Propriétaire : Lxx. » en première ligne (même règle que wiring-11.test.ts). */
 const PROPRIETAIRES: Readonly<Record<string, string>> = {
   "server/routes-territoires.ts": "L31a",
@@ -233,7 +243,7 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
 
   it("aucun fichier de T3d-a n'importe un fichier d'un autre paquet de la vague 0 (D-3d-27)", () => {
     assert.deepEqual(
-      FICHIERS_T3D_A.flatMap((fichier) => importsCroises(fichier, lire(fichier))),
+      FICHIERS_T3D_A.flatMap((fichier) => importsCroises(fichier, lire(fichier))).filter((croisement) => !CROISEMENTS_PERMIS.includes(croisement)),
       [],
     );
   });
@@ -292,7 +302,14 @@ describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
     assert.equal(territoires.status, 200);
     const vue = territoires.json<TerritoiresResponse>();
     assert.equal(typeof vue.genereLe, "number");
-    assert.deepEqual({ ...vue, genereLe: 0 }, { genereLe: 0, mode: "simple", projets: [], salle: null, statutVerifie: false });
+    // [L31a] Le squelette neutre est remplacé par le port réel : la forme du contrat ne change pas, mais la vue est celle de l'état
+    // réel. Harnais : un workspace sans sous-dossier ni conversation → un seul territoire (la racine), rien à compter, pas
+    // d'enceinte, statut vérifié (aucune requête de statut n'était nécessaire : aucune racine de l'instance principale).
+    assert.deepEqual({ ...vue, genereLe: 0, projets: [] }, { genereLe: 0, mode: "simple", projets: [], salle: null, statutVerifie: true });
+    assert.deepEqual(
+      vue.projets.map((territoire) => [territoire.projet, territoire.conversations.length, territoire.compteurs]),
+      [["", 0, { travaillent: 0, attendent: 0, cout: 0 }]],
+    );
 
     assert.deepEqual(await get(`/api/revoir/${ROOT}`), { status: 404, body: { error: "racine-inconnue", code: "racine-inconnue" } });
     assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: false, raison: "racine-inconnue" } });
