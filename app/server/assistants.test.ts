@@ -545,12 +545,17 @@ describe("assistants", () => {
     assert.equal(taskSizeOf("agent-b"), null);
   });
 
-  it("catalogue livré : 6 assistants sûrs, 3 fiches relues ; exemples du Studio avec niveau conseillé", () => {
-    assert.equal(CATALOGUE.length, 6);
+  // <c5:catalogue>
+  // 1.1 (L45a) : changement voulu de ce test, limité à trois points — 6 → 10 assistants (4 assistants d'équipe), 3 → 4 fiches
+  // (postmortem-sans-reproche) et `role` retiré du brouillon comme `id` et `version` (assistantDraftSchema est un z.strictObject).
+  // Toutes les autres assertions sont inchangées.
+  it("catalogue livré : 10 assistants sûrs, 4 fiches relues ; exemples du Studio avec niveau conseillé", () => {
+    assert.equal(CATALOGUE.length, 10);
     for (const entry of CATALOGUE) {
       const draft = { ...entry, reflection: "standard" } as Record<string, unknown>;
       delete draft.id;
       delete draft.version;
+      delete draft.role;
       assert.equal(assistantDraftSchema.safeParse(draft).success, true, entry.id);
       assert.equal(assistantPermission(entry.rights, entry.web, entry.fiches).task, "deny");
       for (const fiche of entry.fiches) {
@@ -559,7 +564,7 @@ describe("assistants", () => {
     }
     assert.deepEqual(
       CATALOGUE_FICHES.map((f) => f.name),
-      ["anonymisation-donnees", "standards-scripts", "checklist-cab"],
+      ["anonymisation-donnees", "standards-scripts", "checklist-cab", "postmortem-sans-reproche"],
     );
     for (const fiche of CATALOGUE_FICHES) assert.ok(fiche.body.startsWith(REVIEW_BANNER), fiche.name);
     assert.match(
@@ -579,6 +584,7 @@ describe("assistants", () => {
       "description-pr": "rapide",
     });
   });
+  // </c5:catalogue>
 });
 
 describe("réalignement en lot", () => {
