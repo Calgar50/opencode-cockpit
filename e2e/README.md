@@ -194,8 +194,13 @@ scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it2-*' --project-prefix i211-e
 ```
 
 Mêmes règles que pour l'itération 1 : un fichier `*-commun.mjs` porte les outils de sa famille et vérifie ses
-préalables, et chaque scénario qui agit sur opencode le fait sous le témoin P6 et P4 (`avecTemoinP6` d'
-`it1-api-commun.mjs`).
+préalables, et chaque autre scénario qui agit sur opencode le fait sous le témoin P6 et P4 (`avecTemoinP6` d'
+`it1-api-commun.mjs`) — **sauf trois** : `it2-api-interrupteur.mjs`, `it2-ui-onglet-ferme.mjs` et
+`it2-ui-selecteur-clavier.mjs`, qui n'ont que le journal des requêtes du faux opencode (`exigerP6SurRequetes` d'
+`it2-api-commun.mjs`). Ce journal n'existe qu'en `--faux` : **ces trois-là ne vérifient donc rien de P6 ni de P4 en
+`--reel-hors-ligne`**, là où le témoin complet contrôle en plus les libérations d'instance relayées et la coupure du
+flux d'opencode. La liste de ces trois exemptés est figée par un test de `npm test` (`croisements-it2-v4`) : un
+nouveau scénario `it2-*` qui agit sur opencode hors du témoin doit être ajouté ici et dans ce test.
 
 **Atelier.** L'autonomie décide sur des faits du disque : les règles de modification résolvent les chemins et la porte
 des commandes lit le sous-arbre et `.git/config`. `it2-api-commun.mjs` prépare donc, une seule fois, deux petits dépôts
