@@ -70,6 +70,7 @@ import { carnetVide, libelleEtat, libelleOutil, libelleSecteur, libelleStation, 
 import { activityApi } from "../../../lib/api-activity.ts";
 import { oc } from "../../../lib/api.ts";
 import type { ActivityFact } from "../../../lib/types.ts";
+import { BandCommands3d } from "../../salle-controle/revoir/BandCommands3d.tsx"; // [3d]
 import "./neon.css";
 
 export interface NeonBandProps {
@@ -201,6 +202,9 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
                   {TOUCHES.demonstration}
                 </button>
               ) : null}
+              {/* [3d] début : commandes « Revoir » et salle de contrôle (itération 3, L28b) */}
+              <BandCommands3d rootId={rootId} facts={facts} advanced={advanced} />
+              {/* [3d] fin */}
             </>
           ) : null}
           <button type="button" className="btn sm" aria-expanded={deplie} aria-controls={deplie ? corpsId : undefined} onClick={basculerRepli}>

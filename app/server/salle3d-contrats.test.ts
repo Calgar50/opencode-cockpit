@@ -112,6 +112,12 @@ const PROPRIETAIRES: Readonly<Record<string, string>> = {
 
 const lire = (relatif: string) => fs.readFileSync(path.join(APP_DIR, relatif), "utf8");
 
+/**
+ * Squelette de T3d-a rempli par son propriétaire (« Squelette T3d-a » disparu de l'en-tête) : à partir de la vague 1, les contrôles
+ * propres aux squelettes ne le concernent plus, seul son en-tête « Propriétaire : Lxx » reste.
+ */
+const estRempli = (relatif: string) => Object.hasOwn(PROPRIETAIRES, relatif) && !/Squelette T3d-a\b/.test(lire(relatif));
+
 // --- Contrôles statiques (commentaires ignorés) --------------------------------------------------------------------------------
 
 /** Texte sans commentaires, lu de gauche à droite (recopié de core.test.ts). */
@@ -231,18 +237,20 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
     assert.deepEqual(importsOf(lire("web/pages/salle-controle/moteur-chargeur.ts")).dynamiques, ["./three/moteur.ts"]);
   });
 
-  it("aucun fichier de T3d-a n'importe un fichier d'un autre paquet de la vague 0 (D-3d-27)", () => {
+  it("aucun fichier ENCORE tenu par T3d-a n'importe un fichier d'un autre paquet de la vague 0 (D-3d-27)", () => {
+    // Un squelette rempli par son propriétaire (L28b, L28c, …) sort de ce contrôle : D-3d-27 ne vaut que pour la vague 0, où
+    // aucun paquet ne voyait les autres. Les fichiers que T3d-a garde (contrats, câblage, client, types) y restent soumis.
     assert.deepEqual(
-      FICHIERS_T3D_A.flatMap((fichier) => importsCroises(fichier, lire(fichier))),
+      FICHIERS_T3D_A.filter((fichier) => !estRempli(fichier)).flatMap((fichier) => importsCroises(fichier, lire(fichier))),
       [],
     );
   });
 
-  it("squelettes : « Propriétaire : Lxx » en première ligne ; composants qui rendent null", () => {
+  it("squelettes : « Propriétaire : Lxx » en première ligne ; composants NON REMPLIS qui rendent null", () => {
     for (const [fichier, proprietaire] of Object.entries(PROPRIETAIRES)) {
       const source = lire(fichier);
       assert.equal((source.split("\n")[0] ?? "").replace(/\r$/, ""), `// Propriétaire : ${proprietaire}.`, fichier);
-      if (fichier.endsWith(".tsx")) assert.match(source, /\): null \{\n {2}return null;\n\}/, fichier);
+      if (fichier.endsWith(".tsx") && !estRempli(fichier)) assert.match(source, /\): null \{\n {2}return null;\n\}/, fichier);
     }
   });
 
@@ -278,6 +286,15 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
 /** Requêtes reçues par le faux opencode depuis l'indice `depuis`. */
 const requetesFaux = (h: CockpitHarness, depuis: number) => h.fake.requests.slice(depuis).map((r) => `${r.method} ${r.pathname}`);
 
+/**
+ * Refus de GET /api/revoir/:rootId : statut, `error`, `code` et présence d'une phrase (`message`, ajoutée par L28b). La phrase
+ * vient de revoir-texts.ts (T3d-b), que ce fichier n'importe pas (D-3d-27) : croisements-3d-v0.test.ts la vérifie.
+ */
+function refusDeRevoir(reponse: { status: number; body: unknown }): { status: number; error: unknown; code: unknown; avecPhrase: boolean } {
+  const corps = (reponse.body ?? {}) as { error?: unknown; code?: unknown; message?: unknown };
+  return { status: reponse.status, error: corps.error, code: corps.code, avecPhrase: typeof corps.message === "string" && corps.message.trim() !== "" };
+}
+
 describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
   it("GET seulement, lecture seule, aucune requête à opencode : territoires 200, « Revoir » 404 / 400 / ?etat=1, consignes 404 / 400 / 200", async (t) => {
     const h = await startCockpit(t);
@@ -294,7 +311,9 @@ describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
     assert.equal(typeof vue.genereLe, "number");
     assert.deepEqual({ ...vue, genereLe: 0 }, { genereLe: 0, mode: "simple", projets: [], salle: null, statutVerifie: false });
 
-    assert.deepEqual(await get(`/api/revoir/${ROOT}`), { status: 404, body: { error: "racine-inconnue", code: "racine-inconnue" } });
+    // L28b ajoute `message` (phrase de revoir-texts.partout.refus) au refus de la route de « Revoir » ; `error` et `code` restent.
+    // La phrase elle-même est croisée par croisements-3d-v0.test.ts : revoir-texts.ts n'est pas importé ici (D-3d-27).
+    assert.deepEqual(refusDeRevoir(await get(`/api/revoir/${ROOT}`)), { status: 404, error: "racine-inconnue", code: "racine-inconnue", avecPhrase: true });
     assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: false, raison: "racine-inconnue" } });
     for (const invalide of ["ses.point", "x".repeat(129)]) {
       assert.equal((await get(`/api/revoir/${invalide}`)).status, 400, invalide);
@@ -473,7 +492,12 @@ describe("salle de contrôle 3D (T3d-a) : buildSalle3dRoutes", () => {
       status: 200,
       body: { rootId: ROOT, titre: "[synthétique]", instance: "principale", termine: true, facts: [], partial: false },
     });
-    assert.deepEqual(await get("/api/revoir/ses_salle"), { status: 403, body: { error: "salle-demande-en-cours", code: "salle-demande-en-cours" } });
+    assert.deepEqual(refusDeRevoir(await get("/api/revoir/ses_salle")), {
+      status: 403,
+      error: "salle-demande-en-cours",
+      code: "salle-demande-en-cours",
+      avecPhrase: true,
+    });
     h.settings.update({ ui: { mode: "avance" } });
     assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: true, raison: null } });
     assert.equal(((await get("/api/salle-controle/territoires")).body as TerritoiresResponse).mode, "avance");
