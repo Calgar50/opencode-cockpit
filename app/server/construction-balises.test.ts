@@ -32,6 +32,12 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   "app/server/second-reading.ts",
   "app/server/team-costs.ts",
   "app/server/routes-chronologie.ts",
+  // Ajoutés au train de V0 par l'intégrateur, comme le veut le §2.6 (« un paquet qui ajoute un fichier partagé l'ajoute à la
+  // liste ») : L44a et L47a ne voyaient pas ce fichier, écrit par T5a dans la même vague.
+  "app/server/shared/methods.ts",
+  "app/server/methods-catalogue.ts",
+  "app/server/shared/chronologie.ts",
+  "app/server/croisements-c5a-v0.test.ts",
   // Contrats et câblage 1.1 : l'intégrateur seul les écrit (D-5-04).
   "app/server/contracts-11.ts",
   "app/server/wiring-11.ts",
