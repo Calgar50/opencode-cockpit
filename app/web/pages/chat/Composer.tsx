@@ -6,6 +6,11 @@ import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Button } from "../../components/ui.tsx";
 import { oc } from "../../lib/api.ts";
+// <c5:methodes-import>
+// Itération 5 (L44e) : puce « + Méthode », méthodes retenues et aperçu modifiable du bloc ajouté au message (D-5-08).
+import { TEXTES as TEXTES_CONSTRUCTION } from "../../../server/shared/construction-texts.ts";
+import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodChip.tsx";
+// </c5:methodes-import>
 import type { ComposerSlots } from "./slots.ts";
 import type { CommandOption } from "./turn.ts";
 
@@ -109,6 +114,10 @@ export function Composer({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [menu, setMenu] = useState<Menu | null>(null);
+  // <c5:methodes-etat>
+  // Méthodes retenues pour CE message (2 au plus, D-5-07) : elles ne vivent que le temps de l'envoi, comme le texte.
+  const [methodes, setMethodes] = useState<ChosenMethod[]>([]);
+  // </c5:methodes-etat>
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -231,16 +240,30 @@ export function Composer({
     const trimmed = text.trim();
     const kept = attachments.filter((a) => a.kind === "image" || trimmed.includes(`@${a.filename}`));
     if (!trimmed && kept.length === 0) return;
-    const snapshot = { text, attachments };
+    const snapshot = { text, attachments, methodes };
     // Rien n'a été envoyé : on remet le message, sauf si l'utilisateur a déjà recommencé à écrire.
     const restore = () => {
       setText((current) => (current ? current : snapshot.text));
       setAttachments((current) => (current.length > 0 ? current : snapshot.attachments));
+      // <c5:methodes-restore>
+      setMethodes((current) => (current.length > 0 ? current : snapshot.methodes));
+      // </c5:methodes-restore>
     };
+    // <c5:methodes-envoi>
+    // Une méthode est un TEXTE (D-5-08) : son bloc est ajouté à la FIN du message, tel que l'aperçu le montre, et rien d'autre
+    // ne change — aucun champ `system`, aucun appel d'IA en plus. Deux cas n'emportent aucun bloc : un message sans texte (le
+    // bloc seul ne serait une demande pour personne) et un RACCOURCI (C §9.4) — la phrase du refus reste affichée sous les
+    // méthodes retenues, rien n'est retiré en silence.
+    const blocs = trimmed === "" || commandName !== null ? "" : methodes.map((methode) => methode.texte).join("");
+    const envoye = `${trimmed}${blocs}`;
+    // </c5:methodes-envoi>
     setText("");
     setAttachments([]);
     setMenu(null);
-    const result = onSubmit({ text: trimmed, attachments: kept });
+    // <c5:methodes-vide>
+    setMethodes([]);
+    // </c5:methodes-vide>
+    const result = onSubmit({ text: envoye, attachments: kept });
     if (result instanceof Promise) {
       setSending(true);
       result
@@ -372,6 +395,16 @@ export function Composer({
           </div>
         ) : null}
 
+        {/* <c5:methodes-retenues> */}
+        {/* Itération 5 (L44e) : méthodes retenues et aperçu MODIFIABLE du texte ajouté, sur leur propre ligne, comme les
+            fichiers joints. Ce que l'aperçu montre est ce qui part. */}
+        <MethodChipList
+          valeur={methodes}
+          onChange={setMethodes}
+          raison={commandName === null ? null : TEXTES_CONSTRUCTION.partout.methodes.limites.raccourci}
+        />
+        {/* </c5:methodes-retenues> */}
+
         <textarea
           ref={area}
           rows={1}
@@ -410,6 +443,11 @@ export function Composer({
             />
           </label>
           {autonomy}
+          {/* <c5:methodes-puce> */}
+          {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci (le nom tapé
+              après « / » est déjà connu, commandName) : aucune méthode ne s'y ajoute. */}
+          <MethodChip agent={agent} estRaccourci={commandName !== null} desactive={disabled} valeur={methodes} onChange={setMethodes} />
+          {/* </c5:methodes-puce> */}
           {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
           {busy || stopVisible ? (
             <Button size="sm" variant="danger" icon="stop" onClick={onAbort}>
