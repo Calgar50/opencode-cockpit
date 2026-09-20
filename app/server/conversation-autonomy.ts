@@ -342,12 +342,23 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
         choix === "plan" ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: "racine-de-plan" },
       );
     }
-    const automatic = async (choix: AutomaticChoice): Promise<AutonomyChoiceAvailability> => {
-      if (!c11.env.autonomy) return { choix, disponible: false, raison: "autonomie-coupee" };
-      const verdict = await c11.ports.activation.check(activationInput(session, choix));
-      return verdict.ok ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: verdict.raison };
+    /**
+     * Les deux choix automatiques se règlent sur UN SEUL relevé : le port d'activation garantit que `choix` n'entre pas dans le
+     * verdict (autonomy-activation.ts : « les deux choix automatiques ont les mêmes refus ; `choix` n'est là que pour l'appelant
+     * et les journaux »). Deux appels séparés faisaient deux fois le même relevé d'opencode — GET /config et GET /global/config,
+     * qui n'ont aucun cache — à chaque lecture de la vue, et la vue est demandée par les deux sélecteurs et le bandeau. Si cette
+     * garantie tombe un jour, il faudra redemander un verdict par choix.
+     */
+    const automatiques = async (): Promise<[AutonomyChoiceAvailability, AutonomyChoiceAvailability]> => {
+      // Interrupteur coupé : refus rendu AVANT tout relevé, opencode n'est pas lu (§4.13, décision n° 13).
+      const verdict: ActivationVerdict = c11.env.autonomy
+        ? await c11.ports.activation.check(activationInput(session, "modifications"))
+        : { ok: false, raison: "autonomie-coupee" };
+      const rendu = (choix: AutomaticChoice): AutonomyChoiceAvailability =>
+        verdict.ok ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: verdict.raison };
+      return [rendu("modifications"), rendu("autonome")];
     };
-    const [modifications, autonome] = await Promise.all([automatic("modifications"), automatic("autonome")]);
+    const [modifications, autonome] = await automatiques();
     return [{ choix: "demander", disponible: true, raison: null }, modifications, { choix: "plan", disponible: false, raison: "nouvelle-conversation" }, autonome];
   };
 
