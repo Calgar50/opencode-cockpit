@@ -278,6 +278,44 @@ describe("activation : verdicts réels (porte ouverte)", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("un seul GET …/autonomie ne relève les faits qu'une fois : les deux choix automatiques partagent le verdict", async (t) => {
+    const { h } = await start(t);
+    const root = await conversation(h);
+    // Les règles de l'assistant passent par le cache court d'OcLookup ; les deux autres lectures n'ont aucun cache, et la
+    // disponibilité demandait le verdict deux fois (une fois par choix automatique) pour deux relevés identiques.
+    const avant = h.fake.requests.length;
+    const vue = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(vue.status, 200, vue.body);
+    const pendant = h.fake.requests.slice(avant);
+    const compte = (pathname: string) => pendant.filter((r) => r.method === "GET" && r.pathname === pathname).length;
+    assert.equal(compte("/config"), 1, "outils déclarés relevés une seule fois");
+    assert.equal(compte("/global/config"), 1, "profil global relevé une seule fois");
+    // Le relevé unique rend le même verdict aux deux choix automatiques.
+    assert.deepEqual(vue.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: true, raison: null },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: true, raison: null },
+    ]);
+
+    // Configuration non conforme : le refus unique est rendu aux deux choix, toujours en un seul relevé.
+    globalPermission(h, { ...PRUDENT, edit: "allow" });
+    const apres = h.fake.requests.length;
+    const refusee = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(refusee.status, 200, refusee.body);
+    const pendant2 = h.fake.requests.slice(apres);
+    assert.equal(pendant2.filter((r) => r.method === "GET" && r.pathname === "/config").length, 1, "outils déclarés relevés une seule fois");
+    assert.equal(pendant2.filter((r) => r.method === "GET" && r.pathname === "/global/config").length, 1, "profil global relevé une seule fois");
+    assert.deepEqual(refusee.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: false, raison: "regle-allow" },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: false, raison: "regle-allow" },
+    ]);
+
+    h.assertNoGlobalRestart();
+  });
+
   it("une règle « allow » de l'assistant refuse l'activation ; règles illisibles de même", async (t) => {
     const { h } = await start(t);
     const root = await conversation(h);

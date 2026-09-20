@@ -146,6 +146,38 @@ describe("choix d'autonomie : racines seulement", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("GET : UN SEUL relevé d'activation pour les deux choix automatiques (le port garantit que « choix » n'entre pas dans le verdict)", async (t) => {
+    const { h, activation } = await start(t);
+    const root = await conversation(h);
+    const avant = activation.calls.length;
+    const ok = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(
+      activation.calls.slice(avant).map((c) => c.choix),
+      ["modifications"],
+      "un seul appel au port pour la vue, et non un par choix automatique",
+    );
+    assert.deepEqual(ok.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: true, raison: null },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: true, raison: null },
+    ]);
+
+    // Refus : le verdict unique est rendu aux DEUX choix automatiques, toujours en un seul appel.
+    activation.verdict = { ok: false, raison: "regle-allow" };
+    const refuse = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(refuse.status, 200, refuse.body);
+    assert.equal(activation.calls.length, avant + 2, "un appel de plus pour la seconde vue, et non deux");
+    assert.deepEqual(refuse.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: false, raison: "regle-allow" },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: false, raison: "regle-allow" },
+    ]);
+    h.assertNoGlobalRestart();
+  });
+
   it("identifiant d'enfant, session interne, conversation supprimée, autre instance, racine inconnue : 404 ; le choix d'un enfant est celui de sa racine", async (t) => {
     const { h, port, store } = await start(t);
     const root = await conversation(h);
@@ -543,10 +575,12 @@ describe("choix d'autonomie : retour à « Demander » au démarrage du cockpit"
     const before = activation.calls.length;
     const loosen = await putChoice(h, clicked.id, { choix: "modifications" }, h.headers.confirmed);
     assert.equal(loosen.status, 200, loosen.body);
+    // Le relâchement est vérifié pour SON choix ; les disponibles de la vue ne demandent plus qu'UN verdict pour les deux choix
+    // automatiques (le port garantit que `choix` n'entre pas dans le verdict), au lieu d'un relevé d'opencode par choix.
     assert.deepEqual(
       activation.calls.slice(before).map((c) => [c.rootId, c.choix]),
-      [[clicked.id, "modifications"], [clicked.id, "modifications"], [clicked.id, "autonome"]],
-      "relâchement vérifié, puis les disponibles de la vue",
+      [[clicked.id, "modifications"], [clicked.id, "modifications"]],
+      "relâchement vérifié, puis le relevé unique des disponibles de la vue",
     );
     assert.deepEqual(choiceEvents(h), [
       { rootId: clicked.id, choix: "demander", cause: "redemarrage-cockpit" },
