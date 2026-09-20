@@ -339,7 +339,11 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
         cited.add(m[1]?.endsWith(".mjs") ? m[1] : `${m[1]}.mjs`);
       }
     }
-    assert.ok(cited.size >= scenarios.length - 1, `scénarios cités : ${[...cited].join(", ")}`);
+    // [3d] : ce croisement appartient à l'itération 1 et ne compte que SES scénarios (`it1-…` et `000-`, `010-`). Ceux des
+    // autres itérations portent d'autres noms (`it3-salle-controle.mjs`…), hors de la forme reconnue ici ; leur présence dans
+    // e2e/README.md est déjà contrôlée, par leur nom de fichier, juste au-dessus.
+    const aCiter = scenarios.filter((name) => /^(?:it1-|\d{3}-)/.test(name));
+    assert.ok(cited.size >= aCiter.length - 1, `scénarios cités : ${[...cited].join(", ")}`);
     assert.deepEqual([...cited].filter((name) => !scenarios.includes(name)), [], "scénarios cités mais absents de e2e/scenarios");
   });
 
