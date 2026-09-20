@@ -100,6 +100,12 @@ import {
   wildcardMatch,
   withTierAvailability,
 } from "./shared/assistant-rules.ts";
+// <c5:methodes-import>
+// Bloc de méthode d'un message (D-5-08) : le garde-fou « le bloc ne part ni dans le résumé, ni dans le classement » le
+// construit avec la MÊME fonction que le composeur, sur une méthode du catalogue livré.
+import { METHODS } from "./methods-catalogue.ts";
+import { renderMessageMethodBlock } from "./shared/methods.ts";
+// </c5:methodes-import>
 import { agentFrontmatterSchema, commandFrontmatterSchema, skillFrontmatterSchema } from "./studio-schema.ts";
 
 const usage = (input = 0, output = 0, reasoning = 0, cacheRead = 0, cacheWrite = 0) => ({ input, output, reasoning, cacheRead, cacheWrite });
@@ -370,6 +376,45 @@ describe("archives", () => {
     assert.ok(d.transcript.includes("`edit` app/src/x.ts"));
     assert.ok(!d.transcript.includes("b".repeat(36)));
   });
+
+  // <c5:methodes>
+  it("le bloc de méthode d'un message ne part ni dans le résumé proposé, ni dans le classement", () => {
+    const methode = METHODS.find((m) => m.id === "retour-arriere-d-abord");
+    assert.ok(methode, "méthode « Retour arrière d'abord » absente du catalogue livré");
+    const bloc = renderMessageMethodBlock(methode);
+    assert.notEqual(bloc, "", "la méthode choisie n'ajoute aucun bloc : le garde-fou ne prouverait rien");
+
+    const session = { id: "ses_m", projectID: "p", directory: "/workspace/app", title: "Doc", time: { created: 1, updated: 2 } } as OcSession;
+    const demande = "Rédige le README de l'outil de sauvegarde, avec la commande à lancer.";
+    const messages = (texte: string) =>
+      [
+        {
+          info: { id: "msg_1", sessionID: "ses_m", role: "user", time: { created: 1 }, agent: "build", model: { providerID: "github-copilot", modelID: "claude-sonnet-5" } },
+          parts: [{ id: "prt_1", sessionID: "ses_m", messageID: "msg_1", type: "text", text: texte }],
+        },
+      ] as OcMessageWithParts[];
+
+    const avecBloc = buildDigest(session, messages(`${demande}${bloc}`), "/workspace");
+    // La demande entre seule dans `prompts` : c'est lui que lisent `classifyHeuristic` (résumé et mots-clés) et le
+    // classement par IA (`classifier.ts`). Le marqueur et l'en-tête du bloc n'y sont plus.
+    assert.equal(avecBloc.prompts[0], demande);
+    for (const morceau of ["cockpit:methode-message", "## Méthode demandée"]) {
+      assert.ok(!(avecBloc.prompts[0] ?? "").includes(morceau), `« ${morceau} » est resté dans prompts[0]`);
+    }
+    const classe = classifyHeuristic(avecBloc, DEFAULT_CATEGORIES);
+    for (const morceau of ["cockpit:methode-message", "## Méthode demandée", methode.titre]) {
+      assert.ok(!classe.summary.includes(morceau), `« ${morceau} » est resté dans le résumé proposé aux Archives`);
+    }
+    // Même demande sans le bloc : mêmes étiquettes et même confiance. Sans cela, deux conversations portant la même
+    // méthode recevraient le même biais de mots-clés, venu de la consigne et non de la demande.
+    const sansBloc = classifyHeuristic(buildDigest(session, messages(demande), "/workspace"), DEFAULT_CATEGORIES);
+    assert.deepEqual(classe.tags, sansBloc.tags);
+    assert.equal(classe.confidence, sansBloc.confidence);
+    assert.equal(classe.category, sansBloc.category);
+    // La transcription, elle, garde le message tel qu'il est parti à opencode : c'est une transcription, pas un résumé.
+    assert.ok(avecBloc.transcript.includes("## Méthode demandée"), "la transcription ne montre plus ce qui a été envoyé");
+  });
+  // </c5:methodes>
 });
 
 describe("sécurité et utilitaires", () => {

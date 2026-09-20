@@ -4,8 +4,13 @@
 // wiring-11.ts ni contracts-11.ts (règle en tête de ces fichiers). `NEUTRAL_PORTS` est inchangé : la construction n'ajoute aucun
 // port, donc aucun module de la construction n'a de port neutre, et un module non installé n'a simplement aucune inscription
 // (route absente → 404, crochet absent → envoi relayé comme avant).
-// Le crochet `secondReading` est le DERNIER de `beforeBilledSend` (D-5-06) : il ne requalifie que la ligne qu'`enforceTurn` vient
-// d'écrire, après les planchers, les plans, l'activation et les demandes.
+// Le crochet `secondReading` est en TÊTE de `beforeBilledSend`, et non en queue comme la lettre de D-5-06 l'écrivait : il ne
+// requalifie que la ligne qu'`enforceTurn` vient d'écrire, mais `runHooks` s'arrête au PREMIER refus. En queue, il était sauté
+// dès qu'un plancher, un plan, l'activation ou une demande refusait l'envoi — la ligne restait « message » au nom du Relecteur,
+// et le composeur rouvrait la conversation sur le Relecteur après une seconde lecture qui n'était jamais partie. En tête, il
+// tient la promesse de D-5-06 (« le composeur retrouve ensuite l'assistant précédent ») dans les deux cas : il rend TOUJOURS
+// null et ne fait qu'un UPDATE, donc il ne change rien pour les crochets qui le suivent, et une ligne décrit bien une TENTATIVE
+// de seconde lecture, qu'elle parte ou non.
 import type { ConstructionModule, ConstructionModuleName, ConstructionRouteGroup } from "./construction-contracts.ts";
 import type { HookStep } from "./contracts-11.ts";
 import { methodsModule } from "./methods-service.ts";
@@ -16,7 +21,7 @@ import { teamCostsModule } from "./team-costs.ts";
 /** Ordre d'installation des modules de la construction, ajouté EN FIN de MODULE_ORDER par l'intégrateur. */
 export const CONSTRUCTION_MODULE_ORDER = ["methods", "secondReading", "chronologie", "teamCosts"] as const satisfies readonly ConstructionModuleName[];
 
-/** Crochets de la construction : un seul, en fin de `beforeBilledSend` (Seconde lecture). */
+/** Crochets de la construction : un seul, en tête de `beforeBilledSend` (Seconde lecture ; voir l'en-tête du fichier). */
 export const CONSTRUCTION_HOOKS = {
   beforeBilledSend: ["secondReading"],
 } as const satisfies Partial<Record<HookStep, readonly ConstructionModuleName[]>>;

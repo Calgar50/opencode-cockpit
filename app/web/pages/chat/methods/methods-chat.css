@@ -15,10 +15,14 @@
   min-width: 0;
 }
 
+/* La puce est posée à DROITE de la barre du composeur : un menu ancré à gauche (`left: 0`) commençait au bord gauche de la
+   puce et se terminait hors de la fenêtre (380 px de large à ~1225 px sur 1440). Il est donc ancré au bord DROIT de la puce,
+   comme `.autonomy-menu` : la largeur le fait alors grandir vers l'intérieur. */
 .methodes-menu {
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 0;
+  left: auto;
+  right: 0;
   z-index: 40;
   width: min(380px, calc(100vw - 32px));
   max-height: 420px;
@@ -165,9 +169,17 @@
   font-size: 0.85rem;
 }
 
+/* Sous 480 px, la puce est trop près du bord droit pour porter le popover : ancré sur elle, il commencerait à 1 px du bord
+   gauche. Il se pose donc sur le COMPOSEUR (`position: relative` déjà posé dans chat.css), comme `.composer .popover`, et
+   reste à 16 px de ses deux bords. `.methodes-puce` redevient statique : le composeur devient le bloc conteneur. */
 @media (max-width: 480px) {
+  .methodes-puce {
+    position: static;
+  }
   .methodes-menu {
-    width: calc(100vw - 32px);
+    left: 16px;
+    right: 16px;
+    width: auto;
   }
 }
 

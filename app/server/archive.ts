@@ -13,6 +13,9 @@ import { type OcMessageWithParts, type OcPart, type OcSession, type OpencodeClie
 import { redactSecrets } from "./redact.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
+// <c5:methodes-import>
+import { splitMessageMethods } from "./shared/methods.ts";
+// </c5:methodes-import>
 // <c5:markdown>
 import { teamRunsMarkdown } from "./team-costs.ts";
 // </c5:markdown>
@@ -194,7 +197,13 @@ export function buildDigest(session: OcSession, messages: OcMessageWithParts[], 
       const attachments = parts.filter((p) => p.type === "file").map((p) => str(p.filename) || "fichier");
       if (!text && attachments.length === 0) continue;
       promptCount++;
-      prompts.push(text);
+      // <c5:methodes>
+      // Le bloc de méthode ajouté par le composeur (D-5-08) est une CONSIGNE, pas une demande : il ne doit ni ouvrir le résumé
+      // proposé aux Archives, ni peser sur le classement (deux conversations portant la même méthode recevraient le même biais
+      // de mots-clés). `prompts` nourrit `classifyHeuristic` et le classement par IA : le texte y entre sans ses blocs.
+      // La transcription, elle, garde le message tel qu'il est parti à opencode : c'est une transcription, pas un résumé.
+      prompts.push(splitMessageMethods(text).texte);
+      // </c5:methodes>
       lines.push(`## 🧑 Vous · ${when}`, "", text || "_(pièce jointe)_", "");
       if (attachments.length > 0) lines.push(`📎 ${attachments.join(", ")}`, "");
       continue;

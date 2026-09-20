@@ -5,8 +5,10 @@
 // aucun chemin facturé propre (P5) et n'ajoute aucun en-tête : il se contente de reconnaître l'envoi et de requalifier la ligne
 // `chat_turns` que le proxy vient d'écrire, pour que le composeur retrouve ensuite l'assistant précédent.
 // Deux inscriptions, et rien d'autre :
-// - crochet `beforeBilledSend`, DERNIER de la chaîne (wiring-construction.ts, posé dans STEP_ORDER par l'intégrateur) : il rend
-//   TOUJOURS null (aucun refus nouveau ; la garde budgétaire d'`enforceTurn` a déjà parlé avant lui) et ne fait qu'un UPDATE ;
+// - crochet `beforeBilledSend`, EN TÊTE de la chaîne (wiring-construction.ts, posé dans STEP_ORDER par l'intégrateur) : il rend
+//   TOUJOURS null (aucun refus nouveau ; la garde budgétaire d'`enforceTurn` a déjà parlé avant lui) et ne fait qu'un UPDATE.
+//   En queue, il était sauté dès qu'un crochet antérieur refusait (`runHooks` s'arrête au premier refus) : la ligne restait
+//   « message » au nom du Relecteur et le composeur basculait sur lui après une relecture qui n'était jamais partie ;
 // - route POST /api/chat/second-reading/estimate : coût estimé, lecture seule, deux modes.
 // Le montant est une ESTIMATION, jamais un minimum (D-5-22) : l'entrée du Relecteur n'est pas celle de l'assistant précédent
 // (autres consignes, aucun cache hérité) et opencode peut élaguer l'historique. Les phrases sont dans construction-texts.ts.
@@ -130,8 +132,10 @@ export function requalifierTour(db: DatabaseSync, sessionId: string, agent: stri
 
 export interface SecondReadingService {
   /**
-   * Crochet `beforeBilledSend`, dernier de la chaîne. Rend TOUJOURS null : la Seconde lecture n'ajoute aucun refus, la garde 1.0
+   * Crochet `beforeBilledSend`, EN TÊTE de la chaîne. Rend TOUJOURS null : la Seconde lecture n'ajoute aucun refus, la garde 1.0
    * s'applique déjà (`enforceTurn` a écrit la ligne `chat_turns` AVANT les crochets, et refuse lui-même avant d'y arriver).
+   * En tête, la requalification a lieu même quand un crochet suivant refuse l'envoi : la ligne décrit une TENTATIVE de seconde
+   * lecture, qu'elle parte ou non, et le composeur retrouve l'assistant précédent dans les deux cas.
    */
   beforeBilledSend(ctx: ProxyContext): Promise<Response | null>;
   /** Coût estimé d'une seconde lecture partant de cette conversation. */

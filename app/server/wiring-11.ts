@@ -80,7 +80,12 @@ export const STEP_ORDER = {
   hooks: {
     createSession: ["floors"],
     sessionCreated: ["floors"],
-    beforeBilledSend: ["floors", "plans", "activation", "requests", "secondReading"], // c5
+    // <c5:ordre-crochets>
+    // `secondReading` est en TÊTE : il ne refuse jamais et ne fait qu'un UPDATE de la ligne que `enforceTurn` vient d'écrire.
+    // En queue, un refus antérieur le sautait (`runHooks` s'arrête au premier refus) et la ligne restait mal qualifiée : le
+    // composeur basculait alors sur le Relecteur après une seconde lecture qui n'était jamais partie (wiring-construction.ts).
+    // </c5:ordre-crochets>
+    beforeBilledSend: ["secondReading", "floors", "plans", "activation", "requests"], // c5
     beforeOnceRelay: ["taskGuard"],
     abort: ["stopTree"],
   },

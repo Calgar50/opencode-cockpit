@@ -500,6 +500,39 @@ describe("croisement 5a V2 : le bouton « Seconde lecture » envoie avec l'assis
     h.assertNoGlobalRestart();
   });
 
+  it("envoi refusé par un crochet antérieur : la ligne est quand même requalifiée, et le composeur garde l'assistant précédent", async (t) => {
+    const h = await croisement(t);
+    installerRelecteur(h);
+    const ses = await conversation(h, "Incident au plancher perdu");
+    assert.equal((await envoyer(h, ses, { agent: "build", model: MODEL, parts: [{ type: "text", text: "Analyse ce journal." }] })).status, 204);
+    const avant = await h.call("GET", `/api/chat/choices/${ses}`, { headers: h.headers.authed });
+    assert.equal(avant.json<{ agent: string }>().agent, "build");
+    const relayesAvant = recus(h).length;
+
+    // Le plancher de la conversation devient illisible : opencode redémarré, écho de PATCH qui ne correspond plus, marque
+    // périmée. Le crochet « floors » refuse alors TOUT envoi facturé, et `runHooks` s'arrête au premier refus.
+    assert.equal(h.sessions.setPlancher(ses, "illisible"), true);
+
+    const texte = secondReadingMessage("Analyser un incident");
+    const refus = await envoyer(h, ses, { agent: RELECTEUR, model: MODEL, parts: [{ type: "text", text: texte }] });
+    assert.equal(refus.status, 502, refus.body);
+    assert.equal(refus.json<{ error: string }>().error, "plancher-non-verifie");
+    assert.equal(recus(h).length, relayesAvant, "un envoi a été relayé alors que le plancher le refusait");
+
+    // Rien n'est parti, rien n'est facturé — mais `enforceTurn` a écrit sa ligne AVANT les crochets. Elle décrit une
+    // TENTATIVE de seconde lecture, et le composeur doit retrouver l'assistant d'avant (D-5-06), pas le Relecteur : sinon le
+    // message suivant partirait, et serait facturé, sur un autre assistant que celui qu'on avait choisi.
+    assert.deepEqual(genres(h, ses), ["message", SECOND_READING_TURN_KIND]);
+    const apres = await h.call("GET", `/api/chat/choices/${ses}`, { headers: h.headers.authed });
+    assert.equal(apres.json<{ agent: string }>().agent, "build", "le composeur a basculé sur le Relecteur après une relecture jamais partie");
+
+    // L'état ne doit pas non plus être collant : le plancher remis en état, le choix reste celui d'avant.
+    assert.equal(h.sessions.setPlancher(ses, null), true);
+    const remis = await h.call("GET", `/api/chat/choices/${ses}`, { headers: h.headers.authed });
+    assert.equal(remis.json<{ agent: string }>().agent, "build");
+    h.assertNoGlobalRestart();
+  });
+
   it("Relecteur disparu d'opencode : la route retombe sur l'assistant par défaut, et RIEN n'est envoyé", async (t) => {
     const h = await croisement(t);
     // Le Relecteur a une ligne `item_meta` (il a été installé), mais opencode ne le déclare plus : supprimé depuis la page

@@ -5,10 +5,15 @@
 // dans les deux thèmes et aux trois tailles — 18 fichiers par vue : la bibliothèque des méthodes, l'écran « Consignes et
 // fiches » de l'assistant de création, le popover de la puce « + Méthode », la bulle d'un message qui portait une
 // méthode, la chronologie et les Coûts par équipe vides.
-// Deux vérifications accompagnent les captures :
+// Trois vérifications accompagnent les captures :
 //   - en MOUVEMENT RÉDUIT, aucune animation ne tourne encore (`document.getAnimations()`), conformément au réglage
 //     système : personne ne doit subir un mouvement qu'il a désactivé ;
-//   - en CONTRASTE FORCÉ, le focus reste VISIBLE : c'est le seul repère de la personne qui navigue au clavier.
+//   - en CONTRASTE FORCÉ, le focus reste VISIBLE : c'est le seul repère de la personne qui navigue au clavier ;
+//   - la vue Chronologie est RELEVÉE juste avant chacune de ses 18 captures. Sans ce relevé, le banc ne compterait que les
+//     FICHIERS écrits : 18 images d'une conversation sans panneau tiendraient le point « captures présentes » en nombre, pas
+//     en contenu, et la relecture humaine du §7.11 n° 4 porterait sur de mauvaises images. Le panneau « Contexte » se ferme
+//     de lui-même sous 1280 px, après que `taille(...)` a rendu la main : l'attente qui absorbe cette course est posée dans
+//     `captureAccessibilite` (`e2e/lib/a11y.mjs`), avec le motif de `c5a-chronologie.mjs`.
 //
 // L'émulation demande la prise CDP, que le contexte d'un scénario ne porte pas (`ctx.navigateur` est l'ONGLET) : ce
 // scénario ouvre donc son propre navigateur, avec le MÊME épinglage et la même isolation (`e2e/lib/a11y.mjs`), plutôt
@@ -181,7 +186,27 @@ export async function run(ctx) {
         await onglet.attendreQue("document.querySelector('.chronologie')", { libelle: "vue Chronologie" });
       };
       await ouvrirLaChronologie();
-      faites.push(...(await captureAccessibilite(navigateur, onglet, `${prefixe}-chronologie`, { avant: ouvrirLaChronologie })));
+      // La vue est relevée JUSTE AVANT chaque capture : `captureAccessibilite` ne compte que les fichiers écrits, et 18
+      // fichiers montrant une conversation sans panneau tiendraient le point « captures présentes » en nombre, pas en
+      // contenu. À 400 px la figure disparaît (§5.6) : seul le tableau est exigé.
+      const chronoVues = [];
+      faites.push(
+        ...(await captureAccessibilite(navigateur, onglet, `${prefixe}-chronologie`, {
+          avant: ouvrirLaChronologie,
+          apres: async ({ mode, theme, taille }) => {
+            const vue = await onglet.evaluer(`(() => {
+              const v = document.querySelector(".chronologie");
+              return v ? { rangees: v.querySelectorAll("tbody tr").length, tableau: v.querySelector("table") !== null } : null;
+            })()`);
+            chronoVues.push({ mode: mode.nom, theme, taille: taille.nom, vue });
+            const ou = `${mode.nom}, ${theme}, ${taille.nom} px`;
+            exiger(vue !== null, `vue Chronologie absente au moment de la capture (${ou}).`);
+            exiger(vue.tableau && vue.rangees > 0, `chronologie vide au moment de la capture (${ou}) : ${resume(vue)}`);
+          },
+        })),
+      );
+      releve(ctx, `chronologie relevée avant chacune des ${chronoVues.length} captures`);
+      exiger(chronoVues.length === MODES_A11Y.length * 6, `${chronoVues.length} relevés de chronologie pour 18 captures.`);
 
       // Mouvement réduit : plus aucune animation ne tourne, même après un changement de vue.
       await emuler(navigateur, onglet, { theme: "sombre", reducedMotion: true, grayscale: true });

@@ -8,6 +8,7 @@
 //   2. à 400 px, la figure disparaît et le tableau reste seul (§5.6) ;
 //   3. en Simple : aucune bascule, aucune chronologie, et le mot « jeton » n'apparaît nulle part dans le panneau.
 // Console muette et aucune violation de la CSP.
+import { suiviDeLargeur } from "../lib/a11y.mjs";
 import {
   attendre,
   attendreFinDuTour,
@@ -59,29 +60,6 @@ const TOUR = {
   cost: 0.002,
   tokens: { input: 800, output: 60, cache: { read: 0, write: 0 } },
 };
-
-/** Largeur sous laquelle le panneau « Contexte » se pose sur la conversation et se ferme de lui-même (ChatPage.tsx, chat.css). */
-const BORNE_PANNEAU = 1280;
-
-/**
- * Absorbe la course du redimensionnement. `page.taille(...)` rend la main avant que la page ait reçu son événement
- * `matchMedia` : en passant sous 1280 px, le panneau « Contexte » se ferme DE LUI-MÊME, mais un peu plus tard. Sans cette
- * attente, le panneau paraît encore ouvert, la vue Chronologie est rouverte puis démontée juste après, et le relevé
- * suivant ne trouve rien — le banc tombait ainsi environ une fois sur deux sur « chronologie absente à 400 px ». Même
- * motif qu'à l'itération 1 (`panneauSelonLaTaille`, it1-ui-mise-en-page). La fermeture n'est attendue que lorsque la
- * borne est franchie vers le bas : au-dessous d'elle, aucun événement n'arrive et rien ne se referme.
- */
-function suiviDeLargeur(largeurDeDepart) {
-  let precedente = largeurDeDepart;
-  return async function apresLaTaille(page, largeur) {
-    const descend = precedente > BORNE_PANNEAU && largeur <= BORNE_PANNEAU;
-    precedente = largeur;
-    if (!descend) return;
-    await page.attendreQue("document.querySelector('.chat')?.classList.contains('aside-open') !== true", {
-      libelle: `panneau « Contexte » fermé de lui-même à ${largeur} px`,
-    });
-  };
-}
 
 /** Ouvre le panneau « Contexte » s'il est fermé (il se ferme de lui-même sous 1280 px). */
 async function ouvrirLeContexte(page) {

@@ -127,10 +127,11 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
     }
     // Les couples et le crochet de wiring-construction.ts sont ceux que porte le câblage de la 1.1.
     assert.deepEqual(STEP_ORDER.routes.slice(-CONSTRUCTION_ROUTES.length), CONSTRUCTION_ROUTES.map((couple) => [...couple]));
-    // Seconde lecture : un seul crochet, et le DERNIER de beforeBilledSend (D-5-06 : il ne requalifie que la ligne qu'enforceTurn
-    // vient d'écrire). Une liste vide passerait une boucle sans rien prouver, d'où l'égalité.
+    // Seconde lecture : un seul crochet, et le PREMIER de beforeBilledSend. Il ne requalifie que la ligne qu'enforceTurn vient
+    // d'écrire (D-5-06) et ne refuse jamais ; en queue, un refus antérieur le sautait (`runHooks` s'arrête au premier refus).
+    // Une liste vide passerait une boucle sans rien prouver, d'où l'égalité.
     assert.deepEqual([...CONSTRUCTION_HOOKS.beforeBilledSend], ["secondReading"]);
-    assert.equal(STEP_ORDER.hooks.beforeBilledSend.at(-1), "secondReading");
+    assert.equal(STEP_ORDER.hooks.beforeBilledSend[0], "secondReading");
   });
 
   // <c5:inscriptions-v1>

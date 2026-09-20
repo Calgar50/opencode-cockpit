@@ -6,8 +6,9 @@
 // Ce que la vague doit prouver ensemble, et qu'aucun paquet ne pouvait prouver seul (chacun a été écrit sans voir les autres,
 // sur son seul module déclaré) :
 //   1. les trois modules cohabitent sur le câblage réel : chacun monte ses routes dans le MÊME groupe « construction » sans
-//      s'avaler l'un l'autre, et le crochet de la Seconde lecture est le DERNIER de beforeBilledSend, derrière le plancher et
-//      les plans qui ne tournaient pas dans les tests de L44c ;
+//      s'avaler l'un l'autre, et le crochet de la Seconde lecture est le PREMIER de beforeBilledSend, devant le plancher et les
+//      plans qui ne tournaient pas dans les tests de L44c (corrections de la relecture de la vague 3 : en queue, un refus
+//      antérieur le sautait) ;
 //   2. §5.3 : enregistrer un assistant avec 2 méthodes puis le rouvrir (consignes sans bloc, méthodes rendues, fichier identique
 //      à un second enregistrement) ; Seconde lecture (ligne `chat_turns` requalifiée, GET /api/chat/choices/:id qui rend
 //      l'assistant PRÉCÉDENT) ; estimation qui CROÎT avec la longueur de la conversation ; GET /api/usage/equipes sur des lignes

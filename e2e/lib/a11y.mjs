@@ -68,21 +68,55 @@ export async function rendreLAffichage(navigateur, onglet) {
   await navigateur.client.envoyer("Emulation.clearDeviceMetricsOverride", {}, onglet.sessionId);
 }
 
+/** Borne sous laquelle ChatPage ferme le panneau « Contexte » de lui-même (`ASIDE_OVERLAY_QUERY`, ChatPage.tsx). */
+export const BORNE_PANNEAU = 1280;
+
+/**
+ * Absorbe la course du redimensionnement. `onglet.taille(...)` rend la main avant que la page ait reçu son événement
+ * `matchMedia` : en passant sous 1280 px, le panneau « Contexte » se ferme DE LUI-MÊME, mais un peu plus tard. Sans cette
+ * attente, le panneau paraît encore ouvert, la vue qu'il porte est rouverte puis démontée juste après, et la capture montre
+ * une conversation SANS panneau. La fermeture n'est attendue qu'au franchissement de la borne VERS LE BAS : au-dessous d'elle,
+ * aucun événement n'arrive et rien ne se referme. Même motif qu'à l'itération 1 (`panneauSelonLaTaille`, it1-ui-mise-en-page) ;
+ * exporté ici pour que les scénarios de la construction s'en servent tous plutôt que d'en garder chacun une copie.
+ */
+export function suiviDeLargeur(largeurDeDepart) {
+  let precedente = largeurDeDepart;
+  return async function apresLaTaille(onglet, largeur) {
+    const descend = precedente > BORNE_PANNEAU && largeur <= BORNE_PANNEAU;
+    precedente = largeur;
+    if (!descend) return;
+    await onglet.attendreQue("document.querySelector('.chat')?.classList.contains('aside-open') !== true", {
+      libelle: `panneau « Contexte » fermé de lui-même à ${largeur} px`,
+    });
+  };
+}
+
 /**
  * Banc de captures d'une vue : 3 modes × 2 thèmes × 3 tailles = 18 fichiers
  * `<prefixe>-<mode>-<taille>-<theme>.png`. `avant({ mode, theme, taille })` est appelé après chaque changement, pour
- * les vues qu'il faut rouvrir (un popover que le redimensionnement referme, par exemple). Rend les chemins écrits.
+ * les vues qu'il faut rouvrir (un popover que le redimensionnement referme, par exemple) ; `apres({ mode, theme, taille })`
+ * est appelé JUSTE AVANT chaque capture, pour exiger que la vue attendue y soit vraiment — le nombre de fichiers écrits ne
+ * dit rien de leur contenu. Rend les chemins écrits.
+ *
+ * La course du redimensionnement est absorbée ici, entre le changement de taille et `avant` : la boucle franchit la borne des
+ * 1280 px vers le bas à chacun des six couples mode × thème, et c'est le seul endroit qui connaisse la taille demandée.
+ * Mesuré : l'aller-retour CDP d'`emuler` suffit aujourd'hui à laisser passer l'événement `matchMedia` (six passages à 1024 px,
+ * panneau toujours vu refermé). L'attente rend cette absorption EXPLICITE au lieu de dépendre de cet aller-retour, qu'un
+ * remaniement (FE4) pourrait déplacer ; elle rend la main tout de suite quand le panneau est déjà refermé.
  */
-export async function captureAccessibilite(navigateur, onglet, prefixe, { avant = null, poseMs = 150 } = {}) {
+export async function captureAccessibilite(navigateur, onglet, prefixe, { avant = null, apres = null, poseMs = 150, largeurDeDepart = 1440 } = {}) {
   const faites = [];
+  const apresLaTaille = suiviDeLargeur(largeurDeDepart);
   for (const mode of MODES_A11Y) {
     for (const theme of THEMES) {
       for (const taille of TAILLES) {
         await onglet.taille(taille);
+        await apresLaTaille(onglet, taille.largeur);
         await emuler(navigateur, onglet, { theme, ...mode });
         if (avant) await avant({ mode, theme, taille });
         // La mise en page et les transitions se posent avant la capture (même pause que `captureSuite`).
         await attendre(poseMs);
+        if (apres) await apres({ mode, theme, taille });
         faites.push(await onglet.capture(`${prefixe}-${mode.nom}-${taille.nom}-${theme}.png`));
       }
     }

@@ -12,7 +12,10 @@
 //   5. la bulle du message montre le texte SANS le bloc et replie le bloc sous « Méthode demandée : … » ;
 //   6. sous la réponse : « Méthode appliquée » quand la section attendue y est, « Méthode non détectée dans la
 //      réponse » sinon — le cockpit ne contrôle que la PRÉSENCE de la section, jamais la justesse (§6 l.1051) ;
-//   7. un raccourci (« /… ») désactive la puce, avec sa raison.
+//   7. aux trois tailles, le popover reste ENTIÈREMENT dans la fenêtre, à 16 px au moins de chaque bord, et la colonne de
+//      la conversation ne défile pas horizontalement : les raisons de refus se lisent sans faire défiler quoi que ce soit
+//      (§5.6, P7, U15). Les attributs ARIA ne disent rien de la géométrie : elle est mesurée ici ;
+//   8. un raccourci (« /… ») désactive la puce, avec sa raison.
 // Console muette et aucune violation de la CSP, comme tout scénario de la page.
 import {
   attendre,
@@ -22,6 +25,7 @@ import {
   cliquerBouton,
   exiger,
   exigerAucuneViolationCsp,
+  LARGE,
   nonJoue,
   preparerPage,
   releve,
@@ -146,6 +150,38 @@ async function ouvrirPopoverAuClavier(page) {
   await page.evaluer(`document.querySelector(".methodes-puce button").focus()`);
   await page.touche("ArrowDown");
   await page.attendreQue("document.querySelector('.methodes-menu')", { libelle: "popover de la puce ouvert" });
+}
+
+/**
+ * Tailles vérifiées pour la géométrie du popover, celles du banc (`e2e/lib/cdp.mjs`, TAILLES), recopiées ici plutôt
+ * qu'importées : `cdp.mjs` n'est jamais écrit par la construction (§2.8) et ce scénario n'a besoin que des largeurs.
+ */
+const TAILLES_POPOVER = [
+  { largeur: 1440, hauteur: 900 },
+  { largeur: 1024, hauteur: 768 },
+  { largeur: 400, hauteur: 860 },
+];
+
+/** Marge exigée entre le popover et les bords de la fenêtre (en-tête de `methods-chat.css`, §5.6). */
+const MARGE_POPOVER = 16;
+
+/**
+ * Géométrie du popover ouvert : ses bords, la largeur de la fenêtre et le défilement horizontal de la colonne de la
+ * conversation. Un menu qui déborde à droite n'a aucun attribut pour le dire — il faut le mesurer.
+ */
+async function geometrieDuPopover(page) {
+  return await page.evaluer(`(() => {
+    const menu = document.querySelector(".methodes-menu");
+    if (!menu) return null;
+    const bords = menu.getBoundingClientRect();
+    const colonne = document.querySelector(".chat-center");
+    return {
+      gauche: Math.round(bords.left),
+      droite: Math.round(bords.right),
+      fenetre: window.innerWidth,
+      defilement: colonne ? Math.round(colonne.scrollWidth - colonne.clientWidth) : 0,
+    };
+  })()`);
 }
 
 /** Coche ou décoche une méthode AU CLAVIER : flèches bas jusqu'à elle (le menu boucle), puis Entrée. */
@@ -328,7 +364,26 @@ export async function run(ctx) {
   releve(ctx, `présences relevées après deux demandes : ${JSON.stringify(presences)}`);
   exiger(presences.includes("oui") && presences.includes("non"), `présences : ${resume(presences)} (une appliquée, une non détectée attendues).`);
 
-  // 8. Raccourci : la puce est désactivée, avec sa raison.
+  // 8. Géométrie du popover aux trois tailles, la saisie encore vide : le menu principal de la fonction doit se lire
+  //    ENTIÈREMENT, sans faire défiler la colonne de la conversation. Les attributs ARIA n'en disent rien.
+  for (const taille of TAILLES_POPOVER) {
+    await page.taille(taille);
+    await ouvrirPopoverAuClavier(page);
+    const geo = await geometrieDuPopover(page);
+    releve(ctx, `popover à ${taille.largeur} px : ${JSON.stringify(geo)}`);
+    exiger(geo !== null, `popover absent à ${taille.largeur} px.`);
+    exiger(geo.gauche >= MARGE_POPOVER, `popover à ${geo.gauche} px du bord gauche à ${taille.largeur} px (${MARGE_POPOVER} px au moins attendus).`);
+    exiger(
+      geo.droite <= geo.fenetre - MARGE_POPOVER,
+      `popover hors de la fenêtre à ${taille.largeur} px : bord droit à ${geo.droite} px pour une fenêtre de ${geo.fenetre} px.`,
+    );
+    exiger(geo.defilement === 0, `la conversation défile de ${geo.defilement} px horizontalement, popover ouvert à ${taille.largeur} px.`);
+    await page.touche("Escape");
+    await page.attendreQue("!document.querySelector('.methodes-menu')", { libelle: `popover fermé à ${taille.largeur} px` });
+  }
+  await page.taille(LARGE);
+
+  // 9. Raccourci : la puce est désactivée, avec sa raison.
   await focaliserLaSaisie(page);
   await page.taper("/resume");
   await attendre(300);

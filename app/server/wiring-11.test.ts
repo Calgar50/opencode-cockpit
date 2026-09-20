@@ -278,7 +278,7 @@ describe("câblage 1.1 : ordre figé", () => {
       hooks: {
         createSession: ["floors"],
         sessionCreated: ["floors"],
-        beforeBilledSend: ["floors", "plans", "activation", "requests", "secondReading"], // c5
+        beforeBilledSend: ["secondReading", "floors", "plans", "activation", "requests"], // c5
         beforeOnceRelay: ["taskGuard"],
         abort: ["stopTree"],
       },
@@ -509,12 +509,13 @@ describe("câblage 1.1 : ports neutres", () => {
     assert.deepEqual(wiring.registrations, [
       { kind: "hook", key: "createSession", module: "floors" },
       { kind: "hook", key: "sessionCreated", module: "floors" },
-      { kind: "hook", key: "beforeBilledSend", module: "floors" },
-      { kind: "hook", key: "beforeBilledSend", module: "plans" },
       // <c5:production>
-      // Seconde lecture (L44c) : DERNIER crochet de beforeBilledSend (D-5-06), donc après le plancher et les plans.
+      // Seconde lecture (L44c) : PREMIER crochet de beforeBilledSend, donc avant le plancher et les plans. Il ne refuse jamais
+      // et ne fait qu'un UPDATE ; en queue, un refus antérieur le sautait (corrections de la relecture de la vague 3).
       { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
       // </c5:production>
+      { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
@@ -531,7 +532,7 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
       // <c5:production>
       // Construction (itération 5), en fin de MODULE_ORDER et de STEP_ORDER.routes : L44c inscrit le crochet de la Seconde
-      // lecture, DERNIER de beforeBilledSend (D-5-06), et sa route ; L44b et L46a montent les leurs dans le groupe
+      // lecture, PREMIER de beforeBilledSend, et sa route ; L44b et L46a montent les leurs dans le groupe
       // « construction ». Le module `chronologie` monte la sienne depuis L47b (train de V2).
       { kind: "routes", key: "construction", module: "methods" },
       { kind: "routes", key: "construction", module: "secondReading" },

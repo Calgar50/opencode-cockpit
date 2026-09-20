@@ -51,6 +51,9 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   // Ajouté aux corrections de la relecture de V1 : la Seconde lecture requalifie une ligne `chat_turns`, que la dérivation des
   // faits d'activité de l'itération 1 relit (`noteSentMessage`). Le genre nouveau y est reconnu entre balises `c5:`.
   "app/server/activity-deriver.ts",
+  // Ajouté aux corrections de la relecture de la vague 3 : `buildDigest` retire le bloc de méthode d'un message avant le
+  // classement (D-5-08), et son garde-fou vit dans le fichier de tests de l'itération 1 où `buildDigest` est déjà éprouvé.
+  "app/server/core.test.ts",
   // Contrats et câblage 1.1 : l'intégrateur seul les écrit (D-5-04).
   "app/server/contracts-11.ts",
   "app/server/wiring-11.ts",

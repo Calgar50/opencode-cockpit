@@ -280,15 +280,17 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // surveillance des délégations (L1e) sa dérivation et son abonnement usage.updated ; les plans (L6b) leur crochet d'envoi,
     // après le plancher, et leurs routes. Le reste du cadre reste au repos.
     // <c5:inscriptions>
-    // beforeBilledSend passe de 2 à 3 : plancher, plans, Seconde lecture (L44c, dernier du rang).
+    // beforeBilledSend passe de 2 à 3 : Seconde lecture (L44c, premier du rang — elle ne refuse jamais et doit tourner même
+    // quand un crochet suivant refuse), puis plancher et plans.
     const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 3, beforeOnceRelay: 1, abort: 1 };
     // </c5:inscriptions>
     assert.deepEqual(wiring.registrations, [
-      ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
-      { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      ...(["createSession", "sessionCreated"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       // <c5:inscriptions>
       { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
       // </c5:inscriptions>
+      { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
