@@ -18,7 +18,7 @@
 // valeur dans flow.ts (INJECTION_TEXTS, égalité vérifiée par le croisement de V0). Aucun composant importé, aucun appel réseau ;
 // testé par server/web-team-transcript.test.ts, qui construit ses messages avec `injectionText` et `stepMessage` de flow.ts.
 import { FLOW_LIMITS } from "../../../../server/shared/team-limits.ts";
-import { TEXTES } from "../../../../server/shared/team-texts.ts";
+import { remplir, TEXTES } from "../../../../server/shared/team-texts.ts";
 import type { StepRunView, TeamRunView } from "../../../../server/shared/team-types.ts";
 import { boundedAiText } from "../turn.ts";
 
@@ -135,10 +135,14 @@ export function teamInjectionOf(message: TranscriptMessageLike, runs: readonly T
   return { kind: genreResultat(contenu), run: resultat, texte: borne(corpsResultat(contenu), FLOW_LIMITS.relaisCaracteres) };
 }
 
-/** Puce de la demande recopiée : « Envoyé à l'équipe « {equipe} » » ; en-tête des résultats partiels (D-eq-22). */
+/**
+ * Puce de la demande recopiée : « Envoyé à l'équipe « {equipe} » » ; en-tête des résultats partiels (D-eq-22).
+ * Le gabarit est rempli par `remplir` (T4t), et jamais par `String.replace` avec un motif chaîne : un titre d'équipe est un
+ * texte libre, et « $& », « $' », « $` » ou « $$ » y seraient lus comme des séquences de remplacement.
+ */
 export function puceInjection(injection: TeamInjection): string {
   const gabarit = injection.kind === "demande" ? P.transcription.envoye : P.transcription.resultatsPartiels;
-  return gabarit.replace("{equipe}", borne(injection.run.titre, TITRE_MAX));
+  return remplir(gabarit, { equipe: borne(injection.run.titre, TITRE_MAX) });
 }
 
 /** Étape d'un lancement dont la session est `sessionId` ; la dernière tentative connue de cette session. */
@@ -164,7 +168,7 @@ export function stepOpeningOf(message: TranscriptMessageLike, run: TeamRunView |
   return { titre: borne(step.titre, TITRE_MAX), texte: borne(trimLignes(lignes).join("\n"), FLOW_LIMITS.relaisCaracteres) };
 }
 
-/** Puce du tiroir : « Consigne envoyée par le cockpit à l'étape « {titre} » ». */
+/** Puce du tiroir : « Consigne envoyée par le cockpit à l'étape « {titre} » » (même règle de remplissage que puceInjection). */
 export function puceConsigne(titre: string): string {
-  return P.transcription.consigne.replace("{titre}", borne(titre, TITRE_MAX));
+  return remplir(P.transcription.consigne, { titre: borne(titre, TITRE_MAX) });
 }

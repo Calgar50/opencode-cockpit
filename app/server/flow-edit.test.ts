@@ -55,9 +55,10 @@ import {
   supprimerBloc,
   TAILLE_PAR_DEFAUT,
 } from "./shared/flow-edit.ts";
-import { FLOW_LIMITS, FLOW_VERSION, STEP_ID_RE, TEAM_ID_RE, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
+import { FLOW_LIMITS, FLOW_VERSION, receivedFrom, STEP_ID_RE, TEAM_ID_RE, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
 import { montant, refusEnregistrement, remplir, TEXTES } from "./shared/team-texts.ts";
 import type { FlowBlock, FlowProblem, FlowStep, TeamExampleView, TeamPreviewResponse } from "./shared/team-types.ts";
+import { exampleById } from "./team-examples.ts";
 
 const P = TEXTES.partout;
 const E = P.editeur;
@@ -327,6 +328,48 @@ describe("éditeur guidé : brouillon et opérations (fiche L40b, C §5.1, D-eq-
     assert.equal(supprimerBloc(draft, "inconnu"), draft);
   });
 
+  it("« tous » d'un bloc « etape » est GARDÉ par l'édition : l'exemple « Chaîne de relecture de script » n'est pas dégradé", () => {
+    // La grammaire (flow.ts) laisse le choix à un bloc « etape » qui n'est pas le premier : `attendu` y vaut null. L'éditeur ne
+    // répare donc que ce qui est devenu ILLÉGAL pour la place, jamais une valeur légitime choisie par l'équipe.
+    const exemple = exampleById("relecture-script");
+    assert.ok(exemple, "l'exemple « Chaîne de relecture de script » (A11, Q3 (a)) est au catalogue");
+    const attendu = ["standards", "securite", "exploitation-nuit"];
+    const consolidation = (courant: FlowDraft) => etapesDe(courant).find((step) => step.id === "consolidation");
+
+    let draft = brouillonDe(exemple.flow);
+    assert.equal(consolidation(draft)?.recoit, "tous", "le déroulé livré porte bien « tous » sur la consolidation");
+    assert.deepEqual(receivedFrom(draft.flow, "consolidation"), attendu);
+
+    // Première opération d'édition : une simple frappe dans un titre.
+    draft = modifierEtape(draft, "standards", { titre: "Standards maison" }, { simple: false });
+    assert.equal(consolidation(draft)?.recoit, "tous", "une frappe ne doit pas changer ce que la consolidation reçoit");
+    assert.deepEqual(receivedFrom(draft.flow, "consolidation"), attendu);
+
+    // Déplacement, ajout puis suppression : la valeur légitime tient à travers toutes les opérations.
+    draft = monter(draft, "securite");
+    assert.equal(consolidation(draft)?.recoit, "tous");
+    draft = ajouterBloc(draft, "etape", 1);
+    assert.equal(consolidation(draft)?.recoit, "tous");
+    draft = supprimerBloc(draft, draft.flow.blocs[1]?.id ?? "");
+    assert.equal(consolidation(draft)?.recoit, "tous");
+    assert.deepEqual(receivedFrom(draft.flow, "consolidation"), attendu);
+  });
+
+  it("`recoit` devenu ILLÉGAL pour la place est réparé : « demande » hors de la tête, « demande » rendue à la tête", () => {
+    const flow = {
+      version: FLOW_VERSION,
+      blocs: [
+        { type: "etape", id: "b1", etape: { id: "e1", titre: "Un", assistant: "relire-script", niveau: null, taille: "M", consigne: "", recoit: "demande" } },
+        { type: "etape", id: "b2", etape: { id: "e2", titre: "Deux", assistant: "relire-script", niveau: null, taille: "M", consigne: "", recoit: "tous" } },
+      ],
+    } as const;
+    // Le bloc « tous » remonté en tête : « demande » est la seule valeur que la grammaire accepte à cette place.
+    const remonte = monter(brouillonDe({ version: flow.version, blocs: [...flow.blocs] }), "b2");
+    assert.equal(etapesDe(remonte).find((step) => step.id === "e2")?.recoit, "demande");
+    // Et le bloc « demande » descendu passe à « precedent ».
+    assert.equal(etapesDe(remonte).find((step) => step.id === "e1")?.recoit, "precedent");
+  });
+
   it("dupliquer : copie posée après l'original, identifiants NEUFS pour la copie, originaux gardés", () => {
     const base = ajouterBloc(brouillonVide(), "avis", 0);
     const blocId = base.flow.blocs[0]?.id ?? "";
@@ -394,6 +437,28 @@ describe("éditeur guidé : brouillon et opérations (fiche L40b, C §5.1, D-eq-
     // Taille hors de la liste fermée : ignorée.
     assert.equal(etapesDe(modifierEtape(modifie, stepId, { taille: "XL" as "L" }, { simple: false }))[0]?.taille, "L");
     assert.equal(modifierEtape(draft, "inconnue", { titre: "x" }, { simple: false }), draft);
+  });
+
+  it("un patch qui ne change RIEN rend le brouillon tel quel : aucun état d'historique identique au précédent", () => {
+    const depart = historiqueDe(ajouterBloc(brouillonVide(), "etape", 0));
+    const stepId = etapesDe(depart.present)[0]?.id ?? "";
+    const plein = "T".repeat(TEAM_TEXT_LIMITS.titreEtape.max);
+    // 60 caractères : un état. Les frappes suivantes sont tronquées au MÊME titre : plus aucun état (le champ n'a pas de
+    // maxLength avant la correction, donc ces frappes arrivent bien jusqu'ici).
+    let historique = appliquer(depart, (draft) => modifierEtape(draft, stepId, { titre: plein }, { simple: false }));
+    assert.equal(historique.passe.length, 1);
+    for (let n = 1; n <= 5; n++) {
+      historique = appliquer(historique, (draft) => modifierEtape(draft, stepId, { titre: `${plein}${"X".repeat(n)}` }, { simple: false }));
+    }
+    assert.equal(historique.passe.length, 1, "cinq frappes au-delà de la borne n'empilent aucun état");
+    assert.equal(etapesDe(historique.present)[0]?.titre, plein);
+    // Même règle pour les autres champs, et pour le message d'une pause.
+    assert.equal(modifierEtape(historique.present, stepId, { titre: plein, taille: "M", consigne: "" }, { simple: false }), historique.present);
+    let pause = historiqueDe(ajouterBloc(brouillonDeForme("a-la-suite"), "pause", 1));
+    const pauseId = pause.present.flow.blocs[1]?.id ?? "";
+    pause = appliquer(pause, (draft) => modifierPause(draft, pauseId, "Relire avant la suite."));
+    assert.equal(pause.passe.length, 1);
+    assert.equal(appliquer(pause, (draft) => modifierPause(draft, pauseId, "Relire avant la suite.")).passe.length, 1);
   });
 
   it("IA de l'étape : posée en Avancé, IGNORÉE en Simple (décision n° 3, D-eq-12)", () => {
@@ -504,12 +569,16 @@ describe("éditeur guidé : assistants proposables (D-eq-11, D-eq-12)", () => {
       [{ rightLines: avec("modification", "allow") }, E.indisponibles["autorise-sans-demander"]],
       [{ rightLines: avec("commande", "allow") }, E.indisponibles["autorise-sans-demander"]],
       [{ rightLines: avec("hors-dossier", "allow") }, E.indisponibles["autorise-sans-demander"]],
-      [{ modelName: null }, E.indisponibles["niveau-indisponible"]],
     ];
     for (const [over, phrase] of cas) assert.equal(raisonIndisponible(assistant(over), { simple: false }), phrase, JSON.stringify(over));
     // « Personnalisé » : refusé en Simple seulement (D-eq-11).
     assert.equal(raisonIndisponible(assistant({ rights: "personnalise" }), { simple: true }), E.indisponibles.personnalise);
     assert.equal(raisonIndisponible(assistant({ rights: "personnalise" }), { simple: false }), null);
+    // Sans IA propre : en Avancé, la grammaire l'accepte dès qu'une « IA de l'étape » est choisie (D-eq-12, flow.ts), et l'aperçu
+    // pose le problème sur l'étape tant qu'aucune ne l'est. L'éditeur ne ferme donc pas ce montage — mais il le ferme en Simple,
+    // où aucun niveau ne peut être choisi.
+    assert.equal(raisonIndisponible(assistant({ modelName: null }), { simple: false }), null);
+    assert.equal(raisonIndisponible(assistant({ modelName: null }), { simple: true }), E.indisponibles["niveau-indisponible"]);
   });
 
   it("liste des assistants : un seul groupe « Mes assistants », les indisponibles désactivés avec leur raison", () => {
@@ -521,6 +590,10 @@ describe("éditeur guidé : assistants proposables (D-eq-11, D-eq-12)", () => {
       ["propose", true, E.indisponibles["propose-reporte"]],
     ]);
     assert.deepEqual(assistantsProposables([], { simple: false }), []);
+    // Un assistant sans IA propre reste CHOISISSABLE en Avancé, et seulement là.
+    const sansIa = [assistant({ name: "sans-ia", modelName: null })];
+    assert.equal(assistantsProposables(sansIa, { simple: false })[0]?.options[0]?.desactivee, false);
+    assert.equal(assistantsProposables(sansIa, { simple: true })[0]?.options[0]?.desactivee, true);
   });
 
   it("choix d'« IA de l'étape » : l'IA de l'assistant d'abord, puis un niveau par ligne avec « ≈ X $ »", () => {
@@ -650,6 +723,7 @@ describe("éditeur guidé : progression et écrans (spécification §2.2 l.90, �
     const etape = modele.ecran2?.blocs[0]?.etapes[0];
     assert.ok(etape);
     assert.equal(etape.titre.libelle, E.champs.titre);
+    assert.equal(etape.titre.max, TEAM_TEXT_LIMITS.titreEtape.max, "la borne du champ vient du modèle, jamais d'un nombre écrit dans le .tsx");
     assert.equal(etape.assistant.libelle, E.champs.assistant);
     assert.equal(etape.consigne.libelle, E.champs.consigne);
     assert.equal(etape.consigne.max, FLOW_LIMITS.consigne);
@@ -775,6 +849,17 @@ describe("éditeur guidé : progression et écrans (spécification §2.2 l.90, �
     assert.equal(invalide?.refus, refusEnregistrement(1));
   });
 
+  it("écran 4 d'un brouillon VIDE : le refus est EXPLIQUÉ près du bouton, jamais un bouton désactivé muet", () => {
+    // Aucun bloc : aucun aperçu n'est demandé, donc aucun problème du serveur n'arrive. Sans phrase, le bouton serait désactivé
+    // sans que rien, nulle part, ne dise pourquoi.
+    const modele = buildEditor(entree({ ecran: 4, historique: historiqueDe(brouillonVide()), titre: "Relecture de script", apercu: null }));
+    assert.equal(modele.apercuDemande, false);
+    assert.equal(modele.ecran4?.enregistrable, false);
+    assert.equal(modele.ecran4?.nom.erreur, null, "le nom est bon : rien d'autre n'expliquerait le refus");
+    assert.deepEqual(modele.problemes, [], "aucun problème de l'équipe entière ne vient du serveur");
+    assert.equal(modele.ecran4?.refus, P.problemes.vide);
+  });
+
   it("titre de la page et confirmation de départ", () => {
     assert.equal(buildEditor(entree({ mode: "nouvelle" })).titre, E.titreNouvelle);
     assert.equal(buildEditor(entree({ mode: "modifier", titre: "Revue SQL" })).titre, remplir(E.titreModifier, { titre: "Revue SQL" }));
@@ -847,6 +932,27 @@ describe("éditeur guidé : composants et feuille de style (contrat statique)", 
     assert.match(editeur, /const APERCU_MS = 300;/);
     assert.match(editeur, /if \(!apercuDemande\) return;/);
     assert.match(editeur, /setTimeout\([\s\S]{0,400}teamsApi\.preview/);
+  });
+
+  it("aperçu réussi : la phrase d'un aperçu refusé est EFFACÉE (jamais un refus annoncé qui n'est plus vrai)", () => {
+    assert.match(editeur, /await teamsApi\.preview\(corps\);[\s\S]{0,200}setErreur\(null\);/);
+  });
+
+  it("Ctrl+Z dans un champ de saisie : l'annulation du texte reste au navigateur, le déroulé n'est pas rembobiné", () => {
+    // La garde sort AVANT le preventDefault : sinon l'annulation native du texte serait supprimée dans tous les cas.
+    const debut = editeur.indexOf("const auClavier =");
+    assert.notEqual(debut, -1, "auClavier introuvable");
+    const corps = editeur.slice(debut, editeur.indexOf("\n  };", debut));
+    const garde = corps.search(/closest\("input, textarea, select"\)/);
+    const empeche = corps.search(/event\.preventDefault\(\)/);
+    assert.notEqual(garde, -1, "aucune garde sur les champs de saisie dans auClavier");
+    assert.notEqual(empeche, -1, "contrôle discriminant : auClavier empêche bien le comportement par défaut");
+    assert.ok(garde < empeche, "la garde doit précéder event.preventDefault()");
+  });
+
+  it("titre d'étape : la borne de saisie vient du modèle, comme la consigne et le message de pause", () => {
+    assert.match(stepForm, /maxLength=\{etape\.titre\.max\}/);
+    assert.match(stepForm, /maxLength=\{etape\.consigne\.max\}/);
   });
 
   it("schéma dessiné à côté par layoutFlow, liste par flowAsList (importés directement)", () => {

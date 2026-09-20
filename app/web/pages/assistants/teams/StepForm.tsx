@@ -40,6 +40,7 @@ export function StepForm({ etape, onPatch, onRetirer }: StepFormProps) {
           <input
             id={id("titre")}
             type="text"
+            maxLength={etape.titre.max}
             value={etape.titre.valeur}
             onChange={(event) => onPatch({ titre: event.target.value })}
           />

@@ -150,6 +150,17 @@ describe("Transcription : demande recopiée par le cockpit (C §7.2)", () => {
     assert.doesNotMatch(puce, CACHE_RE);
   });
 
+  it("un « $& » ou un « $' » dans un titre est rendu TEL QUEL (jamais lu comme une séquence de remplacement)", () => {
+    // Le titre d'une équipe et celui d'une étape sont des textes libres : « $& », « $' », « $` » et « $$ » y sont permis.
+    const piege = run({ titre: "Équipe $' et $& et $$ et $` test" });
+    const injection = teamInjectionOf(message("msg_demande", demandeInjectee()), [piege]);
+    assert.equal(puceInjection(injection!), "Envoyé à l'équipe « Équipe $' et $& et $$ et $` test »");
+    const partiels = teamInjectionOf(message("msg_resultat", partielsInjectes()), [piege]);
+    assert.equal(partiels?.kind, "resultats-partiels");
+    assert.equal(puceInjection(partiels!), "Résultats partiels de l'équipe « Équipe $' et $& et $$ et $` test »");
+    assert.equal(puceConsigne("Étape $& ici"), "Consigne envoyée par le cockpit à l'étape « Étape $& ici »");
+  });
+
   it("demande vide ou faite d'espaces : la bulle reste une bulle, sans texte inventé", () => {
     const vide = injectionText("demande", { runId: "run-9", equipe: EQUIPE, texte: "   " });
     const injection = teamInjectionOf(message("msg_demande", vide), [run()]);

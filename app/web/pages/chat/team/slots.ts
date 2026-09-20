@@ -87,4 +87,10 @@ export interface CarteTabProps {
 // --- Paramètres › Budget -----------------------------------------------------------------------------------------------------
 
 /** `<TeamsBudgetSettings/>` : plafonds et simultanéité des équipes, en mode Avancé seulement (L38c). */
-export type TeamsBudgetSettingsProps = Record<string, never>;
+export interface TeamsBudgetSettingsProps {
+  /**
+   * Modifications non enregistrées du bloc, remontées à l'onglet Budget comme tous les autres blocs de Paramètres : sans ce
+   * rappel, changer d'onglet ou fermer la fenêtre jetterait la saisie sans la confirmation « Modifications non enregistrées ».
+   */
+  onDirty(dirty: boolean): void;
+}

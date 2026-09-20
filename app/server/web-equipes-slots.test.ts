@@ -230,8 +230,8 @@ describe("emplacements des équipes : branchements des fichiers partagés", () =
     assert.ok(slot < deroule.indexOf("{activity.error ?", content), "avant le contenu du Déroulé");
   });
 
-  it("Budget : TeamsBudgetSettings en mode Avancé seulement", () => {
-    assert.match(read("web/pages/settings/BudgetTab.tsx"), /\{advanced \? <TeamsBudgetSettings \/> : null\}/);
+  it("Budget : TeamsBudgetSettings en mode Avancé seulement, avec son rappel de modifications non enregistrées", () => {
+    assert.match(read("web/pages/settings/BudgetTab.tsx"), /\{advanced \? <TeamsBudgetSettings onDirty=\{setTeamsDirty\} \/> : null\}/);
   });
 });
 
@@ -307,9 +307,10 @@ describe("emplacements des équipes : contrat chat/team/slots.ts", () => {
       TeamsTabProps: { advanced: ": boolean" },
       TeamEditorProps: { mode: ': "nouvelle" | "modifier"', id: ": string | null", advanced: ": boolean" },
       CarteTabProps: { directory: ": string", advanced: ": boolean", element: ": string | null" },
+      // Rappel de modifications non enregistrées, comme les autres blocs de Paramètres (useReportDirty de settings/common.tsx).
+      TeamsBudgetSettingsProps: { onDirty: "(dirty: boolean): void" },
     };
     for (const [name, members] of Object.entries(expected)) assert.deepEqual(membersOf(code, name), members, name);
-    assert.match(code, /export type TeamsBudgetSettingsProps = Record<string, never>;/);
   });
 
   it("contrôles discriminants : import de team-types, code, type non primitif, emplacement absent refusés", () => {
@@ -317,7 +318,7 @@ describe("emplacements des équipes : contrat chat/team/slots.ts", () => {
     assert.ok(checkSlots(withImport).some((p) => p.startsWith("import interdit")));
     assert.ok(checkSlots(withImport).includes("type non primitif : TeamRunView"));
     assert.ok(checkSlots(`${slots}\nexport const X = 1;`).includes("code exécutable : types seulement"));
-    assert.ok(checkSlots(slots.replace("export type TeamsBudgetSettingsProps", "export type Autre")).includes("TeamsBudgetSettingsProps absent"));
+    assert.ok(checkSlots(slots.replace("export interface TeamsBudgetSettingsProps", "export interface Autre")).includes("TeamsBudgetSettingsProps absent"));
     assert.ok(checkSlots(slots.replace("element: string | null;", "element: ReactNode;")).includes("type non primitif : ReactNode"));
   });
 });

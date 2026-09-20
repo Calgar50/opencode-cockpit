@@ -299,7 +299,16 @@ describe("Réglages des équipes : mode Avancé seulement, par le PUT /api/setti
   const code = withoutComments(source);
 
   it("invisible en mode Simple : BudgetTab ne rend le bloc qu'en Avancé", () => {
-    assert.match(withoutComments(read(BUDGET)), /\{advanced \? <TeamsBudgetSettings \/> : null\}/);
+    assert.match(withoutComments(read(BUDGET)), /\{advanced \? <TeamsBudgetSettings onDirty=\{setTeamsDirty\} \/> : null\}/);
+  });
+
+  it("modifications non enregistrées remontées, comme tous les autres blocs de Paramètres", () => {
+    // Sans cela, changer d'onglet ou fermer la fenêtre jetterait la saisie SANS la confirmation « Modifications non enregistrées ».
+    assert.match(code, /useReportDirty\(dirty, props\.onDirty\)/);
+    assert.match(code, /import \{[^}]*\buseReportDirty\b[^}]*\} from "\.\/common\.tsx";/);
+    const budget = withoutComments(read(BUDGET));
+    assert.match(budget, /const \[teamsDirty, setTeamsDirty\] = useState\(false\);/);
+    assert.match(budget, /onDirtyChange\(dirty \|\| quotaDirty \|\| teamsDirty\)/);
   });
 
   it("les chemins écrits sont `teams.*`, hors SIMPLE_SETTINGS_PATHS : le serveur refuserait l'écriture en Simple", async () => {
@@ -331,7 +340,7 @@ describe("Réglages des équipes : mode Avancé seulement, par le PUT /api/setti
 
   it("le composant reste typé par slots.ts (contrat T4w figé)", () => {
     assert.match(source, /import type \{ TeamsBudgetSettingsProps \} from "\.\.\/chat\/team\/slots\.ts";/);
-    assert.match(code, /export function TeamsBudgetSettings\(_props: TeamsBudgetSettingsProps\)/);
+    assert.match(code, /export function TeamsBudgetSettings\(props: TeamsBudgetSettingsProps\)/);
   });
 });
 

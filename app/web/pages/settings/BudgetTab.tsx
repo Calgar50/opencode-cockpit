@@ -172,8 +172,11 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
   const { draft, setDraft, dirty, reset } = useDraft(boot.settings.budget);
   const { save, resetSection, saving, issues } = useSettingsSave();
   const [quotaDirty, setQuotaDirty] = useState(false);
+  // --- équipes (it4) : début ---
+  const [teamsDirty, setTeamsDirty] = useState(false);
+  // --- équipes (it4) : fin ---
 
-  useEffect(() => onDirtyChange(dirty || quotaDirty), [dirty, quotaDirty, onDirtyChange]);
+  useEffect(() => onDirtyChange(dirty || quotaDirty || teamsDirty), [dirty, quotaDirty, teamsDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const expensive = boot.models
@@ -325,7 +328,7 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
       </Card>
 
       {/* --- équipes (it4) : début --- */}
-      {advanced ? <TeamsBudgetSettings /> : null}
+      {advanced ? <TeamsBudgetSettings onDirty={setTeamsDirty} /> : null}
       {/* --- équipes (it4) : fin --- */}
       <QuotaSection onDirty={setQuotaDirty} />
     </div>

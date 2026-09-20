@@ -13,7 +13,7 @@ import { useApp } from "../../app/AppContext.tsx";
 import { Card, Field } from "../../components/ui.tsx";
 import { NumberInput } from "../studio/widgets.tsx";
 import type { TeamsBudgetSettingsProps } from "../chat/team/slots.ts";
-import { SectionFooter, useDraft, useSettingsSave } from "./common.tsx";
+import { SectionFooter, useDraft, useReportDirty, useSettingsSave } from "./common.tsx";
 
 const R = TEXTES.avance.reglages;
 
@@ -31,10 +31,13 @@ const entier = (valeur: number | undefined, courant: number) => (valeur === unde
 const ENREGISTRE = "Réglages des équipes enregistrés";
 const REINITIALISE = "Réglages des équipes réinitialisés";
 
-export function TeamsBudgetSettings(_props: TeamsBudgetSettingsProps) {
+export function TeamsBudgetSettings(props: TeamsBudgetSettingsProps) {
   const { boot } = useApp();
   const { draft, setDraft, dirty, reset } = useDraft(boot.settings.teams);
   const { save, resetSection, saving, issues } = useSettingsSave();
+  // Modifications non enregistrées remontées à l'onglet Budget, comme ChatTab, ClassifierTab et TiersTab : sans cela, changer
+  // d'onglet ou fermer la fenêtre jetterait la saisie SANS la confirmation « Modifications non enregistrées ».
+  useReportDirty(dirty, props.onDirty);
   const plafondId = useId();
   const simultaneesId = useId();
   const activesId = useId();

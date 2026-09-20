@@ -145,9 +145,14 @@ function copierFlow(flow: Flow): Flow {
 }
 
 /**
- * `recoit` d'un bloc de travail selon sa place : le premier bloc de travail part de la demande, les suivants du résultat du bloc
- * précédent (C §5.1). Recalculé après chaque déplacement, ajout ou suppression : sinon la grammaire poserait « recoit-invalide »
- * sur une étape que l'utilisateur n'a pas touchée.
+ * `recoit` RÉPARÉ quand la place l'a rendu ILLÉGAL, jamais réécrit autrement : sinon la grammaire poserait « recoit-invalide »
+ * sur une étape que l'utilisateur n'a pas touchée — mais une valeur légitime serait détruite en silence.
+ * Ce que la grammaire (flow.ts, `attendu`) impose, et donc tout ce qui est réparé ici :
+ * - premier bloc de travail : « demande », la seule valeur acceptée à cette place ;
+ * - bloc « etape » suivant : `attendu` vaut null, la grammaire laisse le choix. Seule « demande », héritée d'un déplacement, est
+ *   remplacée par la valeur par défaut « precedent » (C §5.1) ; « precedent » comme « tous » sont GARDÉS — l'exemple « Chaîne de
+ *   relecture de script » (A11, Q3 (a)) finit justement par une consolidation en « tous » ;
+ * - avis : « demande » (c'est ce qui les rend indépendants) ; synthèse : « tous ». Les deux sont imposés par la grammaire.
  */
 function reglerEntrees(flow: Flow): Flow {
   let premierVu = false;
@@ -156,7 +161,8 @@ function reglerEntrees(flow: Flow): Flow {
     const premier = !premierVu;
     premierVu = true;
     if (block.type === "etape") {
-      block.etape.recoit = premier ? "demande" : "precedent";
+      if (premier) block.etape.recoit = "demande";
+      else if (block.etape.recoit === "demande") block.etape.recoit = "precedent";
     } else {
       // Les avis reçoivent la demande seule : c'est ce qui les rend indépendants (spéc. §6 l.1034).
       for (const avis of block.avis) avis.recoit = "demande";
@@ -325,6 +331,8 @@ export interface StepPatch {
  * Modification d'une étape. Les textes sont bornés ici (titre 60, consigne 4 000) pour que le brouillon reste enregistrable ;
  * `simple` vrai ignore `niveau` : en mode Simple, l'IA d'une étape est celle de son assistant (décision n° 3, D-eq-12), et
  * aucun chemin de l'éditeur ne peut la changer.
+ * Un patch qui ne change RIEN — une frappe de plus dans un champ déjà borné, une taille hors de la liste fermée — rend le
+ * brouillon TEL QUEL : `appliquer` n'écrit alors aucun état, et [Annuler] ne rend jamais un état identique au précédent.
  */
 export function modifierEtape(draft: FlowDraft, stepId: string, patch: StepPatch, options: { simple: boolean }): FlowDraft {
   const flow = copierFlow(draft.flow);
@@ -333,11 +341,19 @@ export function modifierEtape(draft: FlowDraft, stepId: string, patch: StepPatch
     for (const step of etapesDe(block)) if (step.id === stepId) trouvee = step;
   }
   if (trouvee === null) return draft;
-  if (patch.titre !== undefined) trouvee.titre = patch.titre.slice(0, TEAM_TEXT_LIMITS.titreEtape.max);
-  if (patch.assistant !== undefined) trouvee.assistant = patch.assistant;
-  if (patch.taille !== undefined && TASK_SIZES.includes(patch.taille)) trouvee.taille = patch.taille;
-  if (patch.consigne !== undefined) trouvee.consigne = patch.consigne.slice(0, FLOW_LIMITS.consigne);
-  if (patch.niveau !== undefined && !options.simple) trouvee.niveau = patch.niveau;
+  const titre = patch.titre === undefined ? trouvee.titre : patch.titre.slice(0, TEAM_TEXT_LIMITS.titreEtape.max);
+  const assistant = patch.assistant ?? trouvee.assistant;
+  const taille = patch.taille !== undefined && TASK_SIZES.includes(patch.taille) ? patch.taille : trouvee.taille;
+  const consigne = patch.consigne === undefined ? trouvee.consigne : patch.consigne.slice(0, FLOW_LIMITS.consigne);
+  const niveau = patch.niveau !== undefined && !options.simple ? patch.niveau : trouvee.niveau;
+  if (titre === trouvee.titre && assistant === trouvee.assistant && taille === trouvee.taille && consigne === trouvee.consigne && niveau === trouvee.niveau) {
+    return draft;
+  }
+  trouvee.titre = titre;
+  trouvee.assistant = assistant;
+  trouvee.taille = taille;
+  trouvee.consigne = consigne;
+  trouvee.niveau = niveau;
   return poser(draft, flow, draft.compteur);
 }
 
@@ -346,7 +362,9 @@ export function modifierPause(draft: FlowDraft, blocId: string, message: string)
   const flow = copierFlow(draft.flow);
   const block = flow.blocs.find((b) => b.id === blocId);
   if (!block || block.type !== "pause") return draft;
-  block.message = message.slice(0, TEAM_TEXT_LIMITS.messagePause);
+  const borne = message.slice(0, TEAM_TEXT_LIMITS.messagePause);
+  if (borne === block.message) return draft;
+  block.message = borne;
   return poser(draft, flow, draft.compteur);
 }
 
@@ -445,7 +463,11 @@ export function raisonIndisponible(assistant: EditorAssistantView, options: { si
   for (const id of ["modification", "commande", "hors-dossier"]) {
     if (action(id) === "allow") return E.indisponibles["autorise-sans-demander"];
   }
-  if (assistant.modelName === null) return E.indisponibles["niveau-indisponible"];
+  // Sans IA propre : la grammaire (flow.ts) ne pose « niveau-indisponible » sur ce motif QUE lorsque l'étape n'a aucun niveau.
+  // En Avancé, choisir une « IA de l'étape » (D-eq-12) lève le problème : l'éditeur ne ferme donc pas un montage que la règle
+  // accepte, et laisse l'aperçu poser son problème sur l'étape tant qu'aucun niveau n'est choisi. En Simple, aucun niveau ne
+  // peut être choisi (D-eq-12) : le refus est définitif, et l'option reste lisible avec sa raison.
+  if (assistant.modelName === null && options.simple) return E.indisponibles["niveau-indisponible"];
   return null;
 }
 
@@ -584,7 +606,8 @@ export interface StepFormModel {
   stepId: string;
   /** Rôle de l'étape dans son bloc : une synthèse ne se retire pas. */
   role: "etape" | "avis" | "synthese";
-  titre: { libelle: string; aide: string; valeur: string };
+  /** `max` : borne de saisie du champ, comme la consigne et le message de pause (jamais un nombre écrit dans le .tsx). */
+  titre: { libelle: string; aide: string; valeur: string; max: number };
   assistant: { libelle: string; valeur: string; groupes: readonly AssistantGroupe[] };
   taille: { libelle: string; valeur: TaskSize; choix: ReadonlyArray<{ valeur: TaskSize; libelle: string }> };
   consigne: { libelle: string; aide: string; limite: string; valeur: string; max: number };
@@ -661,7 +684,11 @@ export interface Ecran4Model {
   enregistrer: string;
   /** Enregistrement possible : aucun problème bloquant et un nom acceptable. */
   enregistrable: boolean;
-  /** « L'équipe n'a pas été enregistrée : {n} problèmes à corriger. » ; null quand rien ne bloque. */
+  /**
+   * Phrase du refus d'enregistrement, rendue juste au-dessus du bouton : « L'équipe n'a pas été enregistrée : {n} problèmes à
+   * corriger. » quand l'aperçu en compte, la phrase du problème « vide » quand le brouillon n'a aucun bloc (aucun aperçu n'est
+   * alors demandé, donc aucun problème du serveur n'arrive) ; null quand rien ne bloque.
+   */
   refus: string | null;
 }
 
@@ -759,7 +786,7 @@ function stepForm(
   return {
     stepId: step.id,
     role,
-    titre: { libelle: E.champs.titre, aide: E.champs.titreAide, valeur: step.titre },
+    titre: { libelle: E.champs.titre, aide: E.champs.titreAide, valeur: step.titre, max: TEAM_TEXT_LIMITS.titreEtape.max },
     assistant: { libelle: E.champs.assistant, valeur: step.assistant, groupes },
     taille: { libelle: E.champs.taille, valeur: step.taille, choix: TAILLES_CHOIX },
     consigne: {
@@ -891,6 +918,9 @@ function ecran4(input: EditorInput): Ecran4Model {
   const verifier = E.verifier;
   const bloquants = (input.apercu?.problems ?? []).filter((probleme) => probleme.bloquant);
   const erreur = erreurNom(input.titre, input.nomsPris);
+  // Brouillon SANS aucun bloc : `apercuDemande` est faux, donc aucun problème du serveur n'arrive et le bouton serait désactivé
+  // sans que rien n'explique pourquoi. La phrase du problème « vide » (T4t) est posée ici, là où l'utilisateur regarde.
+  const vide = input.apercu === null && input.historique.present.flow.blocs.length === 0;
   return {
     nom: {
       libelle: verifier.nom,
@@ -912,7 +942,7 @@ function ecran4(input: EditorInput): Ecran4Model {
     enregistrer: verifier.enregistrer,
     // AUCUNE case contractuelle : en itération 4, aucune étape ne propose de modification (D-eq-11, `propose` refusé).
     enregistrable: bloquants.length === 0 && erreur === null && input.apercu !== null,
-    refus: bloquants.length === 0 ? null : refusEnregistrement(bloquants.length),
+    refus: bloquants.length > 0 ? refusEnregistrement(bloquants.length) : vide ? P.problemes.vide : null,
   };
 }
 

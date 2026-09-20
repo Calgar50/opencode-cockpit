@@ -211,7 +211,11 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
-          setApercu(await teamsApi.preview(corps));
+          const vue = await teamsApi.preview(corps);
+          setApercu(vue);
+          // Un aperçu qui aboutit DÉMENT la phrase de refus laissée par l'aperçu précédent (ou par un enregistrement refusé,
+          // que la modification du brouillon vient justement de périmer) : elle ne doit pas rester annoncée (P3).
+          setErreur(null);
         } catch (err) {
           setApercu(null);
           setErreur(texteRefus(teamError(err), errorText(err)));
@@ -271,9 +275,16 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
     setEcran(2);
   };
 
-  /** Ctrl+Z et Ctrl+Maj+Z, posés sur l'éditeur : ils n'agissent que quand le focus est dedans (spéc. §5.5). */
+  /**
+   * Ctrl+Z et Ctrl+Maj+Z, posés sur l'éditeur : ils n'agissent que quand le focus est dedans (spéc. §5.5), et JAMAIS dans un
+   * champ de saisie, où le raccourci appartient au navigateur. Le nom de l'équipe et « Quand l'utiliser » ne sont pas dans
+   * l'historique du déroulé : sans cette garde, un Ctrl+Z réflexe pour corriger une faute de frappe défairait une opération de
+   * structure. Les boutons [Annuler la dernière modification] et [Rétablir] restent le chemin explicite du déroulé.
+   */
   const auClavier = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
+    const cible = event.target as HTMLElement | null;
+    if (cible !== null && cible.closest("input, textarea, select") !== null) return;
     event.preventDefault();
     const versLeFutur = event.shiftKey;
     setHistorique((precedent) => (versLeFutur ? retablir(precedent) : annuler(precedent)));
