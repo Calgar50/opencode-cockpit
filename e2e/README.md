@@ -227,6 +227,39 @@ console muette :
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
 
+<!-- [3d] début : scénarios de la salle de contrôle 3D (itération 3, L35) -->
+## Scénarios de l'itération 3 : salle de contrôle 3D et « Revoir »
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it3-' --project-prefix 3d11-e2e --image-tag 3d11
+```
+
+`e2e/lib/webgl.mjs` porte les aides 3D. Rien n'y passe par un réglage du cockpit (D-3d-18) : tout se fait par
+injection CDP (`Page.addScriptToEvaluateOnNewDocument`), sur une **seconde connexion** au navigateur déjà lancé par le
+banc, attachée au même onglet — `e2e/lib/cdp.mjs` n'est pas touché. Deux familles d'injections : les **causes de 2D**
+(`simulerWebgl` : refus du contexte demandé avec `failIfMajorPerformanceCaveat`, nom de moteur logiciel) et le
+**« moteur simulé »** (`moteurSimule` : drapeau retiré, nom matériel fictif, horloge de la sonde avancée de 12 ms par
+image pendant ses 90 images). S'y ajoutent l'écouteur des violations de la CSP, les compteurs d'objets WebGL vivants,
+la lecture des marques `salle3d:*`, le journal réseau et l'émulation des réglages du poste (`emuler`).
+
+**Mode 3D du banc**, relu à chaque exécution (`modeBanc`, mesure M3D-1) : contexte *matériel* → aucune injection, la
+3D du banc est la vraie ; *logiciel* seulement → « moteur simulé » ; *aucun* `webgl2` → les contrôles 3D sont
+consignés « en attente », jamais comptés tenus. **Contrôle non vide** : un scénario où la 3D est attendue exige au
+moins une marque `salle3d:scene` **et** le morceau paresseux de three réellement chargé, sinon il échoue.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it3-salle-controle.mjs` | mode Avancé : délégation scriptée, [Ouvrir la salle de contrôle] depuis la bande, zoom 2 en direct en 3D, « Consigne confiée » (rose) avant « Résultat rendu » (bleu) ; zoom 3 puis zoom 1 par le fil d'Ariane sans aucune marque `salle3d:bascule` ; clavier seul (grille, étiquettes, lecteur) ; zéro violation de CSP et console muette ; à la fermeture, `salle3d:memoire` à géométries 0 et textures 0, et 0 tampon, 0 tableau de sommets, 0 programme WebGL |
+| `it3-repli.mjs` | repli 2D : refus du contexte à l'ouverture et **pendant une lecture en différé** (même demande, même moment, même vitesse), moteur « SwiftShader » simulé, mouvement réduit puis [Réessayer] ; chaque cause dit sa phrase, et la 2D dessine aussi ses marques `salle3d:plan` |
+| `it3-revoir.mjs` | « Revoir » depuis la bande et depuis les Archives : bandeau, moments « n / N », ← et → au curseur focalisé, les cinq vitesses, badge « EN DIFFÉRÉ ×… · hh:mm:ss », étiquette d'un écart raccourci ; zoom 3 dans la boîte sans texte de message ; [Voir la consigne] depuis une légende et depuis le zoom 3, consigne de 9 000 caractères tronquée ; entre l'ouverture et la fermeture, seulement des `GET /api/revoir/…`, zéro requête au faux, dépenses inchangées ; vocabulaire du mode Simple |
+| `it3-demos.mjs` | les trois démonstrations en Simple et en Avancé sur le lecteur complet, au moins deux assistants montrés et nommés, avis du mode Simple, zéro requête de la page et vers opencode |
+| `it3-debit.mjs` | mesure M20 sur la suite dense de `e2e/lib/gen-dense.mjs` (`e2e/fixtures/it3-dense.jsonl` : 50 sessions, 3 niveaux, rafales de 200 événements par seconde rejouées par `POST /banc/emettre`) : au plus 4 marques `salle3d:plan` par fenêtre d'une seconde, au moins une par seconde de rafale, en 3D puis en repli 2D |
+
+La route de pilotage `POST /banc/emettre` (section `[3d]` de `e2e/fake-opencode-server.ts`, appelée par
+`ctx.faux.emettre`) passe une liste d'événements à `faux.emit` : aucun tour n'est joué, aucune IA n'est appelée,
+aucun appel n'est facturé. La recette réelle de M20 (capture d'une demande de la Salle OMO) reste en attente.
+<!-- [3d] fin -->
+
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`
