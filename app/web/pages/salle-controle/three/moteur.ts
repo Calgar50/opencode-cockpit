@@ -14,6 +14,10 @@
 //   ../fluidite.ts (salle3d-animations.test.ts), jamais `setInterval` ; la boucle ne tourne que si `graphe.animer()` rend vrai (ou
 //   qu'une translation de caméra est en cours), sous `prefers-reduced-motion: no-preference` et la page visible ; elle s'arrête
 //   dès que rien ne bouge.
+// - **M20, errata du train de V2** : la marque `salle3d:scene` est posée à CHAQUE image (MX-3D, M3D-6), et son `detail` porte
+//   désormais la `cause` de l'image. Seule la cause « plan » passe par le limiteur, donc seule elle est bornée à 4 par seconde ;
+//   le halo pulsé de la spéc. l.996 impose une boucle au rythme de l'écran, et la sonde de L30 force 90 images d'affilée. Le
+//   compte global de `salle3d:scene` reste le contrôle « non vide » (au moins une marque), jamais un plafond.
 // - **D-3d-28, libération volontaire ≠ perte de contexte** : `forceContextLoss()` émet `webglcontextlost`, et `dispose()` ne
 //   retire que l'écouteur de three. `liberer()` pose donc le drapeau `libere` et retire SON écouteur AVANT, dans l'ordre :
 //   drapeau, retrait de l'écouteur, arrêt de la boucle, `graphe.liberer()`, `renderer.dispose()`, lecture de
@@ -35,6 +39,15 @@ import { creerGraphe, type Graphe } from "./graphe.ts";
 
 /** Marque de performance d'une image rendue (compteur de l'e2e et de la sonde ; MX-3D, M3D-6 : une marque par image). */
 export const MARQUE_SCENE = "salle3d:scene";
+
+/**
+ * Cause de l'image rendue, portée par le `detail` de la marque `salle3d:scene` (M20, errata du train de V2). Une image de PLAN
+ * suit un recalcul, donc le limiteur de ../boucle-3d.ts : c'est la seule cause bornée à 4 par seconde. Les images de la boucle
+ * (halo pulsé de la spéc. l.996), celles de la sonde de L30 (90 images forcées) et celle d'un redimensionnement ne le sont pas ;
+ * le compte global de `salle3d:scene` reste le contrôle « non vide », jamais un plafond.
+ */
+export type CauseImage = "plan" | "suivi" | "boucle" | "sonde" | "taille";
+
 /** Marque de performance de la libération : compteurs de `renderer.info.memory` lus après `dispose()` (spéc. l.1170). */
 export const MARQUE_MEMOIRE = "salle3d:memoire";
 
@@ -200,11 +213,14 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
     return encore;
   }
 
-  /** Une image : rendu, marque `salle3d:scene`, puis replacement des étiquettes DOM (L29d). */
-  function dessiner(): void {
+  /**
+   * Une image : rendu, marque `salle3d:scene`, puis replacement des étiquettes DOM (L29d). `cause` dit d'où vient l'image : M20
+   * ne borne à 4 par seconde que la cause « plan », la seule qui passe par le limiteur de ../boucle-3d.ts.
+   */
+  function dessiner(cause: CauseImage): void {
     const debut = horloge();
     rendu.render(scene, camera);
-    marquer(MARQUE_SCENE, { ms: horloge() - debut, anime });
+    marquer(MARQUE_SCENE, { ms: horloge() - debut, anime, cause });
     options.onImage?.();
   }
 
@@ -212,9 +228,9 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
    * Image complète : valeurs de l'instant, rendu, surveillance (`ecartMs` n'est donné que depuis la boucle : JP-12 point 4, « la
    * surveillance est limitée aux images animées »), puis image suivante seulement si quelque chose bouge encore (D-3d-17).
    */
-  function image(maintenant: number, ecartMs: number | null): void {
+  function image(maintenant: number, ecartMs: number | null, cause: CauseImage): void {
     anime = avancer(maintenant);
-    dessiner();
+    dessiner(cause);
     if (ecartMs !== null) options.onFrame?.(ecartMs, anime);
     if (doitAnimer({ anime, mouvementReduit: options.mouvementReduit, visible: pageVisible() })) demarrerBoucle();
     else arreterBoucle();
@@ -225,7 +241,7 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
     if (libere || perdu) return;
     const ecart = precedente === null ? 0 : Math.max(0, msNavigateur - precedente);
     precedente = msNavigateur;
-    image(horloge(), ecart);
+    image(horloge(), ecart, "boucle");
   };
 
   function demarrerBoucle(): void {
@@ -255,7 +271,7 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
     // Une translation en cours garde la main sur la cible : le plan ne la ramène pas en arrière.
     reglage = suivi === null ? plan.camera : { ...plan.camera, cible: reglage.cible };
     appliquerCamera();
-    image(maintenant, null);
+    image(maintenant, null, "plan");
   }
 
   function programmerPlan(attenteMs: number): void {
@@ -306,7 +322,7 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
     renderFrame() {
       if (libere || perdu) return;
       anime = avancer(horloge());
-      dessiner();
+      dessiner("sonde");
     },
 
     suivre(cible, ms) {
@@ -318,7 +334,7 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
         reglage = { ...reglage, cible };
         appliquerCamera();
       }
-      image(maintenant, null);
+      image(maintenant, null, "suivi");
     },
 
     projeter(p) {
@@ -334,7 +350,7 @@ function moteurSurRendu(canvas: HTMLCanvasElement, options: MoteurOptions, rendu
       rendu.setPixelRatio(borner(ratio, RATIO_MIN, RATIO_MAX));
       rendu.setSize(largeur, hauteur, false);
       appliquerCamera();
-      if (graphe !== null) dessiner();
+      if (graphe !== null) dessiner("taille");
     },
 
     info: () => lireMemoire(rendu),

@@ -13,6 +13,7 @@
 // - `action` d'une transition : SEULE porte vers le contrôle de fluidité (L30). Une transition automatique (sonde, surveillance,
 //   échec de la scène, navigation) n'en demande aucune, donc n'écrit jamais la préférence du poste ; seules [Passer en 2D],
 //   [Rester en 3D] et [Réessayer], choisies par la personne, en demandent une.
+import type { SessionInstance } from "../../../server/shared/activity-types.ts";
 import type { PreferenceChoix } from "../../../server/shared/fluidity.ts";
 import type { FluidityReason, FluidityVerdict } from "../../../server/shared/salle3d-types.ts";
 
@@ -157,4 +158,44 @@ export function doitMonterScene3d(etat: EtatSalle): boolean {
 /** MX-3D §9.1 : la poignée d'`onReady` n'est remise à la sonde (`pret()`) que la page visible et la scène 3D montée. */
 export function peutRemettrePoignee(etat: EtatSalle, visible: boolean): boolean {
   return visible && doitMonterScene3d(etat);
+}
+
+// --- Appartenance d'une racine (D-3d-14, §5.9 l.1018-1024) ----------------------------------------------------------------------
+
+/**
+ * Où se trouve la racine montrée dans la dernière réponse des territoires : dans un projet de l'instance principale, dans
+ * l'enceinte de la Salle OMO, ou NULLE PART. « Nulle part » n'est PAS « ce n'est pas la salle » : la réponse n'est peut-être pas
+ * encore arrivée, la racine peut être hors de la fenêtre des 24 h ou du plafond de 200 (territoires-service.ts), et en mode Simple
+ * `territoires-service.ts` écarte volontairement toute racine de la salle dont la demande est en cours (D-3d-14).
+ */
+export type AppartenanceRacine = "projets" | "salle" | "inconnue";
+
+/** Réponse des territoires, réduite à ce que l'appartenance regarde : une forme structurelle, que TerritoiresResponse satisfait. */
+export interface VueTerritoires {
+  projets: ReadonlyArray<{ conversations: ReadonlyArray<{ rootId: string }> }>;
+  salle: { projets: ReadonlyArray<{ conversations: ReadonlyArray<{ rootId: string }> }> } | null;
+}
+
+const porte = (groupes: VueTerritoires["projets"], rootId: string): boolean =>
+  groupes.some((projet) => projet.conversations.some((conversation) => conversation.rootId === rootId));
+
+/** Appartenance lue dans la dernière réponse connue ; `reponse` null (aucune lecture aboutie) ou racine absente → « inconnue ». */
+export function appartenanceRacine(reponse: VueTerritoires | null, rootId: string | null): AppartenanceRacine {
+  if (reponse === null || rootId === null) return "inconnue";
+  if (porte(reponse.projets, rootId)) return "projets";
+  if (reponse.salle !== null && porte(reponse.salle.projets, rootId)) return "salle";
+  return "inconnue";
+}
+
+/**
+ * La racine montrée est-elle une racine de la Salle OMO ? `null` : pas encore prouvé — en mode Simple, la page ne monte alors RIEN
+ * (ni le direct, ni le panneau de la salle), car servir le direct à une racine de la salle en Simple ouvrirait `/facts` et la
+ * relecture des messages, que D-3d-14 interdit. En mode Avancé, le direct est servi dans les deux cas : une appartenance inconnue
+ * y vaut « projets », sans lecture de plus.
+ */
+export function salleDeLaRacine(appartenance: AppartenanceRacine, instance: SessionInstance | null, advanced: boolean): boolean | null {
+  if (appartenance !== "inconnue") return appartenance === "salle";
+  if (advanced) return false;
+  // Lecture décisive de GET /api/revoir/:rootId?etat=1 ; `null` = pas encore lue, ou lue en échec : fermé en cas de doute.
+  return instance === null ? null : instance !== "principale";
 }

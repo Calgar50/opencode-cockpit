@@ -63,6 +63,12 @@ export interface RevoirEtatResponse {
   acces: boolean;
   /** null quand l'accès est donné. */
   raison: RevoirRefus | null;
+  /**
+   * Instance de la racine (D-3d-14) ; null quand la racine est inconnue du cockpit. Une instance illisible est annoncée « omo »,
+   * comme la règle d'accès la traite : la salle est fermée en cas de doute, jamais « principale » par défaut. Lecture DÉCISIVE
+   * pour la page du zoom 2 (L31b), qui ne doit jamais déduire d'une absence qu'une racine n'est pas celle de la Salle OMO.
+   */
+  instance: SessionInstance | null;
 }
 
 /**

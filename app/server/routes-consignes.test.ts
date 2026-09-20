@@ -8,7 +8,8 @@ import { Hono } from "hono";
 import { createConsignesStore } from "./consignes-store.ts";
 import type { RevoirPort } from "./contracts-3d.ts";
 import type { NeonMode } from "./shared/neon-scene.ts";
-import type { RevoirConsigneResponse, RevoirConsignesEnfantResponse, RevoirRefus } from "./shared/salle3d-types.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
+import type { RevoirConsigneResponse, RevoirConsignesEnfantResponse, RevoirEtatResponse } from "./shared/salle3d-types.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { buildSalle3dRoutes } from "./wiring-3d.ts";
 
@@ -36,13 +37,14 @@ interface Simulation {
 function simuler(h: CockpitHarness): Simulation {
   const modes: NeonMode[] = [];
   const fin = { valeur: "terminee" as Fin };
-  const etat = (rootId: string, mode: NeonMode): { rootId: string; acces: boolean; raison: RevoirRefus | null } => {
+  const etat = (rootId: string, mode: NeonMode): RevoirEtatResponse => {
     modes.push(mode);
-    const instance = (h.db.prepare("SELECT instance FROM sessions WHERE id = ?").get(rootId) as { instance: string } | undefined)?.instance;
-    if (instance === undefined) return { rootId, acces: false, raison: "racine-inconnue" };
-    if (instance !== "omo" || mode === "avance") return { rootId, acces: true, raison: null };
-    if (fin.valeur === "terminee") return { rootId, acces: true, raison: null };
-    return { rootId, acces: false, raison: fin.valeur === "en-cours" ? "salle-demande-en-cours" : "salle-fin-inconnue" };
+    const lue = (h.db.prepare("SELECT instance FROM sessions WHERE id = ?").get(rootId) as { instance: string } | undefined)?.instance;
+    if (lue === undefined) return { rootId, acces: false, raison: "racine-inconnue", instance: null };
+    const instance: SessionInstance = lue === "principale" ? "principale" : "omo";
+    if (instance !== "omo" || mode === "avance") return { rootId, acces: true, raison: null, instance };
+    if (fin.valeur === "terminee") return { rootId, acces: true, raison: null, instance };
+    return { rootId, acces: false, raison: fin.valeur === "en-cours" ? "salle-demande-en-cours" : "salle-fin-inconnue", instance };
   };
   const revoir: RevoirPort = {
     etat,

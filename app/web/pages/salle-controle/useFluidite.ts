@@ -12,7 +12,9 @@
 //   [Rester en 3D] → rester3d() : proposition retirée, surveillance suspendue jusqu'à [Réessayer] ; sans réponse, bascule
 //   automatique à 10 s (2D « saccades », préférence du poste inchangée : seul un choix de la personne est gardé, pour que
 //   « vous l'avez choisi sur ce poste » reste vrai) ;
-// - [Réessayer] → reessayer() : préférence remise à auto (D-3d-25), capacités relues, nouvelle sonde ;
+// - [Réessayer] → reessayer() : préférence remise à auto (D-3d-25), capacités relues, nouvelle sonde. C'est un GESTE de la
+//   personne : l'état est reposé même quand il est identique (`poser(..., force)`), pour que la page — qui compare le verdict par
+//   référence — remonte sa scène après un échec survenu avant la première image. Une bascule n'est jamais marquée deux fois ;
 // - chaque passage en 2D pose la marque « salle3d:bascule » (fluidite.ts, D-3d-18).
 // La position du différé n'est pas gardée ici : la page la garde quand l'affichage passe en 2D (L31b).
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -114,14 +116,25 @@ export function creerControleFluidite(dependances: Partial<DependancesFluidite> 
     sondeLancee = -1;
   };
 
-  const poser = (suivant: EtatFluidite) => {
+  /**
+   * Pose un état. `force` : transition VOULUE par la personne ([Réessayer]) dont l'état calculé peut être identique à l'état
+   * courant — l'état est alors remplacé quand même, pour que la page, qui compare le verdict par RÉFÉRENCE, voie le geste et
+   * remonte sa scène. Sans cela, [Réessayer] reste sans effet après un échec de la scène survenu AVANT la première image
+   * (`sondeEnCours` encore vrai, aucune poignée) : l'état recalculé est identique point par point, la garde d'égalité sort, et la
+   * page reste en 2D jusqu'au rechargement.
+   */
+  const poser = (suivant: EtatFluidite, force = false) => {
     const avant = etat;
-    if (memeVerdict(avant.verdict, suivant.verdict) && avant.sondeEnCours === suivant.sondeEnCours && avant.proposition === suivant.proposition) return;
+    const identique =
+      memeVerdict(avant.verdict, suivant.verdict) && avant.sondeEnCours === suivant.sondeEnCours && avant.proposition === suivant.proposition;
+    if (identique && !force) return;
     etat = suivant;
     if (suivant.verdict.mode === "2d") {
       // La scène 3D est démontée en 2D : sa poignée ne sert plus.
       poignee = null;
-      d.marquer(suivant.verdict.raison);
+      // Une bascule déjà comptée ne l'est pas deux fois (D-3d-18) : [Réessayer] sur une cause inchangée (accessibilité) ne marque
+      // rien de plus, même si l'état est reposé pour la page.
+      if (!identique) d.marquer(suivant.verdict.raison);
     }
     for (const ecouteur of [...ecouteurs]) ecouteur();
   };
@@ -183,7 +196,8 @@ export function creerControleFluidite(dependances: Partial<DependancesFluidite> 
       abandonner();
       surveillanceActive = true;
       // Préférence prise à auto sans la relire : un stockage qui refuse l'écriture ne bloque pas [Réessayer].
-      poser(verdictOuverture("auto"));
+      // `force` : geste de la personne, donc transition TOUJOURS observable, même quand le verdict recalculé est le même.
+      poser(verdictOuverture("auto"), true);
       lancerSonde();
     },
     passer2d() {

@@ -12,13 +12,19 @@
 // - §5.5 l.917 : aucune touche à un doigt hors du composant qui a le focus (les flèches appartiennent à la grille, Échap à la
 //   boîte de dialogue de « Revoir »), et le focus n'est jamais volé : il ne bouge que sur une touche ou un clic de la personne.
 // - D-3d-29 : aucune région `aria-live` ici ; les annonces passent par useAnnouncer(ui.activityAnnouncements).
+// - D-3d-14 (§5.9) : l'appartenance d'une racine à la Salle OMO n'est JAMAIS déduite d'une absence. En mode Simple, la liste des
+//   territoires écarte les racines de la salle dont la demande est en cours et s'arrête aux 24 h : tant que l'appartenance n'est
+//   pas prouvée (liste, ou lecture décisive de l'instance par GET /api/revoir/:rootId?etat=1), la page ne monte RIEN aux zooms 2
+//   et 3 — sinon le zoom en direct partirait lire /facts et les messages d'une conversation de la salle.
 // Textes : salle3d-texts.ts (T3d-b) seulement. Aucune animation, aucune boucle, aucune image demandée.
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { SessionInstance } from "../../../server/shared/activity-types.ts";
 import type { NeonTheme } from "../../../server/shared/neon-palette.ts";
 import type { NeonMode } from "../../../server/shared/neon-scene.ts";
 import { libelleCompteurs, messageFluidite, TEXTES } from "../../../server/shared/salle3d-texts.ts";
 import type { ConversationTerritoire, TerritoireView } from "../../../server/shared/salle3d-types.ts";
 import { useApp } from "../../app/AppContext.tsx";
+import { salle3dApi } from "../../lib/api-salle3d.ts";
 import { useAnnouncer } from "../../lib/announcer.ts";
 import { formatUsd } from "../../lib/format.ts";
 import { navigate, routeHref, useRoute } from "../../lib/router.ts";
@@ -26,6 +32,7 @@ import { REQUETE_MOUVEMENT_REDUIT } from "./fluidite.ts";
 import { type EtatGrille, toucheGrille, totalCellules } from "./grille-clavier.ts";
 import { RevoirEntree } from "./revoir/RevoirEntree.tsx";
 import {
+  appartenanceRacine,
   cleZoom,
   doitMonterScene3d,
   type EchecScene,
@@ -37,6 +44,7 @@ import {
   peutRemettrePoignee,
   reessayer,
   rester3d,
+  salleDeLaRacine,
   SECTION_SALLE,
   surveillance,
   type TransitionSalle,
@@ -199,6 +207,35 @@ function lignesDe(projets: readonly TerritoireView[], prefixe: string, avecCompt
   }));
 }
 
+// --- Appartenance de la racine montrée (D-3d-14) -------------------------------------------------------------------------------
+
+/**
+ * Instance de la racine montrée, lue par GET /api/revoir/:rootId?etat=1 (L28b : lecture seule, aucune requête à opencode, aucune
+ * ligne `usage`). Elle n'est demandée QUE lorsque la liste des territoires ne prouve pas l'appartenance et que le mode Simple
+ * ferme la salle : ailleurs, `rootId` vaut null et aucune requête n'est faite. Une racine inconnue du cockpit ou une lecture
+ * impossible rendent « omo » — fermé en cas de doute, comme RevoirEntree, jamais un direct ouvert par défaut.
+ */
+function useInstanceRacine(rootId: string | null): SessionInstance | null {
+  const [instance, setInstance] = useState<SessionInstance | null>(null);
+  useEffect(() => {
+    setInstance(null);
+    if (rootId === null) return;
+    const abandon = new AbortController();
+    salle3dApi.revoirEtat(rootId, abandon.signal).then(
+      (reponse) => {
+        if (!abandon.signal.aborted) setInstance(reponse.instance ?? "omo");
+      },
+      (err: unknown) => {
+        if (abandon.signal.aborted) return;
+        console.warn("Salle de contrôle : instance de la racine illisible", err);
+        setInstance("omo");
+      },
+    );
+    return () => abandon.abort();
+  }, [rootId]);
+  return instance;
+}
+
 // --- Page --------------------------------------------------------------------------------------------------------------------
 
 export function SalleControlePage() {
@@ -271,20 +308,26 @@ export function SalleControlePage() {
     if (phrase !== null) dire(phrase);
   }, [phrase, dire]);
 
-  // Projet et enceinte de la conversation montrée aux zooms 2 et 3, lus dans la dernière réponse connue (jamais inventés, P12).
-  const situation = useMemo(() => {
+  // Nom du projet de la conversation montrée aux zooms 2 et 3, lu dans la dernière réponse connue (jamais inventé, P12) ; null
+  // quand la racine n'y est pas : le fil d'Ariane montre alors son identifiant.
+  const nomDuProjet = useMemo(() => {
     if (etat.rootId === null || reponse === null) return null;
-    const groupes: Array<{ salle: boolean; projets: readonly TerritoireView[] }> = [
-      { salle: false, projets: reponse.projets },
-      { salle: true, projets: reponse.salle?.projets ?? [] },
-    ];
-    for (const groupe of groupes) {
-      for (const projet of groupe.projets) {
-        if (projet.conversations.some((conversation) => conversation.rootId === etat.rootId)) return { nom: projet.nom, salle: groupe.salle };
+    const groupes: Array<readonly TerritoireView[]> = [reponse.projets, reponse.salle?.projets ?? []];
+    for (const projets of groupes) {
+      for (const projet of projets) {
+        if (projet.conversations.some((conversation) => conversation.rootId === etat.rootId)) return projet.nom;
       }
     }
     return null;
   }, [reponse, etat.rootId]);
+
+  // Appartenance de la racine (D-3d-14) : JAMAIS déduite d'une absence. En Simple, `territoires-service.ts` écarte volontairement
+  // les racines de la salle dont la demande est en cours, et la liste s'arrête aux 24 h : une racine absente n'est pas prouvée
+  // ordinaire. Tant qu'elle ne l'est pas, une lecture décisive est faite (l'instance de la racine), et rien n'est monté.
+  const appartenance = appartenanceRacine(reponse, etat.rootId);
+  const aProuver = etat.zoom >= 2 && !advanced && appartenance === "inconnue";
+  const instanceRacine = useInstanceRacine(aProuver ? etat.rootId : null);
+  const salle = salleDeLaRacine(appartenance, instanceRacine, advanced);
 
   const [cible, setCible] = useState<string | null>(null);
   const oublierCible = useCallback(() => setCible(null), []);
@@ -314,9 +357,9 @@ export function SalleControlePage() {
             {etat.zoom >= 2 && etat.rootId !== null ? (
               <li>
                 {etat.zoom === 2 ? (
-                  <span aria-current="page">{situation?.nom ?? etat.rootId}</span>
+                  <span aria-current="page">{nomDuProjet ?? etat.rootId}</span>
                 ) : (
-                  <a href={routeHref(SECTION_SALLE, etat.rootId)}>{situation?.nom ?? etat.rootId}</a>
+                  <a href={routeHref(SECTION_SALLE, etat.rootId)}>{nomDuProjet ?? etat.rootId}</a>
                 )}
               </li>
             ) : null}
@@ -396,14 +439,14 @@ export function SalleControlePage() {
             ) : null}
           </div>
         </div>
-      ) : etat.rootId === null ? null : (
+      ) : etat.rootId === null || salle === null ? null : (
         <ZoomConversation
           key={cleZoom(etat)}
           rootId={etat.rootId}
           sessionId={etat.sessionId}
           mode={mode}
           theme={theme}
-          salle={situation?.salle ?? false}
+          salle={salle}
           vue3d={vue3d}
           mouvementReduit={mouvementReduit}
           onEchec3d={onEchec}

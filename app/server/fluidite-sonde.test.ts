@@ -584,6 +584,50 @@ describe("useFluidite : contrôleur (sans texte : raisons seulement)", () => {
     assert.equal(scene.controle.etat().proposition, false, "4,8 s lentes d'avant la sonde oubliées");
   });
 
+  it("[Réessayer] après un échec de la scène survenu AVANT la première image : transition observable (verdict d'identité neuve, abonnés prévenus)", () => {
+    // La scène a échoué avant tout onReady (contexte refusé au montage, morceau paresseux introuvable) : la page a remis
+    // `pret(null)`, et l'état du contrôle est resté « 3D, sonde en cours », sans poignée. [Réessayer] recalcule le MÊME état ;
+    // sans transition forcée, la garde d'égalité sortirait, la page ne verrait rien et le bouton serait mort.
+    const b = banc();
+    b.controle.ouvrir();
+    b.controle.pret(null);
+    const avant = b.controle.etat();
+    assert.deepEqual(avant, { verdict: { mode: "3d" }, sondeEnCours: true, proposition: false });
+    assert.equal(b.sondes.length, 0, "aucune sonde : il n'y a jamais eu de poignée");
+    const vues = b.notifications();
+    b.controle.reessayer();
+    const apres = b.controle.etat();
+    assert.deepEqual(apres, { verdict: { mode: "3d" }, sondeEnCours: true, proposition: false });
+    assert.notEqual(apres.verdict, avant.verdict, "identité neuve : la page compare le verdict par référence");
+    assert.ok(b.notifications() > vues, "les abonnés sont prévenus");
+    // La scène remontée par la page rend sa poignée : la sonde repart pour de bon.
+    b.controle.pret(poignee());
+    assert.equal(b.sondes.length, 1);
+  });
+
+  it("[Réessayer] après une perte de contexte pendant la sonde (poignée retirée) : même transition observable", () => {
+    const b = banc();
+    b.controle.ouvrir();
+    b.controle.pret(poignee());
+    assert.equal(b.sondes.length, 1);
+    b.controle.pret(null);
+    const avant = b.controle.etat().verdict;
+    b.controle.reessayer();
+    assert.notEqual(b.controle.etat().verdict, avant);
+    assert.deepEqual(b.controle.etat(), { verdict: { mode: "3d" }, sondeEnCours: true, proposition: false });
+  });
+
+  it("[Réessayer] sur une 2D dont la cause n'a pas bougé : état reposé pour la page, aucune marque « salle3d:bascule » en double", () => {
+    const b = banc({ capacites: { couleursForcees: true } });
+    b.controle.ouvrir();
+    assert.deepEqual(b.marques, ["accessibilite"]);
+    const avant = b.controle.etat().verdict;
+    b.controle.reessayer();
+    assert.deepEqual(b.controle.etat().verdict, { mode: "2d", raison: "accessibilite" });
+    assert.notEqual(b.controle.etat().verdict, avant, "la page voit le geste, même quand la cause est la même");
+    assert.deepEqual(b.marques, ["accessibilite"], "D-3d-18 : une bascule n'est jamais comptée deux fois");
+  });
+
   it("abonnement : notifié à chaque changement, plus après désabonnement", async () => {
     const b = banc();
     let vus = 0;

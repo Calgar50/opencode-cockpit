@@ -13,6 +13,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { creerSurveillance } from "../web/pages/salle-controle/fluidite.ts";
 import {
+  appartenanceRacine,
   cleZoom,
   doitMonterScene3d,
   echec3d,
@@ -25,9 +26,11 @@ import {
   PREFERENCE_ECRITE,
   reessayer,
   rester3d,
+  salleDeLaRacine,
   SECTION_SALLE,
   surveillance,
   verdictSonde,
+  type VueTerritoires,
 } from "../web/pages/salle-controle/salle-etat.ts";
 import { creerControleFluidite } from "../web/pages/salle-controle/useFluidite.ts";
 import { type CapacitesNavigateur, type FluidityReason, type PreferenceChoix, preferenceAuto } from "./shared/fluidity.ts";
@@ -112,6 +115,39 @@ describe("salle-etat : aucune scène 3D sans verdict 3D, aucune poignée page ca
     assert.equal(peutRemettrePoignee(en3d, true), true);
     assert.equal(peutRemettrePoignee(en3d, false), false, "onglet caché : aucune image, donc aucune sonde lancée");
     for (const raison of raisons) assert.equal(peutRemettrePoignee(ouvert(routeZoom(), { mode: "2d", raison }), true), false, raison);
+  });
+});
+
+// --- Appartenance d'une racine (D-3d-14, §5.9 l.1018-1024) ----------------------------------------------------------------------
+
+const conv = (...rootIds: string[]) => ({ conversations: rootIds.map((rootId) => ({ rootId })) });
+
+/** Réponse des territoires : la racine « ses_ordinaire » dans un projet, « ses_salle » dans l'enceinte, « ses_absente » nulle part. */
+const VUE: VueTerritoires = { projets: [conv("ses_ordinaire")], salle: { projets: [conv("ses_salle")] } };
+
+describe("salle-etat : l'appartenance d'une racine n'est jamais déduite d'une absence (D-3d-14)", () => {
+  it("appartenanceRacine : projet, enceinte, ou « inconnue » — réponse absente, racine absente, enceinte nulle", () => {
+    assert.equal(appartenanceRacine(VUE, "ses_ordinaire"), "projets");
+    assert.equal(appartenanceRacine(VUE, "ses_salle"), "salle");
+    assert.equal(appartenanceRacine(VUE, "ses_absente"), "inconnue", "hors des 24 h, du plafond de 200, ou écartée par le filtre Simple");
+    assert.equal(appartenanceRacine(null, "ses_ordinaire"), "inconnue", "aucune lecture aboutie : rien n'est prouvé");
+    assert.equal(appartenanceRacine({ projets: [], salle: null }, "ses_salle"), "inconnue", "aucune enceinte : toujours pas une preuve");
+    assert.equal(appartenanceRacine(VUE, null), "inconnue");
+  });
+
+  it("salleDeLaRacine : prouvée par la liste, l'instance n'est même pas demandée", () => {
+    for (const advanced of [false, true]) {
+      assert.equal(salleDeLaRacine("projets", null, advanced), false, `projets, avancé ${advanced}`);
+      assert.equal(salleDeLaRacine("salle", null, advanced), true, `salle, avancé ${advanced}`);
+    }
+  });
+
+  it("salleDeLaRacine : appartenance inconnue — en Simple, rien n'est monté tant que l'instance n'est pas lue", () => {
+    // Le défaut corrigé : « inconnue » valait « ce n'est pas la salle », et le zoom en direct partait lire /facts en mode Simple.
+    assert.equal(salleDeLaRacine("inconnue", null, false), null, "Simple : rien de monté tant que l'instance n'est pas lue");
+    assert.equal(salleDeLaRacine("inconnue", "omo", false), true, "instance lue : c'est la salle, donc « Revoir » seulement");
+    assert.equal(salleDeLaRacine("inconnue", "principale", false), false, "instance lue : conversation ordinaire, le direct est servi");
+    assert.equal(salleDeLaRacine("inconnue", null, true), false, "Avancé : le direct est servi de toute façon, aucune lecture de plus");
   });
 });
 
@@ -203,6 +239,20 @@ describe("SalleControlePage : les gardes de MX-3D et du clavier sont bien celles
     const avant = PAGE.slice(Math.max((montages[0]?.index ?? 0) - 80, 0), montages[0]?.index ?? 0);
     assert.match(avant, /vue3d \?/);
     assert.match(PAGE, /vue3d=\{vue3d\}/, "ZoomConversation reçoit le même verdict");
+  });
+
+  it("l'appartenance à la salle vient de salleDeLaRacine, jamais d'un repli sur « ce n'est pas la salle » (D-3d-14)", () => {
+    assert.match(PAGE, /const appartenance = appartenanceRacine\(reponse, etat\.rootId\);/);
+    assert.match(PAGE, /const salle = salleDeLaRacine\(appartenance, instanceRacine, advanced\);/);
+    assert.match(PAGE, /salle=\{salle\}/, "ZoomConversation reçoit l'appartenance prouvée");
+    assert.equal(/salle=\{[^}]*\?\?\s*false\}/.test(PAGE), false, "aucune absence ne vaut « ce n'est pas la salle »");
+    // Appartenance non prouvée (null) : rien n'est monté, donc aucune lecture de /facts ni de message pour une racine de la salle.
+    assert.match(PAGE, /etat\.rootId === null \|\| salle === null \? null : \(/);
+    // La lecture décisive est demandée seulement quand la liste ne prouve rien ET que le mode Simple ferme la salle.
+    assert.match(PAGE, /const aProuver = etat\.zoom >= 2 && !advanced && appartenance === "inconnue";/);
+    assert.match(PAGE, /useInstanceRacine\(aProuver \? etat\.rootId : null\)/);
+    const lectures = [...PAGE.matchAll(/salle3dApi\.(\w+)\(/g)].map((trouve) => trouve[1]);
+    assert.deepEqual(lectures, ["revoirEtat"], "la page ne fait que cette lecture seule, jamais une requête à opencode");
   });
 
   it("la poignée n'est remise qu'à travers peutRemettrePoignee", () => {

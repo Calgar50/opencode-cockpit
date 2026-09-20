@@ -23,8 +23,20 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
-import { cleZoom, doitMonterScene3d, echec3d, type EtatSalle, etatInitial, peutRemettrePoignee } from "../web/pages/salle-controle/salle-etat.ts";
+import { describe, it, type TestContext } from "node:test";
+import {
+  appartenanceRacine,
+  cleZoom,
+  doitMonterScene3d,
+  echec3d,
+  type EtatSalle,
+  etatInitial,
+  peutRemettrePoignee,
+  salleDeLaRacine,
+  verdictSonde as appliquerVerdict,
+} from "../web/pages/salle-controle/salle-etat.ts";
+import { directServi } from "../web/pages/salle-controle/useFaitsConversation.ts";
+import { creerControleFluidite } from "../web/pages/salle-controle/useFluidite.ts";
 import type { Moteur, MoteurOptions } from "../web/pages/salle-controle/slots-3d.ts";
 import {
   creerMoteur,
@@ -34,12 +46,13 @@ import {
   type ParametresRendu,
   type RenduWebGL,
 } from "../web/pages/salle-controle/three/moteur.ts";
-import { type CapacitesPoste, verdictCapacites } from "./shared/fluidity.ts";
+import { type CapacitesPoste, preferenceAuto, verdictCapacites } from "./shared/fluidity.ts";
 import { moments, type NeonSceneOptions, scene, visibleCount } from "./shared/neon-scene.ts";
 import { messageFluidite, TEXTES as SALLE } from "./shared/salle3d-texts.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
-import type { Plan3d, Plan3dNode, Point3 } from "./shared/salle3d-types.ts";
+import type { Plan3d, Plan3dNode, Point3, RevoirEtatResponse, TerritoiresResponse } from "./shared/salle3d-types.ts";
 import { nomsSimples, vueSimple } from "./shared/vue-simple.ts";
+import { startCockpit } from "./test-support/cockpit-harness.ts";
 import { DEMO_P1_FILE } from "./test-support/gen-demo.ts";
 import { type DemoIt3Cle, DEMOS_IT3, demoJson, fichierDemo, genererDemo } from "./test-support/gen-demos-it3.ts";
 
@@ -228,6 +241,89 @@ describe("croisements 3D V2 : fluidité, repli 2D et position du lecteur (D-3d-2
       assert.equal(etat.sessionId, depart.sessionId, "le zoom 3 reste celui qu'on regardait");
     }
     assert.deepEqual(echec3d(depart, "contexte-perdu").etat.message, { genre: "contexte-perdu" });
+  });
+
+  it("[Réessayer] après un échec survenu avant la première image : le contrôle repose un verdict OBSERVABLE et la page remonte la scène", () => {
+    // Croisement L30 × L31b : la page (SalleControlePage.tsx) ne regarde le contrôle de fluidité que par l'IDENTITÉ de son
+    // verdict. Un échec de la scène arrivé avant tout `onReady` laisse le contrôle en « 3D, sonde en cours » pendant que la page
+    // est passée en 2D : [Réessayer] recalcule alors le même état, et sans transition forcée le bouton reste sans effet.
+    const controle = creerControleFluidite({
+      capacites: () => ({ mouvementReduit: false, couleursForcees: false, webgl2: true, contexteRefuse: false, moteur: "ANGLE" }),
+      preference: () => preferenceAuto(),
+      enregistrer: () => {},
+      sonder: () => new Promise<number[]>(() => {}),
+      marquer: () => {},
+    });
+    controle.ouvrir();
+    let page = etatInitial(ROUTE, controle.etat().verdict);
+    assert.equal(doitMonterScene3d(page), true);
+    // La scène échoue avant d'avoir rendu sa poignée : la page passe en 2D, le contrôle n'en sait rien (aucune action, D-3d-25).
+    page = echec3d(page, "contexte-refuse").etat;
+    assert.equal(doitMonterScene3d(page), false);
+    assert.deepEqual(controle.etat(), { verdict: { mode: "3d" }, sondeEnCours: true, proposition: false });
+
+    const avant = controle.etat().verdict;
+    controle.reessayer();
+    const apres = controle.etat().verdict;
+    assert.notEqual(apres, avant, "le verdict change d'identité : la page le voit (comparaison de référence)");
+    page = appliquerVerdict(page, apres).etat;
+    assert.equal(doitMonterScene3d(page), true, "[Réessayer] n'est pas un bouton mort : la scène est remontée");
+    assert.equal(cleZoom(page), cleZoom(etatInitial(ROUTE, apres)), "§5.8 l.1007 : la position du lecteur survit au réessai");
+  });
+});
+
+// --- L31a × L28b × L31b : l'appartenance d'une racine n'est jamais déduite d'une absence (D-3d-14) -------------------------------
+
+const OMO = "ses_croisement_omo";
+
+/** Racine de la Salle OMO, active à l'instant, avec une demande d'autonomie EN COURS (ligne `autonomy_requests` sans `ended_at`). */
+function racineDeLaSalle(h: { db: { prepare(sql: string): { run(parametres: Record<string, unknown>): unknown } }; fake: { directory: string } }): void {
+  const at = Date.now();
+  h.db
+    .prepare(
+      `INSERT INTO sessions (id, parent_id, root_id, directory, title, purpose, instance, created_at, updated_at)
+       VALUES (:id, NULL, :id, :dossier, 'Demande autonome', 'chat', 'omo', :at, :at)`,
+    )
+    .run({ id: OMO, dossier: h.fake.directory, at });
+  h.db
+    .prepare("INSERT INTO autonomy_requests (id, root_id, choix, plafonds, started_at, ended_at) VALUES ('req_croisement', :root, 'autonome', '{}', :at, NULL)")
+    .run({ root: OMO, at });
+}
+
+describe("croisements 3D V2 : une racine de la salle absente des territoires ne devient jamais une conversation ordinaire (D-3d-14, §5.9)", () => {
+  it("demande en cours en mode Simple : la racine est écartée de la liste, et la page ne sert PAS le direct", async (t: TestContext) => {
+    const h = await startCockpit(t);
+    racineDeLaSalle(h);
+
+    const reponse = await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed });
+    assert.equal(reponse.status, 200, reponse.body);
+    const vue = reponse.json<TerritoiresResponse>();
+    assert.equal(vue.mode, "simple");
+    assert.notEqual(vue.salle, null, "l'enceinte est là (JP-10), même quand le filtre Simple n'en garde aucune conversation");
+    assert.equal(appartenanceRacine(vue, OMO), "inconnue", "D-3d-14 : une demande en cours est volontairement écartée de la liste");
+    // Témoin : une racine de la salle listée est bien reconnue (la dérivation ne rend pas « inconnue » pour tout le monde).
+    assert.equal(appartenanceRacine({ projets: [], salle: { projets: [{ conversations: [{ rootId: OMO }] }] } }, OMO), "salle");
+
+    // Dérivation de la page (L31b) : tant que rien n'est prouvé, RIEN n'est monté — ni le direct, ni le panneau de la salle.
+    assert.equal(salleDeLaRacine("inconnue", null, false), null);
+
+    // Lecture décisive (L28b, GET /api/revoir/:rootId?etat=1) : la racine EST celle de la salle.
+    const acces = await h.call("GET", `/api/revoir/${OMO}?etat=1`, { headers: h.headers.authed });
+    assert.equal(acces.status, 200, acces.body);
+    const etat = acces.json<RevoirEtatResponse>();
+    assert.deepEqual(etat, { rootId: OMO, acces: false, raison: "salle-demande-en-cours", instance: "omo" });
+    assert.equal(salleDeLaRacine("inconnue", etat.instance, false), true);
+    assert.equal(directServi({ salle: true, mode: "simple" }), false, "aucune vue en direct pour la salle en Simple : « Revoir » seulement");
+    // DISCRIMINANT : c'est bien « salle = false » qui ouvrirait le zoom en direct, donc /facts et la relecture des messages.
+    assert.equal(directServi({ salle: false, mode: "simple" }), true);
+
+    // En mode Avancé, la salle est ouverte : la même racine y est listée et le direct est servi (§5.9, D-3d-14).
+    h.settings.update({ ui: { mode: "avance" } });
+    const enAvance = (await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed })).json<TerritoiresResponse>();
+    assert.equal(appartenanceRacine(enAvance, OMO), "salle", "en Avancé, la racine est listée dans l'enceinte");
+    assert.equal(salleDeLaRacine("salle", null, true), true);
+    assert.equal(directServi({ salle: true, mode: "avance" }), true);
+    h.assertNoGlobalRestart();
   });
 });
 

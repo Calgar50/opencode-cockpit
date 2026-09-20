@@ -339,6 +339,96 @@ describe("moteur-3d : rendu à la demande (D-3d-17)", () => {
   });
 });
 
+// --- Cause des marques d'image (M20, errata du train de V2) ----------------------------------------------------------------------
+
+/**
+ * Causes des marques « salle3d:scene » posées depuis le dernier nettoyage, dans l'ordre. M20 (plan it3 §3.2, fiche L35) borne à
+ * 4 par seconde les recalculs de PLAN ; une marque sans cause ne pourrait pas être comptée, et le compte global de
+ * `salle3d:scene` suit le rythme de l'écran dès qu'un halo pulse (MX-3D, M3D-6).
+ */
+function causesMarquees(): string[] {
+  return performance.getEntriesByName(MARQUE_SCENE, "mark").map((entree) => {
+    const detail = (entree as { detail?: unknown }).detail as { cause?: unknown } | null | undefined;
+    return typeof detail?.cause === "string" ? detail.cause : "sans-cause";
+  });
+}
+
+const compter = (causes: readonly string[], cause: string) => causes.filter((une) => une === cause).length;
+
+/** Boucle d'images simulée : `requestAnimationFrame` et `cancelAnimationFrame` posés dans `globalThis`, rappels joués à la demande. */
+function boucleSimulee() {
+  const avant = { demander: globalThis.requestAnimationFrame, annuler: globalThis.cancelAnimationFrame };
+  let file: Array<{ jeton: number; rappel: FrameRequestCallback }> = [];
+  let jetons = 0;
+  globalThis.requestAnimationFrame = ((rappel: FrameRequestCallback) => {
+    jetons += 1;
+    file.push({ jeton: jetons, rappel });
+    return jetons;
+  }) as typeof globalThis.requestAnimationFrame;
+  globalThis.cancelAnimationFrame = ((jeton: number) => {
+    file = file.filter((image) => image.jeton !== jeton);
+  }) as typeof globalThis.cancelAnimationFrame;
+  return {
+    /** Joue au plus `n` images de 16 ms (une seconde d'écran en fait 60) ; rend le nombre d'images vraiment jouées. */
+    jouer(n: number): number {
+      for (let i = 1; i <= n; i++) {
+        const image = file.shift();
+        if (image === undefined) return i - 1;
+        image.rappel(i * 16);
+      }
+      return n;
+    },
+    rendre() {
+      globalThis.requestAnimationFrame = avant.demander;
+      globalThis.cancelAnimationFrame = avant.annuler;
+    },
+  };
+}
+
+describe("moteur-3d : cause de la marque « salle3d:scene » (M20, errata du train de V2)", () => {
+  it("scène animée : une seule marque « plan » sur une rafale de plans, les images de la boucle portent « boucle »", () => {
+    nettoyerMarques();
+    const boucle = boucleSimulee();
+    try {
+      const banc = monter();
+      const anime = (rootId: string): Plan3d => plan({ rootId, noeuds: [noeud("n1", "travaille")], anime: true });
+      banc.moteur.afficher(anime("ses_racine"));
+      assert.deepEqual(causesMarquees(), ["plan"], "le premier plan rend une image de plan");
+      for (let i = 0; i < 40; i++) banc.moteur.afficher(anime(`ses_${i}`));
+      assert.deepEqual(causesMarquees(), ["plan"], "M20 : la rafale est retardée par le limiteur, aucune image de plan de plus");
+      // Une seconde d'écran : la boucle du halo tourne au rythme de l'écran (spéc. l.996), sans aucun recalcul de plan.
+      const jouees = boucle.jouer(60);
+      assert.ok(jouees >= 30, `la boucle tourne (${jouees} images jouées)`);
+      const causes = causesMarquees();
+      assert.equal(compter(causes, "plan"), 1, "M20 : au plus 4 marques de cause « plan » sur une seconde");
+      assert.equal(compter(causes, "boucle"), jouees, "chaque image de la boucle est marquée, et marquée « boucle »");
+      assert.ok(causes.length > 4, "le compte GLOBAL de « salle3d:scene » suit l'écran : ce n'est pas lui que M20 borne");
+      banc.moteur.liberer();
+    } finally {
+      boucle.rendre();
+      nettoyerMarques();
+    }
+  });
+
+  it("sonde de L30, redimensionnement et « Suivre l'action » : aucune marque « plan » de plus", () => {
+    nettoyerMarques();
+    const banc = monter();
+    banc.moteur.afficher(plan());
+    // 90 images forcées : exactement ce que fait sonder() (MX-3D, M3D-6 : « 90 marques salle3d:scene »).
+    for (let i = 0; i < 90; i++) banc.moteur.renderFrame();
+    banc.moteur.redimensionner(800, 600, 1);
+    banc.moteur.suivre(point(6, 0, 0), 20);
+    const causes = causesMarquees();
+    assert.equal(compter(causes, "plan"), 1, "un seul recalcul de plan a eu lieu");
+    assert.equal(compter(causes, "sonde"), 90);
+    assert.equal(compter(causes, "taille"), 1);
+    assert.equal(compter(causes, "suivi"), 1);
+    assert.equal(compter(causes, "sans-cause"), 0, "toute marque « salle3d:scene » porte sa cause");
+    banc.moteur.liberer();
+    nettoyerMarques();
+  });
+});
+
 // --- Perte de contexte et libération (D-3d-28) -----------------------------------------------------------------------------------
 
 describe("moteur-3d : perte de contexte non demandée (D-3d-28)", () => {

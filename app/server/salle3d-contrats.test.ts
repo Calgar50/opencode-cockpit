@@ -345,7 +345,7 @@ describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
     // L28b ajoute `message` (phrase de revoir-texts.partout.refus) au refus de la route de « Revoir » ; `error` et `code` restent.
     // La phrase elle-même est croisée par croisements-3d-v0.test.ts : revoir-texts.ts n'est pas importé ici (D-3d-27).
     assert.deepEqual(refusDeRevoir(await get(`/api/revoir/${ROOT}`)), { status: 404, error: "racine-inconnue", code: "racine-inconnue", avecPhrase: true });
-    assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: false, raison: "racine-inconnue" } });
+    assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: false, raison: "racine-inconnue", instance: null } });
     for (const invalide of ["ses.point", "x".repeat(129)]) {
       assert.equal((await get(`/api/revoir/${invalide}`)).status, 400, invalide);
       assert.equal((await get(`/api/revoir/${invalide}?etat=1`)).status, 400, `${invalide} ?etat=1`);
@@ -497,7 +497,7 @@ describe("salle de contrôle 3D (T3d-a) : buildSalle3dRoutes", () => {
           },
           etat: (rootId, mode) => {
             modes.push(mode);
-            return { rootId, acces: true, raison: null };
+            return { rootId, acces: true, raison: null, instance: "principale" };
           },
         },
         consignes: { lire: (_rootId, callId) => (callId === CALL ? consigne : null), parEnfant: () => [consigne] },
@@ -526,7 +526,7 @@ describe("salle de contrôle 3D (T3d-a) : buildSalle3dRoutes", () => {
       avecPhrase: true,
     });
     h.settings.update({ ui: { mode: "avance" } });
-    assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: true, raison: null } });
+    assert.deepEqual(await get(`/api/revoir/${ROOT}?etat=1`), { status: 200, body: { rootId: ROOT, acces: true, raison: null, instance: "principale" } });
     assert.equal(((await get("/api/salle-controle/territoires")).body as TerritoiresResponse).mode, "avance");
     assert.deepEqual(modes, ["simple", "simple", "avance"]);
     assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes/${CALL}`), { status: 200, body: consigne });

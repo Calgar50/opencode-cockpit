@@ -144,7 +144,7 @@ describe("« Revoir » (L28b) : racine de l'instance principale", () => {
       assert.deepEqual(vue.facts.map((f) => f.data.etat), ["occupee"]);
       // Une conversation en cours de l'instance principale est consultable, sans être « terminée ».
       assert.equal(vue.termine, false);
-      assert.deepEqual(await b.get(`/api/revoir/${PRINCIPALE}?etat=1`), { status: 200, body: { rootId: PRINCIPALE, acces: true, raison: null } });
+      assert.deepEqual(await b.get(`/api/revoir/${PRINCIPALE}?etat=1`), { status: 200, body: { rootId: PRINCIPALE, acces: true, raison: null, instance: "principale" } });
     }
   });
 
@@ -177,7 +177,7 @@ describe("« Revoir » (L28b) : racine de la Salle OMO simulée, mode Simple (D-
     assert.equal(vue.instance, "omo");
     assert.equal(vue.termine, true);
     assert.equal(vue.facts.length, 4);
-    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: true, raison: null } });
+    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: true, raison: null, instance: "omo" } });
   });
 
   it("dernière demande sans `ended_at` → 403 salle-demande-en-cours, avec sa phrase", async (t) => {
@@ -191,7 +191,7 @@ describe("« Revoir » (L28b) : racine de la Salle OMO simulée, mode Simple (D-
       code: "salle-demande-en-cours",
       message: TEXTES.partout.refus["salle-demande-en-cours"],
     });
-    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: false, raison: "salle-demande-en-cours" } });
+    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: false, raison: "salle-demande-en-cours", instance: "omo" } });
   });
 
   it("une session occupée selon les faits → 403, même avec une demande finie", async (t) => {
@@ -213,7 +213,7 @@ describe("« Revoir » (L28b) : racine de la Salle OMO simulée, mode Simple (D-
       code: "salle-fin-inconnue",
       message: TEXTES.partout.refus["salle-fin-inconnue"],
     });
-    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: false, raison: "salle-fin-inconnue" } });
+    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: false, raison: "salle-fin-inconnue", instance: "omo" } });
   });
 
   it("faits partiels (borne des 20 000) → 403 salle-fin-inconnue, même demande finie et arbre au repos", async (t) => {
@@ -257,7 +257,7 @@ describe("« Revoir » (L28b) : racine de la Salle OMO simulée, mode Avancé", 
     const vue = reponse.body as RevoirResponse;
     assert.equal(vue.instance, "omo");
     assert.equal(vue.termine, false, "demande en cours : consultable, mais pas terminée");
-    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: true, raison: null } });
+    assert.deepEqual(await b.get(`/api/revoir/${SALLE}?etat=1`), { status: 200, body: { rootId: SALLE, acces: true, raison: null, instance: "omo" } });
   });
 
   it("le mode est relu à chaque requête : le même refus devient un accès en mode Avancé", async (t) => {
@@ -280,7 +280,7 @@ describe("« Revoir » (L28b) : racines refusées, identifiants", () => {
       const reponse = await b.get(`/api/revoir/${id}`);
       assert.equal(reponse.status, 404, id);
       assert.deepEqual(refus(reponse.body), { error: "racine-inconnue", code: "racine-inconnue", message: TEXTES.partout.refus["racine-inconnue"] }, id);
-      assert.deepEqual(await b.get(`/api/revoir/${id}?etat=1`), { status: 200, body: { rootId: id, acces: false, raison: "racine-inconnue" } }, id);
+      assert.deepEqual(await b.get(`/api/revoir/${id}?etat=1`), { status: 200, body: { rootId: id, acces: false, raison: "racine-inconnue", instance: null } }, id);
     }
   });
 
@@ -388,6 +388,7 @@ describe("« Revoir » (L28b) : forme des réponses", () => {
     const vue = (await b.get(`/api/revoir/${PRINCIPALE}`)).body as RevoirResponse;
     assert.deepEqual(Object.keys(vue).sort(), ["facts", "instance", "partial", "rootId", "termine", "titre"]);
     const etat = (await b.get(`/api/revoir/${PRINCIPALE}?etat=1`)).body as RevoirEtatResponse;
-    assert.deepEqual(Object.keys(etat).sort(), ["acces", "raison", "rootId"]);
+    assert.deepEqual(Object.keys(etat).sort(), ["acces", "instance", "raison", "rootId"]);
+    assert.equal(etat.instance, "principale", "lecture décisive de l’instance pour la page du zoom 2 (D-3d-14)");
   });
 });

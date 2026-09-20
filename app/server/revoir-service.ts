@@ -7,7 +7,9 @@
 //   `revoirAcces` (L28a) ; accès donné : RevoirResponse avec `termine` et le titre passé par `redactSecrets`.
 // - `etat(rootId, mode)` : MÊME décision, sans rendre les faits. Ils ne sont lus que lorsque la décision en dépend (racine de la
 //   salle en mode Simple) ; sinon `sessionsOccupees` vaut null, c'est-à-dire « fin inconnue », donc un refus si la règle changeait
-//   un jour : fermé en cas de doute, jamais ouvert par défaut.
+//   un jour : fermé en cas de doute, jamais ouvert par défaut. `etat` rend AUSSI l'instance de la racine (null : racine inconnue) :
+//   c'est la seule lecture décisive dont la page du zoom 2 dispose pour savoir si une racine est de la Salle OMO (D-3d-14), la
+//   liste des territoires ne portant que les racines actives des dernières 24 h.
 // `etat` est AUSSI consommé par la route des consignes gardées (L28d, U2, D-3d-30), qui lui applique la même règle d'accès : sa
 // signature ne change pas après le train sans demande écrite à l'intégrateur.
 import type { RevoirPort, RevoirResult, Salle3dDeps } from "./contracts-3d.ts";
@@ -88,8 +90,10 @@ export function createRevoirPort(deps: Salle3dDeps): RevoirPort {
       };
     },
     etat(rootId: string, mode: NeonMode): RevoirEtatResponse {
-      const { acces } = decider(deps, rootId, mode, false);
-      return acces.ok ? { rootId, acces: true, raison: null } : { rootId, acces: false, raison: acces.code };
+      const { racine, acces } = decider(deps, rootId, mode, false);
+      // Instance illisible : annoncée comme la salle, comme la règle d'accès la traite (jamais « principale » par défaut).
+      const instance = racine === null ? null : (racine.instance ?? "omo");
+      return acces.ok ? { rootId, acces: true, raison: null, instance } : { rootId, acces: false, raison: acces.code, instance };
     },
   };
 }
