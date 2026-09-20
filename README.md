@@ -389,6 +389,81 @@ Créer, installer, modifier ou supprimer un assistant, enregistrer dans le Studi
 
 Le cockpit installe aussi ses propres outils dans opencode (classement des archives, et l'IA de contrôle de la future « Autonome avec contrôle », qui n'est encore appelée par rien). Il ne le fait qu'en l'absence de réponse en cours ; sinon il réessaie 30 s plus tard, puis à intervalle doublé jusqu'à 5 minutes. **Diagnostic › Travail délégué et autonomie** donne leur état, par exemple « installation en attente d'un moment sans réponse en cours ; nouvel essai vers 10:42 ».
 
+<!-- [3d] début : salle de contrôle, « Revoir », démonstrations et three.js (itération 3, DOC-3D) -->
+
+## Salle de contrôle et « Revoir » (1.1)
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà. Ces deux vues ne font que **lire** ce que le cockpit a déjà enregistré : aucune IA n'est appelée, aucune conversation n'est modifiée, et le bandeau de « Revoir » le rappelle en permanence : « Revoir : rien n'est relancé ni facturé ».
+
+### La salle de contrôle
+
+**Ouvrir la salle de contrôle**, à côté de la carte du travail en direct, montre en grand le travail en cours dans vos projets. Il n'y a pas d'entrée de menu : on y arrive par cette commande, par les Archives, ou par l'adresse. Trois niveaux :
+
+| Niveau | Adresse | Ce qu'on y voit |
+|---|---|---|
+| **Vos projets** | `#/salle-controle` | Un territoire par projet, plus les dossiers où une conversation a travaillé dans les dernières 24 heures. Pour chacun : combien travaillent, combien attendent votre accord, et le total étiqueté « Coût des demandes en cours dans ce projet ». Quand le cockpit ne peut pas lire l'état d'un projet, il écrit « état non vérifiable », jamais zéro. Aucun trait ne relie deux projets : « Aucun faisceau entre projets : une conversation ne confie jamais de travail à une conversation d'un autre projet. » Sans rien à montrer : « Aucune conversation récente dans vos projets. » |
+| **Une conversation** | `#/salle-controle/<conversation>` | La scène de la carte du travail en direct, en grand : l'assistant de la conversation, les consignes confiées (rose), les résultats rendus (bleu), les attentes de votre accord et chaque appel vers GitHub Copilot. Le sélecteur « Conversations de ce projet » passe de l'une à l'autre, et [Liste] / [Tableau] donnent la même chose en texte. |
+| **Un intervenant** | `#/salle-controle/<conversation>/<intervenant>` | Le détail d'un intervenant : ses outils, ses fichiers, sa consigne reçue et son résultat rendu. |
+
+Le fil d'Ariane, en tête, part de « Projets » et descend jusqu'à l'intervenant ouvert ; la station fixe « Cockpit – contrôle », à gauche, représente le cockpit lui-même. Les positions des projets ne bougent pas tant que la vue reste ouverte.
+
+**La liste reste la vérité.** Sous la scène, la liste des conversations et le tableau des intervenants disent exactement la même chose, en texte, en 3D comme en 2D. La scène n'est qu'une image : elle ne dessine que ce que le cockpit a enregistré, et un lecteur d'écran ne la lit pas. Au plus 60 étiquettes sont posées sur la scène ; au-delà, la liste reste seule complète.
+
+### Au clavier
+
+- Dans la grille des conversations : **←** et **→** dans un projet, **↑** et **↓** d'un projet à l'autre, **Début** et **Fin** aux extrémités de la ligne (avec **Ctrl**, de toute la grille), **Entrée** ouvre la conversation. Au bord, la flèche ne saute pas à la ligne voisine.
+- Ces touches n'agissent que **dans** la grille : le cockpit ne prend aucun raccourci à une touche hors du composant qui a le focus, et ne déplace jamais le focus tout seul.
+- Dans le lecteur de « Revoir », **←**, **→**, **Début** et **Fin** déplacent le curseur des moments **seulement quand ce curseur a le focus**.
+- Dans la boîte « Revoir », **Échap** ferme et rend le focus au bouton qui l'a ouverte.
+
+### « Revoir » une demande
+
+**Revoir cette demande** s'ouvre depuis la bande du travail en direct, depuis les Archives et depuis la salle de contrôle. La demande est rejouée moment par moment, en 2D, dans une boîte qui ne remplace jamais l'affichage en direct :
+
+- barre du lecteur : [Lire], [Figer ici], [Moment précédent], [Moment suivant], un curseur « 4 / 12 », une « Vitesse » (×0,25, ×0,5, ×1, ×2, ×4) et le badge « EN DIRECT » ou « EN DIFFÉRÉ ×0,5 · 10:42:07 » ;
+- un temps mort de plus de 4 secondes est montré en une seconde, avec l'étiquette « 10 s sans nouvel événement, montrées en 1 s » ;
+- [Suivre l'action] déplace la vue avec le travail rejoué ; [Revenir au direct] revient au présent ;
+- les légendes expliquent ce qu'elles montrent (« Pourquoi ? »), par exemple « Il ne voit pas votre conversation : il reçoit seulement cette consigne et peut lire le projet », « Il reprend son travail précédent, avec tout son historique » ou « Il travaille en tâche de fond : celui qui lui a confié le travail n'attend pas son résultat. » ;
+- **rien n'est relancé ni facturé** : « Revoir » lit les faits déjà enregistrés, ne demande rien à opencode et n'ajoute aucune ligne au suivi des coûts. Aucune saisie, aucun bouton d'autorisation, aucun arrêt : c'est une lecture.
+
+**[Voir la consigne]** montre la consigne reçue par un intervenant. Elle vient de la **copie que le cockpit a gardée au moment de l'envoi**, jamais d'une nouvelle demande à l'IA : « Copie gardée par le cockpit au moment de l'envoi, secrets reconnus masqués : rien n'est redemandé à l'IA. »
+
+- Les secrets reconnus sont masqués avant que la copie soit écrite ; au-delà de 8 000 caractères, le texte est coupé avec la mention « Consigne tronquée : 8 000 caractères affichés sur 12 345. » ; au-delà de 500 consignes dans une conversation, plus rien n'est gardé.
+- Sans copie : « Consigne non enregistrée : le cockpit n'en a pas gardé de copie (demande antérieure à cette version, cockpit arrêté pendant l'envoi, ou plus de 500 consignes dans cette conversation). »
+- Cette copie **est supprimée avec la conversation**, comme les faits et les archives, et n'est jamais écrite dans un journal ni dans un export.
+- Les **autres** textes de message ne sont pas relus pendant « Revoir » : « Texte non affiché pendant « Revoir » : rien n'est redemandé ni relancé. » C'est voulu : le cockpit ne redemande rien pour afficher un rejeu.
+
+### 3D, repli en 2D et préférence du poste
+
+La 3D n'est **proposée que si le poste sait la dessiner**. Avant de l'ouvrir, le cockpit vérifie que le navigateur donne un affichage 3D accéléré par la carte graphique ; à l'ouverture, il mesure 90 images. Sinon, la même vue s'affiche en 2D, avec la raison :
+
+| Raison | Phrase affichée |
+|---|---|
+| Réglages d'accessibilité (mouvement réduit, couleurs forcées) | « Affichage 2D : vos réglages d'accessibilité le demandent » |
+| Poste sans carte graphique (bureau à distance, machine virtuelle) | « Affichage 2D : ce poste dessine la 3D sans carte graphique (bureau à distance ou machine virtuelle) » |
+| Navigateur sans affichage 3D | « Affichage 2D : la 3D n'est pas disponible dans ce navigateur » |
+| Images trop lentes à la mesure, ou pendant l'usage | « La 3D n'était pas fluide sur ce poste » |
+| Choix gardé sur ce poste | « Affichage 2D : vous l'avez choisi sur ce poste » |
+
+Quand la 3D devient saccadée en cours de route, le cockpit propose d'abord « La 3D saccade sur ce poste. » avec [Passer en 2D] et [Rester en 3D], puis annonce « Passage en 2D dans quelques secondes. » avant de basculer de lui-même ; si l'affichage 3D s'interrompt tout seul, il le dit : « L'affichage 3D s'est interrompu : retour en 2D. »
+
+**[Réessayer]** relance la mesure et redonne sa chance à la 3D. Le choix « 2D » que vous faites vous-même est gardé **sur ce poste seulement** (dans le navigateur, sous la clé `cockpit.salle3d`) ; une bascule automatique, elle, n'est jamais gardée : un onglet laissé en arrière-plan ne ferme donc pas la 3D pour de bon. Rien de tout cela n'est envoyé au serveur.
+
+### Démonstrations
+
+**Voir une démonstration** joue une capture enregistrée sur le lecteur de « Revoir », avec l'étiquette « Démonstration enregistrée : aucune IA n'est appelée ». « Choisir une démonstration » en propose trois : « Deux assistants en même temps », « Attente de votre accord » et « Arrêt au plafond ». Aucune requête n'est envoyée à opencode pendant une démonstration, dans les deux modes. En mode Simple, une démonstration qui montre du travail délégué le signale : « Démonstration enregistrée en mode Avancé : en mode Simple, l'IA ne délègue pas, elle continue seule. »
+
+### three.js, licence et sécurité
+
+La 3D est dessinée par **three.js 0.186.0** (licence MIT), la seule bibliothèque ajoutée par la 1.1 :
+
+- **version exacte épinglée** (`0.186.0`, sans `^` ni `~`), en dépendance de développement : elle est compilée dans l'interface, pas installée dans l'image du serveur ;
+- **empreinte vérifiée** : l'archive du registre npm porte le SHA-256 `61eeff9d7616005c9a481c796f52287d81fbbbc0d55eaca5565322924252c1aa`, et le `package-lock.json` enregistre le SHA-512 correspondant ;
+- **licence servie avec l'application** : le build écrit `licences/three-LICENSE.txt`, copie exacte de la licence MIT de three, et **échoue** si elle manque ;
+- **aucun élargissement de la politique de sécurité du navigateur (CSP)** : elle est **inchangée**, sans `'unsafe-eval'`. Le build vérifie qu'aucun morceau de three ne contient `new Function` ni `eval(`, qu'aucun module expérimental de three n'entre dans l'application, et que three reste chargé **à la demande** : il n'est téléchargé que si vous ouvrez la salle de contrôle.
+
+<!-- [3d] fin -->
+
 ## Suivi des coûts
 
 Depuis le **1er juin 2026**, Copilot facture **au token**, en crédits IA (1 crédit = 0,01 $). Le compteur est remis à zéro le 1er de chaque mois à 00:00 UTC, et un budget utilisateur épuisé bloque les requêtes, sans repli sur un modèle gratuit.
@@ -610,3 +685,9 @@ Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'it�
 ## Licence
 
 MIT. opencode est un projet MIT d'Anomaly (anciennement SST).
+
+<!-- [3d] début : licence de three.js (itération 3, DOC-3D) -->
+
+La salle de contrôle en 3D utilise **three.js 0.186.0**, publié sous licence MIT. Sa licence est livrée avec l'interface, dans `licences/three-LICENSE.txt`, et le build échoue si elle manque.
+
+<!-- [3d] fin -->
