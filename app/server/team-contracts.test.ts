@@ -80,12 +80,12 @@ describe("équipes (T4) : harnais sans équipes et squelettes", () => {
     }
   });
 
-  it("tous les modules squelettes = mêmes réponses que sans eux : routes d'équipe absentes, proxy, suppression aux Archives, arrêt, garde", async (t) => {
+  it("modules encore squelettes = mêmes réponses que sans eux : proxy, suppression aux Archives, arrêt, garde (le groupe « teams » est à L37a)", async (t) => {
     const scenario = async (h: CockpitHarness) => {
       const out: unknown[] = [];
+      // Mise à jour L37a (V2) : les routes du groupe « teams » ne sont plus absentes (elles sont vérifiées séparément
+      // ci-dessous) ; les autres groupes restent des squelettes jusqu'à L37b, L37c et L39b.
       for (const [method, url, body] of [
-        ["GET", "/api/teams", undefined],
-        ["POST", "/api/teams/preview", {}],
         ["POST", "/api/team-runs/00000000-0000-4000-8000-000000000000/stop", {}],
         ["GET", "/api/agent-map?directory=/workspace", undefined],
       ] as const) {
@@ -106,10 +106,26 @@ describe("équipes (T4) : harnais sans équipes et squelettes", () => {
       await assert.rejects(h.cockpit.c11.ports.stopTree.run(root.id, "vous"), PortUnavailableError);
       return out;
     };
-    const bare = await scenario(await startCockpit(t));
+    const sans = await startCockpit(t);
+    const bare = await scenario(sans);
     const all = await startCockpit(t, { equipes: "tous" });
     assert.deepEqual(all.cockpit.equipes.modules, ["agentMap", "teams", "teamPreflight", "teamRunner", "teamGuards"]);
     assert.deepEqual(await scenario(all), bare);
+
+    // Groupe « teams » (L37a) : absent sans `equipes`, servi avec. Le port preflight reste neutre ici (carte d'assistants vide).
+    for (const [method, url, body] of [
+      ["GET", "/api/teams", undefined],
+      ["POST", "/api/teams/preview", {}],
+    ] as const) {
+      const options = { headers: sans.headers.mutating, ...(body === undefined ? {} : { body }) };
+      assert.equal((await sans.call(method, url, options)).status, 404, `sans équipes : ${url}`);
+    }
+    const teams = await all.call("GET", "/api/teams", { headers: all.headers.authed });
+    assert.equal(teams.status, 200, teams.body);
+    assert.deepEqual(teams.json<{ teams: unknown[]; ouvertesEnSimple: boolean }>().teams, []);
+    assert.equal(teams.json<{ ouvertesEnSimple: boolean }>().ouvertesEnSimple, false);
+    const apercu = await all.call("POST", "/api/teams/preview", { headers: all.headers.mutating, body: {} });
+    assert.equal(apercu.status, 400, apercu.body);
     assert.deepEqual(
       bare.find((entry) => Array.isArray(entry) && entry[0] === "archive"),
       ["archive", 200, { deleted: true }, { conversation: { n: 0 }, step: { message_text: null, result_excerpt: null }, run: { precisions: "[]" } }],
