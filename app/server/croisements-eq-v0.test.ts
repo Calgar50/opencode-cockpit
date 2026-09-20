@@ -539,15 +539,22 @@ async function trackedRoot(h: CockpitHarness, title: string): Promise<FakeSessio
   return session;
 }
 
-/** Conversation archivée avec un lancement d'équipe : textes purgés par la suppression de la 1.1. */
-function seedTeamConversation(h: CockpitHarness, rootId: string): void {
+/**
+ * Conversation archivée avec un lancement d'équipe : textes purgés par la suppression de la 1.1.
+ *
+ * Mise à jour du train de la vague 2 : le lancement est TERMINÉ par défaut. Le verrou des Archives de teamGuards (L37c) refuse
+ * la suppression tant qu'une équipe de la conversation travaille encore ; la comparaison « sans équipes = avec tous les
+ * modules » porte donc sur une conversation qu'aucune équipe n'occupe, et le refus 409 est vérifié à part (croisements V2 et
+ * team-guards.test.ts).
+ */
+function seedTeamConversation(h: CockpitHarness, rootId: string, state = "terminee"): void {
   h.db.prepare("INSERT INTO conversations (session_id, created_at, updated_at) VALUES (?, 1, 1)").run(rootId);
   h.db
     .prepare(
       `INSERT INTO team_runs (id, team_titre, flow, flow_sha256, root_session_id, directory, state, precisions, created_at)
-       VALUES (?, 'Revue SQL', '{"version":1,"blocs":[]}', 'f0', ?, '/workspace', 'en-cours', '["Voir la table des factures"]', 1)`,
+       VALUES (?, 'Revue SQL', '{"version":1,"blocs":[]}', 'f0', ?, '/workspace', ?, '["Voir la table des factures"]', 1)`,
     )
-    .run(`run-${rootId}`, rootId);
+    .run(`run-${rootId}`, rootId, state);
   h.db
     .prepare(
       `INSERT INTO team_run_steps (run_id, step_id, ordre, bloc_index, titre, agent, state, message_text, result_excerpt)
@@ -590,7 +597,7 @@ async function scenario(h: CockpitHarness): Promise<unknown[]> {
 }
 
 describe("croisement it4 V0 : app-factory avec les modules 1.1 de production", () => {
-  it("sans `equipes` = avec tous les squelettes : proxy, arrêt, rechargement, réalignement, DELETE /api/archive/:id", async (t) => {
+  it("sans `equipes` = avec tous les modules au repos : proxy, arrêt, rechargement, réalignement, DELETE /api/archive/:id", async (t) => {
     const bare = await scenario(await production(t));
     const all = await production(t, { equipes: "tous" });
     assert.deepEqual(all.cockpit.equipes.modules, [...EQ_MODULE_ORDER]);

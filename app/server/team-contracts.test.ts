@@ -37,15 +37,20 @@ async function trackedRoot(h: CockpitHarness, title: string): Promise<FakeSessio
   return session;
 }
 
-/** Conversation archivée avec un lancement d'équipe : texte envoyé à une étape, extrait et précisions (purgés à la suppression). */
-function seedTeamConversation(h: CockpitHarness, rootId: string): void {
+/**
+ * Conversation archivée avec un lancement d'équipe : texte envoyé à une étape, extrait et précisions (purgés à la suppression).
+ * `state` par défaut « en-cours » : les tests du verrou surchargent le port et décident eux-mêmes du refus. Le scénario de
+ * comparaison, lui, sème un lancement TERMINÉ, car le verrou réel de teamGuards (L37c) refuse la suppression tant qu'une équipe
+ * de la conversation travaille.
+ */
+function seedTeamConversation(h: CockpitHarness, rootId: string, state = "en-cours"): void {
   h.db.prepare("INSERT INTO conversations (session_id, created_at, updated_at) VALUES (?, 1, 1)").run(rootId);
   h.db
     .prepare(
       `INSERT INTO team_runs (id, team_titre, flow, flow_sha256, root_session_id, directory, state, precisions, created_at)
-       VALUES (?, 'Revue SQL', '{"version":1,"blocs":[]}', 'f0', ?, '/workspace', 'en-cours', '["Voir la table des factures"]', 1)`,
+       VALUES (?, 'Revue SQL', '{"version":1,"blocs":[]}', 'f0', ?, '/workspace', ?, '["Voir la table des factures"]', 1)`,
     )
-    .run(`run-${rootId}`, rootId);
+    .run(`run-${rootId}`, rootId, state);
   h.db
     .prepare(
       `INSERT INTO team_run_steps (run_id, step_id, ordre, bloc_index, titre, agent, state, message_text, result_excerpt)
@@ -80,11 +85,13 @@ describe("équipes (T4) : harnais sans équipes et squelettes", () => {
     }
   });
 
-  it("modules encore squelettes = mêmes réponses que sans eux : proxy, suppression aux Archives, arrêt, garde (le groupe « teams » est à L37a)", async (t) => {
+  it("modules réels au repos = mêmes réponses que sans eux : proxy, suppression aux Archives, arrêt, garde (le groupe « teams » est à L37a)", async (t) => {
     const scenario = async (h: CockpitHarness) => {
       const out: unknown[] = [];
-      // Mise à jour L37a (V2) : les routes du groupe « teams » ne sont plus absentes (elles sont vérifiées séparément
-      // ci-dessous) ; les autres groupes restent des squelettes jusqu'à L37b, L37c et L39b.
+      // Mise à jour de la vague 2 : les groupes de routes « teams » (L37a), « team-runs » (L37b, L37c) et « agent-map » (L39b)
+      // répondent maintenant vraiment ; ils sont vérifiés séparément, ici comme dans leurs propres suites. Ce qui reste commun
+      // aux deux cockpits est le comportement de la 1.1 TANT QU'AUCUNE ÉQUIPE NE TRAVAILLE : un arrêt d'un lancement inconnu
+      // répond toujours 404, et la suppression d'une archive sans équipe active purge comme avant.
       for (const [method, url, body] of [
         ["POST", "/api/team-runs/00000000-0000-4000-8000-000000000000/stop", {}],
         // GET /api/agent-map n'est plus dans ce scénario : L39b (V2) a remplacé le squelette, et la route répond vraiment. Le
@@ -98,7 +105,7 @@ describe("équipes (T4) : harnais sans équipes et squelettes", () => {
       out.push(["liste", list.status, list.json<FakeSession[]>().some((s) => s.id === root.id)]);
       const bad = await h.call("POST", `/api/oc/session/${root.id}/prompt_async`, { headers: { ...h.headers.mutating, "content-type": "application/json" }, body: "{pas du json" });
       out.push(["corps invalide", bad.status, bad.json<{ error: string }>().error]);
-      seedTeamConversation(h, "ses_archivee");
+      seedTeamConversation(h, "ses_archivee", "terminee");
       const removed = await h.call("DELETE", "/api/archive/ses_archivee", { headers: h.headers.mutating });
       out.push(["archive", removed.status, removed.json(), teamTexts(h, "ses_archivee")]);
       const invalid = await h.call("DELETE", "/api/archive/ses.point", { headers: h.headers.mutating });

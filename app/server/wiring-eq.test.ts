@@ -304,7 +304,11 @@ describe("câblage des équipes : ports neutres et apply", () => {
   // dans l'ordre d'EQ_STEP_ORDER, et vaut à la fois « toutes présentes » et « aucune en double ».
   it("production (tous les modules réels) : les douze inscriptions rangées par EQ_STEP_ORDER, neutres tant que rien ne travaille", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
-    const wiring = buildEquipes(deps);
+    // Ce test porte sur le CADRE du câblage, avec un c11 factice sans base : les ports du runner et des verrous sont donc
+    // remplacés par leurs ports neutres après l'installation. Le comportement réel du verrou et du décorateur est vérifié sur
+    // un vrai cockpit par team-guards.test.ts, team-runner.test.ts et les tests de croisement.
+    const neutres = { runner: EQ_NEUTRAL_PORTS.runner(deps), guards: EQ_NEUTRAL_PORTS.guards(deps) };
+    const wiring = buildEquipes(deps, { ports: neutres });
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
     assert.deepEqual(
       wiring.registrations.map((r) => `${r.kind}:${r.key}/${r.module}`),
