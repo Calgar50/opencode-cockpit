@@ -60,6 +60,29 @@ const TOUR = {
   tokens: { input: 800, output: 60, cache: { read: 0, write: 0 } },
 };
 
+/** Largeur sous laquelle le panneau « Contexte » se pose sur la conversation et se ferme de lui-même (ChatPage.tsx, chat.css). */
+const BORNE_PANNEAU = 1280;
+
+/**
+ * Absorbe la course du redimensionnement. `page.taille(...)` rend la main avant que la page ait reçu son événement
+ * `matchMedia` : en passant sous 1280 px, le panneau « Contexte » se ferme DE LUI-MÊME, mais un peu plus tard. Sans cette
+ * attente, le panneau paraît encore ouvert, la vue Chronologie est rouverte puis démontée juste après, et le relevé
+ * suivant ne trouve rien — le banc tombait ainsi environ une fois sur deux sur « chronologie absente à 400 px ». Même
+ * motif qu'à l'itération 1 (`panneauSelonLaTaille`, it1-ui-mise-en-page). La fermeture n'est attendue que lorsque la
+ * borne est franchie vers le bas : au-dessous d'elle, aucun événement n'arrive et rien ne se referme.
+ */
+function suiviDeLargeur(largeurDeDepart) {
+  let precedente = largeurDeDepart;
+  return async function apresLaTaille(page, largeur) {
+    const descend = precedente > BORNE_PANNEAU && largeur <= BORNE_PANNEAU;
+    precedente = largeur;
+    if (!descend) return;
+    await page.attendreQue("document.querySelector('.chat')?.classList.contains('aside-open') !== true", {
+      libelle: `panneau « Contexte » fermé de lui-même à ${largeur} px`,
+    });
+  };
+}
+
 /** Ouvre le panneau « Contexte » s'il est fermé (il se ferme de lui-même sous 1280 px). */
 async function ouvrirLeContexte(page) {
   const ouvert = "document.querySelector('.chat')?.classList.contains('aside-open') === true";
@@ -102,6 +125,7 @@ async function releveChronologie(page) {
 
 export async function run(ctx) {
   const page = await preparerPage(ctx);
+  const apresLaTaille = suiviDeLargeur(LARGE.largeur);
   if (ctx.mode !== "faux") {
     nonJoue(ctx, "chronologie", "les tours scriptés (outils, jetons) n'existent qu'en « --faux »");
     ctx.expectNoConsoleErrors();
@@ -163,6 +187,7 @@ export async function run(ctx) {
 
     // §5.6 : à 400 px, la figure disparaît et le tableau reste seul.
     await page.taille(ETROIT);
+    await apresLaTaille(page, ETROIT.largeur);
     await ouvrirLaChronologie(page);
     await attendre(400);
     const etroit = await releveChronologie(page);
@@ -171,12 +196,22 @@ export async function run(ctx) {
     exiger(etroit.figureVisible === false, "la figure de la chronologie est encore dessinée à 400 px (§5.6).");
     exiger(etroit.tableau === true && etroit.rangees >= 1, "le tableau de la chronologie ne reste pas seul à 400 px.");
     await page.taille(LARGE);
+    await apresLaTaille(page, LARGE.largeur);
     await ouvrirLeContexte(page);
     // Les six captures ordinaires du banc (1440, 1024 et 400, dans les deux thèmes) : la vue est rouverte à chaque
-    // taille, le panneau se fermant de lui-même sous 1280 px.
-    const captures = await ctx.screenshot("chronologie", { avant: () => ouvrirLaChronologie(page) });
+    // taille, le panneau se fermant de lui-même sous 1280 px — attendue avant de rouvrir, sans quoi l'image montrerait
+    // un panneau qui se referme.
+    const captures = await ctx.screenshot("chronologie", {
+      avant: async ({ taille }) => {
+        await apresLaTaille(page, taille.largeur);
+        await ouvrirLaChronologie(page);
+      },
+    });
     releve(ctx, `captures de la chronologie : ${captures.length}`);
     exiger(captures.length === 6, `${captures.length} capture(s) de la chronologie au lieu de 6.`);
+    // `captureSuite` retire l'émulation de taille : la grande fenêtre est rétablie pour la suite (mode Simple).
+    await page.taille(LARGE);
+    await apresLaTaille(page, LARGE.largeur);
   });
 
   // Mode Simple : aucune bascule, aucune chronologie, et le mot « jeton » nulle part dans le panneau.
