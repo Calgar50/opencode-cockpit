@@ -1,0 +1,236 @@
+/* Propriétaire : L38a. Lanceur d'équipe et feuille de lancement (spécification §5.5, §5.6 ; C §9.4 corrigée).
+   Aucun état porté par la couleur seule : le lanceur inactif porte sa raison écrite à côté de lui, un refus porte son icône et
+   son texte, une confirmation porte sa case ou son bouton. Contraste des textes secondaires : --text-2 (au moins 4,5:1 sur
+   --surface-1 dans les deux thèmes), jamais une opacité seule.
+   Mouvement (§5.5) : une seule transition de couleur, sous prefers-reduced-motion: no-preference ; aucune animation.
+   400 px (§5.6) : le menu et la feuille défilent au lieu de déborder ; le pied de la feuille passe à la ligne.
+   Contraste forcé (U9, §5.5 l.922) : bordure visible de la feuille et du menu, focus en outline Highlight, icônes en CanvasText,
+   case cochée marquée par sa bordure. */
+
+/* --- Lanceur [Lancer une équipe ▾] ------------------------------------------------------------------------------------------ */
+
+.team-launcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.team-launcher-bouton {
+  max-width: 220px;
+  min-width: 0;
+}
+.team-launcher-bouton[aria-disabled="true"] {
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+.team-launcher-raison {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.team-launcher-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  max-height: 420px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.team-launcher-menu:focus {
+  outline: none;
+}
+.team-launcher-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.team-launcher-item:hover,
+.team-launcher-item:focus-visible {
+  background: var(--surface-2);
+}
+.team-launcher-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.team-launcher-item[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.team-launcher-item[aria-disabled="true"] .team-launcher-item-titre {
+  color: var(--text-2);
+}
+.team-launcher-item-titre {
+  font-weight: 600;
+}
+.team-launcher-item-detail,
+.team-launcher-item-raison {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.team-launcher-item-raison {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+.team-launcher-item-raison .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* --- Feuille de lancement --------------------------------------------------------------------------------------------------- */
+
+.team-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.team-sheet-ligne {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.team-sheet-icone {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.team-sheet-blocs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+}
+.team-sheet-cout {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.team-sheet-detail > summary {
+  cursor: pointer;
+}
+.team-sheet-detail > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.team-sheet-detail ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.team-sheet-ia {
+  display: block;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.team-sheet-confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.team-sheet-confirmation.refus {
+  border-color: var(--critical);
+}
+.team-sheet-confirmation-titre {
+  margin: 0;
+  font-weight: 600;
+}
+.team-sheet-case {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.team-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.team-sheet-alerte {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--border-strong);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.team-sheet-alerte.refus {
+  border-left-color: var(--critical);
+}
+.team-sheet-raison {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .team-launcher-bouton {
+    max-width: 150px;
+  }
+  .team-launcher {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .team-launcher-item {
+    transition: background-color 120ms ease;
+  }
+}
+
+@media (forced-colors: active) {
+  .team-launcher-menu,
+  .team-sheet,
+  .team-sheet-confirmation {
+    border: 1px solid CanvasText;
+  }
+  .team-sheet {
+    padding: 8px;
+  }
+  .team-launcher-bouton[aria-disabled="true"],
+  .team-launcher-item[aria-disabled="true"] .team-launcher-item-titre {
+    color: GrayText;
+  }
+  .team-launcher-item:focus-visible,
+  .team-sheet-detail > summary:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .team-sheet-icone,
+  .team-launcher-item-raison .icon {
+    color: CanvasText;
+  }
+  .team-sheet-alerte {
+    border-left-color: CanvasText;
+  }
+  .team-sheet-alerte.refus,
+  .team-sheet-confirmation.refus {
+    border-color: CanvasText;
+    border-left-color: CanvasText;
+    outline: 1px dashed CanvasText;
+    outline-offset: 2px;
+  }
+}
