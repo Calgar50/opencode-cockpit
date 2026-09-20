@@ -4,12 +4,19 @@
 // opencode), §5.9 (capture réelle p1 rejouée pas à pas dans la même scène que le direct), §5.7.4 ([Voir une démonstration] en mode
 // Simple), décision n° 4 du 19/09 (avis du mode Simple sur la délégation).
 //
+// [3d] Adapté au train de la vague 3 de l'itération 3 : L34 a posé les démonstrations sur le lecteur COMPLET de « Revoir »
+// (ReplayBar de L28c). Le compteur des moments s'écrit « n / N » (revoir-texts, partout.moments), les commandes sont [Lire],
+// [Figer ici], [Moment précédent] et [Moment suivant] — [Recommencer] n'existe plus —, le lecteur s'ouvre sur le DERNIER moment,
+// et l'avis du mode Simple est la phrase unique revoir-texts.simple.demoAvance (U1, D-3d-26). Rien n'est affaibli : les mêmes
+// faits sont exigés, aux textes et aux commandes d'aujourd'hui.
+//
 // Ce que le scénario établit, dans les deux modes (mode Simple d'abord, le défaut, puis Avancé) :
 //   1. une conversation a travaillé : la bande néon existe ; [Voir une démonstration] ouvre la boîte de dialogue étiquetée
-//      « Démonstration enregistrée : aucune IA n'est appelée » ; en Simple, l'avis « Enregistrée en mode Avancé. En mode Simple, l'IA
-//      ne délègue pas : elle continue seule. » ;
-//   2. tous les moments sont parcourus ([Moment suivant] jusqu'à [Recommencer]) : la carte dessine les deux délégations de la
-//      capture p1 (consignes « en même temps », résultats), puis [Tableau] ; captures des six tailles (Simple) ; Échap ferme ;
+//      « Démonstration enregistrée : aucune IA n'est appelée » ; en Simple, l'avis « Démonstration enregistrée en mode Avancé :
+//      en mode Simple, l'IA ne délègue pas, elle continue seule. » ;
+//   2. tous les moments sont parcourus (du premier au dernier, par [Moment suivant], qui se désactive au bout) : la carte dessine
+//      les deux délégations de la capture p1 (consignes « en même temps », résultats), puis [Tableau] ; captures des six tailles
+//      (Simple) ; Échap ferme ;
 //   3. ZÉRO requête : pendant toute la démonstration, la page n'envoie rien (journal réseau de l'onglet), et opencode ne reçoit ni
 //      requête sur la conversation ouverte, ni demande d'IA autre que celles du classement automatique du cockpit (tâche de fond du
 //      serveur, indépendante de la page, qui peut tomber pendant une longue exécution du banc) ;
@@ -23,7 +30,6 @@ import {
   attendreIa,
   attendreModeAffiche,
   attendreReseauCalme,
-  attendreTexte,
   avecTemoinP6,
   cliquerBouton,
   enModeAvance,
@@ -41,6 +47,8 @@ import {
 
 /** Envois d'une conversation qui appellent une IA (méthode POST). */
 const ROUTES_IA = /^\/session\/[^/]+\/(prompt_async|command|summarize|shell|message)$/;
+/** [3d] Avis du mode Simple sur une démonstration qui dessine une délégation (revoir-texts.simple.demoAvance, U1, D-3d-26). */
+const AVIS_SIMPLE = "Démonstration enregistrée en mode Avancé : en mode Simple, l'IA ne délègue pas, elle continue seule.";
 /** Relecture archivée d'une conversation au repos, 4 s après (classifier.ts, onIdle), suivie d'une relecture de la liste. */
 const ARCHIVAGE_MS = 5_000;
 
@@ -89,9 +97,8 @@ async function jouerDemonstration(ctx, rootId, { mode, bouton, captures }) {
   const titre = await texteVisible(page, ".modal .modal-header h2");
   exiger(titre === PHRASES.demonstration, `titre de la démonstration « ${titre} » au lieu de « ${PHRASES.demonstration} ».`);
   const contenu = await texteVisible(page, ".modal");
-  const avis = `Enregistrée en mode Avancé. ${PHRASES.avisSimple}`;
-  if (mode === "simple") exiger(contenu.includes(avis), `avis du mode Simple absent : ${resume(contenu, 400)}`);
-  else exiger(!contenu.includes(PHRASES.avisSimple), "avis du mode Simple affiché en mode Avancé.");
+  if (mode === "simple") exiger(contenu.includes(AVIS_SIMPLE), `avis du mode Simple absent : ${resume(contenu, 400)}`);
+  else exiger(!contenu.includes(AVIS_SIMPLE), "avis du mode Simple affiché en mode Avancé.");
   const total = await parcourirMoments(ctx, mode, captures);
   await cliquerBouton(page, "Tableau", { portee: ".modal" });
   await page.attendreQue("document.querySelector('.modal table')", { libelle: "tableau de la démonstration" });
@@ -102,16 +109,21 @@ async function jouerDemonstration(ctx, rootId, { mode, bouton, captures }) {
   await exigerZeroRequete(ctx, rootId, debut, `démonstration ${mode} : ${total} moments`);
 }
 
-/** Parcourt tous les moments ([Moment suivant] jusqu'à [Recommencer]) et vérifie ce que la carte dessine ; rend leur nombre. */
+/**
+ * [3d] Parcourt tous les moments, du premier au dernier, par [Moment suivant], et vérifie ce que la carte dessine ; rend leur
+ * nombre. Le lecteur complet (L34, ReplayBar de L28c) s'ouvre sur le DERNIER moment et écrit « n / N » : le parcours commence
+ * donc par ramener le curseur au premier moment.
+ */
 async function parcourirMoments(ctx, mode, captures) {
   const page = ctx.navigateur;
-  const compteur = /Moment 1 \/ (\d+)/.exec(await texteVisible(page, ".modal"));
+  const compteur = /^(\d+) \/ (\d+)$/.exec(await texteVisible(page, ".modal .revoir-moments"));
   exiger(compteur, "compteur des moments illisible.");
-  const total = Number(compteur[1]);
+  const total = Number(compteur[2]);
   exiger(total >= 3, `démonstration de ${total} moment(s) seulement.`);
+  await allerAuPremierMoment(page);
   const vus = { consigne: 0, resultat: 0, enMemeTemps: false };
   for (let n = 1; n <= total; n++) {
-    await attendreTexte(page, `Moment ${n} / ${total}`, { selecteur: ".modal" });
+    await attendreMoment(page, n, total);
     const classes = await page.evaluer("[...document.querySelectorAll('.modal .neon-map .neon-faisceau')].map((g) => g.getAttribute('class'))");
     vus.consigne += classes.filter((c) => c.includes("is-consigne")).length;
     vus.resultat += classes.filter((c) => c.includes("is-resultat")).length;
@@ -121,13 +133,35 @@ async function parcourirMoments(ctx, mode, captures) {
       exiger((await ctx.screenshot(`demonstration-${mode}`)).length === 6, "6 captures attendues de la démonstration.");
       await page.taille(LARGE);
     }
-    if (n < total) await cliquerBouton(page, "Moment suivant", { portee: ".modal" });
+    if (n < total) await cliquerBouton(page, "Moment suivant", { portee: ".modal .revoir-commandes" });
   }
   exiger(vus.consigne > 0 && vus.resultat > 0, `démonstration sans consigne ou sans résultat dessinés : ${resume(vus)}`);
   exiger(vus.enMemeTemps, "les deux délégations de la capture p1 ne sont pas marquées « en même temps ».");
-  const recommencer = "[...document.querySelectorAll('.modal button')].some((b) => b.textContent.trim() === 'Recommencer')";
-  exiger(await page.evaluer(recommencer), "[Recommencer] absent au dernier moment.");
+  // [3d] Fin du parcours : [Recommencer] n'existe plus, c'est [Moment suivant] qui se désactive au dernier moment.
+  const suivantFerme = `[...document.querySelectorAll('.modal .revoir-commandes button')].some((b) => b.textContent.trim() === 'Moment suivant' && b.disabled)`;
+  exiger(await page.evaluer(suivantFerme), "[Moment suivant] reste actif au dernier moment.");
   return total;
+}
+
+/**
+ * [3d] Attend le moment n sur total, au texte EXACT du compteur (« 3 / 12 ») : une comparaison par `includes` confondrait
+ * « 1 / 12 » avec « 11 / 12 ».
+ */
+async function attendreMoment(page, n, total) {
+  const attendu = `${n} / ${total}`;
+  await page.attendreQue(`(document.querySelector('.modal .revoir-moments')?.innerText ?? "").replace(/\\s+/g, " ").trim() === ${JSON.stringify(attendu)}`, {
+    libelle: `moment « ${attendu} » du lecteur`,
+  });
+}
+
+/** [3d] Ramène le curseur des moments au premier moment (le lecteur s'ouvre sur le dernier). */
+async function allerAuPremierMoment(page) {
+  await page.evaluer(`(() => {
+    const curseur = document.querySelector('.modal .revoir-curseur');
+    curseur.value = curseur.min;
+    curseur.dispatchEvent(new Event('input', { bubbles: true }));
+    curseur.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
 }
 
 /**

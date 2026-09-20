@@ -198,6 +198,14 @@ export function dossierDuProjet(racine: string, projet: string): string {
 
 // --- Crochet React ---------------------------------------------------------------------------------------------------------------
 
+/**
+ * Préfixe montré d'une liste reçue : les `affiches` premiers faits, ou la liste entière quand la cadence l'a rattrapée. Pur, pour
+ * être joué sous Node avec la cadence (M20, train de la vague 3).
+ */
+export function prefixeMontre(liste: readonly ActivityFact[], affiches: number): readonly ActivityFact[] {
+  return affiches >= liste.length ? liste : liste.slice(0, Math.max(0, affiches));
+}
+
 export interface FaitsConversation {
   /** Faits montrés maintenant : préfixe cadencé de la liste reçue. */
   faits: readonly ActivityFact[];
@@ -222,15 +230,17 @@ function faitDeLaRacine(donnee: unknown, rootId: string): ActivityFact | null {
  * « Affichage rattrapé » ni enregistrer de fait `affichage`.
  */
 export function useFaitsConversation(rootId: string, actif = true): FaitsConversation {
-  const [liste, setListe] = useState<readonly ActivityFact[]>([]);
-  const [affiches, setAffiches] = useState(0);
+  const [faits, setFaits] = useState<readonly ActivityFact[]>([]);
   const [partiel, setPartiel] = useState(false);
   const [chargement, setChargement] = useState(true);
   const [echec, setEchec] = useState(false);
   const listeRef = useRef<readonly ActivityFact[]>([]);
 
-  // Une cadence par montage ; son minuteur est annulé au démontage.
-  const cadence = useMemo(() => creerCadence((montres) => setAffiches(montres)), []);
+  // Une cadence par montage ; son minuteur est annulé au démontage. Elle est le SEUL chemin qui publie les faits montrés (M20,
+  // train de la vague 3) : un fait reçu ne fait que rallonger la liste gardée dans la référence, et seule la cadence — au plus
+  // quatre fois par seconde — rend un nouveau tableau. Publier la liste à chaque fait rendait un tableau NEUF par événement, donc
+  // une scène, un plan et une marque « salle3d:plan » par fait reçu, quelle que soit la cadence.
+  const cadence = useMemo(() => creerCadence((montres) => setFaits(prefixeMontre(listeRef.current, montres))), []);
   useEffect(() => cadence.arreter, [cadence]);
 
   // Première lecture : les faits persistés de la conversation, affichés d'un coup.
@@ -240,13 +250,11 @@ export function useFaitsConversation(rootId: string, actif = true): FaitsConvers
     setChargement(true);
     setEchec(false);
     listeRef.current = [];
-    setListe([]);
     cadence.ouvrir(0);
     activityApi.facts(rootId, 0, abandon.signal).then(
       (reponse) => {
         if (abandon.signal.aborted) return;
         listeRef.current = reponse.facts;
-        setListe(reponse.facts);
         setPartiel(reponse.partial);
         setChargement(false);
         cadence.ouvrir(reponse.facts.length);
@@ -269,11 +277,10 @@ export function useFaitsConversation(rootId: string, actif = true): FaitsConvers
     if (fait === null) return;
     const suivante = [...listeRef.current, fait];
     listeRef.current = suivante;
-    setListe(suivante);
+    // Aucune publication ici : c'est la cadence qui décide quand la vue suit (M20).
     cadence.recevoir(suivante.length);
   });
 
-  const faits = useMemo(() => (affiches >= liste.length ? liste : liste.slice(0, Math.max(0, affiches))), [liste, affiches]);
   return { faits, partiel, chargement, echec };
 }
 
