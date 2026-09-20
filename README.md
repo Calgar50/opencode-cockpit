@@ -413,7 +413,7 @@ Les phrases entre guillemets de cette section sont celles de l'interface. Elles 
 
 Bornes d'une équipe : 5 blocs de travail au maximum, 12 étapes, 2 à 5 avis par bloc d'avis, 4 000 caractères de consigne par étape, 20 fichiers joints par lancement (`app/server/shared/team-limits.ts`).
 
-Deux formes prévues par la conception, le relecteur critique et l'aiguillage, **ne sont pas dans cette version** : elles arrivent à l'itération suivante du chantier.
+Deux formes prévues par la conception, la rédaction suivie d'une relecture en deux tours, et l'aiguillage, **ne sont pas dans cette version** : elles arrivent à l'itération suivante du chantier.
 
 ### Ce qu'une étape peut faire : lire, rien d'autre
 
