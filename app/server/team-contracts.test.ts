@@ -87,7 +87,8 @@ describe("équipes (T4) : harnais sans équipes et squelettes", () => {
         ["GET", "/api/teams", undefined],
         ["POST", "/api/teams/preview", {}],
         ["POST", "/api/team-runs/00000000-0000-4000-8000-000000000000/stop", {}],
-        ["GET", "/api/agent-map?directory=/workspace", undefined],
+        // GET /api/agent-map n'est plus dans ce scénario : L39b (V2) a remplacé le squelette, et la route répond vraiment. Le
+        // contrat « sans module d'équipes = 404 » reste tenu par le test du dessus et par agent-map-service.test.ts.
       ] as const) {
         const res = await h.call(method, url, { headers: h.headers.mutating, ...(body === undefined ? {} : { body }) });
         out.push([url, res.status]);

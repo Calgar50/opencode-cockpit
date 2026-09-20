@@ -299,15 +299,17 @@ describe("câblage des équipes : ports neutres et apply", () => {
     assert.equal(await p.guards.stopForCap("run"), undefined);
   });
 
-  it("production (tous les modules squelettes) : verrou et prédicat inscrits mais neutres ; aucune route, dérivation, abonnement ni démarrage", async () => {
+  it("production : verrou et prédicat inscrits mais neutres ; aucune dérivation, aucun abonnement, aucun démarrage ; seule la carte pose ses routes", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
     const wiring = buildEquipes(deps);
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
+    // « agent-map » est le seul groupe de routes posé tant que les autres modules sont des squelettes (L39b, V2).
     assert.deepEqual(
       wiring.registrations.map((r) => `${r.kind}/${r.module}`),
-      ["proxyGuard/teamGuards", "stopTreeDecorator/teamGuards", "reloadBusy/teamRunner"],
+      ["routes/agentMap", "proxyGuard/teamGuards", "stopTreeDecorator/teamGuards", "reloadBusy/teamRunner"],
     );
-    assert.deepEqual([wiring.derivations, wiring.subscriptions, wiring.startup, wiring.routes], [[], [], [], []]);
+    assert.deepEqual([wiring.derivations, wiring.subscriptions, wiring.startup], [[], [], []]);
+    assert.equal(wiring.routes.length, 1);
     const req: TeamProxyGuardRequest = { entree: "proxy", method: "POST", sub: `/session/${ROOT}/prompt_async`, directory: null, sessionId: ROOT, permissionId: null };
     assert.equal(await wiring.proxyGuard(req), null);
     wiring.apply(c11);
@@ -436,6 +438,9 @@ describe("câblage des équipes : squelettes et événements", () => {
     for (const [file, owner] of Object.entries(owners)) {
       const source = fs.readFileSync(path.join(import.meta.dirname, file), "utf8");
       assert.equal((source.split("\n")[0] ?? "").replace(/\r$/, ""), `// Propriétaire : ${owner}.`, file);
+      // Tant qu'un fichier est un SQUELETTE de T4, il n'importe pas shared/agent-map.ts, écrit en parallèle par L39a (V0). Son
+      // paquet, lui, le lit : L39b (V2) compose l'entrée de deriveAgentMap dans agent-map-service.ts.
+      if (!source.includes("Squelette T4")) continue;
       assert.equal(/from\s+"[^"]*shared\/agent-map\.ts"/.test(source), false, `${file} : agent-map.ts est écrit par L39a`);
     }
   });
