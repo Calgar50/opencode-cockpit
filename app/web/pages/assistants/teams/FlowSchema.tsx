@@ -4,6 +4,8 @@
 // le porte aussi, explicitement. La vérité pour le lecteur d'écran est la liste de FlowList, qui décrit le même déroulé.
 // Le genre de chaque ligne est dit par un MOT (MOTS_LIGNE, textes de T4t) et par une FORME (classe .tm-kind-*, bordure et coins) :
 // jamais par la couleur seule (§2.3, §5.5). Sous 900 px, teams.css cache le schéma et laisse la liste seule (§5.6).
+// Clé d'une ligne : le bloc ET le genre. Un bloc d'avis donne DEUX lignes du même bloc (les avis, puis la synthèse) ; le bloc seul
+// les confondrait, et l'état de la première pourrait être repris par la seconde à la relecture de la liste.
 // Aucune animation, aucun texte écrit ici.
 import type { FlowRow } from "../../../../server/shared/team-types.ts";
 import { MOTS_LIGNE } from "./teams-tab-model.ts";
@@ -28,7 +30,7 @@ export function FlowSchema({ layout, mini = false }: FlowSchemaProps) {
   return (
     <div className={`tm-schema${mini ? " mini" : ""}`} aria-hidden="true">
       {layout.map((ligne, index) => (
-        <div key={ligne.bloc} className="tm-schema-bloc">
+        <div key={`${ligne.bloc}-${ligne.kind}`} className="tm-schema-bloc">
           {index > 0 ? <Connecteur /> : null}
           <p className={`tm-schema-mot tm-kind-${ligne.kind}`}>{MOTS_LIGNE[ligne.kind]}</p>
           <div className="tm-schema-colonnes">

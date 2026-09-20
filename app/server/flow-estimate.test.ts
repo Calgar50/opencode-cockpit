@@ -494,6 +494,19 @@ describe("L36b · disposition et liste, par forme", () => {
     assert.equal(pause?.cellules[0]?.sousTitre, "Vérifiez les points bloquants avant la suite.");
   });
 
+  it("bloc + genre distingue toujours deux lignes : c'est la clé que tient le schéma (L40a)", () => {
+    for (const [nom, flow] of [
+      ["avis", AVIS],
+      ["suite", SUITE],
+    ] as const) {
+      const rows = layoutFlow(flow, NOMS);
+      assert.equal(new Set(rows.map((row) => `${row.bloc}-${row.kind}`)).size, rows.length, nom);
+    }
+    // Contrôle discriminant : le bloc SEUL ne suffit pas, un bloc d'avis donne deux lignes qui le partagent.
+    const avis = layoutFlow(AVIS, NOMS);
+    assert.ok(new Set(avis.map((row) => row.bloc)).size < avis.length, "un bloc d'avis donne deux lignes du même bloc");
+  });
+
   it("les identifiants de la disposition sont ceux du déroulé, sans coordonnée écrite à la main", () => {
     const cellules = layoutFlow(SUITE, NOMS).flatMap((row) => row.cellules.map((cellule) => cellule.stepId));
     assert.deepEqual(

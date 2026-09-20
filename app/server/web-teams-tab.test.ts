@@ -471,6 +471,19 @@ describe("onglet Équipes : contrat statique des sources", () => {
     assert.doesNotMatch(liste, /aria-hidden/, "la liste n'est jamais cachée au lecteur d'écran");
   });
 
+  it("clé d'une ligne du schéma : le bloc ET le genre (un bloc d'avis donne DEUX lignes de même bloc)", () => {
+    // layoutFlow (shared/flow-layout.ts) rend deux lignes pour un bloc d'avis : la ligne « avis », puis la ligne « synthese », avec
+    // le même identifiant de bloc. Une clé faite du seul `bloc` donne alors deux enfants de même clé : l'interface avertit, et
+    // l'état ou le DOM de la ligne d'avis peut être repris pour la synthèse au rechargement de la liste (installation d'un exemple,
+    // relecture de GET /api/teams). Le couple bloc + genre est unique, car layoutFlow n'émet jamais deux lignes des deux mêmes.
+    const schema = sansCommentaires(lire("FlowSchema.tsx"));
+    assert.match(schema, /key=\{`\$\{ligne\.bloc\}-\$\{ligne\.kind\}`\}/, "la clé de ligne porte le bloc ET le genre");
+    assert.doesNotMatch(schema, /key=\{ligne\.bloc\}/, "le bloc seul ne distingue pas les deux lignes d'un bloc d'avis");
+    // La fixture porte volontairement `b3` deux fois : c'est le cas réel, et le témoin de ce que la clé doit distinguer.
+    assert.equal(new Set(LIGNES.map((ligne) => ligne.bloc)).size, LIGNES.length - 1, "deux lignes partagent bien le même bloc");
+    assert.equal(new Set(LIGNES.map((ligne) => `${ligne.bloc}-${ligne.kind}`)).size, LIGNES.length, "bloc + genre reste unique");
+  });
+
   it("aucune animation, aucun raccourci clavier, aucun focus pris sans un clic", () => {
     for (const fichier of SOURCES.filter((f) => f.endsWith(".tsx"))) {
       const code = sansCommentaires(lire(fichier));
