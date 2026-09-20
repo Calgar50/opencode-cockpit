@@ -292,9 +292,11 @@ export async function temoinP6(ctx) {
   let bonjour;
   const pret = new Promise((resolve) => (bonjour = resolve));
 
-  // Cookie de session du client d'API du banc : aucune autre donnée d'authentification n'est lue ni écrite ici.
-  const reponse = await fetch(`${ctx.url}/api/events`, { headers: { cookie: ctx.api.cookie, accept: "text/event-stream" }, signal: controleur.signal });
-  exiger(reponse.ok && reponse.body, `flux d'événements du cockpit refusé (code ${reponse.status}).`);
+  // Flux ouvert par le transport du banc (R105b) : HTTPS épinglé par défaut (certificat du volume pour seule autorité,
+  // empreinte contrôlée à chaque poignée de main), fetch en mode HTTP explicite (« --http »). La vérification TLS n'est
+  // jamais coupée. Le cookie de session est celui du client d'API : aucune autre donnée d'authentification n'est lue ici.
+  const reponse = await ctx.api.flux("/api/events", { signal: controleur.signal });
+  exiger(reponse.ok && reponse.corps, `flux d'événements du cockpit refusé (code ${reponse.status}).`);
 
   const recevoir = (bloc) => {
     const { nom, valeur } = analyserBlocSse(bloc);
@@ -304,7 +306,7 @@ export async function temoinP6(ctx) {
   const lecture = (async () => {
     const decodeur = new TextDecoder();
     let tampon = "";
-    for await (const morceau of reponse.body) {
+    for await (const morceau of reponse.corps) {
       tampon += decodeur.decode(morceau, { stream: true }).replaceAll("\r\n", "\n");
       for (let fin = tampon.indexOf("\n\n"); fin >= 0; fin = tampon.indexOf("\n\n")) {
         recevoir(tampon.slice(0, fin));

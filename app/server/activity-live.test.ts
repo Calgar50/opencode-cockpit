@@ -15,11 +15,13 @@ import {
   ActivityStore,
   bannerVisible,
   DURATION_TICK_MS,
+  demandeEnAttente,
   mainRow,
   ONBOARDING_KEY,
   onboardingToSave,
   opensWork,
   RENDER_MIN_INTERVAL_MS,
+  replierPendantLaDemande,
   SEEN_ONBOARDING_MAX,
   seenOnboardingWith,
   treeWorking,
@@ -462,6 +464,36 @@ describe("useActivity : vue du bandeau", () => {
     assert.equal(treeWorking(rowsOf([occupee(ROOT, T0), attente(ROOT, T0 + 10, "per_1")])), true);
     assert.equal(treeWorking(rowsOf([occupee(ROOT, T0), repos(ROOT, T0 + 5)])), false);
     assert.equal(treeWorking(rowsOf([])), false);
+  });
+
+  it("repli pendant une demande (clôture de l'itération 1) : en mode Simple seulement ; jamais en Avancé, quelle que soit la demande (modification, commande, délégation)", () => {
+    // La correction de la répétition générale repliait la carte des agents et « Qui travaille ? » à chaque demande, dans les deux
+    // modes : en Avancé, l'attente de votre accord et la préparation (§5.7.1, §5.7.3) ne se voyaient plus sans clic (rg-reel-7).
+    const demandes: Array<[string, ActivityFact[]]> = [
+      ["modification", [occupee(ROOT, T0), fact(ROOT, "attente", T0 + 10, { permission: "edit", messageId: "msg_1", callId: "call_e", agent: null }, "per_e")]],
+      ["commande", [occupee(ROOT, T0), attente(ROOT, T0 + 10, "per_b")]],
+      [
+        "délégation",
+        [
+          occupee(ROOT, T0),
+          fact(ROOT, "consigne", T0 + 3, { etat: "prepare", callId: "call_t", messageId: "msg_1", agent: "general" }, "call_t"),
+          fact(ROOT, "attente", T0 + 4, { permission: "task", messageId: "msg_1", callId: "call_t", agent: "general" }, "per_t"),
+        ],
+      ],
+    ];
+    for (const [nom, faits] of demandes) {
+      const rows = rowsOf(faits);
+      assert.equal(demandeEnAttente(rows), true, `${nom} : une ligne porte [Répondre]`);
+      assert.equal(replierPendantLaDemande(true, rows), false, `${nom} : jamais de repli en Avancé`);
+      assert.equal(replierPendantLaDemande(false, rows), true, `${nom} : repli en Simple`);
+    }
+    // Sans demande : aucun repli, dans les deux modes (travail délégué en cours, arbre au repos).
+    for (const faits of [[occupee(ROOT, T0), creee(CHILD, T0 + 1), occupee(CHILD, T0 + 1)], [occupee(ROOT, T0), repos(ROOT, T0 + 5)]]) {
+      const rows = rowsOf(faits);
+      assert.equal(demandeEnAttente(rows), false);
+      assert.equal(replierPendantLaDemande(false, rows), false);
+      assert.equal(replierPendantLaDemande(true, rows), false);
+    }
   });
 
   it("ligne résumée : l'attente de votre accord d'abord, puis un acteur délégué au travail, puis la conversation", () => {

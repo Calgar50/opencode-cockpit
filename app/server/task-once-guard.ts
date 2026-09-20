@@ -9,9 +9,10 @@
 //   Vérification impossible : 503, rien n'est relayé. Les autres permissions passent (null) ;
 // - dérivation du refus Simple (mode Simple ET choix de la racine différent de « autonome », lu par ports.conversationAutonomy) :
 //   sur permission.asked d'un `task`, refus avec message à l'IA par gate.rejectWhenAlone (retenu tant qu'une autre demande de la
-//   même conversation attend : votre autre demande n'est jamais annulée, F-c), puis work.markWait(…, « cockpit ») et fait « reponse »
-//   {reponse: reject, par: cockpit}. Un refus resté « retenu » à la borne de 45 s est réarmé à la réponse suivante de la même
-//   conversation. Aucune attente réseau dans onEvent : le travail part hors de l'appel (microtâche), borné ;
+//   même conversation attend, ou qu'un appel d'outil voisin du même message peut encore en poser une : votre autre demande n'est
+//   jamais annulée, F-c), puis work.markWait(…, « cockpit ») et fait « reponse » {reponse: reject, par: cockpit}. Un refus resté
+//   « retenu » à la borne de 45 s est réarmé à la réponse suivante ou à la fin d'un appel d'outil de la même conversation. Aucune
+//   attente réseau dans onEvent : le travail part hors de l'appel (microtâche), borné ;
 // - collectDelegationFacts (port, réutilisé par L10e pour D1-D7, §4.7) et inspectDelegation : faits d'une délégation en attente ;
 // - details(rootId, permissionId) et GET /api/conversations/:rootId/delegations/:permissionId (routes-delegations.ts).
 // M9 (un refus avec message laisse-t-il l'Assistant général continuer seul, sans boucle, sur une IA Copilot ?) : recette facturée EN
@@ -45,6 +46,7 @@ import {
 import { errorMessage } from "./log.ts";
 import type { OcLookupSnapshot, OcAgentInfo } from "./oc-lookup.ts";
 import { OpencodeError, type OpencodeClient } from "./opencode.ts";
+import { finishedToolSession } from "./permission-gate.ts";
 import { registerDelegationRoutes } from "./routes-delegations.ts";
 import { CONFIRM_HEADER } from "./security.ts";
 import type { SessionRow } from "./sessions.ts";
@@ -746,6 +748,14 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
           if (typeof requestId === "string") retained.delete(requestId);
           const sessionId = properties.sessionID;
           if (typeof sessionId !== "string") return;
+          for (const job of [...retained.values()]) if (job.sessionId === sessionId) start(job);
+          return;
+        }
+        case "message.part.updated": {
+          // Appel d'outil voisin terminé (il retenait le refus au-delà de la borne, par exemple une longue commande) : réarmé.
+          if (retained.size === 0) return;
+          const sessionId = finishedToolSession(properties);
+          if (sessionId === null) return;
           for (const job of [...retained.values()]) if (job.sessionId === sessionId) start(job);
           return;
         }

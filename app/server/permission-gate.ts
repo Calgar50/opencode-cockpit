@@ -22,6 +22,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/**
+ * Conversation d'un message.part.updated qui annonce la fin d'un appel d'outil (partie « tool » en « completed » ou « error ») ;
+ * null pour tout autre événement de partie (texte, appel en préparation ou en cours, forme illisible).
+ */
+export function finishedToolSession(properties: unknown): string | null {
+  if (!isRecord(properties) || !isRecord(properties.part)) return null;
+  const { part } = properties;
+  if (part.type !== "tool" || !isRecord(part.state) || (part.state.status !== "completed" && part.state.status !== "error")) return null;
+  const sessionID = typeof part.sessionID === "string" ? part.sessionID : properties.sessionID;
+  return typeof sessionID === "string" && ID_RE.test(sessionID) ? sessionID : null;
+}
+
+/**
+ * Conversation dont les refus retenus sont à réévaluer : permission.replied, ou fin d'un appel d'outil (finishedToolSession : il ne
+ * posera plus de demande). Préparation et exécution d'un appel (« pending », « running ») ne réveillent rien : elles ne peuvent
+ * que retenir. null : rien à réévaluer.
+ */
+function wakingSession(type: string | undefined, properties: unknown): string | null {
+  if (type === "message.part.updated") return finishedToolSession(properties);
+  if (type !== "permission.replied" || !isRecord(properties)) return null;
+  return typeof properties.sessionID === "string" ? properties.sessionID : null;
+}
+
 /** Borne du registre des réponses émises : les plus anciennes sortent en premier. */
 export const EMITTED_MAX = 2_000;
 
@@ -115,6 +138,39 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     if (message.info.error !== undefined && message.info.error !== null) return false;
     const part = message.parts.find((p) => isRecord(p) && p.type === "tool" && p.callID === tool.callID);
     return isRecord(part) && isRecord(part.state) && part.state.status === "running";
+  };
+
+  /**
+   * Appels d'outil voisins (callID) encore en préparation ou en cours (« pending », « running ») dans le message qui a posé la
+   * demande, sans l'appel lui-même : chacun peut encore poser sa demande. Sur opencode 1.18.30 réel, la demande d'un voisin arrive
+   * après celle de la délégation (répétition générale de l'itération 1 : edit 5 à 7 ms après, le temps de lire le fichier et de
+   * calculer le diff ; bash environ 100 ms après, au premier appel d'un opencode neuf). Message introuvable (404) ou arrêté (erreur
+   * du message) : aucun. opencode injoignable ou réponse illisible : erreur.
+   */
+  const busySiblingCalls = async (sessionID: string, tool: PermissionTool, directory: string | null): Promise<string[]> => {
+    if (!ID_RE.test(sessionID)) throw new Error("identifiant de conversation de la demande illisible");
+    let message: unknown;
+    try {
+      message = await client.request<unknown>("GET", `/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(tool.messageID)}`, {
+        query: { directory },
+        timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
+      });
+    } catch (err) {
+      if (err instanceof OpencodeError && err.status === 404) return [];
+      throw err;
+    }
+    if (!isRecord(message) || !isRecord(message.info) || !Array.isArray(message.parts)) throw new Error("message de la demande illisible");
+    if (message.info.error !== undefined && message.info.error !== null) return [];
+    return message.parts.flatMap((p) =>
+      isRecord(p) &&
+      p.type === "tool" &&
+      typeof p.callID === "string" &&
+      p.callID !== tool.callID &&
+      isRecord(p.state) &&
+      (p.state.status === "pending" || p.state.status === "running")
+        ? [p.callID]
+        : [],
+    );
   };
 
   /**
@@ -332,6 +388,25 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     }
   };
 
+  /**
+   * Appels d'outil voisins en préparation ou en cours de la demande visée par un refus (busySiblingCalls) ; demande posée hors d'un
+   * appel d'outil : aucun. Champ `tool` illisible ou message illisible : « echec », rien n'est envoyé (jamais un refus qui pourrait
+   * emporter une demande que l'utilisateur n'a pas encore vue).
+   */
+  const siblingCallsOf = async (request: PendingPermission, directory: string | null): Promise<string[] | "echec"> => {
+    if (request.tool === null) return [];
+    if (request.tool === "invalid") {
+      log.warn("refus du cockpit non relayé : appel d'outil de la demande illisible", { requestId: request.id });
+      return "echec";
+    }
+    try {
+      return await busySiblingCalls(request.sessionID, request.tool, directory);
+    } catch (err) {
+      log.warn("refus du cockpit non relayé : appels d'outil voisins illisibles", { requestId: request.id, error: errorMessage(err) });
+      return "echec";
+    }
+  };
+
   /** Refus retenu en cours (rejectWhenAlone), réveillé par la dérivation « gate ». */
   interface HeldReject {
     requestId: string;
@@ -348,8 +423,12 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
    * attente de la conversation (F-c, mesure MX1 M12 : le tour s'arrête même avec un message) : tant qu'une autre demande attend,
    * rien n'est envoyé (« retenu »). Seules les autres demandes que ce portillon refuse de toute façon (refus retenus, pas encore
    * inscrits) ne retiennent pas : un seul refus part, inscrit pour chacune, et leur sort est celui de cet envoi.
-   * Limite : une demande posée entre la lecture de GET /permission et l'arrivée du refus serait refusée avec lui (aucune réponse
-   * « seulement celle-ci » n'existe dans opencode).
+   * Retient aussi tant qu'un appel d'outil voisin du même message est en préparation ou en cours sans demande en attente
+   * (busySiblingCalls, lu APRÈS GET /permission) : sa demande arriverait après la lecture et serait refusée avec ce refus (mesure
+   * de la répétition générale de l'itération 1). La fin d'un appel d'outil de la conversation réveille l'évaluation (dérivation).
+   * Limite : un appel d'outil que l'IA n'a pas encore commencé à écrire à la lecture du message, et dont la demande arriverait
+   * avant le refus (un aller-retour sur la boucle locale), serait refusé avec lui (aucune réponse « seulement celle-ci » n'existe
+   * dans opencode).
    */
   const evaluateReject = async (waiter: HeldReject, directory: string | null, message: string): Promise<RelayOutcome | "retenu"> => {
     const release = await acquireReplyGate();
@@ -372,6 +451,10 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
         log.warn("refus du cockpit non relayé : la demande n'appartient pas à cette conversation", { requestId, sessionId });
         return "echec";
       }
+      const busyCalls = await siblingCallsOf(request, directory);
+      if (busyCalls === "echec") return "echec";
+      // Même règle qu'après GET /permission : un refus du navigateur inscrit pendant cette lecture l'emporte.
+      if (emitted.has(requestId)) return "deja-repondu";
       const partners = new Map<string, HeldReject>();
       for (const other of held) {
         if (other !== waiter && other.sessionId === sessionId && other.settled === null) partners.set(other.requestId, other);
@@ -379,6 +462,9 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
       const siblings = pending.filter((p) => p.sessionID === sessionId && p.id !== requestId);
       // Aucune attente entre ces contrôles et l'inscription : rien ne peut s'inscrire entre-temps.
       if (siblings.some((p) => !partners.has(p.id) || emitted.has(p.id))) return "retenu";
+      // Appel voisin en préparation ou en cours dont la demande n'est pas (encore) listée : il peut demander avant l'arrivée du refus.
+      const asked = new Set(siblings.flatMap((p) => (p.tool !== null && p.tool !== "invalid" ? [p.tool.callID] : [])));
+      if (busyCalls.some((callID) => !asked.has(callID))) return "retenu";
       const cascade = siblings.flatMap((p) => partners.get(p.id) ?? []);
       // P9 : inscrits au registre avant l'envoi, la demande visée et celles que le même refus emporte.
       const at = Date.now();
@@ -397,8 +483,9 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
 
   /**
    * Refus envoyé par le cockpit (refus Simple d'une délégation, interdit absolu de la Salle OMO), retenu tant qu'une autre demande
-   * de la même conversation attend (F-c). Réévalué quand la dérivation « gate » voit permission.replied de cette conversation ou le
-   * rechargement d'opencode (demandes retirées sans événement, M14), borné à REJECT_HOLD_MAX_MS (dernière évaluation à la borne).
+   * de la même conversation attend (F-c) ou qu'un appel d'outil voisin du même message peut encore en poser une. Réévalué quand la
+   * dérivation « gate » voit permission.replied ou la fin d'un appel d'outil de cette conversation, ou le rechargement d'opencode
+   * (demandes retirées sans événement, M14), borné à REJECT_HOLD_MAX_MS (dernière évaluation à la borne).
    * Rend le sort de l'envoi, ou « retenu » si une autre demande attend encore à la borne (rien n'est envoyé : la demande reste à
    * l'utilisateur). Message vide : refus sans message. Ne lève jamais. Jamais appelé en tenant une place de la file.
    */
@@ -462,14 +549,14 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     onEvent(event) {
       if (held.size === 0) return;
       const type = event.payload?.type;
-      if (type === "permission.replied") {
-        const sessionID = event.payload.properties?.sessionID;
-        if (typeof sessionID !== "string") return;
-        for (const waiter of held) if (waiter.sessionId === sessionID) waiter.wake();
-      } else if (type === "server.instance.disposed" || type === "global.disposed") {
+      if (type === "server.instance.disposed" || type === "global.disposed") {
         // Mesure MX1 M14 : les demandes en attente disparaissent sans permission.replied.
         for (const waiter of held) waiter.wake();
+        return;
       }
+      const sessionID = wakingSession(type, event.payload?.properties);
+      if (sessionID === null) return;
+      for (const waiter of held) if (waiter.sessionId === sessionID) waiter.wake();
     },
   };
 

@@ -274,6 +274,117 @@ describe("croisements it1 V4 : « Arrêter » visible pendant une délégation (
     assert.match(chat, /stopVisible=\{Boolean\(sessionId\) && treeWorking\}/);
     assert.match(read("../web/pages/chat/Composer.tsx"), /\{busy \|\| stopVisible \? \(/);
   });
+
+  it("mise en page lue dans les sources : colonne du fil dans la fenêtre, demandes bornées aux boutons collés, « Contexte » fermé par défaut quand il recouvre la saisie, carte des agents et « Qui travaille ? » jamais repliés par une demande en Avancé", () => {
+    // Répétition générale de l'itération 1 : fil à 0 px, « Autoriser une fois » et « Arrêter » hors de la fenêtre sous une zone
+    // principale qui ne défile pas, « Arrêter » recouvert par le panneau « Contexte » à 1280 et 400 px. La preuve dans le navigateur
+    // (elementFromPoint, quatre tailles) est le scénario e2e it1-ui-mise-en-page. Clôture de l'itération 1 : la correction repliait la
+    // carte des agents et « Qui travaille ? » à chaque demande, en Avancé aussi (rg-reel-7 en échec sur opencode réel) ; en Avancé,
+    // rien ne se replie plus pour une demande, les bornes ci-dessous suffisent (e2e it1-ui-delegation et it1-ui-mise-en-page).
+    const read = (relative: string) => fs.readFileSync(new URL(relative, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const rule = (css: string, selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      assert.ok(at >= 0, `règle ${selector} absente`);
+      return css.slice(at, css.indexOf("}", at));
+    };
+    const chat = read("../web/pages/chat/chat.css");
+    assert.match(rule(chat, ".chat-center"), /overflow-y: auto;/, "dernier recours : la colonne défile, jamais la zone principale");
+    assert.match(chat, /\.chat-center > \.chat-header,\s*\.chat-center > \.composer-wrap \{\s*flex: none;/, "en-tête et saisie gardent leur taille");
+    assert.match(rule(chat, ".chat-scroll"), /flex: 1 1 0;[\s\S]*min-height: min\(96px, 12vh\);/, "le fil garde une hauteur lisible");
+    assert.match(rule(chat, ".chat-center:has(> .interactions) > .chat-scroll"), /min-height: min\(64px, 8vh\);/, "demande en attente : le fil garde ses dernières lignes");
+    const interactions = rule(chat, ".interactions");
+    for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "max-height: 50vh;", "overflow-y: auto;"]) assert.ok(interactions.includes(decl), `.interactions : ${decl}`);
+    assert.match(rule(chat, ".interactions:has(> .interaction)"), /min-height: min\(7rem, 40vh\);/, "une carte garde son titre et ses boutons");
+    assert.match(rule(chat, ".interaction-actions"), /position: sticky;\s*bottom: 0;/, "boutons collés au bas de la zone des demandes");
+    const activityCss = read("../web/pages/chat/activity/activity.css");
+    const activity = rule(activityCss, ".activity-region");
+    for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "max-height: 36vh;", "overflow-y: auto;"]) assert.ok(activity.includes(decl), `.activity-region : ${decl}`);
+    assert.match(rule(activityCss, ".activity-region.attente"), /flex-shrink: 0;\s*max-height: min\(36vh, 8rem\);/, "mode Simple, demande en attente : les deux lignes de tête restent entières");
+    assert.match(
+      rule(chat, ".chat-center:has(> .activity-region.demande) > .interactions"),
+      /flex-shrink: 4;/,
+      "mode Avancé, demande en attente : la carte de la demande cède bien avant la région, jusqu'à son plancher (vérification de la clôture)",
+    );
+    assert.match(rule(activityCss, ".activity-region.demande"), /min-height: min\(2\.5rem, 6vh\);/, "mode Avancé, demande en attente : la région garde sa première ligne");
+    const region = read("../web/pages/chat/activity/ActivityRegion.tsx");
+    assert.match(region, /const repliPourLaDemande = replierPendantLaDemande\(advanced, activity\.rows\);/, "repli d'office : mode Simple seulement");
+    assert.match(
+      region,
+      /if \(repliPourLaDemande\) classe = "activity-region attente";\s*else if \(demandeEnAttente\(activity\.rows\)\) classe = "activity-region demande";/,
+      "Simple : région repliée (.attente) ; Avancé : région dépliée (.demande)",
+    );
+    assert.match(region, /<div className=\{classe\}>/);
+    assert.match(region, /working=\{working\}\s+repliPourLaDemande=\{repliPourLaDemande\}/, "« Qui travaille ? » replié pendant la demande en Simple seulement");
+    assert.doesNotMatch(region, /demandeEnAttente=\{|permissionId !== null/, "aucune demande brute passée aux composants");
+    const who = read("../web/pages/chat/activity/WhoIsWorking.tsx");
+    assert.match(who, /useEffect\(\(\) => setManual\(null\), \[working, repliPourLaDemande\]\);/);
+    assert.match(who, /const expanded = manual \?\? \(working && !narrow && !repliPourLaDemande\);/, "Avancé : déplié pendant le travail, demande comprise (§5.1)");
+    assert.doesNotMatch(who, /demandeEnAttente|permissionId !== null\)/, "« Qui travaille ? » ne lit aucune demande pour se replier");
+    const prompts = read("../web/pages/chat/Interactions.tsx");
+    assert.equal(prompts.match(/className="row(?: wrap)? interaction-actions"/g)?.length, 3, "rangées de boutons : refus, choix, question");
+
+    // « Contexte » posé sur la conversation sous 1280 px : même borne dans la page et la feuille, fermé par défaut.
+    assert.match(chat, /@media \(max-width: 1280px\) \{\s*\.chat-aside \{\s*display: none;\s*\}\s*\.chat\.aside-open \.chat-aside \{\s*display: flex;\s*position: fixed;/);
+    const page = read("../web/pages/ChatPage.tsx");
+    assert.match(page, /const ASIDE_OVERLAY_QUERY = "\(max-width: 1280px\)";/);
+    assert.match(page, /useState\(\(\) => !asideOverlay\(\) && readFlag\(ASIDE_FLAG, true\)\)/);
+    assert.match(page, /const onChange = \(\) => \{\s*if \(media\.matches\) setAsideOpen\(false\);\s*\};/, "fermé à chaque passage sous 1280 px, jamais rouvert d'office");
+    assert.equal(page.match(/writeFlag\(ASIDE_FLAG/g)?.length, 2);
+    assert.equal(page.match(/if \(!asideOverlay\(\)\) writeFlag\(ASIDE_FLAG, !open\);|if \(!open && !asideOverlay\(\)\) writeFlag\(ASIDE_FLAG, true\);/g)?.length, 2, "préférence inchangée par le panneau posé");
+  });
+
+  it("mode Avancé, demande en attente : « Qui travaille ? » entier sous la bande, bande bornée à la place qui reste et carte réduite à sa hauteur (vérification de la clôture de l'itération 1)", () => {
+    // Vérification de la clôture : dépliées, la carte des agents (504 × 198 à 1440 × 900) et « Qui travaille ? » dépassaient la région
+    // bornée ; le titre, les lignes et [Répondre] de « Qui travaille ? » étaient rendus mais cachés (sous le fil et la carte de la
+    // demande), à 1440 × 900 comme à 1280 × 800, 1366 × 768, 1024 × 768 et 400 × 860. La liste reste la vérité (§5.1, §5.7.4) : elle
+    // garde sa hauteur, la bande prend le reste et la carte s'y réduit (unités de conteneur), pas au-dessous de la mini-carte (§5.6) ;
+    // ensuite la bande défile, en gardant sa ligne de titre. La preuve dans le navigateur (elementFromPoint : titre, lignes,
+    // [Répondre], signes de la carte, aux quatre tailles) est dans les e2e it1-ui-mise-en-page et it1-ui-delegation.
+    const css = fs.readFileSync(new URL("../web/pages/chat/activity/activity.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const plat = css.replace(/\s+/g, " ");
+    const bloc = (selecteur: string, depuis = 0) => {
+      const at = plat.indexOf(`${selecteur} {`, depuis);
+      assert.ok(at >= 0, `règle ${selecteur} absente`);
+      return plat.slice(at, plat.indexOf("}", at));
+    };
+    const media = (requete: string) => {
+      const at = plat.indexOf(`@media ${requete} {`);
+      assert.ok(at >= 0, `@media ${requete} absente`);
+      return at;
+    };
+    const BANDE = ".activity-region.demande > .neon-band:has(> .neon-body)";
+    const bande = bloc(BANDE);
+    for (const decl of ["display: flex;", "flex-direction: column;", "flex: 0 1 auto;", "min-height: 1.75rem;", "overflow-y: auto;"]) {
+      assert.ok(bande.includes(decl), `${BANDE} : ${decl}`);
+    }
+    assert.ok(bloc(".activity-region.demande > .neon-band > .neon-head").includes("flex: none;"), "la tête de la bande garde sa hauteur");
+    const CORPS = ".activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap)";
+    const corps = bloc(CORPS);
+    for (const decl of ["flex: 0 1 auto;", "min-height: 4.5em;", "container-type: size;", "contain-intrinsic-block-size: min(220px, 22vh);"]) {
+      assert.ok(corps.includes(decl), `${CORPS} : ${decl}`);
+    }
+    assert.ok(
+      bloc(".activity-region.demande > .neon-band > .neon-body > .neon-map-wrap").includes("max-width: min(560px, 56vh, 100cqh * 560 / 220);"),
+      "carte réduite à la hauteur de son corps (plancher : la mini-carte, par le min-height du corps)",
+    );
+    // « Qui travaille ? » ne cède jamais au-dessus de 400 px : aucun enfant de la région ne rétrécit hors de la bande.
+    assert.ok(bloc(".activity-region > *").includes("flex: none;"));
+    const horsMedia = plat.slice(0, plat.indexOf("@media"));
+    assert.doesNotMatch(horsMedia, /\.activity-region\.demande > \.who-banner \{/, "« Qui travaille ? » garde sa hauteur au-dessus de 400 px");
+    // Sous 900 px : mini-carte de 3 lignes (neon.css) ; à 400 px : liste seule, bandeau d'une ligne, qui garde sa place sous la bande.
+    assert.ok(bloc(CORPS, media("(max-width: 899.98px)")).includes("contain-intrinsic-block-size: 4.5em;"));
+    const a400 = media("(max-width: 400px)");
+    const corps400 = bloc(CORPS, a400);
+    for (const decl of ["min-height: 0;", "container-type: normal;", "contain-intrinsic-block-size: none;"]) assert.ok(corps400.includes(decl), `400 px, ${CORPS} : ${decl}`);
+    // Bande repliée (sans corps) ou dépliée (le sélecteur :has(> .neon-body) l'emporterait sinon, par sa spécificité).
+    const toute400 = bloc(`.activity-region.demande > .neon-band, ${BANDE}`, a400);
+    for (const decl of ["flex: 0 1 auto;", "min-height: 0;", "overflow-y: auto;"]) assert.ok(toute400.includes(decl), `400 px, bande dépliée ou repliée : ${decl}`);
+    // Bandeau d'une ligne, [Répondre] compris (2,5 rem), avant la bande ; la ligne de titre de la bande (1,75 rem) quand la région le permet.
+    const qui400 = bloc(".activity-region.demande > .who-banner", a400);
+    for (const decl of ["max-height: max(2.5rem, 100% - 1.75rem);", "overflow-y: auto;"]) assert.ok(qui400.includes(decl), `400 px, « Qui travaille ? » : ${decl}`);
+    // Au-dessus de 400 px, bande repliée par vous (sans corps) : aucune de ces bornes, elle garde sa hauteur de tête.
+    assert.doesNotMatch(horsMedia, /\.activity-region\.demande > \.neon-band \{/, "la bande repliée garde sa hauteur de tête");
+  });
 });
 
 describe("croisements it1 V4 : carte de plan (L6c) sur le câblage complet (L6b, porte I1)", () => {

@@ -3,7 +3,9 @@
 // fil (spécification §5.1, §5.4, §5.5, §5.7.4). Propriétés figées dans ../slots.ts.
 // - useActivity : relecture à l'ouverture et à la reconnexion, au plus 4 rendus par seconde ;
 // - onTreeWorking : l'arbre travaille (racine, travail délégué, contrôles, attente de votre accord) → « Arrêter » reste visible ;
-// - bande néon au-dessus de la liste des acteurs, qui reste la vérité ;
+// - bande néon au-dessus de la liste des acteurs, qui reste la vérité. Une demande qui attend votre réponse ne replie rien en mode
+//   Avancé (clôture de l'itération 1 : la carte montre l'attente de votre accord et la préparation, sans clic) ; en mode Simple,
+//   bande et liste se replient sur leur ligne de tête tant qu'elle attend (replierPendantLaDemande) ;
 // - annonces des transitions par l'annonceur de la page (une région aria-live, au plus une annonce toutes les 2 s), coupées par
 //   `ui.activityAnnouncements` ;
 // - premier bandeau : phrase d'accueil, puis `ui.seenOnboarding` écrit par l'API des réglages (PUT /api/settings) ;
@@ -16,7 +18,7 @@ import { useApp } from "../../../app/AppContext.tsx";
 import { useAnnouncer } from "../../../lib/announcer.ts";
 import { formatDuration } from "../../../lib/format.ts";
 import type { ActivityFact } from "../../../lib/types.ts";
-import { bannerVisible, onboardingToSave, useActivity } from "../../../lib/useActivity.ts";
+import { bannerVisible, demandeEnAttente, onboardingToSave, replierPendantLaDemande, useActivity } from "../../../lib/useActivity.ts";
 import type { ActivityRegionProps } from "../slots.ts";
 import { DemoPlayer } from "./DemoPlayer.tsx";
 import { NeonBand } from "./NeonBand.tsx";
@@ -39,6 +41,16 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   useEffect(() => onTreeWorking(working), [working, onTreeWorking]);
 
   const visible = loaded && bannerVisible(activity.state, activity.rows, activity.status);
+  // Une demande attend votre réponse (ligne avec [Répondre]).
+  // - Mode Simple : la carte des agents et « Qui travaille ? » se replient (NeonBand, WhoIsWorking), la région garde ses deux lignes
+  //   de tête (.attente, activity.css) et la place va à la carte de la demande.
+  // - Mode Avancé : jamais de repli pour une demande ; quand la hauteur manque, la carte de la demande cède plus vite que la région,
+  //   jusqu'à son titre et ses boutons (.demande, chat.css) ; dans la région, « Qui travaille ? » garde sa hauteur et la bande prend
+  //   le reste, sa carte réduite (activity.css, vérification de la clôture) ; ensuite la région se borne et défile.
+  const repliPourLaDemande = replierPendantLaDemande(advanced, activity.rows);
+  let classe = "activity-region";
+  if (repliPourLaDemande) classe = "activity-region attente";
+  else if (demandeEnAttente(activity.rows)) classe = "activity-region demande";
 
   // Premier bandeau (§5.4) : la phrase reste pendant cette visite ; « vu » est écrit une seule fois, par l'API des réglages.
   const [welcome, setWelcome] = useState(false);
@@ -60,7 +72,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   const fermerDemonstration = useCallback(() => setDemonstration(false), []);
 
   return (
-    <div className="activity-region">
+    <div className={classe}>
       {/* Faits lus seulement (jamais modifiés) : le même tableau tant que rien ne change, pour la mémoïsation de la bande. Le dossier
           sert à relire les textes du zoom 3 dans la bonne instance d'opencode (train it1 V3, demande de L5c). */}
       <NeonBand
@@ -69,6 +81,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
         advanced={advanced}
         directory={directory}
         onDemonstration={ouvrirDemonstration}
+        repliPourLaDemande={repliPourLaDemande}
       />
       {demonstration ? <DemoPlayer advanced={advanced} onClose={fermerDemonstration} /> : null}
       {visible ? (
@@ -76,6 +89,7 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
           rows={activity.rows}
           advanced={advanced}
           working={working}
+          repliPourLaDemande={repliPourLaDemande}
           partial={activity.partial}
           welcome={welcome}
           details={activity.details}

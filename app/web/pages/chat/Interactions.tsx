@@ -112,7 +112,7 @@ export function PermissionPrompt({
         </div>
       ) : null}
       {refusing ? (
-        <div className="row">
+        <div className="row interaction-actions">
           <input
             className="input sm"
             placeholder="Consigne pour l'assistant (facultatif)"
@@ -132,7 +132,7 @@ export function PermissionPrompt({
           </Button>
         </div>
       ) : (
-        <div className="row wrap">
+        <div className="row wrap interaction-actions">
           {active && !examining ? (
             <Button size="sm" variant="primary" icon="check" loading={busy === "once"} disabled={busy !== null} onClick={() => void act("once")}>
               Autoriser une fois
@@ -227,7 +227,7 @@ export function QuestionPrompt({
           ) : null}
         </div>
       ))}
-      <div className="row">
+      <div className="row interaction-actions">
         <Button size="sm" variant="primary" disabled={!complete || busy} loading={busy} onClick={() => void run(() => onReply(final))}>
           Répondre
         </Button>

@@ -463,6 +463,47 @@ describe("faux opencode : prompt_async et autorisations", () => {
     assert.deepEqual(fake.failures, []);
   });
 
+  it("askAfterMs : la demande suit la partie d'outil « pending » après askAfterMs, et non après le pas du tour (opencode 1.18.30 réel : quelques ms après la partie task, rg-reel-7)", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const vus: Array<{ quoi: "pending" | "demande"; session: string; id: string; t: number }> = [];
+    let connecte = false;
+    const stop = oc.subscribeGlobal(
+      (event) => {
+        const p = props(event);
+        const part = p.part as (OcPart & { state?: { status?: string } }) | undefined;
+        if (event.payload.type === "permission.asked") vus.push({ quoi: "demande", session: String(p.sessionID), id: String(p.id), t: performance.now() });
+        else if (part?.type === "tool" && part.state?.status === "pending") vus.push({ quoi: "pending", session: part.sessionID, id: String(part.callID), t: performance.now() });
+      },
+      (status) => {
+        if (status === "connected") connecte = true;
+      },
+    );
+    t.after(stop);
+    await until(() => connecte);
+    const tache = (askAfterMs?: number): FakeToolScript => ({
+      tool: "task",
+      input: { description: "Relire", prompt: "Relis.", subagent_type: "general" },
+      ask: { permission: "task", patterns: ["general"] },
+      child: { agent: "general", text: "Fait." },
+      ...(askAfterMs === undefined ? {} : { askAfterMs }),
+    });
+    const ecart = async (outil: FakeToolScript) => {
+      const session = await newSession(oc, { title: "Écart" });
+      fake.script(session.id, { stepMs: 400, tools: [outil] });
+      assert.equal(await promptAsync(oc, session.id, "Délègue."), 204);
+      const demande = await until(() => vus.find((v) => v.quoi === "demande" && v.session === session.id), 5_000);
+      const partie = vus.find((v) => v.quoi === "pending" && v.session === session.id);
+      assert.ok(partie, "partie « pending » publiée avant la demande");
+      assert.equal(await reply(oc, demande.id, { reply: "reject" }), true);
+      return demande.t - partie.t;
+    };
+    const parDefaut = await ecart(tache());
+    const aussitot = await ecart(tache(0));
+    assert.ok(parDefaut >= 350, `sans askAfterMs, la demande attend le pas du tour (${Math.round(parDefaut)} ms)`);
+    assert.ok(aussitot < 150, `askAfterMs 0 : la demande suit aussitôt la partie (${Math.round(aussitot)} ms)`);
+    assert.deepEqual(fake.failures, []);
+  });
+
   it("reject sans message : refuse aussi les demandes sœurs de la session (F-c), pas celles des autres, et arrête le tour", async (t) => {
     const { fake, oc } = await startFake(t);
     const session = await newSession(oc);

@@ -1,7 +1,7 @@
 // Propriétaire : L1e.
 // Surveillance des délégations lancées sans demande (spécification §3.14 « allow (Studio) », §3.8, §3.9 SSE, §3.6
 // budget.delegation, §4.8.1 ; plan d'exécution, fiche L1e ; mesure MX1 §7). Une délégation lancée sans demande d'autorisation
-// (agent `task: allow` du Studio, raccourci `subtask` : contrat DelegationView.sansConfirmation) n'est vue qu'après coup : ses
+// (agent `task: allow` du Studio, raccourci `subtask`, seul marqué DelegationView.sansConfirmation) n'est vue qu'après coup : ses
 // plafonds par demande sont surveillés dans les deux modes, et leur dépassement arrête tout l'arbre (stopTree, cause
 // « plafond-delegations »).
 // - Dérivation synchrone, sans attente réseau (mémoire et lectures SQLite seules) :

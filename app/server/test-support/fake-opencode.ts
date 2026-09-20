@@ -71,6 +71,19 @@ export interface FakeToolScript {
    * puis de la session ; « agent » (défaut pour doom_loop, processor.ts:372-379, F-j) : règles de l'agent seules, demande sans `tool`.
    */
   ask?: { permission: string; patterns: string[]; metadata?: Record<string, unknown>; always?: string[]; scope?: "agent" | "session" };
+  /**
+   * Travail de l'outil avant sa demande : la partie passe « running », puis l'outil évalue ses règles et pose sa demande quand la
+   * promesse est tenue (opencode 1.18.30 réel, répétition générale de l'itération 1 : edit lit le fichier et calcule le diff, 5 à
+   * 7 ms ; bash analyse la commande, environ 100 ms au premier appel d'un opencode neuf). Absent : demande aussitôt.
+   */
+  beforeAsk?: () => Promise<void>;
+  /**
+   * Pause entre la partie « pending » de l'outil et son évaluation (sa demande), en ms ; absente : le pas du tour (`stepMs`).
+   * opencode 1.18.30 réel pose permission.asked quelques millisecondes après la partie `task` (clôture de l'itération 1, rg-reel-7) :
+   * un scénario qui regarde ce que la page dessine AVANT la demande la fixe à quelques ms, sinon le pas du tour lui en laisse le
+   * temps. Valeur JSON : le banc e2e la transmet telle quelle (e2e/fake-opencode-server.ts).
+   */
+  askAfterMs?: number;
   /** Règles de l'agent, évaluées avant celles de la session (F-d). */
   agentRules?: PermissionRule[];
   output?: string;
@@ -1563,8 +1576,13 @@ export class FakeOpencode {
   async #tool(run: Run, session: FakeSession, message: OcMessageWithParts, tool: FakeToolScript, stepMs: number): Promise<"ok" | "blocked" | "continue"> {
     const callID = tool.callID ?? `call_${randomBytes(12).toString("hex")}`;
     let part = this.#putPart(message, { type: "tool", tool: tool.tool, callID, state: { status: "pending", input: {}, raw: "" } });
-    if (!(await this.#live(run, stepMs))) return "blocked";
+    if (!(await this.#live(run, tool.askAfterMs ?? stepMs))) return "blocked";
     const start = Date.now();
+    if (tool.beforeAsk) {
+      part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });
+      await Promise.race([tool.beforeAsk(), run.stopped]);
+      if (run.aborted || this.#closed) return "blocked";
+    }
     const ask = tool.ask;
     // doom_loop : règles de l'agent seules, demande sans appel d'outil (processor.ts:372-379, F-j).
     const agentScope = (ask?.scope ?? (ask?.permission === "doom_loop" ? "agent" : "session")) === "agent";
