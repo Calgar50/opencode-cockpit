@@ -13,6 +13,9 @@ import { type OcMessageWithParts, type OcPart, type OcSession, type OpencodeClie
 import { redactSecrets } from "./redact.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
+// <c5:markdown>
+import { teamRunsMarkdown } from "./team-costs.ts";
+// </c5:markdown>
 
 export interface ConversationDigest {
   sessionId: string;
@@ -613,7 +616,15 @@ export class ArchiveService {
       `${created.slice(0, 10)}_${slugify(conv.title, 50)}_${conv.sessionId.slice(-8)}.md`,
     );
     const target = await assertInside(this.#d.archiveDir, path.join(this.#d.archiveDir, relative));
-    await writeFileAtomic(target, content);
+    // <c5:markdown>
+    // La construction (L46a, D-5-10) ajoute EN FIN DE FICHIER le résumé des lancements d'équipe de la conversation, quand il
+    // n'est pas vide : seule la valeur écrite change (`contenu` au lieu de `content`), le reste de la méthode est d'avant.
+    // Le résumé ne contient AUCUN extrait de résultat (`teamRunsMarkdown` ne lit même pas la colonne) : les extraits masqués
+    // restent visibles dans l'interface seulement. Sans lancement d'équipe, l'export est celui de l'itération 1, à l'octet.
+    const equipes = teamRunsMarkdown(this.#d.db, sessionId);
+    const contenu = equipes === "" ? content : `${content}\n\n${equipes}`;
+    await writeFileAtomic(target, contenu);
+    // </c5:markdown>
     const previous = this.#row(sessionId)?.archive_path;
     if (previous && previous !== relative) await this.#removeFile(previous);
     this.#d.db.prepare("UPDATE conversations SET archive_path = ? WHERE session_id = ?").run(relative, sessionId);

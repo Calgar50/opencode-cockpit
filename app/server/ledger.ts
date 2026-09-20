@@ -583,11 +583,22 @@ export class Ledger {
 
   exportCsv(key: string): string {
     const { start, end } = monthBounds(key);
+    // <c5:csv>
+    // La construction (L46a, D-5-10) a ajouté les colonnes `lancement_equipe` et `etape` à TROIS endroits de cette méthode, et
+    // nulle part ailleurs : la FIN du SELECT (deux sous-requêtes paramétrées `LIMIT 1` sur `team_run_steps`, rapprochées par
+    // `session_id` : une session d'étape n'appartient qu'à un lancement, et la première tentative fait foi), la FIN de l'en-tête
+    // et la FIN de chaque ligne. Les deux valeurs passent par `redactSecrets` PUIS par `csvCell`, qui neutralise les formules :
+    // un titre d'équipe ou d'étape est un texte écrit par l'utilisateur ou rendu par une IA, donc jamais de confiance. Les
+    // tables d'équipe viennent de la migration 4 ; une ligne `usage` sans étape d'équipe laisse les deux colonnes vides.
     const rows = this.#db
       .prepare(
         `SELECT u.created_at, u.root_id, u.session_id, u.directory, u.agent, u.purpose, u.provider_id, u.model_id,
                 u.tokens_input, u.tokens_output, u.tokens_reasoning, u.tokens_cache_read, u.tokens_cache_write,
-                u.cost, u.cost_source, COALESCE(c.category, '') category, COALESCE(NULLIF(c.title,''), s.title, '') title
+                u.cost, u.cost_source, COALESCE(c.category, '') category, COALESCE(NULLIF(c.title,''), s.title, '') title,
+                (SELECT tr.team_titre FROM team_run_steps trs JOIN team_runs tr ON tr.id = trs.run_id
+                  WHERE trs.session_id = u.session_id ORDER BY trs.ordre, trs.tour, trs.tentative LIMIT 1) lancement_equipe,
+                (SELECT trs.titre FROM team_run_steps trs
+                  WHERE trs.session_id = u.session_id ORDER BY trs.ordre, trs.tour, trs.tentative LIMIT 1) etape
          FROM usage u LEFT JOIN sessions s ON s.id = u.root_id LEFT JOIN conversations c ON c.session_id = u.root_id
          WHERE u.created_at >= ? AND u.created_at < ? ORDER BY u.created_at`,
       )
@@ -595,16 +606,19 @@ export class Ledger {
     const header = [
       "date_utc", "conversation", "titre", "categorie", "session", "projet", "agent", "usage", "fournisseur", "modele",
       "tokens_entree", "tokens_sortie", "tokens_raisonnement", "cache_lecture", "cache_ecriture", "cout_usd", "credits", "source_cout",
+      "lancement_equipe", "etape",
     ];
     const lines = rows.map((r) =>
       [
         new Date(Number(r.created_at)).toISOString(), r.root_id, redactSecrets(String(r.title ?? "")), r.category, r.session_id, r.directory, r.agent, r.purpose,
         r.provider_id, r.model_id, r.tokens_input, r.tokens_output, r.tokens_reasoning, r.tokens_cache_read, r.tokens_cache_write,
         Number(r.cost).toFixed(6), usdToCredits(Number(r.cost)), r.cost_source,
+        redactSecrets(String(r.lancement_equipe ?? "")), redactSecrets(String(r.etape ?? "")),
       ]
         .map(csvCell)
         .join(","),
     );
+    // </c5:csv>
     return `${[header.join(","), ...lines].join("\r\n")}\r\n`;
   }
 }
