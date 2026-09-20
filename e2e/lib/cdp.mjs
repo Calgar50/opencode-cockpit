@@ -298,9 +298,13 @@ async function creerOnglet(client, sessionId, targetId) {
       await onglet.evaluer(`document.querySelector(${JSON.stringify(selecteur)}).click()`);
     },
 
-    /** Frappe une touche (Tab, Enter, Escape, ArrowDown…). */
+    /**
+     * Frappe une touche (Tab, Enter, Escape, ArrowDown…). Le code virtuel Windows est celui d'un vrai clavier : sans lui, la
+     * touche part avec 0 et le navigateur peut ne pas la servir lui-même (curseur natif, champ de saisie), même si les
+     * gestionnaires de la page, qui lisent `event.key`, la voient.
+     */
     async touche(nom) {
-      const codes = { Tab: 9, Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38, Space: 32 };
+      const codes = { Tab: 9, Enter: 13, Escape: 27, Space: 32, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
       const commun = { key: nom, code: nom, windowsVirtualKeyCode: codes[nom] ?? 0, nativeVirtualKeyCode: codes[nom] ?? 0 };
       await envoyer("Input.dispatchKeyEvent", { type: "rawKeyDown", ...commun });
       if (nom === "Enter") await envoyer("Input.dispatchKeyEvent", { type: "char", text: "\r", ...commun });

@@ -10,7 +10,9 @@
 //      plafond ») et chacune se joue sur le lecteur complet de « Revoir » (moments « n / N », badge, [Lire], [Tableau]) ;
 //   3. « Deux assistants en même temps » montre au moins DEUX assistants en mode Simple, avec leur nom accessible : la carte
 //      les dessine, et le tableau — la vérité de la vue (P7) — en porte une ligne chacun ;
-//   4. ZÉRO requête vers opencode pendant tout cela (journal du faux) et zéro requête de la page ;
+//   4. ZÉRO requête vers opencode pendant tout cela (journal du faux) et zéro requête de la page — la relecture de SA PROPRE
+//      liste par la page du chat (« GET /api/archive », après un classement de fond) et une reconnexion de son flux
+//      d'événements (« GET /api/events ») sont comptées à part et consignées : la démonstration ne peut pas les émettre ;
 //   5. en mode Simple, une démonstration qui dessine une délégation porte l'avis d'U1.
 //
 // ÉCART consigné : la fiche parle de « deux boutons d'assistant ». Le lecteur des démonstrations (L34) monte `NeonCarte` SANS
@@ -134,7 +136,18 @@ async function jouer(ctx, page, { mode, bouton }) {
   // 4. Zéro requête : ni la page, ni opencode.
   await attendre(1_200);
   const nouvelles = page.journalReseau().slice(debut.page);
-  const interdites = nouvelles.filter((l) => l.methode !== "GET" || new URL(l.url).pathname !== "/api/conversations");
+  const chemin = (l) => new URL(l.url).pathname;
+  // La PAGE DU CHAT relit SA PROPRE liste (« GET /api/archive », `loadConversations`) 500 ms après un événement
+  // « conversation.classified » ou « conversation.updated » du cockpit : le classement de fond d'une conversation laissée par
+  // un scénario précédent de la pile (classifier.ts, ChatPage.tsx). Ce n'est jamais une requête de la démonstration — la boîte
+  // ne lit rien. Le flux d'événements (« GET /api/events ») est le canal permanent de la page, ouvert bien avant la boîte :
+  // une reconnexion ne lui appartient pas davantage. Les deux sont comptés à part et consignés, comme dans `it3-revoir.mjs` ;
+  // tout le reste reste interdit.
+  const listeDuChat = (l) => l.methode === "GET" && chemin(l) === "/api/archive";
+  const fluxDeLaPage = (l) => l.methode === "GET" && chemin(l) === "/api/events";
+  const relectures = nouvelles.filter(listeDuChat).length;
+  const reconnexions = nouvelles.filter(fluxDeLaPage).length;
+  const interdites = nouvelles.filter((l) => !listeDuChat(l) && !fluxDeLaPage(l));
   exiger(interdites.length === 0, `la page a envoyé ${interdites.length} requête(s) pendant les démonstrations : ${resume(interdites.map((l) => `${l.methode} ${l.url}`))}`);
   if (ctx.mode !== "faux") {
     nonJoue(ctx, "zéro requête reçue par opencode", "le journal du faux n'existe qu'en mode « --faux »");
@@ -142,7 +155,10 @@ async function jouer(ctx, page, { mode, bouton }) {
     const recues = (await ctx.opencodeRequests()).slice(debut.faux);
     const surLaDemo = recues.filter((r) => String(r.method).toUpperCase() !== "GET" && r.body?.agent !== "cockpit-classifier");
     exiger(surLaDemo.length === 0, `opencode a reçu ${resume(surLaDemo.map((r) => r.pathname))} pendant les démonstrations.`);
-    releve(ctx, `démonstrations ${mode} : ${resume(vus)} ; ${dessines} assistant(s) dessiné(s), ${noms.length} nommé(s) ; 0 requête de la page, ${recues.length} requête(s) de fond reçues par opencode`);
+    releve(
+      ctx,
+      `démonstrations ${mode} : ${resume(vus)} ; ${dessines} assistant(s) dessiné(s), ${noms.length} nommé(s) ; 0 requête de la page (${relectures} relecture(s) de la liste du chat, ${reconnexions} reconnexion(s) du flux), ${recues.length} requête(s) de fond reçues par opencode`,
+    );
   }
 }
 
@@ -157,13 +173,25 @@ async function choisir(page, titre) {
   await attendre(200);
 }
 
-/** Place le lecteur sur le dernier moment : la scène y montre tout ce que la démonstration a dessiné. */
+/**
+ * Place le lecteur sur le dernier moment : la scène y montre tout ce que la démonstration a dessiné. Le curseur des moments est
+ * un VRAI curseur, contrôlé par React (`value={rang}` + `onChange`, ReplayBar) : une valeur POSÉE par programme ne le déplace
+ * pas — React remplace l'accesseur `value` du nœud par son traqueur, l'affectation met le traqueur à jour, et l'événement est
+ * alors jeté comme « valeur inchangée » ; `onAller` n'est jamais appelé. Il se déplace donc au clavier, comme le ferait la
+ * personne : [Fin] d'abord ; si le navigateur ne la sert pas, on avance moment par moment avec → — le même remède que
+ * `allerAuPremierMoment` de `it1-ui-demonstration.mjs`, avec [Début] et ←.
+ */
 async function allerAuDernierMoment(page) {
-  await page.evaluer(`(() => {
-    const curseur = document.querySelector('.modal .revoir-curseur');
-    curseur.value = curseur.max;
-    curseur.dispatchEvent(new Event('input', { bubbles: true }));
-    curseur.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
-  await attendre(250);
+  const curseur = ".modal .revoir-curseur";
+  const valeur = async () => Number(await page.evaluer(`document.querySelector('${curseur}')?.value ?? -1`));
+  const dernier = Number(await page.evaluer(`document.querySelector('${curseur}').max`));
+  await page.evaluer(`document.querySelector('${curseur}').focus()`);
+  await page.touche("End");
+  await attendre(200);
+  for (let pas = 0; pas < dernier && (await valeur()) !== dernier; pas++) {
+    await page.touche("ArrowRight");
+    await attendre(30);
+  }
+  const atteint = await valeur();
+  exiger(atteint === dernier, `le lecteur n'est pas allé au dernier moment : curseur à ${atteint}, ${dernier} attendu.`);
 }

@@ -21,6 +21,11 @@
 //      2D (le cockpit écarte les doublons : la mesure était vide) ; `it1-ui-demonstration` remettait le curseur des moments par
 //      une valeur posée (React ne voit pas ce changement) ; et « Revoir » comptait comme sienne la relecture de la liste que la
 //      page du chat lance après un classement, alors que la boîte ne connaît que `GET /api/revoir/…`.
+//   7. Corrections de la relecture de la vague 3 : les DEUX scénarios des démonstrations mènent le curseur au clavier (celui
+//      de l'itération 3 le posait encore par une valeur, que React ne voit pas) ; un chemin toléré par un scénario est une
+//      route que le cockpit monte vraiment (`GET /api/conversations` nu n'existe pas : la liste est `GET /api/archive`) ;
+//      `e2e/README.md` ne promet « zéro requête au faux » que pour un scénario qui l'exige encore ; et l'anneau de focus des
+//      commandes de la tête reste entier là où la tête défile latéralement.
 // Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc lui-même
 // (`scripts/run-e2e.sh --faux --project-prefix 3d11-e2e --image-tag 3d11`) est joué par l'intégrateur, hors de `npm test`
 // (décision D-06) ; ses chiffres sont recopiés dans `EXEC/mesures/L35.md`.
@@ -49,6 +54,8 @@ const HOOK = path.join(APP_DIR, "web", "pages", "salle-controle", "useFaitsConve
 const PLAFOND = 4;
 /** Cinq scénarios de l'itération 3 livrés par L35 (`it3-captures` vient de L33, en vague 4). */
 const SCENARIOS_IT3 = ["it3-salle-controle.mjs", "it3-repli.mjs", "it3-revoir.mjs", "it3-demos.mjs", "it3-debit.mjs"] as const;
+/** Les deux scénarios qui jouent une démonstration enregistrée sur le lecteur complet (itération 1 et itération 3). */
+const DEMONSTRATIONS = ["it1-ui-demonstration.mjs", "it3-demos.mjs"] as const;
 
 const lire = (fichier: string): string => fs.readFileSync(fichier, "utf8");
 /** Source sans commentaires : une phrase citée dans un commentaire ne prouve ni ne réfute rien. */
@@ -222,8 +229,6 @@ describe("croisement 3-V3 : L35 × L31c, débit de la salle de contrôle (M20, s
 // --- 2. Les scénarios du banc parlent les textes d'aujourd'hui --------------------------------------------------------------------
 
 describe("croisement 3-V3 : L35 × L34 × L28c, le banc suit le lecteur complet des démonstrations", () => {
-  const DEMONSTRATIONS = ["it1-ui-demonstration.mjs", "it3-demos.mjs"] as const;
-
   it("le compteur des moments lu par le banc est celui de revoir-texts", () => {
     const rendu = remplir(REVOIR.partout.moments, { n: 1, total: 12 });
     assert.equal(rendu, "1 / 12", "le compteur du lecteur a changé de forme : les scénarios qui le lisent sont à reprendre");
@@ -377,13 +382,33 @@ describe("croisement 3-V3 : corrections du train sur le banc complet", () => {
     assert.equal(deduper.accept(fait("rk3f2n200")), true, "le même appel sur une AUTRE session doit être gardé : c'est ce que fait la seconde suite");
   });
 
-  it("it1-ui-demonstration ramène le curseur au clavier, jamais par une valeur posée", () => {
-    const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, "it1-ui-demonstration.mjs")));
-    const bloc = /async function allerAuPremierMoment[\s\S]*?\n}/.exec(source)?.[0] ?? "";
-    assert.ok(bloc.length > 0, "allerAuPremierMoment a disparu du scénario des démonstrations");
-    assert.ok(!/\.value\s*=/.test(bloc), "le curseur est remis par une valeur posée : React ne voit pas ce changement (le lecteur ne bouge pas)");
-    assert.match(bloc, /touche\("Home"\)/, "le curseur n'est plus ramené par la touche [Début]");
-    assert.match(bloc, /touche\("ArrowLeft"\)/, "le filet clavier (←) a disparu : une touche [Début] non servie bloquerait le parcours");
+  it("les deux scénarios des démonstrations mènent le curseur au clavier, jamais par une valeur posée", () => {
+    // Le curseur des moments est un `<input type="range">` CONTRÔLÉ par React (ReplayBar : `value={rang}` + `onChange`). React
+    // remplace l'accesseur `value` du nœud par son traqueur : une valeur posée met le traqueur à jour, l'événement est alors jeté
+    // comme « valeur inchangée », et `onAller` n'est jamais appelé — le lecteur ne bouge pas. Les deux scénarios doivent donc
+    // déplacer le curseur au clavier, avec un filet flèche pour le cas où le saut ([Début]/[Fin]) ne serait pas servi.
+    const attendus = {
+      "it1-ui-demonstration.mjs": { fonction: "allerAuPremierMoment", saut: "Home", filet: "ArrowLeft", sens: "[Début] et ←" },
+      "it3-demos.mjs": { fonction: "allerAuDernierMoment", saut: "End", filet: "ArrowRight", sens: "[Fin] et →" },
+    } as const satisfies Record<(typeof DEMONSTRATIONS)[number], { fonction: string; saut: string; filet: string; sens: string }>;
+    for (const nom of DEMONSTRATIONS) {
+      const attendu = attendus[nom];
+      const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, nom)));
+      const bloc = new RegExp(`async function ${attendu.fonction}[\\s\\S]*?\\n}`).exec(source)?.[0] ?? "";
+      assert.ok(bloc.length > 0, `${nom} : ${attendu.fonction} a disparu du scénario des démonstrations`);
+      assert.ok(
+        !/\.value\s*=/.test(bloc),
+        `${nom} : le curseur est déplacé par une valeur posée — React ne voit pas ce changement (le lecteur ne bouge pas)`,
+      );
+      assert.ok(bloc.includes(`touche("${attendu.saut}")`), `${nom} : le curseur n'est plus mené par ${attendu.sens.split(" et ")[0]}`);
+      assert.ok(bloc.includes(`touche("${attendu.filet}")`), `${nom} : le filet clavier (${attendu.sens.split(" et ")[1]}) a disparu`);
+    }
+    // Les touches frappées par le banc partent avec le code virtuel d'un vrai clavier : sans lui, le curseur natif ne les sert pas.
+    const cdp = lire(path.join(E2E_DIR, "lib", "cdp.mjs"));
+    const codes = /const codes = \{([^}]*)\}/.exec(cdp)?.[1] ?? "";
+    for (const [touche, code] of [["End", 35], ["Home", 36], ["ArrowLeft", 37], ["ArrowRight", 39]] as const) {
+      assert.match(codes, new RegExp(`${touche}:\\s*${code}\\b`), `e2e/lib/cdp.mjs n'envoie plus le code de la touche ${touche}`);
+    }
   });
 
   it("la tête de la bande reste sur une ligne pendant une demande : la carte garde la place de ses signes", () => {
@@ -419,6 +444,91 @@ describe("croisement 3-V3 : corrections du train sur le banc complet", () => {
     assert.match(scenario, /surLaConversation\.length === 0/, "le scénario ne contrôle plus ce qu'opencode reçoit sur la conversation revue");
     assert.match(scenario, /appelsIa\.length === 0/, "le scénario ne contrôle plus les appels d'IA pendant « Revoir »");
     assert.match(scenario, /r\.body\?\.agent !== "cockpit-classifier"/, "le classement automatique n'est plus la seule exception admise");
+  });
+});
+
+// --- 7. Corrections de la relecture de la vague 3 ---------------------------------------------------------------------------------
+
+describe("croisement 3-V3 : corrections de la relecture (3-vague-3)", () => {
+  it("un chemin toléré par un scénario du banc est une route que le cockpit monte vraiment", () => {
+    // `/api/conversations` nu n'a jamais existé : le cockpit monte `/api/conversations/:rootId/activity`, `…/facts` et la liste
+    // des conversations sous `GET /api/archive`. Une tolérance MORTE laisse passer un faux rouge le jour où la vraie route
+    // tombe dans le journal, avec un message qui ne désigne pas sa cause.
+    const serveur = path.join(APP_DIR, "server");
+    const fichiers = ["http.ts", ...fs.readdirSync(serveur).filter((nom) => /^routes-.*\.ts$/.test(nom) && !nom.endsWith(".test.ts"))];
+    const montees = new Set<string>();
+    for (const fichier of fichiers) {
+      const source = lire(path.join(serveur, fichier));
+      for (const trouve of source.matchAll(/app\.(get|post|put|patch|delete)\(\s*"([^"]+)"/g)) {
+        montees.add(`${(trouve[1] ?? "").toUpperCase()} ${trouve[2]}`);
+      }
+    }
+    assert.ok(montees.size > 40, `routes du cockpit non parcourues (${montees.size} trouvées)`);
+    assert.ok(montees.has("GET /api/archive"), "la liste des conversations n'est plus « GET /api/archive » : les scénarios qui la comptent à part sont à reprendre");
+    assert.ok(!montees.has("GET /api/conversations"), "« GET /api/conversations » nu existe maintenant : ce croisement est à revoir");
+    for (const nom of [...DEMONSTRATIONS, "it3-revoir.mjs"]) {
+      const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, nom)));
+      for (const trouve of source.matchAll(/[!=]==\s*"(\/api\/[^"]*)"/g)) {
+        assert.ok(montees.has(`GET ${trouve[1]}`), `${nom} compare un chemin à « ${trouve[1]} », que le cockpit ne monte pas`);
+      }
+    }
+  });
+
+  it("les scénarios des démonstrations comptent à part la relecture de la liste du chat, et interdisent tout le reste", () => {
+    // La page du chat repose un minuteur de 500 ms sur « conversation.classified » / « conversation.updated » et relit SA liste :
+    // le classement de fond d'une conversation d'un scénario précédent de la pile tombe pendant la boîte. Ce n'est pas une
+    // requête de la démonstration, qui ne lit rien ; elle est comptée à part, comme dans `it3-revoir.mjs`.
+    const chat = sansCommentaires(lire(path.join(APP_DIR, "web", "pages", "ChatPage.tsx")));
+    assert.match(chat, /conversation\.classified[\s\S]{0,400}loadConversations/, "la relecture de la liste du chat n'est plus celle du classement");
+    assert.match(chat, /archiveList\(\{ limit: 200 \}\)/, "la page du chat ne relit plus sa liste par « GET /api/archive »");
+    for (const nom of DEMONSTRATIONS) {
+      const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, nom)));
+      assert.match(source, /listeDuChat = \(l\) => l\.methode === "GET" && chemin\(l\) === "\/api\/archive"/, `${nom} ne compte pas à part la relecture de la liste du chat`);
+      assert.ok(!source.includes("/api/conversations"), `${nom} garde une tolérance morte sur « /api/conversations »`);
+      assert.match(source, /interdites\.length === 0/, `${nom} n'interdit plus les autres requêtes de la page`);
+      assert.match(source, /relecture\(s\) de la liste du chat/, `${nom} ne consigne plus le nombre de relectures dans son relevé`);
+    }
+  });
+
+  it("e2e/README.md ne promet « zéro requête au faux » que pour un scénario qui l'exige encore", () => {
+    // DOC-3D et la revue lisent ce tableau pour dire ce que le banc établit : aucune ligne de sortie déclarée tenue sans mesure.
+    const readme = lire(path.join(E2E_DIR, "README.md"));
+    for (const ligne of readme.split("\n")) {
+      const nom = /^\|\s*`(it[0-9a-z-]+\.mjs)`\s*\|/.exec(ligne)?.[1];
+      if (!nom || !ligne.includes("zéro requête au faux")) continue;
+      const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, nom)));
+      assert.match(
+        source,
+        /apres\.faux === avant\.faux/,
+        `e2e/README.md annonce « zéro requête au faux » pour ${nom}, qui ne l'exige plus : le tableau promet plus que la mesure`,
+      );
+    }
+    // La ligne de `it3-revoir` dit aujourd'hui ce que le scénario contrôle vraiment depuis les ajustements de la vague 3.
+    const revoir = readme.split("\n").find((l) => l.startsWith("| `it3-revoir.mjs`")) ?? "";
+    assert.ok(revoir.length > 0, "la ligne de `it3-revoir.mjs` a disparu du tableau de e2e/README.md");
+    assert.ok(revoir.includes("`GET /api/archive`"), "la ligne de `it3-revoir.mjs` ne dit pas que la relecture de la liste du chat est comptée à part");
+    assert.ok(
+      revoir.includes("rien reçu par le faux sur la conversation revue") && revoir.includes("hors le classement automatique"),
+      "la ligne de `it3-revoir.mjs` ne dit pas ce que le scénario attribue vraiment au faux",
+    );
+  });
+
+  it("l'anneau de focus des commandes de la tête reste entier malgré le défilement latéral", () => {
+    // `overflow-x: auto` fait de la tête un conteneur de défilement sur les DEUX axes (un `overflow-x` autre que `visible` rend
+    // `overflow-y: visible` équivalent à `auto`). La tête n'a aucun rembourrage : l'anneau du dépôt, posé 2 px en dehors du
+    // bouton, serait rogné en haut et en bas, et le repère du parcours au clavier deviendrait illisible (§5.7.1).
+    const styles = lire(path.join(APP_DIR, "web", "styles.css"));
+    assert.match(styles, /:focus-visible \{[^}]*outline-offset: 2px;[^}]*\}/, "l'anneau de focus du dépôt n'est plus posé en dehors de la boîte : ce croisement est à revoir");
+    const css = lire(path.join(APP_DIR, "web", "pages", "chat", "activity", "activity.css"));
+    // La tête a plusieurs blocs sous ce sélecteur : c'est celui qui pose le défilement qui compte.
+    const blocs = [...css.matchAll(/\.activity-region\.demande > \.neon-band > \.neon-head \{([^}]*)\}/g)].map((t) => t[1] ?? "");
+    assert.ok(blocs.length > 0, "la tête de la bande pendant une demande n'a plus de règle propre");
+    if (!blocs.some((bloc) => /overflow-x:\s*(auto|scroll)/.test(bloc))) return; // Sans défilement, rien à compenser.
+    assert.match(
+      css,
+      /\.activity-region\.demande > \.neon-band > \.neon-head \.btn:focus-visible \{\s*outline-offset: -2px;\s*\}/,
+      "la tête défile latéralement sans rembourrage : l'anneau de focus de ses commandes est rogné en haut et en bas",
+    );
   });
 });
 

@@ -17,7 +17,9 @@
 //   2. tous les moments sont parcourus (du premier au dernier, par [Moment suivant], qui se désactive au bout) : la carte dessine
 //      les deux délégations de la capture p1 (consignes « en même temps », résultats), puis [Tableau] ; captures des six tailles
 //      (Simple) ; Échap ferme ;
-//   3. ZÉRO requête : pendant toute la démonstration, la page n'envoie rien (journal réseau de l'onglet), et opencode ne reçoit ni
+//   3. ZÉRO requête : pendant toute la démonstration, la page n'envoie rien (journal réseau de l'onglet) — la relecture de SA
+//      PROPRE liste après un classement de fond (« GET /api/archive ») et une reconnexion de son flux (« GET /api/events »)
+//      sont comptées à part et consignées, la démonstration ne pouvant pas les émettre —, et opencode ne reçoit ni
 //      requête sur la conversation ouverte, ni demande d'IA autre que celles du classement automatique du cockpit (tâche de fond du
 //      serveur, indépendante de la page, qui peut tomber pendant une longue exécution du banc) ;
 //   4. aucune violation de la CSP, console muette ; P6 et P4 tenus (témoin ouvert avant la création de la conversation, fermé après
@@ -173,19 +175,28 @@ async function allerAuPremierMoment(page, total) {
 }
 
 /**
- * Zéro requête pendant la démonstration : la page ne fait que relire la liste des conversations (GET /api/conversations, base du
- * cockpit) si un événement du serveur tombe pendant ce temps (classement d'une autre conversation) ; elle n'envoie rien d'autre.
+ * Zéro requête pendant la démonstration : la page ne fait que relire SA PROPRE liste de conversations (« GET /api/archive »,
+ * `loadConversations` de ChatPage.tsx, reposée 500 ms après un « conversation.classified » ou « conversation.updated » du
+ * cockpit — le classement de fond d'une autre conversation) et, au besoin, rouvrir son flux d'événements
+ * (« GET /api/events », canal permanent ouvert bien avant la boîte) ; elle n'envoie rien d'autre. Ces deux lignes-là sont
+ * comptées à part et consignées, jamais confondues avec une requête de la démonstration, qui ne lit rien.
  * Côté opencode (« --faux ») : aucune requête sur la conversation, aucune demande d'IA hors du classement automatique.
  */
 async function exigerZeroRequete(ctx, rootId, debut, libelle) {
   const page = ctx.navigateur;
   await attendreReseauCalme(page, { calmeMs: 1_000 });
   const nouvelles = page.journalReseau().slice(debut.page);
-  const interdites = nouvelles.filter((l) => l.methode !== "GET" || new URL(l.url).pathname !== "/api/conversations");
+  const chemin = (l) => new URL(l.url).pathname;
+  const listeDuChat = (l) => l.methode === "GET" && chemin(l) === "/api/archive";
+  const fluxDeLaPage = (l) => l.methode === "GET" && chemin(l) === "/api/events";
+  const relectures = nouvelles.filter(listeDuChat).length;
+  const reconnexions = nouvelles.filter(fluxDeLaPage).length;
+  const interdites = nouvelles.filter((l) => !listeDuChat(l) && !fluxDeLaPage(l));
   const liste = interdites.map((l) => `${l.methode} ${l.url}`);
   exiger(interdites.length === 0, `la page a envoyé ${interdites.length} requête(s) pendant la démonstration : ${resume(liste)}`);
+  const compte = `0 requête de la page (${relectures} relecture(s) de la liste du chat, ${reconnexions} reconnexion(s) du flux)`;
   if (ctx.mode !== "faux") {
-    releve(ctx, `${libelle}, ${nouvelles.length} requête(s) de la page`);
+    releve(ctx, `${libelle}, ${compte}`);
     return;
   }
   const recues = (await ctx.opencodeRequests()).slice(debut.faux);
@@ -193,5 +204,5 @@ async function exigerZeroRequete(ctx, rootId, debut, libelle) {
   exiger(surLaConversation.length === 0, `opencode a reçu ${resume(surLaConversation.map((r) => r.pathname))} sur la conversation pendant la démonstration.`);
   const appelsIa = recues.filter((r) => String(r.method).toUpperCase() === "POST" && ROUTES_IA.test(r.pathname ?? "") && r.body?.agent !== "cockpit-classifier");
   exiger(appelsIa.length === 0, `demande(s) d'IA reçue(s) par opencode pendant la démonstration : ${resume(appelsIa.map((r) => r.pathname))}`);
-  releve(ctx, `${libelle}, ${nouvelles.length} requête(s) de la page, ${recues.length} requête(s) de fond reçues par opencode (aucune sur la conversation, aucun appel d'IA)`);
+  releve(ctx, `${libelle}, ${compte}, ${recues.length} requête(s) de fond reçues par opencode (aucune sur la conversation, aucun appel d'IA)`);
 }
