@@ -112,6 +112,15 @@ const PROPRIETAIRES: Readonly<Record<string, string>> = {
 
 const lire = (relatif: string) => fs.readFileSync(path.join(APP_DIR, relatif), "utf8");
 
+/**
+ * Refus d'une route 3d, sans recopier la phrase : statut, code, et « une phrase est là ». Les phrases sont dans revoir-texts.ts
+ * (T3d-b), que ce fichier n'importe pas (D-3d-27).
+ */
+const refus = ({ status, body }: { status: number; body: unknown }) => {
+  const rendu = body as { error?: unknown; code?: unknown; message?: unknown };
+  return { status, code: String(rendu.code), phrase: rendu.code === rendu.error && typeof rendu.message === "string" && rendu.message.length > 10 };
+};
+
 // --- Contrôles statiques (commentaires ignorés) --------------------------------------------------------------------------------
 
 /** Texte sans commentaires, lu de gauche à droite (recopié de core.test.ts). */
@@ -232,17 +241,22 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
   });
 
   it("aucun fichier de T3d-a n'importe un fichier d'un autre paquet de la vague 0 (D-3d-27)", () => {
+    // D-3d-27 ne vaut que pour la vague 0 : un squelette confié à un paquet d'une vague suivante (PROPRIETAIRES) lui appartient
+    // et lit alors légitimement les textes de T3d-b ou les modules de L28a. Les fichiers propres à T3d-a restent contrôlés.
+    const propres = FICHIERS_T3D_A.filter((fichier) => !Object.hasOwn(PROPRIETAIRES, fichier));
+    assert.ok(propres.length > 5, "les fichiers propres à T3d-a restent contrôlés");
     assert.deepEqual(
-      FICHIERS_T3D_A.flatMap((fichier) => importsCroises(fichier, lire(fichier))),
+      propres.flatMap((fichier) => importsCroises(fichier, lire(fichier))),
       [],
     );
   });
 
-  it("squelettes : « Propriétaire : Lxx » en première ligne ; composants qui rendent null", () => {
+  it("squelettes : « Propriétaire : Lxx » en première ligne ; un squelette encore vide rend null", () => {
     for (const [fichier, proprietaire] of Object.entries(PROPRIETAIRES)) {
       const source = lire(fichier);
       assert.equal((source.split("\n")[0] ?? "").replace(/\r$/, ""), `// Propriétaire : ${proprietaire}.`, fichier);
-      if (fichier.endsWith(".tsx")) assert.match(source, /\): null \{\n {2}return null;\n\}/, fichier);
+      // Un squelette rempli par son paquet ne porte plus la mention « Squelette T3d-a » : seule la ligne « Propriétaire » reste.
+      if (fichier.endsWith(".tsx") && source.includes("Squelette T3d-a")) assert.match(source, /\): null \{\n {2}return null;\n\}/, fichier);
     }
   });
 
@@ -279,7 +293,7 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
 const requetesFaux = (h: CockpitHarness, depuis: number) => h.fake.requests.slice(depuis).map((r) => `${r.method} ${r.pathname}`);
 
 describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
-  it("GET seulement, lecture seule, aucune requête à opencode : territoires 200, « Revoir » 404 / 400 / ?etat=1, consignes 404 / 400 / 200", async (t) => {
+  it("GET seulement, lecture seule, aucune requête à opencode : territoires 200, « Revoir » 404 / 400 / ?etat=1, consignes 404 / 400", async (t) => {
     const h = await startCockpit(t);
     const auth = h.headers.authed;
     const get = async (chemin: string) => {
@@ -301,18 +315,14 @@ describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
       assert.equal((await get(`/api/revoir/${invalide}?etat=1`)).status, 400, `${invalide} ?etat=1`);
     }
 
-    assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes/${CALL}`), {
-      status: 404,
-      body: { error: "consigne-absente", code: "consigne-absente" },
-    });
+    // Règle d'accès de « Revoir » avant toute lecture de consigne (L28d) : racine inconnue du port revoir → 404, pour les deux
+    // formes de la route. Le code est comparé, la phrase seulement présente : elle appartient à revoir-texts.ts (T3d-b).
+    assert.deepEqual(refus(await get(`/api/revoir/${ROOT}/consignes/${CALL}`)), { status: 404, code: "racine-inconnue", phrase: true });
     assert.equal((await get(`/api/revoir/${ROOT}/consignes/call.point`)).status, 400, "callId invalide");
     assert.equal((await get(`/api/revoir/${ROOT}/consignes/${"c".repeat(129)}`)).status, 400, "callId trop long");
     assert.equal((await get(`/api/revoir/ses.point/consignes/${CALL}`)).status, 400, "rootId invalide");
 
-    assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes?enfant=${ENFANT}`), {
-      status: 200,
-      body: { rootId: ROOT, enfant: ENFANT, consignes: [] },
-    });
+    assert.deepEqual(refus(await get(`/api/revoir/${ROOT}/consignes?enfant=${ENFANT}`)), { status: 404, code: "racine-inconnue", phrase: true });
     assert.equal((await get(`/api/revoir/${ROOT}/consignes?enfant=ses.point`)).status, 400, "enfant invalide");
     assert.equal((await get(`/api/revoir/${ROOT}/consignes`)).status, 400, "enfant absent");
     assert.equal((await get(`/api/revoir/ses.point/consignes?enfant=${ENFANT}`)).status, 400, "rootId invalide");
@@ -359,7 +369,7 @@ describe("salle de contrôle 3D (T3d-a) : routes neutres", () => {
     assert.equal(tous.cockpit.wiring.registrations.some((r) => r.key === "consignes-3d" || /salle|revoir|3d/.test(r.key)), false);
     // Routes 3d montées après toutes les routes 1.1 : elles répondent aussi avec tous les modules.
     assert.equal((await tous.call("GET", `/api/revoir/${ROOT}`, { headers: tous.headers.authed })).status, 404);
-    assert.equal((await tous.call("GET", `/api/revoir/${ROOT}/consignes?enfant=${ENFANT}`, { headers: tous.headers.authed })).status, 200);
+    assert.equal((await tous.call("GET", `/api/revoir/${ROOT}/consignes?enfant=${ENFANT}`, { headers: tous.headers.authed })).status, 404);
   });
 });
 
@@ -479,7 +489,7 @@ describe("salle de contrôle 3D (T3d-a) : buildSalle3dRoutes", () => {
     assert.equal(((await get("/api/salle-controle/territoires")).body as TerritoiresResponse).mode, "avance");
     assert.deepEqual(modes, ["simple", "simple", "avance"]);
     assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes/${CALL}`), { status: 200, body: consigne });
-    assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes/call_autre`), { status: 404, body: { error: "consigne-absente", code: "consigne-absente" } });
+    assert.deepEqual(refus(await get(`/api/revoir/${ROOT}/consignes/call_autre`)), { status: 404, code: "consigne-absente", phrase: true });
     assert.deepEqual(await get(`/api/revoir/${ROOT}/consignes?enfant=${ENFANT}`), { status: 200, body: { rootId: ROOT, enfant: ENFANT, consignes: [consigne] } });
   });
 });

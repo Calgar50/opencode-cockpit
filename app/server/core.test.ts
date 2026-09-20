@@ -12,7 +12,7 @@ import { type ArchiveService, buildDigest, type Conversation, type ConversationD
 import { catalogLite, ModelCatalog } from "./catalog.ts";
 import { Classifier, extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
 import { ControlService } from "./control.ts";
-import { openDb, openMemoryDb } from "./db.ts";
+import { MIGRATIONS, openDb, openMemoryDb } from "./db.ts";
 import { type AppEnv, EnvError, isValidConfirmedAt, loadEnv, parseAllowedProviders, parseLocalAccess } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { PathError, readInside, safeSegment, slugify } from "./fsutil.ts";
@@ -1643,7 +1643,7 @@ describe("profils de droits et catalogue partagés", () => {
 describe("base", () => {
   it("openMemoryDb atteint user_version 5 avec item_meta et chat_turns", () => {
     const db = openMemoryDb();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
     const names = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE name IN ('item_meta', 'chat_turns', 'idx_chat_turns_session') ORDER BY name")
@@ -1669,12 +1669,13 @@ describe("base", () => {
         DROP TABLE autonomy_decisions; ALTER TABLE sessions DROP COLUMN agent; ALTER TABLE sessions DROP COLUMN plancher;
         ALTER TABLE usage DROP COLUMN variant; ALTER TABLE prompts DROP COLUMN kind; ALTER TABLE item_meta DROP COLUMN methods;
         ALTER TABLE item_meta DROP COLUMN role;
-        DROP TABLE activity_facts; DROP TABLE omo_room_starts; ALTER TABLE sessions DROP COLUMN instance;`);
+        DROP TABLE activity_facts; DROP TABLE omo_room_starts; ALTER TABLE sessions DROP COLUMN instance;
+        DROP TABLE revoir_consignes;`); // [3d] ajout de la migration 8, retiré comme les autres (itération 3, L28d)
       old.exec("PRAGMA user_version = 2");
       old.close();
       const db = openDb(dir);
       try {
-        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
         assert.deepEqual({ ...(db.prepare("SELECT preview FROM prompts WHERE message_id = 'msg_1'").get() as object) }, { preview: "" });
         assert.equal((db.prepare("PRAGMA secure_delete").get() as { secure_delete: number }).secure_delete, 1);
       } finally {

@@ -1,0 +1,75 @@
+/* Propriétaire : L28d. Panneau de la consigne gardée localement, dans « Revoir » (U2, D-3d-30) : copie bornée et masquée du texte
+   envoyé à un sous-assistant. Aucune animation (salle3d-animations.test.ts) : le panneau s'ouvre à la demande, jamais pendant un
+   défilement. Le texte défile dans sa carte, garde ses retours à la ligne et ses espaces, et ne déborde jamais de la fenêtre :
+   une consigne de 8 000 caractères ne doit pas pousser la page. À 400 px, la carte garde ses marges et le texte défile seul. */
+
+.consigne-revoir {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.consigne-revoir-titre {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.consigne-revoir-sous-titre {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* Phrase « Copie gardée par le cockpit… » et phrases d'état (chargement, consigne absente, refus). */
+.consigne-revoir-copie,
+.consigne-revoir-etat {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.consigne-revoir-bloc {
+  min-width: 0;
+}
+
+/* Texte de la consigne : nœud de texte rendu par React, retours à la ligne gardés, coupure des mots très longs. */
+.consigne-revoir-texte {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+/* Mention « Consigne tronquée : … » : jamais la couleur seule, la phrase suffit à la lire. */
+.consigne-revoir-tronquee {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.consigne-revoir-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0;
+}

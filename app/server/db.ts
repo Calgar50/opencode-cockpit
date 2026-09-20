@@ -375,6 +375,36 @@ export const MIGRATIONS: readonly string[] = [
     fin TEXT
   );
   `,
+  // [3d] début : migrations réservées 6 et 7, migration 8 (itération 3, L28d)
+  // Numéros réservés (A2, D-3d-23), jamais « dans l'ordre de fusion » : 6 = salle, 7 = équipes, 8 = salle de contrôle 3D et
+  // « Revoir », 9 = construction. La boucle migrate est positionnelle : pour que la 8 garde son numéro sur cette branche, les
+  // entrées 6 et 7 y sont un commentaire SQL seul, appliqué sans effet. À la grande fusion, chacune est remplacée par la vraie
+  // migration de son propriétaire ; les bases qui ont vu une entrée vide sont des bases de branche, jetables.
+  `
+  -- 6 : réservée à la salle (plan 2 bis, T3c) ; vide sur cette branche (A2)
+  `,
+  `
+  -- 7 : réservée aux équipes (plan it4) ; vide sur cette branche (A2)
+  `,
+  // 1.1 (itération 3, U2) : copie locale des consignes transmises à un sous-assistant, lue par « Revoir » sans requête à opencode.
+  // Ajouts seulement, comme la migration 5, et aucun objet des migrations 6 et 7 : la 8 s'applique même quand une entrée réservée
+  // est vide, quel que soit l'ordre des fusions.
+  `
+  CREATE TABLE revoir_consignes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id TEXT NOT NULL,
+    parent_session_id TEXT NOT NULL,         -- session qui a confié le travail
+    enfant_session_id TEXT,                  -- session qui a reçu la consigne ; NULL si inconnue à l'envoi
+    call_id TEXT NOT NULL,                   -- callID de la partie task, ou clé d'étape d'équipe (ID_RE)
+    texte TEXT NOT NULL,                     -- masqué et borné ; jamais journalisé ; supprimé avec la conversation
+    longueur INTEGER NOT NULL,               -- points de code du texte d'origine, avant masquage et coupe
+    tronque INTEGER NOT NULL DEFAULT 0,      -- 1 : mention « Consigne tronquée » à l'affichage
+    at INTEGER NOT NULL,
+    UNIQUE (parent_session_id, call_id)
+  );
+  CREATE INDEX idx_revoir_consignes_root ON revoir_consignes(root_id, call_id);
+  `,
+  // [3d] fin
 ];
 
 /** Ligne de la table item_meta (migration 2). */
