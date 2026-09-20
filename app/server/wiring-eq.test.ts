@@ -299,18 +299,26 @@ describe("câblage des équipes : ports neutres et apply", () => {
     assert.equal(await p.guards.stopForCap("run"), undefined);
   });
 
-  it("production : groupe de routes « teams » (L37a) monté ; verrou et prédicat inscrits mais neutres ; aucune dérivation, abonnement ni démarrage", async () => {
+  // Les modules réels arrivent paquet par paquet et ajoutent leurs propres inscriptions (L37a : routes « teams » ; L37b :
+  // dérivation, abonnement, démarrage et routes « team-runs » du runner). Le test porte donc sur les inscriptions attendues,
+  // présentes UNE fois chacune, et sur leur neutralité au repos, jamais sur l'absence des autres.
+  it("production (tous les modules) : routes, verrou, décorateur, prédicat et inscriptions du runner posés une fois, neutres tant que rien ne travaille", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
     const wiring = buildEquipes(deps);
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
-    // Mise à jour L37a (V2) : le module « teams » n'est plus un squelette, il monte son groupe de routes à son rang. Les autres
-    // modules restent des squelettes jusqu'à leur paquet (L37p, L37b, L37c, L39b).
-    assert.deepEqual(
-      wiring.registrations.map((r) => `${r.kind}/${r.module}`),
-      ["routes/teams", "proxyGuard/teamGuards", "stopTreeDecorator/teamGuards", "reloadBusy/teamRunner"],
-    );
-    assert.deepEqual([wiring.derivations, wiring.subscriptions, wiring.startup], [[], [], []]);
-    assert.equal(wiring.routes.length, 1, "seul le groupe « teams » est monté");
+    const inscriptions = wiring.registrations.map((r) => `${r.kind}/${r.key}/${r.module}`);
+    for (const attendue of [
+      "routes/teams/teams",
+      "proxyGuard/proxyGuard/teamGuards",
+      "stopTreeDecorator/stopTreeDecorator/teamGuards",
+      "reloadBusy/reloadBusy/teamRunner",
+      "derivation/teamRunner/teamRunner",
+      "hub/opencode.connection/teamRunner",
+      "startup/startup/teamRunner",
+      "routes/team-runs/teamRunner",
+    ]) {
+      assert.equal(inscriptions.filter((entry) => entry === attendue).length, 1, `${attendue} : une seule fois`);
+    }
     const req: TeamProxyGuardRequest = { entree: "proxy", method: "POST", sub: `/session/${ROOT}/prompt_async`, directory: null, sessionId: ROOT, permissionId: null };
     assert.equal(await wiring.proxyGuard(req), null);
     wiring.apply(c11);
