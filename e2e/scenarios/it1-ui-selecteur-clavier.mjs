@@ -2,8 +2,9 @@
 //
 // Spécification §4.13 et §5.5 (sélecteur accessible : bouton de menu APG, éléments `menuitemradio`, choix indisponibles atteignables
 // avec leur raison, aucun raccourci global), §4.9 point 1 (« Plan d'abord (nouvelle conversation) » depuis une conversation
-// existante), P7. Itération 1 (L6s) : « Demander à chaque fois » et « Plan d'abord » s'appliquent ; les choix automatiques restent
-// désactivés avec leur raison jusqu'à L12a.
+// existante), P7. Depuis la bascule de la porte I1 (train de la vague 3 de l'itération 2) et le sélecteur à quatre choix de L12a,
+// les quatre choix s'appliquent dans une conversation ordinaire ; les choix désactivés, avec leur raison, se lisent dans la
+// conversation de PLAN, dont le choix « Plan d'abord » est permanent (raison « racine-de-plan »).
 //
 // Aucune souris dans ce scénario : seulement des touches envoyées au navigateur (Tab, flèches, Début, Fin, Entrée, Échap, une lettre).
 // La conversation est préparée par l'API et ouverte par son adresse (un lien) ; les règles d'utilisation, si la fenêtre bloquante est
@@ -11,13 +12,14 @@
 //
 // Ce que le scénario établit (tous les modes du banc : le sélecteur n'appelle aucune IA) :
 //   1. la tabulation atteint le bouton « Autonomie : Demander à chaque fois » de l'en-tête ;
-//   2. Flèche bas ouvre le menu sur le premier choix, coché ; Flèche bas passe au choix suivant, désactivé avec sa raison ; Entrée
-//      sur ce choix ne fait rien (menu ouvert, aucune requête) ; Fin et Début vont au dernier et au premier choix ; la lettre « p »
-//      va à « Plan d'abord (nouvelle conversation) » ; Échap ferme le menu et rend le focus au bouton ;
+//   2. Flèche bas ouvre le menu sur le premier choix, coché ; Flèche bas passe au choix suivant, qui s'applique désormais et n'a
+//      donc aucune raison à lire ; Fin et Début vont au dernier et au premier choix ; la lettre « p » va à « Plan d'abord
+//      (nouvelle conversation) » ; Échap ferme le menu et rend le focus au bouton ;
 //   3. au clavier, « Plan d'abord (nouvelle conversation) » + Entrée crée la conversation de plan (POST /api/plans) et l'ouvre : son
 //      sélecteur affiche « Plan d'abord » ;
 //   4. dans cette conversation, le focus est resté sur le bouton du sélecteur (jamais sur la page) ; Flèche haut ouvre le menu sur le
-//      dernier choix ; Tab le ferme et la tabulation continue hors du menu ;
+//      dernier choix, DÉSACTIVÉ avec sa raison (« racine-de-plan ») ; Entrée n'y fait rien (menu ouvert, aucune requête) ; Tab
+//      ferme le menu et la tabulation continue hors du menu ;
 //   5. aucune violation de la CSP, console muette ; P6 et P4 tenus (témoin ouvert avant la création de la conversation, fermé après
 //      celle de la conversation de plan).
 import {
@@ -54,17 +56,13 @@ export async function run(ctx) {
     await page.touche("ArrowDown");
     await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
     await page.touche("ArrowDown");
-    const modifications = await attendreFocusMenu(page, { libelle: "Modifications automatiques", coche: false, desactive: true, position: 2 });
-    exiger(modifications.raison !== "", "choix désactivé sans raison lue.");
-    const avant = page.journalReseau().length;
-    await page.touche("Enter");
-    await attendre(400);
-    exiger(await menuOuvert(page), "Entrée sur un choix désactivé a fermé le menu.");
-    // Seules comptent les écritures du sélecteur (choix, plan) : la page peut résoudre l'IA de la saisie au même moment.
-    const envoyees = page.journalReseau().slice(avant).filter((l) => /\/api\/(conversations\/[^/]+\/autonomie|plans)$/.test(new URL(l.url).pathname));
-    exiger(envoyees.length === 0, `Entrée sur un choix désactivé a envoyé ${resume(envoyees.map((l) => `${l.methode} ${l.url}`))}`);
+    // Porte I1 basculée (train de la vague 3, it2) : les deux choix automatiques s'appliquent, donc aucune raison à lire ici.
+    // Entrée n'est PAS frappée sur eux : elle ouvrirait la confirmation de L12a et changerait le choix de la conversation ; le
+    // refus d'un choix désactivé est joué plus bas, dans la conversation de plan, où trois choix restent fermés.
+    const modifications = await attendreFocusMenu(page, { libelle: "Modifications automatiques", coche: false, desactive: false, position: 2 });
+    exiger(modifications.raison === "", `choix disponible annoncé avec une raison : ${resume(modifications)}`);
     await page.touche("End");
-    await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
+    await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: false, position: 4 });
     await page.touche("Home");
     await attendreFocusMenu(page, { libelle: "Demander à chaque fois", coche: true, desactive: false, position: 1 });
     await page.taper("p");
@@ -97,6 +95,17 @@ export async function run(ctx) {
       libelle: "focus gardé sur le bouton du sélecteur après l'ouverture de la conversation de plan",
     });
     await page.touche("ArrowUp");
+    const ferme = await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
+    // Choix désactivé atteignable avec SA raison (§5.5) : dans une conversation de plan, « racine-de-plan » ferme les trois
+    // autres choix. Entrée n'y fait rien : le menu reste ouvert et rien n'est envoyé.
+    exiger(ferme.raison !== "", "choix désactivé sans raison lue.");
+    const avant = page.journalReseau().length;
+    await page.touche("Enter");
+    await attendre(400);
+    exiger(await menuOuvert(page), "Entrée sur un choix désactivé a fermé le menu.");
+    // Seules comptent les écritures du sélecteur (choix, plan) : la page peut résoudre l'IA de la saisie au même moment.
+    const envoyees = page.journalReseau().slice(avant).filter((l) => /\/api\/(conversations\/[^/]+\/autonomie|plans)$/.test(new URL(l.url).pathname));
+    exiger(envoyees.length === 0, `Entrée sur un choix désactivé a envoyé ${resume(envoyees.map((l) => `${l.methode} ${l.url}`))}`);
     await attendreFocusMenu(page, { libelle: "Autonome avec contrôle", coche: false, desactive: true, position: 4 });
     await page.touche("Tab");
     await page.attendreQue(`!document.querySelector('[role="menu"]') && document.activeElement !== document.body && !document.activeElement.closest('.autonomy-selector-header')`, {
