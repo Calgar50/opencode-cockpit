@@ -73,3 +73,29 @@
   justify-content: flex-end;
   margin: 0;
 }
+
+/* --- Couleurs forcées (L33 ; §5.5 l.921) -------------------------------------------------
+   La carte de la consigne et le bloc du texte se voyaient par leur fond, qui disparaît en mode contrasté : ils prennent
+   un TRAIT en couleur système. La mention « Consigne tronquée : … » est une phrase, jamais une couleur seule. */
+@media (forced-colors: active) {
+  .consigne-revoir,
+  .consigne-revoir-texte {
+    border-color: CanvasText;
+  }
+  .consigne-revoir-actions button:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* --- Mouvement réduit (L33 ; §5.5 l.922) -------------------------------------------------
+   Le panneau ne déclare aucune animation : ce bloc est une garde. Le texte de la consigne, qui défile dans sa carte
+   (8 000 caractères au plus, D-3d-30), ne défile jamais en glissant, quel que soit le réglage d'une autre feuille. */
+@media (prefers-reduced-motion: reduce) {
+  .consigne-revoir,
+  .consigne-revoir-texte {
+    animation: none;
+    transition: none;
+    scroll-behavior: auto;
+  }
+}

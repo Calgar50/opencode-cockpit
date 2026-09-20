@@ -4,7 +4,7 @@
      @media (prefers-reduced-motion: no-preference), avec un nombre d'itérations écrit (salle3d-animations.test.ts). La pulsation
      des nœuds est réservée à la 3D, dans le moteur three : rien ne pulse ici.
    - Couleurs : jetons de styles.css seulement, pour suivre le thème clair et le thème sombre ; les couleurs forcées sont
-     traitées par L33 (blocs forced-colors), qui n'entre pas ici.
+     traitées en fin de feuille par L33 (blocs forced-colors et mouvement réduit), qui n'entre pas ailleurs.
    - 900 px : le tableau passe sous la vue. 400 px (§5.6 l.928) : LISTE SEULE — la carte 2D, le tableau et la scène 3D sont
      retirés, la liste des assistants reste la vérité. */
 
@@ -174,5 +174,54 @@
 
   .zoom-conv-panneau dl {
     grid-template-columns: 1fr;
+  }
+}
+
+/* --- Couleurs forcées (L33 ; §5.5 l.921, §5.7.1) -----------------------------------------
+   La carte 2D du zoom 2 est celle de la bande (NeonCarte), et toutes ses couleurs passent par un jeton `--neon-*`.
+   neon.css redéfinit ces jetons en couleurs système, mais SOUS `.neon-band` seulement : dans la salle, la carte n'a pas
+   ce parent, et `.neon-map { forced-color-adjust: none }` — règle générale de neon.css — lui fait garder ses couleurs
+   néon. Les jetons sont donc redéfinis ici, pour la même carte et de la même façon : formes, pointillés, hachures,
+   chevrons et losanges gardent le sens, l'arrêt, le figé et le décor passent en GrayText. */
+@media (forced-colors: active) {
+  .zoom-conv {
+    --neon-fond: Canvas;
+    --neon-grille: GrayText;
+    --neon-territoire: CanvasText;
+    --neon-texte: CanvasText;
+    --neon-texte-discret: CanvasText;
+    --neon-vous: CanvasText;
+    --neon-consigne: CanvasText;
+    --neon-resultat: CanvasText;
+    --neon-attente: CanvasText;
+    --neon-auto: CanvasText;
+    --neon-refus: CanvasText;
+    --neon-extension: CanvasText;
+    --neon-acteur: CanvasText;
+    --neon-arret: GrayText;
+  }
+  /* Étiquette « Revoir : rien n'est relancé ni facturé » : sa pastille se voyait par son fond, qui disparaît. */
+  .zoom-conv-bandeau {
+    border: 1px solid CanvasText;
+  }
+  .zoom-conv-panneau {
+    border-color: CanvasText;
+  }
+  .zoom-conv-consigne:focus-visible,
+  .zoom-conv-liste button:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* --- Mouvement réduit (L33 ; §5.5 l.922) -------------------------------------------------
+   L'apparition du panneau du zoom 3 est déjà sous `no-preference` : elle est coupée NOMMÉMENT ici, pour que la salle ne
+   dépende pas de la règle générale de styles.css (feuille d'un autre paquet). Le tableau défile sans lissage. */
+@media (prefers-reduced-motion: reduce) {
+  .zoom-conv-panneau {
+    animation: none;
+  }
+  .zoom-conv-tableau {
+    scroll-behavior: auto;
   }
 }
