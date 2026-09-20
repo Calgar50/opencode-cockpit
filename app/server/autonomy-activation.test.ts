@@ -3,8 +3,9 @@
 // (L4b) et le choix d'autonomie (L6a) sont réels, les autres ports restent neutres.
 // Les deux branches de la porte I1 passent par la fabrique exportée (installActivation), jamais par wiring-11.ts,
 // contracts-11.ts ni le harnais :
-// - « activation » (le module livré) lit c11.activationOuverte, donc la constante du dépôt : il doit refuser « a-venir » même
-//   pour une configuration parfaitement conforme, et rester inerte comme le port neutre ;
+// - MODULE_FERME est le module livré, porte fermée : il doit refuser « a-venir » même pour une configuration parfaitement
+//   conforme, et rester inerte comme le port neutre. Depuis la bascule du train de la vague 3 (it2), ACTIVATION_OUVERTE vaut
+//   true, donc le module de production ouvre la porte : la branche fermée passe par la fabrique, comme l'autre avant elle ;
 // - MODULE_OUVERT est le même module avec la porte ouverte : verdicts réels et crochet d'envoi.
 // Un client qui fait échouer une lecture (FailingClient) tient les cas « configuration illisible » : le faux reste fidèle à
 // opencode 1.18.30.
@@ -28,6 +29,7 @@ import type { ActivationRefusalCode, ConversationAutonomyView } from "./shared/a
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import { type FakeAgent, nativeAgents, rulesFromConfig } from "./test-support/fake-opencode.ts";
 import { until, within } from "./test-support/helpers.ts";
+import { ACTIVATION_OUVERTE } from "./wiring-11.ts";
 
 const MODEL = { providerID: "github-copilot", modelID: "gpt-5-mini" };
 /** Profil livré (docker/opencode/opencode.default.jsonc) : conforme, avec l'exception « bash pwd » du §4.10. */
@@ -37,6 +39,16 @@ const PRUDENT = PERMISSION_PRESETS.prudent.permission;
 const MODULE_OUVERT: Cockpit11Module = {
   name: "activation",
   install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: true }),
+};
+
+/**
+ * Le module livré, porte FERMÉE : depuis la bascule du train de la vague 3 (it2), `ACTIVATION_OUVERTE` vaut true, si bien que
+ * le module « activation » de production ouvre la porte. La branche fermée garde donc son test par la fabrique, comme la
+ * branche ouverte l'avait avant la bascule : c'est ce que le cockpit rendrait si la porte était refermée (§2.6).
+ */
+const MODULE_FERME: Cockpit11Module = {
+  name: "activation",
+  install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: false }),
 };
 
 /** Client opencode dont certaines lectures échouent (« GET /config »), pour les relevés impossibles. */
@@ -60,7 +72,7 @@ async function start(t: TestContext, options: { ouverte?: boolean } & CockpitHar
   const { ouverte = true, ...rest } = options;
   let client: FailingClient | null = null;
   const h = await startCockpit(t, {
-    modules: [ouverte ? MODULE_OUVERT : "activation", "floors", "facts", "conversationAutonomy"],
+    modules: [ouverte ? MODULE_OUVERT : MODULE_FERME, "floors", "facts", "conversationAutonomy"],
     ...rest,
     deps: (base) => {
       client = new FailingClient(base.env);
@@ -200,8 +212,8 @@ describe("activation : relevé des faits en lecture seule", () => {
 describe("activation : porte I1 (ACTIVATION_OUVERTE)", () => {
   it("fermée, configuration parfaitement conforme : le port répond comme le port neutre, sans aucune lecture, et n'inscrit aucun crochet", async (t) => {
     const { h } = await start(t, { ouverte: false });
-    // La constante du dépôt, lue par le module : ce test échoue si la bascule est faite sans lui.
-    assert.equal(h.cockpit.c11.activationOuverte, false);
+    // La constante du dépôt vaut true depuis la bascule du train de la vague 3 : la porte fermée se joue donc par la fabrique.
+    assert.equal(ACTIVATION_OUVERTE, true);
     assert.deepEqual(
       h.cockpit.wiring.registrations.filter((r) => r.kind === "hook").map((r) => `${r.key}/${r.module}`),
       ["createSession/floors", "sessionCreated/floors", "beforeBilledSend/floors"],

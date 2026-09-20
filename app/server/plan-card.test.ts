@@ -404,10 +404,13 @@ async function attempt(planId: string, action: PlanExecutionBody["choix"], plafo
 }
 
 describe("carte de plan : parcours avec le cockpit (client du navigateur, harnais, faux opencode)", () => {
+  // Porte I1 basculée au train de la vague 3 (it2) : la constante du dépôt est ouverte. Ce parcours garde le cas de la porte
+  // FERMÉE, avec l'amorçage qu'un cockpit à porte fermée sert ; côté serveur, le port neutre d'activation (module non déclaré
+  // par ce harnais) refuse toujours « a-venir », si bien que la carte et le serveur disent la même chose.
   it("porte I1 fermée : phrase seule avant la réponse, carte après ; 428 → confirmation, confirmé → 409 « a-venir » sans conversation ; « demander » → brouillon", async (t) => {
     const h = await start(t);
-    const boot: BootstrapAutonomy = { interrupteur: true, activationOuverte: h.cockpit.c11.activationOuverte };
-    assert.equal(boot.activationOuverte, false);
+    assert.equal(h.cockpit.c11.activationOuverte, true, "constante basculée : l'amorçage fermé est ici celui d'une porte refermée");
+    const boot: BootstrapAutonomy = { interrupteur: true, activationOuverte: false };
     const planId = await newPlan(h);
     assert.equal((await cardOf(h, planId, boot)).affichage, "note");
     await answer(h, planId, "1. Lire le code.\n2. Écrire les tests.");

@@ -274,12 +274,14 @@ describe("croisements it1 V2 : arrêt de l'arbre sur le câblage complet", () =>
 
 describe("croisements it1 V2 : choix d'autonomie et faits", () => {
   const allow: ActivationPort = { check: async () => ({ ok: true }) };
+  /** Porte I1 refermée : le refus que le port réel rendait avant la bascule du train de la vague 3 (it2). */
+  const aVenir: ActivationPort = { check: async () => ({ ok: false, raison: "a-venir" }) };
   const putChoice = (h: CockpitHarness, rootId: string, body: unknown, headers: Record<string, string>) =>
     h.call("PUT", `/api/conversations/${rootId}/autonomie`, { headers, body });
   const choiceFacts = (facts: readonly ActivityFact[]) => facts.filter((f) => f.kind === "choix").map((f) => [f.sessionId, f.data]);
 
   it("resserrer (Autonome → Modifications → Demander) : immédiat, fait « choix » écrit par le magasin réel, diffusé, relu par L4c ; aucune scène d'assistant sur un choix seul", async (t) => {
-    // Activation ouverte par surcharge de port (porte I1 fermée en production : voir le test suivant).
+    // Activation ouverte par surcharge de port : ce test ne dépend d'aucune configuration d'assistant (voir le test suivant).
     const h = await startCockpit(t, { modules: "tous", ports: { activation: allow } });
     const root = await trackedRoot(h, "Choix croisé");
 
@@ -314,20 +316,37 @@ describe("croisements it1 V2 : choix d'autonomie et faits", () => {
     h.assertNoGlobalRestart();
   });
 
-  it("porte I1 sur le câblage complet : relâcher → 428, puis 409 « a-venir » confirmé, rien d'écrit ; COCKPIT_AUTONOMY=off : demander 200, choix automatiques 403", async (t) => {
+  // Porte I1 BASCULÉE au train de la vague 3 de l'itération 2 : sur le câblage complet, un choix automatique confirmé passe
+  // désormais. Le refus « a-venir » reste joué ici par un port d'activation qui refuse — la porte refermée —, et le avant/après
+  // de la constante elle-même est tenu par croisements-it2-v3.test.ts.
+  it("porte I1 ouverte sur le câblage complet : relâcher → 428, puis 200 confirmé et fait « choix » ; porte refermée → 409 « a-venir », rien d'écrit ; COCKPIT_AUTONOMY=off : demander 200, choix automatiques 403", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
     const root = await trackedRoot(h, "Porte I1");
     for (const choix of ["modifications", "autonome"]) {
       assert.equal((await putChoice(h, root.id, { choix }, h.headers.mutating)).status, 428);
-      const refused = await putChoice(h, root.id, { choix }, h.headers.confirmed);
+      const ouvert = await putChoice(h, root.id, { choix }, h.headers.confirmed);
+      assert.equal(ouvert.status, 200, ouvert.body);
+      assert.equal(ouvert.json<ConversationAutonomyView>().choix, choix);
+      assert.equal(h.cockpit.c11.ports.conversationAutonomy.choiceOf(root.id), choix);
+    }
+    assert.deepEqual(choiceFacts(await readFacts(h, root.id)), [
+      [root.id, { choix: "modifications", cause: "clic" }],
+      [root.id, { choix: "autonome", cause: "clic" }],
+    ]);
+
+    const ferme = await startCockpit(t, { modules: "tous", ports: { activation: aVenir } });
+    const fermeRoot = await trackedRoot(ferme, "Porte refermée");
+    for (const choix of ["modifications", "autonome"]) {
+      assert.equal((await putChoice(ferme, fermeRoot.id, { choix }, ferme.headers.mutating)).status, 428);
+      const refused = await putChoice(ferme, fermeRoot.id, { choix }, ferme.headers.confirmed);
       assert.equal(refused.status, 409, refused.body);
       assert.deepEqual(
         { error: refused.json<{ error: string }>().error, raison: refused.json<{ raison: string }>().raison },
         { error: "autonomie-indisponible", raison: "a-venir" },
       );
     }
-    assert.deepEqual(choiceFacts(await readFacts(h, root.id)), [], "aucun fait « choix »");
-    assert.equal(h.cockpit.c11.ports.conversationAutonomy.choiceOf(root.id), "demander");
+    assert.deepEqual(choiceFacts(await readFacts(ferme, fermeRoot.id)), [], "aucun fait « choix »");
+    assert.equal(ferme.cockpit.c11.ports.conversationAutonomy.choiceOf(fermeRoot.id), "demander");
 
     const off = await startCockpit(t, { modules: "tous", env: { autonomy: false }, ports: { activation: allow } });
     const offRoot = await trackedRoot(off, "Autonomie coupée");

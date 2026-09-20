@@ -281,10 +281,13 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // après le plancher, et leurs routes. Itération 2 : les demandes autonomes (L10a) inscrivent leur crochet d'envoi, après
     // l'activation, le cycle d'autonomie (L10a) sa dérivation et son abonnement opencode.connection, et la surveillance des
     // plafonds (L10c) sa dérivation, son abonnement usage.updated et sa reprise au démarrage. Le reste reste au repos.
-    const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 3, beforeOnceRelay: 1, abort: 1 };
+    // Porte I1 basculée au train de la vague 3 (it2) : l'activation (L10d) inscrit son crochet d'envoi, entre les plans et les
+    // demandes ; beforeBilledSend passe donc de 3 à 4.
+    const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 4, beforeOnceRelay: 1, abort: 1 };
     assert.deepEqual(wiring.registrations, [
       ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      { kind: "hook", key: "beforeBilledSend", module: "activation" },
       { kind: "hook", key: "beforeBilledSend", module: "requests" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
@@ -308,7 +311,7 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked[step] ?? 0, step);
     assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [5, 3, 2]);
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
-    assert.equal(ACTIVATION_OUVERTE, false);
+    assert.equal(ACTIVATION_OUVERTE, true, "porte I1 basculée au train de la vague 3 de l'itération 2");
     assert.equal(wiring.c11.reloadBusy(), false);
     await wiring.c11.ports.internalAgents.ensureAll();
 
@@ -323,7 +326,7 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       ],
       interrupteur: h.deps.env.autonomy,
       controleIa: h.settings.get().budget.autonomie.controleIa,
-      activationOuverte: false,
+      activationOuverte: true,
     });
     assert.equal((await h.call("GET", "/api/diagnostic/activite")).status, 401, "sans cookie de session");
     assert.deepEqual(h.fake.failures, []);

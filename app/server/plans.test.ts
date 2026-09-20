@@ -706,9 +706,11 @@ describe("Plan d'abord : POST /api/plans/:id/execution", () => {
     assert.equal(activation.calls.length, 0, "activation non consultée sans confirmation");
   });
 
-  it("avec l'en-tête, activation fermée (ACTIVATION_OUVERTE faux, port neutre) → 409 avec la raison, aucune racine", async (t) => {
+  it("avec l'en-tête, activation fermée (port neutre, module d'activation non déclaré) → 409 avec la raison, aucune racine", async (t) => {
     const { h } = await start(t);
-    assert.equal(h.cockpit.c11.activationOuverte, false);
+    // Porte I1 basculée au train de la vague 3 (it2) : le cadre la dit ouverte, mais le port NEUTRE refuse toujours « a-venir »
+    // — c'est ce que L6b doit rendre tant que le module d'activation n'est pas déclaré par le harnais (§2.2).
+    assert.equal(h.cockpit.c11.activationOuverte, true);
     const { rootId: planId } = await newPlan(h);
     await answer(h, planId, "Plan.");
     const before = creations(h);

@@ -265,10 +265,11 @@ describe("L1a : démarrage, dérivations, abonnements, routes", () => {
     const on = await startCockpit(t);
     const boot = await on.call("GET", "/api/bootstrap", { headers: on.headers.authed });
     assert.equal(boot.status, 200, boot.body);
-    assert.deepEqual(boot.json<{ autonomy: unknown }>().autonomy, { interrupteur: true, activationOuverte: false });
+    // activationOuverte : true depuis la bascule de la porte I1 au train de la vague 3 (it2) ; l'amorçage la rend telle quelle.
+    assert.deepEqual(boot.json<{ autonomy: unknown }>().autonomy, { interrupteur: true, activationOuverte: true });
     const off = await startCockpit(t, { env: { autonomy: false } });
     const bootOff = await off.call("GET", "/api/bootstrap", { headers: off.headers.authed });
-    assert.deepEqual(bootOff.json<{ autonomy: unknown }>().autonomy, { interrupteur: false, activationOuverte: false });
+    assert.deepEqual(bootOff.json<{ autonomy: unknown }>().autonomy, { interrupteur: false, activationOuverte: true });
   });
 
   it("dérivations : appel synchrone avant la file, hors événements traités et pour une session cachée ; une dérivation qui lève n'arrête ni les suivantes, ni la diffusion, ni la file, ni le relais", async (t) => {

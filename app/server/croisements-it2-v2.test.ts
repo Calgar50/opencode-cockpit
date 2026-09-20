@@ -16,16 +16,17 @@
 //      d'opencode est refusé 409 tant que l'examen dure.
 // L'exécution d'un plan en choix automatique (428 puis 409 « a-venir ») est déjà jouée sur le câblage complet par
 // croisements-it1-v3.test.ts, qui installe désormais le module d'activation réel : elle n'est pas redite ici.
-// ACTIVATION_OUVERTE n'est JAMAIS touchée : la porte ouverte passe par installActivation, comme dans les tests de L10d.
+// Les deux états de la porte passent par installActivation, comme dans les tests de L10d.
 //
-// À LA BASCULE D'`ACTIVATION_OUVERTE` (train de la vague 3), À FAIRE AU MÊME COMMIT :
-//   a. ajouter { kind: "hook", key: "beforeBilledSend", module: "activation" } après « plans » dans les deux listes exhaustives
+// BASCULE D'`ACTIVATION_OUVERTE` FAITE au train de la vague 3 de l'itération 2 (20/09/2026) ; la liste laissée ici par le train
+// de la vague 2 a été suivie au même commit :
+//   a. { kind: "hook", key: "beforeBilledSend", module: "activation" } ajouté après « plans » dans les deux listes exhaustives
 //      des inscriptions de production (wiring-11.test.ts, suite « production (tous les modules réels) » ; et
-//      croisements-it1-v0.test.ts), et porter le compte beforeBilledSend de 3 à 4 ;
-//   b. la première suite de CE fichier décrit la porte FERMÉE : elle deviendra fausse, point par point (liste des crochets,
-//      409 « a-venir », choix indisponibles, décision « a-venir »). L'intégrateur de la bascule la retourne — la deuxième suite
-//      donne déjà les valeurs attendues porte ouverte — ou la retire en la remplaçant par les croisements de sa propre vague ;
-//   c. la deuxième suite, elle, reste vraie telle quelle : elle joue déjà le câblage de production, porte ouverte.
+//      croisements-it1-v0.test.ts), compte beforeBilledSend porté de 3 à 4 ;
+//   b. la première suite de CE fichier décrit la porte FERMÉE : elle est retournée, non retirée — elle tourne désormais sur
+//      TOUS_PORTE_FERMEE, le câblage de production avec la seule porte refermée, et reste vraie point par point ;
+//   c. la deuxième suite est restée vraie telle quelle : elle joue le câblage de production, porte ouverte, qui est maintenant
+//      celui du dépôt. Le avant/après de la CONSTANTE elle-même est tenu par croisements-it2-v3.test.ts.
 // Aucun appel facturé : faux opencode seulement (porte des exécutions facturées FERMÉE).
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -68,8 +69,17 @@ const MODULE_OUVERT: Cockpit11Module = {
   install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: true }),
 };
 
-/** Le câblage de production, à ceci près que la porte I1 est ouverte : ce que la bascule de la vague 3 donnera. */
+/** Le câblage de production, à ceci près que la porte I1 est ouverte : ce que la bascule de la vague 3 a donné. */
 const TOUS_PORTE_OUVERTE: ReadonlyArray<ModuleName | Cockpit11Module> = MODULE_ORDER.map((name) => (name === "activation" ? MODULE_OUVERT : name));
+
+/** Le même module, porte FERMÉE : depuis la bascule du train de la vague 3, c'est par la fabrique que la porte se referme. */
+const MODULE_FERME: Cockpit11Module = {
+  name: "activation",
+  install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: false }),
+};
+
+/** Le câblage de production d'AVANT la bascule : ce que le cockpit rendrait si la porte I1 était refermée (§2.6). */
+const TOUS_PORTE_FERMEE: ReadonlyArray<ModuleName | Cockpit11Module> = MODULE_ORDER.map((name) => (name === "activation" ? MODULE_FERME : name));
 
 /** Assistant qui agit déjà sans demander : refusé par le §4.10, quel que soit le profil global (même agent que les tests L10d). */
 const SANS_DEMANDE: FakeAgent = {
@@ -107,13 +117,24 @@ function choicePort(choices: Map<string, AutonomyChoice>): ConversationAutonomyP
   };
 }
 
-/** Port d'activation qui retient l'examen jusqu'à `release()` : l'examen dure, la garde de rechargement peut être interrogée. */
-function activationBarrier(): { port: ActivationPort; reached: Promise<void>; release: () => void } {
+/**
+ * Port d'activation qui retient l'examen jusqu'à `release()` : l'examen dure, la garde de rechargement peut être interrogée.
+ *
+ * `laisserPasser` : nombre de vérifications rendues tout de suite AVANT de retenir. Depuis la bascule de la porte I1 (train de
+ * la vague 3), le crochet d'envoi de L10d consulte ce MÊME port pour vérifier l'assistant visé : retenir dès le premier appel
+ * bloquerait l'envoi lui-même, et le cockpit n'atteindrait jamais l'examen. On laisse donc passer la vérification de l'envoi.
+ */
+function activationBarrier(laisserPasser = 0): { port: ActivationPort; reached: Promise<void>; release: () => void } {
   const hit = Promise.withResolvers<void>();
   const open = Promise.withResolvers<void>();
+  let restant = laisserPasser;
   return {
     port: {
       check: async () => {
+        if (restant > 0) {
+          restant -= 1;
+          return { ok: true };
+        }
         hit.resolve();
         await open.promise;
         return { ok: true };
@@ -213,9 +234,10 @@ const putChoice = (h: CockpitHarness, rootId: string, choix: string, headers?: R
 
 describe("croisements it2 V2 : porte I1 fermée sur le câblage complet (L10d × L6a × L10a)", () => {
   it("le module d'activation réel reste inerte : aucun crochet inscrit, aucune lecture d'opencode, le refus du port neutre au code près ; les deux choix automatiques restent 409 « a-venir »", async (t) => {
-    const h = await start(t);
-    assert.equal(ACTIVATION_OUVERTE, false, "la constante du dépôt n'est pas basculée avant la vague 3");
-    assert.equal(h.cockpit.c11.activationOuverte, false);
+    // Bascule faite au train de la vague 3 : la porte fermée se joue désormais par la fabrique (TOUS_PORTE_FERMEE), et la
+    // constante du dépôt vaut true. Ce que cette suite décrit reste vrai de la porte fermée, point par point.
+    const h = await start(t, { modules: TOUS_PORTE_FERMEE });
+    assert.equal(ACTIVATION_OUVERTE, true, "la constante du dépôt est basculée depuis le train de la vague 3");
     // Le crochet d'envoi du paquet L10a (rang « requests ») est là ; celui de l'activation ne l'est pas tant que la porte est
     // fermée. À la bascule, « activation » s'insère entre « plans » et « requests » (avertissement en tête de fichier, point a).
     assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["floors", "plans", "requests"]);
@@ -244,7 +266,7 @@ describe("croisements it2 V2 : porte I1 fermée sur le câblage complet (L10d ×
 
   it("le cycle (L10a) sur le port d'activation réel : même en « Autonome » forcé, une commande consultée reste à l'utilisateur avec « a-venir » ; rien n'est envoyé", async (t) => {
     const choices = new Map<string, AutonomyChoice>();
-    const h = await start(t, { ports: { conversationAutonomy: choicePort(choices) } });
+    const h = await start(t, { modules: TOUS_PORTE_FERMEE, ports: { conversationAutonomy: choicePort(choices) } });
     const conv = await conversation(h, "Autonome forcé");
     choices.set(conv.id, "autonome");
 
@@ -264,7 +286,7 @@ describe("croisements it2 V2 : porte I1 fermée sur le câblage complet (L10d ×
 describe("croisements it2 V2 : répétition générale de la bascule (porte ouverte, câblage complet)", () => {
   it("le crochet d'activation s'inscrit avant celui des demandes, et « PUT autonome » confirmé rend 200 (§2.6)", async (t) => {
     const h = await start(t, { modules: TOUS_PORTE_OUVERTE });
-    assert.equal(ACTIVATION_OUVERTE, false, "la porte du dépôt reste fermée : seule la fabrique est ouverte ici");
+    assert.equal(ACTIVATION_OUVERTE, true, "la porte du dépôt est ouverte depuis la bascule du train de la vague 3");
     assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["floors", "plans", "activation", "requests"]);
 
     const root = await withAgent(h, "Porte ouverte");
@@ -317,7 +339,8 @@ describe("croisements it2 V2 : répétition générale de la bascule (porte ouve
 
 describe("croisements it2 V2 : examen en cours (L10a) × garde de rechargement (L1a)", () => {
   it("pendant l'examen, reloadBusy est vrai et le redémarrage d'opencode est refusé 409 ; l'examen fini, la garde se rouvre", async (t) => {
-    const barrier = activationBarrier();
+    // 1 : la vérification du crochet d'envoi (L10d, porte ouverte) passe ; c'est celle du cycle (L10a) qui est retenue.
+    const barrier = activationBarrier(1);
     const choices = new Map<string, AutonomyChoice>();
     const h = await start(t, { ports: { conversationAutonomy: choicePort(choices), activation: barrier.port } });
     const conv = await conversation(h, "Examen en cours");

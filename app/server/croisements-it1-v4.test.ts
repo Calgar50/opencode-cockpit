@@ -20,6 +20,7 @@ import { type ActivityClock, type ActivitySource, ActivityStore } from "../web/l
 import { formatTime } from "../web/lib/format.ts";
 import { buildPlanCard, clickEffect, type PlanCardModel, planAnswered } from "../web/pages/chat/plan/plan-card.ts";
 import { CLASSIFIER_AGENT } from "./classifier.ts";
+import type { ActivationPort } from "./contracts-11.ts";
 import type { ActivityFact, FactsResponse } from "./shared/activity-types.ts";
 import { activityStatus, type ActivityState, emptyActivity, liveRows, replayFacts, replayMessages, timeline, totals } from "./shared/activity.ts";
 import type { ActivationRefusalCode, BootstrapAutonomy, ConversationAutonomyView, PlanCreateResponse } from "./shared/autonomy-types.ts";
@@ -395,14 +396,21 @@ describe("croisements it1 V4 : carte de plan (L6c) sur le câblage complet (L6b,
     return buildPlanCard({ rootId: planId, view, answer: { rootId: planId, answered: planAnswered(messages) }, busy, boot });
   }
 
+  // Porte I1 basculée au train de la vague 3 (it2) : l'amorçage annonce désormais la porte ouverte, et c'est un port
+  // d'activation qui refuse « a-venir » — la porte refermée — qui tient le premier cas. Ce que la carte doit prouver ne
+  // change pas : elle n'écrit aucune raison, elle reprend CELLE QUE LE SERVEUR OPPOSE.
+  const aVenir: ActivationPort = { check: async () => ({ ok: false, raison: "a-venir" }) };
   for (const [label, autonomy, expected] of [
-    ["porte I1 fermée", true, "a-venir"],
+    ["porte I1 refermée", true, "a-venir"],
     ["COCKPIT_AUTONOMY=off", false, "autonomie-coupee"],
   ] as const) {
     it(`${label} : après la réponse, « modifications » et « autonome » désactivés avec la raison « ${expected} », celle que le serveur oppose ; « demander » et « continuer » actifs`, async (t) => {
-      const h = await startCockpit(t, { modules: "tous", env: { autonomy } });
-      const boot = (await getJson<{ autonomy: BootstrapAutonomy }>(h, "/api/bootstrap")).autonomy;
-      assert.deepEqual(boot, { interrupteur: autonomy, activationOuverte: false });
+      const h = await startCockpit(t, { modules: "tous", env: { autonomy }, ports: { activation: aVenir } });
+      const servi = (await getJson<{ autonomy: BootstrapAutonomy }>(h, "/api/bootstrap")).autonomy;
+      // L'amorçage réel annonce la porte OUVERTE depuis la bascule. Le cas « porte refermée » se joue donc avec l'amorçage
+      // qu'un cockpit à porte fermée servirait ; le cas « autonomie coupée », lui, garde l'amorçage réel.
+      assert.deepEqual(servi, { interrupteur: autonomy, activationOuverte: true });
+      const boot: BootstrapAutonomy = expected === "a-venir" ? { interrupteur: autonomy, activationOuverte: false } : servi;
       const created = await h.call("POST", "/api/plans", { headers: h.headers.mutating, body: { directory: h.fake.directory } });
       assert.equal(created.status, 200, created.body);
       const planId = created.json<PlanCreateResponse>().rootId;
@@ -479,7 +487,8 @@ describe("croisements it1 V4 : Diagnostic du travail délégué (L1f) et agents 
     // « illisible » ; la carte est présente, et le resterait sans bandeau grâce aux agents internes (écart 6 de L1f, pour L12c).
     h.fake.setAgents([{ name: "delegue-tout", mode: "primary", options: {}, permission: [{ permission: "task", pattern: "*", action: "allow" }] }]);
     const first = await diagnostic();
-    assert.deepEqual([first.delegation, first.interrupteur, first.activationOuverte], [[{ code: "task-allow", noms: ["delegue-tout"] }], true, false]);
+    // activationOuverte : true depuis la bascule de la porte I1 au train de la vague 3 (it2).
+    assert.deepEqual([first.delegation, first.interrupteur, first.activationOuverte], [[{ code: "task-allow", noms: ["delegue-tout"] }], true, true]);
     assert.deepEqual(shown(first, false), {
       present: true,
       bandeaux: [bandeauDiagnostic({ code: "task-allow", noms: ["delegue-tout"] }, false)],

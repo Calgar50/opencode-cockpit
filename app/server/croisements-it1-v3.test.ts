@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { describe, it } from "node:test";
 import { validateDraft } from "../web/pages/studio/shared.ts";
-import type { PermissionGate } from "./contracts-11.ts";
+import type { ActivationPort, PermissionGate } from "./contracts-11.ts";
 import type { ConversationAutonomyView, PlanCreateResponse, PlanExecutionResponse } from "./shared/autonomy-types.ts";
 import { avisSimple, messageRefusSimple } from "./shared/delegation-texts.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
@@ -247,8 +247,12 @@ describe("croisements it1 V3 : Plan d'abord sur le câblage complet", () => {
   }
 
   it("conversation d'origine enregistrée ; exécution « modifications » ou « autonome » : 428 sans en-tête, 409 « a-venir » avec (porte I1), aucune racine ; « demander » : nouvelle racine liée au plan", async (t) => {
-    const h = await startCockpit(t, { modules: "tous" });
-    assert.equal(h.cockpit.c11.activationOuverte, false);
+    // Porte I1 basculée au train de la vague 3 (it2) : la constante du dépôt est ouverte, et c'est un port d'activation qui
+    // refuse « a-venir » — la porte refermée — qui tient ce scénario. L'exécution d'un plan porte OUVERTE est jouée par
+    // croisements-it2-v3.test.ts.
+    const aVenir: ActivationPort = { check: async () => ({ ok: false, raison: "a-venir" }) };
+    const h = await startCockpit(t, { modules: "tous", ports: { activation: aVenir } });
+    assert.equal(h.cockpit.c11.activationOuverte, true);
     const origin = await trackedRoot(h, "Origine du plan");
     const created = await createPlan(h, { directory: h.fake.directory, source: origin.id });
     assert.equal(created.status, 200, created.body);

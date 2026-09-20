@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { ActivationInput, ActivationPort, ActivationVerdict, FactsPort } from "./contracts-11.ts";
+import { installActivation } from "./autonomy-activation.ts";
+import type { ActivationInput, ActivationPort, ActivationVerdict, Cockpit11Module, FactsPort } from "./contracts-11.ts";
 import { ConversationAutonomyStore, returnToAsk } from "./conversation-autonomy.ts";
 import { openMemoryDb } from "./db.ts";
 import type { OcSession } from "./opencode.ts";
@@ -402,7 +403,9 @@ describe("choix d'autonomie : relâcher, resserrer", () => {
   });
 
   it("activation fermée (port du module activation, porte I1) : 409 « a-venir » avec la phrase du contrat ; rien d'écrit", async (t) => {
-    const h = await startCockpit(t, { modules: ["conversationAutonomy", "activation"] });
+    // Porte I1 basculée au train de la vague 3 (it2) : la porte FERMÉE se joue par la fabrique, comme dans les tests de L10d.
+    const ferme: Cockpit11Module = { name: "activation", install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: false }) };
+    const h = await startCockpit(t, { modules: ["conversationAutonomy", ferme] });
     const root = await conversation(h);
     const store = new ConversationAutonomyStore(h.db);
     for (const choix of ["modifications", "autonome"]) {
