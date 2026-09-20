@@ -299,30 +299,31 @@ describe("câblage des équipes : ports neutres et apply", () => {
     assert.equal(await p.guards.stopForCap("run"), undefined);
   });
 
-  // Les modules réels arrivent paquet par paquet et ajoutent leurs propres inscriptions (L37a : routes « teams » ; L37b :
-  // dérivation, abonnement, démarrage et routes « team-runs » du runner ; L37c : dérivation du rechargement, abonnement du
-  // plafond et routes d'incident de teamGuards, en plus des deux inscriptions posées par T4). Le test porte donc sur les
-  // inscriptions attendues, présentes UNE fois chacune, et sur leur neutralité au repos, jamais sur l'absence des autres.
-  it("production (tous les modules) : routes, verrou, décorateur, prédicat et inscriptions du runner et des verrous posés une fois, neutres tant que rien ne travaille", async () => {
+  // Mise à jour du train de la vague 2 : plus aucun module n'est un squelette (L39b la carte, L37a « teams », L37p le
+  // pré-lancement, L37b le runner, L37c les verrous). La liste complète des inscriptions de production est donc figée ici,
+  // dans l'ordre d'EQ_STEP_ORDER, et vaut à la fois « toutes présentes » et « aucune en double ».
+  it("production (tous les modules réels) : les douze inscriptions rangées par EQ_STEP_ORDER, neutres tant que rien ne travaille", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
     const wiring = buildEquipes(deps);
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
-    const inscriptions = wiring.registrations.map((r) => `${r.kind}/${r.key}/${r.module}`);
-    for (const attendue of [
-      "routes/teams/teams",
-      "proxyGuard/proxyGuard/teamGuards",
-      "stopTreeDecorator/stopTreeDecorator/teamGuards",
-      "reloadBusy/reloadBusy/teamRunner",
-      "derivation/teamRunner/teamRunner",
-      "hub/opencode.connection/teamRunner",
-      "startup/startup/teamRunner",
-      "routes/team-runs/teamRunner",
-      "derivation/teamGuards/teamGuards",
-      "hub/usage.updated/teamGuards",
-      "routes/team-runs/teamGuards",
-    ]) {
-      assert.equal(inscriptions.filter((entry) => entry === attendue).length, 1, `${attendue} : une seule fois`);
-    }
+    assert.deepEqual(
+      wiring.registrations.map((r) => `${r.kind}:${r.key}/${r.module}`),
+      [
+        "derivation:teamRunner/teamRunner",
+        "derivation:teamGuards/teamGuards",
+        "hub:usage.updated/teamGuards",
+        "hub:opencode.connection/teamRunner",
+        "startup:startup/teamRunner",
+        "routes:agent-map/agentMap",
+        "routes:teams/teams",
+        "routes:team-runs/teamRunner",
+        "routes:team-runs/teamGuards",
+        "proxyGuard:proxyGuard/teamGuards",
+        "stopTreeDecorator:stopTreeDecorator/teamGuards",
+        "reloadBusy:reloadBusy/teamRunner",
+      ],
+    );
+    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length, wiring.routes.length], [2, 2, 1, 4]);
     const req: TeamProxyGuardRequest = { entree: "proxy", method: "POST", sub: `/session/${ROOT}/prompt_async`, directory: null, sessionId: ROOT, permissionId: null };
     assert.equal(await wiring.proxyGuard(req), null);
     wiring.apply(c11);
@@ -451,6 +452,9 @@ describe("câblage des équipes : squelettes et événements", () => {
     for (const [file, owner] of Object.entries(owners)) {
       const source = fs.readFileSync(path.join(import.meta.dirname, file), "utf8");
       assert.equal((source.split("\n")[0] ?? "").replace(/\r$/, ""), `// Propriétaire : ${owner}.`, file);
+      // Tant qu'un fichier est un SQUELETTE de T4, il n'importe pas shared/agent-map.ts, écrit en parallèle par L39a (V0). Son
+      // paquet, lui, le lit : L39b (V2) compose l'entrée de deriveAgentMap dans agent-map-service.ts.
+      if (!source.includes("Squelette T4")) continue;
       assert.equal(/from\s+"[^"]*shared\/agent-map\.ts"/.test(source), false, `${file} : agent-map.ts est écrit par L39a`);
     }
   });
