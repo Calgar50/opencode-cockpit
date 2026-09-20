@@ -349,7 +349,7 @@ function workspace(t: TestContext): string {
   return root;
 }
 
-/** Port `activation` ouvert par surcharge (ACTIVATION_OUVERTE reste false : la constante n'est jamais touchée). */
+/** Port `activation` ouvert par surcharge (ACTIVATION_OUVERTE vaut true depuis la bascule ; ce test ne touche jamais la constante). */
 const PERMIS: ActivationPort = { check: async () => ({ ok: true }) };
 
 function choicePort(choices: Map<string, AutonomyChoice>): ConversationAutonomyPort {

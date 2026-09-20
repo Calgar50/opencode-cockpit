@@ -2,8 +2,9 @@
 // automatiquement », « Ne lève jamais un refus » et « L'IA de contrôle ne peut pas autoriser une commande interdite » ; plan
 // d'exécution, fiche L10a).
 // Harnais à modules déclarés (plan §2.2) : `modules: ["autonomy", "requests", "facts", "floors"]`, port `activation` surchargé à
-// « permis » (ACTIVATION_OUVERTE vaut false : la constante n'est JAMAIS touchée, §2.6) et port `conversationAutonomy` surchargé
-// pour poser le choix de la conversation. Les tests restent vrais après la fusion de L10d, L10c et L10e.
+// « permis » (la constante ACTIVATION_OUVERTE vaut true depuis la bascule du train de la vague 3 ; ces tests ouvrent le port par
+// surcharge et ne la touchent JAMAIS, §2.6) et port `conversationAutonomy` surchargé pour poser le choix de la conversation.
+// Les tests restent vrais après la fusion de L10d, L10c et L10e.
 // Ce que ces tests prouvent : aucun `allow`, `ask` ni `always` envoyé ; aucune réponse hors de la racine choisie ; un
 // resserrement pendant l'examen annule la décision ; exactement un fait `decision` par ligne de `autonomy_decisions` ;
 // `.github/workflows/x.yml` → attente avec la phrase E2 ; assistant « Lecture seule » en Autonome → aucun outil `edit` visible et
@@ -74,7 +75,7 @@ function workspace(t: TestContext, gitConfig = CLEAN_GIT_CONFIG): string {
   return root;
 }
 
-/** Port `activation` ouvert par surcharge (ACTIVATION_OUVERTE reste false : la constante n'est jamais touchée). */
+/** Port `activation` ouvert par surcharge (ACTIVATION_OUVERTE vaut true depuis la bascule ; ce test ne touche jamais la constante). */
 const PERMIS: ActivationPort = { check: async () => ({ ok: true }) };
 
 function choicePort(choices: Map<string, AutonomyChoice>): ConversationAutonomyPort {

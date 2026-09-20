@@ -248,6 +248,19 @@ describe("câblage 1.1 : ordre figé", () => {
     assert.equal(ACTIVATION_OUVERTE, true);
   });
 
+  // Exactitude des commentaires après la bascule (défaut relevé par la répétition générale de l'itération 2) : plus aucune source
+  // du serveur ne peut écrire que la constante « vaut » ou « reste » false. Les tournures conditionnelles, comme « tant
+  // qu'ACTIVATION_OUVERTE est fausse », restent permises : elles décrivent la branche fermée, que la fabrique tient toujours.
+  it("porte I1 : aucune source du serveur ne donne encore ACTIVATION_OUVERTE pour false", () => {
+    const perime = /ACTIVATION_OUVERTE`?\s+(?:vaut|reste|restait|est passée? à)\s+`?(?:false|faux|fausse)/i;
+    const fichiers = fs.readdirSync(import.meta.dirname, { encoding: "utf8", recursive: true }).filter((nom) => nom.endsWith(".ts"));
+    assert.ok(fichiers.length > 100, `sources parcourues : ${fichiers.length}`);
+    for (const nom of fichiers) {
+      const trouve = perime.exec(fs.readFileSync(path.join(import.meta.dirname, nom), "utf8"))?.[0];
+      assert.equal(trouve, undefined, `${nom} : « ${trouve ?? ""} », alors que la constante vaut true depuis la bascule de la vague 3`);
+    }
+  });
+
   it("MODULE_ORDER et STEP_ORDER : ordre du plan §4.4", () => {
     assert.deepEqual(MODULE_ORDER, [
       "gate",

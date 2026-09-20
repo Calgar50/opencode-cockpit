@@ -1,6 +1,7 @@
 // Tests L10a : demandes autonomes (spécification §4.3, §4.8.1, §4.10, §4.12 ; plan d'exécution, fiche L10a).
 // Harnais à modules déclarés (plan §2.2) : `modules: ["autonomy", "requests", "facts", "floors"]`, port `activation` surchargé à
-// « permis » (ACTIVATION_OUVERTE reste false) et port `conversationAutonomy` surchargé pour poser le choix de la conversation.
+// « permis » (la constante ACTIVATION_OUVERTE vaut true depuis la bascule du train de la vague 3 ; ces tests ouvrent le port par
+// surcharge et ne la touchent jamais) et port `conversationAutonomy` surchargé pour poser le choix de la conversation.
 // Ce que ces tests prouvent : une demande s'ouvre à l'envoi en choix automatique et se ferme à l'envoi suivant ; un choix qui vous
 // demande n'ouvre rien ; un raccourci qui contient « !` » est refusé en choix automatique (409 raccourci-refuse-autonomie), rien
 // n'est envoyé à opencode, et il passe en « Demander à chaque fois » ; compteurs, dépense (`ledger.spentSince`), événement
