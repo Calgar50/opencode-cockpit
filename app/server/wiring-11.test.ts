@@ -205,9 +205,12 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   assert.equal(p.requests.spent("req_1"), 0);
   assert.equal(p.requests.interrupt(ROOT, "interrompue"), undefined);
   assert.deepEqual(await p.activation.check({ rootId: ROOT, choix: "autonome", agent: "build", directory: "/workspace/app" }), { ok: false, raison: "a-venir" });
+  // L10e : module réel → les faits de la délégation ne se lisent pas sur ce client factice, la demande attend sans qu'aucun refus
+  // parte (X-illisible, contrôlé par autonomy-delegation.test.ts) ; port neutre → attente sans règle.
+  const delegation = livres.includes("delegationPolicy") ? "X-illisible" : null;
   assert.deepEqual(await p.delegationPolicy.decide({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null, mode: "simple" }), {
     verdict: "attente",
-    regle: null,
+    regle: delegation,
   });
   assert.deepEqual(p.capWatch, {});
   const judge = await p.controlAi.judge({ rootId: ROOT, sessionId: ROOT, requestId: null, command: "jq . a.json", head: "jq", relativeDir: ".", directory: null });
@@ -468,7 +471,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), délégation en Autonome (L10e), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -521,8 +524,8 @@ describe("câblage 1.1 : ports neutres", () => {
     });
     wiring.c11.ports.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { etat: "occupee" }, at: 1 }]);
     assert.equal(wiring.c11.ports.facts.since(ROOT, 0).facts.length, 1);
-    // L11b : port réel de l'IA de contrôle (aucune inscription).
-    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts", "taskGuard", "controlAi"]);
+    // L11b et L10e : ports réels de l'IA de contrôle et de la délégation en Autonome (aucune inscription).
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts", "taskGuard", "controlAi", "delegationPolicy"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
