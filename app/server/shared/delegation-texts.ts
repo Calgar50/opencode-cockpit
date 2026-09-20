@@ -32,6 +32,17 @@ export const TEXTES = {
   simple: {
     /** Avis affiché en mode Simple quand l'IA veut déléguer (Q5, option b). */
     avis: "En mode Simple, l'IA ne délègue pas : elle continue seule.",
+    // --- équipes (it4) : début ---
+    /**
+     * Avis COMPLET (spécification §3.14 l.437), affiché à la place du court SEULEMENT quand les équipes sont ouvertes dans le mode
+     * courant (`ouvertesEnSimple` de GET /api/teams, c'est-à-dire EQUIPES_SIMPLE_OUVERTES, décision U1). Tant que la constante est
+     * fausse, le texte court est gardé : le cockpit n'invite jamais à une fonction qu'il refuserait (P3). L'écart avec la décision
+     * Q5 (b), qui prévoyait le texte complet « jusqu'à L38, puis », est consigné par DOC-EQ.
+     */
+    avisEquipes: "En mode Simple, l'IA ne délègue pas : elle continue seule. Pour faire travailler plusieurs assistants, lancez une équipe.",
+    /** Bouton de l'avis complet, vers #/assistants/equipes ; absent avec le texte court (rien à proposer). */
+    voirEquipes: "Voir les équipes",
+    // --- équipes (it4) : fin ---
     /** « Autoriser une fois » en mode Simple quand le refus d'office n'a pas pu être lancé (trop de refus en cours). */
     avisAttente: "En mode Simple, l'IA ne délègue pas, mais le cockpit n'a pas pu refuser cette demande pour l'instant : elle attend votre réponse. Choisissez « Refuser ».",
     /** Titre de la partie « travail délégué » du Diagnostic. */
@@ -198,6 +209,30 @@ function remplir(gabarit: string, valeurs: Readonly<Record<string, string | numb
 export function avisSimple(): string {
   return TEXTES.simple.avis;
 }
+
+// --- équipes (it4) : début ---
+
+/** Avis du mode Simple sur la délégation, avec le bouton [Voir les équipes] quand il y a lieu (§3.14 l.437). */
+export interface AvisDelegation {
+  texte: string;
+  /** Bouton vers l'onglet Équipes ; null avec le texte court : aucune invitation à une fonction fermée (P3, U1). */
+  bouton: { libelle: string; href: string } | null;
+}
+
+/** Adresse de l'onglet Équipes (web/lib/router.ts) : code, jamais un texte affiché. */
+const EQUIPES_HREF = "#/assistants/equipes";
+
+/**
+ * Avis du mode Simple avec ou sans les équipes. `ouvertesEnSimple` VRAI (EQUIPES_SIMPLE_OUVERTES, lu par l'interface dans
+ * `ouvertesEnSimple` de GET /api/teams) : texte complet et [Voir les équipes] ; FAUX : texte court d'avant, sans bouton (U1). Le
+ * refus envoyé à opencode, lui, garde toujours `avisSimple()`.
+ */
+export function avisDelegationSimple(ouvertesEnSimple: boolean): AvisDelegation {
+  if (!ouvertesEnSimple) return { texte: TEXTES.simple.avis, bouton: null };
+  return { texte: TEXTES.simple.avisEquipes, bouton: { libelle: TEXTES.simple.voirEquipes, href: EQUIPES_HREF } };
+}
+
+// --- équipes (it4) : fin ---
 
 /** Avis du mode Simple quand aucun refus d'office n'a pu être lancé : la demande attend l'utilisateur. */
 export function avisSimpleEnAttente(): string {
