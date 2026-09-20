@@ -31,8 +31,13 @@ import {
   effectiveBuiltinRules,
   MESSAGES,
   parseModelKey,
+  tierOfView,
   unknownAgentKeyMessage,
 } from "./shared/assistant-rules.ts";
+// <c5:methodes-import>
+// 1.1 (corrections de la relecture de 5a V2) : corps de « Ajouter à un assistant », rejoué tel quel sur la route.
+import { requestWithMethod } from "../web/pages/assistants/methods/assistant-request.ts";
+// </c5:methodes-import>
 import { StudioApplyError, StudioService, StudioValidationError } from "./studio.ts";
 import { TEMPLATES } from "./templates.ts";
 import { TierService } from "./tiers.ts";
@@ -585,6 +590,89 @@ describe("assistants", () => {
     });
   });
   // </c5:catalogue>
+
+  // <c5:methodes-niveau>
+  // 1.1 (corrections de la relecture de 5a V2) : « Ajouter à un assistant » (bibliothèque des méthodes) réenregistre le
+  // brouillon COMPLET de l'assistant. Un assistant créé en Avancé avec une IA précise n'a AUCUN niveau ; repris en mode Simple,
+  // son IA précise ne peut pas être renvoyée telle quelle. Le corps est donc construit par `requestWithMethod`, qui passe par
+  // la même conversion que l'assistant de création (`tierOfView`).
+  it("ajout d'une méthode en mode Simple à un assistant à IA précise : le corps de la bibliothèque est accepté", async () => {
+    const h = harness({ mode: "avance" });
+    // 1. En Avancé : un assistant avec une IA précise, donc sans niveau.
+    const cree = await h.call("PUT", "/api/assistants/analyste", { ...DRAFT, title: "Analyser un incident de production", tier: null, model: CODEX });
+    assert.equal(cree.status, 200, JSON.stringify(cree.body));
+    assert.equal(h.meta("agents", "analyste")?.tier, null, "l'assistant devrait être enregistré sans niveau");
+
+    // 2. Retour au mode Simple, le mode par défaut du cockpit.
+    h.settings.update({ ui: { mode: "simple" } });
+    const vue = (await h.call("GET", "/api/assistants")).body.assistants.find((a: Json) => a.name === "analyste");
+    assert.ok(vue, "assistant absent de GET /api/assistants");
+    assert.equal(vue.tier, null);
+    assert.equal(vue.model, CODEX);
+
+    // 3. Le corps « naïf » — l'IA précise recopiée telle quelle — est bien REFUSÉ : c'est le défaut corrigé ici.
+    const naif = await h.call("PUT", "/api/assistants/analyste", {
+      ...DRAFT,
+      title: vue.title,
+      description: vue.description,
+      useCase: vue.useCase,
+      tier: vue.tier,
+      model: vue.model,
+      instructions: vue.instructions,
+      fiches: vue.fiches,
+      examples: vue.examples,
+      icon: vue.icon,
+      methods: ["pre-mortem"],
+      previousName: "analyste",
+    });
+    assert.equal(naif.status, 422, "le corps à IA précise passe en mode Simple : le cas du défaut n'est plus reproduit");
+    assert.ok(
+      naif.body.issues.some((i: Json) => i.path === "model" && i.message === MESSAGES.modeAvance),
+      JSON.stringify(naif.body.issues),
+    );
+
+    // 4. Le corps réellement envoyé par la bibliothèque : accepté, et la méthode est écrite dans le FICHIER d'agent (D-5-07).
+    const corps = requestWithMethod(vue, { id: "pre-mortem" }, { avance: false, tiers: h.tiers.views() });
+    assert.equal(corps.tier, "equilibre", "sans niveau déduit, le corps retombe sur « equilibre »");
+    assert.equal(corps.model, undefined, "une IA précise part encore alors que le mode Simple la refuse");
+    assert.deepEqual(corps.methods, ["pre-mortem"]);
+    const ajout = await h.call("PUT", "/api/assistants/analyste", corps);
+    assert.equal(ajout.status, 200, JSON.stringify(ajout.body));
+    const fichier = fs.readFileSync(path.join(h.config, "agents", "analyste.md"), "utf8");
+    assert.ok(fichier.includes("cockpit:methode pre-mortem"), "le bloc de la méthode n'est pas dans le fichier d'agent");
+    const miroir = h.db.prepare("SELECT methods FROM item_meta WHERE kind = 'agents' AND name = 'analyste'").get() as Json;
+    assert.deepEqual(JSON.parse(String(miroir?.methods ?? "[]")), ["pre-mortem"]);
+
+    // 5. En mode Avancé, l'ajout d'une méthode ne change PAS l'IA précise de l'assistant.
+    const enAvance = requestWithMethod({ ...vue, methods: [] }, { id: "pre-mortem" }, { avance: true, tiers: h.tiers.views() });
+    assert.equal(enAvance.tier, null);
+    assert.equal(enAvance.model, CODEX);
+  });
+
+  it("tierOfView : une seule règle de conversion, la même que l'assistant de création", () => {
+    const h = harness();
+    const tiers = h.tiers.views();
+    const equilibre = tiers.find((t) => t.id === "equilibre");
+    assert.equal(equilibre?.model, SONNET, "le niveau Équilibré devrait résoudre Claude Sonnet 5");
+    // Un niveau déjà posé est gardé tel quel, dans les deux modes.
+    assert.equal(tierOfView({ tier: "rapide", model: null }, false, tiers), "rapide");
+    assert.equal(tierOfView({ tier: "rapide", model: null }, true, tiers), "rapide");
+    // IA précise : gardée en Avancé, convertie en Simple — par le niveau qui porte cette IA, sinon « equilibre ».
+    assert.equal(tierOfView({ tier: null, model: CODEX }, true, tiers), null);
+    assert.equal(tierOfView({ tier: null, model: CODEX }, false, tiers), "equilibre");
+    assert.equal(tierOfView({ tier: null, model: SONNET }, false, tiers), "equilibre");
+    // Ni niveau ni IA : « equilibre » dans les deux modes, jamais « Choisissez un niveau d'IA. ».
+    assert.equal(tierOfView({ tier: null, model: null }, true, tiers), "equilibre");
+    assert.equal(tierOfView({ tier: null, model: null }, false, tiers), "equilibre");
+    // La règle de l'assistant de création n'a pas divergé : `draftFromView` appelle la même conversion, à la lettre.
+    const wizard = fs.readFileSync(path.join(import.meta.dirname, "..", "web", "pages", "assistants", "AssistantWizard.tsx"), "utf8");
+    assert.match(
+      wizard,
+      /const tier: Tier \| null = view\.tier \?\? \(advanced && view\.model \? null : \(inferred \?\? "equilibre"\)\);/,
+      "draftFromView a changé de règle : mettre tierOfView à jour, ou l'y brancher",
+    );
+  });
+  // </c5:methodes-niveau>
 });
 
 describe("réalignement en lot", () => {

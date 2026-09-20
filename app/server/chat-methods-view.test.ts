@@ -153,13 +153,19 @@ describe("puce « + Méthode » (C §9.4)", () => {
   });
 
   it("une phrase par code de refus, toutes venues de construction-texts.ts", () => {
-    const codes: MethodChipCode[] = ["raccourci", "deja", "trop"];
+    const codes: MethodChipCode[] = ["raccourci", "sans-texte", "deja", "trop"];
     const attendues = [
       TEXTES.partout.methodes.limites.raccourci,
+      TEXTES.partout.methodes.limites.sansTexte,
       TEXTES.partout.methodes.limites.deja,
       TEXTES.partout.methodes.limites.trop,
     ];
     assert.deepEqual(codes.map(methodChipReason), attendues);
+    // Quatre phrases distinctes : un code sans phrase propre n'apprendrait rien à la personne.
+    assert.equal(new Set(attendues).size, codes.length);
+    // « sans-texte » est le refus d'un message sans un mot écrit : le bloc seul ne serait une demande pour personne. Il n'est
+    // PAS un état du popover — le catalogue reste choisissable tant que rien n'est envoyé.
+    for (const ligne of etat().items) assert.notEqual(ligne.code, "sans-texte");
   });
 
   it("libellés de la puce retenue et de son retrait", () => {

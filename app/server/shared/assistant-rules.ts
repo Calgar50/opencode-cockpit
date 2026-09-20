@@ -1088,6 +1088,30 @@ export interface AssistantDraft {
   // </c5:methodes>
 }
 
+// <c5:methodes-niveau>
+/**
+ * Niveau d'IA d'un assistant DÉJÀ installé, tel qu'un enregistrement doit le poser (itération 5, corrections de la relecture de
+ * 5a V2). Une seule règle pour tous les chemins qui réenregistrent un assistant : l'assistant de création (`draftFromView`) et
+ * l'ajout d'une méthode depuis la bibliothèque (`requestWithMethod`).
+ *
+ * Un assistant créé en mode Avancé avec une IA précise n'a AUCUN niveau (`tier` null) et garde son IA. Repris en mode Simple, il
+ * ne peut pas être renvoyé tel quel : `PUT /api/assistants/:name` refuse une IA précise hors du mode Avancé (« Action réservée au
+ * mode Avancé »). On retombe alors sur le niveau dont l'IA est justement celle de l'assistant, et, à défaut, sur « equilibre ».
+ * Ainsi l'ajout d'une méthode ne change jamais l'IA en Avancé, et n'échoue jamais en Simple.
+ *
+ * `null` en retour veut dire « IA précise conservée » : l'appelant envoie alors `model`, et lui seul.
+ */
+export function tierOfView(
+  view: { tier: Tier | null; model: string | null },
+  advanced: boolean,
+  tiers: readonly { id: Tier; model: string | null }[],
+): Tier | null {
+  if (view.tier !== null) return view.tier;
+  if (advanced && view.model) return null;
+  return tiers.find((niveau) => niveau.model !== null && niveau.model === view.model)?.id ?? "equilibre";
+}
+// </c5:methodes-niveau>
+
 /** Nom technique opencode (identique à studio-schema.ts NAME_RE). */
 export const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** Nom de fiche : comme NAME_RE, mais jamais uniquement des chiffres (une clé numérique serait réordonnée avant « * »). */

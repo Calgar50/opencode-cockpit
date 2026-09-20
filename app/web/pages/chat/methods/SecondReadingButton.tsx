@@ -13,11 +13,16 @@
 //
 // Un seul `prompt_async` par envoi : le cockpit n'ouvre aucun chemin facturé propre (P5). La garde budgétaire de la 1.0 parle la
 // première ; sa confirmation est reprise telle quelle.
+//
+// Avant cet envoi facturé, `secondReadingSendGuard` relit la réponse de la résolution : la route ne refuse pas un assistant
+// disparu, elle retombe sur l'assistant par défaut du chat et le dit par `agentMissing`. Sans cette garde, le clic partait à
+// l'Assistant général, avec d'autres droits, une autre IA et un autre coût que ceux annoncés par l'infobulle.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   secondReadingButtonLabel,
   secondReadingButtonVisible,
   secondReadingMessage,
+  secondReadingSendGuard,
   secondReadingTooltip,
 } from "../../../../server/shared/chat-methods-view.ts";
 import { BUDGET_CONFIRM_CANCEL, BUDGET_CONFIRM_SEND, BUDGET_CONFIRM_TITLE } from "../../../../server/shared/assistant-rules.ts";
@@ -31,7 +36,8 @@ import { api, assistantModelChanged, budgetGuard, errorText, oc } from "../../..
 import { estimateSecondReading } from "../../../lib/api-construction.ts";
 import { eventBus } from "../../../lib/events.ts";
 import { formatUsd } from "../../../lib/format.ts";
-import type { ResolveResponse, SecondReadingEstimate } from "../../../lib/types.ts";
+import type { ResolveResponse } from "../../../lib/types.ts";
+import { type EtatSecondeLecture, creerTableMagasins } from "./second-reading-store.ts";
 import "./methods-chat.css";
 
 /** Devise ajoutée par `formatUsd` : le gabarit du bouton porte déjà « $ », seul le nombre y entre (§4.3). */
@@ -49,128 +55,14 @@ function montantSansDevise(usd: number | null): string | null {
 // --- Magasin par conversation ----------------------------------------------------------------------------------------------
 
 /**
- * Estimation et occupation d'UNE conversation, partagées par tous les boutons de sa transcription : une seule lecture pour
- * toute la page, plutôt qu'une par tour. `occupee` : une réponse est en cours quelque part dans la conversation — le bouton
- * reste visible sous les réponses déjà terminées, mais il est inactif et dit pourquoi.
+ * Le magasin lui-même vit dans `second-reading-store.ts`, sans React ni réseau : ici, seules la lecture réelle
+ * (`estimateSecondReading`) et le flux réel (`eventBus`) lui sont données.
  */
-interface EtatSecondeLecture {
-  estimation: SecondReadingEstimate | null;
-  /** Une lecture est faite (même en échec) : avant, le bouton ne s'affiche pas plutôt que d'afficher un montant faux. */
-  lue: boolean;
-  occupee: boolean;
-}
-
-const VIDE: EtatSecondeLecture = Object.freeze({ estimation: null, lue: false, occupee: false });
-
-class MagasinSecondeLecture {
-  readonly sessionId: string;
-  #etat: EtatSecondeLecture = VIDE;
-  #abonnes = new Set<() => void>();
-  #stopFlux: (() => void) | null = null;
-  #directory = "";
-  /** Dernière lecture lancée : seule sa réponse est appliquée (une réponse plus ancienne arrivée après est ignorée). */
-  #seq = 0;
-  /** Tours dont la réponse n'est pas terminée, signalés par la transcription : source sûre au chargement de la page. */
-  #toursEnCours = new Set<string>();
-  #occupeeFlux = false;
-
-  constructor(sessionId: string) {
-    this.sessionId = sessionId;
-  }
-
-  get etat(): EtatSecondeLecture {
-    return this.#etat;
-  }
-
-  abonner(listener: () => void, directory: string): () => void {
-    this.#directory = directory;
-    this.#abonnes.add(listener);
-    this.#ecouter();
-    if (!this.#etat.lue && this.#seq === 0) void this.rafraichir();
-    return () => {
-      this.#abonnes.delete(listener);
-      // Plus personne n'écoute : le flux est lâché, mais le magasin reste dans la table. Le retirer ferait naître deux
-      // magasins pour une même conversation (double montage de React, puis un bouton par tour), donc deux estimations.
-      if (this.#abonnes.size > 0) return;
-      this.#stopFlux?.();
-      this.#stopFlux = null;
-    };
-  }
-
-  /** Un tour signale l'état de sa réponse ; la conversation est occupée dès qu'un tour n'est pas terminé. */
-  signalerTour(cle: string, terminee: boolean): void {
-    const avant = this.#toursEnCours.size;
-    if (terminee) this.#toursEnCours.delete(cle);
-    else this.#toursEnCours.add(cle);
-    if (this.#toursEnCours.size !== avant) this.#poser({ ...this.#etat, occupee: this.#occupee() });
-  }
-
-  oublierTour(cle: string): void {
-    if (!this.#toursEnCours.delete(cle)) return;
-    this.#poser({ ...this.#etat, occupee: this.#occupee() });
-  }
-
-  /**
-   * `POST /api/chat/second-reading/estimate` : lecture seule, aucune IA appelée. Une erreur laisse l'estimation à null et le
-   * bouton disparaît : mieux vaut ne rien proposer que proposer un montant inventé.
-   */
-  async rafraichir(): Promise<void> {
-    if (this.#directory === "") return;
-    const seq = ++this.#seq;
-    try {
-      const estimation = await estimateSecondReading({ directory: this.#directory, sessionId: this.sessionId, cible: "reponse" });
-      if (seq === this.#seq) this.#poser({ ...this.#etat, estimation, lue: true });
-    } catch (err) {
-      if (seq !== this.#seq) return;
-      console.warn("seconde lecture : estimation non lue", errorText(err));
-      this.#poser({ ...this.#etat, estimation: null, lue: true });
-    }
-  }
-
-  #occupee(): boolean {
-    return this.#occupeeFlux || this.#toursEnCours.size > 0;
-  }
-
-  #ecouter(): void {
-    this.#stopFlux ??= eventBus.subscribe((event) => {
-      if (event.kind === "cockpit") {
-        // Flux rétabli : la conversation a pu s'allonger pendant la coupure.
-        if (event.type === "stream.reconnected") void this.rafraichir();
-        return;
-      }
-      // Données venues d'opencode : lues avec prudence, jamais supposées.
-      const { type, properties } = event.event;
-      if (typeof properties.sessionID !== "string" || properties.sessionID !== this.sessionId) return;
-      if (type === "session.status") {
-        const status = properties.status as { type?: string } | undefined;
-        this.#occupeeFlux = status?.type !== "idle";
-        this.#poser({ ...this.#etat, occupee: this.#occupee() });
-      } else if (type === "session.idle") {
-        // Une réponse vient de se terminer : la conversation s'est allongée, l'estimation est redemandée (D-5-22).
-        this.#occupeeFlux = false;
-        this.#poser({ ...this.#etat, occupee: this.#occupee() });
-        void this.rafraichir();
-      }
-    });
-  }
-
-  #poser(etat: EtatSecondeLecture): void {
-    if (etat.estimation === this.#etat.estimation && etat.lue === this.#etat.lue && etat.occupee === this.#etat.occupee) return;
-    this.#etat = etat;
-    for (const abonne of this.#abonnes) abonne();
-  }
-}
-
-const MAGASINS = new Map<string, MagasinSecondeLecture>();
-
-function magasinDe(sessionId: string): MagasinSecondeLecture {
-  let magasin = MAGASINS.get(sessionId);
-  if (!magasin) {
-    magasin = new MagasinSecondeLecture(sessionId);
-    MAGASINS.set(sessionId, magasin);
-  }
-  return magasin;
-}
+const magasinDe = creerTableMagasins({
+  estimer: (directory, sessionId) => estimateSecondReading({ directory, sessionId, cible: "reponse" }),
+  abonnerFlux: (ecouter) => eventBus.subscribe(ecouter),
+  avertir: (message, detail) => console.warn(message, errorText(detail)),
+});
 
 /** Estimation et occupation de la conversation, et le tour courant signalé au magasin. */
 function useSecondeLecture(sessionId: string, directory: string, cle: string, terminee: boolean): EtatSecondeLecture {
@@ -245,9 +137,18 @@ export function SecondReadingButton({ sessionId, cle, assistant, terminee, reper
         toast.error("Envoi impossible", err);
         return;
       }
-      const bloquants = resolu.display.problems.filter((probleme) => probleme.blocking);
-      if (bloquants.length > 0) {
-        toast.error("Rien n'a été envoyé", [...new Set(bloquants.map((probleme) => probleme.message))].join(" "));
+      // Dernière garde avant l'envoi facturé : le Relecteur a pu disparaître depuis la lecture de l'estimation. La route
+      // retomberait alors sur l'assistant par défaut du chat — un autre assistant, d'autres droits, une autre IA, un autre
+      // coût. Rien ne part, et l'estimation est relue pour retrouver [Installer].
+      const garde = secondReadingSendGuard({
+        relecteur: relecteur.name,
+        agent: resolu.agent,
+        agentMissing: resolu.agentMissing,
+        problemes: resolu.display.problems,
+      });
+      if (!garde.envoyer) {
+        toast.error("Rien n'a été envoyé", garde.message ?? textes.absente);
+        if (garde.code === "absent") await magasinDe(sessionId).rafraichir();
         return;
       }
       const corps = (model: ResolveResponse["send"]["model"], variant: string | undefined) => ({

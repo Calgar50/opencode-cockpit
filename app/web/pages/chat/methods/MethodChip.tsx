@@ -20,6 +20,7 @@ import { errorText } from "../../../lib/api.ts";
 import { getMethods } from "../../../lib/api-construction.ts";
 import { eventBus } from "../../../lib/events.ts";
 import type { MethodView } from "../../../lib/types.ts";
+import { creerMagasinCatalogue } from "./catalogue-store.ts";
 import "./methods-chat.css";
 
 /** Méthode retenue pour le message en cours d'écriture ; `texte` est le bloc, modifiable dans l'aperçu. */
@@ -29,62 +30,22 @@ export interface ChosenMethod {
   texte: string;
 }
 
-// --- Catalogue des méthodes, lu une fois et partagé -----------------------------------------------------------------------------
+// --- Catalogue des méthodes, lu une fois par visite du chat et partagé ---------------------------------------------------------
 
 /**
- * `GET /api/methods` est en LECTURE SEULE et rend le même catalogue à toute la page : la puce, la bulle d'un message et la
- * présence d'une méthode sous une réponse le lisent tous ici, une seule fois, plutôt qu'une fois par tour de conversation.
- * Relu quand le Studio change (un bloc ajouté ou retiré d'un fichier d'assistant change `utiliseePar`) et quand le flux se
- * rétablit. Une lecture en échec laisse le catalogue VIDE : la puce disparaît et la présence ne dit rien — rien n'est inventé.
+ * Le magasin lui-même vit dans `catalogue-store.ts`, sans React ni réseau : ici, seules la lecture réelle (`getMethods`) et le
+ * flux réel (`eventBus`) lui sont donnés. Le catalogue est partagé par la puce, la bulle d'un message et la présence d'une
+ * méthode sous une réponse : une seule lecture pour toute la page, plutôt qu'une par tour de conversation.
  */
-let catalogue: MethodView[] = [];
-let charge = false;
-let enVol: Promise<void> | null = null;
-const abonnes = new Set<() => void>();
-let arreterFlux: (() => void) | null = null;
-
-const prevenir = () => {
-  for (const abonne of abonnes) abonne();
-};
-
-function lire(): Promise<void> {
-  enVol ??= getMethods()
-    .then(
-      (reponse) => {
-        catalogue = reponse.methods;
-      },
-      (err: unknown) => {
-        catalogue = [];
-        console.warn("méthodes : catalogue non lu", errorText(err));
-      },
-    )
-    .finally(() => {
-      charge = true;
-      enVol = null;
-      prevenir();
-    });
-  return enVol;
-}
-
-function abonner(listener: () => void): () => void {
-  abonnes.add(listener);
-  arreterFlux ??= eventBus.subscribe((event) => {
-    if (event.kind === "cockpit" && (event.type === "studio.changed" || event.type === "stream.reconnected")) void lire();
-  });
-  if (!charge && enVol === null) void lire();
-  return () => {
-    abonnes.delete(listener);
-    if (abonnes.size > 0) return;
-    arreterFlux?.();
-    arreterFlux = null;
-  };
-}
-
-const instantane = () => catalogue;
+const MAGASIN = creerMagasinCatalogue({
+  lire: getMethods,
+  abonnerFlux: (ecouter) => eventBus.subscribe(ecouter),
+  avertir: (message, detail) => console.warn(message, errorText(detail)),
+});
 
 /** Catalogue des méthodes, partagé par la puce, la bulle et la présence. Vide tant qu'il n'est pas lu, ou en cas d'échec. */
 export function useMethodCatalogue(): MethodView[] {
-  return useSyncExternalStore(abonner, instantane, instantane);
+  return useSyncExternalStore(MAGASIN.abonner, MAGASIN.instantane, MAGASIN.instantane);
 }
 
 // --- Bouton et popover -------------------------------------------------------------------------------------------------------
@@ -259,7 +220,10 @@ export function MethodChipList({
 }: {
   valeur: readonly ChosenMethod[];
   onChange: (methodes: ChosenMethod[]) => void;
-  /** Phrase affichée quand les méthodes retenues ne partiront PAS avec ce message (raccourci) : rien n'est retiré en silence. */
+  /**
+   * Phrase affichée quand les méthodes retenues ne partiront PAS avec ce message : raccourci, ou message sans texte écrit.
+   * Rien n'est retiré en silence — le composeur garde aussi les méthodes retenues après un tel envoi.
+   */
   raison?: string | null;
 }) {
   if (valeur.length === 0) return null;

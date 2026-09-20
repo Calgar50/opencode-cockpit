@@ -8,7 +8,8 @@ import { Button } from "../../components/ui.tsx";
 import { oc } from "../../lib/api.ts";
 // <c5:methodes-import>
 // Itération 5 (L44e) : puce « + Méthode », méthodes retenues et aperçu modifiable du bloc ajouté au message (D-5-08).
-import { TEXTES as TEXTES_CONSTRUCTION } from "../../../server/shared/construction-texts.ts";
+// Les phrases de refus viennent du module pur (§4.3) : aucune n'est réécrite ici.
+import { methodChipReason } from "../../../server/shared/chat-methods-view.ts";
 import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodChip.tsx";
 // </c5:methodes-import>
 import type { ComposerSlots } from "./slots.ts";
@@ -126,6 +127,14 @@ export function Composer({
   const selectId = useId();
 
   const commandName = /^\/([\w-]+)(?=\s|$)/.exec(text)?.[1] ?? null;
+  // <c5:methodes-raccourci>
+  // Le raccourci se repère sur le texte RÉELLEMENT ENVOYÉ (`text.trim()`, plus bas), comme ChatPage.tsx le fait de son côté :
+  // « ␣/resume » est un raccourci pour l'envoi, alors que la ligne d'origine ci-dessus, qui lit le texte brut, ne le voit pas.
+  // Sans cette ligne, le bloc de méthode partait en ARGUMENTS du raccourci, sans qu'aucune phrase le dise (C §9.4).
+  const raccourci = /^\/([\w-]+)(?=\s|$)/.exec(text.trimStart())?.[1] ?? null;
+  // Message sans texte : le bloc seul ne serait une demande pour personne. Le refus est annoncé, comme celui du raccourci.
+  const sansTexte = text.trim() === "";
+  // </c5:methodes-raccourci>
   const onCommandChangeRef = useRef(onCommandChange);
   onCommandChangeRef.current = onCommandChange;
   useEffect(() => {
@@ -256,16 +265,18 @@ export function Composer({
     // <c5:methodes-envoi>
     // Une méthode est un TEXTE (D-5-08) : son bloc est ajouté à la FIN du message, tel que l'aperçu le montre, et rien d'autre
     // ne change — aucun champ `system`, aucun appel d'IA en plus. Deux cas n'emportent aucun bloc : un message sans texte (le
-    // bloc seul ne serait une demande pour personne) et un RACCOURCI (C §9.4) — la phrase du refus reste affichée sous les
-    // méthodes retenues, rien n'est retiré en silence.
-    const blocs = trimmed === "" || commandName !== null ? "" : methodes.map((methode) => methode.texte).join("");
+    // bloc seul ne serait une demande pour personne) et un RACCOURCI (C §9.4) — dans les deux, la phrase du refus est affichée
+    // sous les méthodes retenues AVANT l'envoi, et les méthodes retenues restent là après : rien n'est retiré en silence.
+    const blocs = trimmed === "" || raccourci !== null ? "" : methodes.map((methode) => methode.texte).join("");
     const envoye = `${trimmed}${blocs}`;
     // </c5:methodes-envoi>
     setText("");
     setAttachments([]);
     setMenu(null);
     // <c5:methodes-vide>
-    setMethodes([]);
+    // Les méthodes ne sont vidées que si leurs blocs sont VRAIMENT partis : après l'envoi d'une image seule ou d'un raccourci,
+    // elles restent retenues, avec leur phrase, et la personne peut écrire son message puis renvoyer.
+    if (blocs !== "") setMethodes([]);
     // </c5:methodes-vide>
     // <c5:methodes-envoi-appel>
     // La ligne d'origine envoyait `text: trimmed` : c'est le même texte, avec les blocs de méthode ajoutés à la fin (D-5-08).
@@ -404,11 +415,12 @@ export function Composer({
 
         {/* <c5:methodes-retenues> */}
         {/* Itération 5 (L44e) : méthodes retenues et aperçu MODIFIABLE du texte ajouté, sur leur propre ligne, comme les
-            fichiers joints. Ce que l'aperçu montre est ce qui part. */}
+            fichiers joints. Ce que l'aperçu montre est ce qui part. Les deux cas qui n'emportent aucun bloc — raccourci et
+            message sans texte — affichent leur phrase ICI, avant l'envoi. */}
         <MethodChipList
           valeur={methodes}
           onChange={setMethodes}
-          raison={commandName === null ? null : TEXTES_CONSTRUCTION.partout.methodes.limites.raccourci}
+          raison={raccourci !== null ? methodChipReason("raccourci") : sansTexte ? methodChipReason("sans-texte") : null}
         />
         {/* </c5:methodes-retenues> */}
 
@@ -451,9 +463,9 @@ export function Composer({
           </label>
           {autonomy}
           {/* <c5:methodes-puce> */}
-          {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci (le nom tapé
-              après « / » est déjà connu, commandName) : aucune méthode ne s'y ajoute. */}
-          <MethodChip agent={agent} estRaccourci={commandName !== null} desactive={disabled} valeur={methodes} onChange={setMethodes} />
+          {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci, repéré sur le
+              texte réellement envoyé (`raccourci`) : aucune méthode ne s'y ajoute. */}
+          <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled} valeur={methodes} onChange={setMethodes} />
           {/* </c5:methodes-puce> */}
           {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
           {busy || stopVisible ? (

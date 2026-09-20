@@ -37,6 +37,7 @@ import {
   methodBubbleRows,
   methodOfView,
   secondReadingFooter,
+  secondReadingSendGuard,
 } from "./shared/chat-methods-view.ts";
 import { chronologie } from "./shared/chronologie.ts";
 import {
@@ -46,7 +47,7 @@ import {
   SECOND_READING_CATALOG_ID,
   SECOND_READING_TURN_KIND,
 } from "./shared/construction-constants.ts";
-import { secondReadingPrefix } from "./shared/construction-texts.ts";
+import { TEXTES as TEXTES_C5, secondReadingPrefix } from "./shared/construction-texts.ts";
 import type { ChronologieResponse, ChronologieUsageRow, ChronologieView, MethodsResponse, MethodView } from "./shared/construction-types.ts";
 import { methodDetected, splitMessageMethods } from "./shared/methods.ts";
 import { methodMenuState, suggestionsByAssistant, wizardMethodState } from "./shared/methods-view.ts";
@@ -205,15 +206,27 @@ describe("croisement 5a V2 : les vues de la vague tiennent sur les types de T5a"
     // contrat, ils prouveraient seulement que le faux opencode reçoit ce qu'on lui envoie. Le précédent est
     // `croisements-it1-v4.test.ts`, qui lit `Composer.tsx` de la même manière.
     const composeur = lireVue("pages/chat/Composer.tsx");
-    assert.match(composeur, /const blocs = trimmed === "" \|\| commandName !== null \? "" : methodes\.map\(/, "les blocs ne viennent plus des méthodes retenues, ni le raccourci n'est plus écarté");
+    // Le raccourci est repéré sur le texte RÉELLEMENT envoyé (`text.trimStart()`), comme ChatPage.tsx le fait de son côté :
+    // c'est la garde corrigée après la relecture de V2, sans quoi « ␣/resume » emportait le bloc en arguments du raccourci.
+    assert.match(composeur, /const raccourci = \/\^\\\/\(\[\\w-\]\+\)\(\?=\\s\|\$\)\/\.exec\(text\.trimStart\(\)\)/, "le raccourci n'est plus repéré sur le texte envoyé");
+    assert.match(composeur, /const blocs = trimmed === "" \|\| raccourci !== null \? "" : methodes\.map\(/, "les blocs ne viennent plus des méthodes retenues, ni le raccourci n'est plus écarté");
     assert.match(composeur, /const envoye = `\$\{trimmed\}\$\{blocs\}`/, "les blocs ne sont plus ajoutés à la fin du texte");
     assert.match(composeur, /onSubmit\(\{ text: envoye, attachments: kept \}\)/, "le texte envoyé n'est plus celui qui porte les blocs");
     assert.ok(!/\bsystem\s*:/.test(composeur), "le composeur envoie un champ `system` : une méthode est un TEXTE (D-5-08)");
+    // Rien n'est retiré en silence : les méthodes retenues ne sont vidées que si leurs blocs sont partis, et les deux cas de
+    // refus (raccourci, message sans texte) affichent leur phrase sous les méthodes retenues.
+    assert.match(composeur, /if \(blocs !== ""\) setMethodes\(\[\]\);/, "les méthodes retenues sont vidées même quand aucun bloc n'est parti");
+    assert.match(composeur, /methodChipReason\("raccourci"\)/, "la phrase du raccourci ne vient plus du module pur");
+    assert.match(composeur, /methodChipReason\("sans-texte"\)/, "un message sans texte efface les méthodes retenues sans rien dire");
 
     const bouton = lireVue("pages/chat/methods/SecondReadingButton.tsx");
     assert.match(bouton, /await api\.resolveChat\(\{ directory, agent: relecteur\.name \}\)/, "le bouton ne résout plus l'assistant par /api/chat/resolve");
     assert.match(bouton, /oc\.promptAsync\(sessionId, directory, corps\(resolu\.send\.model/, "l'IA envoyée n'est plus celle que la route a résolue");
     assert.match(bouton, /agent: resolu\.agent/, "l'agent envoyé n'est plus celui que la route a résolu");
+    // Garde ajoutée après la relecture de V2 : un Relecteur disparu ne doit pas faire partir l'envoi facturé à l'assistant de repli.
+    assert.match(bouton, /secondReadingSendGuard\(\{/, "le bouton n'interroge plus la garde d'envoi");
+    assert.match(bouton, /agentMissing: resolu\.agentMissing/, "le repli signalé par la route n'est plus lu");
+    assert.match(bouton, /if \(!garde\.envoyer\)/, "la garde d'envoi n'arrête plus le clic");
   });
 
   it("GET /api/methods : la réponse réelle traverse les quatre modules purs des vues de la vague", async (t) => {
@@ -372,6 +385,44 @@ describe("croisement 5a V2 : la puce de méthode aboutit au corps reçu par le f
     h.assertNoGlobalRestart();
   });
 
+  it("raccourci précédé d'une espace : le bloc ne part ni dans le texte, ni en arguments du raccourci", async (t) => {
+    const h = await croisement(t);
+    const ses = await conversation(h, "Raccourci à espace de tête");
+    const reponse = await catalogue(h);
+    const choisie = methodChipState({ methods: reponse.methods, agent: "build", estRaccourci: false, choisies: [] }).items[0];
+    assert.ok(choisie, "aucune méthode attachable : le cas ne prouverait rien");
+
+    // La personne tape une espace avant la barre oblique. Les deux repérages doivent tomber d'accord : celui du composeur
+    // (Composer.tsx, section `c5:methodes-raccourci`) et celui de l'envoi (ChatPage.tsx), qui lit le texte ROGNÉ.
+    const brut = " /resume";
+    const raccourci = /^\/([\w-]+)(?=\s|$)/.exec(brut.trimStart())?.[1] ?? null;
+    const ancien = /^\/([\w-]+)(?=\s|$)/.exec(brut)?.[1] ?? null;
+    assert.equal(ancien, null, "le texte brut ne voit pas le raccourci : c'est la source du défaut corrigé");
+    assert.equal(raccourci, "resume", "le composeur ne reconnaît pas « ␣/resume » comme un raccourci");
+
+    const trimmed = brut.trim();
+    const blocs = trimmed === "" || raccourci !== null ? "" : choisie.bloc;
+    assert.equal(blocs, "", "le bloc de méthode part avec un raccourci (C §9.4)");
+    const envoye = `${trimmed}${blocs}`;
+
+    // Ce que ChatPage.tsx fait du texte envoyé : le raccourci est reconnu, et ses ARGUMENTS restent vides.
+    const commande = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(envoye);
+    assert.equal(commande?.[1], "resume");
+    assert.equal(commande?.[2], undefined, "le bloc de méthode est passé en arguments du raccourci ($ARGUMENTS)");
+    // Avec l'ancien repérage, le bloc partait bel et bien en arguments : le cas ci-dessus l'empêche.
+    const commandeAvant = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(`${trimmed}${choisie.bloc}`);
+    assert.ok(commandeAvant?.[2]?.includes("cockpit:methode-message"), "le scénario du défaut n'est plus reproduit");
+
+    assert.equal((await envoyer(h, ses, { agent: "build", model: MODEL, parts: [{ type: "text", text: envoye }] })).status, 204);
+    const corps = recus(h)[0];
+    assert.ok(corps);
+    const recu = texteEnvoye(corps);
+    assert.equal(recu, trimmed);
+    assert.deepEqual(splitMessageMethods(recu).methodes, []);
+    assert.ok(!recu.includes("cockpit:methode-message"), "un bloc de méthode est arrivé au faux opencode avec un raccourci");
+    h.assertNoGlobalRestart();
+  });
+
   it("présence de la méthode dans la réponse : la section trouvée, et rien de plus", async (t) => {
     const h = await croisement(t);
     const reponse = await catalogue(h);
@@ -447,6 +498,65 @@ describe("croisement 5a V2 : le bouton « Seconde lecture » envoie avec l'assis
     assert.ok(secondReadingFooter(texte), "aucun pied sous une demande de seconde lecture");
     assert.equal(secondReadingFooter("Analyse ce journal."), null);
     h.assertNoGlobalRestart();
+  });
+
+  it("Relecteur disparu d'opencode : la route retombe sur l'assistant par défaut, et RIEN n'est envoyé", async (t) => {
+    const h = await croisement(t);
+    // Le Relecteur a une ligne `item_meta` (il a été installé), mais opencode ne le déclare plus : supprimé depuis la page
+    // Assistants, ou passé en sous-agent dans le Studio. L'estimation lue plus tôt, elle, est encore en mémoire.
+    const now = Date.now();
+    h.db
+      .prepare(
+        `INSERT INTO item_meta (kind, name, title, tier, task_size, origin, catalog_id, catalog_version, role, created_at, updated_at)
+         VALUES ('agents', ?, 'Relecteur critique', 'rapide', 'S', 'catalogue', ?, 1, 'equipier', ?, ?)`,
+      )
+      .run(RELECTEUR, SECOND_READING_CATALOG_ID, now, now);
+    const ses = await conversation(h, "Incident sans relecteur");
+    assert.equal((await envoyer(h, ses, { agent: "build", model: MODEL, parts: [{ type: "text", text: "Analyse ce journal." }] })).status, 204);
+
+    // Étape 1 du bouton : la route ne REFUSE pas un assistant inconnu, elle retombe sur l'assistant par défaut du chat.
+    const resolu = await h.call("POST", "/api/chat/resolve", { headers: h.headers.mutating, body: { directory: h.fake.directory, agent: RELECTEUR } });
+    assert.equal(resolu.status, 200, resolu.body);
+    const turn = resolu.json<{ agent: string; agentMissing: string | null; display: { problems: { message: string; blocking: boolean }[] } }>();
+    assert.equal(turn.agentMissing, RELECTEUR, "la route ne signale plus le repli : le scénario du défaut n'est plus reproduit");
+    assert.notEqual(turn.agent, RELECTEUR);
+    assert.deepEqual(turn.display.problems.filter((p) => p.blocking), [], "aucun problème bloquant ici : seul `agentMissing` dit le repli");
+
+    // Étape 2 : la garde du bouton s'arrête là. Sans elle, l'envoi facturé partait à l'Assistant général, avec ses droits,
+    // son IA et un montant qui n'était plus celui de l'infobulle.
+    const garde = secondReadingSendGuard({
+      relecteur: RELECTEUR,
+      agent: turn.agent,
+      agentMissing: turn.agentMissing,
+      problemes: turn.display.problems,
+    });
+    assert.equal(garde.envoyer, false, "l'envoi part à l'assistant de repli");
+    assert.equal(garde.code, "absent");
+    assert.equal(garde.message, TEXTES_C5.partout.secondeLecture.absente);
+
+    // Rien de plus n'est parti au faux, et la conversation n'a toujours qu'une ligne « message ».
+    assert.equal(recus(h).length, 1, "un envoi de seconde lecture est parti alors que le Relecteur n'est plus là");
+    assert.deepEqual(genres(h, ses), ["message"]);
+    const apres = await h.call("GET", `/api/chat/choices/${ses}`, { headers: h.headers.authed });
+    assert.equal(apres.json<{ agent: string }>().agent, "build", "le composeur a changé d'assistant tout seul");
+    h.assertNoGlobalRestart();
+  });
+
+  it("garde d'envoi : l'assistant résolu doit être le Relecteur, et aucun refus bloquant ne doit rester", () => {
+    const problemes = [{ message: "Choisissez une IA.", blocking: true }];
+    assert.deepEqual(secondReadingSendGuard({ relecteur: RELECTEUR, agent: RELECTEUR, agentMissing: null, problemes: [] }), {
+      envoyer: true,
+      code: null,
+      message: null,
+    });
+    // Un refus bloquant garde la phrase du serveur, jamais celle du Relecteur absent.
+    assert.deepEqual(secondReadingSendGuard({ relecteur: RELECTEUR, agent: RELECTEUR, agentMissing: null, problemes }), {
+      envoyer: false,
+      code: "bloquant",
+      message: "Choisissez une IA.",
+    });
+    // Agent remplacé sans que la route le signale : l'envoi ne part pas davantage.
+    assert.equal(secondReadingSendGuard({ relecteur: RELECTEUR, agent: "build", agentMissing: null, problemes: [] }).code, "absent");
   });
 
   it("libellé et estimation : « ≈ » et jamais « au moins », montant absent quand la base ne dit rien", async (t) => {

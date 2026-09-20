@@ -116,6 +116,7 @@ export const TEXTES = {
         trop: "2 méthodes au maximum : au-delà, l'assistant les applique moins bien.",
         deja: "Déjà appliquée par l'assistant.",
         raccourci: "Les méthodes ne s'ajoutent pas à un raccourci.",
+        sansTexte: "Les méthodes ne partent qu'avec un message écrit.",
         equipe: "Les méthodes d'une équipe se règlent sur ses étapes.",
       },
       fiche: {

@@ -33,13 +33,19 @@ export function methodOfView(view: MethodView): Method {
 
 // --- Puce « + Méthode » du composeur (C §9.4) --------------------------------------------------------------------------------
 
-/** Pourquoi une méthode ne peut pas être ajoutée à ce message : raccourci, déjà dans l'assistant, limite atteinte. */
-export type MethodChipCode = "raccourci" | "deja" | "trop";
+/**
+ * Pourquoi une méthode ne peut pas être ajoutée à ce message : raccourci, message sans texte, déjà dans l'assistant, limite
+ * atteinte. « sans-texte » n'est pas un état du popover (le catalogue reste choisissable tant que rien n'est envoyé) : c'est la
+ * phrase affichée sous les méthodes retenues quand le message part sans un mot écrit — leurs blocs ne partent pas, et elles
+ * restent retenues (corrections de la relecture de 5a V2).
+ */
+export type MethodChipCode = "raccourci" | "sans-texte" | "deja" | "trop";
 
 /** Une phrase par code (§4.3) : la puce n'en invente aucune. */
 export function methodChipReason(code: MethodChipCode): string {
   const limites = TEXTES.partout.methodes.limites;
   if (code === "raccourci") return limites.raccourci;
+  if (code === "sans-texte") return limites.sansTexte;
   return code === "deja" ? limites.deja : limites.trop;
 }
 
@@ -239,6 +245,39 @@ export function secondReadingTooltip(estimate: SecondReadingEstimate): string | 
   const debut = TEXTES.partout.secondeLecture.infobulle.replace("{ia}", estimate.ia.libelle);
   const base = secondReadingBasePhrase(estimate.base);
   return base === null ? debut : `${debut} ${base}`;
+}
+
+/** Pourquoi le clic sur « Seconde lecture » n'envoie rien : le Relecteur n'est plus là, ou la résolution a un refus bloquant. */
+export type SecondReadingSendRefusal = "absent" | "bloquant";
+
+export interface SecondReadingSendDecision {
+  envoyer: boolean;
+  code: SecondReadingSendRefusal | null;
+  /** Phrase du refus (§4.3 pour « absent », messages du serveur pour « bloquant ») ; null quand l'envoi part. */
+  message: string | null;
+}
+
+/**
+ * Dernière garde avant l'envoi FACTURÉ, sur la réponse de `POST /api/chat/resolve` (corrections de la relecture de 5a V2).
+ *
+ * La route ne refuse pas un assistant inconnu : elle retombe sur l'assistant par défaut du chat et le dit par `agentMissing`.
+ * Un envoi parti tel quel irait donc à l'Assistant général, avec ses droits et son IA, alors que l'infobulle promettait le
+ * Relecteur en lecture seule et un montant calculé pour lui. Le bouton s'arrête là et laisse la place à [Installer].
+ */
+export function secondReadingSendGuard(input: {
+  /** Nom d'agent du Relecteur, tel que l'estimation l'a rendu. */
+  relecteur: string;
+  /** Agent réellement résolu par la route. */
+  agent: string;
+  agentMissing: string | null;
+  problemes: readonly { message: string; blocking: boolean }[];
+}): SecondReadingSendDecision {
+  if (input.agentMissing !== null || input.agent !== input.relecteur) {
+    return { envoyer: false, code: "absent", message: TEXTES.partout.secondeLecture.absente };
+  }
+  const bloquants = [...new Set(input.problemes.filter((probleme) => probleme.blocking).map((probleme) => probleme.message))];
+  if (bloquants.length > 0) return { envoyer: false, code: "bloquant", message: bloquants.join(" ") };
+  return { envoyer: true, code: null, message: null };
 }
 
 /** Message envoyé au Relecteur, variante « reponse » (§4.3) : le texte EXACT, jamais une reformulation. */

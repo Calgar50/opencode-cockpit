@@ -11,47 +11,21 @@
 // Honnêteté : une méthode est du TEXTE ajouté aux consignes, aucun appel d'IA en plus, et elle ne garantit pas que la réponse
 // est juste (phrase de l'état vide, spécification l.910). Rien n'est jamais attaché automatiquement.
 import { useState } from "react";
-import { RIGHTS_INFO, USE_CASE_INFO } from "../../../../server/shared/assistant-rules.ts";
+import { RIGHTS_INFO } from "../../../../server/shared/assistant-rules.ts";
 import { TEXTES } from "../../../../server/shared/construction-texts.ts";
-import { methodMenuState, suggestionsByAssistant, withMethod } from "../../../../server/shared/methods-view.ts";
+import { methodMenuState, suggestionsByAssistant } from "../../../../server/shared/methods-view.ts";
+import { useApp } from "../../../app/AppContext.tsx";
 import { Icon } from "../../../components/Icon.tsx";
 import { useToast } from "../../../components/Toast.tsx";
 import { useReloadGuard } from "../../../components/reloadGuard.ts";
 import { Button, EmptyState, Spinner, useConfirm } from "../../../components/ui.tsx";
 import { api, errorText } from "../../../lib/api.ts";
-import type { AssistantSaveRequest, AssistantView, MethodsResponse, MethodView } from "../../../lib/types.ts";
+import type { AssistantView, MethodsResponse, MethodView } from "../../../lib/types.ts";
+import { requestWithMethod } from "./assistant-request.ts";
 import { MethodCard, SuggestionButton } from "./MethodCard.tsx";
 import "./methods.css";
 
 const M = TEXTES.partout.methodes;
-
-/**
- * Brouillon COMPLET d'un assistant installé, plus la méthode : ce que `PUT /api/assistants/:name` attend. Chaque champ est
- * repris de l'assistant tel qu'il est lu aujourd'hui — rien n'est deviné — pour que l'ajout d'une méthode ne modifie que ses
- * méthodes. `previousName` est son nom actuel : l'enregistrement n'est pas un renommage.
- */
-export function requestWithMethod(view: AssistantView, method: Pick<MethodView, "id">): AssistantSaveRequest {
-  const useCase = view.useCase ?? "autre";
-  const request: AssistantSaveRequest = {
-    title: view.title,
-    description: view.description,
-    useCase,
-    // « Personnalisé » n'est pas un profil enregistrable : la confirmation ci-dessous le dit avant d'envoyer.
-    rights: view.rights === "propose" ? "propose" : "lecture",
-    web: view.web,
-    tier: view.tier,
-    reflection: view.variant === "high" ? "poussee" : "standard",
-    taskSize: view.taskSize,
-    instructions: view.instructions,
-    fiches: [...view.fiches],
-    examples: [...view.examples],
-    icon: view.icon ?? USE_CASE_INFO[useCase].icon,
-    methods: withMethod({ methods: view.methods }, method),
-    previousName: view.name,
-  };
-  if (view.tier === null) request.model = view.model;
-  return request;
-}
 
 export interface MethodsLibraryProps {
   /** Catalogue rendu par GET /api/methods ; null tant qu'il n'est pas lu. */
@@ -67,10 +41,14 @@ export interface MethodsLibraryProps {
 }
 
 export function MethodsLibrary({ catalogue, erreur, chargement, onReessayer, assistants, onChanged, avance }: MethodsLibraryProps) {
+  const { boot } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
   const guardReload = useReloadGuard();
   const [busy, setBusy] = useState(false);
+  // Niveaux d'IA rendus par `GET /api/boot` : ils servent à retrouver le niveau d'un assistant à IA précise, que le mode Simple
+  // ne peut pas réenregistrer tel quel (`tierOfView`).
+  const tiers = boot.ai?.tiers ?? [];
 
   const ajouter = async (assistant: AssistantView, method: MethodView) => {
     if (busy) return;
@@ -84,7 +62,7 @@ export function MethodsLibrary({ catalogue, erreur, chargement, onReessayer, ass
     }
     setBusy(true);
     try {
-      await guardReload((options) => api.saveAssistant(assistant.name, requestWithMethod(assistant, method), options));
+      await guardReload((options) => api.saveAssistant(assistant.name, requestWithMethod(assistant, method, { avance, tiers }), options));
       toast.success("Méthode ajoutée", `« ${method.titre} » s'ajoute maintenant aux consignes de « ${assistant.title} ».`);
       onChanged();
     } catch (err) {

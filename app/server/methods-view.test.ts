@@ -264,7 +264,13 @@ describe("methods-view : interface de la bibliothèque", () => {
   it("l'ajout passe par la garde de rechargement et par le brouillon complet", () => {
     assert.ok(bibliotheque.includes("useReloadGuard"), "garde de rechargement");
     assert.ok(bibliotheque.includes("guardReload((options) => api.saveAssistant("), "PUT /api/assistants/:name");
-    assert.ok(bibliotheque.includes("previousName: view.name"), "aucun renommage");
+    // Le corps est construit par le module pur voisin (testé pour de bon dans assistants.test.ts, section c5:methodes-niveau) :
+    // aucune règle de conversion n'est réécrite ici, et la page lui passe le mode et les niveaux d'IA.
+    const corps = fs.readFileSync(path.join(WEB, "methods", "assistant-request.ts"), "utf8");
+    assert.ok(bibliotheque.includes("requestWithMethod(assistant, method, { avance, tiers })"), "le mode et les niveaux ne sont plus passés au corps");
+    assert.ok(corps.includes("previousName: view.name"), "aucun renommage");
+    assert.ok(corps.includes("tierOfView(view, contexte.avance, contexte.tiers)"), "la conversion du niveau n'est plus partagée avec l'assistant de création");
+    assert.equal(/\btier:\s*view\.tier\b/.test(corps), false, "le niveau de l'assistant est recopié tel quel : le mode Simple refuserait une IA précise");
   });
 
   it("feuille de style : mode contrasté, aucune animation, aucune boucle", () => {
