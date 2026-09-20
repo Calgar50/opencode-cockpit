@@ -7,6 +7,8 @@
 //     de la Salle OMO est calculée en « avance » (décision n° 7, D-3d-12) ;
 //  3. racine de la Salle OMO en mode Simple → aucune vue en direct : « Revoir » seulement (D-3d-14) ;
 //  4. en différé, aucun texte de message n'est relu hors la consigne reçue, lue dans la copie gardée (D-3d-12, U2) ;
+//  4 bis. tuiles de fichiers du panneau en direct : chaque tuile porte son CHEMIN, relu dans la partie d'outil de son `callId`
+//     comme le panneau du zoom 3 de la bande 2D, suivi de ses états ; les `callId` entrent dans la clé de relecture ;
 //  5. « Suivre l'action » : la cible rendue par cibleASuivre est retrouvée dans le plan (nœud, faisceau, attente), jamais inventée ;
 //  6. dossier d'un projet : l'inverse de projetRelatif, repli honnête compris.
 // Chaque garde échoue sans le code qu'elle garde (contrôles discriminants écrits à côté).
@@ -23,13 +25,17 @@ import { scene } from "./shared/neon-scene.ts";
 import { cibleASuivre } from "./shared/revoir.ts";
 import { projetRelatif } from "./territoires-service.ts";
 import {
+  cheminsDesTuiles,
   cibleSuivre,
   creerCadence,
   type DependancesCadence,
   directServi,
   dossierDuProjet,
+  etatsTuile,
+  libelleTuile,
   MARQUE_PLAN,
   optionsScene,
+  PANNEAU_CHEMIN_MAX,
   textesPanneau,
   zoomDe,
 } from "../web/pages/salle-controle/useFaitsConversation.ts";
@@ -239,6 +245,103 @@ describe("L31c : textes du panneau du zoom 3 (direct et différé)", () => {
     assert.match(source, /else if \(detail !== null\) \{\s*panneauDuZoom3 = <PanneauRevoir /, "le différé monte le panneau de « Revoir »");
     assert.match(source, /const relire = textes\.aRelire\.length > 0;/, "aucune requête quand rien n'est à relire");
     assert.match(source, /if \(!relire\)/, "la relecture est coupée quand aucun message n'est à relire");
+  });
+});
+
+describe("L31c : tuiles de fichiers du panneau du zoom 3 en direct (§5.7.4, comme la bande 2D)", () => {
+  /** Un appel d'outil sur un fichier : la scène n'en garde que les CLÉS (pathKey), jamais le chemin (activity-facts.ts). */
+  const outil = (at: number, callId: string, categorie: string, phase: string, fichier: string): ActivityFact =>
+    fait("statut", RACINE, at, { etat: "outil", outil: categorie, nom: categorie, phase, callId, messageId: "msg_2", fichier, dossier: "cle_src" }, callId);
+
+  /** Deux fichiers lus, un modifié, un cherché sans aucun état posé — et aucune consigne ni réponse à relire. */
+  const faitsAvecTuiles = (): ActivityFact[] => [
+    fait("statut", RACINE, 1_010, { etat: "occupee" }),
+    outil(1_100, "call_a", "lire", "termine", "cle_a"),
+    outil(1_110, "call_b", "lire", "termine", "cle_b"),
+    outil(1_120, "call_c", "modifier", "termine", "cle_c"),
+    outil(1_130, "call_d", "chercher", "termine", "cle_d"),
+  ];
+
+  /** Messages de la conversation : le chemin de chaque tuile vit LÀ, dans `state.input.filePath` de sa partie d'outil. */
+  const messages: readonly unknown[] = [
+    {
+      info: { id: "msg_2" },
+      parts: [
+        { type: "tool", callID: "call_a", state: { input: { filePath: "/srv/depot/src/a.ts" } } },
+        { type: "tool", callID: "call_b", state: { input: { filePath: "/srv/depot/src/b.ts" } } },
+        { type: "tool", callID: "call_c", state: { input: { filePath: "/srv/depot/src/c.ts" } } },
+        { type: "tool", callID: "call_d", state: { input: { filePath: "/srv/depot/src/d.ts" } } },
+      ],
+    },
+  ];
+
+  function panneauDuZoom3() {
+    const vue = scene(faitsAvecTuiles(), null, optionsScene({ salle: false, mode: "avance" }, RACINE));
+    const detail = vue.detail;
+    assert.ok(detail !== null, "le zoom 3 a bien un panneau");
+    const tuiles = detail.dossiers.flatMap((un) => un.tuiles);
+    assert.equal(tuiles.length, 4, "les quatre fichiers sont des tuiles (sinon la garde ne prouverait rien)");
+    return { detail, tuiles };
+  }
+
+  const tuileDe = (tuiles: ReturnType<typeof panneauDuZoom3>["tuiles"], callId: string) => {
+    const trouvee = tuiles.find((tuile) => tuile.callId === callId);
+    assert.ok(trouvee !== undefined, `tuile ${callId} absente`);
+    return trouvee;
+  };
+
+  it("deux tuiles de fichiers différents donnent deux libellés différents (le chemin, pas seulement l'état)", () => {
+    const { detail, tuiles } = panneauDuZoom3();
+    const chemins = cheminsDesTuiles(messages, detail.dossiers);
+    const libelles = tuiles.map((tuile) => libelleTuile(tuile, chemins.get(tuile.callId)));
+    assert.equal(new Set(libelles).size, libelles.length, `libellés indiscernables : ${libelles.join(" | ")}`);
+    assert.ok(libelles.includes("/srv/depot/src/a.ts (lu)"), libelles.join(" | "));
+    assert.ok(libelles.includes("/srv/depot/src/b.ts (lu)"), libelles.join(" | "));
+    assert.ok(libelles.includes("/srv/depot/src/c.ts (modifié)"), libelles.join(" | "));
+    // Témoin : les seuls états, rendus sans le chemin, ne distinguent PAS les deux fichiers lus.
+    assert.equal(etatsTuile(tuileDe(tuiles, "call_a")), etatsTuile(tuileDe(tuiles, "call_b")));
+  });
+
+  it("une tuile sans état posé porte tout de même son chemin", () => {
+    const { detail, tuiles } = panneauDuZoom3();
+    const sansEtat = tuileDe(tuiles, "call_d");
+    assert.equal(etatsTuile(sansEtat), "", "aucun état n'est posé sur cette tuile (sinon la garde ne prouverait rien)");
+    const chemins = cheminsDesTuiles(messages, detail.dossiers);
+    assert.equal(libelleTuile(sansEtat, chemins.get(sansEtat.callId)), "/srv/depot/src/d.ts", "le chemin est rendu, jamais un tiret seul");
+  });
+
+  it("un chemin pas encore relu devient « … » (jamais inventé, P12) ; un chemin trop long est coupé", () => {
+    const { tuiles } = panneauDuZoom3();
+    const lue = tuileDe(tuiles, "call_a");
+    assert.equal(libelleTuile(lue, undefined), "… (lu)");
+    const libelle = libelleTuile(lue, `/srv/depot/${"x".repeat(400)}.ts`);
+    assert.ok(libelle.startsWith("/srv/depot/"), libelle);
+    assert.ok(libelle.endsWith("… (lu)"), libelle);
+    assert.ok(libelle.length <= PANNEAU_CHEMIN_MAX + " (lu)".length, `libellé de ${libelle.length} caractères`);
+  });
+
+  it("aucun chemin sans messages relus : la table est vide, et un callId inconnu reste sans chemin", () => {
+    const { detail } = panneauDuZoom3();
+    assert.equal(cheminsDesTuiles(null, detail.dossiers).size, 0, "en différé, rien n'est relu : aucune tuile n'a de chemin");
+    assert.equal(cheminsDesTuiles([{ info: { id: "msg_2" }, parts: [] }], detail.dossiers).size, 0, "une partie d'outil absente ne donne aucun chemin");
+  });
+
+  it("les tuiles entrent dans la clé de relecture en direct, et une session sans consigne ni réponse se relit tout de même", () => {
+    const { detail } = panneauDuZoom3();
+    assert.equal(detail.panneau.consigne, null, "ce panneau n'a ni consigne…");
+    assert.equal(detail.panneau.reponse, null, "…ni réponse (sinon la garde ne prouverait rien)");
+    const textes = textesPanneau(true, detail.panneau, detail.dossiers);
+    for (const callId of ["call_a", "call_b", "call_c", "call_d"]) assert.ok(textes.aRelire.includes(callId), `${callId} manque à la clé de relecture`);
+    assert.ok(textes.aRelire.length > 0, "sans relecture, les tuiles resteraient « … » indéfiniment");
+    // En différé, RIEN n'est relu : ni message, ni tuile (D-3d-12, U2).
+    assert.deepEqual(textesPanneau(false, detail.panneau, detail.dossiers).aRelire, []);
+  });
+
+  it("le panneau en direct rend le chemin de chaque tuile et se relit quand elles changent (contrôle de source)", () => {
+    const source = fs.readFileSync(path.join(APP_DIR, "web/pages/salle-controle/ZoomConversation.tsx"), "utf8");
+    assert.match(source, /textesPanneau\(true, detail\.panneau, detail\.dossiers\)/, "les tuiles entrent dans la clé de relecture du panneau");
+    assert.match(source, /cheminsDesTuiles\(lecture\?\.messages \?\? null, detail\.dossiers\)/, "les chemins sont relus dans les messages du panneau");
+    assert.match(source, /\{libelleTuile\(tuile, chemins\.get\(tuile\.callId\)\)\}/, "chaque tuile rend son chemin, pas seulement ses états");
   });
 });
 

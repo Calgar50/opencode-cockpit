@@ -11,8 +11,9 @@
 // Aucune animation, aucune boucle d'images : un seul minuteur ponctuel à la fois, replacé par le pas suivant (D-3d-22).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityFact } from "../../../server/shared/activity-types.ts";
-import { avancer, fileNeuve, type NeonFile, recevoir } from "../../../server/shared/neon-band.ts";
-import type { NeonDetail, NeonMode, NeonSceneOptions } from "../../../server/shared/neon-scene.ts";
+import { avancer, cheminDeLOutil, couper, fileNeuve, type NeonFile, recevoir } from "../../../server/shared/neon-band.ts";
+import type { NeonDetail, NeonFolder, NeonMode, NeonSceneOptions, NeonTile } from "../../../server/shared/neon-scene.ts";
+import { TEXTES as NEON } from "../../../server/shared/neon-texts.ts";
 import type { Plan3d, Plan3dZoom, Point3 } from "../../../server/shared/salle3d-types.ts";
 import { activityApi } from "../../lib/api-activity.ts";
 import { useEvents } from "../../lib/events.ts";
@@ -148,7 +149,10 @@ export function zoomDe(sessionId: string | null): Plan3dZoom {
 
 /** D'où le panneau du zoom 3 tire ses textes (D-3d-12, U2). */
 export interface TextesPanneau {
-  /** Messages à relire dans la conversation, dans l'ordre (consigne, réponse) ; TOUJOURS vide en différé. */
+  /**
+   * À relire dans la conversation, dans l'ordre : la consigne, la réponse, puis le `callId` de chaque tuile de fichier (dont le
+   * chemin ne vit que dans la partie d'outil, cheminsDesTuiles). TOUJOURS vide en différé.
+   */
   aRelire: string[];
   /** Les textes de message sont remplacés par « Texte non affiché pendant « Revoir » » (différé). */
   nonAffiche: boolean;
@@ -161,11 +165,55 @@ export interface TextesPanneau {
  * - EN DIRECT, ils sont relus dans la conversation, exactement comme la bande 2D, et rendus en texte ;
  * - EN DIFFÉRÉ, AUCUN texte de message n'est relu (`aRelire` vide) : chacun devient « Texte non affiché pendant « Revoir » »,
  *   SAUF la consigne reçue, lue dans la copie gardée localement par le cockpit, sans aucune requête à opencode (U2, D-3d-30).
+ *
+ * En direct, les tuiles de fichiers comptent elles aussi : leur chemin ne vit que dans la partie d'outil de leur `callId`, donc
+ * elles entrent dans `aRelire` (et dans la clé de relecture), comme le panneau de la bande 2D. Sans elles, un assistant sans
+ * consigne ni réponse ne relirait RIEN et ses tuiles resteraient « … » ; et le panneau ne se relirait pas quand elles changent.
  */
-export function textesPanneau(direct: boolean, panneau: NeonDetail["panneau"]): TextesPanneau {
+export function textesPanneau(direct: boolean, panneau: NeonDetail["panneau"], dossiers: readonly NeonFolder[] = []): TextesPanneau {
   if (!direct) return { aRelire: [], nonAffiche: true, consigneGardee: true };
-  const aRelire = [panneau.consigne?.messageId, panneau.reponse?.messageId].filter((id): id is string => typeof id === "string" && id !== "");
-  return { aRelire, nonAffiche: false, consigneGardee: false };
+  const messages = [panneau.consigne?.messageId, panneau.reponse?.messageId].filter((id): id is string => typeof id === "string" && id !== "");
+  const tuiles = dossiers.flatMap((dossier) => dossier.tuiles.map((tuile) => tuile.callId)).filter((callId) => callId !== "");
+  return { aRelire: [...messages, ...tuiles], nonAffiche: false, consigneGardee: false };
+}
+
+/** Coupe des chemins de fichier du panneau du zoom 3, la même que la bande 2D (NeonBand.tsx, NeonZoom3). */
+export const PANNEAU_CHEMIN_MAX = 120;
+
+/**
+ * Chemins des tuiles de fichiers du panneau, relus dans les messages de la conversation par leur `callId` (`cheminDeLOutil`,
+ * même lecture que la bande 2D, masquée par redactSecrets) : la scène ne porte que la CLÉ du fichier (`NeonTile.fichier`),
+ * jamais son chemin. Sans messages (différé, ou première lecture pas encore arrivée), la table est vide : chaque tuile affiche
+ * « … », jamais un chemin inventé (P12).
+ */
+export function cheminsDesTuiles(messages: readonly unknown[] | null, dossiers: readonly NeonFolder[]): Map<string, string> {
+  const chemins = new Map<string, string>();
+  if (messages === null) return chemins;
+  for (const dossier of dossiers) {
+    for (const tuile of dossier.tuiles) {
+      const chemin = cheminDeLOutil(messages, tuile.callId);
+      if (chemin !== null) chemins.set(tuile.callId, chemin);
+    }
+  }
+  return chemins;
+}
+
+/** États d'une tuile de fichier, en toutes lettres ; chaîne vide quand aucun état n'est posé, comme la bande 2D. */
+export function etatsTuile(tuile: NeonTile): string {
+  return [tuile.lu ? NEON.partout.tuiles.lu : "", tuile.modifie ? NEON.partout.tuiles.modifie : "", tuile.refuse ? NEON.partout.tuiles.refuse : "", tuile.enCours ? NEON.partout.tuiles.enCours : ""]
+    .filter((mot) => mot !== "")
+    .join(", ");
+}
+
+/**
+ * Libellé d'une tuile de fichier dans « Ce qu'il a fait » (§5.7.4, zoom 3) : le chemin relu et coupé, suivi de ses états entre
+ * parenthèses — exactement le panneau du zoom 3 de la bande 2D, qui est la référence du même texte. Un chemin pas encore relu
+ * devient « … » ; une tuile sans état posé garde tout de même son chemin, seule chose qui la distingue d'une autre.
+ */
+export function libelleTuile(tuile: NeonTile, chemin: string | undefined): string {
+  const nom = couper(chemin ?? "…", PANNEAU_CHEMIN_MAX);
+  const etats = etatsTuile(tuile);
+  return etats === "" ? nom : `${nom} (${etats})`;
 }
 
 /**

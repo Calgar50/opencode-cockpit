@@ -31,7 +31,7 @@ import { TEXTES as ACTIVITE } from "../../../server/shared/activity-texts.ts";
 import { legendesAuMoment } from "../../../server/shared/legendes.ts";
 import { libelleNoeud, NEON_RELECTURE_MS, texteDuMessage } from "../../../server/shared/neon-band.ts";
 import { planConversation } from "../../../server/shared/neon-plan3d.ts";
-import type { NeonDetail, NeonScene, NeonTile } from "../../../server/shared/neon-scene.ts";
+import type { NeonDetail, NeonScene } from "../../../server/shared/neon-scene.ts";
 import { scene, visibleCount } from "../../../server/shared/neon-scene.ts";
 import { libelleEtat, libelleOutil, remplir, TEXTES as NEON } from "../../../server/shared/neon-texts.ts";
 import { cibleASuivre, instant } from "../../../server/shared/revoir.ts";
@@ -51,9 +51,11 @@ import { useReplay } from "./revoir/useReplay.ts";
 import { Scene3d } from "./Scene3d.tsx";
 import type { ConsigneRevoirProps, ZoomConversationProps } from "./slots-3d.ts";
 import {
+  cheminsDesTuiles,
   cibleSuivre,
   directServi,
   dossierDuProjet,
+  libelleTuile,
   optionsScene,
   type TextesPanneau,
   textesPanneau,
@@ -64,7 +66,7 @@ import {
 } from "./useFaitsConversation.ts";
 import "./zoom-conversation.css";
 
-/** Valeur absente ou sans état : un tiret, comme le panneau du zoom 3 de la bande (aucun texte inventé, P12). */
+/** Valeur absente : un tiret, comme le panneau du zoom 3 de la bande (aucun texte inventé, P12). */
 const RIEN = "—";
 
 export function ZoomConversation(props: ZoomConversationProps) {
@@ -392,14 +394,6 @@ function TexteLu({ lecture, messageId }: { lecture: Lecture | null; messageId: s
   return <p className="zoom-conv-panneau-texte">{valeur ?? NEON.partout.texteIndisponible}</p>;
 }
 
-/** États d'une tuile de fichier, en toutes lettres ; un tiret quand aucun état n'est posé. */
-function etatsTuile(tuile: NeonTile): string {
-  const poses = [tuile.lu ? NEON.partout.tuiles.lu : "", tuile.modifie ? NEON.partout.tuiles.modifie : "", tuile.refuse ? NEON.partout.tuiles.refuse : "", tuile.enCours ? NEON.partout.tuiles.enCours : ""].filter(
-    (mot) => mot !== "",
-  );
-  return poses.length === 0 ? RIEN : poses.join(", ");
-}
-
 /**
  * Panneau « Consigne reçue · Ce qu'il a fait · Résultat rendu » EN DIRECT (§5.7.4) : les textes de message sont relus dans la
  * conversation, comme la bande 2D. En différé, ce panneau n'est jamais monté : c'est PanneauRevoir (L28c) qui sert, sans aucune
@@ -417,8 +411,11 @@ function PanneauDirect({
   onRetour: () => void;
 }) {
   const noeud = vue.noeuds.find((candidat) => candidat.sessionId === detail.sessionId);
-  const textes = textesPanneau(true, detail.panneau);
+  // Les tuiles de fichiers entrent dans la clé de relecture : leur chemin ne vit que dans la partie d'outil de leur `callId`.
+  const textes = textesPanneau(true, detail.panneau, detail.dossiers);
   const lecture = useTextesDuPanneau(detail, noeud?.etat ?? "", dossier, textes);
+  // Chemins relus des tuiles, comme la bande 2D : la scène ne porte que la clé du fichier, jamais son chemin.
+  const chemins = useMemo(() => cheminsDesTuiles(lecture?.messages ?? null, detail.dossiers), [lecture, detail]);
   const { panneau } = detail;
   const outils = [...detail.outils.map((outil) => ({ nom: libelleOutil(outil.categorie), ...outil })), { nom: libelleOutil("autres"), ...detail.autresOutils }]
     .map((outil) => ({ nom: outil.nom, total: outil.enCours + outil.termines + outil.echecs + outil.interrompus }))
@@ -451,7 +448,7 @@ function PanneauDirect({
                 <li key={outil.nom}>{`${outil.nom} : ${outil.total}`}</li>
               ))}
               {tuiles.map((tuile) => (
-                <li key={`${tuile.fichier}|${tuile.callId}`}>{etatsTuile(tuile)}</li>
+                <li key={`${tuile.fichier}|${tuile.callId}`}>{libelleTuile(tuile, chemins.get(tuile.callId))}</li>
               ))}
               {enPlus > 0 ? <li>{remplir(NEON.partout.tuiles.enPlus, { n: enPlus })}</li> : null}
             </ul>
