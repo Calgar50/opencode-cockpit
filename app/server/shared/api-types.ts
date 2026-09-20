@@ -136,6 +136,13 @@ export interface AssistantView {
   examples: string[];
   /** Consignes sans le bloc de règles communes (stripCommonRules). */
   instructions: string;
+  // <c5:methodes>
+  /**
+   * Méthodes attachées, lues dans le FICHIER d'agent (`methodIdsIn`), qui fait foi (D-5-07) : `item_meta.methods` n'en est
+   * que le miroir. Les blocs sont retirés des `instructions` ci-dessus. Absent quand le service ne les rend pas encore.
+   */
+  methods?: string[];
+  // </c5:methodes>
   /** `model:` du fichier. */
   model: string | null;
   modelName: string | null;
