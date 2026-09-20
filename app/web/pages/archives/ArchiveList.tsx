@@ -29,6 +29,16 @@ import {
   Snippet,
   useDebouncedValue,
 } from "./shared.tsx";
+// <c5:equipe-filtre>
+// Itération 5 (L46b, D-5-11) : filtre « Avec une équipe », appliqué CÔTÉ CLIENT aux conversations DÉJÀ CHARGÉES, d'après les
+// racines rendues par GET /api/equipes/conversations. Ni `archive.list` ni les routes de http.ts ne changent : la recherche, la
+// pagination et les compteurs du serveur restent ceux de la 1.0.
+import { TEAM_CONVERSATIONS_MAX } from "../../../server/shared/construction-constants.ts";
+import { TEXTES } from "../../../server/shared/construction-texts.ts";
+import { getTeamConversations } from "../../lib/api-construction.ts";
+import type { TeamConversationsResponse } from "../../lib/types.ts";
+import "../costs/team-costs.css";
+// </c5:equipe-filtre>
 
 const PAGE_SIZE = 50;
 /** Taille de page maximale acceptée par le serveur. */
@@ -207,6 +217,19 @@ export function ArchiveListView({
   }, [stats.data, project]);
   const countPlaceholder = stats.loading ? "…" : "—";
   const active = hasActiveFilters(filters);
+  // <c5:equipe-filtre>
+  // Le filtre reste local à la liste : `ArchiveFilters` (shared.tsx) n'est pas touché, et aucun critère ne part au serveur.
+  // Tant que les racines ne sont pas lues (route absente, panne), rien n'est masqué : la liste complète vaut mieux qu'une liste
+  // vide qui laisserait croire qu'aucune conversation n'a lancé d'équipe.
+  const [avecEquipe, setAvecEquipe] = useState(false);
+  const equipes = useAsync(() => getTeamConversations(), []);
+  const racines = equipes.data;
+  const racinesEquipe = useMemo(() => new Set(racines?.rootIds ?? []), [racines]);
+  const listeAffichee = useMemo(
+    () => (avecEquipe && racines && list ? { items: list.items.filter((c) => racinesEquipe.has(c.sessionId)), total: list.total } : list),
+    [avecEquipe, racines, racinesEquipe, list],
+  );
+  // </c5:equipe-filtre>
 
   return (
     <div className="archives">
@@ -254,6 +277,12 @@ export function ArchiveListView({
           <Icon name="pin" size={14} />
           Épinglées
         </button>
+        {/* <c5:equipe-filtre> */}
+        <button type="button" className="chip team-filter" aria-pressed={avecEquipe} onClick={() => setAvecEquipe((v) => !v)}>
+          <Icon name="users" size={14} />
+          {TEXTES.partout.archives.filtre}
+        </button>
+        {/* </c5:equipe-filtre> */}
       </div>
 
       <div className="cat-strip" role="group" aria-label="Filtrer par catégorie">
@@ -299,8 +328,13 @@ export function ArchiveListView({
         ) : null}
       </div>
 
+      {/* <c5:equipe-filtre> */}
+      {avecEquipe ? <TeamFilterNote charge={list} affichee={listeAffichee} racines={racines} erreur={equipes.error} /> : null}
+      {/* </c5:equipe-filtre> */}
+
+      {/* <c5:equipe-filtre> seule la source de la liste change : le filtre est appliqué aux éléments déjà chargés */}
       <ArchiveResults
-        list={list}
+        list={listeAffichee}
         error={error}
         loading={loading}
         loadingMore={loadingMore}
@@ -313,6 +347,7 @@ export function ArchiveListView({
         onResetFilters={resetFilters}
         onLoadMore={() => void loadMore()}
       />
+      {/* </c5:equipe-filtre> */}
     </div>
   );
 }
@@ -528,3 +563,36 @@ function ArchiveRow({
     </a>
   );
 }
+
+// <c5:equipe-filtre>
+/**
+ * Ce que le filtre « Avec une équipe » fait vraiment (D-5-11) : le compteur de la barre reste celui du serveur, qui ne connaît
+ * pas ce critère ; cette note dit sur quoi le filtre a porté, et le prévient quand la liste des racines est incomplète
+ * (`tronque`) ou indisponible.
+ */
+function TeamFilterNote({
+  charge,
+  affichee,
+  racines,
+  erreur,
+}: {
+  charge: ArchiveList | null;
+  affichee: ArchiveList | null;
+  racines: TeamConversationsResponse | null;
+  erreur: unknown;
+}) {
+  if (erreur) {
+    return (
+      <p className="small muted team-filter-note">{`Filtre « ${TEXTES.partout.archives.filtre} » indisponible : ${errorText(erreur)}`}</p>
+    );
+  }
+  if (!racines || !charge || !affichee) {
+    return <p className="small muted team-filter-note">Lecture des conversations qui ont lancé une équipe…</p>;
+  }
+  const trouvees = plural(affichee.items.length, "conversation avec une équipe", "conversations avec une équipe");
+  const borne = racines.tronque
+    ? ` Le cockpit reconnaît les ${formatInt(TEAM_CONVERSATIONS_MAX)} conversations les plus récentes qui ont lancé une équipe.`
+    : "";
+  return <p className="small muted team-filter-note">{`${trouvees} parmi les ${formatInt(charge.items.length)} déjà chargées.${borne}`}</p>;
+}
+// </c5:equipe-filtre>
