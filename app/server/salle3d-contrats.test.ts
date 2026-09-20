@@ -240,8 +240,13 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
   });
 
   it("aucun fichier de T3d-a n'importe « three » ; seul moteur-chargeur.ts atteint ./three/, par import dynamique (D-3d-05)", () => {
-    for (const fichier of FICHIERS_T3D_A) assert.equal(importeThree(lire(fichier)), false, fichier);
-    const versThree = FICHIERS_T3D_A.flatMap((fichier) =>
+    // [train V2] `three/moteur.ts`, rempli par L29c, importe three par imports NOMMÉS statiques et lit ses voisins de three/
+    // (D-3d-05, MX-3D M3D-3) : comme les autres squelettes remplis, il sort de ce contrôle de vague 0. La règle générale — three
+    // seulement dans three/, frontière franchie par le seul moteur-chargeur.ts — est tenue par three-import.test.ts (L32).
+    const controles = FICHIERS_T3D_A.filter((fichier) => !(estRempli(fichier) && fichier.startsWith("web/pages/salle-controle/three/")));
+    assert.ok(controles.length >= FICHIERS_T3D_A.length - 1, "un seul fichier sort de ce contrôle : le moteur rempli");
+    for (const fichier of controles) assert.equal(importeThree(lire(fichier)), false, fichier);
+    const versThree = controles.flatMap((fichier) =>
       tousLesImports(lire(fichier))
         .filter((spec) => spec.startsWith(".") && path.resolve(APP_DIR, path.dirname(fichier), spec).includes(`${path.sep}three${path.sep}`))
         .map((spec) => `${fichier} → ${spec}`),
@@ -271,7 +276,9 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
     }
   });
 
-  it("chargerMoteur() rend un module dont creerMoteur rend null (squelette, aucun three chargé)", async () => {
+  it("chargerMoteur() rend un module dont creerMoteur rend null sans contexte WebGL", async () => {
+    // [train V2] Le moteur est rempli (L29c) : `chargerMoteur()` charge donc three. Hors navigateur, `new WebGLRenderer(...)`
+    // échoue et la fabrique rend null, comme le squelette le faisait — la page reste en 2D (« contexte-refuse »).
     const { creerMoteur } = await chargerMoteur();
     assert.equal(typeof creerMoteur, "function");
     const moteur = creerMoteur({} as HTMLCanvasElement, {
