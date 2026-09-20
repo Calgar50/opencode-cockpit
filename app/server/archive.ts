@@ -584,7 +584,12 @@ export class ArchiveService {
       .sort((a, b) => b[1] - a[1])
       .map(([name, n]) => `${name} ×${n}`)
       .join(", ");
+    // <c5:markdown-base>
+    // Seule ligne de l'itération 1 modifiée dans cette méthode : le corps était rendu directement (`return [`), il est nommé
+    // pour que la section `c5:markdown` ci-dessous puisse y ajouter le résumé des lancements d'équipe. Le contenu du tableau,
+    // lui, est celui de l'itération 1, à l'octet.
     const base = [
+      // </c5:markdown-base>
       "---",
       header.trimEnd(),
       "---",
@@ -626,8 +631,10 @@ export class ArchiveService {
       `${created.slice(0, 10)}_${slugify(conv.title, 50)}_${conv.sessionId.slice(-8)}.md`,
     );
     const target = await assertInside(this.#d.archiveDir, path.join(this.#d.archiveDir, relative));
+    // <c5:markdown-fichier>
     // Le résumé des lancements d'équipe (L46a, D-5-10) est déjà dans `content` : il est composé par `markdown()`, section
     // `c5:markdown`, pour que le fichier écrit ici et le téléchargement de l'interface soient identiques.
+    // </c5:markdown-fichier>
     await writeFileAtomic(target, content);
     const previous = this.#row(sessionId)?.archive_path;
     if (previous && previous !== relative) await this.#removeFile(previous);

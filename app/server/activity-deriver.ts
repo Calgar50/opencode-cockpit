@@ -208,9 +208,10 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
         // lié en paramètre (SQL paramétré), jamais interpolé dans le texte de la requête.
         `SELECT id FROM chat_turns WHERE session_id = ? AND kind IN ('message', 'raccourci', ?) AND created_at BETWEEN ? AND ?
          ORDER BY created_at, id LIMIT 16`,
-        // </c5:origine-seconde-lecture>
       )
+      // Le genre de la Seconde lecture est LIÉ ici : la ligne de liaison change donc elle aussi, et reste dans la section.
       .all(sessionId, SECOND_READING_TURN_KIND, created - SENT_MESSAGE_WINDOW_MS, created + SENT_MESSAGE_SKEW_MS) as Array<{ id: number }>;
+    // </c5:origine-seconde-lecture>
     const turn = turns.find((row) => !usedTurns.has(String(row.id)));
     if (!turn) return;
     usedTurns.set(String(turn.id), true);

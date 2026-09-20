@@ -31,12 +31,14 @@ import {
   effectiveBuiltinRules,
   MESSAGES,
   parseModelKey,
-  tierOfView,
   unknownAgentKeyMessage,
 } from "./shared/assistant-rules.ts";
 // <c5:methodes-import>
 // 1.1 (corrections de la relecture de 5a V2) : corps de « Ajouter à un assistant », rejoué tel quel sur la route.
 import { requestWithMethod } from "../web/pages/assistants/methods/assistant-request.ts";
+// `tierOfView` ne sert qu'à la section `c5:methodes-niveau` : importé ici, la liste partagée au-dessus reste celle de
+// l'itération 1 (§2.6 : tout ajout de la construction dans un fichier de classe A est entre balises).
+import { tierOfView } from "./shared/assistant-rules.ts";
 // </c5:methodes-import>
 import { StudioApplyError, StudioService, StudioValidationError } from "./studio.ts";
 import { TEMPLATES } from "./templates.ts";
