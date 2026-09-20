@@ -11,6 +11,10 @@ import { formatDateTime, formatInt, formatTokens, formatUsd, plural, relativeTim
 import { navigate, routeHref } from "../../lib/router.ts";
 import type { Conversation, ModelInfo } from "../../lib/types.ts";
 import { Deroule } from "../chat/activity/Deroule.tsx";
+// <c5:equipes>
+// Itération 5 (L46b) : équipes lancées dans cette conversation (D-5-10). Rien n'est rendu quand il n'y en a aucune.
+import { ArchiveTeams } from "./ArchiveTeams.tsx";
+// </c5:equipes>
 import { ClassificationBadge, classificationMethod, DeletedBadge, formatConfidence } from "./shared.tsx";
 
 type Action = "title" | "category" | "tags" | "summary" | "pin" | "classify" | "refresh" | "delete";
@@ -483,6 +487,10 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
         </aside>
 
         <Deroule rootId={sessionId} placement="archives" advanced={boot.ui.mode === "avance"} />
+
+        {/* <c5:equipes> */}
+        <ArchiveTeams rootId={sessionId} supprimeeDansOpencode={c.deletedInOpencode} />
+        {/* </c5:equipes> */}
 
         <Card
           className="area-transcript"
