@@ -12,7 +12,6 @@ import { libelleConsigneAbsente, libelleConsigneTronquee, libelleRefus, TEXTES }
 import type { RevoirConsigneResponse, RevoirRefus } from "../../../../server/shared/salle3d-types.ts";
 import { Button } from "../../../components/ui.tsx";
 import { salle3dApi } from "../../../lib/api-salle3d.ts";
-import { ApiError } from "../../../lib/api.ts";
 import type { ConsigneRevoirProps } from "../slots-3d.ts";
 import "./consigne-revoir.css";
 
@@ -24,10 +23,23 @@ type Etat =
   /** Aucune copie gardée (404), ou conversation fermée à « Revoir » (403) : une phrase, jamais une cause inventée. */
   | { etat: "sans"; phrase: string };
 
+/**
+ * Erreur de l'API lue SUR SA FORME, jamais par son type : web/lib/api.ts porte le client d'opencode et reste hors de revoir/**
+ * (règle de lecture seule, même choix que RevoirDialog, L28c ; ajustement du train V1).
+ */
+function formeErreur(err: unknown): { status: number | null; code: string | null } {
+  const brut = err !== null && typeof err === "object" ? (err as { status?: unknown; code?: unknown }) : {};
+  return {
+    status: typeof brut.status === "number" ? brut.status : null,
+    code: typeof brut.code === "string" && brut.code !== "" ? brut.code : null,
+  };
+}
+
 /** 404 « consigne-absente » : phrase `absente`. Refus de « Revoir » : sa phrase. Autre échec : phrase neutre. */
 function echec(err: unknown): Etat {
-  if (err instanceof ApiError && REFUS.has(err.code)) return { etat: "sans", phrase: libelleRefus(err.code as RevoirRefus) };
-  if (err instanceof ApiError && err.status === 404) return { etat: "sans", phrase: libelleConsigneAbsente(CONSIGNES.parRacine) };
+  const { status, code } = formeErreur(err);
+  if (code !== null && REFUS.has(code)) return { etat: "sans", phrase: libelleRefus(code as RevoirRefus) };
+  if (status === 404) return { etat: "sans", phrase: libelleConsigneAbsente(CONSIGNES.parRacine) };
   return { etat: "sans", phrase: TEXTES.partout.refusInconnu };
 }
 

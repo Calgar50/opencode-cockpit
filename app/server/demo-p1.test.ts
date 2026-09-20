@@ -387,7 +387,21 @@ describe("DemoPlayer : aucune requête (examen statique, §6 l.1064)", () => {
       const source = fs.readFileSync(f, "utf8");
       return f === DEMO_PLAYER ? source.replace("<NeonCarte vue={vue} />", "<NeonBand rootId={DEMO} facts={[]} advanced={advanced} />").replace("{ NeonCarte, NeonTableau }", "{ NeonBand, NeonCarte, NeonTableau }") : source;
     });
-    assert.deepEqual(problemes, ["web/pages/chat/activity/NeonBand.tsx : import réseau ../../../lib/api-activity.ts", "web/pages/chat/activity/NeonBand.tsx : import réseau ../../../lib/api.ts"]);
+    // [train V1, itération 3] La bande porte maintenant les commandes « Revoir » (L28b), qui ouvrent la boîte de L28c : montée
+    // ENTIÈRE, elle atteint donc aussi ../../../lib/api-salle3d.ts (lecture seule, permise dans revoir/**, interdite au lecteur de
+    // démonstration). Ce qui est éprouvé ici reste que l'examen VOIT les imports réseau de la bande, et le contrôle du haut, lui,
+    // garde son égalité stricte à [] pour le vrai DemoPlayer.
+    for (const attendu of [
+      "web/pages/chat/activity/NeonBand.tsx : import réseau ../../../lib/api-activity.ts",
+      "web/pages/chat/activity/NeonBand.tsx : import réseau ../../../lib/api.ts",
+    ]) {
+      assert.ok(problemes.includes(attendu), `${attendu} absent de ${JSON.stringify(problemes)}`);
+    }
+    assert.deepEqual(
+      problemes.filter((probleme) => !/^web\/pages\/(chat\/activity\/NeonBand\.tsx|salle-controle\/revoir\/)/.test(probleme)),
+      [],
+      "aucun autre module atteint ne lit le réseau",
+    );
   });
 
   it("contrôles discriminants : import de l'API, fetch, EventSource, import dynamique, ou NeonTableau qui lit le proxy", () => {
