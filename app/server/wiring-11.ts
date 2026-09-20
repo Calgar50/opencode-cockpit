@@ -1,6 +1,6 @@
 // Câblage 1.1 (plan d'exécution §2.2, §2.6, §4.4 ; T0) : porte I1, ordre figé des modules, des crochets, des dérivations, des
 // abonnements, du démarrage et des routes, ports neutres. Aucun paquet n'édite ce fichier : l'intégrateur seul, au train de vague
-// (ajout d'un couple à STEP_ORDER avec relecture, bascule d'ACTIVATION_OUVERTE au train de V4).
+// (ajout d'un couple à STEP_ORDER avec relecture ; bascule d'ACTIVATION_OUVERTE faite au train de la vague 3 de l'itération 2).
 // Rien n'est enregistré dans createApp : app-factory.ts (L1a) appelle buildCockpit11 puis branche les listes rendues.
 import type { Hono } from "hono";
 import { activationModule, neutralActivation } from "./autonomy-activation.ts";
@@ -35,10 +35,15 @@ import { neutralStopTree, stopTreeModule } from "./stop-tree.ts";
 import { neutralTaskGuard, taskGuardModule } from "./task-once-guard.ts";
 
 /**
- * Porte I1 tenue par le code (plan §2.6). Tant qu'elle vaut false, le port activation réel répond comme le port neutre (refus
- * « a-venir ») ; les tests ouvrent l'activation par surcharge de port. Bascule : une ligne, par l'intégrateur, au train de V4.
+ * Porte I1 tenue par le code (plan §2.6). Tant qu'elle valait false, le port activation réel répondait comme le port neutre
+ * (refus « a-venir ») ; les tests ouvraient l'activation par surcharge de port.
+ *
+ * BASCULÉE À true au train de la vague 3 de l'itération 2 (20/09/2026), par l'intégrateur, après vérification des conditions
+ * du §2.6 : L1c (arrêt), L3 (plancher), L10c (plafonds), L1f (« Arrêter » visible), L12b (bandeau) et L12c (Journal) fusionnés
+ * et verts ; scénarios e2e API de l'itération 1 (L7b-1) verts en faux ; revue de l'itération 1 verte le 20/09 (H1), aucun
+ * constat haut ouvert. Rien n'est publié pour autant : la publication reste une décision humaine (§7.11).
  */
-export const ACTIVATION_OUVERTE = false;
+export const ACTIVATION_OUVERTE = true;
 
 /** Ordre d'installation des modules. */
 export const MODULE_ORDER = [

@@ -29,9 +29,10 @@ import type { EventProcessor } from "./processor.ts";
 import { ProjectsService } from "./projects.ts";
 import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
-import { SessionTracker } from "./sessions.ts";
+import { purposeOf, SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import { MESSAGES, type Run } from "./shared/assistant-rules.ts";
+import { isClassifierRoot } from "./shared/session-purpose.ts";
 import { StudioService, StudioValidationError } from "./studio.ts";
 import { TierService } from "./tiers.ts";
 
@@ -196,6 +197,40 @@ describe("registre des coûts", () => {
     sessions.upsert(session("ses_r"));
     assert.equal(sessions.get("ses_gc")?.root_id, "ses_r");
     assert.equal(ledger.sessionUsage("ses_r").cost, 0.01);
+  });
+
+  it("classement (P12) : une conversation suivie n'est jamais reclassée par son titre, écrit par l'IA de titre d'opencode ; seul le titre exact « [cockpit] classement » d'une racine compte, à l'insertion ; usage forcé par le serveur et métadonnées du cockpit, si", () => {
+    const { sessions } = setup();
+    // Créée sans titre puis titrée par l'IA d'après le premier message (opencode session/prompt.ts, ensureTitle) : reste « chat ».
+    sessions.upsert(session("ses_titree"));
+    for (const title of ["[cockpit] Bouton Arrêter inopérant", "[cockpit] classement"]) {
+      const row = sessions.upsert({ ...session("ses_titree"), title });
+      assert.deepEqual([row.title, row.purpose, sessions.isHidden("ses_titree")], [title, "chat", false]);
+    }
+    // À l'insertion (rattrapage, session inconnue) : titre exact d'une racine seulement, jamais un préfixe ni un enfant.
+    assert.equal(sessions.upsert({ ...session("ses_prefixe"), title: "[cockpit] Bouton Arrêter inopérant" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_casse"), title: "[cockpit] Classement" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_enfant", "ses_titree"), title: "[cockpit] classement" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_classement"), title: "[cockpit] classement" }).purpose, "classifier");
+    assert.equal(purposeOf({ title: "[cockpit] classement complet" }, null), "chat");
+    // Même règle pour le rattrapage (processor.ts) et la liste des conversations de l'interface (ChatPage.tsx).
+    assert.deepEqual(
+      [
+        { title: "[cockpit] classement" },
+        { title: "Classement", metadata: { cockpit: "classifier" } },
+        { title: "[cockpit] Bouton Arrêter inopérant" },
+        { title: "[cockpit] Classement" },
+        { title: "[cockpit] classement", parentID: "ses_titree" },
+        { title: "Classement", metadata: "classifier" },
+      ].map(isClassifierRoot),
+      [true, true, false, false, false, false],
+    );
+    // Session de classement créée par le serveur (classifier.ts), déjà enregistrée en « chat » par session.created : classement.
+    sessions.upsert(session("ses_serveur"));
+    assert.equal(sessions.upsert({ ...session("ses_serveur"), title: "[cockpit] classement" }, "classifier").purpose, "classifier");
+    // Métadonnée posée par le serveur seul (le proxy la refuse) : classement, même pour une session déjà suivie.
+    sessions.upsert(session("ses_meta"));
+    assert.equal(sessions.upsert({ ...session("ses_meta"), metadata: { cockpit: "classifier" } }).purpose, "classifier");
   });
 
   it("garde-fou : modèles chers puis budget atteint, confirmation possible", () => {
@@ -1058,6 +1093,25 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     const enterprise = { inputs: { deploymentType: "enterprise", enterpriseUrl: "https://Entreprise.ghe.com/" } };
     assert.equal(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "entreprise.ghe.com"), undefined);
     assert.notEqual(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "autre.ghe.com"), undefined);
+  });
+
+  it("refuse un titre de conversation « [cockpit] … », réservé au classement du cockpit, à la création comme au renommage ; P12", async () => {
+    const relayedTitles = () => upstreamRequests.filter((r) => r.body.includes("ockpit]")).length;
+    const before = relayedTitles();
+    for (const title of ["[cockpit] classement", "[cockpit] Bouton Arrêter inopérant", "  [Cockpit] notes"]) {
+      const expected = forbiddenProxyBody("POST", "/session", { title }, null);
+      assert.match(expected ?? "", /^Titre refusé : « \[cockpit\] » /);
+      const created = await call("POST", "/api/oc/session", mutating, JSON.stringify({ title }));
+      assert.equal(created.status, 403, created.body);
+      assert.deepEqual(JSON.parse(created.body), { error: "forbidden-body", message: expected });
+      const renamed = await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title }));
+      assert.equal(renamed.status, 403, renamed.body);
+      assert.deepEqual(JSON.parse(renamed.body), { error: "forbidden-body", message: expected });
+    }
+    assert.equal(relayedTitles(), before, "aucun titre « [cockpit] » relayé");
+    // Crochet ailleurs que tout au début : titre accepté.
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ title: "Revue du [cockpit]" }))).status, 204);
+    assert.equal((await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title: "Notes cockpit" }))).status, 200);
   });
 
   it("refuse les pièces jointes hors du workspace", async () => {

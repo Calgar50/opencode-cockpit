@@ -131,6 +131,63 @@
   --shadow-pop: 0 18px 60px rgba(0, 0, 0, 0.6);
 }
 
+/* --- 1.1 (L5c) : jetons de la carte des agents en direct ------------------------------
+   « Néon clair » en thème clair, « néon sombre » en thème sombre (spécification §5.7.1, §5.7.4). Copie exacte de NEON_PALETTES
+   (server/shared/neon-palette.ts), qui passe le script couleurs JP-14 ; neon-band.test.ts compare la copie à la palette.
+   Utilisés par pages/chat/activity/neon.css. */
+:root {
+  --neon-fond: #F5F7FB;
+  --neon-grille: #D9E1EC;
+  --neon-territoire: #007C91;
+  --neon-texte: #0B1220;
+  --neon-texte-discret: #46546A;
+  --neon-vous: #1A2233;
+  --neon-consigne: #C2187A;
+  --neon-resultat: #1560BD;
+  --neon-attente: #9A6400;
+  --neon-auto: #137A45;
+  --neon-refus: #9E1C1C;
+  --neon-extension: #B34700;
+  --neon-acteur: #007C91;
+  --neon-arret: #414953;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --neon-fond: #070B14;
+    --neon-grille: #13233A;
+    --neon-territoire: #2EE6FF;
+    --neon-texte: #E8EEF7;
+    --neon-texte-discret: #9AA8BD;
+    --neon-vous: #F2F5FA;
+    --neon-consigne: #FF3DA6;
+    --neon-resultat: #3DA9FF;
+    --neon-attente: #FFB02E;
+    --neon-auto: #3DFF9A;
+    --neon-refus: #FF5A5A;
+    --neon-extension: #FF8A3D;
+    --neon-acteur: #2EE6FF;
+    --neon-arret: #6B778A;
+  }
+}
+
+:root[data-theme="dark"] {
+  --neon-fond: #070B14;
+  --neon-grille: #13233A;
+  --neon-territoire: #2EE6FF;
+  --neon-texte: #E8EEF7;
+  --neon-texte-discret: #9AA8BD;
+  --neon-vous: #F2F5FA;
+  --neon-consigne: #FF3DA6;
+  --neon-resultat: #3DA9FF;
+  --neon-attente: #FFB02E;
+  --neon-auto: #3DFF9A;
+  --neon-refus: #FF5A5A;
+  --neon-extension: #FF8A3D;
+  --neon-acteur: #2EE6FF;
+  --neon-arret: #6B778A;
+}
+
 /* --- Base ---------------------------------------------------------------------------- */
 
 *,

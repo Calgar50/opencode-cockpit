@@ -776,7 +776,7 @@ describe("modes Simple et Avancé", () => {
     h.state.globalConfig = { permission: PRUDENT, agent: { plan: { permission: { edit: "deny", bash: "deny", task: "deny" } } } };
     const locked = await planOf();
     assert.equal(locked.title, "Conseiller (lecture seule)");
-    assert.equal(locked.help, "Réfléchit et propose un plan, sans rien modifier.");
+    assert.equal(locked.help, "Prépare un plan, sans rien modifier.");
     assert.deepEqual(decisions(locked), ["non", "non"]);
   });
 

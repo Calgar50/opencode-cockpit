@@ -104,7 +104,8 @@ export function AgentFields({
             onChange={(n) => setFm({ temperature: n })}
           />
         </Field>
-        <Field label="Étapes maximum" htmlFor={ids.steps} hint="Optionnel : nombre d'actions (appels d'outils) avant de rendre la main.">
+        {/* 1.1 (§2.2) : le champ `steps` d'opencode compte des actions ; « Étape » est réservé aux équipes. */}
+        <Field label="Actions maximum" htmlFor={ids.steps} hint="Optionnel : nombre d'actions (appels d'outils) avant de rendre la main.">
           <NumberInput
             id={ids.steps}
             value={typeof fm.steps === "number" ? fm.steps : undefined}

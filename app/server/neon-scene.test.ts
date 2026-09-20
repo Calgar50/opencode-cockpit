@@ -638,6 +638,48 @@ describe("arrêt : faisceaux figés en gris sur `statut {cause: arret}`", () => 
     assert.equal(s.faisceaux[0]?.id, "demande:msg_d2");
   });
 
+  it("arrêt pendant une attente d'accord (refus, sans MessageAbortedError) : la réponse close depuis le début de l'arrêt est figée, l'assistant « arrete » ; close avant, ou refus seul : « termine », rien de figé", () => {
+    const waiting = () => {
+      const st = new Story();
+      st.demande("msg_d1");
+      st.occupee(R);
+      st.outil(R, "call_b", "commande", "en-cours");
+      st.attente(R, "per_b", "call_b", "bash");
+      return st;
+    };
+    const refuse = (st: Story) => {
+      st.reponse(R, "per_b", "reject");
+      st.outil(R, "call_b", "commande", "erreur");
+      return st.repos(R);
+    };
+    const st = waiting();
+    const debut = (st.facts.at(-1)?.at ?? 0) + 5;
+    const idle = refuse(st);
+    const stop = st.add(R, "statut", { cause: "arret", motif: "vous", nonConfirmees: 0, debut });
+    const s = scene(st.facts, null, AVANCE);
+    assert.deepEqual(s.arret?.faits, [stop]);
+    assert.deepEqual(beamsOf(s), [`demande:vous>${R}:fige`]);
+    assert.equal(s.faisceaux[0]?.fin, "repos");
+    assert.deepEqual([nodeOf(s, R)?.etat, nodeOf(s, R)?.depuis, nodeOf(s, R)?.faits], ["arrete", st.facts[idle]?.at, [0, idle, stop]]);
+    assertHonest(s, st.facts, st.facts.length, "arrêt pendant une attente");
+    assert.deepEqual(beamsOf(scene(st.facts, null, SIMPLE)), [`demande:vous>${R}:fige`]);
+    assert.equal(nodeOf(scene(st.facts, null, SIMPLE), R)?.etat, "arrete");
+    // Avant le fait d'arrêt : la réponse est « terminée », rien de figé.
+    assert.deepEqual([nodeOf(scene(st.facts.slice(0, stop), null, AVANCE), R)?.etat, scene(st.facts.slice(0, stop), null, AVANCE).faisceaux], ["termine", []]);
+
+    // Réponse close avant le début de l'arrêt : arrêt signalé, rien de figé, « termine ».
+    const late = waiting();
+    const lateIdle = refuse(late);
+    const lateStop = late.add(R, "statut", { cause: "arret", motif: "vous", nonConfirmees: 0, debut: (late.facts[lateIdle]?.at ?? 0) + 5 });
+    const ls = scene(late.facts, null, AVANCE);
+    assert.deepEqual([ls.arret?.faits, ls.faisceaux, nodeOf(ls, R)?.etat], [[lateStop], [], "termine"]);
+    // Témoin : « Refuser » sans message, sans arrêt.
+    const alone = waiting();
+    refuse(alone);
+    const as = scene(alone.facts, null, AVANCE);
+    assert.deepEqual([as.arret, as.faisceaux, nodeOf(as, R)?.etat], [null, [], "termine"]);
+  });
+
   it("arrêt sans réponse en cours ni réponse interrompue : signalé, rien de figé ; sans assistant, l'arrêt reste signalé", () => {
     const facts = [...replay("p1-delegation-parallele.jsonl")];
     facts.push(stopFact((facts.at(-1)?.at ?? 0) + 1));

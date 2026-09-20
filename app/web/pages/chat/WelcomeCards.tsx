@@ -160,7 +160,7 @@ export function WelcomeCards({
       ) : (
         <div className="stack tight">
           <strong>Aucun assistant pour l'instant</strong>
-          <span className="small secondary">Installez un assistant prêt à l'emploi ou créez le vôtre en 5 étapes.</span>
+          <span className="small secondary">Installez un assistant prêt à l'emploi ou créez le vôtre en 5 écrans.</span>
         </div>
       )}
 

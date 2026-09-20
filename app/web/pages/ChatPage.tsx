@@ -16,6 +16,7 @@ import {
   TIER_LABELS,
 } from "../../server/shared/assistant-rules.ts";
 import { pickRestorableAgent } from "../../server/shared/agent-choice.ts";
+import { isClassifierRoot } from "../../server/shared/session-purpose.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -97,6 +98,12 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
+/** Préférence du panneau « Contexte » (fenêtres larges). */
+const ASIDE_FLAG = "cockpit-chat-aside";
+/** Largeur sous laquelle le panneau « Contexte » se pose sur la conversation (même borne que chat.css). */
+const ASIDE_OVERLAY_QUERY = "(max-width: 1280px)";
+const asideOverlay = () => window.matchMedia(ASIDE_OVERLAY_QUERY).matches;
+
 function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
   const index = list.findIndex((x) => x.id === item.id);
   if (index < 0) return [item, ...list];
@@ -142,7 +149,19 @@ export function ChatPage() {
   const [children, setChildren] = useState<OcSession[]>([]);
   const [usageTick, setUsageTick] = useState(0);
   const [drawer, setDrawer] = useState<string | null>(null);
-  const [asideOpen, setAsideOpen] = useState(() => readFlag("cockpit-chat-aside", true));
+  // Panneau « Contexte » : la préférence mémorisée vaut pour une page ouverte dans une fenêtre large. Sous ASIDE_OVERLAY_QUERY, il se
+  // pose sur la conversation et recouvrait la saisie et « Arrêter » (répétition générale de l'itération 1) : fermé à l'ouverture de
+  // la page et à chaque passage sous cette largeur, ouvert seulement à la demande, sans changer la préférence. Jamais rouvert
+  // d'office en revenant au large : rien ne s'ouvre sans vous.
+  const [asideOpen, setAsideOpen] = useState(() => !asideOverlay() && readFlag(ASIDE_FLAG, true));
+  useEffect(() => {
+    const media = window.matchMedia(ASIDE_OVERLAY_QUERY);
+    const onChange = () => {
+      if (media.matches) setAsideOpen(false);
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
 
@@ -200,7 +219,8 @@ export function ChatPage() {
       oc.commands(directory),
     ]);
     if (list.status === "fulfilled") {
-      setSessions(list.value.filter((s) => !s.parentID && !s.title.startsWith("[cockpit]")).sort((a, b) => b.time.updated - a.time.updated));
+      // Racines de classement seules : un titre « [cockpit] … » écrit par l'IA de titre d'opencode reste une conversation (P12).
+      setSessions(list.value.filter((s) => !s.parentID && !isClassifierRoot(s)).sort((a, b) => b.time.updated - a.time.updated));
     } else {
       toast.error("Conversations indisponibles", list.reason);
     }
@@ -406,7 +426,7 @@ export function ChatPage() {
           if (info.parentID === sessionRef.current) setChildren((list) => upsertById(list, info));
           break;
         }
-        if (info.title.startsWith("[cockpit]") || info.directory !== directory) break;
+        if (isClassifierRoot(info) || info.directory !== directory) break;
         setSessions((list) => upsertById(list, info).sort((a, b) => b.time.updated - a.time.updated));
         break;
       }
@@ -716,7 +736,7 @@ export function ChatPage() {
   /** [Journal] du bandeau d'autonomie : panneau de contexte ouvert, Déroulé prévenu. */
   const openJournal = () => {
     setAsideOpen((open) => {
-      if (!open) writeFlag("cockpit-chat-aside", true);
+      if (!open && !asideOverlay()) writeFlag(ASIDE_FLAG, true);
       return true;
     });
     setJournalNonce((n) => n + 1);
@@ -821,7 +841,8 @@ export function ChatPage() {
 
   const toggleAside = () => {
     setAsideOpen((open) => {
-      writeFlag("cockpit-chat-aside", !open);
+      // Posé sur la conversation (fenêtre étroite) : ouvrir ou fermer ne change pas la préférence des fenêtres larges.
+      if (!asideOverlay()) writeFlag(ASIDE_FLAG, !open);
       return !open;
     });
   };
@@ -1086,7 +1107,18 @@ export function ChatPage() {
                   Résumer
                 </Button>
               ) : null}
-              <AutonomySelector placement="header" {...selectorProps} />
+            </>
+          ) : (
+            <div className="stack tight spacer" style={{ gap: 0 }}>
+              <h1>Nouvelle conversation</h1>
+              <span className="tiny muted">{projectLabel}</span>
+            </div>
+          )}
+          {/* Un seul sélecteur, toujours à cette place : il reste le même élément quand la conversation change ou se recharge
+              (« Plan d'abord (nouvelle conversation) » ouvre la conversation de plan), et le focus clavier reste sur lui. */}
+          <AutonomySelector placement="header" {...selectorProps} />
+          {session ? (
+            <>
               <IconButton icon="edit" label="Renommer" onClick={() => setRenaming(session.title)} />
               {conversation ? (
                 <a className="btn ghost icon-only" href={api.archiveExportUrl(session.id)} download title="Exporter en Markdown" aria-label="Exporter en Markdown">
@@ -1096,15 +1128,7 @@ export function ChatPage() {
               <IconButton icon="trash" label="Supprimer la conversation" onClick={() => void removeSession()} />
               <IconButton icon="panel" label={asideOpen ? "Masquer le contexte" : "Afficher le contexte"} onClick={toggleAside} />
             </>
-          ) : (
-            <>
-              <div className="stack tight spacer" style={{ gap: 0 }}>
-                <h1>Nouvelle conversation</h1>
-                <span className="tiny muted">{projectLabel}</span>
-              </div>
-              <AutonomySelector placement="header" {...selectorProps} />
-            </>
-          )}
+          ) : null}
         </header>
 
         {sessionId ? (

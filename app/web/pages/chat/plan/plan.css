@@ -1,0 +1,122 @@
+/* Propriétaire : L6c. Carte de plan en fin de fil (spécification §4.9 points 4 à 6, I7) : phrase d'honnêteté, quatre boutons qui
+   passent à la ligne (libellés longs, 400 px), boutons indisponibles décrits par leur raison, phrase d'un refus. Aucune animation.
+   Un bouton indisponible reste focalisable (aria-disabled) : il se distingue par sa couleur, sa bordure en tirets et le curseur,
+   jamais par une opacité. Sélecteurs « .btn.… » : la feuille globale (styles.css) est chargée après celle-ci et gagnerait à
+   spécificité égale. Textes secondaires en --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes). */
+
+.plan-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.plan-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.plan-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-2);
+}
+.plan-card-head .plan-icon {
+  margin-top: 0;
+}
+
+.plan-card-honnetete,
+.plan-card-reason,
+.plan-card-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+}
+.plan-card-honnetete {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.plan-card-reason {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.plan-card-message {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--critical-soft);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.plan-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.btn.plan-card-button {
+  height: auto;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 6px 12px;
+  white-space: normal;
+  text-align: left;
+}
+.btn.plan-card-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.plan-card-actions .btn.plan-card-button[aria-disabled="true"],
+.plan-card-actions .btn.plan-card-button[aria-disabled="true"]:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .plan-card-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .btn.plan-card-button {
+    justify-content: flex-start;
+  }
+}
+
+@media (forced-colors: active) {
+  .plan-card {
+    border-color: CanvasText;
+  }
+  .plan-card-actions .btn.plan-card-button[aria-disabled="true"],
+  .plan-card-actions .btn.plan-card-button[aria-disabled="true"]:hover {
+    border-color: GrayText;
+    color: GrayText;
+  }
+  .plan-card-message {
+    border: 1px solid CanvasText;
+  }
+}

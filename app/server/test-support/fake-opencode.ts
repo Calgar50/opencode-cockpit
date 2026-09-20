@@ -71,6 +71,19 @@ export interface FakeToolScript {
    * puis de la session ; « agent » (défaut pour doom_loop, processor.ts:372-379, F-j) : règles de l'agent seules, demande sans `tool`.
    */
   ask?: { permission: string; patterns: string[]; metadata?: Record<string, unknown>; always?: string[]; scope?: "agent" | "session" };
+  /**
+   * Travail de l'outil avant sa demande : la partie passe « running », puis l'outil évalue ses règles et pose sa demande quand la
+   * promesse est tenue (opencode 1.18.30 réel, répétition générale de l'itération 1 : edit lit le fichier et calcule le diff, 5 à
+   * 7 ms ; bash analyse la commande, environ 100 ms au premier appel d'un opencode neuf). Absent : demande aussitôt.
+   */
+  beforeAsk?: () => Promise<void>;
+  /**
+   * Pause entre la partie « pending » de l'outil et son évaluation (sa demande), en ms ; absente : le pas du tour (`stepMs`).
+   * opencode 1.18.30 réel pose permission.asked quelques millisecondes après la partie `task` (clôture de l'itération 1, rg-reel-7) :
+   * un scénario qui regarde ce que la page dessine AVANT la demande la fixe à quelques ms, sinon le pas du tour lui en laisse le
+   * temps. Valeur JSON : le banc e2e la transmet telle quelle (e2e/fake-opencode-server.ts).
+   */
+  askAfterMs?: number;
   /** Règles de l'agent, évaluées avant celles de la session (F-d). */
   agentRules?: PermissionRule[];
   output?: string;
@@ -628,10 +641,21 @@ export class FakeOpencode {
   globalConfig: Record<string, unknown>;
   /** PATCH /global/config reçus, dans l'ordre : corps, et changement effectif (qui libère toutes les instances en tâche de fond). */
   readonly globalConfigPatches: Array<{ body: Record<string, unknown>; changed: boolean }> = [];
+  /**
+   * Configuration propre à un dossier (opencode.json du projet, extensions découvertes dans ses plugin(s)/), fusionnée à la
+   * configuration globale par GET /config.
+   */
+  readonly projectConfigs = new Map<string, Record<string, unknown>>();
   /** GET /config/providers : une IA `available: false` n'y figure pas. */
   providers: FakeProvider[] = defaultProviders();
   /** Champ « default » de GET /config/providers : IA par défaut de chaque fournisseur. */
   defaultModels: Record<string, string> = { "github-copilot": "gpt-5-mini" };
+  /**
+   * GET /experimental/capabilities → { backgroundSubagents } (handlers/experimental.ts:39-41) : drapeau du processus
+   * (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ou OPENCODE_EXPERIMENTAL), faux par défaut comme opencode sans ces variables.
+   * Demande de L1f (Diagnostic du travail délégué), ajoutée au train it1 V4.
+   */
+  backgroundSubagents = false;
   /** Contenus connus (chemins absolus) : état « avant » des métadonnées edit, write et apply_patch, mis à jour par chaque outil terminé. */
   readonly files = new Map<string, string>();
   /**
@@ -733,6 +757,15 @@ export class FakeOpencode {
   setAgents(agents: FakeAgent[], directory?: string): void {
     if (directory === undefined) this.#defaultAgents = jsonClone(agents);
     else this.#agents.set(directory, jsonClone(agents));
+  }
+
+  /**
+   * Configuration effective d'un dossier (GET /config, mesuré sur opencode 1.18.30) : globale puis projet ; `plugin` toujours présent
+   * (liste vide par défaut, fichiers de plugin(s)/ en « file:// ») ; `mcp` absent tant qu'aucun serveur n'est déclaré.
+   */
+  effectiveConfig(directory: string = this.directory): Record<string, unknown> {
+    const merged = mergeDeep(this.globalConfig, this.projectConfigs.get(directory) ?? {});
+    return { ...merged, plugin: Array.isArray(merged.plugin) ? merged.plugin : [] };
   }
 
   /** Raccourcis de GET /command dans ce dossier : liste propre au dossier, sinon liste par défaut (vide). */
@@ -986,6 +1019,7 @@ export class FakeOpencode {
     }
     if (is("GET", "agent")) return json(200, this.agents(directory));
     if (is("GET", "command")) return json(200, this.commands(directory));
+    if (is("GET", "config")) return json(200, this.effectiveConfig(directory));
     // Chemins de l'instance, forme relevée par MX1 (utilisateur node de l'image) ; worktree « / » hors git.
     if (is("GET", "path")) {
       return json(200, { home: "/home/node", state: "/home/node/.local/state/opencode", config: "/home/node/.config/opencode", worktree: this.worktreeOf(directory), directory });
@@ -1003,6 +1037,7 @@ export class FakeOpencode {
       return json(200, { providers, default: this.defaultModels });
     }
     if (is("GET", "experimental", "session")) return this.#listSessions(res, url, directory);
+    if (is("GET", "experimental", "capabilities")) return json(200, { backgroundSubagents: this.backgroundSubagents });
     if (is("GET", "question")) return json(200, [...this.#questions.values()].filter((entry) => entry.directory === directory).map((entry) => entry.info));
     if (is("POST", "question", "*", "reply") || is("POST", "question", "*", "reject")) {
       const replying = seg[2] === "reply";
@@ -1541,8 +1576,13 @@ export class FakeOpencode {
   async #tool(run: Run, session: FakeSession, message: OcMessageWithParts, tool: FakeToolScript, stepMs: number): Promise<"ok" | "blocked" | "continue"> {
     const callID = tool.callID ?? `call_${randomBytes(12).toString("hex")}`;
     let part = this.#putPart(message, { type: "tool", tool: tool.tool, callID, state: { status: "pending", input: {}, raw: "" } });
-    if (!(await this.#live(run, stepMs))) return "blocked";
+    if (!(await this.#live(run, tool.askAfterMs ?? stepMs))) return "blocked";
     const start = Date.now();
+    if (tool.beforeAsk) {
+      part = this.#putPart(message, { ...part, state: { status: "running", input: tool.input, time: { start } } });
+      await Promise.race([tool.beforeAsk(), run.stopped]);
+      if (run.aborted || this.#closed) return "blocked";
+    }
     const ask = tool.ask;
     // doom_loop : règles de l'agent seules, demande sans appel d'outil (processor.ts:372-379, F-j).
     const agentScope = (ask?.scope ?? (ask?.permission === "doom_loop" ? "agent" : "session")) === "agent";

@@ -8,7 +8,7 @@ const enc = encodeURIComponent;
 export const conversationApi = {
   /** POST /api/conversations/:rootId/stop → StopResult ; 400 identifiant invalide, 403 CSRF, 404 racine inconnue. */
   stop: (rootId: string) => http.post<StopResult>(`/api/conversations/${enc(rootId)}/stop`),
-  /** GET /api/conversations/:rootId/delegations/:permissionId → carte détaillée du mode Avancé (400, 404). */
+  /** GET /api/conversations/:rootId/delegations/:permissionId → carte détaillée du mode Avancé (400, 404, 503 opencode injoignable). */
   delegationDetails: (rootId: string, permissionId: string, signal?: AbortSignal) =>
     http.get<DelegationDetailsView>(`/api/conversations/${enc(rootId)}/delegations/${enc(permissionId)}`, signal),
 };

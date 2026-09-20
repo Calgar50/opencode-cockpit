@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { ActivationInput, ActivationPort, ActivationVerdict, FactsPort } from "./contracts-11.ts";
+import { installActivation } from "./autonomy-activation.ts";
+import type { ActivationInput, ActivationPort, ActivationVerdict, Cockpit11Module, FactsPort } from "./contracts-11.ts";
 import { ConversationAutonomyStore, returnToAsk } from "./conversation-autonomy.ts";
 import { openMemoryDb } from "./db.ts";
 import type { OcSession } from "./opencode.ts";
@@ -145,12 +146,45 @@ describe("choix d'autonomie : racines seulement", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("GET : UN SEUL relevé d'activation pour les deux choix automatiques (le port garantit que « choix » n'entre pas dans le verdict)", async (t) => {
+    const { h, activation } = await start(t);
+    const root = await conversation(h);
+    const avant = activation.calls.length;
+    const ok = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(ok.status, 200, ok.body);
+    assert.deepEqual(
+      activation.calls.slice(avant).map((c) => c.choix),
+      ["modifications"],
+      "un seul appel au port pour la vue, et non un par choix automatique",
+    );
+    assert.deepEqual(ok.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: true, raison: null },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: true, raison: null },
+    ]);
+
+    // Refus : le verdict unique est rendu aux DEUX choix automatiques, toujours en un seul appel.
+    activation.verdict = { ok: false, raison: "regle-allow" };
+    const refuse = await h.call("GET", url(root.id), { headers: h.headers.authed });
+    assert.equal(refuse.status, 200, refuse.body);
+    assert.equal(activation.calls.length, avant + 2, "un appel de plus pour la seconde vue, et non deux");
+    assert.deepEqual(refuse.json<ConversationAutonomyView>().disponibles, [
+      { choix: "demander", disponible: true, raison: null },
+      { choix: "modifications", disponible: false, raison: "regle-allow" },
+      { choix: "plan", disponible: false, raison: "nouvelle-conversation" },
+      { choix: "autonome", disponible: false, raison: "regle-allow" },
+    ]);
+    h.assertNoGlobalRestart();
+  });
+
   it("identifiant d'enfant, session interne, conversation supprimée, autre instance, racine inconnue : 404 ; le choix d'un enfant est celui de sa racine", async (t) => {
     const { h, port, store } = await start(t);
     const root = await conversation(h);
     const child = await ocSession(h, { parentID: root.id, title: "Enfant" }, root.directory);
     assert.equal(child.root_id, root.id);
-    const classifier = await ocSession(h, { title: "[cockpit] Classement" });
+    // Session de classement créée comme par classifier.ts (titre exact et métadonnée).
+    const classifier = await ocSession(h, { title: "[cockpit] classement", metadata: { cockpit: "classifier" } });
     const controle = await ocSession(h, { title: "Contrôle", metadata: { cockpit: "controle" } });
     const deleted = await conversation(h, "Supprimée");
     h.sessions.markDeleted(deleted.id);
@@ -401,7 +435,9 @@ describe("choix d'autonomie : relâcher, resserrer", () => {
   });
 
   it("activation fermée (port du module activation, porte I1) : 409 « a-venir » avec la phrase du contrat ; rien d'écrit", async (t) => {
-    const h = await startCockpit(t, { modules: ["conversationAutonomy", "activation"] });
+    // Porte I1 basculée au train de la vague 3 (it2) : la porte FERMÉE se joue par la fabrique, comme dans les tests de L10d.
+    const ferme: Cockpit11Module = { name: "activation", install: (reg, c11) => void installActivation(reg, c11, { activationOuverte: false }) };
+    const h = await startCockpit(t, { modules: ["conversationAutonomy", ferme] });
     const root = await conversation(h);
     const store = new ConversationAutonomyStore(h.db);
     for (const choix of ["modifications", "autonome"]) {
@@ -518,6 +554,64 @@ describe("choix d'autonomie : retour à « Demander » au démarrage du cockpit"
     assert.equal(choiceEvents(h).length, count);
     h.assertNoGlobalRestart();
   });
+
+  it("horloge reculée entre deux démarrages : un choix automatique d'avant, daté après ce démarrage, vaut « demander » dès la lecture et l'étape de démarrage le remet à « demander » (un événement, un fait) ; un choix posé ensuite est gardé", async (t) => {
+    const { h, port, store, facts, activation } = await start(t);
+    const ahead = await conversation(h, "Autonome, heure en avance");
+    const clicked = await conversation(h, "Modifications, heure en avance, puis clic");
+    const future = Date.now() + 3_600_000;
+    h.db.prepare("INSERT INTO conversation_autonomy (root_id, choix, plafonds, depuis, retour_cause) VALUES (?, 'autonome', '{}', ?, NULL)").run(ahead.id, future);
+    h.db.prepare("INSERT INTO conversation_autonomy (root_id, choix, plafonds, depuis, retour_cause) VALUES (?, 'modifications', '{}', ?, NULL)").run(clicked.id, future);
+
+    assert.equal(port.choiceOf(ahead.id), "demander");
+    const early = (await h.call("GET", url(ahead.id), { headers: h.headers.authed })).json<ConversationAutonomyView>();
+    assert.deepEqual([early.choix, early.retourCause], ["demander", "redemarrage-cockpit"]);
+    assert.equal(store.read(ahead.id)?.choix, "autonome", "aucune écriture par une lecture");
+
+    // Un clic sur une telle ligne la remet d'abord à « demander » (redemarrage-cockpit) : reposer le même choix est un
+    // relâchement, à confirmer et à vérifier, pas un « immédiat ».
+    const unconfirmed = await putChoice(h, clicked.id, { choix: "modifications" });
+    assert.equal(unconfirmed.status, 428, unconfirmed.body);
+    const before = activation.calls.length;
+    const loosen = await putChoice(h, clicked.id, { choix: "modifications" }, h.headers.confirmed);
+    assert.equal(loosen.status, 200, loosen.body);
+    // Le relâchement est vérifié pour SON choix ; les disponibles de la vue ne demandent plus qu'UN verdict pour les deux choix
+    // automatiques (le port garantit que `choix` n'entre pas dans le verdict), au lieu d'un relevé d'opencode par choix.
+    assert.deepEqual(
+      activation.calls.slice(before).map((c) => [c.rootId, c.choix]),
+      [[clicked.id, "modifications"], [clicked.id, "modifications"]],
+      "relâchement vérifié, puis le relevé unique des disponibles de la vue",
+    );
+    assert.deepEqual(choiceEvents(h), [
+      { rootId: clicked.id, choix: "demander", cause: "redemarrage-cockpit" },
+      { rootId: clicked.id, choix: "modifications", cause: "clic" },
+    ]);
+
+    await h.cockpit.startup();
+    assert.deepEqual([store.read(ahead.id)?.choix, store.read(ahead.id)?.retourCause], ["demander", "redemarrage-cockpit"]);
+    assert.equal(port.choiceOf(ahead.id), "demander");
+    assert.equal(store.read(clicked.id)?.choix, "modifications", "choix posé par ce démarrage : gardé, quelle que soit l'heure de la ligne d'avant");
+    assert.equal(port.choiceOf(clicked.id), "modifications");
+    assert.deepEqual(choiceEvents(h).slice(2), [{ rootId: ahead.id, choix: "demander", cause: "redemarrage-cockpit" }]);
+    assert.deepEqual(
+      choiceFacts(facts.appended).filter((f) => f.rootId === ahead.id),
+      [{ rootId: ahead.id, sessionId: ahead.id, kind: "choix", ref: null, data: { choix: "demander", cause: "redemarrage-cockpit" } }],
+    );
+    const count = choiceEvents(h).length;
+    await h.cockpit.startup();
+    assert.equal(choiceEvents(h).length, count, "idempotent");
+  });
+
+  it("COCKPIT_AUTONOMY=off et horloge reculée : un choix automatique d'avant, daté après ce démarrage, ne s'applique pas", async (t) => {
+    const { h, port, store } = await start(t, { env: { autonomy: false } });
+    const ahead = await conversation(h, "Autonome, heure en avance");
+    h.db.prepare("INSERT INTO conversation_autonomy (root_id, choix, plafonds, depuis, retour_cause) VALUES (?, 'autonome', '{}', ?, NULL)").run(ahead.id, Date.now() + 3_600_000);
+    assert.equal(port.choiceOf(ahead.id), "demander");
+    const view = (await h.call("GET", url(ahead.id), { headers: h.headers.authed })).json<ConversationAutonomyView>();
+    assert.deepEqual([view.interrupteur, view.choix], [false, "demander"]);
+    await h.cockpit.startup();
+    assert.equal(store.read(ahead.id)?.choix, "demander");
+  });
 });
 
 describe("choix d'autonomie : magasin", () => {
@@ -543,11 +637,13 @@ describe("choix d'autonomie : magasin", () => {
       assert.deepEqual(store.read("ses_ok")?.plafonds, { actionsMax: 12 });
       assert.equal(store.read("ses_absente"), null);
 
-      assert.deepEqual(store.resetAutomatic({ before: 30, depuis: 50, cause: "plafond-duree", rootId: "ses_ok" }), ["ses_ok"]);
-      assert.deepEqual(store.resetAutomatic({ before: 30, depuis: 60, cause: "redemarrage-cockpit" }), ["ses_caps"]);
-      assert.deepEqual(store.resetAutomatic({ before: 30, depuis: 70, cause: "redemarrage-cockpit" }), []);
+      assert.deepEqual(store.resetAutomatic({ depuis: 50, cause: "plafond-duree", rootId: "ses_ok" }), ["ses_ok"]);
+      // « garder » : les racines dont le choix a été posé par ce démarrage ; jamais une comparaison d'heures entre deux démarrages.
+      assert.deepEqual(store.resetAutomatic({ depuis: 60, cause: "redemarrage-cockpit", garder: ["ses_new"] }), ["ses_caps"]);
+      assert.deepEqual(store.resetAutomatic({ depuis: 70, cause: "redemarrage-cockpit", garder: ["ses_new"] }), []);
+      assert.deepEqual(store.resetAutomatic({ depuis: 80, cause: "redemarrage-cockpit", garder: [] }), ["ses_new"]);
       assert.deepEqual([store.read("ses_ok")?.choix, store.read("ses_ok")?.retourCause, store.read("ses_ok")?.depuis], ["demander", "plafond-duree", 50]);
-      assert.equal(store.read("ses_new")?.choix, "autonome");
+      assert.deepEqual([store.read("ses_new")?.choix, store.read("ses_new")?.depuis], ["demander", 80]);
       assert.equal(db.prepare("SELECT choix FROM conversation_autonomy WHERE root_id = 'ses_omo'").get()?.choix, "omo", "valeur étrangère non réécrite");
     } finally {
       db.close();

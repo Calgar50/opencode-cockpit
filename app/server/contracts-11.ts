@@ -80,7 +80,12 @@ export interface PermissionGate {
   rejectAborted(sessionId: string, directory: string | null, release: () => void): Promise<void>;
   /** L1b : file → vérification « once » → inscription au registre → relais. */
   relayOnce(requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome>;
-  /** L1b : refus retenu tant qu'une autre demande de la même session attend (F-c), borné à 45 s, puis vérifié et envoyé. */
+  /**
+   * L1b : refus retenu tant qu'une autre demande de la même session attend (F-c) ou qu'un appel d'outil voisin du même message est
+   * encore en préparation ou en cours (sa demande arriverait après la lecture), puis vérifié et envoyé une fois seul. Borne de 45 s :
+   * dernière évaluation ; si une autre demande ou un appel voisin retient encore, rien n'est envoyé (« retenu ») et la demande reste
+   * à l'utilisateur.
+   */
   rejectWhenAlone(requestId: string, sessionId: string, directory: string | null, message: string, by: RepliedBy): Promise<RelayOutcome | "retenu">;
   /** Registre des réponses émises, inscrites avant l'envoi. */
   readonly emitted: { record(entry: EmittedReply): void; has(requestId: string): boolean };
@@ -243,6 +248,10 @@ export interface DelegationRequestRef {
 
 /** L1d. Neutre : details → null ; collectDelegationFacts lève ; aucun crochet ni refus Simple. */
 export interface TaskGuardPort {
+  /**
+   * Carte détaillée d'une délégation en attente ; null : inconnue ou hors de la conversation (route : 404). Lève si opencode ne
+   * répond pas (route : 503, rien n'est deviné ; code ajouté par L1d au train it1 V3).
+   */
   details(rootId: string, permissionId: string): Promise<DelegationDetailsView | null>;
   /** Exporté et documenté par L1d, réutilisé par L10e. */
   collectDelegationFacts(ref: DelegationRequestRef): Promise<DelegationFacts>;
@@ -351,6 +360,13 @@ export interface DelegationPolicyInput {
   permissionId: string;
   directory: string | null;
   mode: UiMode;
+  /**
+   * Sort du refus Simple, une fois connu (L10e l'envoie HORS de l'appel : la retenue F-c le garde jusqu'à 45 s tant qu'une autre
+   * demande de la conversation attend). Appelé une seule fois, et seulement quand un refus a été lancé. « ok » : le refus est
+   * parti ; « retenu », « echec », « deja-repondu », « expiree » : rien n'a été envoyé, la demande attend toujours votre accord.
+   * Le cycle (L10a) s'en sert pour n'écrire la décision « Refusé automatiquement » au Journal qu'une fois le refus parti.
+   */
+  onRefusalSettled?: (relais: RelayOutcome | "retenu", regle: string | null) => void;
 }
 
 export interface DelegationPolicyVerdict {

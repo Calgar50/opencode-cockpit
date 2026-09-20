@@ -97,9 +97,14 @@ export function controlerPair(hote, pair, epinglage) {
 }
 
 /** Réponse d'une requête épinglée, au sous-ensemble de l'interface Response dont le banc se sert. */
-function reponseDe(res, corps, url) {
+function entetesDe(res) {
   const entetes = new Headers();
   for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) entetes.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+  return entetes;
+}
+
+function reponseDe(res, corps, url) {
+  const entetes = entetesDe(res);
   const status = res.statusCode ?? 0;
   return {
     status,
@@ -115,8 +120,12 @@ function reponseDe(res, corps, url) {
  * Une requête HTTPS épinglée (node:https) : le certificat du volume est la seule autorité (ca), la vérification reste
  * exigée (rejectUnauthorized: true) et controlerPair compare l'empreinte. agent: false : aucune connexion réutilisée,
  * aucun proxy de l'environnement. Aucune redirection n'est suivie (le cockpit n'en sert qu'à /auth).
+ *
+ * `flux: true` : la réponse est rendue dès les en-têtes reçus, corps compris (`corps`, lu au fil de l'eau), pour un
+ * flux d'événements (SSE) qui n'a pas de fin connue. Mêmes garanties TLS ; seuls changent la lecture du corps et le
+ * délai, qui ne couvre alors que l'établissement de la connexion. `signal` ferme le flux.
  */
-function requeteEpinglee(base, chemin, { method = "GET", headers = {}, body, delaiMs = 60_000 } = {}, epinglage) {
+function requeteEpinglee(base, chemin, { method = "GET", headers = {}, body, delaiMs = 60_000, flux = false, signal = null } = {}, epinglage) {
   const url = `${base.origin}${chemin}`;
   // Pour les messages : jamais la requête (défi, demande signée, ticket).
   const sansRequete = chemin.split("?")[0];
@@ -133,8 +142,17 @@ function requeteEpinglee(base, chemin, { method = "GET", headers = {}, body, del
         checkServerIdentity: (hote, pair) => controlerPair(hote, pair, epinglage),
         agent: false,
         timeout: delaiMs,
+        ...(signal ? { signal } : {}),
       },
       (res) => {
+        if (flux) {
+          // Le corps est rendu tel quel : c'est le lecteur qui le consomme et qui voit ses erreurs. Plus de délai
+          // d'inactivité une fois le flux ouvert (un flux d'événements se tait entre deux trames).
+          requete.setTimeout(0);
+          const status = res.statusCode ?? 0;
+          resolve({ status, ok: status >= 200 && status < 300, url, headers: entetesDe(res), corps: res });
+          return;
+        }
         const morceaux = [];
         let taille = 0;
         res.on("data", (morceau) => {
@@ -159,6 +177,8 @@ function requeteEpinglee(base, chemin, { method = "GET", headers = {}, body, del
 /**
  * Accès au cockpit : fetch en mode HTTP explicite, requête épinglée en HTTPS. Une adresse https:// sans épinglage est
  * refusée : le banc ne se rabat jamais sur une vérification coupée. `chemin` est toujours un chemin absolu du cockpit.
+ * Avec `flux: true`, les deux modes rendent la même forme : { status, ok, url, headers, corps }, où `corps` est lu au
+ * fil de l'eau (flux d'événements).
  */
 export function creerTransport(url, epinglage = null) {
   let base;
@@ -182,7 +202,9 @@ export function creerTransport(url, epinglage = null) {
   if (base.protocol === "http:") {
     return async (chemin, options = {}) => {
       verifierChemin(chemin);
-      return await fetch(`${base.origin}${chemin}`, options);
+      const reponse = await fetch(`${base.origin}${chemin}`, options);
+      if (!options.flux) return reponse;
+      return { status: reponse.status, ok: reponse.ok, url: reponse.url, headers: reponse.headers, corps: reponse.body };
     };
   }
   return async (chemin, options = {}) => {
@@ -222,8 +244,8 @@ export function creerClientCockpit(url, jeton, epinglage = null) {
   const requete = creerTransport(url, epinglage);
   const origine = new URL(url).origin;
 
-  const appeler = async (methode, chemin, corps, options = {}) => {
-    const entetes = { "x-cockpit-csrf": "1", origin: origine };
+  const appeler = async (methode, chemin, corps, { headers: enPlus, ...options } = {}) => {
+    const entetes = { "x-cockpit-csrf": "1", origin: origine, ...enPlus };
     if (cookie) entetes.cookie = cookie;
     if (corps !== undefined) entetes["content-type"] = "application/json";
     const reponse = await requete(chemin, {
@@ -274,10 +296,24 @@ export function creerClientCockpit(url, jeton, epinglage = null) {
     async put(chemin, corps) {
       return await lireJson(await appeler("PUT", chemin, corps ?? {}));
     },
-    /** Réponse brute (code et corps), pour les scénarios qui attendent un refus. */
-    async brut(methode, chemin, corps) {
-      const reponse = await appeler(methode, chemin, corps);
-      return { code: reponse.status, corps: await reponse.text() };
+    /**
+     * Réponse brute (code, en-têtes et corps), pour les scénarios qui attendent un refus ou lisent un en-tête (CSP).
+     * `entetes` ajoute des en-têtes à la requête, pour ceux que les raccourcis get/post/put ne posent pas — par
+     * exemple la confirmation d'un choix automatique (« x-cockpit-confirm: 1 »). Le cookie de session, `origin` et
+     * `x-cockpit-csrf` restent posés par le client : un scénario n'a donc jamais à ouvrir sa propre connexion.
+     */
+    async brut(methode, chemin, corps, { entetes } = {}) {
+      const reponse = await appeler(methode, chemin, corps, entetes ? { headers: entetes } : {});
+      return { code: reponse.status, entetes: reponse.headers, corps: await reponse.text() };
+    },
+    /**
+     * Ouvre un flux d'événements (SSE) du cockpit par le transport du banc : HTTPS épinglé par défaut (certificat du
+     * volume pour seule autorité, empreinte contrôlée à chaque poignée de main), fetch en mode HTTP explicite. Rend
+     * { ok, status, corps }, où `corps` est lu au fil de l'eau ; `signal` ferme le flux. Le cookie de session est
+     * celui de ce client : aucune autre donnée d'authentification n'est lue ni écrite ici.
+     */
+    async flux(chemin, { signal = null, accept = "text/event-stream" } = {}) {
+      return await appeler("GET", chemin, undefined, { flux: true, signal, headers: { accept } });
     },
   };
 }

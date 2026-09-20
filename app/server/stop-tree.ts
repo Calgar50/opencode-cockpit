@@ -9,7 +9,8 @@
 //   4. sonder /session/status toutes les 500 ms pendant 10 s au plus, ré-arrêter une fois, sinon journaliser « arrêt non confirmé » ;
 //   5. tout « once » tardif est refusé : nettoyage 1.0 (rejectAborted) des demandes restées en attente dans l'arbre, puis
 //      vérification existante du proxy (checkOnce) ;
-//   6. délégations en cours marquées « arretee » (ports.facts.work, écrivain unique), fait statut {cause}, conversation.arretee.
+//   6. délégations en cours marquées « arretee » (ports.facts.work, écrivain unique), fait statut {cause, motif, nonConfirmees,
+//      debut} (debut : heure du début de l'arrêt), conversation.arretee.
 //      Aucun résultat partiel n'est injecté dans la conversation.
 // Échéances : les étapes 2 et 3 tiennent la file des réponses, que le portillon libère d'office après 30 s ; au-delà, un « once »
 // vérifié pourrait passer au milieu de l'arrêt. Leurs appels s'arrêtent donc à STOP_PHASE_BUDGET_MS, sauf l'arrêt de la racine,
@@ -403,12 +404,14 @@ export function createStopTree(deps: StopTreeDeps, options: StopTreeOptions = {}
         log.warn("arrêt : délégation non marquée", { rootId, callId: row.call_id, error: errorMessage(err) });
       }
     }
+    // `debut` : une session close pendant l'arrêt (refus sans MessageAbortedError) est dite arrêtée, pas terminée ; il rend aussi
+    // chaque fait d'arrêt unique (deux arrêts successifs de même cause).
     const fact: ActivityFact = {
       rootId,
       sessionId: rootId,
       kind: "statut",
       ref: null,
-      data: { cause: STATUT_CAUSE_OF_STOP[cause], motif: cause, nonConfirmees: unconfirmed.length },
+      data: { cause: STATUT_CAUSE_OF_STOP[cause], motif: cause, nonConfirmees: unconfirmed.length, debut: startedAt },
       at: now(),
     };
     try {

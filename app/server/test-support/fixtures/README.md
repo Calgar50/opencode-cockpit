@@ -26,6 +26,22 @@ Les fichiers du flux `/event` n'ont ni enveloppe `{directory, project}` ni jumea
 
 Générée par le train it1 V0 depuis les sorties brutes (`out/passe-a`, comparée à `out/passe-b`), après vérification des empreintes du banc (contenus, plancher, règles ETAPE) et la recherche du paragraphe « Nettoyage » : aucune occurrence. Rejouée par `croisements-it1-v0.test.ts` (métadonnées par défaut, suite d'arrêt et `toolsFor()` du faux, relais du proxy).
 
+## Mesures hors ligne MX2
+
+`mx2-mesures.json` : relevés du 2026-09-17 de la mesure MX2, scénario « F-l » (opencode 1.18.30 hors ligne, faux fournisseur, `bash: ask`, dossier `/workspace/fl` ; compte rendu `execution/mesures/MX2.md` du chantier 1.1, passe A). Une session par forme ; pour chacune, la commande exacte, la permission demandée pour la partie `bash` (`asked`, `null` quand la partie s'est terminée **sans aucune demande** pour son `callID`) et, le cas échéant, `ecrit` quand la forme a modifié le disque sans demande.
+
+29 formes : 21 sans demande (dont 5 qui écrivent : `declare -p > f`, redirection seule dans une boucle ou un sous-shell, `cd sub && > f`, `> ~/.gitconfig`), 7 avec une demande `bash` et une avec une demande `external_directory` (`cd /tmp`). La liste du §3.3 de la spécification (affectation, `declare`, redirection seule) reste vraie mais est **plus étroite** que la réalité mesurée. Correction portée par la mesure : « `echo a > f` » n'est **pas** une forme sans demande ; la forme sans demande est la redirection **seule**.
+
+Rejouée par `croisements-it2-v0.test.ts` : contre `isNoRequestShellForm` et la porte shell (`shared/shell-gate.ts`), et sur le faux opencode, où chaque forme sans demande termine sa partie `bash` sans `permission.asked` pour son `callID` — le fait runtime dont L10c fait sa condition principale.
+
+Les autres mesures de MX2 (M5 : partie `bash` publiée avant l'effet disque, mais prévention impossible ; M11 : configuration git globale du conteneur opencode, illisible par le cockpit) ne donnent pas de fixture : leur conséquence est une phrase de la spécification et une limite à documenter (DOC2, « G04 limité au dépôt »).
+
+## Corpus de la porte shell
+
+`shell-corpus.json` : les 116 commandes de la sonde « autonomy-probe » du 2026-09-14 (`results.json`, opencode 1.18.30 ; décision D-08 : 116 et non 110), portées telles quelles, plus un champ `attendu` par ligne (verdict et règle de la porte 1.1). Exactement 11 consultations automatiques. Son en-tête `nettoyage` décrit l'analyse de secrets faite avant la copie (deux concordances bénignes : le mot cherché par `grep-abs` et l'adresse privée de `redirect-dev-tcp`).
+
+Rejoué sur un vrai dossier par `shell-corpus.test.ts` (L8b : faits du disque puis porte, dépôt piégé, formes F-l, analyse de secrets à chaque exécution) et par `croisements-it2-v1.test.ts` (matrice des choix, phrases, IA de contrôle sur le câblage complet).
+
 ## Réductions
 
 - p1 et p2 : fenêtres extraites de la capture continue p1-p5, du début de la capture au repos de la racine (p1), puis de l'envoi à `command.executed` (p2).

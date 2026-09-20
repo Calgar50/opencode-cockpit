@@ -16,6 +16,8 @@ import { redactSecrets } from "./redact.ts";
 import { sessionRole } from "./shared/activity-facts.ts";
 import type {
   ActivityResponse,
+  AffichageEtat,
+  AffichageResponse,
   DelegationSource,
   DelegationState,
   DelegationView,
@@ -37,7 +39,7 @@ import type {
 import { SESSION_ID_RE } from "./shared/ids.ts";
 
 /** `data.etat` du fait « affichage » posé par la bande 2D quand sa file est vidée (« Affichage rattrapé »). */
-export const AFFICHAGE_RATTRAPE_ETAT = "rattrape";
+export const AFFICHAGE_RATTRAPE_ETAT: AffichageEtat = "rattrape";
 /** Au plus un fait « Affichage rattrapé » par conversation toutes les 2 s. */
 export const AFFICHAGE_INTERVAL_MS = 2_000;
 /** Conversations dont la dernière écriture est gardée en mémoire (la plus ancienne est oubliée au-delà). */
@@ -315,14 +317,14 @@ export function registerActivityRoutes(app: Hono, c11: Cockpit11, options: Activ
       }
       const at = now();
       const last = lastAffichage.get(rootId);
-      if (last !== undefined && at - last < AFFICHAGE_INTERVAL_MS && at >= last) return c.json({ enregistre: false });
+      if (last !== undefined && at - last < AFFICHAGE_INTERVAL_MS && at >= last) return c.json<AffichageResponse>({ enregistre: false });
       // Conversation close par « Déroulé partiel » : plus rien n'est enregistré (le magasin l'écarterait sans le dire).
-      if (c11.ports.facts.since(rootId, Number.MAX_SAFE_INTEGER, 1).partial) return c.json({ enregistre: false });
+      if (c11.ports.facts.since(rootId, Number.MAX_SAFE_INTEGER, 1).partial) return c.json<AffichageResponse>({ enregistre: false });
       lastAffichage.delete(rootId);
       if (lastAffichage.size >= AFFICHAGE_ROOTS_MAX) lastAffichage.delete(lastAffichage.keys().next().value as string);
       lastAffichage.set(rootId, at);
       c11.ports.facts.append([{ rootId, sessionId: rootId, kind: "affichage", ref: null, data: { etat: AFFICHAGE_RATTRAPE_ETAT }, at }]);
-      return c.json({ enregistre: true });
+      return c.json<AffichageResponse>({ enregistre: true });
     },
   );
 }

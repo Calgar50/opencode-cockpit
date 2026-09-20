@@ -1,8 +1,9 @@
 // Faits d'activité (spécification §3.7, §3.10 point 6, §5.7.3, M15, JP-8 ; plan d'exécution, fiche L4a) : un événement opencode
 // devient des faits `activity_facts` SANS texte de message ; « Revoir » relit ces faits par la même fonction que le direct (P12).
 // Fournit : factsFromEvent(event, ctx), eventTime(id, receivedAt), la garde « aucun texte dans data » (factDataProblem,
-// factProblem, assertFact), sessionRole (une session « controle » n'est jamais du travail délégué), la fusion du direct et du
-// différé (factKey, FactDeduper, dedupeFacts, mergeFacts) et EventMemory (rôles des messages vus dans le flux).
+// factProblem, assertFact), sessionRole (une session « controle » n'est jamais du travail délégué), les doublons du flux (factKey,
+// FactDeduper, dedupeFacts), la fusion du direct et du différé par identité (mergeFacts) et EventMemory (rôles des messages vus
+// dans le flux).
 // Module pur (server/shared) : aucun module node, aucun accès à process (test de pureté de core.test.ts).
 //
 // Faits produits (`data` : codes, identifiants, nombres, clés ; jamais un titre, une consigne, une sortie, un motif ni un chemin) :
@@ -503,6 +504,8 @@ function toolFacts(part: Record<string, unknown>, messageId: string, s: Facts): 
     if (status === "pending") return [s.fact("consigne", callId, { etat: "prepare", callId, messageId })];
     if (status === "running") {
       if (enfant === null) return [];
+      // Source « raccourci » : `command` rempli, comme le fait opencode pour un raccourci `subtask`. L'IA peut aussi le remplir
+      // (paramètre facultatif de l'outil `task`) : seule l'absence de demande pour cet appel prouve un lancement sans confirmation.
       const commande = nameOf(input.command);
       return [
         s.fact("consigne", callId, {
@@ -622,10 +625,19 @@ function factIdentity(fact: ActivityFact): string {
 
 /**
  * Fusion du différé (faits persistés, dans l'ordre du magasin) et du direct (faits `activite.fait` reçus depuis l'abonnement),
- * tous deux déjà filtrés par le magasin : un fait du direct identique à un fait persisté (recouvrement) est écarté, puis le reste
- * suit les persistés, sans doublon.
+ * tous deux déjà filtrés par le magasin : les persistés d'abord, puis le direct ; un fait identique à un fait déjà gardé
+ * (recouvrement) est écarté. Doublons par identité SEULEMENT, comme le direct (activity.ts, applyEvent) : la règle « même état que
+ * le précédent » (FactDeduper) ne sert qu'au flux côté serveur ; appliquée ici, elle écarterait un fait persisté que le direct a
+ * montré (deux arrêts de même contenu, un état réécrit après un redémarrage du cockpit) et le différé ne vaudrait plus le direct.
  */
 export function mergeFacts(persisted: readonly ActivityFact[], live: readonly ActivityFact[]): ActivityFact[] {
-  const known = new Set(persisted.map(factIdentity));
-  return dedupeFacts([...persisted, ...live.filter((fact) => !known.has(factIdentity(fact)))]);
+  const known = new Set<string>();
+  const out: ActivityFact[] = [];
+  for (const fact of [...persisted, ...live]) {
+    const identity = factIdentity(fact);
+    if (known.has(identity)) continue;
+    known.add(identity);
+    out.push(fact);
+  }
+  return out;
 }

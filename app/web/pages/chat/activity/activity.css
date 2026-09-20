@@ -1,0 +1,295 @@
+/* 1.1 (L5b) — « Qui travaille ? » : bandeau et liste des acteurs (spécification §5.1, §5.5, §5.6).
+   Aucune animation ni transition : le mouvement de la carte néon est dans neon.css (L5c). L'état se lit toujours par une icône
+   et un mot, jamais par la couleur seule ; couleurs par les jetons de styles.css (thèmes clair et sombre). */
+
+/* Dans la colonne du fil (chat.css), répétition générale de l'itération 1 : bornée, elle défile et cède sa place au fil et à la
+   saisie quand la hauteur de la fenêtre manque. Mode Avancé : une demande qui attend votre réponse ne replie rien (clôture de
+   l'itération 1, §5.1, §5.7) ; carte et liste restent dépliées dans ces mêmes bornes. Mode Simple seulement (.attente, posée par
+   ActivityRegion) : bande et liste sont repliées tant que la demande attend (NeonBand, WhoIsWorking) ; la région garde ses deux
+   lignes de tête entières, [Répondre] compris, et ne cède rien à la carte de la demande. */
+.activity-region {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-height: 36vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.activity-region.attente {
+  flex-shrink: 0;
+  max-height: min(36vh, 8rem);
+}
+/* Mode Avancé, une demande attend (.demande) : la carte de la demande cède avant la région (chat.css) ; dans une fenêtre très basse
+   (mesuré sur opencode réel hors ligne à 1024 × 768 et 400 × 860, deux bandeaux et un avis dans la saisie), la région garde au
+   moins sa première ligne, qu'on fait défiler ; « Arrêter » et les boutons de la demande restent dans la fenêtre. */
+.activity-region.demande {
+  min-height: min(2.5rem, 6vh);
+}
+/* Vérification de la clôture de l'itération 1 : dépliées, la carte des agents (504 × 198 à 1440 × 900) et « Qui travaille ? »
+   dépassaient la région bornée ; le titre, les lignes et [Répondre] de « Qui travaille ? » étaient rendus mais cachés sous le fil et la
+   carte de la demande, dès 1440 × 900. Pendant une demande en Avancé, la liste des acteurs, qui reste la vérité (§5.1, §5.7.4), garde
+   toute sa hauteur sous la bande. La bande dépliée (carte, tableau ou zoom 3) prend la place qui reste et défile au besoin, en gardant
+   au moins sa ligne de titre (1,75 rem) ; sa tête garde sa hauteur. Au zoom 2, le corps de la bande a pour hauteur naturelle celle de
+   la carte à sa largeur bornée (neon.css : min(560px, 56vh) de large, soit min(220px, 22vh) de haut) ; conteneur de taille, il cède
+   la place et la carte s'y réduit (100cqh), pas au-dessous de la mini-carte (4,5 em de haut, §5.6). Quand la région ne tient plus la
+   liste sous la ligne de titre de la bande (1024 × 768 du banc : la saisie y prend 428 px), elle défile : le titre de la liste reste
+   en vue, le reste s'atteint en faisant défiler la région et la bande. Bande repliée par vous : inchangée au-dessus de 400 px. */
+.activity-region.demande > .neon-band:has(> .neon-body) {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 1.75rem;
+  overflow-y: auto;
+}
+.activity-region.demande > .neon-band > .neon-head {
+  flex: none;
+}
+.activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
+  flex: 0 1 auto;
+  min-height: 4.5em;
+  container-type: size;
+  contain-intrinsic-block-size: min(220px, 22vh);
+}
+.activity-region.demande > .neon-band > .neon-body > .neon-map-wrap {
+  max-width: min(560px, 56vh, 100cqh * 560 / 220);
+}
+@media (max-width: 899.98px) {
+  /* Mini-carte de 3 lignes (neon.css) : hauteur naturelle du corps. */
+  .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
+    contain-intrinsic-block-size: 4.5em;
+  }
+}
+@media (max-width: 400px) {
+  /* Liste seule (§5.6) : plus de carte à réduire. « Qui travaille ? » tient sur une ligne, [Répondre] compris (2,5 rem), et passe
+     avant la bande : il laisse à la bande, dépliée ou repliée, jusqu'à sa ligne de titre (1,75 rem) quand la région le permet, et la
+     bande défile. Région à son plancher (2,5 rem, opencode réel hors ligne à 400 × 860 : deux bandeaux et l'avis de la saisie), la
+     bande se réduit à ses marges et la ligne de « Qui travaille ? » reste vue. */
+  .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
+    min-height: 0;
+    container-type: normal;
+    contain-intrinsic-block-size: none;
+  }
+  .activity-region.demande > .neon-band,
+  .activity-region.demande > .neon-band:has(> .neon-body) {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .activity-region.demande > .who-banner {
+    max-height: max(2.5rem, 100% - 1.75rem);
+    overflow-y: auto;
+  }
+}
+.activity-region > * {
+  flex: none;
+}
+.activity-region:empty {
+  display: none;
+}
+
+.who-banner {
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  background: var(--surface-1);
+  padding: 4px 18px 4px 15px;
+  min-width: 0;
+}
+.who-banner.working {
+  border-left-color: var(--accent);
+}
+
+.who-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.who-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.who-toggle:hover {
+  background: var(--surface-2);
+}
+.who-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.who-icon {
+  color: var(--text-2);
+}
+.who-title {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.who-summary {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.who-more {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 600;
+}
+.who-welcome {
+  margin: 2px 0 4px;
+  color: var(--text-2);
+}
+.who-body {
+  max-height: 40vh;
+  overflow: auto;
+}
+.who-body[hidden] {
+  display: none;
+}
+.who-partial {
+  margin: 2px 0 4px;
+}
+
+.actor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.actor-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.actor-row.depth-1 {
+  margin-left: 16px;
+}
+.actor-row.depth-2 {
+  margin-left: 32px;
+}
+.actor-row.depth-3 {
+  margin-left: 48px;
+}
+.actor-row.state-attente-accord {
+  background: var(--warning-soft);
+}
+.actor-row.state-attente-accord .actor-icon {
+  color: var(--warning-ink);
+}
+.actor-row.state-termine .actor-icon {
+  color: var(--good-ink);
+}
+.actor-row.state-echec .actor-icon {
+  color: var(--critical-ink);
+}
+.actor-row.state-arrete .actor-icon,
+.actor-row.state-jamais-demarre .actor-icon,
+.actor-row.state-pas-commence .actor-icon {
+  color: var(--text-3);
+}
+.actor-icon {
+  color: var(--text-2);
+}
+.actor-main {
+  min-width: 0;
+}
+.actor-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  min-width: 0;
+}
+.actor-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.actor-state {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.actor-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  min-width: 0;
+}
+.actor-time,
+.actor-cost {
+  white-space: nowrap;
+}
+.actor-actions {
+  display: flex;
+  gap: 4px;
+}
+.actor-actions:empty {
+  display: none;
+}
+
+.activity-failed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* §5.6 : 400 px — bandeau sur une ligne (« +2 ») tant qu'il n'est pas déplié ; lignes déplacées sur deux rangs. */
+@media (max-width: 400px) {
+  .who-banner {
+    padding: 4px 12px 4px 9px;
+  }
+  .actor-row {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .actor-main {
+    flex: 1 1 60%;
+  }
+  .actor-row.depth-2,
+  .actor-row.depth-3 {
+    margin-left: 24px;
+  }
+}
+
+/* §5.5 : couleurs forcées — l'attente de votre accord garde un contour pointillé, le focus reste visible. */
+@media (forced-colors: active) {
+  .who-banner.working {
+    border-left-color: Highlight;
+  }
+  .who-more {
+    border: 1px solid CanvasText;
+  }
+  .actor-row.state-attente-accord {
+    outline: 1px dashed CanvasText;
+    outline-offset: -1px;
+  }
+  .who-toggle:focus-visible {
+    outline-color: Highlight;
+  }
+}

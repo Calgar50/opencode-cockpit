@@ -4,9 +4,12 @@
 // relâcher → 428 sans x-cockpit-confirm, choix automatiques confiés au port activation, COCKPIT_AUTONOMY=off → 403 pour
 // « modifications » et « autonome », événement autonomie.choix et fait « choix » à chaque changement, retour à « demander » au
 // démarrage (retour_cause redemarrage-cockpit). Le port rend des CODES ; les phrases sont dans shared/autonomy-choice-texts.ts.
+// Un relâchement vers un choix automatique demande au cycle d'autonomie (L10a) de relire les demandes d'autorisation déjà en
+// attente de la conversation (§4.3 étape 8) : ce module ne décide rien lui-même, il ne fait que le signaler.
 // neutralConversationAutonomy reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import { requestPendingRescan } from "./autonomy-requests.ts";
 import { emitCockpit } from "./cockpit-events.ts";
 import type { ActivationVerdict, AutonomyPutResult, Cockpit11, Cockpit11Deps, Cockpit11Module, ConversationAutonomyPort } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
@@ -158,25 +161,24 @@ export class ConversationAutonomyStore {
   }
 
   /**
-   * Choix automatiques posés avant `before` remis à « demander » (depuis, cause), pour la racine `rootId` ou pour toutes ; une
-   * seule instruction (RETURNING) : chaque racine changée est rendue une fois, triée. « demander » et « plan » : inchangés.
+   * Choix automatiques remis à « demander » (depuis, cause), pour la racine `rootId` ou pour toutes ; `garder` : racines laissées
+   * telles quelles (choix posés par ce démarrage). Une seule instruction (RETURNING) : chaque racine changée est rendue une fois,
+   * triée. « demander » et « plan » : inchangés.
    */
-  resetAutomatic(options: { before: number; depuis: number; cause: ChoiceCause; rootId?: string }): string[] {
-    const rows = (
-      options.rootId === undefined
-        ? this.#db
-            .prepare(
-              `UPDATE conversation_autonomy SET choix = 'demander', depuis = ?, retour_cause = ?
-               WHERE choix IN ('modifications', 'autonome') AND depuis < ? RETURNING root_id`,
-            )
-            .all(options.depuis, options.cause, options.before)
-        : this.#db
-            .prepare(
-              `UPDATE conversation_autonomy SET choix = 'demander', depuis = ?, retour_cause = ?
-               WHERE choix IN ('modifications', 'autonome') AND depuis < ? AND root_id = ? RETURNING root_id`,
-            )
-            .all(options.depuis, options.cause, options.before, options.rootId)
-    ) as Array<{ root_id: string }>;
+  resetAutomatic(options: { depuis: number; cause: ChoiceCause; rootId?: string; garder?: readonly string[] }): string[] {
+    const conditions = ["choix IN ('modifications', 'autonome')"];
+    const values: Array<string | number> = [options.depuis, options.cause];
+    if (options.rootId !== undefined) {
+      conditions.push("root_id = ?");
+      values.push(options.rootId);
+    }
+    if (options.garder !== undefined) {
+      conditions.push("root_id NOT IN (SELECT value FROM json_each(?))");
+      values.push(JSON.stringify([...options.garder]));
+    }
+    const rows = this.#db
+      .prepare(`UPDATE conversation_autonomy SET choix = 'demander', depuis = ?, retour_cause = ? WHERE ${conditions.join(" AND ")} RETURNING root_id`)
+      .all(...values) as Array<{ root_id: string }>;
     return rows.map((row) => row.root_id).sort();
   }
 
@@ -224,17 +226,17 @@ function announceChoice(c11: Cockpit11, rootIds: readonly string[], choix: Auton
 }
 
 /**
- * Retour à « Demander à chaque fois » (§4.11, décision n° 10) des choix automatiques posés avant `before` (défaut : tous), pour
- * `rootId` ou pour toutes les conversations : ligne (retour_cause), événement et fait « choix » par racine changée. Rend les
+ * Retour à « Demander à chaque fois » (§4.11, décision n° 10) des choix automatiques, pour `rootId` ou pour toutes les
+ * conversations, sauf les racines de `garder` : ligne (retour_cause), événement et fait « choix » par racine changée. Rend les
  * racines changées. Démarrage du cockpit (redemarrage-cockpit) ; réutilisable par les plafonds et l'activation.
  */
-export function returnToAsk(c11: Cockpit11, cause: ChoiceCause, scope: { rootId?: string; before?: number } = {}): string[] {
+export function returnToAsk(c11: Cockpit11, cause: ChoiceCause, scope: { rootId?: string; garder?: readonly string[] } = {}): string[] {
   const now = Date.now();
   const roots = new ConversationAutonomyStore(c11.db).resetAutomatic({
-    before: scope.before ?? Number.MAX_SAFE_INTEGER,
     depuis: now,
     cause,
     ...(scope.rootId === undefined ? {} : { rootId: scope.rootId }),
+    ...(scope.garder === undefined ? {} : { garder: scope.garder }),
   });
   announceChoice(c11, roots, "demander", cause, now);
   return roots;
@@ -257,11 +259,11 @@ export interface ConversationAutonomyService {
   port: ConversationAutonomyPort;
   store: ConversationAutonomyStore;
   /**
-   * Heure d'installation du module. Un choix automatique posé avant elle date d'un démarrage précédent : il vaut « demander »
-   * dès la lecture (vue, choiceOf), avant même l'étape de démarrage, que main.ts ne lance qu'une fois opencode joignable.
+   * Heure d'installation du module, montrée comme `depuis` d'un choix périmé. Jamais comparée à l'heure d'une ligne : un choix
+   * automatique est tenu pour posé par ce démarrage seulement si CE service l'a écrit (aucune horloge entre deux démarrages).
    */
   readonly bootAt: number;
-  /** Étape de démarrage : choix automatiques antérieurs à bootAt remis à « demander » (redemarrage-cockpit), avec leur fait. */
+  /** Étape de démarrage : choix automatiques des démarrages précédents remis à « demander » (redemarrage-cockpit), avec leur fait. */
   returnToAskAtStartup(): Promise<void>;
 }
 
@@ -270,8 +272,14 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
   const store = new ConversationAutonomyStore(c11.db);
   const bootAt = Date.now();
 
-  /** Choix automatique posé avant ce démarrage (§4.11) : jamais appliqué. Avec COCKPIT_AUTONOMY=off, c'est le cas de tous. */
-  const stale = (row: StoredAutonomy | null): boolean => row !== null && isAutomatic(row.choix) && row.depuis < bootAt;
+  /**
+   * Racines dont le choix automatique a été écrit par CE démarrage (apply). Aucune heure n'est comparée d'un démarrage à l'autre :
+   * une horloge qui recule ne ferait plus passer un choix automatique pour récent (§4.11, décision n° 10).
+   */
+  const posedNow = new Set<string>();
+
+  /** Choix automatique posé par un démarrage précédent (§4.11) : jamais appliqué. Avec COCKPIT_AUTONOMY=off, c'est le cas de tous. */
+  const stale = (row: StoredAutonomy | null): boolean => row !== null && isAutomatic(row.choix) && !posedNow.has(row.rootId);
 
   /** Ligne telle qu'elle s'applique : un choix périmé est lu « demander », cause redemarrage-cockpit, sans écriture. */
   const effective = (row: StoredAutonomy | null): StoredAutonomy | null =>
@@ -281,7 +289,7 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
   const settle = (rootId: string): StoredAutonomy | null => {
     const row = store.read(rootId);
     if (!stale(row)) return row;
-    returnToAsk(c11, "redemarrage-cockpit", { rootId, before: bootAt });
+    returnToAsk(c11, "redemarrage-cockpit", { rootId });
     return store.read(rootId);
   };
 
@@ -334,12 +342,23 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
         choix === "plan" ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: "racine-de-plan" },
       );
     }
-    const automatic = async (choix: AutomaticChoice): Promise<AutonomyChoiceAvailability> => {
-      if (!c11.env.autonomy) return { choix, disponible: false, raison: "autonomie-coupee" };
-      const verdict = await c11.ports.activation.check(activationInput(session, choix));
-      return verdict.ok ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: verdict.raison };
+    /**
+     * Les deux choix automatiques se règlent sur UN SEUL relevé : le port d'activation garantit que `choix` n'entre pas dans le
+     * verdict (autonomy-activation.ts : « les deux choix automatiques ont les mêmes refus ; `choix` n'est là que pour l'appelant
+     * et les journaux »). Deux appels séparés faisaient deux fois le même relevé d'opencode — GET /config et GET /global/config,
+     * qui n'ont aucun cache — à chaque lecture de la vue, et la vue est demandée par les deux sélecteurs et le bandeau. Si cette
+     * garantie tombe un jour, il faudra redemander un verdict par choix.
+     */
+    const automatiques = async (): Promise<[AutonomyChoiceAvailability, AutonomyChoiceAvailability]> => {
+      // Interrupteur coupé : refus rendu AVANT tout relevé, opencode n'est pas lu (§4.13, décision n° 13).
+      const verdict: ActivationVerdict = c11.env.autonomy
+        ? await c11.ports.activation.check(activationInput(session, "modifications"))
+        : { ok: false, raison: "autonomie-coupee" };
+      const rendu = (choix: AutomaticChoice): AutonomyChoiceAvailability =>
+        verdict.ok ? { choix, disponible: true, raison: null } : { choix, disponible: false, raison: verdict.raison };
+      return [rendu("modifications"), rendu("autonome")];
     };
-    const [modifications, autonome] = await Promise.all([automatic("modifications"), automatic("autonome")]);
+    const [modifications, autonome] = await automatiques();
     return [{ choix: "demander", disponible: true, raison: null }, modifications, { choix: "plan", disponible: false, raison: "nouvelle-conversation" }, autonome];
   };
 
@@ -373,7 +392,14 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
       depuis: changed || stored === null ? now : stored.depuis,
       retourCause: changed ? null : (stored?.retourCause ?? null),
     });
+    // Choix automatique écrit par ce démarrage : il s'applique jusqu'au prochain, quelle que soit l'heure de l'horloge.
+    if (isAutomatic(choix)) posedNow.add(rootId);
+    else posedNow.delete(rootId);
     if (changed) announceChoice(c11, [rootId], choix, "clic", now);
+    // Relâchement vers un choix automatique (§4.3 étape 8) : les demandes d'autorisation déjà en attente de cette conversation
+    // sont relues par le cycle d'autonomie (L10a). Posé ici, et non dans la route, pour couvrir tout appelant du port (plans, L6b).
+    // Sans le module « autonomy », l'appel est sans effet. Un resserrement ne relit rien : il ne peut qu'enlever des permissions.
+    if (changed && isAutomatic(choix)) requestPendingRescan(c11, rootId);
   };
 
   /**
@@ -464,7 +490,7 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
     store,
     bootAt,
     async returnToAskAtStartup() {
-      const roots = returnToAsk(c11, "redemarrage-cockpit", { before: bootAt });
+      const roots = returnToAsk(c11, "redemarrage-cockpit", { garder: [...posedNow] });
       for (const rootId of roots) supersede(rootId);
       if (roots.length > 0) c11.log.info("autonomie : choix automatiques revenus à « demander » au démarrage", { conversations: roots.length });
     },

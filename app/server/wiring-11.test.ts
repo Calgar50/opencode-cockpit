@@ -156,8 +156,10 @@ const ctx = {} as ProxyContext;
 async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof setup>, autonomy = true, livres: readonly PortName[] = []) {
   const p = wiring.c11.ports;
   if (!livres.includes("stopTree")) await assert.rejects(p.stopTree.run(ROOT, "vous"), PortUnavailableError);
-  assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
-  await assert.rejects(p.taskGuard.collectDelegationFacts({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null }), PortUnavailableError);
+  if (!livres.includes("taskGuard")) {
+    assert.equal(await p.taskGuard.details(ROOT, "per_1"), null);
+    await assert.rejects(p.taskGuard.collectDelegationFacts({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null }), PortUnavailableError);
+  }
   assert.deepEqual(p.delegationWatch, {});
   if (!livres.includes("floors")) {
     assert.equal(await p.floors.verified(ROOT), false);
@@ -209,20 +211,34 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   assert.equal(p.requests.current(ROOT), null);
   assert.equal(p.requests.spent("req_1"), 0);
   assert.equal(p.requests.interrupt(ROOT, "interrompue"), undefined);
-  assert.deepEqual(await p.activation.check({ rootId: ROOT, choix: "autonome", agent: "build", directory: "/workspace/app" }), { ok: false, raison: "a-venir" });
+  // L10d, porte I1 basculée : module réel → la porte est ouverte, le relevé est tenté sur ce client factice et l'assistant
+  // n'est pas jugé conforme (« regle-allow », contrôlé par autonomy-activation.test.ts) ; port neutre → « a-venir ».
+  const activation = livres.includes("activation") ? "regle-allow" : "a-venir";
+  assert.deepEqual(await p.activation.check({ rootId: ROOT, choix: "autonome", agent: "build", directory: "/workspace/app" }), { ok: false, raison: activation });
+  // L10e : module réel → les faits de la délégation ne se lisent pas sur ce client factice, la demande attend sans qu'aucun refus
+  // parte (X-illisible, contrôlé par autonomy-delegation.test.ts) ; port neutre → attente sans règle.
+  const delegation = livres.includes("delegationPolicy") ? "X-illisible" : null;
   assert.deepEqual(await p.delegationPolicy.decide({ rootId: ROOT, sessionId: ROOT, permissionId: "per_1", directory: null, mode: "simple" }), {
     verdict: "attente",
-    regle: null,
+    regle: delegation,
   });
   assert.deepEqual(p.capWatch, {});
   const judge = await p.controlAi.judge({ rootId: ROOT, sessionId: ROOT, requestId: null, command: "jq . a.json", head: "jq", relativeDir: ".", directory: null });
-  assert.deepEqual(judge, { decision: "indisponible", raison: "a-venir" });
-  // L1g : module réel installé → agent suivi, en attente du premier ensureAll ; port neutre → « non suivi ».
+  // L11b : module réel → sans demande autonome, l'IA de contrôle n'est pas consultée (« desactive », aucun appel, contrôlé par
+  // control-ai.test.ts) ; port neutre → « a-venir ».
+  assert.deepEqual(judge, { decision: "indisponible", raison: livres.includes("controlAi") ? "desactive" : "a-venir" });
+  // L1g : module réel installé → agent suivi, en attente du premier ensureAll ; port neutre → « non suivi ». L11b : le module réel
+  // suit aussi cockpit-controle.
   const suivi = wiring.modules.includes("internalAgents") ? "en-attente" : "non-suivi";
-  assert.deepEqual(p.internalAgents.status(), [{ nom: "cockpit-classifier", etat: suivi, prochainEssai: null }]);
-  assert.deepEqual(await p.diagnostics.delegation(), []);
+  const controle = wiring.modules.includes("internalAgents") ? [{ nom: "cockpit-controle", etat: "en-attente", prochainEssai: null }] : [];
+  assert.deepEqual(p.internalAgents.status(), [{ nom: "cockpit-classifier", etat: suivi, prochainEssai: null }, ...controle]);
+  // L1f : module réel → le client factice ne répond à rien : relevés impossibles, dits par le bandeau « illisible » (train it1 V4) ;
+  // port neutre → aucun bandeau.
+  const illisible = wiring.modules.includes("diagnostics") ? [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }] : [];
+  assert.deepEqual(await p.diagnostics.delegation(), illisible);
   assert.equal(wiring.c11.reloadBusy(), false);
-  assert.equal(wiring.c11.activationOuverte, false);
+  // Porte I1 basculée au train de la vague 3 (it2) : le cadre porte désormais true, y compris sans aucun module.
+  assert.equal(wiring.c11.activationOuverte, true);
 }
 
 function assertNoRegistration(wiring: Cockpit11Wiring) {
@@ -233,8 +249,23 @@ function assertNoRegistration(wiring: Cockpit11Wiring) {
 }
 
 describe("câblage 1.1 : ordre figé", () => {
-  it("porte I1 : ACTIVATION_OUVERTE vaut false", () => {
-    assert.equal(ACTIVATION_OUVERTE, false);
+  // Porte I1 : basculée à true au train de la vague 3 de l'itération 2 (plan §2.6), après vérification de ses conditions.
+  // Tant qu'elle valait false, le port d'activation réel répondait comme le port neutre et n'inscrivait aucun crochet.
+  it("porte I1 : ACTIVATION_OUVERTE vaut true depuis la bascule du train de la vague 3", () => {
+    assert.equal(ACTIVATION_OUVERTE, true);
+  });
+
+  // Exactitude des commentaires après la bascule (défaut relevé par la répétition générale de l'itération 2) : plus aucune source
+  // du serveur ne peut écrire que la constante « vaut » ou « reste » false. Les tournures conditionnelles, comme « tant
+  // qu'ACTIVATION_OUVERTE est fausse », restent permises : elles décrivent la branche fermée, que la fabrique tient toujours.
+  it("porte I1 : aucune source du serveur ne donne encore ACTIVATION_OUVERTE pour false", () => {
+    const perime = /ACTIVATION_OUVERTE`?\s+(?:vaut|reste|restait|est passée? à)\s+`?(?:false|faux|fausse)/i;
+    const fichiers = fs.readdirSync(import.meta.dirname, { encoding: "utf8", recursive: true }).filter((nom) => nom.endsWith(".ts"));
+    assert.ok(fichiers.length > 100, `sources parcourues : ${fichiers.length}`);
+    for (const nom of fichiers) {
+      const trouve = perime.exec(fs.readFileSync(path.join(import.meta.dirname, nom), "utf8"))?.[0];
+      assert.equal(trouve, undefined, `${nom} : « ${trouve ?? ""} », alors que la constante vaut true depuis la bascule de la vague 3`);
+    }
   });
 
   it("MODULE_ORDER et STEP_ORDER : ordre du plan §4.4", () => {
@@ -466,7 +497,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), plafonds et redémarrages (L10c), délégation en Autonome (L10e), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -474,22 +505,48 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "createSession", module: "floors" },
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      // L10d : porte I1 basculée au train de la vague 3 (it2) → le crochet d'activation s'inscrit, entre « plans » et « requests ».
+      { kind: "hook", key: "beforeBilledSend", module: "activation" },
+      // L10a : la demande autonome s'ouvre à l'envoi, après l'activation (rang « requests » de STEP_ORDER).
+      { kind: "hook", key: "beforeBilledSend", module: "requests" },
+      { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
+      { kind: "derivation", key: "taskGuard", module: "taskGuard" },
+      // L1e : surveillance des délégations lancées sans demande (dérivation et abonnement usage.updated), port toujours vide.
+      { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
+      // L10a : cycle d'une décision (dérivation permission.asked) et relecture de GET /permission à la reconnexion d'opencode.
+      { kind: "derivation", key: "autonomy", module: "autonomy" },
+      // L10c : plafonds, « Passé sans contrôle » et redémarrages d'opencode (dérivation, abonnement usage.updated, reprise).
+      { kind: "derivation", key: "capWatch", module: "capWatch" },
+      { kind: "hub", key: "usage.updated", module: "delegationWatch" },
+      { kind: "hub", key: "opencode.connection", module: "autonomy" },
+      { kind: "hub", key: "usage.updated", module: "capWatch" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
+      { kind: "startup", key: "startup", module: "capWatch" },
       { kind: "routes", key: "conversations", module: "stopTree" },
+      { kind: "routes", key: "delegations", module: "taskGuard" },
       { kind: "routes", key: "activity", module: "facts" },
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
+      { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
     assert.deepEqual(
-      [wiring.hooks.createSession.length, wiring.hooks.sessionCreated.length, wiring.hooks.beforeBilledSend.length, wiring.hooks.abort.length],
-      [1, 1, 1, 1],
+      [
+        wiring.hooks.createSession.length,
+        wiring.hooks.sessionCreated.length,
+        wiring.hooks.beforeBilledSend.length,
+        wiring.hooks.beforeOnceRelay.length,
+        wiring.hooks.abort.length,
+      ],
+      // beforeBilledSend : 4 depuis la bascule de la porte I1 (floors, plans, activation, requests).
+      [1, 1, 4, 1, 1],
     );
-    assert.deepEqual([wiring.hooks.beforeOnceRelay, wiring.subscriptions], [[], []]);
-    assert.equal(wiring.derivations.length, 1);
-    assert.equal(wiring.startup.length, 1);
-    assert.equal(wiring.routes.length, 4);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
+    assert.equal(wiring.derivations.length, 5);
+    assert.equal(wiring.startup.length, 2);
+    assert.equal(wiring.routes.length, 6);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.
     assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
@@ -500,7 +557,9 @@ describe("câblage 1.1 : ports neutres", () => {
     });
     wiring.c11.ports.facts.append([{ rootId: ROOT, sessionId: ROOT, kind: "statut", ref: null, data: { etat: "occupee" }, at: 1 }]);
     assert.equal(wiring.c11.ports.facts.since(ROOT, 0).facts.length, 1);
-    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts"]);
+    // L11b et L10e : ports réels de l'IA de contrôle et de la délégation en Autonome (aucune inscription).
+    // L10d : porte I1 basculée au train de la vague 3 (it2), le port d'activation réel n'est donc plus inerte.
+    await assertNeutralPorts(wiring, s, true, ["stopTree", "floors", "conversationAutonomy", "facts", "taskGuard", "controlAi", "delegationPolicy", "activation"]);
   });
 
   it("surcharge de ports : l'emporte sur le module installé ; reloadBusy suit ports.autonomy.examining", async () => {
@@ -578,12 +637,17 @@ describe("câblage 1.1 : routes et cadre", () => {
     const res = await request("GET", "/api/diagnostic/activite", authed);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), {
-      delegation: [],
-      // L1g : module réel des agents internes, aucun ensureAll encore.
-      agentsInternes: [{ nom: "cockpit-classifier", etat: "en-attente", prochainEssai: null }],
+      // L1f : client factice sans réponse → relevés impossibles, bandeau « illisible » (train it1 V4).
+      delegation: [{ code: "illisible", noms: ["configuration", "arriere-plan", "agents"] }],
+      // L1g : module réel des agents internes, aucun ensureAll encore ; L11b : cockpit-controle suivi aussi.
+      agentsInternes: [
+        { nom: "cockpit-classifier", etat: "en-attente", prochainEssai: null },
+        { nom: "cockpit-controle", etat: "en-attente", prochainEssai: null },
+      ],
       interrupteur: true,
       controleIa: s.settings.get().budget.autonomie.controleIa,
-      activationOuverte: false,
+      // Porte I1 basculée au train de la vague 3 (it2) : le Diagnostic la dit ouverte.
+      activationOuverte: true,
     });
     assert.equal((await request("GET", "/api/diagnostic/activite", {})).status, 401);
     const bare = setup();

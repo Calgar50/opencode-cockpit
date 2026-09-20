@@ -15,7 +15,9 @@
 // sous-agent) ; une demande n'expire que si son instance est libérée (server.instance.disposed, global.disposed : mesure M14,
 // demande disparue sans permission.replied). « Lancée sans confirmation » n'est posé que pour un raccourci (subtask) : l'absence
 // d'une demande vue dans le flux ne prouve rien (événements manqués pendant une coupure) ; pour un agent `task: allow`, c'est
-// l'évaluation de ses règles (garde des délégations, L1d) qui peut le dire, par ce même port.
+// l'évaluation de ses règles (garde des délégations, L1d) qui peut le dire, par ce même port. La source « raccourci » vient du
+// paramètre `command` de la partie `task`, que l'IA peut remplir elle-même (opencode 1.18.30) : seule l'absence de demande pour
+// l'appel prouve un lancement sans confirmation, et fact-store ne garde sans_confirmation qu'avec aucune demande connue.
 import type { Cockpit11, DelegationUpsert, EventDerivation, WaitUpsert } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import type { OcGlobalEvent } from "./opencode.ts";
@@ -30,7 +32,7 @@ import {
   type FactSession,
   factsFromEvent,
 } from "./shared/activity-facts.ts";
-import type { ActivityFact, DelegationState } from "./shared/activity-types.ts";
+import type { ActivityFact, DelegationState, ReponseFactData } from "./shared/activity-types.ts";
 import { ID_RE } from "./shared/ids.ts";
 
 /** Recherche d'une session inconnue (sessions.ensure) : 5 s au plus (§3.10 point 2). */
@@ -165,7 +167,8 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     const parent = parentId === null ? null : session(parentId);
     if (parentId !== null && parent === null) return null;
     const sticky = parent && STICKY_PURPOSES.has(parent.purpose) ? parent.purpose : null;
-    const purpose = sticky ?? purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined });
+    // Titre d'un enfant écrit par l'IA (description du task) : jamais lu comme l'usage d'une session du cockpit (purposeOf).
+    const purpose = sticky ?? purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined }, parentId);
     return { rootId: parent?.rootId ?? id, parentId, purpose, instance: parent?.instance ?? "principale" };
   };
 
@@ -322,7 +325,8 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
       safely("attente expirée", () => {
         if (!work().markWait(waitOf(row), "expiree", null)) return;
         // Fait « reponse » : l'attente dessinée prend fin (P12), pour le direct comme pour « Revoir ».
-        facts.push({ rootId: row.root_id, sessionId: row.session_id, kind: "reponse", ref: row.permission_id, data: { reponse: "expiree" }, at });
+        const data: ReponseFactData = { reponse: "expiree" };
+        facts.push({ rootId: row.root_id, sessionId: row.session_id, kind: "reponse", ref: row.permission_id, data, at });
         const delegation = delegationByPermission(row.permission_id);
         if (delegation?.state === "attente-accord") {
           work().markDelegation({ ...keyOf(delegation), agent: "", permissionId: row.permission_id }, "expiree", null);

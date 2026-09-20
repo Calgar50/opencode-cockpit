@@ -7,7 +7,8 @@
 // faits écartés par identité, messages par (id, time.completed) ; deltas jamais lus (le détail vient des faits).
 // Rend des CODES (états, causes, genres de barre, annonces) : les phrases sont écrites par le module de textes de l'interface (L5b).
 // Une session de rôle « controle » est la ligne « Contrôle de sécurité » : son coût compte dans la demande, jamais dans « dont x $ de
-// travail délégué ». Faits lus : statut (dont {cause} d'un arrêt, L1c), consigne, resultat, attente, reponse, choix (L6a) et
+// travail délégué ». Faits lus : statut (dont {cause, debut} d'un arrêt, L1c : une session arrêtée par MessageAbortedError, ou dont
+// le travail s'est fermé entre `debut` et le fait sans erreur, est « arrete »), consigne, resultat, attente, reponse, choix (L6a) et
 // affichage « deroule-partiel » (L4b) ; decision et origine ne changent pas les lignes (Journal et transcription).
 // Module pur (server/shared) : aucun module node, aucun accès à process, ni horloge ni aléa (l'heure est passée en paramètre).
 import type {
@@ -76,7 +77,10 @@ export interface ActivitySessionInfo {
   parentId: string | null;
   /** Titre donné par opencode, ACTIVITY_TITLE_MAX caractères au plus ; "" si inconnu. */
   title: string;
-  /** Assistant du dernier message utilisateur (la racine n'en a pas dans session.created). */
+  /**
+   * Assistant de la session : celui de ses informations (opencode 1.18.30 : l'assistant de sa dernière demande ; la racine n'en a pas
+   * dans session.created) ou de son dernier message utilisateur, le plus récent reçu.
+   */
   agent: string | null;
   /** Dernier message utilisateur lu : clé (id, time.completed) et heure de création. */
   message: { key: string; created: number } | null;
@@ -169,9 +173,12 @@ function withSession(state: ActivityState, info: Record<string, unknown>): Activ
   const known = state.sessions.get(id);
   if (!known && state.sessions.size >= ACTIVITY_MAX_SESSIONS * 2) return state;
   const title = typeof info.title === "string" ? info.title.slice(0, ACTIVITY_TITLE_MAX) : (known?.title ?? "");
-  if (known && known.parentId === parentId && known.title === title) return state;
+  // Assistant de la session (opencode 1.18.30 : celui de sa dernière demande, absent de session.created pour la racine) : le même
+  // qu'en direct pour un onglet rouvert, qui relit les informations de la conversation sans relire ses messages.
+  const agent = nameOf(info.agent) ?? known?.agent ?? null;
+  if (known && known.parentId === parentId && known.title === title && known.agent === agent) return state;
   const sessions = new Map(state.sessions);
-  sessions.set(id, { parentId, title, agent: known?.agent ?? null, message: known?.message ?? null });
+  sessions.set(id, { parentId, title, agent, message: known?.message ?? null });
   return { ...state, sessions };
 }
 
@@ -276,6 +283,12 @@ function derive(state: ActivityState): Model {
 }
 
 const callKey = (sessionId: string, callId: string): string => `appel:${sessionId}:${callId}`;
+
+/** Dernière période de travail de la session fermée dans [from, to]. */
+function closedWithin(node: NodeModel, from: number, to: number): boolean {
+  const end = node.intervals.at(-1)?.[1];
+  return typeof end === "number" && end >= from && end <= to;
+}
 
 function closeBusy(node: NodeModel, at: number): void {
   const last = node.intervals.at(-1);
@@ -426,6 +439,7 @@ function build(state: ActivityState): Model {
           if (node.depth !== 0 || !STATUT_CAUSES.has(data.cause)) return;
           const cause = data.cause as StatutCause;
           model.stop = { cause, at, nonConfirmees: timeOf(data.nonConfirmees) ?? 0 };
+          const debut = timeOf(data.debut);
           for (const other of model.nodes.values()) {
             if (other.busy) {
               // Une session encore occupée n'est dite arrêtée que si opencode a été relancé : un arrêt non confirmé reste visible.
@@ -434,6 +448,10 @@ function build(state: ActivityState): Model {
                 other.stopped = { cause, at };
               }
             } else if (other.abortedAt !== null && other.abortedAt >= lastStop) {
+              other.stopped = { cause, at };
+            } else if (debut !== null && other.erreur === null && closedWithin(other, debut, at)) {
+              // Tour clos pendant l'arrêt sans MessageAbortedError (refus d'une demande en attente, étape 2) : arrêté, pas terminé.
+              // Une vraie erreur pendant l'arrêt reste un échec.
               other.stopped = { cause, at };
             }
           }
@@ -593,6 +611,12 @@ export interface LiveRow extends ActivityRow {
   permissionId: string | null;
   source: DelegationSource | null;
   commande: string | null;
+  /**
+   * Lancée sans demande d'autorisation par un raccourci `subtask` (§6 l.1048) : appel `task` porteur d'une commande, et aucune
+   * attente vue pour lui (règle de delegations.sans_confirmation, fact-store). La commande seule ne prouve rien : l'IA peut remplir
+   * le paramètre `command` de l'outil `task` elle-même, et opencode pose alors la demande.
+   */
+  sansConfirmation: boolean;
   reprise: boolean;
   /** Enfant lancé alors que la session qui délègue ne travaillait plus (accord tardif) : son résultat ne revient nulle part. */
   detache: boolean;
@@ -602,6 +626,9 @@ export interface LiveRow extends ActivityRow {
   until: number | null;
   durationMs: number | null;
 }
+
+/** Raccourci lancé sans demande : commande portée par l'appel `task`, et aucune attente d'accord vue pour cet appel. */
+const lanceSansDemande = (call: CallModel | null): boolean => call !== null && call.commande !== null && call.permissionId === null;
 
 const ownOpenWait = (model: Model, node: NodeModel): WaitModel | null => {
   for (const wait of model.waits.values()) {
@@ -660,6 +687,7 @@ function sessionRow(state: ActivityState, model: Model, node: NodeModel, now: nu
     permissionId: node.busy ? (ownOpenWait(model, node)?.id ?? null) : null,
     source: call?.source ?? null,
     commande: call?.commande ?? null,
+    sansConfirmation: lanceSansDemande(call),
     reprise: call?.reprise ?? false,
     detache: node.role === "delegation" && call === null && !node.parentBusy,
     cause: node.stopped?.cause ?? null,
@@ -703,6 +731,7 @@ function callRow(state: ActivityState, model: Model, call: CallModel, now: numbe
     permissionId: rowState === "attente-accord" ? (wait?.id ?? null) : null,
     source: call.source,
     commande: call.commande,
+    sansConfirmation: lanceSansDemande(call),
     reprise: false,
     detache: false,
     cause: call.stopCause,

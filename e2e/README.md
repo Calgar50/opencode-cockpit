@@ -137,7 +137,7 @@ Le contexte `ctx` :
 | `epinglage` | en HTTPS, empreinte SHA-256 du certificat (`sha256`) et condensé de sa clé publique (`spki`) épinglés, lus sur le volume ; `null` en HTTP. Jamais la clé |
 | `faux` | pilotage du faux opencode (`requetes`, `evenements`, `scripter`, `tourParDefaut`, `oublier`), ou `null` hors du mode `--faux` |
 | `mode` | `faux`, `reel-hors-ligne` ou `reel` |
-| `api` | client d'API du cockpit, déjà connecté (`get`, `post`, `put`, `brut`), épinglé en HTTPS. Un scénario ne parle au cockpit que par lui ou par la page : un `fetch` direct vers `ctx.url` échouerait en HTTPS, et c'est voulu |
+| `api` | client d'API du cockpit, déjà connecté (`get`, `post`, `put`, `brut`, `flux`), épinglé en HTTPS. `brut(methode, chemin, corps, { entetes })` rend `{ code, entetes, corps }` et accepte des en-têtes de plus, pour ceux que les raccourcis ne posent pas (`x-cockpit-confirm: 1`) ; `flux(chemin, { signal })` ouvre un flux d'événements lu au fil de l'eau. Un scénario ne parle au cockpit que par lui ou par la page : un `fetch` direct vers `ctx.url` échouerait en HTTPS, et c'est voulu |
 | `pile` | redémarrage réel d'un service de la pile jetable : `arreter(service)` (`docker compose stop -t 5`) et `demarrer(service)` (`start`), par les commandes Compose du banc (projet revérifié) ; seulement les services du mode courant, jamais `rm`, `kill` ni `down` |
 | `screenshot(nom)` | les six captures : 1440, 1024 et 400, en clair et en sombre |
 | `expectNoConsoleErrors()` | lève si la console a porté la moindre erreur depuis l'ouverture de l'onglet |
@@ -176,8 +176,122 @@ ni le faux.
 |---|---|
 | `E2E_NAVIGATEUR` | chemin du navigateur (sinon Edge puis Chromium, aux emplacements usuels) |
 | `E2E_MESURES_DIR` | dossier où lire `MX1.md` pour `--reel-hors-ligne` |
+| `E2E_ACCORD_FACTURE` | accord écrit pour une recette facturée : `it1-ui-m1-noreply.mjs` ne joue la mesure M1 qu'en `--reel` et si la valeur contient `M1` |
+| `E2E_M1_IA` | IA de la recette M1, séparées par des virgules (sinon la première IA Claude et la première IA GPT du catalogue) |
 
 Ces chemins sont lus par Node : sous Git Bash, écrivez-les à la mode Windows (`C:/…`) et non `/c/…`.
+
+## Scénarios de l'itération 1 (chantier 1.1)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it1-*' --project-prefix it11-e2e --image-tag it11
+scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it1-*' --project-prefix it11-e2e --image-tag it11
+```
+
+Un fichier `*-commun.mjs` porte les outils de sa famille et vérifie leurs préalables : le banc le joue comme un
+scénario. Chaque autre scénario qui agit sur opencode (conversation créée, message envoyé, plan créé) le fait sous le
+témoin P6 (aucun `PATCH /global/config`, `/global/dispose` ni `/instance/dispose`, flux d'opencode jamais coupé) et P4
+(seulement `once` et `reject` envoyés), par `avecTemoinP6` ; un test de `npm test` (`croisements-it1-v5`) le vérifie.
+En `--reel-hors-ligne`, le faux fournisseur ne répond que du texte : ce qui demande qu'une IA appelle un outil
+(délégation, lecture d'un fichier) y est annoncé « non joué ».
+
+**Écart D-05 levé.** Ces scénarios tournaient sur un cockpit servi en HTTP. Depuis R105b, ils passent par le transport
+du banc dans les deux modes : le flux d'événements du témoin P6 (`it1-api-commun.mjs`) est ouvert par `ctx.api.flux`,
+la CSP de la page (`it1-ui-commun.mjs`, `it1-ui-m25.mjs`) est lue par `ctx.api.brut`, et l'adresse comme le protocole
+de la page sont comparés au schéma du banc (`ctx.schema`), non plus à `http:`. Plus aucun `fetch` nu vers le cockpit :
+un banc en HTTPS épinglé le refuserait. Un test de `npm test` (`croisements-it1-v5`) le vérifie.
+
+Par l'API du cockpit :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it1-api-commun.mjs` | préalables : mode Simple par défaut, opencode joint, IA du banc au catalogue, agents internes installés, témoin P6, outils du faux conformes à la mesure M2 |
+| `it1-api-arret.mjs` | « Arrêter » : demande en attente refusée, racine arrêtée la première, plus aucune session de l'arbre occupée ; « Autoriser une fois » tardif refusé |
+| `it1-api-m16.mjs` | mesure M16 : le plancher posé à la création ne change ni le titre ni l'archive |
+| `it1-api-pfx-explore.mjs` | un enfant `explore` hérite du plancher : `cle.pfx` refusé sans demande, `notes.txt` lu |
+| `it1-api-plan.mjs` | Plan d'abord : plancher PLAN, outils retirés pour la racine et pour l'enfant (mesure M2) |
+| `it1-api-plancher.mjs` | plancher de conversation posé et relu, aucun outil retiré, fichier de clés refusé sans demande |
+
+Par la page, en agissant comme un utilisateur (clic, clavier), avec captures 1440, 1024 et 400 dans les deux thèmes et
+console muette :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it1-ui-commun.mjs` | préalables : mode Simple par défaut, page servie dans le schéma du banc sous la CSP réelle, règles acceptées au clic, flux d'événements ouvert ; relevés installés dans la page (faisceaux, animations, violations de CSP) |
+| `it1-ui-delegation.mjs` | mode Avancé, demande posée quelques millisecondes après la partie `task` comme sur opencode réel (`askAfterMs` du faux) : carte « Détails de la délégation » ; sans aucun clic pendant la demande, carte des agents et « Qui travaille ? » dépliés, attente de votre accord (hexagone hachuré, cadenas, ambre) et préparation (pointillé rose fixe) visibles dans la fenêtre, titre, lignes et [Répondre] de « Qui travaille ? » vus (elementFromPoint, pas seulement rendus) ; « Autoriser une fois » cliqué, faisceau rose (préparation, consigne) puis bleu (résultat), dans l'ordre des faits |
+| `it1-ui-arreter.mjs` | « Arrêter » visible pendant le travail délégué ; le clic arrête tout l'arbre et la consigne est figée en gris |
+| `it1-ui-mise-en-page.mjs` | mode Avancé, délégation en attente puis en cours, à 1440, 1280, 1024 et 400 px : fil et « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… » et « Arrêter » dans la fenêtre et non recouverts (elementFromPoint), [Répondre] atteignable (au besoin en faisant défiler la seule région d'activité), zone principale jamais défilée, « Contexte » fermé de lui-même sous 1280 px ; carte des agents dépliée pendant la demande ; tout relevé vu (elementFromPoint) : titre de « Qui travaille ? » vu sans défiler aux quatre tailles, ses lignes et [Répondre], l'attente de votre accord et la préparation vues sans défiler à 1440 et 1280, atteintes en faisant défiler la région et la bande à 1024 × 768 (la saisie y prend 428 px), bandeau d'une ligne et [Répondre] vus à 400 ; [Répondre] focalise « Autoriser une fois » ; modification en attente sur la racine, à 1440 : « Qui travaille ? » et l'attente de votre accord vus sans défiler |
+| `it1-ui-demonstration.mjs` | démonstration en Simple puis en Avancé : étiquette, avis du mode Simple, tous les moments parcourus, zéro requête de la page et d'opencode |
+| `it1-ui-p2-raccourci.mjs` | capture p2 : délégation d'un raccourci `subtask` lancée sans demande, enregistrée « sans confirmation », et « lancé sans confirmation » affiché |
+| `it1-ui-m25.mjs` | mesure M25 dans le schéma du banc (HTTPS épinglé par défaut) : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
+| `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
+| `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
+
+## Scénarios de l'itération 2 (chantier 1.1)
+
+L'itération 2 est « l'autonomie contrôlée ». Ses scénarios se lancent comme ceux de l'itération 1 :
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it2-*' --project-prefix i211-e2e --image-tag i211
+scripts/run-e2e.sh --reel-hors-ligne --scenarios 'it2-*' --project-prefix i211-e2e --image-tag i211
+```
+
+Mêmes règles que pour l'itération 1 : un fichier `*-commun.mjs` porte les outils de sa famille et vérifie ses
+préalables, et chaque autre scénario qui agit sur opencode le fait sous le témoin P6 et P4 (`avecTemoinP6` d'
+`it1-api-commun.mjs`) — **sauf trois** : `it2-api-interrupteur.mjs`, `it2-ui-onglet-ferme.mjs` et
+`it2-ui-selecteur-clavier.mjs`, qui n'ont que le journal des requêtes du faux opencode (`exigerP6SurRequetes` d'
+`it2-api-commun.mjs`). Ce journal n'existe qu'en `--faux` : **ces trois-là ne vérifient donc rien de P6 ni de P4 en
+`--reel-hors-ligne`**, là où le témoin complet contrôle en plus les libérations d'instance relayées et la coupure du
+flux d'opencode. La liste de ces trois exemptés est figée par un test de `npm test` (`croisements-it2-v4`) : un
+nouveau scénario `it2-*` qui agit sur opencode hors du témoin doit être ajouté ici et dans ce test.
+
+**Atelier.** L'autonomie décide sur des faits du disque : les règles de modification résolvent les chemins et la porte
+des commandes lit le sous-arbre et `.git/config`. `it2-api-commun.mjs` prépare donc, une seule fois, deux petits dépôts
+dans le dossier de travail monté par le banc : `it2-atelier` (dépôt propre) et `it2-piege` (dépôt dont le `.git/config`
+porte `core.pager`, ce qui fait attendre toute commande `git` — règle G04).
+
+**Corpus de la barrière des 60.** `e2e/corpus/controle-60.json` porte les soixante commandes de la recette M8 (trente
+inoffensives, trente nuisibles). Le banc en vérifie seulement la **forme** à chaque passage ; **aucune de ces commandes
+n'est soumise**, ici ni ailleurs : la barrière est une recette à jouer à la main avant publication.
+
+**Écart D-05 levé ici aussi.** `it2-api-commun.mjs` tournait lui aussi sur un cockpit servi en HTTP : la confirmation
+d'un choix automatique exige l'en-tête `x-cockpit-confirm: 1`, que les raccourcis `get`/`post`/`put` du client d'API ne
+posent pas, d'où deux `fetch` nus réunis dans une seule section. Depuis l'entrée de R105b dans le chantier, `ctx.api.brut`
+prend un quatrième paramètre `{ entetes }` : `putAutonomie` et `postExecutionDePlan` passent par le transport du banc,
+cookie de session, `origin` et `x-cockpit-csrf` compris. Plus un seul `fetch` nu dans les scénarios de l'itération 2.
+
+**Interrupteur.** `it2-api-interrupteur.mjs` est le seul scénario à deux côtés. Le passage ordinaire du banc le joue
+allumé. Pour le côté coupé, la variable se pose dans l'environnement du shell — Compose l'interpole avant le fichier
+d'environnement du banc, donc aucun fichier n'est à modifier :
+
+```sh
+COCKPIT_AUTONOMY=off scripts/run-e2e.sh --faux --project-prefix i211-e2e --image-tag i211 \
+  --scenarios it2-api-interrupteur
+```
+
+Par l'API du cockpit :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it2-api-commun.mjs` | préalables : activation ouverte, interrupteur `COCKPIT_AUTONOMY` allumé, mode Simple par défaut, atelier en place, corpus des 60 bien formé (jamais joué), agents internes installés ; outils communs de la famille |
+| `it2-api-modifications.mjs` | la confirmation vient du serveur (428 `confirmation-requise`) ; une écriture dans le dossier part sans demander (règle A-edit, « once » relayé, ligne « Autorisé automatiquement ») ; une écriture dans un fichier protégé attend (règle E2) ; compteurs de la demande ; P4 |
+| `it2-api-commandes.mjs` | `grep` et `git status` automatiques dans le dépôt propre (règles A-grep et A-git-status) ; `git status` en attente dans le dépôt piégé (règle G04), sans qu'aucune session de contrôle soit créée ; mesure M4 relevée sur le faux (borne basse) |
+| `it2-api-delegation.mjs` | en mode Simple, une délégation conforme sous les plafonds part sans demander (règle A-task) et l'enfant travaille ; seul « once » est relayé |
+| `it2-api-plafond.mjs` | plafonds envoyés par la confirmation ; un tour au-dessus du plafond de coût arrête l'arbre, la demande est close « plafond-cout », la conversation revient à « Demander à chaque fois » et plus aucune session n'est occupée |
+| `it2-api-lecture-seule.mjs` | assistant « Lecture seule » en Autonome : aucun outil de modification proposé à l'IA, aucune demande `edit` levée, aucun refus d'assistant contourné |
+| `it2-api-m14.mjs` | mesure M14 : au signal d'un redémarrage d'opencode (`session.error` sur la session racine), la demande autonome est close « interrompue » et la conversation revient à « Demander à chaque fois » |
+| `it2-api-interrupteur.mjs` | `COCKPIT_AUTONOMY` : allumé, les quatre choix sont servis et un `PUT` confirmé passe ; coupé, seuls « Demander » et « Plan d'abord » restent possibles, les deux autres portant la raison `autonomie-coupee` |
+
+Par la page, en agissant comme un utilisateur (clic, clavier), avec captures 1440, 1024 et 400 dans les deux thèmes et
+console muette :
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it2-ui-commun.mjs` | préalables et outils de page de l'itération 2 ; une seule entrée de console tolérée, bornée à la route d'autonomie et au code 428, qui est la preuve que la porte du serveur a répondu |
+| `it2-ui-selecteur-clavier.mjs` | les quatre choix **et** la confirmation au clavier seul : Entrée n'applique rien toute seule (428), la confirmation porte ses cinq lignes et ses plafonds modifiables, Échap ferme sans rien appliquer, [Lancer en autonome] change le choix côté serveur |
+| `it2-ui-plan-autonome.mjs` | plan exécuté en autonome : carte à quatre boutons, 428 puis confirmation, nouvelle conversation créée en « Autonome avec contrôle » avec un brouillon prérempli et rien d'envoyé |
+| `it2-ui-bandeau-journal.mjs` | bandeau d'autonomie (compteurs, dépense, plafond, [Arrêter], [Journal]), Journal du contrôle ligne à ligne, puis fin de demande avec [Voir les modifications de cette demande] ; les douze captures des vues de L12 |
+| `it2-ui-onglet-ferme.mjs` | onglet fermé pendant une demande autonome : les décisions automatiques continuent et l'attente est retrouvée à la réouverture, bandeau et carte compris |
 
 ## Contrôle des types
 

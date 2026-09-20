@@ -1,6 +1,6 @@
 // Textes de la carte des agents en direct (spécification §2.1, §2.3, §5.4, §5.7.1 à §5.7.4, §5.9 ; plan d'exécution, fiche L5a) :
-// libellés des signes, des états, des secteurs, des outils et des stations de la scène (neon-scene.ts), commandes et états vides de
-// la bande 2D (L5c), étiquette de la démonstration enregistrée (L5d). Convention TEXTES de T0, contrôlée par textes.test.ts, avec
+// libellés des signes, des états, des secteurs, des outils et des stations de la scène (neon-scene.ts), commandes, états vides,
+// tableau et panneau du zoom 3 de la bande 2D (L5c), étiquette et lecteur de la démonstration enregistrée (L5d). Convention TEXTES de T0, contrôlée par textes.test.ts, avec
 // « un sens par mot » : ni « pause », ni « relecture », « mode » seulement dans « mode Simple » ou « mode Avancé ».
 // Honnêteté (P3, P12) : chaque libellé de signe nomme un signe que la scène ne dessine que sur un fait (neon-scene.test.ts) ;
 // « terminé », jamais « réussi » ; la Salle OMO et l'extension ne sont nommées qu'en mode Avancé (salle réservée à ce mode).
@@ -17,6 +17,11 @@ export const TEXTES = {
     resume: "Une seule IA travaille sur cette demande.",
     /** §5.7.4 : démonstration proposée en mode Simple. */
     demonstration: "Voir une démonstration : deux assistants en même temps",
+    /**
+     * §5.9, décision n° 4 et P3 : la démonstration dessine une délégation, refusée en mode Simple ; suivie dans le lecteur (L5d) de
+     * l'avis Simple de delegation-texts.ts, « En mode Simple, l'IA ne délègue pas : elle continue seule. ».
+     */
+    demonstrationAvancee: "Enregistrée en mode Avancé.",
     /** Délégations enregistrées avant le passage en mode Simple : comptées, non dessinées ; la liste des acteurs les montre. */
     travailConfieHorsCarte: "Du travail a été confié à d'autres assistants : la liste ci-dessous le montre.",
     /** Station « Carnet partagé et plan », toujours vide hors de la Salle OMO. */
@@ -52,6 +57,18 @@ export const TEXTES = {
     rattrape: "Affichage rattrapé",
     /** §5.9 : étiquette de la démonstration (L5d). */
     demonstrationEnregistree: "Démonstration enregistrée : aucune IA n'est appelée",
+    /** Lecteur pas à pas de la démonstration (L5d) : un moment = une coupure nette de la scène (moments() de neon-scene.ts). */
+    lecteur: {
+      /** Démonstration p1 : deux délégations lancées par une même réponse, capture réelle. */
+      titre: "Deux assistants en même temps",
+      moment: "Moment {n} / {total}",
+      /** Valeur dite du curseur des moments. */
+      momentAccessible: "Moment {n} sur {total}, {duree} depuis le début",
+      depuisDebut: "{duree} depuis le début",
+      precedent: "Moment précédent",
+      suivant: "Moment suivant",
+      recommencer: "Recommencer",
+    },
     stations: {
       vous: "Vous",
       copilot: "GitHub Copilot",
@@ -129,6 +146,18 @@ export const TEXTES = {
     nonEnregistre: "non enregistré",
     /** Nom accessible du bouton d'un assistant sur la carte (§5.7.4 : un vrai bouton par assistant). */
     bouton: "{nom}, {etat}",
+    /** Assistant délégué dont le nom n'est pas enregistré (P12 : un inconnu est dit inconnu). */
+    assistantInconnu: "Assistant non identifié",
+    /** [Tableau] de la bande 2D (L5c) : une ligne par assistant dessiné ; la légende du tableau est le titre de la bande. */
+    tableau: {
+      assistant: "Assistant",
+      secteur: "Secteur",
+      etat: "État",
+      depuis: "Depuis",
+      carte: "Sur la carte",
+    },
+    /** Panneau du zoom 3 (L5c) : texte relu dans la conversation mais illisible (message absent, proxy injoignable). */
+    texteIndisponible: "Texte indisponible.",
   },
 };
 

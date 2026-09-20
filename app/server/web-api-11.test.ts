@@ -97,6 +97,8 @@ describe("clients 1.1 : activité, autonomie, plans, Diagnostic", () => {
     await autonomyApi.put("ses_A1", { choix: "demander" });
     await autonomyApi.put("ses_A1", { choix: "autonome", plafonds: { plafondUsd: 1 } }, { confirm: true });
     await planApi.create("/w/projet");
+    await planApi.create("/w/projet", { source: "ses_O1" });
+    await planApi.create("/w/projet", { confirm: true, source: undefined });
     await planApi.execute("ses_P1", { choix: "modifications" });
     await planApi.execute("ses_P1", { choix: "autonome" }, { confirm: true });
     assert.deepEqual(
@@ -105,6 +107,9 @@ describe("clients 1.1 : activité, autonomie, plans, Diagnostic", () => {
         ["PUT", "/api/conversations/ses_A1/autonomie", null, { choix: "demander" }],
         ["PUT", "/api/conversations/ses_A1/autonomie", "1", { choix: "autonome", plafonds: { plafondUsd: 1 } }],
         ["POST", "/api/plans", null, { directory: "/w/projet" }],
+        // Conversation d'origine (train it1 V3) : dans le corps seulement quand elle existe.
+        ["POST", "/api/plans", null, { directory: "/w/projet", source: "ses_O1" }],
+        ["POST", "/api/plans", "1", { directory: "/w/projet" }],
         ["POST", "/api/plans/ses_P1/execution", null, { choix: "modifications" }],
         ["POST", "/api/plans/ses_P1/execution", "1", { choix: "autonome" }],
       ],

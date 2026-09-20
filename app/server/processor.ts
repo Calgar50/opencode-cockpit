@@ -15,6 +15,7 @@ import type {
   OpencodeClient,
 } from "./opencode.ts";
 import type { SessionTracker } from "./sessions.ts";
+import { isClassifierRoot } from "./shared/session-purpose.ts";
 
 const PROCESSED = new Set(["session.created", "session.updated", "session.deleted", "session.idle", "session.status", "message.updated", "message.part.updated"]);
 const DAY_MS = 86_400_000;
@@ -192,8 +193,10 @@ export class EventProcessor {
       log.warn("rattrapage : liste des sessions indisponible", { error: errorMessage(err) });
       return;
     }
+    // Racines de classement écartées (métadonnée ou titre exact) ; toute autre session titrée « [cockpit] … » est relue : le titre
+    // d'une conversation ou d'un enfant est écrit par l'IA (shared/session-purpose.ts).
     const recent = list
-      .filter((s) => (s.time?.updated ?? 0) >= since && !(s.title ?? "").startsWith("[cockpit]"))
+      .filter((s) => (s.time?.updated ?? 0) >= since && !isClassifierRoot(s))
       .sort((a, b) => (a.parentID ? 1 : 0) - (b.parentID ? 1 : 0) || a.time.created - b.time.created);
     for (const info of recent) sessions.upsert(info);
     const roots = new Set<string>();

@@ -22,6 +22,7 @@ import { assertFact, factProblem } from "./shared/activity-facts.ts";
 import type {
   ActivityFact,
   ActivityFactKind,
+  AffichageEtat,
   DelegationSource,
   DelegationState,
   DelegationTransitions,
@@ -58,7 +59,7 @@ export const factsModule: Cockpit11Module = {
 /** Au plus 20 000 faits par racine (§3.5), le fait « Déroulé partiel » compris. */
 export const FACTS_PER_ROOT_MAX = 20_000;
 /** `data.etat` du fait « affichage » écrit à la place du 20 000e : la suite de la conversation n'est plus enregistrée. */
-export const PARTIAL_FACT_ETAT = "deroule-partiel";
+export const PARTIAL_FACT_ETAT: AffichageEtat = "deroule-partiel";
 /** Racines dont le nombre de faits est gardé en mémoire ; les autres sont recomptées à leur prochaine écriture. */
 const COUNT_CACHE_MAX = 1_000;
 /**

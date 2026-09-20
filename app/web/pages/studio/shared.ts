@@ -153,7 +153,8 @@ export function validateDraft(kind: StudioKind, draft: Draft): ValidationIssue[]
       issues.push({ path: "température", message: "Nombre entre 0 et 2." });
     }
     if (fm.steps !== undefined && (typeof fm.steps !== "number" || !Number.isInteger(fm.steps) || fm.steps < 1 || fm.steps > 10_000)) {
-      issues.push({ path: "étapes", message: "Nombre entier entre 1 et 10 000." });
+      // 1.1 (§2.2, D1) : champ affiché « Actions maximum » ; « étape » est réservé aux équipes.
+      issues.push({ path: "actions maximum", message: "Nombre entier entre 1 et 10 000." });
     }
     if (fm.color !== undefined) {
       const ok = typeof fm.color === "string" && (HEX_RE.test(fm.color) || (THEME_COLORS as readonly string[]).includes(fm.color));

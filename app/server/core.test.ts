@@ -253,6 +253,29 @@ describe("masquage des secrets", () => {
     assert.equal(redactSecrets("http://jdoe:p@ssw0rd!2026@proxy.corp:8080"), "http://jdoe:****@proxy.corp:8080");
     assert.equal(redactSecrets(redactSecrets("password = hunter22")), redactSecrets("password = hunter22"));
   });
+
+  it("en-tête Authorization écrit en JSON (clé et valeur entre guillemets) : masqué", () => {
+    for (const text of ['"Authorization": "Bearer FAUXjetonMCP0123456789"', "{'authorization':'Basic FAUXjetonMCP0123456789'}"]) {
+      assert.equal(redactSecrets(text).includes("FAUXjetonMCP0123456789"), false, `${text} -> ${redactSecrets(text)}`);
+    }
+    assert.equal(redactSecrets('"Authorization": "Bearer FAUXjetonMCP0123456789"'), '"Authorization": "Bearer ****"');
+  });
+
+  it("journal : un secret dans un texte JSON journalisé (configuration recopiée dans un message d'erreur) est masqué", () => {
+    const lines: string[] = [];
+    const log = createLogger("info", (line) => void lines.push(line));
+    const jsonc =
+      '{ "mcp": { "outil": { "headers": { "Authorization": "Bearer FAUXjetonMCP0123456789" } } }, "provider": { "p": { "options": { "apiKey": "FAUXcleAPI0123456789abcdef" } } } }';
+    log.warn("configuration illisible", { error: `opencode 400 ConfigJsonError : --- JSONC Input ---\n${jsonc}`, detail: { texte: jsonc, liste: [jsonc] } });
+    log.debug("ignoré sous le niveau", { error: jsonc });
+    assert.equal(lines.length, 1);
+    for (const secret of ["FAUXjetonMCP0123456789", "FAUXcleAPI0123456789abcdef"]) assert.equal(lines[0]?.includes(secret), false, lines[0]);
+    const entry = JSON.parse(lines[0] ?? "") as { level: string; msg: string; error: string; detail: { texte: string; liste: string[] } };
+    assert.deepEqual([entry.level, entry.msg], ["warn", "configuration illisible"]);
+    assert.match(entry.error, /^opencode 400 ConfigJsonError : --- JSONC Input ---\n\{ "mcp"/);
+    assert.ok(entry.detail.texte.includes('"Authorization": "Bearer ****"') && entry.detail.liste[0]?.includes('"apiKey": "****"'), lines[0]);
+    assert.ok(lines[0]?.endsWith("\n"));
+  });
 });
 
 const signals = (prompts: string[], tools: Record<string, number> = {}, files: string[] = [], commands: string[] = []) => ({
@@ -1109,7 +1132,7 @@ describe("droits effectifs", () => {
     assert.equal(readOnlyWith({ "*": "allow" }), "Conseiller");
     const locked = plan("autonome", { edit: "deny", bash: "deny", task: "deny" });
     assert.deepEqual(lines(locked), ["modification:non", "commande:non"]);
-    assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Réfléchit et propose un plan, sans rien modifier." });
+    assert.deepEqual(builtinAssistantInfo("plan", locked), { title: "Conseiller (lecture seule)", help: "Prépare un plan, sans rien modifier." });
     // Sans configuration globale : refus propre du Conseiller, dossier des plans modifiable, aucune règle de commande.
     const bare = effectiveBuiltinRules("plan", {});
     assert.equal(evaluate(bare, "edit", "scripts/x.ps1"), "deny");
