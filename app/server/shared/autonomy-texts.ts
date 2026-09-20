@@ -185,7 +185,9 @@ export const TEXTES = {
         cout: "Coût du contrôle",
       },
       quiDelegue: "{nom} (travail délégué)",
-      vide: "Aucune décision du cockpit pour cette demande.",
+      // Train de la vague 3 (it2) : phrase alignée sur le §5.4, signalée par L12b (bandeau) et L12c (Journal), qui l'écrivaient
+      // chacun à sa façon. Le Déroulé garde son gabarit, qui sait dire « cette conversation » ; les deux disent le même mot.
+      vide: "Aucune décision automatique pour cette demande.",
     },
     /** Plafonds d'« Autonome avec contrôle » (§4.8.1, décision n° 9). */
     plafonds: {
