@@ -32,3 +32,37 @@ export const TEAM_CONVERSATIONS_MAX = 2000;
 
 /** Caractères gardés au plus d'un extrait de résultat d'étape, après `redactSecrets`. */
 export const ARCHIVE_EXCERPT_MAX = 2000;
+
+/**
+ * Adresses des routes de la construction, **seule source** : le client d'API (`web/lib/api-construction.ts`) les lit ici, et
+ * chaque module qui monte sa route les lit ici aussi (L44b, L44c, L46a, L47b). Tant qu'une adresse était recopiée des deux côtés,
+ * le client et le serveur pouvaient s'écarter sans qu'aucun test ne tombe. Valeurs des fiches du plan it5 (§6) ; `:rootId` est
+ * rempli par `constructionPath`. Le pluriel d'`/api/archives/:rootId/equipes` est voulu : le préfixe existant `/api/archive`
+ * (singulier) est déjà capté par `app.get("/api/archive/:id")` de http.ts.
+ */
+export const CONSTRUCTION_ROUTE_PATHS = {
+  /** L44b : catalogue des méthodes et limites. */
+  methodes: "/api/methods",
+  /** L44c : coût estimé d'une seconde lecture (le seul POST du client). */
+  secondeLectureEstimation: "/api/chat/second-reading/estimate",
+  /** L47b : lignes `usage` d'une conversation, mode Avancé seulement. */
+  chronologie: "/api/conversations/:rootId/chronologie",
+  /** L46a : coûts par équipe du mois, paramètre `month` (AAAA-MM), comme `/api/usage/summary`. */
+  coutsEquipes: "/api/usage/equipes",
+  /** L46a : lancements d'équipe archivés d'une conversation. */
+  archivesEquipes: "/api/archives/:rootId/equipes",
+  /** L46a : racines qui ont lancé une équipe (filtre « Avec une équipe » des Archives, D-5-11). */
+  equipesConversations: "/api/equipes/conversations",
+} as const;
+
+/** Nom du paramètre de mois de `coutsEquipes` (validé par `MONTH_RE` côté serveur, comme `/api/usage/summary`). */
+export const TEAM_COSTS_MONTH_PARAM = "month";
+
+/**
+ * Remplit le paramètre `:rootId` d'un chemin de `CONSTRUCTION_ROUTE_PATHS`, l'identifiant étant encodé pour l'URL.
+ * Un chemin sans `:rootId` est une erreur de programmation, jamais un chemin rendu tel quel : la faute se voit tout de suite.
+ */
+export function constructionPath(chemin: string, rootId: string): string {
+  if (!chemin.includes(":rootId")) throw new RangeError(`Chemin sans :rootId : ${chemin}`);
+  return chemin.replace(":rootId", encodeURIComponent(rootId));
+}

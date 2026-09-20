@@ -187,7 +187,7 @@ export interface TeamRunCostRow {
   debut: number;
 }
 
-/** Réponse de GET /api/team-costs?mois= (L46a). */
+/** Réponse de GET /api/usage/equipes?month= (L46a) ; le paramètre d'URL est `month`, le champ `mois` est celui du corps rendu. */
 export interface TeamCostsResponse {
   mois: string;
   parEquipe: TeamCostRow[];
@@ -224,13 +224,13 @@ export interface ArchiveTeamRun {
   etapes: ArchiveTeamStep[];
 }
 
-/** Réponse de GET /api/archive/:rootId/equipes (L46a). */
+/** Réponse de GET /api/archives/:rootId/equipes (L46a) ; pluriel voulu : `/api/archive/:id` de http.ts capterait le singulier. */
 export interface ArchiveTeamsResponse {
   rootId: string;
   lancements: ArchiveTeamRun[];
 }
 
-/** Réponse de GET /api/archive/equipes : racines qui ont lancé une équipe (filtre « Avec une équipe », D-5-11). */
+/** Réponse de GET /api/equipes/conversations : racines qui ont lancé une équipe (filtre « Avec une équipe », D-5-11). */
 export interface TeamConversationsResponse {
   rootIds: string[];
   tronque: boolean;

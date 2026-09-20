@@ -22,6 +22,8 @@ import type { ConstructionModuleName } from "./construction-contracts.ts";
 import {
   ARCHIVE_EXCERPT_MAX,
   CHRONO_MAX_ROWS,
+  CONSTRUCTION_ROUTE_PATHS,
+  constructionPath,
   EQUIPIER_ROLE,
   METHOD_BLOCK_MAX_CHARS,
   METHOD_BLOCK_MAX_WORDS,
@@ -31,6 +33,7 @@ import {
   SECOND_READING_CATALOG_ID,
   SECOND_READING_TURN_KIND,
   TEAM_CONVERSATIONS_MAX,
+  TEAM_COSTS_MONTH_PARAM,
   TEAM_COSTS_TOP,
 } from "./shared/construction-constants.ts";
 import { annonceMiseAJour, secondReadingPrefix, TEXTES } from "./shared/construction-texts.ts";
@@ -240,17 +243,38 @@ describe("construction : client d'API", () => {
       appels.map((a) => [a.method, a.url]),
       [
         ["GET", "/api/methods"],
-        ["POST", "/api/seconde-lecture/estimation"],
+        ["POST", "/api/chat/second-reading/estimate"],
         ["GET", "/api/conversations/ses_A1%2Fb/chronologie"],
-        ["GET", "/api/team-costs?mois=2026-09"],
-        ["GET", "/api/team-costs"],
-        ["GET", "/api/conversations/ses_A1/equipes"],
-        ["GET", "/api/conversations/equipes"],
+        ["GET", "/api/usage/equipes?month=2026-09"],
+        ["GET", "/api/usage/equipes"],
+        ["GET", "/api/archives/ses_A1/equipes"],
+        ["GET", "/api/equipes/conversations"],
       ],
     );
     assert.deepEqual(
       appels.map((a) => a.csrf),
       [undefined, "1", undefined, undefined, undefined, undefined, undefined],
     );
+  });
+
+  it("les six adresses sont celles des fiches du plan, et le client n'en écrit aucune lui-même", () => {
+    // Valeurs des fiches : L44b (§6), L44c (l.752), L47b, L46a (l.785, l.791, l.794). Le paramètre de mois est `month`,
+    // comme /api/usage/summary, parce que L46a le valide par MONTH_RE. Écrire ces adresses ici ET dans le client laissait les
+    // deux s'écarter en silence ; elles ne vivent plus que dans construction-constants.ts, que les modules serveur liront aussi.
+    assert.deepEqual({ ...CONSTRUCTION_ROUTE_PATHS }, {
+      methodes: "/api/methods",
+      secondeLectureEstimation: "/api/chat/second-reading/estimate",
+      chronologie: "/api/conversations/:rootId/chronologie",
+      coutsEquipes: "/api/usage/equipes",
+      archivesEquipes: "/api/archives/:rootId/equipes",
+      equipesConversations: "/api/equipes/conversations",
+    });
+    assert.equal(TEAM_COSTS_MONTH_PARAM, "month");
+    // Aucune adresse en clair dans le client : une chaîne « /api/… » y serait une seconde source.
+    const source = fs.readFileSync(path.join(import.meta.dirname, "..", "web", "lib", "api-construction.ts"), "utf8");
+    assert.equal(/["'`]\/api\//.test(source), false, "api-construction.ts écrit une adresse au lieu de la lire dans les constantes");
+    // `constructionPath` refuse un chemin sans paramètre : une erreur de branchement se voit, au lieu de partir vers /api/….
+    assert.equal(constructionPath(CONSTRUCTION_ROUTE_PATHS.archivesEquipes, "a/b"), "/api/archives/a%2Fb/equipes");
+    assert.throws(() => constructionPath(CONSTRUCTION_ROUTE_PATHS.methodes, "ses_A1"), /Chemin sans :rootId/);
   });
 });

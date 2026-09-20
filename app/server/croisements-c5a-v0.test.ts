@@ -25,6 +25,8 @@ import { applyEvent, emptyActivity } from "./shared/activity.ts";
 import { EventMemory, type FactContext, FactDeduper, type FactEvent, type FactSession, factsFromEvent } from "./shared/activity-facts.ts";
 import {
   CHRONO_MAX_ROWS,
+  CONSTRUCTION_ROUTE_PATHS as CHEMINS,
+  constructionPath,
   EQUIPIER_ROLE,
   METHOD_BLOCK_MAX_CHARS,
   METHOD_BLOCK_MAX_WORDS,
@@ -32,6 +34,7 @@ import {
   METHODS_PER_MESSAGE,
   METHODS_PER_STEP,
   SECOND_READING_CATALOG_ID,
+  TEAM_COSTS_MONTH_PARAM,
 } from "./shared/construction-constants.ts";
 import { TEXTES } from "./shared/construction-texts.ts";
 import type { ChronologieUsageRow, ChronologieView, MethodsResponse, MethodView, SecondReadingEstimate } from "./shared/construction-types.ts";
@@ -140,16 +143,24 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
       [],
       "un squelette de T5a inscrit quelque chose : L44b, L44c, L46a et L47b ne sont pas encore livrés",
     );
-    // Les six adresses du client d'API de T5a n'existent pas encore : la V0 ne livre aucun comportement.
-    for (const adresse of [
-      "/api/methods",
-      `/api/conversations/${ROOT}/chronologie`,
-      "/api/team-costs?mois=2026-09",
-      `/api/conversations/${ROOT}/equipes`,
-      "/api/conversations/equipes",
-    ]) {
-      const res = await h.call("GET", adresse, { headers: h.headers.authed });
-      assert.equal(res.status, 404, `${adresse} → ${res.status}`);
+    // Les six adresses du client d'API de T5a n'existent pas encore : la V0 ne livre aucun comportement. Elles sont lues dans
+    // CONSTRUCTION_ROUTE_PATHS, jamais recopiées ici : une adresse du client qui s'écarterait des fiches ferait tomber ce test
+    // en même temps que celui du client, au lieu de traverser le train avec tout au vert.
+    // Le corps attendu est le 404 GÉNÉRIQUE de `/api/*` (« Route inconnue. ») : il prouve qu'aucune route déjà montée par
+    // http.ts ne capte l'adresse. C'est ce qui serait arrivé à `/api/archive/equipes`, avalé par `app.get("/api/archive/:id")`.
+    const adresses: readonly [string, string][] = [
+      ["GET", CHEMINS.methodes],
+      ["POST", CHEMINS.secondeLectureEstimation],
+      ["GET", constructionPath(CHEMINS.chronologie, ROOT)],
+      ["GET", `${CHEMINS.coutsEquipes}?${TEAM_COSTS_MONTH_PARAM}=2026-09`],
+      ["GET", constructionPath(CHEMINS.archivesEquipes, ROOT)],
+      ["GET", CHEMINS.equipesConversations],
+    ];
+    for (const [methode, adresse] of adresses) {
+      const entetes = methode === "GET" ? h.headers.authed : h.headers.mutating;
+      const res = await h.call(methode, adresse, { headers: entetes });
+      assert.equal(res.status, 404, `${methode} ${adresse} → ${res.status}`);
+      assert.deepEqual(res.json(), { error: "not-found", message: "Route inconnue." }, `${methode} ${adresse} : capté par une route existante`);
     }
     h.assertNoGlobalRestart();
   });
