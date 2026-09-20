@@ -240,7 +240,11 @@ export function Composer({
     const trimmed = text.trim();
     const kept = attachments.filter((a) => a.kind === "image" || trimmed.includes(`@${a.filename}`));
     if (!trimmed && kept.length === 0) return;
+    // <c5:methodes-instantane>
+    // La ligne d'origine (`const snapshot = { text, attachments };`) garde aussi les méthodes retenues : elles reviennent avec
+    // le texte quand rien n'est parti.
     const snapshot = { text, attachments, methodes };
+    // </c5:methodes-instantane>
     // Rien n'a été envoyé : on remet le message, sauf si l'utilisateur a déjà recommencé à écrire.
     const restore = () => {
       setText((current) => (current ? current : snapshot.text));
@@ -263,7 +267,10 @@ export function Composer({
     // <c5:methodes-vide>
     setMethodes([]);
     // </c5:methodes-vide>
+    // <c5:methodes-envoi-appel>
+    // La ligne d'origine envoyait `text: trimmed` : c'est le même texte, avec les blocs de méthode ajoutés à la fin (D-5-08).
     const result = onSubmit({ text: envoye, attachments: kept });
+    // </c5:methodes-envoi-appel>
     if (result instanceof Promise) {
       setSending(true);
       result

@@ -56,20 +56,6 @@ export function describeError(error: OcError): { tone: "muted" | "critical"; tex
   }
 }
 
-// <c5:methodes-texte>
-/**
- * Texte écrit par la personne (ou rendu par l'assistant) : parties texte non ajoutées par opencode, dans l'ordre. Même lecture
- * pour la bulle, pour la méthode demandée et pour la présence de sa section dans la réponse.
- */
-function texteDuMessage(entry: MessageEntry): string {
-  return entry.parts
-    .filter((p): p is OcTextPart => p.type === "text" && !p.synthetic)
-    .map((p) => p.text)
-    .join("\n")
-    .trim();
-}
-// </c5:methodes-texte>
-
 function UserBubble({ entry }: { entry: MessageEntry }) {
   // <c5:methodes-bulle-texte>
   // Le bloc de méthode est VISIBLE dans le message envoyé (D-5-08) : la bulle montre le texte SANS lui, et le replie dessous.
@@ -107,6 +93,21 @@ function UserBubble({ entry }: { entry: MessageEntry }) {
     </div>
   );
 }
+
+// <c5:methodes-texte>
+/**
+ * Texte écrit par la personne (ou rendu par l'assistant) : parties texte non ajoutées par opencode, dans l'ordre. Même lecture
+ * pour la bulle, pour la méthode demandée et pour la présence de sa section dans la réponse. Déclarée APRÈS `UserBubble`
+ * (les fonctions sont remontées) pour que la ligne d'en-tête de `UserBubble` reste celle de l'itération 1, hors balise.
+ */
+function texteDuMessage(entry: MessageEntry): string {
+  return entry.parts
+    .filter((p): p is OcTextPart => p.type === "text" && !p.synthetic)
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+}
+// </c5:methodes-texte>
 
 /** « Reprise dans la conversation » (§5.1) : la conversation reprend après un travail délégué, ou d'elle-même. */
 function ResumeSeparator() {

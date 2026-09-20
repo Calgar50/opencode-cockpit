@@ -54,10 +54,13 @@ export type WizardMode = "nouveau" | "modifier" | "completer";
 const STEPS = ["Le besoin", "Les droits", "L'IA", "Consignes et fiches", "Vérifier"] as const;
 const LAST_STEP = STEPS.length - 1;
 
+// <c5:methodes-champ>
 // « methods » est ajouté par la construction (L44d) : les méthodes se choisissent dans l'écran « Consignes et fiches ».
+// Les deux formes d'origine tiennent chacune sur une ligne : la section les reprend en entier, avec cette seule clé en plus.
 type FieldKey = "title" | "description" | "tier" | "model" | "instructions" | "examples" | "confirm" | "methods";
 
 const FIELD_STEP: Readonly<Record<FieldKey, number>> = { title: 0, description: 0, tier: 2, model: 2, instructions: 3, examples: 3, confirm: 4, methods: 3 };
+// </c5:methodes-champ>
 
 /** Écran où corriger une erreur du serveur (chemin zod « title », « tier », « fiches.0 »…). */
 function issueStep(path: string): number {
@@ -532,14 +535,16 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
               <span>« {saved.title} » est prêt.</span>
             </div>
           )}
+          {/* <c5:methodes-enregistre> */}
+          {/* Itération 5 (L44d) : la carte de l'assistant enregistré montre aussi ses méthodes. L'appel d'origine
+              (<IdentityCard data={identityOfView(saved)} />) est repris ici avec ce seul champ en plus. */}
           <IdentityCard
             data={{
               ...identityOfView(saved),
-              // <c5:methodes-enregistre>
               methods: methodLabels(saved.methods, methodes.data?.methods ?? null),
-              // </c5:methodes-enregistre>
             }}
           />
+          {/* </c5:methodes-enregistre> */}
           <div className="row wrap">
             <Button variant="primary" icon="chat" onClick={() => openChatWithAssistant(saved.name)}>
               Essayer dans le chat
