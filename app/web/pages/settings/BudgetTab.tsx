@@ -1,5 +1,9 @@
-// Budget mensuel, alertes, garde-fou et synchronisation optionnelle du solde réel GitHub.
+// Budget mensuel, alertes, garde-fou, plafonds du travail automatique (1.1, L12c) et synchronisation optionnelle du solde réel
+// GitHub. Les plafonds d'autonomie (budget.autonomie.*) et de travail délégué (budget.delegation.*) se règlent dans LES DEUX
+// modes (SIMPLE_SETTINGS_PATHS, spécification §3.6) : leurs bornes sont celles du serveur (settings.ts), qui refuse le reste.
 import { useEffect, useId, useState } from "react";
+import { libelleChoix } from "../../../server/shared/autonomy-choice-texts.ts";
+import { TEXTES as TEXTES_AUTONOMIE } from "../../../server/shared/autonomy-texts.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
@@ -7,6 +11,7 @@ import { Badge, Button, Card, Field, Meter, Spinner, ToggleRow, useAsync } from 
 import { api, errorText } from "../../lib/api.ts";
 import { cockpitEvent, useEvents } from "../../lib/events.ts";
 import { formatCredits, formatDateTime, formatPercent, formatUsd, relativeTime } from "../../lib/format.ts";
+import type { AutonomieSettings, DelegationSettings } from "../../../server/shared/api-types.ts";
 import type { QuotaSnapshot } from "../../lib/types.ts";
 import { NumberInput, TokenListEditor } from "../studio/widgets.tsx";
 import { fmtNumber, SectionFooter, useDraft, useSettingsSave } from "./common.tsx";
@@ -163,6 +168,164 @@ function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   );
 }
 
+/** Bornes du serveur (settings.ts) : l'interface ne propose jamais une valeur que le schéma refuserait. */
+const BORNES = {
+  delegationUsd: { min: 0, max: 100, step: 0.5 },
+  delegationNombre: { min: 0, max: 50 },
+  plafondUsd: { min: 0.01, max: 50, step: 0.5 },
+  actionsMax: { min: 1, max: 500 },
+  delegationsMax: { min: 0, max: 50 },
+  dureeMinutes: { min: 1, max: 240 },
+  fichiersMax: { min: 1, max: 500 },
+  controlesIaMax: { min: 0, max: 200 },
+};
+
+const LIBELLES = TEXTES_AUTONOMIE.partout.plafonds.libelles;
+
+/**
+ * Plafonds du travail automatique (spécification §3.6, §4.8, décision n° 9), réglables dans les deux modes : travail délégué
+ * (budget.delegation) et « Autonome avec contrôle » (budget.autonomie). Chaque plafond est borné comme le serveur le borne ;
+ * le plafond d'arrêt par défaut ne peut pas dépasser le plafond maximal, que le serveur refuse aussi.
+ */
+function AutomaticCaps({
+  delegation,
+  autonomie,
+  onDelegation,
+  onAutonomie,
+}: {
+  delegation: DelegationSettings;
+  autonomie: AutonomieSettings;
+  onDelegation: (patch: Partial<DelegationSettings>) => void;
+  onAutonomie: (patch: Partial<AutonomieSettings>) => void;
+}) {
+  const ids = {
+    delegationUsd: useId(),
+    delegationNombre: useId(),
+    plafondUsd: useId(),
+    plafondMaxUsd: useId(),
+    actionsMax: useId(),
+    delegationsMax: useId(),
+    dureeMinutes: useId(),
+    fichiersMax: useId(),
+    controlesIaMax: useId(),
+  };
+  const entier = (patch: (n: number) => void) => (n: number | undefined) => n !== undefined && patch(Math.round(n));
+  const plafondTropHaut = autonomie.plafondUsd > autonomie.plafondMaxUsd;
+
+  return (
+    <>
+      <h3 className="settings-subtitle">Travail délégué par l'IA</h3>
+      <div className="grid-2">
+        <Field label="Coût par demande" htmlFor={ids.delegationUsd} hint={`Soit ${formatCredits(delegation.maxUsdPerRequest)}.`}>
+          <div className="input-suffix">
+            <NumberInput
+              id={ids.delegationUsd}
+              value={delegation.maxUsdPerRequest}
+              {...BORNES.delegationUsd}
+              onChange={(n) => n !== undefined && onDelegation({ maxUsdPerRequest: n })}
+            />
+            <span className="small muted">$ par demande</span>
+          </div>
+        </Field>
+        <Field label="Nombre par demande" htmlFor={ids.delegationNombre} hint="Au-delà, le travail délégué attend votre accord.">
+          <NumberInput
+            id={ids.delegationNombre}
+            value={delegation.maxPerRequest}
+            {...BORNES.delegationNombre}
+            step={1}
+            onChange={entier((n) => onDelegation({ maxPerRequest: n }))}
+          />
+        </Field>
+      </div>
+
+      <h3 className="settings-subtitle">{libelleChoix("autonome")}</h3>
+      <div className="grid-2">
+        <Field
+          label={LIBELLES.plafondUsd}
+          htmlFor={ids.plafondUsd}
+          hint={`Proposé à chaque activation, modifiable dans la confirmation. Soit ${formatCredits(autonomie.plafondUsd)}.`}
+          {...(plafondTropHaut ? { error: "Le plafond proposé dépasse le plafond maximal." } : {})}
+        >
+          <div className="input-suffix">
+            <NumberInput
+              id={ids.plafondUsd}
+              value={autonomie.plafondUsd}
+              {...BORNES.plafondUsd}
+              onChange={(n) => n !== undefined && onAutonomie({ plafondUsd: n })}
+            />
+            <span className="small muted">$ par demande</span>
+          </div>
+        </Field>
+        <Field label="Plafond maximal" htmlFor={ids.plafondMaxUsd} hint="Valeur la plus haute que la confirmation accepte.">
+          <div className="input-suffix">
+            <NumberInput
+              id={ids.plafondMaxUsd}
+              value={autonomie.plafondMaxUsd}
+              {...BORNES.plafondUsd}
+              onChange={(n) => n !== undefined && onAutonomie({ plafondMaxUsd: n })}
+            />
+            <span className="small muted">$ par demande</span>
+          </div>
+        </Field>
+        <Field label={LIBELLES.actionsMax} htmlFor={ids.actionsMax} hint="Au-delà, retour à « Demander à chaque fois ».">
+          <NumberInput
+            id={ids.actionsMax}
+            value={autonomie.actionsMax}
+            {...BORNES.actionsMax}
+            step={1}
+            onChange={entier((n) => onAutonomie({ actionsMax: n }))}
+          />
+        </Field>
+        <Field label={LIBELLES.delegationsMax} htmlFor={ids.delegationsMax} hint="Travail confié à un autre assistant, par demande.">
+          <NumberInput
+            id={ids.delegationsMax}
+            value={autonomie.delegationsMax}
+            {...BORNES.delegationsMax}
+            step={1}
+            onChange={entier((n) => onAutonomie({ delegationsMax: n }))}
+          />
+        </Field>
+        <Field label={LIBELLES.dureeMinutes} htmlFor={ids.dureeMinutes} hint="Durée maximale d'une demande automatique.">
+          <NumberInput
+            id={ids.dureeMinutes}
+            value={autonomie.dureeMinutes}
+            {...BORNES.dureeMinutes}
+            step={1}
+            onChange={entier((n) => onAutonomie({ dureeMinutes: n }))}
+          />
+        </Field>
+        <Field label={LIBELLES.fichiersMax} htmlFor={ids.fichiersMax} hint="Fichiers différents modifiés sans vous demander.">
+          <NumberInput
+            id={ids.fichiersMax}
+            value={autonomie.fichiersMax}
+            {...BORNES.fichiersMax}
+            step={1}
+            onChange={entier((n) => onAutonomie({ fichiersMax: n }))}
+          />
+        </Field>
+        <Field label={LIBELLES.controlesIaMax} htmlFor={ids.controlesIaMax} hint="Chaque contrôle par IA est facturé.">
+          <NumberInput
+            id={ids.controlesIaMax}
+            value={autonomie.controlesIaMax}
+            {...BORNES.controlesIaMax}
+            step={1}
+            disabled={!autonomie.controleIa}
+            onChange={entier((n) => onAutonomie({ controlesIaMax: n }))}
+          />
+        </Field>
+      </div>
+      <div>
+        <ToggleRow
+          title="Faire juger les commandes inconnues par l'IA de contrôle"
+          description="Coupée, les commandes que le cockpit ne connaît pas attendent votre accord au lieu d'être jugées."
+          checked={autonomie.controleIa}
+          onChange={(controleIa) => onAutonomie({ controleIa })}
+        />
+      </div>
+    </>
+  );
+}
+
 export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const { boot, advanced } = useApp();
   const ids = { monthly: useId(), from: useId(), price: useId() };
@@ -307,6 +470,13 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
               </span>
             </div>
           )}
+
+          <AutomaticCaps
+            delegation={draft.delegation}
+            autonomie={draft.autonomie}
+            onDelegation={(patch) => setDraft((d) => ({ ...d, delegation: { ...d.delegation, ...patch } }))}
+            onAutonomie={(patch) => setDraft((d) => ({ ...d, autonomie: { ...d.autonomie, ...patch } }))}
+          />
 
           <SectionFooter
             dirty={dirty}

@@ -30,13 +30,16 @@ import {
   timeline,
   totals,
 } from "../../../../server/shared/activity.ts";
+import { quiDelegue } from "../../../../server/shared/autonomy-texts.ts";
+import { useApp } from "../../../app/AppContext.tsx";
 import { Icon, type IconName } from "../../../components/Icon.tsx";
 import { Button } from "../../../components/ui.tsx";
 import { activityApi } from "../../../lib/api-activity.ts";
 import { errorText, oc } from "../../../lib/api.ts";
 import { eventBus } from "../../../lib/events.ts";
 import { formatDuration, formatTime, formatUsd, plural } from "../../../lib/format.ts";
-import type { ActivityResponse, ActorState, BrowserEvent, OcSession } from "../../../lib/types.ts";
+import type { ActivityResponse, ActorState, BrowserEvent, DecisionView, OcSession, SessionRole } from "../../../lib/types.ts";
+import { ControlJournal, DecisionMarks, useControlDecisions } from "../autonomy/ControlJournal.tsx";
 import type { DerouleProps } from "../slots.ts";
 import { builtinTitle, gapsText, type Planned, plannedOf } from "../turn.ts";
 import "./deroule.css";
@@ -345,6 +348,10 @@ interface BarView {
 
 interface RowView {
   key: string;
+  /** Session de la ligne : rattache ses décisions du Journal du contrôle (L12c). */
+  sessionId: string;
+  /** Rôle de la session : la colonne « Qui » du Journal ne dit « travail délégué » que pour une délégation. */
+  role: SessionRole;
   depth: number;
   who: string;
   title: string | null;
@@ -417,6 +424,8 @@ function buildRows(state: ActivityState, window: Window | null, now: number, pas
     const [a, b] = line.start === null ? [0, 0] : clip(line.start, line.end);
     return {
       key: line.key,
+      sessionId: line.sessionId,
+      role: line.role,
       depth: Math.min(line.depth, ACTIVITY_MAX_DEPTH),
       who: row ? whoOf(row) : "Travail délégué",
       title: row?.title ? row.title : null,
@@ -442,6 +451,13 @@ function ecartsOf(rows: readonly RowView[]): string {
     echecs: count((r) => r.state === "echec"),
     arrets: count((r) => r.state === "arrete"),
   });
+}
+
+/** Nom de chaque session pour la colonne « Qui » du Journal du contrôle (§4.12) : travail délégué avec sa mention. */
+function nomsDesActeurs(rows: readonly RowView[]): Map<string, string> {
+  const noms = new Map<string, string>();
+  for (const row of rows) noms.set(row.sessionId, row.depth === 0 || row.role === "controle" ? row.who : quiDelegue(row.who));
+  return noms;
 }
 
 /** Libellé chiffré de la figure (§5.5) : intervenants, coût et appels d'IA de la demande choisie. */
@@ -510,8 +526,23 @@ function DerouleTable({ rows }: { rows: readonly RowView[] }) {
   );
 }
 
-/** Barres du Déroulé (§5.1, §5.5) : `<figure>` à libellé chiffré ; barres décoratives, leur texte dit pour le lecteur d'écran. */
-function DerouleBars({ rows, advanced, caption }: { rows: readonly RowView[]; advanced: boolean; caption: string }) {
+/**
+ * Barres du Déroulé (§5.1, §5.5) : `<figure>` à libellé chiffré ; barres décoratives, leur texte dit pour le lecteur d'écran.
+ * Chaque ligne d'acteur porte les repères de ses décisions automatiques (mot et icône ; règle et raison au focus, L12c).
+ */
+function DerouleBars({
+  rows,
+  advanced,
+  caption,
+  decisions,
+  controleIa,
+}: {
+  rows: readonly RowView[];
+  advanced: boolean;
+  caption: string;
+  decisions: readonly DecisionView[];
+  controleIa: boolean;
+}) {
   const captionId = useId();
   return (
     <figure className="deroule-figure" aria-labelledby={captionId}>
@@ -547,6 +578,7 @@ function DerouleBars({ rows, advanced, caption }: { rows: readonly RowView[]; ad
               {row.bars.length > 0 ? row.bars.map((bar) => `${BAR_TEXT[bar.kind]} ${formatDuration(bar.durationMs)}`).join(", ") : "aucune période enregistrée"}
               {`, prévu : ${row.prevu.text}`}
             </span>
+            <DecisionMarks decisions={decisions} sessionId={row.sessionId} advanced={advanced} controleIa={controleIa} />
           </li>
         ))}
       </ol>
@@ -564,6 +596,8 @@ function DerouleBars({ rows, advanced, caption }: { rows: readonly RowView[]; ad
 
 /** Vue du Déroulé pour une activité déjà lue (sans magasin ni réseau) : demande choisie, barres ou tableau, écarts, Journal. */
 export function DerouleContent({ activity, rootId, placement, advanced, journalNonce }: DerouleContentProps) {
+  // Variante des phrases de règle du Journal (décision n° 8 : l'IA de contrôle peut être livrée coupée).
+  const controleIa = useApp().boot.settings.budget.autonomie.controleIa === true;
   const [picked, setPicked] = useState<string | null>(null);
   const [table, setTable] = useState(false);
   const journalRef = useRef<HTMLElement | null>(null);
@@ -587,11 +621,14 @@ export function DerouleContent({ activity, rootId, placement, advanced, journalN
   const rows = state ? buildRows(state, selected.window, Date.now(), past) : [];
   const sum = useMemo(() => (state ? totals(state, selected.window ?? undefined) : null), [state, selected]);
   const status = state ? activityStatus(state) : null;
-  const decisions = useMemo(() => {
-    if (!state) return 0;
+  // Faits « decision » de la conversation (P12 : le signe vient du fait, jamais l'inverse) ; les lignes du Journal du contrôle
+  // (L12c) sont celles de `autonomy_decisions`, relues par GET …/activity seulement s'il existe un fait, puis fenêtrées.
+  const faitsDecision = useMemo(() => (state ? state.facts.filter((f) => f.kind === "decision").length : 0), [state]);
+  const journal = useControlDecisions(rootId, faitsDecision);
+  const lignesJournal = useMemo(() => {
     const w = selected.window;
-    return state.facts.filter((f) => f.kind === "decision" && (!w || (f.at >= w.from && (w.to === null || f.at < w.to)))).length;
-  }, [state, selected]);
+    return journal.decisions.filter((d) => !w || (d.askedAt >= w.from && (w.to === null || d.askedAt < w.to)));
+  }, [journal.decisions, selected]);
 
   const archives = placement === "archives";
   const Heading = archives ? "h3" : "h4";
@@ -643,18 +680,26 @@ export function DerouleContent({ activity, rootId, placement, advanced, journalN
           ) : null}
           {delegated ? null : <p className="small muted">Une seule IA a travaillé sur {scope}.</p>}
 
-          {table ? <DerouleTable rows={rows} /> : <DerouleBars rows={rows} advanced={advanced} caption={captionOf(rows, sum)} />}
+          {table ? (
+            <DerouleTable rows={rows} />
+          ) : (
+            <DerouleBars rows={rows} advanced={advanced} caption={captionOf(rows, sum)} decisions={lignesJournal} controleIa={controleIa} />
+          )}
 
           {delegated ? <p className="tiny muted">{ecartsOf(rows)}</p> : null}
 
-          {/* Emplacement du Journal du contrôle : L12c y pose le tableau des décisions (§4.12). */}
+          {/* Journal du contrôle (L12c) : tableau des décisions de la demande choisie (§4.12), ou son état vide (§5.4). */}
           <section className="deroule-journal" aria-labelledby={journalId} tabIndex={-1} ref={journalRef}>
             <SubHeading id={journalId}>Journal du contrôle</SubHeading>
-            <p className="small muted">
-              {decisions === 0
-                ? `Aucune décision automatique pour ${scope}.`
-                : `${plural(decisions, "décision du contrôle de sécurité", "décisions du contrôle de sécurité")} pour ${scope}.`}
-            </p>
+            <ControlJournal
+              decisions={lignesJournal}
+              advanced={advanced}
+              controleIa={controleIa}
+              noms={nomsDesActeurs(rows)}
+              chargement={journal.chargement}
+              error={journal.error}
+              vide={`Aucune décision automatique pour ${scope}.`}
+            />
           </section>
         </div>
       ) : null}
