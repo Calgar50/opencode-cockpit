@@ -508,7 +508,11 @@ describe("DemoPlayer : textes (§5.9, décision n° 4)", () => {
   it("DemoPlayer.tsx : titre = étiquette, avis Simple, aucun texte écrit hors des modules de textes", () => {
     const source = fs.readFileSync(DEMO_PLAYER, "utf8");
     assert.ok(source.includes("title={TEXTES.partout.demonstrationEnregistree}"));
-    assert.ok(source.includes("TEXTES.simple.demonstrationAvancee} ${TEXTES_DELEGATION.simple.avis}"));
+    // [3d] DemoPlayer.tsx est passé à la salle de contrôle 3D (L34) : l'avis du mode Simple est maintenant la phrase UNIQUE
+    // revoir-texts.simple.demoAvance (U1, D-3d-26), qui dit la même chose que TEXTES.simple.demonstrationAvancee suivi de
+    // TEXTES_DELEGATION.simple.avis. Les deux textes de l'itération 1 restent contrôlés par le test des textes ci-dessus ; leur
+    // emploi par le lecteur est vérifié, avec sa condition, par demos-it3.test.ts.
+    assert.ok(source.includes("REVOIR.simple.demoAvance"));
     const code = lexer(source, false);
     const phrases = [...code.matchAll(/(["'`])((?:(?!\1).)*)\1/g)].map((m) => m[2] ?? "").filter((t) => /[À-ÿ]|[A-Z][a-z]+ [a-z]/.test(t));
     assert.deepEqual(phrases, []);
