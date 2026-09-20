@@ -95,13 +95,14 @@ export interface ChronologieResponse {
 
 /**
  * Appel d'IA d'une ligne de chronologie. Les jetons valent `null` quand ils ne sont pas enregistrés : jamais 0 à leur place
- * (honnêteté, spécification §6). `end` null : appel encore en cours.
+ * (honnêteté, spécification §6). `end` null : appel encore en cours. `model` null : aucune ligne `usage` pour ce message,
+ * donc aucune IA enregistrée — jamais un nom inventé (nullité relevée au train de V0 sur le module de L47a).
  */
 export interface ChronologieCall {
   messageId: string;
   start: number;
   end: number | null;
-  model: string;
+  model: string | null;
   variant: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
@@ -117,14 +118,17 @@ export interface ChronologieTick {
   code: string;
 }
 
-/** Ligne de la chronologie (un acteur) ; `groupe` : clé du groupe qui la replie, null si elle est seule. */
+/**
+ * Ligne de la chronologie (un acteur) ; `groupe` : clé du groupe qui la replie, null si elle est seule. `start` et `end`
+ * viennent de `TimelineRow` du Déroulé de l'it1, déjà nullables : une ligne jamais démarrée n'a pas de début.
+ */
 export interface ChronologieRow {
   key: string;
   sessionId: string;
   depth: number;
   role: SessionRole;
   state: ActorState;
-  start: number;
+  start: number | null;
   end: number | null;
   calls: ChronologieCall[];
   ticks: ChronologieTick[];
@@ -139,10 +143,13 @@ export interface ChronologieGroup {
   rowKeys: string[];
 }
 
-/** Vue rendue par le module pur `chronologie(state, usage, now)` ; `curseur` : « maintenant », null pour une demande terminée. */
+/**
+ * Vue rendue par le module pur `chronologie(state, usage, now)` ; `curseur` : « maintenant », null pour une demande terminée.
+ * `start` et `end` sont null pour une conversation sans aucune ligne, aucun appel et aucun repère.
+ */
 export interface ChronologieView {
-  start: number;
-  end: number;
+  start: number | null;
+  end: number | null;
   curseur: number | null;
   rows: ChronologieRow[];
   groupes: ChronologieGroup[];

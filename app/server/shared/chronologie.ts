@@ -12,88 +12,26 @@ import { toolCategory } from "./activity-facts.ts";
 import type { DecisionVerdict } from "./autonomy-types.ts";
 
 // --- Types ------------------------------------------------------------------------------------------------------------------------
-// Forme de construction-types.ts, comparée au train de V0 : `construction-types.ts` (T5a) est de la même vague, ces déclarations
-// locales tiennent sa place jusqu'au croisement du train, qui remplace ce bloc par un import.
+// Une seule source depuis le train de V0 : les six types viennent du contrat de T5a (construction-types.ts), qui a reçu au même
+// train la nullité rendue ici (`ChronologieView.start`/`.end`, `ChronologieRow.start`, `ChronologieCall.model`). Ils sont
+// ré-exportés pour que les consommateurs de ce module (L47b, l'interface) n'aient pas à connaître les deux chemins.
 
-/** Ligne du registre des coûts (table `usage`) d'une conversation, servie par la route de la chronologie (L47b). */
-export interface ChronologieUsageRow {
-  messageId: string;
-  sessionId: string;
-  agent: string;
-  providerId: string;
-  modelId: string;
-  variant: string | null;
-  tokensInput: number;
-  tokensOutput: number;
-  tokensReasoning: number;
-  tokensCacheRead: number;
-  tokensCacheWrite: number;
-  cost: number;
-  createdAt: number;
-  completedAt: number | null;
-}
-
-/** Appel d'IA d'une ligne ; jetons `null` = non enregistrés (aucune ligne `usage` pour ce message). */
-export interface ChronologieCall {
-  messageId: string;
-  start: number;
-  /** null : appel en cours. */
-  end: number | null;
-  /** Identifiant d'IA (`usage.model_id`), jamais un libellé. */
-  model: string | null;
-  /** Réflexion écrite (`usage.variant`), null si aucune. */
-  variant: string | null;
-  /** Entrée = input + cache lu + cache écrit (comme `ledger.summary`). */
-  tokensIn: number | null;
-  /** Sortie = output + réflexion (comme `ledger.summary`). */
-  tokensOut: number | null;
-  tokensCache: number | null;
-  tokensReasoning: number | null;
-  /** Coût du Déroulé (fait `appel-fini`), jamais recalculé ici. */
-  cost: number;
-}
-
-/** Repère posé sur une ligne : une catégorie d'outil, le rang d'une nouvelle tentative, un verdict de décision, une attente de vous. */
-export interface ChronologieTick {
-  at: number;
-  genre: "outil" | "tentative" | "decision" | "attente";
-  /** Code seulement : catégorie d'outil, rang en chiffres, verdict, ou ATTENTE_CODE. */
-  code: string;
-}
-
-/** Ligne de la chronologie : celle du Déroulé de l'itération 1, même clé et même rang. */
-export interface ChronologieRow {
-  key: string;
-  sessionId: string;
-  depth: number;
-  role: SessionRole;
-  state: ActorState;
-  start: number | null;
-  end: number | null;
-  calls: ChronologieCall[];
-  ticks: ChronologieTick[];
-  /** Clé du groupe de délégations répétées, null si la ligne n'en fait pas partie. */
-  groupe: string | null;
-}
-
-/** Délégations répétées : au moins GROUPE_MIN lignes du même assistant sous le même parent (« ×n »). */
-export interface ChronologieGroup {
-  key: string;
-  agent: string;
-  count: number;
-  rowKeys: string[];
-}
-
-/** Vue rendue par `chronologie` : bornes, curseur du direct, lignes, groupes et « Déroulé partiel ». */
-export interface ChronologieView {
-  start: number | null;
-  end: number | null;
-  /** `now` tant qu'une ligne est en cours, null sinon (et null si `now` est null). */
-  curseur: number | null;
-  rows: ChronologieRow[];
-  groupes: ChronologieGroup[];
-  partiel: boolean;
-}
+export type {
+  ChronologieCall,
+  ChronologieGroup,
+  ChronologieRow,
+  ChronologieTick,
+  ChronologieUsageRow,
+  ChronologieView,
+} from "./construction-types.ts";
+import type {
+  ChronologieCall,
+  ChronologieGroup,
+  ChronologieRow,
+  ChronologieTick,
+  ChronologieUsageRow,
+  ChronologieView,
+} from "./construction-types.ts";
 
 // --- Constantes -------------------------------------------------------------------------------------------------------------------
 
