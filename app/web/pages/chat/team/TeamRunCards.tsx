@@ -8,8 +8,11 @@
 // d'équipe n'est reconnu que par IDENTIFIANT, jamais par un marqueur (risque 19).
 // Verrou (D-eq-16) : texte tant qu'une équipe est `preparation`, `en-cours` ou `attente-*` ; `terminee`, `arretee`, `echec`,
 // `interrompue` et `plafond` ne verrouillent pas. Aucun texte écrit ici, aucune animation, aucune région aria-live propre.
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { teamRunsApi } from "../../../lib/api-teams.ts";
+// MODE SIMPLE FERMÉ (U1, D-eq-13 ; plan §2.6) : `ouvertesEnSimple` de GET /api/teams est la SEULE valeur qui ferme les équipes en
+// Simple (l'ouverture tient en une ligne, comme pour le lanceur et l'onglet). Fermées, les cartes ne proposent pas la relance, que
+// le serveur refuse en 403 ; la consultation, l'arrêt et les pauses restent. Lecture impossible → fermées, jamais supposées.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { teamRunsApi, teamsApi } from "../../../lib/api-teams.ts";
 import { errorText } from "../../../lib/api.ts";
 import type { TeamRunCardsProps } from "./slots.ts";
 import { TeamResultCard } from "./TeamResultCard.tsx";
@@ -21,8 +24,24 @@ import "./team-cards.css";
 // `directory` n'est pas lu ici : les lancements portent déjà leur dossier, et aucun chemin n'est écrit dans le document.
 export function TeamRunCards({ rootId, advanced, onOpenSession, onLockChange }: TeamRunCardsProps) {
   const { runs } = useTeamRuns(rootId);
-  const cartes = useMemo(() => runs.map((run) => ({ run, modele: buildTeamRunCard(run, advanced) })), [runs, advanced]);
+  /** `ouvertesEnSimple` de GET /api/teams (U1) ; faux tant que la réponse n'est pas là, ou si elle ne vient pas. */
+  const [ouvertesEnSimple, setOuvertesEnSimple] = useState(false);
+  const equipesOuvertes = advanced || ouvertesEnSimple;
+  const cartes = useMemo(() => runs.map((run) => ({ run, modele: buildTeamRunCard(run, advanced, equipesOuvertes) })), [runs, advanced, equipesOuvertes]);
   const verrou = useMemo(() => verrouDe(runs), [runs]);
+
+  // En Avancé, les équipes sont toujours ouvertes : aucune lecture à faire.
+  useEffect(() => {
+    if (advanced) return undefined;
+    const controller = new AbortController();
+    teamsApi.list(controller.signal).then(
+      (reponse) => setOuvertesEnSimple(reponse.ouvertesEnSimple === true),
+      (err: unknown) => {
+        if (!controller.signal.aborted) console.warn("équipes : ouverture en mode Simple illisible", errorText(err));
+      },
+    );
+    return () => controller.abort();
+  }, [advanced]);
 
   /** Dernier rappel reçu de ChatPage : celui du rendu courant, jamais celui d'un rendu ancien. */
   const lockRef = useRef(onLockChange);

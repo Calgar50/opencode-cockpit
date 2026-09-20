@@ -261,6 +261,24 @@ describe("cartes d'équipe : carte d'exécution", () => {
     assert.equal(buildTeamRunCard(run(), true).lignes.filter((l) => l.kind === "pause").length, 0);
   });
 
+  it("équipe terminée : ce n'est plus une exécution, et [Arrêter l'équipe] n'est pas proposé (POST …/stop rendrait 409)", () => {
+    const modele = buildTeamRunCard(run({ state: "terminee", endedAt: 3_000 }), true);
+    assert.deepEqual(
+      modele.boutons.map((b) => b.action),
+      [],
+    );
+    assert.notEqual(modele.genre, "execution");
+  });
+
+  it("aucun état hors ETATS_VERROU ne compose [Arrêter l'équipe] : l'arrêt n'est offert que là où il a un sens", () => {
+    for (const etat of TEAM_RUN_STATES) {
+      const arretable = buildTeamRunCard(run({ state: etat }), true).boutons.some((b) => b.action === "arreter");
+      if (!ETATS_VERROU.has(etat)) assert.equal(arretable, false, etat);
+    }
+    // Contrôle discriminant : un lancement qui travaille, lui, porte bien le bouton.
+    assert.equal(buildTeamRunCard(run({ state: "en-cours" }), true).boutons.some((b) => b.action === "arreter"), true);
+  });
+
   it("boîte d'arrêt : « Arrêter l'équipe ? » et sa phrase", () => {
     assert.deepEqual(confirmationArret(), { titre: P.arret.titre, message: P.arret.message, confirmer: P.arret.confirmer, annuler: P.arret.annuler });
     assert.equal(confirmationArret().titre, "Arrêter l'équipe ?");
@@ -335,35 +353,35 @@ describe("cartes d'équipe : cartes finales, boutons selon relancable et resulta
   const finale = (patch: Partial<TeamRunView>) => run({ state: "arretee", cause: "vous", endedAt: 3_000, ...patch });
 
   it("relancable : [Relancer la suite (≈ x $)] avec x = run.suite.typique (calcul LOCAL, aucune lecture)", () => {
-    const boutons = boutonsFinaux(finale({ relancable: true, suite: { typique: 0.09, maximum: 0.4 } }));
+    const boutons = boutonsFinaux(finale({ relancable: true, suite: { typique: 0.09, maximum: 0.4 } }), true);
     assert.equal(boutons[0]?.action, "relancer");
     assert.equal(boutons[0]?.libelle, `Relancer la suite (≈ ${montant(0.09)} $)`);
     assert.equal(boutons[0]?.desactive, false);
-    assert.deepEqual(boutonsFinaux(finale({ relancable: false })).map((b) => b.action), ["ajouter-resultats"]);
+    assert.deepEqual(boutonsFinaux(finale({ relancable: false }), true).map((b) => b.action), ["ajouter-resultats"]);
   });
 
   it("suite inconnue : le bouton reste, désactivé, avec sa raison", () => {
-    const bouton = boutonsFinaux(finale({ relancable: true, suite: null }))[0];
+    const bouton = boutonsFinaux(finale({ relancable: true, suite: null }), true)[0];
     assert.equal(bouton?.desactive, true);
     assert.equal(bouton?.raison, P.erreurs["pas-relancable"]);
   });
 
   it("resultatsAjoutes : [Ajouter les résultats obtenus à la conversation] désactivé avec « déjà ajoutés » (D-eq-22)", () => {
-    const libre = boutonsFinaux(finale({})).find((b) => b.action === "ajouter-resultats");
+    const libre = boutonsFinaux(finale({}), true).find((b) => b.action === "ajouter-resultats");
     assert.equal(libre?.libelle, P.boutons.ajouterResultats);
     assert.equal(libre?.desactive, false);
-    const ajoutes = boutonsFinaux(finale({ resultatsAjoutes: true })).find((b) => b.action === "ajouter-resultats");
+    const ajoutes = boutonsFinaux(finale({ resultatsAjoutes: true }), true).find((b) => b.action === "ajouter-resultats");
     assert.equal(ajoutes?.desactive, true);
     assert.equal(ajoutes?.raison, P.erreurs["deja-ajoute"]);
     // Aucune étape terminée : rien à ajouter.
-    assert.equal(boutonsFinaux(finale({ steps: [step({ state: "non-lancee", sessionId: null })] })).some((b) => b.action === "ajouter-resultats"), false);
+    assert.equal(boutonsFinaux(finale({ steps: [step({ state: "non-lancee", sessionId: null })] }), true).some((b) => b.action === "ajouter-resultats"), false);
   });
 
   it("[Fermer] pour interrompue, plafond et echec seulement (POST …/fermer)", () => {
     for (const etat of ["interrompue", "plafond", "echec"] as const) {
-      assert.ok(boutonsFinaux(finale({ state: etat })).some((b) => b.action === "fermer"), etat);
+      assert.ok(boutonsFinaux(finale({ state: etat }), true).some((b) => b.action === "fermer"), etat);
     }
-    assert.equal(boutonsFinaux(finale({ state: "arretee" })).some((b) => b.action === "fermer"), false);
+    assert.equal(boutonsFinaux(finale({ state: "arretee" }), true).some((b) => b.action === "fermer"), false);
   });
 
   it("phrases des cartes finales : arrêtée, plafond, échec, interrompue, redémarrage du cockpit avant le début", () => {
@@ -373,6 +391,25 @@ describe("cartes d'équipe : cartes finales, boutons selon relancable et resulta
     assert.equal(messageFinal(finale({ state: "interrompue", cause: "rechargement" })), "Équipe interrompue par un rechargement d'opencode à l'étape 2. Les résultats déjà obtenus sont gardés.");
     assert.equal(messageFinal(finale({ state: "interrompue", cause: "redemarrage-cockpit" })), P.cartes.redemarrage);
     assert.equal(messageFinal(finale({ state: "interrompue", cause: "redemarrage-cockpit", startedAt: null })), P.cartes.redemarrageAvantDebut);
+  });
+
+  it("équipes fermées en mode Simple (U1, §2.6) : aucune carte finale ne propose la relance, que le serveur refuse (403)", () => {
+    const arretee = finale({ relancable: true, suite: { typique: 0.09, maximum: 0.4 } });
+    assert.equal(
+      boutonsFinaux(arretee, false).some((b) => b.action === "relancer"),
+      false,
+      "une fonction absente n'est jamais annoncée avec un prix (P3)",
+    );
+    assert.deepEqual(
+      boutonsFinaux(arretee, false).map((b) => b.action),
+      ["ajouter-resultats"],
+      "les autres boutons de la carte finale restent",
+    );
+    assert.equal(boutonsFinaux(arretee, true)[0]?.action, "relancer");
+    // La carte entière : en Simple fermé, rien ne mène à la relance ; l'ouverture d'UNE LIGNE (ouvertesEnSimple) la ramène.
+    assert.equal(buildTeamRunCard(arretee, false).boutons.some((b) => b.action === "relancer"), false);
+    assert.equal(buildTeamRunCard(arretee, false, true).boutons.some((b) => b.action === "relancer"), true);
+    assert.equal(buildTeamRunCard(arretee, true).boutons.some((b) => b.action === "relancer"), true);
   });
 
   it("carte finale : genre, phrase et bilan chiffré", () => {
@@ -617,6 +654,15 @@ describe("cartes d'équipe : contrat des composants", () => {
     assert.match(code, /const \{ runs \} = useTeamRuns\(rootId\);/);
     assert.match(code, /lockRef\.current\(verrou\);/);
     assert.match(code, /return \(\) => lockRef\.current\(null\);/);
+  });
+
+  it("TeamRunCards lit `ouvertesEnSimple` (GET /api/teams) et le passe au modèle : rien de fermé n'est proposé en Simple", () => {
+    const code = withoutComments(read(CARDS));
+    assert.match(code, /teamsApi\.list\(/, "l'ouverture des équipes est lue par api-teams.ts, jamais supposée");
+    assert.match(code, /buildTeamRunCard\(run, advanced, equipesOuvertes\)/);
+    assert.match(code, /const equipesOuvertes = advanced \|\| ouvertesEnSimple;/);
+    // Défaut fermé : un échec de lecture laisse les équipes fermées en Simple, comme le lanceur qui reste absent.
+    assert.match(code, /useState\(false\)/);
   });
 
   it("TeamResultCard est EXPORTÉ avec les propriétés de la fiche (consommateur L38c en V3)", () => {

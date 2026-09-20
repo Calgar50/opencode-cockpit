@@ -158,9 +158,9 @@ export interface EventRow {
 /**
  * Entrée du pré-lancement. `confirmed` : en-tête x-cockpit-confirm: 1 (garde-fou budgétaire P6). `relance` (L37c) : `restantes` =
  * étapes non terminées dans l'ordre de planSteps, `depense` = spentOfRun(runId) ; en relance, `body` est reconstitué LOCALEMENT
- * (dossier, racine et confirmations d'origine lus en base ; demande et fichiers par requestFromStepMessage, D-eq-27 ; textes
- * purgés → pas-relancable), `body.estimateSha256` vient de TeamRelaunchBody, P4 ignore ce lancement lui-même, l'estimation porte
- * sur `restantes` seulement et plafond = depense + maximum du reste.
+ * (dossier, racine et confirmations d'origine lus en base ; demande et fichiers par requestFromStepMessage sur le `message_text`
+ * d'une étape QUI A REÇU LA DEMANDE, D-eq-27 ; textes purgés → pas-relancable), `body.estimateSha256` vient de TeamRelaunchBody,
+ * P4 ignore ce lancement lui-même, l'estimation porte sur `restantes` seulement et plafond = depense + maximum du reste.
  */
 export interface PreflightInput {
   team: TeamRow;

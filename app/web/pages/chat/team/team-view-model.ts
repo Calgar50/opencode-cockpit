@@ -5,7 +5,10 @@
 // l.392 ; C §9.5, §9.6 ; plan it4 §6 fiche L38b, §4.1.1.
 // Aucun texte écrit ici : tout vient de server/shared/team-texts.ts (T4t). Montants écrits par montant() ou par remplir() avec un
 // nombre, JAMAIS par formatUsd(), qui ajoute déjà « $ » (report MX-EQ au train de V0, §4.2).
-// Relance (D-eq-17, A4) : estimation d'abord au clic, confirmation ensuite, `relancer` jamais sans empreinte.
+// Relance (D-eq-17, A4) : estimation d'abord au clic, confirmation ensuite, `relancer` jamais sans empreinte ; la relance n'est
+// PAS proposée quand les équipes sont fermées dans le mode courant (U1, §2.6 : le serveur y répond 403).
+// Aucun bouton que le serveur refuserait : l'arrêt n'est composé que pour les états d'ETATS_VERROU (ailleurs, POST …/stop rend
+// 409 `etat-incompatible`), et une équipe `terminee` a son genre à elle, la carte de résultat prenant la suite.
 // Testé par server/web-team-cards.test.ts ; aucun composant (.tsx) importé, aucun appel réseau.
 import { FLOW_LIMITS } from "../../../../server/shared/team-limits.ts";
 import { pauseChangement, phraseBlocage, phraseErreur, remplir, resumeResultat, TEXTES } from "../../../../server/shared/team-texts.ts";
@@ -125,7 +128,8 @@ export interface TeamResultModel {
 
 export interface TeamRunCardModel {
   runId: string;
-  genre: "execution" | "pause" | "finale";
+  /** `terminee` : l'équipe a fini, la carte de résultat prend la suite ; ni en-tête d'exécution, ni bouton d'arrêt. */
+  genre: "execution" | "pause" | "finale" | "terminee";
   /** En-tête de la carte d'exécution, ou titre de la carte finale. */
   entete: string;
   etatMot: string;
@@ -262,10 +266,15 @@ export function messageFinal(run: TeamRunView): string {
   }
 }
 
-/** Boutons d'une carte finale, selon `relancable` et `resultatsAjoutes` (D-eq-22). */
-export function boutonsFinaux(run: TeamRunView): TeamButton[] {
+/**
+ * Boutons d'une carte finale, selon `relancable` et `resultatsAjoutes` (D-eq-22). `equipesOuvertes` : les équipes sont-elles
+ * ouvertes dans le mode courant (toujours en Avancé ; en Simple, `ouvertesEnSimple` de GET /api/teams, U1) ? Fermées, la relance
+ * n'est PAS proposée : le serveur refuse `POST …/estimate` et `POST …/relancer` en 403, et une fonction absente ne s'annonce
+ * jamais avec un prix (P3, §2.6). L'ouverture tient toujours en une ligne (EQUIPES_SIMPLE_OUVERTES).
+ */
+export function boutonsFinaux(run: TeamRunView, equipesOuvertes: boolean): TeamButton[] {
   const boutons: TeamButton[] = [];
-  if (run.relancable) {
+  if (run.relancable && equipesOuvertes) {
     const suite = run.suite;
     boutons.push({
       action: "relancer",
@@ -315,12 +324,32 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
   };
 }
 
-/** Modèle complet d'une carte de lancement (exécution, pause ou carte finale), avec sa carte de résultat s'il y a lieu. */
-export function buildTeamRunCard(run: TeamRunView, advanced: boolean): TeamRunCardModel {
+/** Genre de la carte : une équipe terminée n'est ni une pause, ni une carte finale, ni une exécution en cours. */
+function genreCarte(run: TeamRunView, enPause: boolean, finale: boolean): TeamRunCardModel["genre"] {
+  if (enPause) return "pause";
+  if (finale) return "finale";
+  return run.state === "terminee" ? "terminee" : "execution";
+}
+
+/** Boutons de la carte : ceux d'une carte finale, ceux de la pause (portés par `modelePause`), l'arrêt, ou aucun. */
+function boutonsCarte(run: TeamRunView, etat: { enPause: boolean; finale: boolean; arretable: boolean; equipesOuvertes: boolean }): TeamButton[] {
+  if (etat.finale) return boutonsFinaux(run, etat.equipesOuvertes);
+  if (etat.enPause) return [];
+  return etat.arretable ? [boutonArreter()] : [];
+}
+
+/**
+ * Modèle complet d'une carte de lancement (exécution, pause, carte finale ou équipe terminée), avec sa carte de résultat s'il y a
+ * lieu. `equipesOuvertes` : équipes ouvertes dans le mode courant (défaut : le mode Avancé seulement, U1 ; en Simple, la valeur
+ * vient de `ouvertesEnSimple` de GET /api/teams). Fermées, la carte ne propose aucune action que le serveur refuserait.
+ */
+export function buildTeamRunCard(run: TeamRunView, advanced: boolean, equipesOuvertes: boolean = advanced): TeamRunCardModel {
   const etapes = etapesVisibles(run);
   const { n, total, terminees } = progression(run);
   const enPause = run.pause !== null && ETATS_ATTENTE.has(run.state);
   const finale = ETATS_FINAUX.has(run.state);
+  // L'arrêt n'est proposé que là où il a un sens : POST …/stop répond 409 `etat-incompatible` pour une équipe terminée ou finie.
+  const arretable = ETATS_VERROU.has(run.state);
   const lignes = etapes.map((step) => ligneEtape(step, advanced));
   if (run.pause?.kind === "verification") {
     lignes.push({ cle: `pause-${run.id}`, kind: "pause", titre: P.execution.pause, detail: "", icone: "pause", mot: P.execution.pause, sessionId: null, voirTravail: null, tentative: null, tronquee: null, cause: null });
@@ -329,7 +358,7 @@ export function buildTeamRunCard(run: TeamRunView, advanced: boolean): TeamRunCa
   const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced) : null;
   return {
     runId: run.id,
-    genre: enPause ? "pause" : finale ? "finale" : "execution",
+    genre: genreCarte(run, enPause, finale),
     entete: remplir(P.execution.entete, { equipe: texte(run.titre, TITRE_MAX), n, total, depense: run.cost, plafond: plafondDe(run) }),
     etatMot: P.etatsEquipe[run.state],
     etatIcone: RUN_ICONS[run.state],
@@ -337,7 +366,7 @@ export function buildTeamRunCard(run: TeamRunView, advanced: boolean): TeamRunCa
     message: finale ? messageFinal(run) : null,
     bilan: finale ? remplir(P.cartes.bilan, { k: terminees, total, cout: run.cost }) : null,
     pause: enPause && run.pause !== null ? modelePause(run, run.pause) : null,
-    boutons: finale ? boutonsFinaux(run) : enPause ? [] : [boutonArreter()],
+    boutons: boutonsCarte(run, { enPause, finale, arretable, equipesOuvertes }),
     verrou: ETATS_VERROU.has(run.state) ? P.saisieVerrouillee : null,
     resultat,
     annonce: P.etatsEquipe[run.state],

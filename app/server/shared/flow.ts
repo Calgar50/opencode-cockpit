@@ -17,8 +17,8 @@
 // TEXTES : les phrases envoyées aux IA sont écrites ici (elles ne sont pas des textes d'interface). Les deux en-têtes des messages
 // injectés sont repris PAR VALEUR de team-texts.ts (T4t, `partout.injection`) : INJECTION_TEXTS ci-dessous, égalité vérifiée par le
 // croisement de vague. Le résultat d'une étape est recopié sans être modifié (« recopié ici par le cockpit, sans appel d'IA ») :
-// seuls l'encadrement `<<<` … `>>>` et la troncature annoncée le touchent, jamais un masquage silencieux (redactSecrets reste au
-// magasin, sur l'extrait gardé en base, L37s).
+// seuls l'encadrement `<<<` … `>>>`, les marqueurs `<!-- cockpit:` (neutralisés de la même façon, voir plus bas) et la troncature
+// annoncée le touchent, jamais un masquage silencieux (redactSecrets reste au magasin, sur l'extrait gardé en base, L37s).
 import { evaluate, RIGHT_SAMPLES, type Rule, type Tier, type UiMode, wildcardMatch } from "./assistant-rules.ts";
 import { FLOW_LIMITS, planSteps, receivedFrom, STEP_ID_RE, STEP_INPUTS, TEAM_TEXT_LIMITS } from "./team-limits.ts";
 import type { Flow, FlowBlock, FlowProblem, FlowProblemCode, FlowStep, PlannedOrder, StepAssistant, TeamStepState } from "./team-types.ts";
@@ -56,6 +56,15 @@ const OUVRANT = "<<<";
 const FERMANT = ">>>";
 const OUVRANT_NEUTRE = "‹‹‹";
 const FERMANT_NEUTRE = "›››";
+
+/**
+ * Ouverture des marqueurs du cockpit, neutralisée dans les textes relayés de la même façon que l'encadrement : l'IA d'une étape
+ * LIT l'identifiant du lancement (première ligne de son message), donc sa sortie pourrait sinon fabriquer les sections
+ * « Demande de l'utilisateur » et « Fichiers joints » du message des étapes suivantes (D-eq-27). Les marqueurs écrits par le
+ * cockpit restent les seuls de leur forme, et le texte relayé reste lisible.
+ */
+const MARQUEUR = "<!-- cockpit:";
+const MARQUEUR_NEUTRE = "‹!-- cockpit:";
 
 // --- Grammaire ----------------------------------------------------------------------------------------------------------------
 
@@ -308,9 +317,12 @@ export interface StepMessageContext {
 /** Marqueur de section, porteur de l'identifiant du lancement (tiré au lancement, inconnu de l'utilisateur, D-eq-27). */
 const marker = (nom: string, runId: string): string => `<!-- cockpit:${nom} run=${runId} -->`;
 
-/** `<<<` et `>>>` du texte relayé neutralisés : l'encadrement du cockpit reste le seul de sa forme. */
+/**
+ * `<<<`, `>>>` et `<!-- cockpit:` du texte relayé neutralisés : l'encadrement ET les marqueurs du cockpit restent les seuls de
+ * leur forme. Le texte relayé vient d'une IA : c'est la partie NON FIABLE du message (l'identifiant du lancement lui est connu).
+ */
 export function neutralizeFrames(texte: string): string {
-  return texte.replaceAll(OUVRANT, OUVRANT_NEUTRE).replaceAll(FERMANT, FERMANT_NEUTRE);
+  return texte.replaceAll(OUVRANT, OUVRANT_NEUTRE).replaceAll(FERMANT, FERMANT_NEUTRE).replaceAll(MARQUEUR, MARQUEUR_NEUTRE);
 }
 
 /** Troncature annoncée à FLOW_LIMITS.relaisCaracteres : le cockpit dit toujours ce qu'il a retiré. */
@@ -399,18 +411,31 @@ function between(texte: string, debut: string, fin: string): string | null {
 }
 
 /**
+ * Début de la partie relayée d'un message d'étape : la section des résultats, suivie de sa phrase « ce sont des données ». Tout
+ * ce qui suit vient d'une IA ; les sections écrites par le cockpit, elles, sont toutes avant.
+ */
+const DEBUT_RELAIS = `\n\n## ${STEP_SECTIONS.resultats}\n\n${STEP_TEXTS.donnees}\n\n`;
+
+/**
  * Demande et pièces jointes relues dans un texte écrit par `stepMessage` (D-eq-27) : reprise après un redémarrage du cockpit et
  * relance, sans aucune requête. L'identifiant du lancement borne les deux sections ; il est tiré au lancement, donc inconnu de
  * l'utilisateur quand il écrit sa demande, qui n'est ni modifiée ni échappée.
+ *
+ * La partie NON FIABLE d'un message d'étape n'est pas la demande, mais les RÉSULTATS relayés : l'IA qui les a écrits lit
+ * l'identifiant du lancement en tête de son propre message. Deux défenses : `neutralizeFrames` retire la forme active des
+ * marqueurs de tout texte relayé, et la lecture ci-dessous s'arrête à la première section de résultats — une demande qui
+ * n'apparaîtrait qu'après elle n'est jamais relue.
  *
  * À n'appliquer QU'À `team_run_steps.message_text` (texte écrit par le cockpit), jamais à un texte venu d'opencode. Format
  * inconnu, section absente ou texte vidé par la purge de la conversation → null.
  */
 export function requestFromStepMessage(texte: string, runId: string): { demande: string; fichiers: string[] } | null {
   if (typeof texte !== "string" || texte.length === 0 || typeof runId !== "string" || runId.length === 0) return null;
-  const demande = between(texte, marker("demande", runId), marker("fin-demande", runId));
+  const relais = texte.indexOf(DEBUT_RELAIS);
+  const avantRelais = relais === -1 ? texte : texte.slice(0, relais);
+  const demande = between(avantRelais, marker("demande", runId), marker("fin-demande", runId));
   if (demande === null) return null;
-  const liste = between(texte, marker("fichiers", runId), marker("fin-fichiers", runId));
+  const liste = between(avantRelais, marker("fichiers", runId), marker("fin-fichiers", runId));
   if (liste === null) return null;
   if (liste.length === 0) return { demande, fichiers: [] };
   const fichiers: string[] = [];
