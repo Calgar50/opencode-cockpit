@@ -46,6 +46,28 @@
 .activity-region.demande > .neon-band > .neon-head {
   flex: none;
 }
+/* Clôture de l'itération 1 × commandes de l'itération 3. Pendant une demande, la bande n'a qu'une centaine de pixels de haut (la
+   liste des acteurs garde la sienne). Les commandes de la bande — [Figer l'affichage], [Tableau], [Voir une démonstration], et,
+   depuis l'itération 3, [Revoir cette demande] et [Ouvrir la salle de contrôle] (§5.7.4 l.985) — passaient alors sur trois lignes :
+   80 px de tête au lieu de 26, et la carte, déjà à son plancher de mini-carte, était coupée par le bas — ses signes (attente de
+   votre accord, préparation) tombaient sous « Qui travaille ? » à 1280 × 800, et la carte était rognée dès 1440 × 900. Dans ce
+   seul cas, la tête reste sur UNE ligne et ses commandes défilent latéralement quand elles ne tiennent pas : chaque bouton reste
+   atteignable (le focus clavier l'amène à la vue), et la carte garde la place de ses signes (§5.7.1, §5.7.3). */
+.activity-region.demande > .neon-band > .neon-head {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.activity-region.demande > .neon-band > .neon-head > .neon-title {
+  flex: none;
+}
+.activity-region.demande > .neon-band > .neon-head > .neon-commands {
+  flex: none;
+  flex-wrap: nowrap;
+}
+.activity-region.demande > .neon-band > .neon-head .btn {
+  white-space: nowrap;
+}
 .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
   flex: 0 1 auto;
   min-height: 4.5em;

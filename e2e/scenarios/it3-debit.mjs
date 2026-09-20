@@ -14,7 +14,8 @@
 //   1. la salle de contrôle montre la conversation pendant que la suite dense arrive ;
 //   2. sur TOUTE fenêtre d'une seconde, AU PLUS 4 marques `salle3d:plan` (3D, puis 2D en repli) et au plus 4 marques
 //      `salle3d:scene` de cause « plan » ;
-//   3. AU MOINS une marque `salle3d:plan` par seconde de rafale : sans cela le contrôle serait vide et le scénario échoue ;
+//   3. AU MOINS une marque `salle3d:plan` par seconde DE RAFALE (l'écoulement de 1,5 s qui suit la dernière rafale n'en est pas
+//      une : la vue y a rattrapé) : sans cela le contrôle serait vide et le scénario échoue ;
 //   4. le repli 2D dessine lui aussi, au même plafond : la mesure est refaite avec `prefers-reduced-motion: reduce`.
 import { attendre, attendreFinDuTour, attendreIa, exiger, nonJoue, oc, preparerPage, releve, resume } from "./it1-ui-commun.mjs";
 import { chargerFixture, DENSE } from "../lib/gen-dense.mjs";
@@ -25,7 +26,9 @@ const PLAFOND = 4;
 // « Sur toute fenêtre d'une seconde » (fiche L35) : fenêtre GLISSANTE, et aucun dépassement toléré.
 
 export async function run(ctx) {
-  const { cdp, mode } = await preparer3d(ctx);
+  const premiere = await preparer3d(ctx);
+  // Suite de la seconde mesure, préparée pendant la première ; nulle tant que rien n'est à mesurer en 2D.
+  let repliAFaire = null;
   try {
     if (ctx.mode !== "faux") {
       nonJoue(ctx, "débit (M20)", "le rejeu d'événements passe par le pilotage du faux opencode");
@@ -34,29 +37,50 @@ export async function run(ctx) {
     }
     const page = await preparerPage(ctx);
     const rootId = await conversation(ctx);
-    const { entete, creations, rafales } = chargerFixture({ racine: rootId, prefixe: `d${Date.now().toString(36).slice(-4)}` });
-    exiger(entete.sessions === DENSE.sessions && rafales.length > 0, `fixture dense inattendue : ${resume(entete)}`);
+    const suiteDense = (marque) => chargerFixture({ racine: rootId, prefixe: `${marque}${Date.now().toString(36).slice(-4)}` });
+    const dense3d = suiteDense("d");
+    exiger(dense3d.entete.sessions === DENSE.sessions && dense3d.rafales.length > 0, `fixture dense inattendue : ${resume(dense3d.entete)}`);
 
     // Les 50 sessions sont annoncées d'abord (le cockpit les apprend par `properties.info`, sans aucune requête), puis la
     // salle est ouverte au zoom 2 sur la racine.
-    await ctx.faux.emettre(creations);
+    await ctx.faux.emettre(dense3d.creations);
     await attendre(1_000);
-    const resultat3d = await mesurer(ctx, page, cdp, rootId, rafales, { attendue3d: mode.mode !== "aucun" });
+    const resultat3d = await mesurer(ctx, page, premiere.cdp, rootId, dense3d.rafales, { attendue3d: premiere.mode.mode !== "aucun" });
     releve(ctx, `M20 (3D) : ${resume(resultat3d)}`);
 
-    // 4. Même mesure en repli 2D : la marque `salle3d:plan` y est posée aussi (M20 compte les deux rendus).
-    const repli = await preparer3d(ctx, { mouvementReduit: true });
-    try {
-      const page2d = await preparerPage(ctx);
-      const resultat2d = await mesurer(ctx, page2d, repli.cdp, rootId, rafales, { attendue3d: false });
-      releve(ctx, `M20 (repli 2D) : ${resume(resultat2d)}`);
-    } finally {
-      await repli.cdp.fermer();
-    }
-    ctx.expectNoConsoleErrors();
+    // Une SECONDE suite, à sessions neuves, pour la mesure en repli : rejouer la première ne ferait naître AUCUN fait, puisque
+    // le cockpit écarte les doublons par (session, appel, phase) (FactDeduper, server/shared/activity-facts.ts) — la mesure 2D
+    // serait vide et le scénario tomberait sur son propre contrôle. Seuls les appels portés par la RACINE elle-même restent des
+    // doublons (une session sur cinquante) : les quarante-neuf autres suffisent largement à la cadence mesurée.
+    const dense2d = suiteDense("r");
+    exiger(dense2d.creations.length === dense3d.creations.length, `seconde suite dense incomplète : ${resume(dense2d.entete)}`);
+    await ctx.faux.emettre(dense2d.creations);
+    await attendre(1_000);
+    repliAFaire = { rootId, rafales: dense2d.rafales };
+
+    // La salle est QUITTÉE avant de changer les réglages du poste : son démontage libère la scène (D-3d-28). Sans cela, la page
+    // serait déchargée moteur vivant, le contexte WebGL disparaîtrait sous lui, et three écrirait son erreur dans la console.
+    await page.evaluer("location.hash = '#/'");
+    await page.attendreQue("!document.querySelector('.page.salle3d')", { libelle: "salle de contrôle quittée" });
+    await attendre(300);
   } finally {
-    await cdp.fermer();
+    // La connexion de la PREMIÈRE mesure est fermée AVANT d'ouvrir celle du repli (même usage que it3-repli) : deux connexions
+    // qui émulent des réglages contraires sur le même onglet se recouvrent, la page monte alors la 3D avant de se replier, et
+    // la mesure 2D compte les recalculs de cette bascule (jusqu'à 6 dans la première seconde), moteur three en erreur compris.
+    await premiere.cdp.fermer();
   }
+  if (repliAFaire === null) return;
+
+  // 4. Même mesure en repli 2D : la marque `salle3d:plan` y est posée aussi (M20 compte les deux rendus).
+  const repli = await preparer3d(ctx, { mouvementReduit: true });
+  try {
+    const page2d = await preparerPage(ctx);
+    const resultat2d = await mesurer(ctx, page2d, repli.cdp, repliAFaire.rootId, repliAFaire.rafales, { attendue3d: false });
+    releve(ctx, `M20 (repli 2D) : ${resume(resultat2d)}`);
+  } finally {
+    await repli.cdp.fermer();
+  }
+  ctx.expectNoConsoleErrors();
 }
 
 /** Conversation réelle du banc : la racine des sessions synthétiques, connue du cockpit. */
@@ -88,6 +112,7 @@ async function mesurer(ctx, page, cdp, rootId, rafales, { attendue3d }) {
     const reste = 1_000 - (Date.now() - parti);
     if (reste > 0) await attendre(reste);
   }
+  const finDesRafales = await page.evaluer("performance.now()");
   // Les derniers faits traversent encore la file d'affichage (au plus 250 ms) et le flux du cockpit.
   await attendre(1_500);
   const fin = await page.evaluer("performance.now()");
@@ -95,6 +120,10 @@ async function mesurer(ctx, page, cdp, rootId, rafales, { attendue3d }) {
   const plans = await marques(cdp, "salle3d:plan");
   const scenes = await marques(cdp, "salle3d:scene");
   const debitPlan = debitParSeconde(plans.map((m) => m.t), { debut, fin });
+  // Les secondes VIDES se comptent sur les seules SECONDES DE RAFALE : pendant l'écoulement qui suit (1,5 s, le temps que les
+  // derniers faits traversent la file), la vue a déjà rattrapé et n'a plus rien à redessiner — une seconde sans marque y est
+  // attendue, pas un contrôle vide. Le plafond, lui, reste compté sur toute la période, écoulement compris.
+  const pendantLesRafales = debitParSeconde(plans.map((m) => m.t), { debut, fin: finDesRafales });
   const scenesPlan = scenes.filter((m) => m.detail?.cause === "plan");
   const debitScene = debitParSeconde(scenesPlan.map((m) => m.t), { debut, fin });
 
@@ -105,7 +134,8 @@ async function mesurer(ctx, page, cdp, rootId, rafales, { attendue3d }) {
     plans: debitPlan.total,
     planMaxParSeconde: debitPlan.max,
     secondes: debitPlan.secondes,
-    secondesVides: debitPlan.vides,
+    secondesDeRafale: pendantLesRafales.secondes,
+    secondesVides: pendantLesRafales.vides,
     scenes: scenes.length,
     scenesDePlan: scenesPlan.length,
     sceneMaxParSeconde: debitScene.max,
@@ -115,7 +145,8 @@ async function mesurer(ctx, page, cdp, rootId, rafales, { attendue3d }) {
   releve(ctx, `M20 mesurée (${mesure.rendu}) : ${resume(mesure)} ; plans par seconde ${resume(parSeconde(plans.map((m) => m.t), debut))}`);
 
   exiger(debitPlan.total > 0, "aucune marque salle3d:plan pendant les rafales : contrôle vide, scénario en échec.");
-  exiger(debitPlan.vides === 0, `${debitPlan.vides} seconde(s) de rafale sans aucune marque salle3d:plan : contrôle vide sur ces secondes.`);
+  exiger(pendantLesRafales.secondes >= rafales.length - 1, `période de rafale mesurée trop courte : ${pendantLesRafales.secondes} seconde(s) pour ${rafales.length} rafale(s).`);
+  exiger(pendantLesRafales.vides === 0, `${pendantLesRafales.vides} seconde(s) de rafale sans aucune marque salle3d:plan : contrôle vide sur ces secondes.`);
   exiger(debitPlan.max <= PLAFOND, `${debitPlan.max} recalculs de plan dans une même seconde (plafond ${PLAFOND}).`);
   exiger(debitScene.max <= PLAFOND, `${debitScene.max} images de cause « plan » dans une même seconde (plafond ${PLAFOND}).`);
   if (attendue3d) exiger(scenes.length > 0, "aucune image rendue par le moteur three : contrôle 3D vide.");

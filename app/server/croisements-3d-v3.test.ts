@@ -17,6 +17,10 @@
 //      reste bornée et derrière le jeton du banc.
 //   5. Constantes à garder (règles de train) : three@0.186.0 exact en devDependencies, `chunkSizeWarningLimit` jamais relevé,
 //      `SALLE_OUVERTE` jamais posée à vrai.
+//   6. Ce que le banc COMPLET a mis au jour, corrigé par l'intégrateur : `it3-debit` rejouait la même suite dense pour sa mesure
+//      2D (le cockpit écarte les doublons : la mesure était vide) ; `it1-ui-demonstration` remettait le curseur des moments par
+//      une valeur posée (React ne voit pas ce changement) ; et « Revoir » comptait comme sienne la relecture de la liste que la
+//      page du chat lance après un classement, alors que la boîte ne connaît que `GET /api/revoir/…`.
 // Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc lui-même
 // (`scripts/run-e2e.sh --faux --project-prefix 3d11-e2e --image-tag 3d11`) est joué par l'intégrateur, hors de `npm test`
 // (décision D-06) ; ses chiffres sont recopiés dans `EXEC/mesures/L35.md`.
@@ -29,6 +33,7 @@ import {
   type DependancesCadence,
   prefixeMontre,
 } from "../web/pages/salle-controle/useFaitsConversation.ts";
+import { FactDeduper } from "./shared/activity-facts.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
 import { NEON_RENDU_MS } from "./shared/neon-band.ts";
 import { remplir } from "./shared/neon-texts.ts";
@@ -283,7 +288,8 @@ describe("croisement 3-V3 : L35, le banc de l'itération 3 ne peut pas être ver
     assert.match(debit, /const PLAFOND = 4;/, "le plafond de M20 n'est plus 4");
     assert.match(debit, /debitPlan\.max <= PLAFOND/, "le plafond n'est plus contrôlé sur le maximum par seconde");
     assert.ok(!/PLAFOND \+ \d|tolerance|tolérance/i.test(debit), "une tolérance a été ajoutée au plafond de M20");
-    assert.match(debit, /debitPlan\.vides === 0/, "les secondes sans marque ne font plus échouer la mesure");
+    assert.match(debit, /pendantLesRafales\.vides === 0/, "les secondes de rafale sans marque ne font plus échouer la mesure");
+    assert.match(debit, /debitParSeconde\(plans\.map\(\(m\) => m\.t\), \{ debut, fin: finDesRafales \}\)/, "les secondes vides ne sont plus comptées sur les seules rafales");
     const webgl = lire(path.join(E2E_DIR, "lib", "webgl.mjs"));
     assert.match(webgl, /while \(j < tries\.length && tries\[j\] - tries\[i\] < 1_000\) j\+\+;/, "la fenêtre d'une seconde n'est plus glissante");
   });
@@ -338,6 +344,81 @@ describe("croisement 3-V3 : constantes à garder (règles de train)", () => {
     for (const fichier of fichiers) {
       assert.ok(!/SALLE_OUVERTE\s*=\s*true/.test(lire(fichier)), `${path.relative(DEPOT, fichier)} ouvre la Salle OMO`);
     }
+  });
+});
+
+// --- 6. Corrections du train : ce que le banc complet a mis au jour ----------------------------------------------------------------
+
+describe("croisement 3-V3 : corrections du train sur le banc complet", () => {
+  it("it3-debit rejoue une SECONDE suite en repli 2D : la première ne ferait naître aucun fait", () => {
+    const debit = sansCommentaires(lire(path.join(SCENARIOS_DIR, "it3-debit.mjs")));
+    const suites = [...debit.matchAll(/suiteDense\("([a-z])"\)/g)].map((trouve) => trouve[1]);
+    assert.equal(suites.length, 2, "le scénario ne charge plus exactement deux suites denses (3D puis repli 2D)");
+    assert.notEqual(suites[0], suites[1], "les deux suites portent la même marque de préfixe : leurs sessions seraient les mêmes");
+    assert.match(debit, /emettre\(dense2d\.creations\)/, "les sessions de la seconde suite ne sont plus annoncées avant la mesure 2D");
+    assert.match(debit, /repliAFaire = \{ rootId, rafales: dense2d\.rafales \}/, "la mesure 2D ne rejoue plus la seconde suite");
+    assert.match(debit, /mesurer\(ctx, page2d, repli\.cdp, repliAFaire\.rootId, repliAFaire\.rafales/, "la mesure 2D ne rejoue pas la suite préparée pour elle");
+  });
+
+  it("it3-debit ne tient jamais deux connexions du banc en même temps, et quitte la salle avant de changer les réglages", () => {
+    const debit = sansCommentaires(lire(path.join(SCENARIOS_DIR, "it3-debit.mjs")));
+    const quitte = debit.indexOf("location.hash = '#/'");
+    const ferme = debit.indexOf("premiere.cdp.fermer()");
+    const repli = debit.indexOf('preparer3d(ctx, { mouvementReduit: true })');
+    assert.ok(quitte > 0 && ferme > quitte, "la salle n'est plus quittée avant la fermeture de la première connexion (moteur vivant au déchargement)");
+    assert.ok(repli > ferme, "la connexion du repli est ouverte avant la fermeture de la première : les réglages émulés se recouvrent");
+  });
+
+  it("raison de la seconde suite : un appel d'outil rejoué à l'identique est écarté, celui d'une autre session est gardé", () => {
+    const deduper = new FactDeduper();
+    const fait = (sessionId: string): ActivityFact => ({ rootId: "ses_r", sessionId, kind: "statut", ref: "c0-00", data: { etat: "outil", phase: "running" }, at: 1 });
+    assert.equal(deduper.accept(fait("dk3f2n200")), true, "le premier appel doit être gardé");
+    assert.equal(deduper.accept(fait("dk3f2n200")), false, "le MÊME appel rejoué doit être écarté : rejouer la première suite ne dessinerait rien");
+    assert.equal(deduper.accept(fait("rk3f2n200")), true, "le même appel sur une AUTRE session doit être gardé : c'est ce que fait la seconde suite");
+  });
+
+  it("it1-ui-demonstration ramène le curseur au clavier, jamais par une valeur posée", () => {
+    const source = sansCommentaires(lire(path.join(SCENARIOS_DIR, "it1-ui-demonstration.mjs")));
+    const bloc = /async function allerAuPremierMoment[\s\S]*?\n}/.exec(source)?.[0] ?? "";
+    assert.ok(bloc.length > 0, "allerAuPremierMoment a disparu du scénario des démonstrations");
+    assert.ok(!/\.value\s*=/.test(bloc), "le curseur est remis par une valeur posée : React ne voit pas ce changement (le lecteur ne bouge pas)");
+    assert.match(bloc, /touche\("Home"\)/, "le curseur n'est plus ramené par la touche [Début]");
+    assert.match(bloc, /touche\("ArrowLeft"\)/, "le filet clavier (←) a disparu : une touche [Début] non servie bloquerait le parcours");
+  });
+
+  it("la tête de la bande reste sur une ligne pendant une demande : la carte garde la place de ses signes", () => {
+    // Mesuré sur le banc (20/09) : avec [Revoir cette demande] et [Ouvrir la salle de contrôle], la tête passait à 80 px sur
+    // trois lignes ; la bande n'en a que 114 à 1280 × 800, et la carte (63 px, son plancher) était coupée — ses signes
+    // tombaient sous « Qui travaille ? ». Sur une ligne, la tête fait 26 px et tout tient (it1-ui-mise-en-page, §5.7.1).
+    const css = lire(path.join(APP_DIR, "web", "pages", "chat", "activity", "activity.css"));
+    const bloc = /\.activity-region\.demande > \.neon-band > \.neon-head \{[^}]*flex-wrap: nowrap;[^}]*\}/.exec(css)?.[0] ?? "";
+    assert.ok(bloc.length > 0, "la tête de la bande peut de nouveau passer à la ligne pendant une demande");
+    assert.match(bloc, /overflow-x: auto;/, "les commandes qui débordent ne sont plus atteignables par défilement latéral");
+    assert.match(css, /\.activity-region\.demande > \.neon-band > \.neon-head > \.neon-commands \{[^}]*flex-wrap: nowrap;[^}]*\}/, "les commandes passent encore à la ligne");
+    assert.match(css, /\.activity-region\.demande > \.neon-band > \.neon-head \.btn \{\s*white-space: nowrap;\s*\}/, "un libellé de commande peut encore se couper en deux lignes");
+    // La règle ne vaut QUE pendant une demande : hors demande, la tête garde son retour à la ligne (§5.6).
+    const neon = lire(path.join(APP_DIR, "web", "pages", "chat", "activity", "neon.css"));
+    assert.match(neon, /\.neon-head \{[^}]*flex-wrap: wrap;[^}]*\}/, "la tête de la bande ne revient plus à la ligne hors demande");
+  });
+
+  it("« Revoir » ne peut pas lire les archives : la relecture de la liste vient de la page du chat", () => {
+    // La boîte ne connaît que `salle3dApi` (GET /api/revoir/…) ; le croisement de la vague 1 interdit déjà `lib/api.ts` sous
+    // le dossier `revoir/`. Aucune route d'archive ne peut donc venir de « Revoir » : celle que le scénario compte à part est la liste
+    // que la PAGE DU CHAT relit après un événement de classement (ChatPage.tsx).
+    const dossier = path.join(APP_DIR, "web", "pages", "salle-controle", "revoir");
+    const fichiers = fs.readdirSync(dossier).filter((nom) => /\.tsx?$/.test(nom));
+    assert.ok(fichiers.length >= 6, "dossier revoir/ non parcouru");
+    for (const nom of fichiers) assert.ok(!lire(path.join(dossier, nom)).includes("/api/archive"), `${nom} cite une route d'archive`);
+    const chat = sansCommentaires(lire(path.join(APP_DIR, "web", "pages", "ChatPage.tsx")));
+    assert.match(chat, /conversation\.classified[\s\S]{0,400}loadConversations/, "la relecture de la liste du chat n'est plus celle du classement");
+    const scenario = sansCommentaires(lire(path.join(SCENARIOS_DIR, "it3-revoir.mjs")));
+    assert.match(scenario, /await attendreClassement\(ctx, rootId\)/, "le scénario n'attend plus le classement avant de mesurer le réseau");
+    assert.match(scenario, /chemin\(ligne\) === "\/api\/archive"/, "la relecture de la liste n'est plus comptée à part");
+    assert.match(scenario, /autres\.length === 0/, "le contrôle « rien d'autre que GET /api/revoir/… » a disparu");
+    // Côté opencode, ce que le faux reçoit est ATTRIBUÉ : rien sur la conversation revue, aucun appel d'IA hors classement.
+    assert.match(scenario, /surLaConversation\.length === 0/, "le scénario ne contrôle plus ce qu'opencode reçoit sur la conversation revue");
+    assert.match(scenario, /appelsIa\.length === 0/, "le scénario ne contrôle plus les appels d'IA pendant « Revoir »");
+    assert.match(scenario, /r\.body\?\.agent !== "cockpit-classifier"/, "le classement automatique n'est plus la seule exception admise");
   });
 });
 

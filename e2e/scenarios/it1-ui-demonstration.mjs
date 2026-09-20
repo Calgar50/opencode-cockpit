@@ -120,7 +120,7 @@ async function parcourirMoments(ctx, mode, captures) {
   exiger(compteur, "compteur des moments illisible.");
   const total = Number(compteur[2]);
   exiger(total >= 3, `démonstration de ${total} moment(s) seulement.`);
-  await allerAuPremierMoment(page);
+  await allerAuPremierMoment(page, total);
   const vus = { consigne: 0, resultat: 0, enMemeTemps: false };
   for (let n = 1; n <= total; n++) {
     await attendreMoment(page, n, total);
@@ -154,14 +154,22 @@ async function attendreMoment(page, n, total) {
   });
 }
 
-/** [3d] Ramène le curseur des moments au premier moment (le lecteur s'ouvre sur le dernier). */
-async function allerAuPremierMoment(page) {
-  await page.evaluer(`(() => {
-    const curseur = document.querySelector('.modal .revoir-curseur');
-    curseur.value = curseur.min;
-    curseur.dispatchEvent(new Event('input', { bubbles: true }));
-    curseur.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
+/**
+ * [3d] Ramène le curseur des moments au premier moment (le lecteur s'ouvre sur le dernier). Le curseur est un VRAI curseur : il se
+ * déplace au clavier, comme le ferait la personne — une valeur posée par programme ne déclenche pas son changement (React lit la
+ * valeur par son accesseur natif). [Début] d'abord ; si le navigateur ne la sert pas, on recule moment par moment avec ←.
+ */
+async function allerAuPremierMoment(page, total) {
+  const curseur = ".modal .revoir-curseur";
+  const valeur = async () => Number(await page.evaluer(`document.querySelector('${curseur}')?.value ?? -1`));
+  const premier = Number(await page.evaluer(`document.querySelector('${curseur}').min`));
+  await page.evaluer(`document.querySelector('${curseur}').focus()`);
+  await page.touche("Home");
+  await attendre(200);
+  for (let pas = 0; pas < total && (await valeur()) !== premier; pas++) {
+    await page.touche("ArrowLeft");
+    await attendre(30);
+  }
 }
 
 /**

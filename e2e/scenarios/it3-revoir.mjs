@@ -14,8 +14,10 @@
 //   4. [Voir la consigne] (U2) s'ouvre depuis une légende ET depuis le zoom 3 : le texte de la consigne scriptée est affiché
 //      depuis la copie gardée par le cockpit, et une consigne de 9 000 caractères porte « Consigne tronquée : … » ;
 //   5. ENTRE L'OUVERTURE ET LA FERMETURE de la boîte, le navigateur n'envoie QUE des « GET /api/revoir/… » (consignes
-//      comprises) : aucune requête « /api/oc/ », aucun « …/facts », rien d'autre ; le faux opencode ne reçoit RIEN et le
-//      journal des dépenses du cockpit ne bouge pas ;
+//      comprises) : aucune requête « /api/oc/ », aucun « …/facts », rien d'autre — la relecture de SA propre liste par la page
+//      du chat (GET /api/archive, déclenchée par un classement) est comptée à part, la boîte ne pouvant pas l'émettre ; le faux
+//      opencode ne reçoit RIEN sur la conversation revue et aucun appel d'IA (hors le classement automatique du cockpit, qui
+//      travaille en fond sur les conversations des scénarios précédents), et le journal des dépenses ne bouge pas ;
 //   6. en mode Simple, sur une racine principale : le bandeau est là et aucun mot interdit en mode Simple n'entre dans la boîte.
 //
 // ÉCART consigné : la fiche cite « /api/costs » pour le journal des dépenses ; la route du cockpit est
@@ -55,6 +57,8 @@ const PAS_MS = 5_000;
 const SEUIL_RACCOURCI_MS = 4_000;
 /** Relecture archivée d'une conversation au repos (classifier.ts, onIdle), suivie d'une relecture de la liste. */
 const ARCHIVAGE_MS = 5_000;
+/** Routes d'opencode qui font travailler une IA (mêmes que le scénario des démonstrations). */
+const ROUTES_IA = /^\/session\/[^/]+\/(prompt_async|command|summarize|shell|message)$/;
 /** §2.3 l.102 : quelques mots interdits en mode Simple, écrits ici en clair. */
 const INTERDITS_SIMPLE = [/\bagents?\b/i, /\bsous-agents?\b/i, /\bsessions?\b/i, /\bpermissions?\b/i, /\bit[ée]rations?\b/i, /\bn(?:œ|oe)uds?\b/i];
 
@@ -118,9 +122,26 @@ async function deleguer(ctx, page) {
   });
 }
 
+/**
+ * Attend que le classement automatique de la conversation soit écrit (`classifiedAt` posé). Le cockpit émet alors
+ * « conversation.classified », et la page du chat relit sa liste 500 ms plus tard : passé ce point, la mesure du réseau de
+ * « Revoir » ne subit plus cette relecture. Lu par l'API du banc, jamais par la page : la mesure du navigateur reste intacte.
+ * Sans classement au bout de 30 s (classement coupé, pile chargée), on continue : le contrôle du réseau, lui, reste entier.
+ */
+async function attendreClassement(ctx, rootId) {
+  const classe = async () => {
+    const detail = await ctx.api.get(`/api/archive/${encodeURIComponent(rootId)}`).catch(() => null);
+    return (detail?.conversation?.classifiedAt ?? null) !== null;
+  };
+  await attendreQue(classe, { libelle: "classement automatique de la conversation", delaiMs: 30_000 }).catch(() => false);
+}
+
 /** 1 à 5 : la boîte ouverte depuis la bande, le lecteur, les consignes, et le réseau du navigateur. */
 async function lecteurDepuisLaBande(ctx, page, journal, rootId) {
   await ouvrirConversation(ctx, rootId);
+  // Le classement automatique de CETTE conversation écrit son archive, puis le cockpit émet « conversation.classified » et la page
+  // du chat relit sa liste 500 ms plus tard (ChatPage.tsx) : attendu ICI, il ne tombe pas au milieu de la mesure de réseau.
+  await attendreClassement(ctx, rootId);
   // Le classement automatique d'autres conversations de la pile peut travailler en fond : on attend le calme sans l'exiger.
   await attendreReseauCalme(page, { calmeMs: 1_500 }).catch(() => attendre(1_500));
   const avant = {
@@ -143,7 +164,14 @@ async function lecteurDepuisLaBande(ctx, page, journal, rootId) {
   // Le flux d'événements (`/api/events`) est le canal permanent de la page, ouvert bien avant la boîte : une reconnexion n'est
   // pas une requête de « Revoir ». Tout le reste est interdit : aucune `/api/oc/`, aucun `…/facts`, rien d'autre.
   const chemin = (ligne) => new URL(ligne.url).pathname;
-  const lignes = journal.lignes(avant.reseau).filter((ligne) => chemin(ligne).startsWith("/api/") && chemin(ligne) !== "/api/events");
+  // La PAGE DU CHAT qui porte la bande relit sa propre liste de conversations (GET /api/archive) 500 ms après un événement
+  // « conversation.classified » ou « conversation.updated » du cockpit — le classement d'une autre conversation de la pile, par
+  // exemple (ChatPage.tsx). Ce n'est jamais une lecture de « Revoir » : la boîte ne connaît que `salle3dApi`, c'est-à-dire
+  // « GET /api/revoir/… », ce que le croisement de la vague 3 vérifie dans le code (aucune route d'archive sous le dossier `revoir/`). Elle
+  // est donc comptée à part et consignée, jamais confondue avec une lecture de la boîte ; tout le reste reste interdit.
+  const listeDuChat = (ligne) => ligne.methode === "GET" && chemin(ligne) === "/api/archive";
+  const relectures = journal.lignes(avant.reseau).filter(listeDuChat).length;
+  const lignes = journal.lignes(avant.reseau).filter((ligne) => chemin(ligne).startsWith("/api/") && chemin(ligne) !== "/api/events" && !listeDuChat(ligne));
   const permises = lignes.filter((ligne) => ligne.methode === "GET" && chemin(ligne).startsWith("/api/revoir/"));
   const autres = lignes.filter((ligne) => !permises.includes(ligne));
   exiger(autres.length === 0, `requête(s) autres que « GET /api/revoir/… » pendant « Revoir » : ${resume(autres.map((l) => `${l.methode} ${chemin(l)}`))}`);
@@ -156,10 +184,20 @@ async function lecteurDepuisLaBande(ctx, page, journal, rootId) {
     usage: await ctx.api.get("/api/usage/summary"),
     session: await ctx.api.get(`/api/usage/session/${encodeURIComponent(rootId)}`).catch(() => null),
   };
-  exiger(apres.faux === avant.faux, `le faux opencode a reçu ${apres.faux - avant.faux} requête(s) pendant « Revoir ».`);
+  // Ce que le faux a reçu pendant la boîte est ATTRIBUÉ, comme dans le scénario des démonstrations : RIEN sur la conversation
+  // revue, et AUCUN appel d'IA — hors le classement automatique du cockpit (`cockpit-classifier`), qui relit en fond les
+  // conversations de la pile laissées par les scénarios précédents et n'a rien à voir avec « Revoir ».
+  const recues = (await ctx.opencodeRequests()).slice(avant.faux);
+  const surLaConversation = recues.filter((r) => `${r.pathname} ${JSON.stringify(r.query ?? {})} ${JSON.stringify(r.body ?? {})}`.includes(rootId));
+  exiger(surLaConversation.length === 0, `opencode a reçu ${resume(surLaConversation.map((r) => `${r.method} ${r.pathname}`))} sur la conversation pendant « Revoir ».`);
+  const appelsIa = recues.filter((r) => String(r.method).toUpperCase() === "POST" && ROUTES_IA.test(r.pathname ?? "") && r.body?.agent !== "cockpit-classifier");
+  exiger(appelsIa.length === 0, `demande(s) d'IA reçue(s) par opencode pendant « Revoir » : ${resume(appelsIa.map((r) => r.pathname))}`);
   exiger(apres.usage?.spentUsd === avant.usage?.spentUsd, `le journal des dépenses a bougé pendant « Revoir » : ${avant.usage?.spentUsd} → ${apres.usage?.spentUsd}.`);
   exiger(JSON.stringify(apres.session) === JSON.stringify(avant.session), "une ligne « usage » a été écrite sur la conversation pendant « Revoir ».");
-  releve(ctx, `« Revoir » depuis la bande : ${permises.length} lecture(s) /api/revoir (dont ${consignesLues} consigne(s)), 0 requête au faux, dépenses inchangées`);
+  releve(
+    ctx,
+    `« Revoir » depuis la bande : ${permises.length} lecture(s) /api/revoir (dont ${consignesLues} consigne(s)), ${relectures} relecture(s) de la liste du chat, ${recues.length} requête(s) de fond reçues par le faux (aucune sur la conversation, aucun appel d'IA), dépenses inchangées`,
+  );
 
   await page.touche("Escape");
   await page.attendreQue("!document.querySelector('.revoir-boite')", { libelle: "boîte fermée par Échap" });
