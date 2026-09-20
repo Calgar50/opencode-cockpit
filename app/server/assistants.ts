@@ -20,6 +20,7 @@ import type { SettingsStore } from "./settings.ts";
 import type {
   AssistantOrigin,
   AssistantPreview,
+  AssistantRole,
   AssistantState,
   AssistantsResponse,
   AssistantView,
@@ -403,7 +404,13 @@ export async function probeSessionsBusyStrict(deps: {
 
 // --- Service -----------------------------------------------------------------------------------
 
-type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at">;
+/** `role` : colonne `item_meta.role` (déjà migrée), absente d'`ItemMetaRow` ; sans valeur, la ligne reste « assistant ». */
+type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at"> & { role?: AssistantRole };
+
+/** Rôle d'une ligne item_meta : « equipier » pour un assistant d'équipe installé depuis le catalogue, « assistant » sinon. */
+function roleOf(row: Pick<ItemMetaRow, "name">): AssistantRole {
+  return (row as { role?: unknown }).role === "equipier" ? "equipier" : "assistant";
+}
 
 interface ViewContext {
   rows: ItemMetaRow[];
@@ -460,14 +467,14 @@ export class AssistantService {
     this.#d.db
       .prepare(
         `INSERT INTO item_meta (kind, name, title, use_case, icon, tier, rights, task_size, examples, origin, catalog_id,
-           catalog_version, applied_model, applied_variant, created_at, updated_at)
+           catalog_version, applied_model, applied_variant, role, created_at, updated_at)
          VALUES (:kind, :name, :title, :use_case, :icon, :tier, :rights, :task_size, :examples, :origin, :catalog_id,
-           :catalog_version, :applied_model, :applied_variant, :now, :now)
+           :catalog_version, :applied_model, :applied_variant, :role, :now, :now)
          ON CONFLICT(kind, name) DO UPDATE SET
            title = excluded.title, use_case = excluded.use_case, icon = excluded.icon, tier = excluded.tier,
            rights = excluded.rights, task_size = excluded.task_size, examples = excluded.examples, origin = excluded.origin,
            catalog_id = excluded.catalog_id, catalog_version = excluded.catalog_version, applied_model = excluded.applied_model,
-           applied_variant = excluded.applied_variant, updated_at = excluded.updated_at`,
+           applied_variant = excluded.applied_variant, role = excluded.role, updated_at = excluded.updated_at`,
       )
       .run(
         params({
@@ -485,6 +492,7 @@ export class AssistantService {
           catalog_version: row.catalog_version,
           applied_model: row.applied_model,
           applied_variant: row.applied_variant,
+          role: row.role ?? "assistant",
           now,
         }),
       );
@@ -636,6 +644,7 @@ export class AssistantService {
       origin: row.origin,
       catalogId: row.catalog_id,
       catalogVersion: row.catalog_version,
+      role: roleOf(row),
       tier: isTier(row.tier) ? row.tier : null,
       taskSize,
       rights: detected.rights,
@@ -783,6 +792,7 @@ export class AssistantService {
         web: entry.web,
         tier: entry.tier,
         taskSize: entry.taskSize,
+        role: entry.role ?? "assistant",
         fiches: [...entry.fiches],
         examples: [...entry.examples],
         instructions: entry.instructions,
@@ -870,6 +880,8 @@ export class AssistantService {
       catalog_version: entry.version,
       applied_model: text(item.frontmatter.model),
       applied_variant: text(item.frontmatter.variant),
+      // `role` ne passe pas par le brouillon : il ne vit que dans item_meta.
+      role: entry.role ?? "assistant",
     });
     this.#d.lookup.invalidate();
     this.#d.hub.cockpit("studio.changed", { kind: "agents", name });
@@ -1024,6 +1036,8 @@ export class AssistantService {
         catalog_version: existing && existing.origin !== "studio" ? existing.catalog_version : null,
         applied_model: text(item.frontmatter.model),
         applied_variant: text(item.frontmatter.variant),
+        // « Modifier » ne change pas le rôle : un assistant d'équipe installé le garde, comme son origine.
+        role: existing && existing.origin !== "studio" ? roleOf(existing) : "assistant",
       });
     });
 
@@ -1390,6 +1404,7 @@ export class AssistantService {
         catalog_version: row?.catalog_version ?? null,
         applied_model: model,
         applied_variant: variant,
+        role: row ? roleOf(row) : "assistant",
       });
     });
   };
