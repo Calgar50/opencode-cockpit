@@ -511,6 +511,10 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      // <c5:production>
+      // Seconde lecture (L44c) : DERNIER crochet de beforeBilledSend (D-5-06), donc après le plancher et les plans.
+      { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
+      // </c5:production>
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
@@ -525,6 +529,14 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <c5:production>
+      // Construction (itération 5), en fin de MODULE_ORDER et de STEP_ORDER.routes : L44c inscrit le crochet de la Seconde
+      // lecture, DERNIER de beforeBilledSend (D-5-06), et sa route ; L44b et L46a montent les leurs dans le groupe
+      // « construction ». Le module `chronologie` reste le squelette de T5a jusqu'à L47b : il n'inscrit rien.
+      { kind: "routes", key: "construction", module: "methods" },
+      { kind: "routes", key: "construction", module: "secondReading" },
+      { kind: "routes", key: "construction", module: "teamCosts" },
+      // </c5:production>
     ]);
     assert.deepEqual(
       [
@@ -534,12 +546,18 @@ describe("câblage 1.1 : ports neutres", () => {
         wiring.hooks.beforeOnceRelay.length,
         wiring.hooks.abort.length,
       ],
-      [1, 1, 2, 1, 1],
+      // <c5:production>
+      // beforeBilledSend passe de 2 à 3 : plancher, plans, Seconde lecture (L44c), dans cet ordre.
+      [1, 1, 3, 1, 1],
+      // </c5:production>
     );
     assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated"]);
     assert.equal(wiring.derivations.length, 3);
     assert.equal(wiring.startup.length, 1);
-    assert.equal(wiring.routes.length, 6);
+    // <c5:production>
+    // 6 inscriptions de routes de l'it1, plus les trois du groupe « construction » (L44b, L44c, L46a).
+    assert.equal(wiring.routes.length, 9);
+    // </c5:production>
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.
     assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {

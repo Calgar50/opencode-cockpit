@@ -53,11 +53,15 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     // délégations (L1d, dont le crochet laisse passer le « once » d'une autre demande qu'une délégation) et plans (L6b, crochet
     // d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0 inchangé
     // ci-dessous.
+    // <c5:inscriptions>
+    // Construction (itération 5, V1) : les six inscriptions de l'it1 gagnent les trois routes du groupe « construction »
+    // (L44b methods, L44c secondReading, L46a teamCosts). `chronologie` reste inerte jusqu'à L47b.
     assert.equal(
       h.cockpit.wiring.routes.length,
-      6,
-      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic",
+      9,
+      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, construction ×3",
     );
+    // </c5:inscriptions>
 
     const { session, asked } = await pendingAsk(h, "Croisement V1");
     const always = await h.call("POST", `/api/oc/permission/${asked.id}/reply`, { headers: h.headers.mutating, body: { reply: "always" } });

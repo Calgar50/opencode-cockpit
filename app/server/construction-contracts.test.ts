@@ -90,16 +90,28 @@ describe("construction : câblage propre", () => {
     assert.equal(new Set(CONSTRUCTION_MODULE_ORDER).size, CONSTRUCTION_MODULE_ORDER.length);
   });
 
-  it("CONSTRUCTION_MODULES : un module par nom, à son rang, et aucun n'inscrit quoi que ce soit (squelettes)", () => {
+  // <c5:inscriptions-v1>
+  // Train de V1 : les modules livrés inscrivent ce que leur fiche annonce ; ceux qui restent des squelettes de T5a n'inscrivent
+  // toujours rien. La table est exhaustive et nommée module par module : un squelette qui se mettrait à inscrire, comme un module
+  // livré qui perdrait une inscription ou en gagnerait une autre, fait tomber ce test. `chronologie` est livré par L47b (V2).
+  const INSCRIPTIONS_ATTENDUES: Record<ConstructionModuleName, readonly string[]> = {
+    methods: ["routes/construction"], // L44b, V1
+    secondReading: ["hook/beforeBilledSend", "routes/construction"], // L44c, V1
+    chronologie: [], // squelette jusqu'à L47b (V2)
+    teamCosts: ["routes/construction"], // L46a, V1
+  };
+
+  it("CONSTRUCTION_MODULES : un module par nom, à son rang, et n'inscrit que ce que sa fiche annonce", () => {
     assert.deepEqual(Object.keys(CONSTRUCTION_MODULES), [...CONSTRUCTION_MODULE_ORDER]);
     for (const name of CONSTRUCTION_MODULE_ORDER) {
       const module = CONSTRUCTION_MODULES[name];
       assert.equal(module.name, name);
       const trace: string[] = [];
       module.install(registreTracant(trace), {} as Cockpit11);
-      assert.deepEqual(trace, [], name);
+      assert.deepEqual(trace, [...INSCRIPTIONS_ATTENDUES[name]], name);
     }
   });
+  // </c5:inscriptions-v1>
 
   it("CONSTRUCTION_HOOKS : le seul crochet est la Seconde lecture, sur une étape connue de STEP_ORDER", () => {
     assert.deepEqual(CONSTRUCTION_HOOKS, { beforeBilledSend: ["secondReading"] });

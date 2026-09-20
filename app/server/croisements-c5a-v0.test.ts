@@ -133,37 +133,69 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
     assert.equal(STEP_ORDER.hooks.beforeBilledSend.at(-1), "secondReading");
   });
 
-  it("squelettes inertes : avec tous les modules réels, aucune inscription de la construction, et GET /api/methods → 404", async (t) => {
+  // <c5:inscriptions-v1>
+  // Train de V1 : L44b (`methods`), L44c (`secondReading`) et L46a (`teamCosts`) livrent leur comportement ; `chronologie` reste
+  // le squelette de T5a jusqu'à L47b (V2). L'assertion « rien d'inscrit » est donc bornée aux modules non encore livrés, et la
+  // liste des inscriptions de la construction est vérifiée EXACTEMENT, pour qu'un module livré ne puisse ni en perdre une ni en
+  // gagner une au passage. Les adresses suivent : celle de la chronologie doit toujours rendre le 404 générique.
+  const MODULES_LIVRES: readonly string[] = ["methods", "secondReading", "teamCosts"];
+  const INSCRIPTIONS_V1: readonly { kind: string; key: string; module: string }[] = [
+    { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
+    { kind: "routes", key: "construction", module: "methods" },
+    { kind: "routes", key: "construction", module: "secondReading" },
+    { kind: "routes", key: "construction", module: "teamCosts" },
+  ];
+
+  it("modules de V1 livrés, chronologie encore inerte : inscriptions exactes, et GET de la chronologie → 404", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
     const wiring = h.cockpit.wiring;
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
     const construction: readonly string[] = CONSTRUCTION_MODULE_ORDER;
+    const inscrites = wiring.registrations.filter((r) => construction.includes(r.module));
     assert.deepEqual(
-      wiring.registrations.filter((r) => construction.includes(r.module)),
+      inscrites.filter((r) => !MODULES_LIVRES.includes(r.module)),
       [],
-      "un squelette de T5a inscrit quelque chose : L44b, L44c, L46a et L47b ne sont pas encore livrés",
+      "un squelette de T5a inscrit quelque chose : L47b (chronologie) n'est pas encore livré",
     );
-    // Les six adresses du client d'API de T5a n'existent pas encore : la V0 ne livre aucun comportement. Elles sont lues dans
-    // CONSTRUCTION_ROUTE_PATHS, jamais recopiées ici : une adresse du client qui s'écarterait des fiches ferait tomber ce test
-    // en même temps que celui du client, au lieu de traverser le train avec tout au vert.
-    // Le corps attendu est le 404 GÉNÉRIQUE de `/api/*` (« Route inconnue. ») : il prouve qu'aucune route déjà montée par
-    // http.ts ne capte l'adresse. C'est ce qui serait arrivé à `/api/archive/equipes`, avalé par `app.get("/api/archive/:id")`.
-    const adresses: readonly [string, string][] = [
-      ["GET", CHEMINS.methodes],
-      ["POST", CHEMINS.secondeLectureEstimation],
-      ["GET", constructionPath(CHEMINS.chronologie, ROOT)],
-      ["GET", `${CHEMINS.coutsEquipes}?${TEAM_COSTS_MONTH_PARAM}=2026-09`],
-      ["GET", constructionPath(CHEMINS.archivesEquipes, ROOT)],
-      ["GET", CHEMINS.equipesConversations],
-    ];
-    for (const [methode, adresse] of adresses) {
+    assert.deepEqual(
+      [...inscrites].sort((a, b) => `${a.kind}/${a.key}/${a.module}`.localeCompare(`${b.kind}/${b.key}/${b.module}`)),
+      [...INSCRIPTIONS_V1],
+      "les inscriptions de la construction ne sont pas exactement celles des trois paquets de V1",
+    );
+    // Les adresses sont lues dans CONSTRUCTION_ROUTE_PATHS, jamais recopiées ici : une adresse du client qui s'écarterait des
+    // fiches ferait tomber ce test en même temps que celui du client, au lieu de traverser le train avec tout au vert.
+    // Le 404 attendu pour la chronologie est le 404 GÉNÉRIQUE de `/api/*` (« Route inconnue. ») : il prouve qu'aucune route déjà
+    // montée par http.ts ne capte l'adresse. C'est ce qui serait arrivé à `/api/archive/equipes`, avalé par
+    // `app.get("/api/archive/:id")`.
+    const inertes: readonly [string, string][] = [["GET", constructionPath(CHEMINS.chronologie, ROOT)]];
+    for (const [methode, adresse] of inertes) {
       const entetes = methode === "GET" ? h.headers.authed : h.headers.mutating;
       const res = await h.call(methode, adresse, { headers: entetes });
       assert.equal(res.status, 404, `${methode} ${adresse} → ${res.status}`);
       assert.deepEqual(res.json(), { error: "not-found", message: "Route inconnue." }, `${methode} ${adresse} : capté par une route existante`);
     }
+    // Les cinq adresses des modules livrés sont montées : elles ne rendent plus le 404 générique. Leur comportement propre est
+    // vérifié par croisements-c5a-v1.test.ts et par les tests de chaque paquet ; ici on prouve seulement qu'elles existent et
+    // qu'aucune route existante ne les avale.
+    const montees: readonly [string, string][] = [
+      ["GET", CHEMINS.methodes],
+      ["POST", CHEMINS.secondeLectureEstimation],
+      ["GET", `${CHEMINS.coutsEquipes}?${TEAM_COSTS_MONTH_PARAM}=2026-09`],
+      ["GET", constructionPath(CHEMINS.archivesEquipes, ROOT)],
+      ["GET", CHEMINS.equipesConversations],
+    ];
+    for (const [methode, adresse] of montees) {
+      const entetes = methode === "GET" ? h.headers.authed : h.headers.mutating;
+      const res = await h.call(methode, adresse, { headers: entetes });
+      assert.notDeepEqual(
+        res.json(),
+        { error: "not-found", message: "Route inconnue." },
+        `${methode} ${adresse} : la route du module livré n'est pas montée`,
+      );
+    }
     h.assertNoGlobalRestart();
   });
+  // </c5:inscriptions-v1>
 
   it("sans les modules (comportement de l'it1) : GET /api/methods → 404", async (t) => {
     const h = await startCockpit(t, { modules: [] });

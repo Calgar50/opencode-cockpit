@@ -38,6 +38,13 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   "app/server/methods-catalogue.ts",
   "app/server/shared/chronologie.ts",
   "app/server/croisements-c5a-v0.test.ts",
+  "app/server/croisements-c5a-v1.test.ts",
+  "app/server/construction-contracts.test.ts",
+  // Ajoutés au train de V1 : les trois paquets de la vague inscrivent leurs routes et leur crochet, ce qui touche deux listes
+  // d'inscriptions écrites par l'itération 1 et partagées avec les autres branches (classe A). Les lignes de la construction y
+  // sont balisées pour que la grande fusion les retrouve.
+  "app/server/croisements-it1-v0.test.ts",
+  "app/server/croisements-it1-v1.test.ts",
   // Contrats et câblage 1.1 : l'intégrateur seul les écrit (D-5-04).
   "app/server/contracts-11.ts",
   "app/server/wiring-11.ts",
