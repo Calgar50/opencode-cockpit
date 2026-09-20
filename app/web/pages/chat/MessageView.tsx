@@ -10,6 +10,15 @@ import { formatDuration, formatTokens } from "../../lib/format.ts";
 import type { OcError, OcFilePart, OcPart, OcTextPart } from "../../lib/types.ts";
 import { DelegationCard } from "./activity/DelegationCard.tsx";
 import { useConversationValue } from "./activity/Deroule.tsx";
+// <c5:methodes-import>
+// Itération 5 (L44e) : bulle repliée de la méthode demandée, présence de sa section dans la réponse (D-5-08, spéc. §6 l.1051),
+// bouton « Seconde lecture » sous une réponse terminée et pied de la réponse du Relecteur (C §9.7, D-5-22).
+import { estDemandeDeSecondeLecture, secondReadingFooter } from "../../../server/shared/chat-methods-view.ts";
+import { splitMessageMethods } from "../../../server/shared/methods.ts";
+import { MethodBubble } from "./methods/MethodBubble.tsx";
+import { MethodPresence } from "./methods/MethodPresence.tsx";
+import { SecondReadingButton, SecondReadingFooter } from "./methods/SecondReadingButton.tsx";
+// </c5:methodes-import>
 import { relativePath, ToolCard } from "./ToolCard.tsx";
 import { type MessageEntry, type Turn, turnTotals } from "./transcript.ts";
 import {
@@ -47,12 +56,25 @@ export function describeError(error: OcError): { tone: "muted" | "critical"; tex
   }
 }
 
-function UserBubble({ entry }: { entry: MessageEntry }) {
-  const text = entry.parts
+// <c5:methodes-texte>
+/**
+ * Texte écrit par la personne (ou rendu par l'assistant) : parties texte non ajoutées par opencode, dans l'ordre. Même lecture
+ * pour la bulle, pour la méthode demandée et pour la présence de sa section dans la réponse.
+ */
+function texteDuMessage(entry: MessageEntry): string {
+  return entry.parts
     .filter((p): p is OcTextPart => p.type === "text" && !p.synthetic)
     .map((p) => p.text)
     .join("\n")
     .trim();
+}
+// </c5:methodes-texte>
+
+function UserBubble({ entry }: { entry: MessageEntry }) {
+  // <c5:methodes-bulle-texte>
+  // Le bloc de méthode est VISIBLE dans le message envoyé (D-5-08) : la bulle montre le texte SANS lui, et le replie dessous.
+  const { texte: text, methodes } = splitMessageMethods(texteDuMessage(entry));
+  // </c5:methodes-bulle-texte>
   const files = entry.parts.filter((p): p is OcFilePart => p.type === "file");
   // Raccourci envoyé (partie subtask, sans texte de vous) : son nom et sa description, jamais une bulle vide (§5.1).
   const shortcuts = entry.parts.filter((p) => p.type === "subtask");
@@ -79,6 +101,9 @@ function UserBubble({ entry }: { entry: MessageEntry }) {
           )}
         </div>
       ) : null}
+      {/* <c5:methodes-bulle> */}
+      <MethodBubble methodes={methodes} />
+      {/* </c5:methodes-bulle> */}
     </div>
   );
 }
@@ -208,6 +233,19 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
   const models = [...new Set(turn.replies.map((r) => `${r.info.providerID}/${r.info.modelID}`))];
   let opening: ReactNode = null;
   if (turn.user) opening = isAutomaticUserMessage(turn.user) ? <ResumeSeparator /> : <UserBubble entry={turn.user} />;
+  // <c5:methodes-demande>
+  // Méthodes demandées PAR CETTE DEMANDE, et texte rendu par l'assistant : la présence de la section attendue se lit dans la
+  // réponse (spéc. §6 l.1051). Le texte de l'IA n'est que lu, jamais interprété ; React l'échappe à l'affichage.
+  const demande = turn.user ? texteDuMessage(turn.user) : "";
+  const methodesDemandees = splitMessageMethods(demande).methodes;
+  const reponse = turn.replies.map(texteDuMessage).join("\n");
+  // Ce tour EST une seconde lecture quand sa demande ouvre par le début fixe du message du Relecteur : même règle que le crochet
+  // du serveur, qui a requalifié la ligne `chat_turns`. Le pied dit alors ce que cette relecture ne remplace pas.
+  const secondeLecture = estDemandeDeSecondeLecture(demande);
+  const pied = secondReadingFooter(demande);
+  // Le bouton n'est proposé que sous une réponse d'une conversation RACINE : le tiroir d'un travail délégué n'en est pas une.
+  const sessionDeTour = turn.replies[0]?.info.sessionID ?? null;
+  // </c5:methodes-demande>
   return (
     <article className="turn">
       {opening}
@@ -251,6 +289,26 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
               );
             })}
           </div>
+          {/* <c5:methodes-presence> */}
+          {/* Sous la réponse qui suit une demande avec méthode : « Méthode appliquée » ou « Méthode non détectée dans la
+              réponse ». Tant que la réponse s'écrit, rien n'est affirmé : la section peut encore arriver. */}
+          {totals.running ? null : <MethodPresence demandees={methodesDemandees} reponse={reponse} />}
+          {/* </c5:methodes-presence> */}
+          {/* <c5:seconde-lecture> */}
+          {/* Pied de la réponse du Relecteur, puis « Seconde lecture (≈ {x} $) » sous une réponse terminée : ni en cours, ni
+              message repère, ni la relecture elle-même (C §9.7). Le composeur garde son assistant. */}
+          {pied !== null && !totals.running ? <SecondReadingFooter texte={pied} /> : null}
+          {conversationRoot && sessionDeTour !== null ? (
+            <SecondReadingButton
+              sessionId={sessionDeTour}
+              cle={turn.key}
+              assistant={agents.join(", ")}
+              terminee={!totals.running}
+              repere={turn.replies.every(isUnbilledMarker)}
+              estSecondeLecture={secondeLecture}
+            />
+          ) : null}
+          {/* </c5:seconde-lecture> */}
           {totals.running ? null : <TurnFooter turn={turn} conversationRoot={conversationRoot} advanced={advanced} />}
         </div>
       ) : null}
