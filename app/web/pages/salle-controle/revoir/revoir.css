@@ -226,6 +226,68 @@
   padding-top: 8px;
 }
 
+/* --- Entrée « Revoir » (L28b) : [Revoir cette demande] et la phrase du refus ------------------------------------- */
+
+.revoir-entree {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.revoir-entree-refus {
+  display: block;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+/* Archives : l'entrée a sa zone dans la grille de la fiche, entre le résumé et le Déroulé (même ordre que la page). Sans cette
+   zone, l'auto-placement la renverrait dans une rangée implicite, tout en bas, sous la Transcription. Même modèle que
+   deroule.css ; le cas où les deux sont là est traité à part, car les deux `:has()` ont la même spécificité. */
+.revoir-entree.is-archives {
+  grid-area: revoir;
+}
+
+.archive-grid:has(> .revoir-entree) {
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    "summary side"
+    "revoir side"
+    "transcript side";
+}
+
+.archive-grid:has(> .revoir-entree):has(> .deroule--archives) {
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas:
+    "summary side"
+    "revoir side"
+    "deroule side"
+    "transcript side";
+}
+
+@media (max-width: 1100px) {
+  .archive-grid:has(> .revoir-entree) {
+    grid-template-rows: auto;
+    grid-template-areas:
+      "summary"
+      "side"
+      "revoir"
+      "transcript";
+  }
+
+  .archive-grid:has(> .revoir-entree):has(> .deroule--archives) {
+    grid-template-rows: auto;
+    grid-template-areas:
+      "summary"
+      "side"
+      "revoir"
+      "deroule"
+      "transcript";
+  }
+}
+
 /* --- Mouvement (§5.5) : transitions seulement quand le poste ne demande pas moins de mouvement -------------------- */
 
 @media (prefers-reduced-motion: no-preference) {

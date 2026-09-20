@@ -3,8 +3,9 @@
 // sous-assistant, table revoir_consignes (migration 8, écrite par L28d seul). `enregistrer` est aussi l'API publique de la jonction
 // des étapes d'équipe (GF3 du plan it5), qui l'appelle sans écrire ce fichier. Jamais journalisée.
 // Écriture : INSERT OR IGNORE paramétré, après bornerConsigne(brut, redactSecrets) ; aucune requête construite par concaténation
-// de valeurs. Lecture : synchrone, en base seulement, jamais une requête à opencode. Purge : purgeConsignes, appelée par la ligne
-// [3d] de conversation-purge.ts (point unique D-07).
+// de valeurs. Lecture : synchrone, en base seulement, jamais une requête à opencode. Écriture, lecture et purge portent toutes sur
+// l'ARBRE de la conversation (TREE_SQL), jamais sur la seule égalité root_id = ? : une ligne écrite sous une racine provisoire reste
+// retrouvée après rattachement. Purge : purgeConsignes, appelée par la ligne [3d] de conversation-purge.ts (point unique D-07).
 import type { ConsignesPort, Salle3dDeps } from "./contracts-3d.ts";
 import type { Db } from "./db.ts";
 import { redactSecrets } from "./redact.ts";
@@ -50,8 +51,10 @@ interface ConsigneRow {
 }
 
 /**
- * Sessions de la conversation : recopié de TREE_SQL de conversation-purge.ts (la racine et toute session suivie rattachée à elle),
- * pour que la purge des consignes porte exactement sur le même arbre que purgeConversation. Un changement là-bas se recopie ici.
+ * Sessions de la conversation : recopié de TREE_SQL de conversation-purge.ts et de fact-store.ts (la racine et toute session suivie
+ * rattachée à elle), pour que l'écriture, la lecture et la purge des consignes portent exactement sur le même arbre que
+ * purgeConversation et que ports.facts.since. Une ligne écrite sous une racine provisoire (session connue avant ses ancêtres, puis
+ * rattachée par SessionTracker) reste ainsi lue, comptée et purgée avec sa conversation. Un changement là-bas se recopie ici.
  */
 const TREE_SQL = "SELECT :root UNION SELECT id FROM sessions WHERE root_id = :root";
 
@@ -92,7 +95,7 @@ export function createConsignesStore(db: Db): ConsignesStore {
     enregistrer({ rootId, parent, enfant, callId, brut, at }: ConsigneAGarder): ConsigneEcriture {
       // Clé d'étape d'équipe comprise (D-3d-30) : le deux-points est refusé par ID_RE, rien n'est écrit.
       if (!ID_RE.test(callId) || !SESSION_ID_RE.test(rootId) || !SESSION_ID_RE.test(parent) || !sessionValide(enfant)) return "cle-invalide";
-      const { n } = prepare("SELECT COUNT(*) AS n FROM revoir_consignes WHERE root_id = ?").get(rootId) as { n: number };
+      const { n } = prepare(`SELECT COUNT(*) AS n FROM revoir_consignes WHERE root_id IN (${TREE_SQL})`).get({ root: rootId }) as { n: number };
       if (Number(n) >= CONSIGNES.parRacine) return "limite";
       const { texte, longueur, tronque } = bornerConsigne(brut, redactSecrets);
       const instant = Number.isFinite(at) ? Math.trunc(at) : 0;
@@ -102,9 +105,10 @@ export function createConsignesStore(db: Db): ConsignesStore {
 
     lire(rootId: string, callId: string): RevoirConsigneResponse | null {
       if (!SESSION_ID_RE.test(rootId) || !ID_RE.test(callId)) return null;
-      const row = prepare(`SELECT ${COLONNES} FROM revoir_consignes WHERE root_id = ? AND call_id = ? ORDER BY at, id LIMIT 1`).get(rootId, callId) as
-        | ConsigneRow
-        | undefined;
+      const row = prepare(`SELECT ${COLONNES} FROM revoir_consignes WHERE root_id IN (${TREE_SQL}) AND call_id = :call ORDER BY at, id LIMIT 1`).get({
+        root: rootId,
+        call: callId,
+      }) as ConsigneRow | undefined;
       return row ? vue(row) : null;
     },
 
@@ -112,8 +116,8 @@ export function createConsignesStore(db: Db): ConsignesStore {
       if (!SESSION_ID_RE.test(rootId) || !SESSION_ID_RE.test(enfant)) return [];
       // « par at croissant » (D-3d-30) ; `id` départage deux consignes de la même milliseconde, l'ordre reste celui de l'écriture.
       const rows = prepare(
-        `SELECT ${COLONNES} FROM revoir_consignes WHERE root_id = ? AND enfant_session_id = ? ORDER BY at, id LIMIT ${PAR_ENFANT_MAX}`,
-      ).all(rootId, enfant) as unknown as ConsigneRow[];
+        `SELECT ${COLONNES} FROM revoir_consignes WHERE root_id IN (${TREE_SQL}) AND enfant_session_id = :enfant ORDER BY at, id LIMIT ${PAR_ENFANT_MAX}`,
+      ).all({ root: rootId, enfant }) as unknown as ConsigneRow[];
       return rows.map(vue);
     },
   };

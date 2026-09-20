@@ -30,6 +30,13 @@ export const RACINES_MAX = 200;
 /** Délai de GET /session/status par dossier (fiche L31a). */
 export const STATUT_TIMEOUT_MS = 5_000;
 
+/**
+ * Sessions de la conversation : la racine et toute session suivie rattachée à elle (conversation-purge.ts, fact-store.ts,
+ * routes-activity.ts). Une ligne écrite sous une racine provisoire (session enregistrée avant ses ancêtres, puis rattachée par
+ * SessionTracker) reste ainsi comptée avec sa conversation.
+ */
+const TREE_SQL = "SELECT :root UNION SELECT id FROM sessions WHERE root_id = :root";
+
 export interface TerritoiresOptions {
   /** Horloge de secours : utilisée quand `lire` reçoit un instant illisible ; absente : Date.now. */
   now?: () => number;
@@ -119,9 +126,11 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
     return racines;
   };
 
-  /** Demandes d'autorisation de l'arbre encore sans réponse (D-3d-13). */
+  /** Demandes d'autorisation de l'ARBRE encore sans réponse (D-3d-13), comme routes-activity.ts : jamais la seule égalité root_id = ?. */
   const attentes = (rootId: string): number => {
-    const row = deps.db.prepare("SELECT COUNT(*) AS n FROM permission_waits WHERE root_id = ? AND replied_at IS NULL").get(rootId) as { n: number };
+    const row = deps.db
+      .prepare(`SELECT COUNT(*) AS n FROM permission_waits WHERE root_id IN (${TREE_SQL}) AND replied_at IS NULL`)
+      .get({ root: rootId }) as { n: number } | undefined;
     return typeof row?.n === "number" ? row.n : 0;
   };
 
@@ -148,6 +157,9 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
   };
 
   /** Dernière ligne `autonomy_requests` de la racine (revoirAcces) ; null : aucune. */
+  // Égalité `root_id = ?` gardée à dessein, et non TREE_SQL comme les attentes : une demande d'autonomie s'ouvre toujours sur une
+  // VRAIE racine (l'utilisateur la demande depuis sa conversation), jamais sur une racine provisoire, et la salle veut la dernière
+  // demande de cette racine-là, pas la plus récente de tout l'arbre. Écart de convention avec routes-activity.ts, assumé ici.
   const derniereDemande = (rootId: string): { finie: boolean } | null => {
     const row = deps.db.prepare("SELECT ended_at FROM autonomy_requests WHERE root_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1").get(rootId) as
       | { ended_at: number | null }

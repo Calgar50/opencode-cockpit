@@ -376,6 +376,9 @@ const SANS_TEXTE: ReadonlyArray<{ fichier: string; paquet: string }> = [
   { fichier: "consignes.ts", paquet: "L28d" },
   { fichier: "vue-simple.ts", paquet: "L28c" },
   { fichier: "territoires.ts", paquet: "L31a" },
+  // Nettoyage des textes d'IA affichés (corrections de la relecture 3-vague-1) : ne porte que des motifs de comparaison,
+  // construits par String.fromCharCode pour ne dépendre d'aucun encodage.
+  { fichier: "texte-ia.ts", paquet: "L28d" },
 ];
 
 // --- Valeurs des types recopiés (D-3d-27), exhaustives par construction -----------------------------------------------------------

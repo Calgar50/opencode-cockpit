@@ -457,6 +457,180 @@ describe("train V1 : migration 8 (A2, D-3d-23)", () => {
   });
 });
 
+// --- L28b × L28c × la fiche d'archive : zones de la grille -------------------------------------------------------------------------
+// Corrections de la relecture 3-vague-1 : `<RevoirEntree placement="archives"/>` est posé en enfant direct de `.archive-grid`, une
+// grille à zones nommées. Sans règle `grid-area`, l'auto-placement renvoyait l'entrée dans une rangée implicite, tout en bas de la
+// page, sous la Transcription. Contrôle STATIQUE : tout enfant direct de la grille a sa zone, et, pour chaque combinaison d'enfants
+// facultatifs (Déroulé, entrée « Revoir ») et pour les deux largeurs, la règle `.archive-grid` qui l'emporte nomme exactement les
+// zones de ces enfants — ni oubli, ni zone orpheline.
+
+const CSS_DIR = path.join(APP_DIR, "web");
+
+/** Enfant direct de `.archive-grid` (ArchiveDetail.tsx) : sa classe, sa présence, et la marque qui le prouve dans le source. */
+const ENFANTS_ARCHIVE: ReadonlyArray<{ quoi: string; classe: string; toujours: boolean; marque: RegExp }> = [
+  { quoi: "résumé", classe: "area-summary", toujours: true, marque: /className="area-summary"/ },
+  { quoi: "panneau latéral", classe: "area-side", toujours: true, marque: /<aside className="area-side"/ },
+  { quoi: "transcription", classe: "area-transcript", toujours: true, marque: /className="area-transcript"/ },
+  { quoi: "Déroulé", classe: "deroule--archives", toujours: false, marque: /<Deroule rootId=\{sessionId\} placement="archives"/ },
+  { quoi: "entrée « Revoir »", classe: "revoir-entree", toujours: false, marque: /<RevoirEntree rootId=\{sessionId\} placement="archives" \/>/ },
+];
+
+interface RegleCss {
+  selecteurs: string[];
+  corps: string;
+  /** Contexte `@media` normalisé ; chaîne vide hors media. */
+  media: string;
+  ordre: number;
+}
+
+/** Règles d'une feuille : `@media` suivis, autres règles-at (keyframes, font-face) sautées avec leur bloc. */
+function lireRegles(css: string, media: string, out: RegleCss[]): void {
+  let i = 0;
+  while (i < css.length) {
+    const ouvre = css.indexOf("{", i);
+    if (ouvre === -1) return;
+    const prelude = css.slice(i, ouvre).trim().replace(/\s+/g, " ");
+    let profondeur = 1;
+    let j = ouvre + 1;
+    while (j < css.length && profondeur > 0) {
+      if (css[j] === "{") profondeur += 1;
+      else if (css[j] === "}") profondeur -= 1;
+      j += 1;
+    }
+    const corps = css.slice(ouvre + 1, j - 1);
+    if (prelude.startsWith("@media")) lireRegles(corps, media === "" ? prelude : `${media} ${prelude}`, out);
+    else if (!prelude.startsWith("@")) out.push({ selecteurs: prelude.split(",").map((s) => s.trim()), corps, media, ordre: out.length });
+    i = j;
+  }
+}
+
+/** Toutes les règles des feuilles de web/, commentaires retirés, dans l'ordre des fichiers. */
+function reglesDeLInterface(): RegleCss[] {
+  const out: RegleCss[] = [];
+  for (const nom of (fs.readdirSync(CSS_DIR, { recursive: true }) as string[]).filter((f) => f.endsWith(".css")).sort()) {
+    lireRegles(fs.readFileSync(path.join(CSS_DIR, nom), "utf8").replace(/\/\*[\s\S]*?\*\//g, ""), "", out);
+  }
+  return out;
+}
+
+/** Zones nommées par `grid-template-areas` ; null si la règle n'en déclare pas. */
+function zonesDeLaGrille(corps: string): Set<string> | null {
+  const declaration = /grid-template-areas\s*:([^;]*);/.exec(corps);
+  if (declaration === null) return null;
+  const zones = new Set<string>();
+  for (const chaine of (declaration[1] ?? "").matchAll(/"([^"]*)"/g)) {
+    for (const nom of (chaine[1] ?? "").split(/\s+/)) if (nom !== "" && nom !== ".") zones.add(nom);
+  }
+  return zones;
+}
+
+/** Valeur d'une déclaration `grid-area` (jamais `grid-template-areas`). */
+const zoneDeclaree = (corps: string): string | null => /(?<![\w-])grid-area\s*:\s*([\w-]+)\s*;/.exec(corps)?.[1] ?? null;
+
+interface GrilleArchive {
+  selecteur: string;
+  /** Classes exigées par les `:has(> .x)` du sélecteur. */
+  conditions: string[];
+  zones: Set<string>;
+  media: string;
+  ordre: number;
+}
+
+const grillesArchive = (regles: readonly RegleCss[]): GrilleArchive[] =>
+  regles.flatMap((regle) =>
+    regle.selecteurs
+      .filter((sel) => sel.startsWith(".archive-grid"))
+      .flatMap((sel) => {
+        const zones = zonesDeLaGrille(regle.corps);
+        if (zones === null) return [];
+        const conditions = [...sel.matchAll(/:has\(\s*>\s*\.([\w-]+)\s*\)/g)].map((m) => m[1] ?? "");
+        return [{ selecteur: sel, conditions, zones, media: regle.media, ordre: regle.ordre }];
+      }),
+  );
+
+/** Zone nommée d'une classe (règle hors `@media` qui cible cette classe et déclare `grid-area`) ; null : aucune. */
+function zoneDeClasse(regles: readonly RegleCss[], classe: string): string | null {
+  const cible = new RegExp(`\\.${classe}(?![\\w-])`);
+  for (const regle of regles) {
+    if (regle.media !== "" || !regle.selecteurs.some((sel) => cible.test(sel))) continue;
+    const zone = zoneDeclaree(regle.corps);
+    if (zone !== null) return zone;
+  }
+  return null;
+}
+
+/** Règle qui l'emporte : toutes ses conditions remplies, le plus de conditions, puis la dernière écrite. */
+function grilleGagnante(grilles: readonly GrilleArchive[], media: string, presentes: ReadonlySet<string>): GrilleArchive | null {
+  let gagnante: GrilleArchive | null = null;
+  for (const grille of grilles) {
+    if (grille.media !== media || !grille.conditions.every((classe) => presentes.has(classe))) continue;
+    const mieux = gagnante === null || grille.conditions.length > gagnante.conditions.length || (grille.conditions.length === gagnante.conditions.length && grille.ordre > gagnante.ordre);
+    if (mieux) gagnante = grille;
+  }
+  return gagnante;
+}
+
+const MEDIAS_ARCHIVE = ["", "@media (max-width: 1100px)"] as const;
+
+/** Manquements de la grille de la fiche d'archive : enfant sans zone, ou grille qui ne nomme pas exactement les zones présentes. */
+function manquementsGrilleArchive(regles: readonly RegleCss[]): string[] {
+  const manquements: string[] = [];
+  const zones = new Map<string, string>();
+  for (const enfant of ENFANTS_ARCHIVE) {
+    const zone = zoneDeClasse(regles, enfant.classe);
+    if (zone === null) manquements.push(`${enfant.quoi} (.${enfant.classe}) : aucune zone nommée (grid-area)`);
+    else zones.set(enfant.classe, zone);
+  }
+  if (manquements.length > 0) return manquements;
+  const grilles = grillesArchive(regles);
+  const facultatifs = ENFANTS_ARCHIVE.filter((e) => !e.toujours).map((e) => e.classe);
+  for (const media of MEDIAS_ARCHIVE) {
+    for (let masque = 0; masque < 2 ** facultatifs.length; masque++) {
+      const presentes = new Set(ENFANTS_ARCHIVE.filter((e) => e.toujours).map((e) => e.classe));
+      for (const [rang, classe] of facultatifs.entries()) if ((masque & (1 << rang)) !== 0) presentes.add(classe);
+      const attendues = [...presentes].map((classe) => zones.get(classe) ?? "").sort();
+      const gagnante = grilleGagnante(grilles, media, presentes);
+      const ou = `${media === "" ? "par défaut" : media} avec ${[...presentes].sort().join(" + ")}`;
+      if (gagnante === null) manquements.push(`${ou} : aucune règle .archive-grid ne pose de grille`);
+      else if ([...gagnante.zones].sort().join(" ") !== attendues.join(" ")) {
+        manquements.push(`${ou} : ${gagnante.selecteur} nomme « ${[...gagnante.zones].sort().join(" ")} » au lieu de « ${attendues.join(" ")} »`);
+      }
+    }
+  }
+  return manquements;
+}
+
+describe("train V1 : l'entrée « Revoir » des Archives (L28b) a sa zone dans la grille de la fiche (L28c, revoir.css)", () => {
+  it("ArchiveDetail.tsx pose bien ces enfants directs dans .archive-grid", () => {
+    const source = lire("web/pages/archives/ArchiveDetail.tsx");
+    assert.match(source, /<div className="archive-grid">/);
+    for (const enfant of ENFANTS_ARCHIVE) assert.match(source, enfant.marque, enfant.quoi);
+    // Aucune autre zone `area-*` n'est posée sur la fiche : la table ci-dessus reste la liste complète.
+    const autres = [...source.matchAll(/className="(area-[\w-]+)"/g)].map((m) => m[1] ?? "").filter((classe) => !ENFANTS_ARCHIVE.some((e) => e.classe === classe));
+    assert.deepEqual([...new Set(autres)], []);
+  });
+
+  it("chaque enfant direct a sa zone, et la grille qui l'emporte nomme exactement les zones présentes (deux largeurs)", () => {
+    const regles = reglesDeLInterface();
+    assert.ok(grillesArchive(regles).length >= 8, "les règles .archive-grid sont bien lues");
+    const manquements = manquementsGrilleArchive(regles);
+    assert.deepEqual(manquements, [], manquements.join("\n"));
+  });
+
+  it("DISCRIMINANT : sans les règles de .revoir-entree, le contrôle échoue", () => {
+    const regles = reglesDeLInterface();
+    const sansRevoir = regles.filter((regle) => !regle.selecteurs.some((sel) => /\.revoir-entree(?![\w-])/.test(sel)));
+    const manquements = manquementsGrilleArchive(sansRevoir);
+    assert.ok(
+      manquements.some((m) => m.includes("revoir-entree")),
+      manquements.join("\n"),
+    );
+    // Témoin : le seul retrait des règles de grille (la zone gardée) est vu aussi, par les combinaisons.
+    const sansGrille = regles.filter((regle) => !regle.selecteurs.some((sel) => sel.startsWith(".archive-grid") && /\.revoir-entree(?![\w-])/.test(sel)));
+    assert.ok(manquementsGrilleArchive(sansGrille).length > 0);
+  });
+});
+
 // --- T3d-b × L28c, L28d, L31a : contrôles « sans texte » qui ne sautent plus ---------------------------------------------------------
 
 describe("train V1 : modules « sans texte » de la vague (D-3d-21)", () => {

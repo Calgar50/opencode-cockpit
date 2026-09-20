@@ -4,12 +4,16 @@
 // UNE seule requête, au montage : la consigne d'un appel (`cible: {callId}`) ou toutes les consignes gardées d'une session
 // (`cible: {enfant}`, étape d'équipe relue en plusieurs tours). Rien n'est redemandé à l'IA : le cockpit lit sa propre copie.
 // Le texte vient d'un sous-assistant : rendu en NŒUD DE TEXTE par React (jamais dangerouslySetInnerHTML, jamais du Markdown), dans
-// un <pre> défilant. Aucune région aria-live (D-3d-29 : la page n'en a qu'une) ; aucune animation.
+// un <pre> défilant, et passé par nettoyerTexteIa (server/shared/texte-ia.ts) comme tout texte d'IA affiché par le cockpit —
+// séquences de terminal et marques de sens d'écriture retirées, pour ne pas faire lire la consigne autrement qu'elle n'est écrite.
+// Le nettoyage se fait ICI, à l'affichage : la copie gardée en base reste fidèle à ce qui a été envoyé (U2, D-3d-30).
+// Aucune région aria-live (D-3d-29 : la page n'en a qu'une) ; aucune animation.
 import { useEffect, useId, useState } from "react";
 import { CONSIGNES, pointsDeCode } from "../../../../server/shared/consignes.ts";
 import { remplir } from "../../../../server/shared/neon-texts.ts";
 import { libelleConsigneAbsente, libelleConsigneTronquee, libelleRefus, TEXTES } from "../../../../server/shared/revoir-texts.ts";
 import type { RevoirConsigneResponse, RevoirRefus } from "../../../../server/shared/salle3d-types.ts";
+import { nettoyerTexteIa } from "../../../../server/shared/texte-ia.ts";
 import { Button } from "../../../components/ui.tsx";
 import { salle3dApi } from "../../../lib/api-salle3d.ts";
 import type { ConsigneRevoirProps } from "../slots-3d.ts";
@@ -81,14 +85,19 @@ export function ConsigneRevoir({ rootId, cible, onFermer }: ConsigneRevoirProps)
       {charge.etat === "chargement" ? <p className="consigne-revoir-etat">{c.chargement}</p> : null}
       {charge.etat === "sans" ? <p className="consigne-revoir-etat">{charge.phrase}</p> : null}
       {charge.etat === "pret"
-        ? charge.consignes.map((consigne, index) => (
-            <article className="consigne-revoir-bloc" key={`${consigne.callId}/${consigne.at}`}>
-              {total > 1 ? <h4 className="consigne-revoir-sous-titre">{remplir(c.titrePlusieurs, { n: index + 1, total })}</h4> : null}
-              {/* Texte d'un sous-assistant : nœud de texte, jamais du HTML ni du Markdown. */}
-              <pre className="consigne-revoir-texte">{consigne.texte}</pre>
-              {consigne.tronque ? <p className="consigne-revoir-tronquee">{libelleConsigneTronquee(pointsDeCode(consigne.texte), consigne.longueur)}</p> : null}
-            </article>
-          ))
+        ? charge.consignes.map((consigne, index) => {
+            // Nettoyage À L'AFFICHAGE seulement : la copie gardée reste fidèle aux octets envoyés (U2, D-3d-30). La mention de
+            // troncature compte le texte réellement affiché, pour que « … caractères affichés sur … » reste juste.
+            const texte = nettoyerTexteIa(consigne.texte);
+            return (
+              <article className="consigne-revoir-bloc" key={`${consigne.callId}/${consigne.at}`}>
+                {total > 1 ? <h4 className="consigne-revoir-sous-titre">{remplir(c.titrePlusieurs, { n: index + 1, total })}</h4> : null}
+                {/* Texte d'un sous-assistant : nœud de texte, jamais du HTML ni du Markdown. */}
+                <pre className="consigne-revoir-texte">{texte}</pre>
+                {consigne.tronque ? <p className="consigne-revoir-tronquee">{libelleConsigneTronquee(pointsDeCode(texte), consigne.longueur)}</p> : null}
+              </article>
+            );
+          })
         : null}
       <p className="consigne-revoir-actions">
         <Button size="sm" onClick={onFermer}>

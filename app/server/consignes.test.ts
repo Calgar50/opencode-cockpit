@@ -1,7 +1,8 @@
 // Consignes gardées localement pour « Revoir » (paquet L28d, itération 3 ; U2, D-3d-30) : bornes du module pur, magasin
-// revoir_consignes (écriture paramétrée, doublon, borne par conversation, clé d'étape d'équipe), capture synchrone sur le faux
-// opencode avec le processeur réel, purge avec la conversation (D-07), et la garantie centrale : le texte d'une consigne n'est
-// JAMAIS journalisé ni publié dans un événement du cockpit.
+// revoir_consignes (écriture paramétrée, doublon, borne par conversation sur l'ARBRE, lecture par l'arbre après rattachement d'une
+// racine provisoire, clé d'étape d'équipe), nettoyage du texte à l'AFFICHAGE, capture synchrone sur le faux opencode avec le
+// processeur réel, purge avec la conversation (D-07), et la garantie centrale : le texte d'une consigne n'est JAMAIS journalisé ni
+// publié dans un événement du cockpit.
 // Textes des fixtures : « [synthétique] », jamais un extrait réel. Le jeton factice des tests est CONSTRUIT À L'EXÉCUTION : aucun
 // secret, même factice, n'est écrit en clair dans le dépôt.
 import assert from "node:assert/strict";
@@ -10,8 +11,11 @@ import { describe, it, type TestContext } from "node:test";
 import { type ConsigneAGarder, createConsignesStore, PAR_ENFANT_MAX, purgeConsignes } from "./consignes-store.ts";
 import { openMemoryDb } from "./db.ts";
 import type { Logger } from "./log.ts";
+import type { OcSession, OpencodeClient } from "./opencode.ts";
 import { redactSecrets } from "./redact.ts";
+import { SessionTracker } from "./sessions.ts";
 import { bornerConsigne, CONSIGNES, pointsDeCode } from "./shared/consignes.ts";
+import { nettoyerTexteIa } from "./shared/texte-ia.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { readCapture } from "./test-support/fake-opencode.ts";
 import { until } from "./test-support/helpers.ts";
@@ -19,6 +23,19 @@ import { until } from "./test-support/helpers.ts";
 /** Racine des captures p1 et p2 (expérience « ocgraph », opencode 1.18.30). */
 const ROOT = "ses_f618ff214ffevi6gfuGx6TvpTP";
 const AUTRE = "ses_autre_racine";
+/** Arbre de la conversation : la fille et la petite-fille, pour le cas « enregistrée avant ses ancêtres » (racine provisoire). */
+const FILLE = "ses_fille_de_la_racine";
+const PETITE_FILLE = "ses_petite_fille";
+
+/** Session telle qu'opencode la rend, pour SessionTracker.upsert (même forme que migration5.test.ts). */
+const session = (id: string, parentID?: string): OcSession => ({
+  id,
+  projectID: "p",
+  directory: "/workspace/app",
+  title: `Session ${id}`,
+  time: { created: 1_000, updated: 1_000 },
+  ...(parentID ? { parentID } : {}),
+});
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -231,6 +248,38 @@ describe("consignes gardées : bornes (shared/consignes.ts, module pur)", () => 
   });
 });
 
+// --- Nettoyage à l'affichage (corrections de la relecture 3-vague-1) --------------------------------------------------------------
+
+describe("consignes gardées : nettoyage à l'AFFICHAGE (server/shared/texte-ia.ts)", () => {
+  it("marque de sens d'écriture et séquence de terminal retirées ; le reste du texte est gardé tel quel", () => {
+    // Caractères construits à l'exécution, jamais écrits en clair (même règle que le jeton factice).
+    const rtlOverride = String.fromCharCode(0x202e);
+    const isolant = String.fromCharCode(0x2066);
+    const couleur = `${String.fromCharCode(27)}[31m`;
+    const fin = `${String.fromCharCode(27)}[0m`;
+    const brut = `${couleur}[synthétique] lis ${rtlOverride}le fichier${isolant}${fin}\tsuite${String.fromCharCode(0)}`;
+
+    const propre = nettoyerTexteIa(brut);
+    assert.equal(propre, "[synthétique] lis le fichier\tsuite");
+    assert.equal(propre.includes(rtlOverride), false, "U+202E retiré : le texte ne se lit plus à l'envers (« Trojan Source »)");
+    assert.equal(propre.includes(isolant), false);
+    assert.equal(propre.includes(String.fromCharCode(27)), false, "séquences de terminal retirées");
+    assert.equal(nettoyerTexteIa(42), "");
+    assert.equal(nettoyerTexteIa(null), "");
+  });
+
+  it("le nettoyage est fait à l'affichage SEULEMENT : la copie gardée reste fidèle aux octets envoyés (U2, D-3d-30)", () => {
+    const rtlOverride = String.fromCharCode(0x202e);
+    const db = openMemoryDb();
+    const store = createConsignesStore(db);
+    const brut = `[synthétique] ${rtlOverride}consigne`;
+    assert.equal(store.enregistrer({ rootId: ROOT, parent: ROOT, enfant: "ses_enfant1", callId: "call_bidi", brut, at: 1_000 }), "enregistree");
+    assert.equal(store.lire(ROOT, "call_bidi")?.texte, brut, "la base garde ce qui a été envoyé");
+    assert.equal(nettoyerTexteIa(store.lire(ROOT, "call_bidi")?.texte).includes(rtlOverride), false, "c'est l'affichage qui nettoie");
+    db.close();
+  });
+});
+
 // --- Magasin ---------------------------------------------------------------------------------------------------------------------
 
 describe("consignes gardées : magasin (revoir_consignes)", () => {
@@ -257,6 +306,53 @@ describe("consignes gardées : magasin (revoir_consignes)", () => {
     assert.deepEqual(store.parEnfant(ROOT, "ses_enfant1"), [lue]);
     assert.deepEqual(store.parEnfant(ROOT, "ses_enfant_inconnu"), []);
     assert.deepEqual(store.parEnfant(AUTRE, "ses_enfant1").map((c) => c.callId), ["call_2"]);
+    db.close();
+  });
+
+  it("racine provisoire puis rattachement : la consigne est retrouvée par la VRAIE racine, comme la purge et les faits", () => {
+    // Un événement de la petite-fille arrive avant que sa mère soit connue : SessionTracker l'enregistre sous la racine
+    // PROVISOIRE (la mère), et la dérivation écrit la consigne avec ce root_id. Quand la mère arrive, #reparent remet
+    // sessions.root_id à la vraie racine, mais revoir_consignes garde la racine provisoire : la lecture doit donc passer par
+    // l'ARBRE (TREE_SQL), comme purgeConsignes, fact-store.since et routes-activity.
+    const db = openMemoryDb();
+    const sessions = new SessionTracker(db, {} as OpencodeClient);
+    const store = createConsignesStore(db);
+    sessions.upsert(session(ROOT));
+    sessions.upsert(session(PETITE_FILLE, FILLE)); // racine provisoire : FILLE
+    assert.equal(sessions.rootOf(PETITE_FILLE), FILLE, "racine provisoire avant rattachement");
+    assert.equal(store.enregistrer(consigne({ rootId: FILLE, parent: FILLE, enfant: PETITE_FILLE, callId: "call_provisoire" })), "enregistree");
+    sessions.upsert(session(FILLE, ROOT)); // rattachement
+    assert.equal(sessions.rootOf(PETITE_FILLE), ROOT);
+    assert.equal(
+      (db.prepare("SELECT root_id FROM revoir_consignes WHERE call_id = ?").get("call_provisoire") as { root_id: string }).root_id,
+      FILLE,
+      "la ligne garde sa racine provisoire : c'est la LECTURE qui doit suivre l'arbre",
+    );
+
+    assert.equal(store.lire(ROOT, "call_provisoire")?.callId, "call_provisoire", "lire() par la vraie racine");
+    assert.deepEqual(store.parEnfant(ROOT, PETITE_FILLE).map((c) => c.callId), ["call_provisoire"], "parEnfant() par la vraie racine");
+    assert.equal(purgeConsignes(db, ROOT), 1, "la purge portait déjà sur l'arbre : lecture et purge restent solidaires");
+
+    // Non-régression : une consigne d'une AUTRE conversation n'est jamais rendue par l'arbre.
+    assert.equal(store.enregistrer(consigne({ rootId: AUTRE, parent: AUTRE, enfant: "ses_enfant_autre", callId: "call_ailleurs" })), "enregistree");
+    assert.equal(store.lire(ROOT, "call_ailleurs"), null);
+    assert.deepEqual(store.parEnfant(ROOT, "ses_enfant_autre"), []);
+    db.close();
+  });
+
+  it("borne par conversation : comptée sur l'ARBRE entier, racine provisoire comprise, jamais deux fois la borne", () => {
+    const db = openMemoryDb();
+    const sessions = new SessionTracker(db, {} as OpencodeClient);
+    const store = createConsignesStore(db);
+    sessions.upsert(session(ROOT));
+    sessions.upsert(session(PETITE_FILLE, FILLE)); // racine provisoire : FILLE
+    // Une moitié des copies écrite sous la racine provisoire, l'autre sous la vraie racine : une seule conversation.
+    for (let i = 0; i < CONSIGNES.parRacine; i++) {
+      const ou = i % 2 === 0 ? { rootId: FILLE, parent: FILLE, enfant: PETITE_FILLE } : { rootId: ROOT, parent: ROOT };
+      assert.equal(store.enregistrer(consigne({ ...ou, callId: `call_${i}`, at: i })), "enregistree", `consigne ${i}`);
+    }
+    sessions.upsert(session(FILLE, ROOT)); // rattachement : l'arbre est enfin connu
+    assert.equal(store.enregistrer(consigne({ callId: "call_de_trop", at: 9_999 })), "limite", "la borne voit les copies des deux côtés de l'arbre");
     db.close();
   });
 

@@ -4,10 +4,12 @@
 //   séparée à droite, stations, aucun faisceau, aucune étiquette d'état en Simple pour l'enceinte, 60 étiquettes au plus) et règle
 //   « qui travaille » recopiée de statusBusy ;
 // - service (territoires-service.ts) sur le harnais du cockpit : deux projets, une racine occupée, une en attente d'accord, une au
-//   repos, coûts, réponses de statut illisibles, salle en Simple et en Avancé, P11.
+//   repos, coûts, réponses de statut illisibles, salle en Simple et en Avancé, P11, et les attentes comptées sur l'ARBRE de la
+//   conversation (ligne écrite sous une racine provisoire, puis rattachée).
 import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
+import type { OcSession } from "./opencode.ts";
 import type { NeonMode } from "./shared/neon-scene.ts";
 import type { ConversationTerritoire, Plan3d, TerritoiresResponse, TerritoireView } from "./shared/salle3d-types.ts";
 import { ETIQUETTES_MAX, hexAxial, placer, planTerritoires, sessionsQuiTravaillent } from "./shared/territoires.ts";
@@ -303,6 +305,16 @@ function semerSession(
   );
 }
 
+/** Session telle qu'opencode la rend, pour le VRAI SessionTracker (racine provisoire puis rattachement). */
+const ocSession = (id: string, parentID?: string): OcSession => ({
+  id,
+  projectID: "p",
+  directory: "/workspace/alpha",
+  title: `Session ${id}`,
+  time: { created: MAINTENANT - 1_000, updated: MAINTENANT - 1_000 },
+  ...(parentID ? { parentID } : {}),
+});
+
 /** Message de l'utilisateur (prompts.kind = 'message') : début de la fenêtre de coût. */
 function semerMessage(db: DatabaseSync, rootId: string, at: number, kind = "message"): void {
   db.prepare("INSERT INTO prompts (message_id, session_id, root_id, created_at, kind) VALUES (?, ?, ?, ?, ?)").run(`msg_${rootId}_${at}`, rootId, rootId, at, kind);
@@ -434,6 +446,35 @@ describe("territoires : service (D-3d-13)", () => {
       false,
       "un dossier hors du workspace n'ouvre aucun territoire",
     );
+  });
+
+  it("attente d'accord écrite sous une racine PROVISOIRE : comptée par l'arbre après rattachement, étiquette « attente-accord »", async (t) => {
+    // Corrections de la relecture 3-vague-1 : activity-deriver retombe sur la session elle-même quand le parent est encore inconnu,
+    // et fact-store.markWait écrit permission_waits avec ce root_id provisoire. SessionTracker.#reparent remet sessions.root_id à la
+    // vraie racine, mais pas permission_waits : la lecture doit donc suivre l'ARBRE, comme routes-activity.ts, sinon la salle de
+    // contrôle n'annonce pas qu'un accord est attendu, alors que la bande 2D, elle, le montre.
+    const h = await startCockpit(t, { modules: ["facts"] });
+    const ROOT = "ses_racine_arbre";
+    const FILLE = "ses_fille_arbre";
+    const PETITE = "ses_petite_arbre";
+    h.sessions.upsert(ocSession(ROOT));
+    h.sessions.upsert(ocSession(PETITE, FILLE)); // racine provisoire : FILLE
+    assert.equal(h.sessions.rootOf(PETITE), FILLE, "racine provisoire avant rattachement");
+    h.cockpit.c11.ports.facts.work.markWait({ permissionId: "per_arbre", sessionId: PETITE, rootId: FILLE, permission: "bash" }, "attente", null);
+    h.sessions.upsert(ocSession(FILLE, ROOT)); // rattachement
+    assert.equal(h.sessions.rootOf(PETITE), ROOT);
+    assert.equal(
+      (h.db.prepare("SELECT root_id FROM permission_waits WHERE permission_id = ?").get("per_arbre") as { root_id: string }).root_id,
+      FILLE,
+      "la ligne garde sa racine provisoire : c'est la LECTURE qui doit suivre l'arbre",
+    );
+
+    const vue = await createTerritoiresPort(h.cockpit.c11, { statut: async () => ({}) }).lire("avance", MAINTENANT);
+    assert.equal(conversationDe(vue, "alpha", ROOT)?.attendent, 1, "la demande d'autorisation est signalée sur la vraie racine");
+    assert.equal(territoireDe(vue, "alpha")?.compteurs.attendent, 1);
+    const plan = planTerritoires(vue, new Map(), { theme: "sombre", mode: "avance" });
+    const etiquette = plan.etiquettes.find((e) => e.cible === "projet:alpha");
+    assert.equal(etiquette?.etat, "attente-accord", "l'étiquette du territoire dit qu'un accord est attendu");
   });
 
   it("titres passés par redactSecrets", async (t) => {

@@ -14,6 +14,12 @@
 //     aussi les fichiers des vagues suivantes.
 //  6. useAnnouncer n'est appelé qu'avec ui.activityAnnouncements, jamais avec une constante (D-3d-29) : les annonces restent
 //     coupables par le réglage.
+//  7. Textes venus d'un sous-assistant (corrections de la relecture 3-vague-1) : dans web/pages/salle-controle/**, aucun HTML brut
+//     (dangerouslySetInnerHTML, innerHTML, insertAdjacentHTML) et aucun champ `texte` d'une consigne gardée rendu sans passer par
+//     nettoyerTexteIa (server/shared/texte-ia.ts). Le cockpit a une règle établie pour tout texte d'IA affiché — boundedAiText de
+//     web/pages/chat/turn.ts s'en sert aussi — : retirer les séquences de terminal et les marques de sens d'écriture, pour ne pas
+//     faire lire un texte d'IA autrement qu'il n'est écrit (U+202E, « Trojan Source »). « Revoir » promet de montrer ce qui a
+//     VRAIMENT été envoyé au sous-assistant (U2) : la règle vaut d'abord ici.
 // Chaque règle échoue sur un source fabriqué (contrôle discriminant).
 // « Zéro requête à opencode pendant « Revoir », zoom 3 et [Voir la consigne] compris » est joué en e2e par L35 (réseau du
 // navigateur) : ce test garde la propriété à la source.
@@ -195,6 +201,26 @@ function verifierSalle(source: Source): Violation[] {
   return out;
 }
 
+/** Module de nettoyage des textes d'IA affichés : seule façon permise de montrer un texte venu d'un sous-assistant. */
+const MODULE_NETTOYAGE = "texte-ia.ts";
+/** Façons de poser du HTML brut : aucune n'est permise dans la salle de contrôle (le texte est rendu en nœud de texte par React). */
+const HTML_BRUT = ["dangerouslySetInnerHTML", "innerHTML", "insertAdjacentHTML"];
+
+/** Règle 7 : périmètre salle-controle/**, fichiers des vagues suivantes compris. */
+function verifierTexteIa(source: Source): Violation[] {
+  const code = sansCommentaires(source.texte);
+  const out: Violation[] = [];
+  const ajouter = (regle: string, detail: string) => out.push({ fichier: source.fichier, regle, detail });
+
+  for (const mot of HTML_BRUT) if (new RegExp(`(?<![\\w$])${mot}(?![\\w$])`).test(code)) ajouter("HTML brut dans la salle de contrôle", mot);
+  // Champ `texte` d'une consigne gardée rendu tel quel dans du JSX : {consigne.texte}, {c.texte}, {x?.texte}…
+  for (const m of code.matchAll(/\{\s*[A-Za-z_$][\w$]*(?:\??\.[\w$]+)*\.texte\s*\}/g)) ajouter("texte d'un sous-assistant rendu sans nettoyage", m[0] ?? "");
+  // Un fichier qui lit ce champ, même par une variable intermédiaire, doit importer le nettoyage.
+  const nettoie = importsDe(code).some((chemin) => (chemin.split("/").pop() ?? "") === MODULE_NETTOYAGE);
+  if (/\.texte\b/.test(code) && !nettoie) ajouter("texte d'un sous-assistant lu sans importer le nettoyage", MODULE_NETTOYAGE);
+  return out;
+}
+
 const lignes = (violations: readonly Violation[]) => violations.map((v) => `${v.fichier} : ${v.regle} (${v.detail})`).join("\n");
 const fabrique = (fichier: string, texte: string): Source => ({ fichier, texte });
 
@@ -274,6 +300,24 @@ describe("salle de contrôle : une seule région d'annonces par page (D-3d-29)",
     assert.match(tout, /useAnnouncer\s*\(\s*ui\.activityAnnouncements\s*\)/);
   });
 
+  it("aucun HTML brut, et aucun texte de sous-assistant affiché sans nettoyerTexteIa (U2)", () => {
+    const violations = SOURCES_SALLE.flatMap(verifierTexteIa);
+    assert.deepEqual(violations, [], lignes(violations));
+  });
+
+  it("la consigne gardée passe bien par le nettoyage (sinon la garde ne prouverait rien)", () => {
+    const consigne = SOURCES_SALLE.find((s) => s.fichier === `${REVOIR}/ConsigneRevoir.tsx`);
+    assert.ok(consigne !== undefined, "ConsigneRevoir.tsx est bien parcouru");
+    const code = sansCommentaires(consigne.texte);
+    assert.match(code, /nettoyerTexteIa\(consigne\.texte\)/, "le texte est nettoyé à l'affichage");
+    assert.match(code, /<pre className="consigne-revoir-texte">\{texte\}<\/pre>/, "c'est le texte nettoyé qui est rendu");
+    assert.match(code, /libelleConsigneTronquee\(pointsDeCode\(texte\)/, "la mention de troncature compte le texte affiché");
+    assert.ok(
+      importsDe(code).some((chemin) => chemin.endsWith(`shared/${MODULE_NETTOYAGE}`)),
+      "le nettoyage vient de server/shared, jamais de web/pages/chat/turn.ts (qui importe le client d'opencode)",
+    );
+  });
+
   it("DISCRIMINANT : chaque règle de salle-controle/** échoue sur un source fabriqué", () => {
     const cas: ReadonlyArray<[string, Source]> = [
       ["aria-live", fabrique(`${SALLE}/Faux.tsx`, '<div aria-live="polite" />;\n')],
@@ -283,5 +327,21 @@ describe("salle de contrôle : une seule région d'annonces par page (D-3d-29)",
     for (const [nom, source] of cas) assert.ok(verifierSalle(source).length > 0, nom);
     assert.deepEqual(verifierSalle(fabrique(`${SALLE}/Faux.tsx`, "const say = useAnnouncer(ui.activityAnnouncements);\n")), []);
     assert.deepEqual(verifierSalle(fabrique(`${SALLE}/Faux.tsx`, "// aucune région aria-live ici, et SubSessionDrawer n'est jamais importé\n")), []);
+  });
+
+  it("DISCRIMINANT : la règle des textes de sous-assistant échoue sur un source fabriqué", () => {
+    const importNettoyage = `import { nettoyerTexteIa } from "../../../../server/shared/${MODULE_NETTOYAGE}";\n`;
+    const cas: ReadonlyArray<[string, Source]> = [
+      ["HTML brut", fabrique(`${SALLE}/Faux.tsx`, "<pre dangerouslySetInnerHTML={{ __html: consigne }} />;\n")],
+      ["innerHTML", fabrique(`${SALLE}/Faux.tsx`, "hote.innerHTML = recu;\n")],
+      ["insertAdjacentHTML", fabrique(`${SALLE}/Faux.tsx`, 'hote.insertAdjacentHTML("beforeend", recu);\n')],
+      ["texte rendu tel quel", fabrique(`${REVOIR}/Faux.tsx`, `${importNettoyage}<pre>{consigne.texte}</pre>;\n`)],
+      ["texte lu sans le nettoyage", fabrique(`${REVOIR}/Faux.tsx`, "const t = consigne.texte;\n<pre>{t}</pre>;\n")],
+    ];
+    for (const [nom, source] of cas) assert.ok(verifierTexteIa(source).length > 0, nom);
+    // Témoins : la forme permise ne lève rien, et un commentaire qui cite la règle non plus.
+    assert.deepEqual(verifierTexteIa(fabrique(`${REVOIR}/Faux.tsx`, `${importNettoyage}const texte = nettoyerTexteIa(consigne.texte);\n<pre>{texte}</pre>;\n`)), []);
+    assert.deepEqual(verifierTexteIa(fabrique(`${SALLE}/Faux.tsx`, "// jamais dangerouslySetInnerHTML, ni {consigne.texte} sans nettoyage\n")), []);
+    assert.deepEqual(verifierTexteIa(fabrique(`${SALLE}/Faux.tsx`, '<p className="consigne-revoir-texte">{phrase}</p>;\n')), []);
   });
 });
