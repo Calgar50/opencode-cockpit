@@ -3,7 +3,7 @@
    - Mouvement : AUCUNE animation, donc aucune animation infinie ; les seules transitions sont sous
      @media (prefers-reduced-motion: no-preference) (salle3d-animations.test.ts). Le lecteur ne bouge pas : il change de moment.
    - Couleurs : jetons de styles.css seulement, pour suivre le thème clair et le thème sombre ; les couleurs forcées sont
-     traitées par L33 (blocs forced-colors), qui n'entre pas ici.
+     traitées en fin de feuille par L33 (blocs forced-colors et mouvement réduit), qui n'entre pas ailleurs.
    - 400 px (§5.6 l.928) : la barre passe sur deux lignes et ses commandes défilent, sans jamais sortir de l'écran. */
 
 .revoir-fond {
@@ -326,5 +326,70 @@
 
   .revoir-commandes > * {
     flex: 0 0 auto;
+  }
+}
+
+/* --- Couleurs forcées (L33 ; §5.5 l.921, §5.7.1) -----------------------------------------
+   Comme au zoom 2 : la carte de la boîte est celle de la bande (NeonCarte), sans parent `.neon-band`, donc ses jetons
+   `--neon-*` sont redéfinis ici en couleurs système (neon.css ne les redéfinit que sous `.neon-band`, et sa règle
+   générale `.neon-map { forced-color-adjust: none }` lui ferait sinon garder les couleurs néon).
+   Le reste du lecteur se voyait par des fonds : cadre de la boîte, barre des moments, badge « EN DIFFÉRÉ », pastille du
+   bandeau, légendes et leur filet de gauche prennent un TRAIT en couleur système. Le focus du curseur reste visible. */
+@media (forced-colors: active) {
+  .revoir-boite {
+    --neon-fond: Canvas;
+    --neon-grille: GrayText;
+    --neon-territoire: CanvasText;
+    --neon-texte: CanvasText;
+    --neon-texte-discret: CanvasText;
+    --neon-vous: CanvasText;
+    --neon-consigne: CanvasText;
+    --neon-resultat: CanvasText;
+    --neon-attente: CanvasText;
+    --neon-auto: CanvasText;
+    --neon-refus: CanvasText;
+    --neon-extension: CanvasText;
+    --neon-acteur: CanvasText;
+    --neon-arret: GrayText;
+    border-color: CanvasText;
+  }
+  .revoir-bandeau,
+  .revoir-badge {
+    border: 1px solid CanvasText;
+  }
+  /* « EN DIRECT » : son fond vert disparaît, mais le mot le dit déjà ; son trait le distingue du différé. */
+  .revoir-badge[data-etat="direct"] {
+    border-color: Highlight;
+  }
+  .revoir-bar,
+  .revoir-panneau,
+  .revoir-legende {
+    border-color: CanvasText;
+  }
+  .revoir-legende {
+    border-left-color: Highlight;
+  }
+  .revoir-consigne-hote {
+    border-top-color: CanvasText;
+  }
+  .revoir-curseur:focus-visible,
+  .revoir-commandes button:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* --- Mouvement réduit (L33 ; §5.5 l.922) -------------------------------------------------
+   Les seules transitions de cette feuille sont déjà sous `no-preference` : elles sont coupées NOMMÉMENT ici, pour que
+   « Revoir » ne dépende pas de la règle générale de styles.css (feuille d'un autre paquet). La boîte et la rangée de
+   commandes, toutes deux défilantes, ne défilent jamais en glissant. */
+@media (prefers-reduced-motion: reduce) {
+  .revoir-legende,
+  .revoir-badge {
+    transition: none;
+  }
+  .revoir-boite,
+  .revoir-commandes {
+    scroll-behavior: auto;
   }
 }
