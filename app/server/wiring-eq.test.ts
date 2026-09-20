@@ -299,15 +299,17 @@ describe("câblage des équipes : ports neutres et apply", () => {
     assert.equal(await p.guards.stopForCap("run"), undefined);
   });
 
-  it("production (tous les modules squelettes) : verrou et prédicat inscrits mais neutres ; aucune route, dérivation, abonnement ni démarrage", async () => {
+  it("production (modules réels et squelettes restants) : inscriptions rangées, arrêt inchangé et verrou neutre sans équipe", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
     const wiring = buildEquipes(deps);
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
     assert.deepEqual(
       wiring.registrations.map((r) => `${r.kind}/${r.module}`),
-      ["proxyGuard/teamGuards", "stopTreeDecorator/teamGuards", "reloadBusy/teamRunner"],
+      // teamGuards (L37c) n'est plus un squelette : dérivation du rechargement, abonnement du plafond et routes d'incident,
+      // en plus des deux inscriptions posées par T4. Les autres modules restent des squelettes jusqu'à leur paquet.
+      ["derivation/teamGuards", "hub/teamGuards", "routes/teamGuards", "proxyGuard/teamGuards", "stopTreeDecorator/teamGuards", "reloadBusy/teamRunner"],
     );
-    assert.deepEqual([wiring.derivations, wiring.subscriptions, wiring.startup, wiring.routes], [[], [], [], []]);
+    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length, wiring.routes.length], [1, 1, 0, 1]);
     const req: TeamProxyGuardRequest = { entree: "proxy", method: "POST", sub: `/session/${ROOT}/prompt_async`, directory: null, sessionId: ROOT, permissionId: null };
     assert.equal(await wiring.proxyGuard(req), null);
     wiring.apply(c11);
