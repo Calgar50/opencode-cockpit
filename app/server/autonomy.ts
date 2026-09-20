@@ -21,7 +21,9 @@
 //    jamais un texte de message), les événements `autonomie.examen` et `autonomie.decision`, UN fait `decision` par ligne
 //    (`ports.facts`) et `work.markWait(…, « cockpit » | « controle »)` quand un « once » est parti.
 // 6. RELECTURE de `GET /permission` pour l'arbre de la racine SEULEMENT (jamais les conversations des autres) : à la reconnexion
-//    d'opencode (`opencode.connection`) et à l'ouverture d'une demande, quand un choix est relâché (autonomy-requests.ts).
+//    d'opencode (`opencode.connection`), à l'ouverture d'une demande (autonomy-requests.ts) et au relâchement du choix vers
+//    « Modifications automatiques » ou « Autonome avec contrôle » (conversation-autonomy.ts, L6a). Seules les attentes de
+//    `REPRISE_POSSIBLE` sont reprises : les autres seraient redécidées à l'identique.
 // 7. `examining()` : vrai pendant un examen. C'est lui qui alimente `reloadBusy` de wiring-11, donc la garde de rechargement.
 // Frontières de paquets : le retour à « Demander à chaque fois » (E5, plafonds), « Passé sans contrôle » et les redémarrages
 // d'opencode appartiennent à L10c ; l'activation à L10d ; la délégation en Autonome à L10e ; l'IA de contrôle à L11b. Ce module
@@ -59,10 +61,12 @@ import {
   classifyEdit,
   DELEGATION_AUTO_RULE,
   preconditionFailure,
+  REPRISE_POSSIBLE,
   routePermission,
 } from "./shared/autonomy-rules.ts";
 import { type ControleIaIndisponible, controleIaIndisponible, decisionControleIa, phraseRegle, phraseRelais } from "./shared/autonomy-texts.ts";
 import type { AutomaticChoice, AutonomyChoice, DecisionBy, DecisionVerdict, RelayOutcome, RepliedBy } from "./shared/autonomy-types.ts";
+import { CONTROL_NO_ANSWER, isControlProblem } from "./shared/control-ai-output.ts";
 import { ID_RE } from "./shared/ids.ts";
 import { classifyCommand, type ShellContext } from "./shared/shell-gate.ts";
 
@@ -253,10 +257,10 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
 
   /**
    * Demandes prises en charge (en file, en examen ou décidées). Une relecture de `GET /permission` ne reprend une demande que si
-   * elle est marquée « à revoir » : c'est le cas d'une demande mise en attente faute de demande autonome en cours
-   * (« X-hors-demande »), pour qu'un passage à un choix automatique la relise (§4.3 étape 8). Une demande qu'aucun examen n'a
-   * touchée (choix « Demander » ou « Plan d'abord », délégation hors Autonome) sort de la table : aucune ligne de journal n'a été
-   * écrite, elle sera reprise telle quelle.
+   * elle est marquée « à revoir » : c'est le cas des attentes de `REPRISE_POSSIBLE` (L9b), celles dont la cause est l'état du
+   * cockpit et peut disparaître sans nouvel événement de la demande (§4.3 étape 8). Une demande qu'aucun examen n'a touchée (choix
+   * « Demander » ou « Plan d'abord », délégation hors Autonome) sort de la table : aucune ligne de journal n'a été écrite, elle
+   * sera reprise telle quelle.
    */
   const claimed = new Bounded<{ retry: boolean }>(CLAIMED_MAX);
   /** `workdir` des appels `bash` vus dans le flux, par « session|callID » (null : absent de l'entrée de l'outil). */
@@ -462,12 +466,23 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
       // L'IA n'a pas été consultée : rien n'est compté, la commande attend votre accord.
       return { kind: "attente", regle: "S7", par: "cockpit", raison: controleIaIndisponible(verdict.raison as ControleIaIndisponible) };
     }
-    const ia: IaInfo = { model: verdict.model, cost: verdict.costUsd, ms: verdict.ms };
     count(requestId, { controles: 1 });
-    const raison = decisionControleIa({ decision: verdict.decision, raison: verdict.raison });
-    return verdict.decision === "autoriser"
-      ? { kind: "auto", regle: "S7", par: "ia-controle", raison, ia }
-      : { kind: "attente", regle: "S7", par: "ia-controle", raison, ia };
+    // Un verdict « attendre » de L11b porte soit le TEXTE de l'IA (masqué, borné), soit un CODE interne de CONTROL_PROBLEMS. Un
+    // code n'est jamais recopié dans le Journal (§4.12 : une phrase, en français), et la colonne « Par » n'attribue la décision à
+    // l'IA de contrôle que lorsqu'elle a vraiment répondu.
+    const probleme = isControlProblem(verdict) ? verdict.raison : null;
+    if (probleme === null) {
+      const ia: IaInfo = { model: verdict.model, cost: verdict.costUsd, ms: verdict.ms };
+      const raison = decisionControleIa({ decision: verdict.decision, raison: verdict.raison });
+      return verdict.decision === "autoriser"
+        ? { kind: "auto", regle: "S7", par: "ia-controle", raison, ia }
+        : { kind: "attente", regle: "S7", par: "ia-controle", raison, ia };
+    }
+    // Session de contrôle non vérifiée : aucun message n'est parti, donc aucune IA à nommer (la place du plafond reste prise).
+    const ia: IaInfo = { model: probleme === "session-non-verifiee" ? null : verdict.model, cost: verdict.costUsd, ms: verdict.ms };
+    if (CONTROL_NO_ANSWER.has(probleme)) return { kind: "attente", regle: "S7", par: "cockpit", raison: decisionControleIa("non-abouti"), ia };
+    // Délai dépassé : l'appel est bien parti, l'IA n'a pas répondu à temps ; tout autre code : elle a répondu, mais mal.
+    return { kind: "attente", regle: "S7", par: "ia-controle", raison: decisionControleIa(probleme === "delai-depasse" ? "sans-reponse" : "illisible"), ia };
   };
 
   const bashOutcome = async (job: Job, directory: string, choix: AutomaticChoice, requestId: string | null): Promise<Outcome> => {
@@ -576,8 +591,10 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
   };
 
   const wait = async (job: Job, choix: AutonomyChoice, requestId: string | null, outcome: Extract<Outcome, { kind: "attente" }>): Promise<void> => {
-    // Attente faute de demande autonome en cours : une relecture la reprendra quand une demande s'ouvrira (§4.3 étape 8).
-    if (outcome.regle === "X-hors-demande") claimed.set(job.permissionId, { retry: true });
+    // Attente dont la cause est l'état du cockpit (demande autonome absente, interrupteur, plafonds, choix « Modifications ») :
+    // une relecture la reprendra quand cet état changera (§4.3 étape 8). Une attente due à l'action elle-même n'est jamais reprise :
+    // une relecture la redéciderait à l'identique.
+    if (REPRISE_POSSIBLE.has(outcome.regle)) claimed.set(job.permissionId, { retry: true });
     count(requestId, { attentes: 1 });
     record({
       job,

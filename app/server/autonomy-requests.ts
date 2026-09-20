@@ -226,8 +226,9 @@ export function requestView(row: RequestRow, caps: AutonomyCaps, spent: number):
 
 /**
  * Relecture de `GET /permission` pour l'arbre d'une racine, posée par le cycle d'autonomie (autonomy.ts) quand il est installé.
- * Une demande qui s'ouvre réveille ainsi les demandes d'autorisation déjà en attente de cette conversation (§4.3 étape 8) ; sans
- * le module « autonomy », il n'y a rien à réveiller. Une clé par câblage : rien n'est partagé entre deux cockpits.
+ * Une demande qui s'ouvre réveille ainsi les demandes d'autorisation déjà en attente de cette conversation (§4.3 étape 8) ; le
+ * relâchement du choix vers « Modifications automatiques » ou « Autonome avec contrôle » aussi (conversation-autonomy.ts, L6a).
+ * Sans le module « autonomy », il n'y a rien à réveiller. Une clé par câblage : rien n'est partagé entre deux cockpits.
  */
 const RESCANNERS = new WeakMap<object, (rootId: string) => void>();
 

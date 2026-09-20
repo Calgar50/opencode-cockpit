@@ -41,7 +41,7 @@ import type { SessionRow } from "./sessions.ts";
 import type { Run } from "./shared/assistant-rules.ts";
 import { modelName, providerOf } from "./shared/assistant-rules.ts";
 import type { AutonomyRequestView } from "./shared/autonomy-types.ts";
-import { CONTROL_AGENT_FILE, CONTROL_AGENT_NAME, type ControlOutputProblem, controlPrompt, parseControlOutput } from "./shared/control-ai-output.ts";
+import { CONTROL_AGENT_FILE, CONTROL_AGENT_NAME, type ControlCallProblem, controlPrompt, isControlProblem, parseControlOutput } from "./shared/control-ai-output.ts";
 import { ID_RE } from "./shared/ids.ts";
 import { classifyCommand, type ShellContext } from "./shared/shell-gate.ts";
 
@@ -64,31 +64,11 @@ export const CONTROL_CLEANUP_TIMEOUT_MS = 10_000;
 export const CONTROL_RESERVATIONS_MAX = 256;
 
 /**
- * Codes d'un verdict « attendre » sans texte de l'IA : réponse illisible (L11a), délai dépassé, appel ou réponse en erreur,
- * session de contrôle non vérifiée. La commande attend votre accord.
+ * Codes d'un verdict « attendre » sans texte de l'IA (réponse illisible, délai dépassé, appel ou réponse en erreur, session de
+ * contrôle non vérifiée) : la liste est tenue par L11a (shared/control-ai-output.ts), pour que L10a la lise sans importer ce
+ * module. Réexportés ici : c'est le contrat du port que les appelants connaissent.
  */
-export type ControlCallProblem = ControlOutputProblem | "delai-depasse" | "appel-en-erreur" | "reponse-en-erreur" | "session-non-verifiee";
-
-export const CONTROL_PROBLEMS: ReadonlySet<string> = new Set<ControlCallProblem>([
-  "reponse-vide",
-  "decision-absente",
-  "decision-multiple",
-  "decision-non-finale",
-  "decision-invalide",
-  "raison-absente",
-  "raison-multiple",
-  "raison-vide",
-  "raison-trop-longue",
-  "delai-depasse",
-  "appel-en-erreur",
-  "reponse-en-erreur",
-  "session-non-verifiee",
-]);
-
-/** Verdict « attendre » rendu par le cockpit (code), et non par l'IA (texte). */
-export function isControlProblem(verdict: ControlAiVerdict): boolean {
-  return verdict.decision === "attendre" && CONTROL_PROBLEMS.has(verdict.raison);
-}
+export { CONTROL_NO_ANSWER, CONTROL_PROBLEMS, type ControlCallProblem, isControlProblem } from "./shared/control-ai-output.ts";
 
 /** Consignes de l'agent telles qu'opencode les rend dans GET /agent (corps du fichier, sans l'en-tête, espaces de bord retirés). */
 export const CONTROL_AGENT_PROMPT = CONTROL_AGENT_FILE.replace(/^---\n[\s\S]*?\n---\n/, "").trim();

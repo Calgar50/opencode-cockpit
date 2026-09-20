@@ -4,6 +4,8 @@
 // Fermé en cas de doute : une entrée hors bornes n'est jamais envoyée (null) et toute réponse qui n'a pas exactement la forme
 // attendue vaut « attendre ». Rend des CODES (illisible) ou le texte de l'IA masqué (raison) ; les phrases affichées sont écrites
 // dans un module de textes, et le texte de l'IA reste échappé à l'affichage.
+// La liste fermée des codes d'un verdict « attendre » sans texte de l'IA (CONTROL_PROBLEMS, CONTROL_NO_ANSWER, isControlProblem)
+// est ici, et non dans control-ai.ts, pour que L10a la lise sans importer L11b ni la file de configuration.
 // Module pur (server/shared) : aucun module node, aucun accès à process (test de pureté de core.test.ts), ni horloge ni hasard.
 import { redactSecrets } from "../redact.ts";
 
@@ -126,6 +128,40 @@ export type ControlOutput =
   /** `raison` : texte de l'IA nettoyé, masqué, 200 caractères au plus ; à échapper à l'affichage. */
   | { decision: "autoriser" | "attendre"; raison: string; illisible: false }
   | { decision: "attendre"; raison: ControlOutputProblem; illisible: true };
+
+/**
+ * Codes d'un verdict « attendre » sans texte de l'IA : réponse illisible (ci-dessus), délai dépassé, appel ou réponse en erreur,
+ * session de contrôle non vérifiée. La commande attend votre accord. Posés par L11b (control-ai.ts, qui les réexporte) et lus par
+ * L10a, qui doit écrire une phrase et jamais un code dans le Journal du contrôle.
+ */
+export type ControlCallProblem = ControlOutputProblem | "delai-depasse" | "appel-en-erreur" | "reponse-en-erreur" | "session-non-verifiee";
+
+export const CONTROL_PROBLEMS: ReadonlySet<string> = new Set<ControlCallProblem>([
+  "reponse-vide",
+  "decision-absente",
+  "decision-multiple",
+  "decision-non-finale",
+  "decision-invalide",
+  "raison-absente",
+  "raison-multiple",
+  "raison-vide",
+  "raison-trop-longue",
+  "delai-depasse",
+  "appel-en-erreur",
+  "reponse-en-erreur",
+  "session-non-verifiee",
+]);
+
+/**
+ * Codes dont AUCUNE réponse de l'IA n'a été lue : la session n'a pas été vérifiée (rien n'est parti), l'appel ou la réponse est en
+ * erreur. La décision revient alors au cockpit, jamais à l'IA de contrôle (colonne « Par » du Journal, §4.12).
+ */
+export const CONTROL_NO_ANSWER: ReadonlySet<string> = new Set<ControlCallProblem>(["session-non-verifiee", "appel-en-erreur", "reponse-en-erreur"]);
+
+/** Verdict « attendre » rendu par le cockpit (code de CONTROL_PROBLEMS), et non par l'IA (texte masqué et borné). */
+export function isControlProblem(verdict: { decision: string; raison: string }): boolean {
+  return verdict.decision === "attendre" && CONTROL_PROBLEMS.has(verdict.raison);
+}
 
 /** Casse et accents tolérés : décomposition, marques diacritiques et caractères de mise en forme retirés, majuscules. */
 const fold = (text: string) => text.normalize("NFD").replace(/[\p{M}\p{Cf}]/gu, "").toUpperCase();

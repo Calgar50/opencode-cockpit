@@ -189,6 +189,24 @@ export function preconditionFailure(input: PreconditionInput): PreconditionRule 
   return isActivationRefusalCode(input.activation) ? input.activation : "X-illisible";
 }
 
+/**
+ * Règles d'attente dont la cause est l'ÉTAT DU COCKPIT et non l'action demandée : une relecture de `GET /permission` peut les
+ * reprendre (§4.3 étape 8), car leur cause disparaît sans aucun nouvel événement de la demande — demande autonome ouverte
+ * (X-hors-demande), interrupteur remis (X-coupee), compteurs d'une nouvelle demande (plafond-*), passage à « Autonome avec
+ * contrôle » (R-modifications). Toutes les autres attentes (E1-E6, S1-S7, D1-D7, R-web, R-hors-projet, R-lecture, R-repetition,
+ * R-autre, X-illisible, refus d'activation, relais déjà répondu) seraient redécidées à l'identique : elles ne sont jamais reprises.
+ * Cette liste ne change AUCUNE décision : elle dit seulement ce qu'une relecture réexamine (pas de AUTONOMY_RULES_VERSION à lever).
+ */
+export const REPRISE_POSSIBLE: ReadonlySet<string> = new Set<PreconditionRule | CapHit["cause"] | RouteWaitRule>([
+  "X-coupee",
+  "X-hors-demande",
+  "plafond-cout",
+  "plafond-actions",
+  "plafond-duree",
+  "plafond-fichiers",
+  "R-modifications",
+]);
+
 // --- Délégation en Autonome (§4.7) -------------------------------------------------------------------------------------------
 
 export type DelegationRule = "D1" | "D2" | "D3" | "D4" | "D5" | "D6" | "D7";

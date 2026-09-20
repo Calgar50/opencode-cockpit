@@ -10,7 +10,9 @@
 // aucune demande `edit` ; `grep` dans le dossier → automatique ; `git status` sur dépôt piégé → attente (G04) ; programme non
 // listé + IA de contrôle indisponible → attente ; 404 au relais → « Déjà répondu par vous. » ; jamais de refus envoyé ; demande
 // déjà au registre `emitted` → aucune réponse ; pré-conditions dans l'ordre ; borne des 45 s ; relecture de GET /permission à la
-// reconnexion ; P6 partout. La fixture `autonomie-p8.jsonl` est relue ici (analyse de secrets et rejeu).
+// reconnexion, au relâchement du choix (route L6a réelle) et pour une attente dont la cause a disparu (R-modifications, plafond),
+// jamais à un resserrement ; un CODE interne de l'IA de contrôle n'est jamais montré et n'est jamais attribué à l'IA ; P6 partout.
+// La fixture `autonomie-p8.jsonl` est relue ici (analyse de secrets et rejeu).
 // Aucun appel facturé : faux opencode seulement (porte des exécutions facturées FERMÉE).
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -24,11 +26,14 @@ import { SessionTracker } from "./sessions.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
 import { phraseRegle, phraseRelais, TEXTES } from "./shared/autonomy-texts.ts";
 import type { AutonomyChoice } from "./shared/autonomy-types.ts";
+import { CONTROL_PROBLEMS } from "./shared/control-ai-output.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import { type FakeAgent, type FakePermissionRequest, type FakeSession, type FakeToolScript, readCapture } from "./test-support/fake-opencode.ts";
 import { bash, editTool, leaks, until, within } from "./test-support/helpers.ts";
 
 const MODEL = { providerID: "github-copilot", modelID: "gpt-5-mini" };
+/** IA nommée par un verdict du port `controlAi` (L11b), telle qu'elle arrive dans `autonomy_decisions.ia_model`. */
+const IA_MODELE = "github-copilot/gpt-5-mini";
 const DOSSIER = "/workspace/proj";
 const FIN = "Synthèse du faux opencode.";
 const NL = String.fromCharCode(10);
@@ -175,6 +180,9 @@ const decisions = (h: CockpitHarness): DecisionRow[] => h.db.prepare("SELECT * F
 
 const decisionOf = (h: CockpitHarness, permissionId: string): Promise<DecisionRow> =>
   until(() => decisions(h).find((row) => row.permission_id === permissionId));
+
+/** Relectures de `GET /permission` réellement demandées au faux opencode (§4.3 étape 8). */
+const permissionReads = (h: CockpitHarness): number => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission").length;
 
 /** Réponses d'autorisation réellement envoyées à opencode. */
 const replies = (h: CockpitHarness): Array<{ id: string; body: unknown }> =>
@@ -461,6 +469,60 @@ describe("L10a : attentes", () => {
       assert.deepEqual([decision.verdict, decision.regle], ["attente", regle], permission);
       assert.deepEqual(repliesTo(h, request.id), [], permission);
     }
+    assertOneFactPerDecision(h);
+    assertNeverForbidden(h);
+  });
+
+  it("codes internes de l'IA de contrôle : phrase française dans le Journal, jamais le code, « Par » selon qui a décidé", async (t) => {
+    const { controleIa } = TEXTES.partout;
+    /** Sort attendu de chaque code de CONTROL_PROBLEMS : la phrase montrée et la colonne « Par » de la ligne du Journal. */
+    const ATTENDUS = new Map<string, { raison: string; par: string }>([
+      // Délai de 30 s : l'appel est parti, l'IA n'a pas répondu à temps.
+      ["delai-depasse", { raison: controleIa.sansReponse, par: "ia-controle" }],
+      // Aucune réponse lue (rien n'est parti, ou l'appel a échoué) : la décision est celle du cockpit, pas celle de l'IA.
+      ["session-non-verifiee", { raison: controleIa.nonAbouti, par: "cockpit" }],
+      ["appel-en-erreur", { raison: controleIa.nonAbouti, par: "cockpit" }],
+      ["reponse-en-erreur", { raison: controleIa.nonAbouti, par: "cockpit" }],
+      // L'IA a répondu, mais sa réponse ne se lit pas (L11a).
+      ...(["reponse-vide", "decision-absente", "decision-multiple", "decision-non-finale", "decision-invalide", "raison-absente", "raison-multiple", "raison-vide", "raison-trop-longue"] as const).map(
+        (code) => [code, { raison: controleIa.illisible, par: "ia-controle" }] as [string, { raison: string; par: string }],
+      ),
+    ]);
+    assert.deepEqual([...ATTENDUS.keys()].sort(), [...CONTROL_PROBLEMS].sort(), "la table couvre exactement CONTROL_PROBLEMS");
+
+    let raisonRendue = "delai-depasse";
+    const controlAi: ControlAiPort = {
+      // Forme exacte produite par control-ai.ts (L11b) pour un défaut : un CODE dans `raison`, avec l'IA et la durée.
+      judge: async () => ({ decision: "attendre", raison: raisonRendue, model: IA_MODELE, costUsd: null, ms: 30_000 }),
+    };
+    const { h, choices } = await startCycle(t, { ports: { controlAi } });
+
+    for (const [code, attendu] of ATTENDUS) {
+      raisonRendue = code;
+      // Une conversation par cas : une demande laissée en attente bloque le tour de la sienne.
+      const conv = await conversation(h, `Autonome ${code}`);
+      choices.set(conv.id, "autonome");
+      const request = await ask(h, conv, bash("sort -o src/a.ts src/a.ts"));
+      const decision = await decisionOf(h, request.id);
+      assert.deepEqual([decision.verdict, decision.regle], ["attente", "S7"], code);
+      assert.equal(decision.raison, attendu.raison, code);
+      assert.equal(decision.par, attendu.par, code);
+      for (const interne of CONTROL_PROBLEMS) assert.ok(!decision.raison.includes(interne), `${code} : code interne « ${interne} » montré à l'utilisateur`);
+      // Session non vérifiée : aucun message n'est parti, donc aucune IA à nommer ; la place du plafond reste prise.
+      assert.equal(decision.ia_model, code === "session-non-verifiee" ? null : IA_MODELE, code);
+      assert.equal(decision.ia_ms, 30_000, code);
+      assert.deepEqual(repliesTo(h, request.id), [], code);
+      await until(() => requestRow(h, conv.id).controles === 1);
+    }
+
+    // Contre-épreuve : un vrai texte de l'IA n'est pas touché, et la décision lui est bien attribuée.
+    raisonRendue = "Trie des lignes du dossier.";
+    const conv = await conversation(h, "Autonome texte");
+    choices.set(conv.id, "autonome");
+    const request = await ask(h, conv, bash("sort -o src/a.ts src/a.ts"));
+    const decision = await decisionOf(h, request.id);
+    assert.deepEqual([decision.verdict, decision.regle, decision.par, decision.ia_model], ["attente", "S7", "ia-controle", IA_MODELE]);
+    assert.equal(decision.raison, "L'IA de contrôle demande votre accord : Trie des lignes du dossier.");
     assertOneFactPerDecision(h);
     assertNeverForbidden(h);
   });
@@ -799,6 +861,109 @@ describe("L10a : relecture des demandes en attente", () => {
     assert.ok(derniere);
     assert.deepEqual([derniere.verdict, derniere.regle, derniere.relais], ["auto", "A-grep", "ok"]);
     assert.deepEqual(repliesTo(h, request.id), [{ reply: "once" }]);
+    assertOneFactPerDecision(h);
+    assertNeverForbidden(h);
+  });
+
+  it("attente « R-modifications » puis passage à « Autonome » : la demande est reprise et décidée à la relecture", async (t) => {
+    const { h, choices } = await startCycle(t);
+    const conv = await conversation(h, "Modifications");
+    choices.set(conv.id, "modifications");
+    // `bash` en « Modifications automatiques » : attente R-modifications (seul `edit` y est automatique).
+    const request = await ask(h, conv, bash("grep -rn 'TODO' src"));
+    const attente = await decisionOf(h, request.id);
+    assert.deepEqual([attente.verdict, attente.regle, attente.par], ["attente", "R-modifications", "regles"]);
+    assert.deepEqual(repliesTo(h, request.id), []);
+
+    // La cause de l'attente est le choix, pas l'action : relâché à « Autonome », la relecture doit reprendre la demande.
+    choices.set(conv.id, "autonome");
+    h.hub.cockpit("opencode.connection", { connected: true, error: null });
+    await until(() => decisions(h).length === 2, 8_000);
+    const reprise = decisions(h).at(-1);
+    assert.ok(reprise);
+    assert.deepEqual([reprise.verdict, reprise.regle, reprise.relais], ["auto", "A-grep", "ok"]);
+    assert.equal(reprise.permission_id, request.id);
+    assert.deepEqual(repliesTo(h, request.id), [{ reply: "once" }]);
+    assertOneFactPerDecision(h);
+    assertNeverForbidden(h);
+  });
+
+  it("attente « plafond-actions » puis nouvelle demande autonome : la demande restée en attente est reprise", async (t) => {
+    const { h, choices } = await startCycle(t, { caps: { actionsMax: 1 } });
+    const conv = await conversation(h, "Autonome");
+    choices.set(conv.id, "autonome");
+    // Un envoi = une demande : la seconde commande du même tour dépasse le plafond d'actions.
+    await send(h, conv, [bash("grep -rn 'TODO' src"), bash("pwd")]);
+    await until(() => decisions(h).length === 2, 8_000);
+    const bloquee = decisions(h).find((row) => row.regle === "plafond-actions");
+    assert.ok(bloquee?.permission_id, "une décision « plafond-actions »");
+    assert.deepEqual(repliesTo(h, bloquee.permission_id), []);
+
+    // Une nouvelle demande autonome s'ouvre (compteurs repartis à zéro) : la relecture reprend la demande restée en attente.
+    h.db.prepare("UPDATE autonomy_requests SET ended_at = ?, fin = 'terminee' WHERE root_id = ? AND ended_at IS NULL").run(Date.now(), conv.id);
+    h.db
+      .prepare("INSERT INTO autonomy_requests (id, root_id, choix, plafonds, started_at) VALUES ('dem-plafond', ?, 'autonome', ?, ?)")
+      .run(conv.id, JSON.stringify({ plafondUsd: 1, actionsMax: 60, delegationsMax: 5, dureeMinutes: 30, fichiersMax: 25, controlesIaMax: 20 }), Date.now());
+    h.hub.cockpit("opencode.connection", { connected: true, error: null });
+    await until(() => decisions(h).length === 3, 8_000);
+    const reprise = decisions(h).at(-1);
+    assert.ok(reprise);
+    assert.deepEqual([reprise.verdict, reprise.relais, reprise.permission_id], ["auto", "ok", bloquee.permission_id]);
+    assert.ok(["A-grep", "A-pwd"].includes(reprise.regle), reprise.regle);
+    assert.deepEqual(repliesTo(h, bloquee.permission_id), [{ reply: "once" }]);
+    assertOneFactPerDecision(h);
+    assertNeverForbidden(h);
+  });
+
+  it("relâchement du choix par la route réelle : relecture des demandes en attente ; un resserrement n'en déclenche aucune", async (t) => {
+    const root = workspace(t);
+    // Câblage complet du choix : module « conversationAutonomy » réel (route L6a), activation ouverte par surcharge de port.
+    const h = await startCockpit(t, {
+      modules: ["autonomy", "requests", "facts", "floors", "conversationAutonomy"],
+      env: { workspaceDir: root },
+      settings: { ui: { mode: "simple" }, budget: { autonomie: { controleIa: true } } },
+      ports: { activation: PERMIS },
+    });
+    const conv = await conversation(h, "Autonome");
+    const url = `/api/conversations/${conv.id}/autonomie`;
+    const put = (choix: AutonomyChoice, confirmed = false) =>
+      h.call("PUT", url, { headers: confirmed ? h.headers.confirmed : h.headers.mutating, body: { choix } });
+
+    const ouvert = await put("autonome", true);
+    assert.equal(ouvert.status, 200, ouvert.body);
+
+    // Envoi : une demande autonome s'ouvre ; l'utilisateur resserre à « Demander » pendant le tour, avant la demande d'autorisation.
+    const since = h.fake.emitted.length;
+    await send(h, conv, [
+      bash("grep -rn 'TODO' src", {
+        beforeAsk: async () => {
+          const resserre = await put("demander");
+          assert.equal(resserre.status, 200, resserre.body);
+        },
+      }),
+    ]);
+    const request = (await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === conv.id, { since })).properties as unknown as FakePermissionRequest;
+    await until(() => h.fake.pendingPermissions().some((p) => p.id === request.id));
+    await flush();
+    // Route « hors-autonomie » : la demande est laissée à l'utilisateur, aucune ligne de journal.
+    assert.deepEqual(decisions(h), []);
+    const ouvertes = h.db.prepare("SELECT COUNT(*) AS n FROM autonomy_requests WHERE root_id = ? AND ended_at IS NULL").get(conv.id) as { n: number };
+    assert.equal(ouvertes.n, 1, "la demande autonome de l'envoi court toujours");
+
+    // Relâchement : la demande restée en attente est relue et décidée, sans reconnexion d'opencode.
+    const relache = await put("autonome", true);
+    assert.equal(relache.status, 200, relache.body);
+    const decision = await decisionOf(h, request.id);
+    assert.deepEqual([decision.verdict, decision.regle, decision.relais], ["auto", "A-grep", "ok"]);
+    assert.deepEqual(repliesTo(h, request.id), [{ reply: "once" }]);
+
+    // Contre-épreuve : un resserrement (« Autonome » → « Demander ») ne relit jamais les demandes en attente.
+    await flush();
+    const avant = permissionReads(h);
+    const resserre = await put("demander");
+    assert.equal(resserre.status, 200, resserre.body);
+    await flush();
+    assert.equal(permissionReads(h), avant, "un resserrement ne déclenche aucune relecture");
     assertOneFactPerDecision(h);
     assertNeverForbidden(h);
   });

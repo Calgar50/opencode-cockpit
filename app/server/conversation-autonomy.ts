@@ -4,9 +4,12 @@
 // relâcher → 428 sans x-cockpit-confirm, choix automatiques confiés au port activation, COCKPIT_AUTONOMY=off → 403 pour
 // « modifications » et « autonome », événement autonomie.choix et fait « choix » à chaque changement, retour à « demander » au
 // démarrage (retour_cause redemarrage-cockpit). Le port rend des CODES ; les phrases sont dans shared/autonomy-choice-texts.ts.
+// Un relâchement vers un choix automatique demande au cycle d'autonomie (L10a) de relire les demandes d'autorisation déjà en
+// attente de la conversation (§4.3 étape 8) : ce module ne décide rien lui-même, il ne fait que le signaler.
 // neutralConversationAutonomy reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
+import { requestPendingRescan } from "./autonomy-requests.ts";
 import { emitCockpit } from "./cockpit-events.ts";
 import type { ActivationVerdict, AutonomyPutResult, Cockpit11, Cockpit11Deps, Cockpit11Module, ConversationAutonomyPort } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
@@ -382,6 +385,10 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
     if (isAutomatic(choix)) posedNow.add(rootId);
     else posedNow.delete(rootId);
     if (changed) announceChoice(c11, [rootId], choix, "clic", now);
+    // Relâchement vers un choix automatique (§4.3 étape 8) : les demandes d'autorisation déjà en attente de cette conversation
+    // sont relues par le cycle d'autonomie (L10a). Posé ici, et non dans la route, pour couvrir tout appelant du port (plans, L6b).
+    // Sans le module « autonomy », l'appel est sans effet. Un resserrement ne relit rien : il ne peut qu'enlever des permissions.
+    if (changed && isAutomatic(choix)) requestPendingRescan(c11, rootId);
   };
 
   /**

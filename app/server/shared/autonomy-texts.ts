@@ -244,6 +244,8 @@ export const TEXTES = {
       attend: "L'IA de contrôle demande votre accord : {raison}",
       illisible: "Réponse illisible de l'IA de contrôle : en attente de votre accord.",
       sansReponse: "L'IA de contrôle n'a pas répondu à temps : en attente de votre accord.",
+      /** Aucune réponse n'a été lue (contrôle non préparé, appel ou réponse en erreur) : la décision revient au cockpit. */
+      nonAbouti: "Le contrôle par IA n'a pas abouti : en attente de votre accord.",
       indisponible: {
         "a-venir": "Contrôle par IA pas encore disponible dans cette version du cockpit : en attente de votre accord.",
         desactive: "Contrôle par IA coupé dans les réglages : en attente de votre accord.",
@@ -469,12 +471,14 @@ export function controleIaIndisponible(code: ControleIaIndisponible): string {
 
 /**
  * Phrase d'une réponse de l'IA de contrôle (§4.6) : « autoriser » ou « attendre » avec sa raison (texte de l'IA, masqué et borné,
- * à échapper), réponse illisible, ou délai dépassé.
+ * à échapper), réponse illisible, délai dépassé, ou contrôle qui n'a pas abouti (aucune réponse lue). Un CODE interne du port
+ * n'est jamais affiché : l'appelant choisit l'une de ces phrases (L10a, autonomy.ts).
  */
-export function decisionControleIa(reponse: { decision: "autoriser" | "attendre"; raison: string } | "illisible" | "sans-reponse"): string {
+export function decisionControleIa(reponse: { decision: "autoriser" | "attendre"; raison: string } | "illisible" | "sans-reponse" | "non-abouti"): string {
   const { controleIa } = TEXTES.partout;
   if (reponse === "illisible") return controleIa.illisible;
   if (reponse === "sans-reponse") return controleIa.sansReponse;
+  if (reponse === "non-abouti") return controleIa.nonAbouti;
   return remplir(reponse.decision === "autoriser" ? controleIa.autorise : controleIa.attend, { raison: reponse.raison });
 }
 
