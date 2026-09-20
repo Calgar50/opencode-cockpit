@@ -366,7 +366,19 @@ describe("emplacements des équipes : squelettes", () => {
 
   it("contrôles discriminants : rendu, propriétaire et type de propriétés vérifiés", () => {
     const squelette = SQUELETTES[0] as Squelette;
-    const texte = read(squelette.fichier);
+    // Source FABRIQUÉ, jamais le fichier réel : chaque paquet remplace son squelette à sa vague (L38a remplace TeamLauncher en
+    // V1), et le contrôle discriminant doit rester valable après ce remplacement.
+    const texte = [
+      "// Propriétaire : L38a.",
+      "// Squelette T4w : rend null.",
+      'import type { TeamLauncherProps } from "./slots.ts";',
+      "",
+      "export function TeamLauncher(_props: TeamLauncherProps): null {",
+      "  return null;",
+      "}",
+      "",
+    ].join("\n");
+    assert.deepEqual(checkSquelette(squelette, texte), [], "le source fabriqué est un squelette conforme");
     assert.ok(checkSquelette(squelette, texte.replace("return null;", "return <div />;")).includes("squelette : ne rend pas null"));
     assert.ok(checkSquelette(squelette, texte.replace("return null;", "if (_props.busy) return null;\n  return null;")).includes("squelette : ne rend pas null"));
     assert.ok(checkSquelette(squelette, texte.replace(squelette.proprietaire, "L99")).some((p) => p.startsWith("première ligne")));
