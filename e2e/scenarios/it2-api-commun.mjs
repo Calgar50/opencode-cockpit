@@ -19,10 +19,11 @@
 // d'écrire quoi que ce soit ; si la disposition du banc change, le scénario s'arrête en le disant et demande `ctx.workspace` à
 // l'intégrateur, propriétaire de e2e/lib/.
 //
-// D-05 (banc en HTTP tant que la 1.0.5 n'est pas rebasée). Le client d'API du banc ne sait pas poser d'en-tête : la confirmation
-// d'un choix automatique (« x-cockpit-confirm: 1 », §4.11) part donc d'un `fetch` brut vers `ctx.url`, comme le flux du témoin P6.
-// Tous les `fetch` bruts de l'itération 2 sont dans la seule section « Requêtes brutes (D-05) » ci-dessous : R105b n'a qu'un endroit
-// à reprendre pour cette famille, et une option `confirm` du client d'API les supprimerait toutes (demande à l'intégrateur).
+// TRANSPORT. Tout passe par le transport du banc : HTTPS épinglé par défaut depuis R105b, HTTP explicite avec « --http ». La
+// confirmation d'un choix automatique (« x-cockpit-confirm: 1 », §4.11) demande un en-tête que les raccourcis get/post/put du client
+// d'API ne posent pas : les deux requêtes concernées passent par `ctx.api.brut`, dont le quatrième paramètre accepte des en-têtes de
+// plus (section « Requêtes avec confirmation » ci-dessous). Plus aucun `fetch` nu vers `ctx.url` : un banc en HTTPS épinglé le
+// refuserait, et `croisements-it1-v5` le vérifie pour tous les scénarios.
 import fs from "node:fs";
 import path from "node:path";
 import { forbiddenCategory } from "../../app/server/shared/shell-gate.ts";
@@ -158,59 +159,41 @@ export async function exigerP6SurRequetes(ctx, depuis = 0) {
   exiger(hors.length === 0, `P4 : réponse d'autorisation « ${hors.map((r) => r.body?.reply).join(", ")} » envoyée à opencode.`);
 }
 
-// --- Requêtes brutes (D-05) ---------------------------------------------------------------------------------------------------------
+// --- Requêtes avec confirmation -----------------------------------------------------------------------------------------------------
 
-/**
- * PUT /api/conversations/:rootId/autonomie, avec ou sans la confirmation (« x-cockpit-confirm: 1 »). Le client d'API du banc ne
- * pose pas d'en-tête : requête brute avec le seul cookie de session du banc, comme le flux du témoin P6.
- * D-05 : `fetch` brut vers ctx.url, possible tant que le banc sert en HTTP ; en HTTPS épinglé (R105b), à reprendre par le transport
- * épinglé du banc — avec `postExecutionDePlan` ci-dessous, ce sont les deux seuls endroits de l'itération 2, réunis ici.
- */
-export async function putAutonomie(ctx, rootId, corps, { confirme = false } = {}) {
-  const entetes = {
-    cookie: ctx.api.cookie,
-    origin: ctx.url,
-    "content-type": "application/json",
-    "x-cockpit-csrf": "1",
-    ...(confirme ? { "x-cockpit-confirm": "1" } : {}),
-  };
-  // D-05 : `fetch` brut vers ctx.url (voir l'en-tête de cette fonction).
-  const reponse = await fetch(`${ctx.url}/api/conversations/${encodeURIComponent(rootId)}/autonomie`, {
-    method: "PUT",
-    headers: entetes,
-    body: JSON.stringify(corps),
-  });
-  const texte = await reponse.text();
+/** Réponse brute du banc ramenée à { code, corps, texte } : le corps n'est analysé que s'il est du JSON. */
+function lireReponseBrute(reponse) {
+  const texte = reponse.corps ?? "";
   let json = null;
   try {
     json = texte ? JSON.parse(texte) : null;
   } catch {
     json = null;
   }
-  return { code: reponse.status, corps: json, texte };
+  return { code: reponse.code, corps: json, texte };
 }
 
-/** POST /api/plans/:id/execution, avec ou sans la confirmation. Même D-05 que putAutonomie. */
-export async function postExecutionDePlan(ctx, planId, corps, { confirme = false } = {}) {
-  const reponse = await fetch(`${ctx.url}/api/plans/${encodeURIComponent(planId)}/execution`, {
-    method: "POST",
-    headers: {
-      cookie: ctx.api.cookie,
-      origin: ctx.url,
-      "content-type": "application/json",
-      "x-cockpit-csrf": "1",
-      ...(confirme ? { "x-cockpit-confirm": "1" } : {}),
-    },
-    body: JSON.stringify(corps),
+/**
+ * PUT /api/conversations/:rootId/autonomie, avec ou sans la confirmation (« x-cockpit-confirm: 1 »).
+ * Les raccourcis get/post/put du client d'API ne posent pas d'en-tête : la requête passe donc par `ctx.api.brut`, qui accepte des
+ * en-têtes de plus depuis l'entrée de R105b dans le chantier. Tout va par le transport du banc — HTTPS épinglé par défaut (certificat
+ * du volume pour seule autorité, empreinte contrôlée à chaque poignée de main), fetch en mode HTTP explicite (« --http ») — avec le
+ * cookie de session, `origin` et `x-cockpit-csrf` posés par le client. Avec `postExecutionDePlan` ci-dessous, ce sont les deux seuls
+ * endroits de l'itération 2 qui posent un en-tête, réunis ici.
+ */
+export async function putAutonomie(ctx, rootId, corps, { confirme = false } = {}) {
+  const reponse = await ctx.api.brut("PUT", `/api/conversations/${encodeURIComponent(rootId)}/autonomie`, corps, {
+    entetes: confirme ? { "x-cockpit-confirm": "1" } : undefined,
   });
-  const texte = await reponse.text();
-  let json = null;
-  try {
-    json = texte ? JSON.parse(texte) : null;
-  } catch {
-    json = null;
-  }
-  return { code: reponse.status, corps: json, texte };
+  return lireReponseBrute(reponse);
+}
+
+/** POST /api/plans/:id/execution, avec ou sans la confirmation. Même transport que putAutonomie. */
+export async function postExecutionDePlan(ctx, planId, corps, { confirme = false } = {}) {
+  const reponse = await ctx.api.brut("POST", `/api/plans/${encodeURIComponent(planId)}/execution`, corps, {
+    entetes: confirme ? { "x-cockpit-confirm": "1" } : undefined,
+  });
+  return lireReponseBrute(reponse);
 }
 
 // --- Choix d'autonomie ---------------------------------------------------------------------------------------------------------------

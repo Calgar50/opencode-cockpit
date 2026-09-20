@@ -2,7 +2,7 @@
 // DOC2 (documentation de l'itération 2), posés par les corrections de la relecture « 2-vague-4 ». Ce que la vague doit prouver, et
 // qu'aucun paquet ne peut prouver seul — les trois constats venaient tous d'un document qui annonçait autre chose que la branche :
 //   1. gardes d'isolation du banc : le nombre annoncé par le §10 du RECAPITULATIF est celui que `run-e2e.sh --gardes` joue sur
-//      CETTE branche (30 ; les 51 des branches voisines viennent de R105b, qui n'y est pas encore) ;
+//      CETTE branche (51 depuis l'intégration de la 1.0.5, qui apporte les gardes HTTPS de R105b ; 30 avant elle) ;
 //   2. témoin P6 et P4 : chaque scénario `it2-*` qui agit sur opencode tourne sous `avecTemoinP6`, sauf une liste FIGÉE de trois
 //      exemptés qui n'ont que le journal des requêtes du faux (`exigerP6SurRequetes`, muet hors « --faux ») ; `e2e/README.md` les
 //      nomme et dit ce qu'ils ne vérifient pas ;
@@ -52,11 +52,13 @@ function entree(file: string, debut: string): string {
 
 describe("croisements it2 V4 : gardes d'isolation du banc (L13, DOC2)", () => {
   it("le §10 du RECAPITULATIF annonce le nombre de gardes que `run-e2e.sh --gardes` joue sur cette branche", () => {
-    // Une garde = un `await refuse(…)` ou un `await verifier(…)` de `verifierGardes()`, en tête de ligne (le `verifier` interne de
-    // `refuse` est indenté plus loin) : c'est exactement ce que le banc imprime en « ok » ou en « ÉCHEC ».
+    // Une garde = un `await refuse(…)`, `await verifier(…)` ou `await refusCertificat(…)` de `verifierGardes()`, en tête de ligne
+    // (les `verifier`/`refuse` internes de ces enveloppes sont indentés plus loin) : c'est exactement ce que le banc imprime en
+    // « ok » ou en « ÉCHEC ». `refusCertificat` est arrivé avec les gardes HTTPS de R105b (intégration de la 1.0.5) : sans elle,
+    // ses six gardes manquaient au compte et le §10 semblait annoncer trop.
     const gardes = lire(BANC_FILE)
       .split(/\r?\n/)
-      .filter((line) => /^ {2}await (?:refuse|verifier)\(/.test(line));
+      .filter((line) => /^ {2}await (?:refuse|verifier|refusCertificat)\(/.test(line));
     assert.ok(gardes.length > 20, `gardes relevées dans e2e/lib/docker-e2e.mjs : ${gardes.length}`);
 
     const annonces = [...lire(RECAP).matchAll(/gardes(?: d'isolation)? du banc : (\d+)/g)].map((m) => Number(m[1]));
@@ -68,9 +70,10 @@ describe("croisements it2 V4 : gardes d'isolation du banc (L13, DOC2)", () => {
     );
   });
 
-  it("le chiffre des branches qui portent R105b est nommé comme tel, jamais donné pour joué ici", () => {
+  it("le chiffre des gardes HTTPS reste rattaché à ce qui les apporte (R105b, la 1.0.5)", () => {
     const recap = aplati(RECAP);
-    // Le 51 peut rester pour mémoire, mais seulement rattaché à R105b (la 1.0.5), qui n'est pas dans cette branche.
+    // Depuis l'intégration de la 1.0.5, les 51 gardes sont jouées ici ; la phrase doit toujours dire d'où viennent
+    // celles qui se sont ajoutées aux 30 de l'itération 2, sans quoi le chiffre change sans explication.
     for (const m of recap.matchAll(/51 gardes[^.]*\./g)) assert.match(m[0], /R105b|1\.0\.5/, `« ${m[0]} » sans sa condition`);
   });
 });

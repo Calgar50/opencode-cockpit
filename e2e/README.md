@@ -137,7 +137,7 @@ Le contexte `ctx` :
 | `epinglage` | en HTTPS, empreinte SHA-256 du certificat (`sha256`) et condensé de sa clé publique (`spki`) épinglés, lus sur le volume ; `null` en HTTP. Jamais la clé |
 | `faux` | pilotage du faux opencode (`requetes`, `evenements`, `scripter`, `tourParDefaut`, `oublier`), ou `null` hors du mode `--faux` |
 | `mode` | `faux`, `reel-hors-ligne` ou `reel` |
-| `api` | client d'API du cockpit, déjà connecté (`get`, `post`, `put`, `brut`), épinglé en HTTPS. Un scénario ne parle au cockpit que par lui ou par la page : un `fetch` direct vers `ctx.url` échouerait en HTTPS, et c'est voulu |
+| `api` | client d'API du cockpit, déjà connecté (`get`, `post`, `put`, `brut`, `flux`), épinglé en HTTPS. `brut(methode, chemin, corps, { entetes })` rend `{ code, entetes, corps }` et accepte des en-têtes de plus, pour ceux que les raccourcis ne posent pas (`x-cockpit-confirm: 1`) ; `flux(chemin, { signal })` ouvre un flux d'événements lu au fil de l'eau. Un scénario ne parle au cockpit que par lui ou par la page : un `fetch` direct vers `ctx.url` échouerait en HTTPS, et c'est voulu |
 | `pile` | redémarrage réel d'un service de la pile jetable : `arreter(service)` (`docker compose stop -t 5`) et `demarrer(service)` (`start`), par les commandes Compose du banc (projet revérifié) ; seulement les services du mode courant, jamais `rm`, `kill` ni `down` |
 | `screenshot(nom)` | les six captures : 1440, 1024 et 400, en clair et en sombre |
 | `expectNoConsoleErrors()` | lève si la console a porté la moindre erreur depuis l'ouverture de l'onglet |
@@ -254,10 +254,11 @@ porte `core.pager`, ce qui fait attendre toute commande `git` — règle G04).
 inoffensives, trente nuisibles). Le banc en vérifie seulement la **forme** à chaque passage ; **aucune de ces commandes
 n'est soumise**, ici ni ailleurs : la barrière est une recette à jouer à la main avant publication.
 
-**HTTP (écart D-05).** `it2-api-commun.mjs` suppose lui aussi un cockpit servi en HTTP : la confirmation d'un choix
-automatique exige l'en-tête `x-cockpit-confirm: 1` et le client d'API du banc ne sait pas poser d'en-tête. Ses deux
-`fetch` bruts vers `ctx.url` sont réunis dans une seule section « Requêtes brutes (D-05) », et sont à reprendre au
-rebase de la 1.0.5 comme ceux de l'itération 1.
+**Écart D-05 levé ici aussi.** `it2-api-commun.mjs` tournait lui aussi sur un cockpit servi en HTTP : la confirmation
+d'un choix automatique exige l'en-tête `x-cockpit-confirm: 1`, que les raccourcis `get`/`post`/`put` du client d'API ne
+posent pas, d'où deux `fetch` nus réunis dans une seule section. Depuis l'entrée de R105b dans le chantier, `ctx.api.brut`
+prend un quatrième paramètre `{ entetes }` : `putAutonomie` et `postExecutionDePlan` passent par le transport du banc,
+cookie de session, `origin` et `x-cockpit-csrf` compris. Plus un seul `fetch` nu dans les scénarios de l'itération 2.
 
 **Interrupteur.** `it2-api-interrupteur.mjs` est le seul scénario à deux côtés. Le passage ordinaire du banc le joue
 allumé. Pour le côté coupé, la variable se pose dans l'environnement du shell — Compose l'interpole avant le fichier

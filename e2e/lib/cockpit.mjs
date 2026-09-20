@@ -296,9 +296,14 @@ export function creerClientCockpit(url, jeton, epinglage = null) {
     async put(chemin, corps) {
       return await lireJson(await appeler("PUT", chemin, corps ?? {}));
     },
-    /** Réponse brute (code, en-têtes et corps), pour les scénarios qui attendent un refus ou lisent un en-tête (CSP). */
-    async brut(methode, chemin, corps) {
-      const reponse = await appeler(methode, chemin, corps);
+    /**
+     * Réponse brute (code, en-têtes et corps), pour les scénarios qui attendent un refus ou lisent un en-tête (CSP).
+     * `entetes` ajoute des en-têtes à la requête, pour ceux que les raccourcis get/post/put ne posent pas — par
+     * exemple la confirmation d'un choix automatique (« x-cockpit-confirm: 1 »). Le cookie de session, `origin` et
+     * `x-cockpit-csrf` restent posés par le client : un scénario n'a donc jamais à ouvrir sa propre connexion.
+     */
+    async brut(methode, chemin, corps, { entetes } = {}) {
+      const reponse = await appeler(methode, chemin, corps, entetes ? { headers: entetes } : {});
       return { code: reponse.status, entetes: reponse.headers, corps: await reponse.text() };
     },
     /**

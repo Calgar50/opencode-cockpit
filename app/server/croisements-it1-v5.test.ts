@@ -370,6 +370,8 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
     assert.deepEqual(endroits, [], "endroits qui supposent encore le HTTP (le banc sert en HTTPS épinglé depuis R105b)");
     // Aucun scénario ne parle au cockpit hors du transport du banc : ni fetch nu, ni vérification TLS coupée, ni
     // connexion par mot de passe. Le seul fetch permis est celui du mode HTTP explicite, dans e2e/lib/cockpit.mjs.
+    // Les scénarios de l'itération 2 sont couverts par la même règle : leurs deux requêtes de confirmation
+    // (« x-cockpit-confirm: 1 », §4.11) passent par `ctx.api.brut`, à qui l'entrée de la 1.0.5 a ajouté un paramètre d'en-têtes.
     const horsBanc = /\bfetch\(|NODE_TLS_REJECT_UNAUTHORIZED|rejectUnauthorized:\s*false|ignore-certificate-errors(?!-spki-list)|\/api\/login/;
     const fautifs: string[] = [];
     for (const name of fs.readdirSync(SCENARIOS_DIR).filter((n) => n.endsWith(".mjs"))) {
