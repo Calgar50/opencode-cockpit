@@ -1,0 +1,82 @@
+/* Propriétaire : L38c.
+   « Prévu / Réel » des équipes, en tête du Déroulé (panneau de contexte et Archives ; spécification §5.1 l.878-883, §5.5 ;
+   C §9.14). Les pistes et les barres « génération » et « attente de vous » viennent de activity/deroule.css (it1) : cette feuille
+   n'ajoute que la barre de PAUSE (hachure + le mot « vérification », toujours écrit) et la mise en page propre aux équipes.
+   Aucune animation, aucune transition : les états se lisent en mots et en icônes, jamais par la couleur seule. */
+
+.team-deroule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.team-deroule-run {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.team-deroule-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.team-deroule-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  min-width: 0;
+}
+.team-deroule-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+}
+.team-deroule-bilan {
+  margin: 0;
+}
+/* Colonne « Prévu » des barres : la coche (ou le tiret) se lit à côté du mot de l'état. */
+.team-deroule-prevu {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+/* Pause pour vérifier : hachure ET le mot « vérification », comme la barre « vous » porte le mot « vous ». */
+.deroule-bar--verification {
+  background: repeating-linear-gradient(135deg, var(--accent-soft) 0 4px, var(--surface-1) 4px 8px);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  font-weight: 600;
+}
+
+/* --- Mode contrasté --------------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .team-deroule {
+    border-bottom-color: CanvasText;
+  }
+  .team-deroule-state,
+  .team-deroule-prevu,
+  .team-deroule-title {
+    color: CanvasText;
+  }
+  /* Hachure de la pause : motif sur CanvasText, bordure, et le mot « vérification » reste écrit dans la barre. */
+  .deroule-bar--verification {
+    forced-color-adjust: none;
+    color: CanvasText;
+    background: repeating-linear-gradient(135deg, CanvasText 0 1px, Canvas 1px 5px);
+    box-shadow: inset 0 0 0 1px CanvasText;
+  }
+  .team-deroule-toggle:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

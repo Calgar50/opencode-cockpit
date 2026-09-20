@@ -705,9 +705,17 @@ describe("Interface du portillon : garde-fous lus dans les sources", () => {
     for (const field of ["view.cible.nom", "view.cible.titre", "view.cible.mode", "view.ia.model"]) assert.ok(details.includes(`bounded(${field},`), field);
   });
 
-  it("avis du mode Simple : ni [Voir les équipes] ni équipe (Q5, option b) ; rien en mode Avancé", () => {
+  it("avis du mode Simple : texte court et pas de [Voir les équipes] tant que les équipes sont fermées (U1) ; rien en mode Avancé", () => {
     const source = read("web/pages/chat/delegation/DelegationNotice.tsx").replace(/\/\/.*$/gm, "");
-    assert.ok(!/équipe/i.test(source));
+    // --- équipes (it4) : début ---
+    // La décision U1 du 19/09 remplace Q5 (b) « jusqu'à L38 » : l'avis garde le TEXTE COURT tant que `ouvertesEnSimple`
+    // (EQUIPES_SIMPLE_OUVERTES) est faux, et le bouton [Voir les équipes] n'apparaît qu'avec le texte complet. Les deux textes et
+    // les deux cas sont vérifiés par web-team-deroule.test.ts (L38c) ; ici, seul le composant est relu : il n'écrit aucun texte
+    // d'équipe lui-même et ne montre jamais le bouton sans lui.
+    assert.ok(!/Voir les équipes|lancez une équipe/i.test(source), "aucun texte d'équipe écrit dans le composant (tout vient de delegation-texts.ts)");
+    assert.match(source, /avis\.bouton === null \? null :/, "bouton seulement quand l'avis en porte un");
+    assert.match(source, /avisSimple\(\)/, "équipes fermées : exactement le texte court d'avant");
+    // --- équipes (it4) : fin ---
     assert.match(source, /if \(advanced \|\| !ID_RE\.test\(rootId\)\) return null;/);
     assert.match(read("web/pages/chat/delegation/DelegationDetails.tsx"), /if \(!advanced\) return null;/, "carte détaillée : mode Avancé seulement");
   });
