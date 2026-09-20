@@ -97,6 +97,10 @@ export type {
 export type * from "../../server/shared/activity-types.ts";
 export type * from "../../server/shared/autonomy-types.ts";
 export type * from "../../server/shared/cockpit-event-types.ts";
+// <c5:types>
+// Itération 5 : méthodes, Seconde lecture, chronologie, coûts par équipe et archives d'équipe (T5a).
+export type * from "../../server/shared/construction-types.ts";
+// </c5:types>
 
 export interface PriceRates {
   input: number;
