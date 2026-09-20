@@ -379,23 +379,22 @@ describe("catalogue des méthodes : textes affichés", () => {
 });
 
 describe("méthodes : module partagé", () => {
-  it("shared/methods.ts est pur : aucun import, aucun module node, aucun accès à process", () => {
+  it("shared/methods.ts est pur : aucun module node, aucun accès à process, et pour seul import construction-constants.ts", () => {
     const source = fs.readFileSync(path.join(import.meta.dirname, "shared", "methods.ts"), "utf8");
     assert.equal(source.includes('"node:'), false);
     assert.equal(/\bprocess\./.test(source), false);
     assert.equal(/\brequire\s*\(/.test(source), false);
-    assert.deepEqual(importsDe(source), []);
+    // Bascule du train de V0 : la copie locale des cinq limites a été remplacée par l'import du module de valeurs de T5a.
+    assert.deepEqual(importsDe(source), ["./construction-constants.ts"]);
+    assert.equal(/^const METHODS_PER_ASSISTANT\b/m.test(source), false);
   });
 
-  it("le catalogue n'importe que le type Method : construction-constants.ts n'existe pas dans cette vague", () => {
+  it("le catalogue n'importe que le type Method ; les limites ne sont plus recopiées", () => {
     const source = fs.readFileSync(path.join(import.meta.dirname, "methods-catalogue.ts"), "utf8");
-    const partage = fs.readFileSync(path.join(import.meta.dirname, "shared", "methods.ts"), "utf8");
     assert.deepEqual(importsDe(source), ["./shared/methods.ts"]);
-    for (const texte of [source, partage]) {
-      assert.equal(
-        importsDe(texte).some((spec) => spec.includes("construction-constants")),
-        false,
-      );
-    }
+    assert.equal(
+      importsDe(source).some((spec) => spec.includes("construction-constants")),
+      false,
+    );
   });
 });

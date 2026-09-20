@@ -10,7 +10,15 @@
 // La VÉRITÉ est le fichier d'agent : `methodIdsIn` le relit. `item_meta.methods` n'en est qu'un miroir, écrit ailleurs.
 // Aucune méthode n'est attachée automatiquement : elles sont seulement conseillées (`suggereePour`).
 //
-// Module pur (server/shared) : aucun module node, aucun accès à process, aucun import (test de pureté de core.test.ts).
+// Module pur (server/shared) : aucun module node, aucun accès à process (test de pureté de core.test.ts). Seul import :
+// construction-constants.ts, lui-même pur, posé au train de V0 à la place de la copie locale des limites (plan it5 §5.3).
+import {
+  METHOD_BLOCK_MAX_CHARS,
+  METHOD_BLOCK_MAX_WORDS,
+  METHODS_PER_ASSISTANT,
+  METHODS_PER_MESSAGE,
+  METHODS_PER_STEP,
+} from "./construction-constants.ts";
 
 /** Entrée du catalogue des méthodes (conception C §5.4). */
 export interface Method {
@@ -38,13 +46,8 @@ export interface Method {
 
 // --- Limites -------------------------------------------------------------------------------------------------------------------
 
-// Copie de construction-constants.ts, remplacée par un import au train de V0 : `construction-constants.ts` est écrit par T5a
-// dans la même vague et n'existe pas dans cette copie. Valeurs du plan d'exécution it5 §4.2.
-const METHODS_PER_ASSISTANT = 2;
-const METHODS_PER_MESSAGE = 2;
-const METHODS_PER_STEP = 2;
-const METHOD_BLOCK_MAX_CHARS = 900;
-const METHOD_BLOCK_MAX_WORDS = 120;
+// Les cinq valeurs viennent de construction-constants.ts (T5a), seule source depuis le train de V0 : la copie locale de L44a
+// a été remplacée par l'import ci-dessus, après vérification de l'égalité des cinq valeurs (plan d'exécution it5 §4.2, §5.3).
 
 /** Limites des méthodes (2 par assistant, par message et par étape ; bloc de 900 caractères et 120 mots au plus). */
 export const METHOD_LIMITS = {
