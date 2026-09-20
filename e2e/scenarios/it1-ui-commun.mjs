@@ -1,7 +1,8 @@
 // Scénarios e2e de l'interface de l'itération 1 (paquet L7b-2) : outils communs, et le scénario qui vérifie leurs préalables.
 //
 // Le banc lance chaque fichier « .mjs » de e2e/scenarios comme un scénario : ce module en est donc un aussi. Son run(ctx) vérifie ce
-// sur quoi reposent les autres scénarios « it1-ui-* » : mode Simple par défaut, page servie en HTTP sous la CSP réelle (D-05), règles
+// sur quoi reposent les autres scénarios « it1-ui-* » : mode Simple par défaut, page servie dans le schéma du banc (HTTPS épinglé
+// par défaut depuis R105b, HTTP explicite avec « --http ») sous la CSP réelle, règles
 // d'utilisation acceptées au clic comme le ferait un utilisateur, flux d'événements ouvert, console muette.
 //
 // Principe : on regarde la PAGE, pilotée par le banc (CDP), et on n'agit que par ce qu'un utilisateur ferait (clic, clavier). Les
@@ -491,18 +492,20 @@ export async function run(ctx) {
   const bootstrap = await ctx.api.get("/api/bootstrap");
   exiger(bootstrap?.settings?.ui?.mode === "simple", `mode ${resume(bootstrap?.settings?.ui?.mode)} au lieu de « simple ».`);
 
-  // D-05 : HTTP explicite sur la boucle locale (contexte sûr pour le navigateur), sous la CSP réelle du cockpit : adresse en http://,
-  // CSP lue par un fetch brut vers ctx.url (refusé en HTTPS épinglé : R105b), protocole de la page vérifié plus bas.
-  exiger(ctx.url.startsWith("http://127.0.0.1:"), `adresse du cockpit inattendue : ${ctx.url}`);
-  const reponse = await fetch(`${ctx.url}/`, { headers: { cookie: ctx.api.cookie } });
-  const csp = reponse.headers.get("content-security-policy") ?? "";
-  exiger(reponse.ok && /default-src 'self'/.test(csp) && /script-src 'self'(;|$)/.test(csp) && /connect-src 'self'/.test(csp), `CSP de la page inattendue : « ${csp} »`);
-  await reponse.body?.cancel();
+  // Boucle locale (contexte sûr pour le navigateur), sous la CSP réelle du cockpit : adresse dans le schéma du banc
+  // (HTTPS épinglé par défaut depuis R105b, HTTP explicite avec « --http »), CSP lue par le transport épinglé du banc,
+  // protocole de la page vérifié plus bas.
+  exiger(ctx.url.startsWith(`${ctx.schema}://127.0.0.1:`), `adresse du cockpit inattendue : ${ctx.url}`);
+  const reponse = await ctx.api.brut("GET", "/");
+  const csp = reponse.entetes.get("content-security-policy") ?? "";
+  exiger(reponse.code === 200 && /default-src 'self'/.test(csp) && /script-src 'self'(;|$)/.test(csp) && /connect-src 'self'/.test(csp), `CSP de la page inattendue : « ${csp} »`);
 
   // Règles acceptées au clic (première visite de la pile), mode Simple affiché, flux d'événements ouvert.
   await preparerPage(ctx);
-  // D-05 : « http: » exigé tant que le banc sert en HTTP ; en HTTPS épinglé, le schéma servi est celui du banc.
-  exiger(await page.evaluer("window.isSecureContext === true && location.protocol === 'http:'"), "page hors contexte sûr, ou servie autrement qu'en HTTP.");
+  // Le schéma servi est celui du banc : « https: » par défaut (épinglé, R105b), « http: » avec « --http ».
+  exiger(await page.evaluer("window.isSecureContext === true"), "page hors contexte sûr.");
+  const protocole = await page.evaluer("location.protocol");
+  exiger(protocole === `${ctx.schema}:`, `page servie en « ${protocole} », attendu « ${ctx.schema}: ».`);
   const accepte = (await ctx.api.get("/api/settings"))?.ui?.rulesAcceptedVersion;
   exiger(typeof accepte === "number" && accepte >= (bootstrap.rulesVersion ?? 0), `règles non enregistrées après « Commencer » (${resume(accepte)}).`);
   await attendreModeAffiche(page, "simple");

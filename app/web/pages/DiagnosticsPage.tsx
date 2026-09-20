@@ -1,6 +1,8 @@
 // Diagnostic : état d'opencode, du flux d'événements, du réseau, de Copilot et journal.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
 import { useApp } from "../app/AppContext.tsx";
+import { LOCAL_HTTP_EXPLANATIONS } from "../app/LocalHttpNotice.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { useReloadGuard } from "../components/reloadGuard.ts";
@@ -99,6 +101,16 @@ type Problem = { tone: "critical" | "warning"; text: string; action?: "restart-o
 
 function problemsOf(s: SystemStatus, quotaEnabled: boolean): Problem[] {
   const out: Problem[] = [];
+  // Le mode HTTP local n'est jamais un « point à vérifier » : c'est un choix d'installation, rappelé par son bandeau permanent.
+  if (s.security.tls !== null && certificateRenewalDue(s.security.tls.daysLeft)) {
+    out.push({
+      tone: "warning",
+      text:
+        s.security.tls.daysLeft < 0
+          ? "Le certificat HTTPS local a expiré : il sera remplacé au prochain démarrage du cockpit."
+          : `Le certificat HTTPS local expire dans ${s.security.tls.daysLeft} jour${s.security.tls.daysLeft > 1 ? "s" : ""} : il sera remplacé au prochain démarrage du cockpit.`,
+    });
+  }
   if (s.opencode.restarting) out.push({ tone: "warning", text: "opencode est en cours de redémarrage." });
   else if (!s.opencode.reachable) out.push({ tone: "critical", text: "opencode ne répond pas." });
   if (!s.events.connected && !s.opencode.restarting) out.push({ tone: "critical", text: "Le flux d'événements d'opencode est coupé : les coûts et archives ne se mettent plus à jour." });
@@ -126,6 +138,145 @@ function problemsOf(s: SystemStatus, quotaEnabled: boolean): Problem[] {
   }
   if (quotaEnabled && s.quota.lastError) out.push({ tone: "warning", text: "La synchronisation du solde GitHub échoue." });
   return out;
+}
+
+type CopyValue = (value: string, what: string) => void;
+
+/** Valeur longue (empreinte, origine) en chasse fixe, avec son bouton Copier. */
+function Copyable({ value, what, onCopy }: { value: string; what: string; onCopy: CopyValue }) {
+  return (
+    <span className="row" style={{ gap: 6, alignItems: "center", minWidth: 0 }}>
+      <span className="mono small" style={{ wordBreak: "break-all" }}>
+        {value}
+      </span>
+      <Button size="sm" icon="copy" aria-label={`Copier : ${what}`} title={`Copier : ${what}`} onClick={() => onCopy(value, what)} />
+    </span>
+  );
+}
+
+/** Mode HTTPS : ce que le navigateur vérifie, et l'empreinte à comparer au premier accès. */
+function LocalHttpsLines({ tls, onCopy }: { tls: NonNullable<SystemStatus["security"]["tls"]>; onCopy: CopyValue }) {
+  return (
+    <>
+      <Line
+        tone="good"
+        label="Mode"
+        value="HTTPS local"
+        hint="Le navigateur affiche un avertissement au premier accès : le certificat est créé sur ce PC et n'est approuvé nulle part ailleurs. Comparez l'empreinte ci-dessous avant de continuer."
+      />
+      <Line
+        tone="neutral"
+        label="Certificat"
+        value={tls.source === "genere" ? "créé par le cockpit" : tls.source}
+        hint="Recréé automatiquement au démarrage un mois avant son échéance. Sa clé reste dans un volume Docker réservé au cockpit."
+      />
+      <Line tone="neutral" label="Empreinte SHA-256" hint={<Copyable value={tls.sha256} what="empreinte du certificat" onCopy={onCopy} />} />
+      <Line tone="neutral" label="Clé publique (SPKI, base64)" hint={<span className="mono small" style={{ wordBreak: "break-all" }}>{tls.spkiSha256Base64}</span>} />
+      <Line
+        tone={certificateRenewalDue(tls.daysLeft) ? "warning" : "good"}
+        label="Validité"
+        value={tls.daysLeft < 0 ? "expiré" : `${formatInt(tls.daysLeft)} jour${tls.daysLeft > 1 ? "s" : ""} restant${tls.daysLeft > 1 ? "s" : ""}`}
+        hint={`Du ${formatDateTime(Date.parse(tls.notBefore))} au ${formatDateTime(Date.parse(tls.notAfter))}.`}
+      />
+      <Line
+        tone="neutral"
+        label="Adresses couvertes"
+        hint={
+          <>
+            <span className="row wrap" style={{ gap: 4 }}>
+              {tls.san.map((h) => (
+                <span key={h} className="chip mono">
+                  {h}
+                </span>
+              ))}
+            </span>
+            {tls.ignoredHosts > 0
+              ? ` ${formatInt(tls.ignoredHosts)} hôte${tls.ignoredHosts > 1 ? "s" : ""} de COCKPIT_ALLOWED_HOSTS n'a pas pu être mis dans le certificat : ouvrez le cockpit par 127.0.0.1 ou localhost.`
+              : ""}
+          </>
+        }
+      />
+      <Line
+        tone="neutral"
+        label="Dernier renouvellement"
+        value={relativeTime(Date.parse(tls.generatedAt))}
+        hint={
+          tls.previousSha256 ? (
+            <>
+              Empreinte précédente : <span className="mono">{tls.previousSha256}</span>. Un avertissement du navigateur après un
+              renouvellement est normal.
+            </>
+          ) : (
+            "Premier certificat de cette installation."
+          )
+        }
+      />
+      <Line
+        tone="neutral"
+        label="Connexions TLS refusées (24 h)"
+        value={formatInt(tls.refusals24h)}
+        hint="Indicatif : une adresse http:// ouverte par erreur sur ce port, ou un outil qui n'accepte pas le certificat."
+      />
+      <Line
+        tone="neutral"
+        label="Adresse exacte de cette page"
+        hint={
+          <>
+            <Copyable value={window.location.origin} what="adresse du cockpit" onCopy={onCopy} />{" "}
+            <span className="small">
+              À donner à votre service informatique si Edge ne propose pas de continuer (exception SSLErrorOverrideAllowedForOrigins).
+            </span>
+          </>
+        }
+      />
+      <Line
+        tone="neutral"
+        label="Trafic interne"
+        value="HTTP sur le réseau Docker"
+        hint="Entre le cockpit et opencode, à l'intérieur de Docker : aucun port n'est ouvert pour ce trafic."
+      />
+    </>
+  );
+}
+
+/** Mode HTTP explicite : ce qui circule en clair, qui peut le lire, et comment revenir en HTTPS (plan §3.1). */
+function LocalHttpLines({ status, onCopy }: { status: SystemStatus; onCopy: CopyValue }) {
+  const confirmedAt = status.security.localHttpConfirmedAt;
+  const notice = localAccessNotice({
+    scheme: status.security.localScheme,
+    confirmedAt,
+    protocol: window.location.protocol,
+  });
+  return (
+    <>
+      <Line
+        tone="warning"
+        label="Mode"
+        value={
+          notice?.kind === "http-choisi"
+            ? `HTTP local (choix d'installation du ${formatDateTime(Date.parse(notice.confirmedAt))})`
+            : "HTTP local (choix d'installation)"
+        }
+        hint="Choisi à l'installation avec .\install.ps1 -Http, parce que le navigateur de ce poste n'accepte pas le certificat local. Le cockpit n'écoute que sur ce PC, mais sans chiffrer."
+      />
+      {LOCAL_HTTP_EXPLANATIONS.map((item) => (
+        <Line key={item.label} tone="neutral" label={item.label} hint={item.hint} />
+      ))}
+      <Line
+        tone="neutral"
+        label="Certificat"
+        value="non utilisé"
+        hint="Aucun certificat n'est lu ni écrit dans ce mode ; celui qui existe déjà resservira au retour en HTTPS."
+      />
+      <Line
+        tone="neutral"
+        label="Trafic interne"
+        value="HTTP sur le réseau Docker"
+        hint="Entre le cockpit et opencode, à l'intérieur de Docker : aucun port n'est ouvert pour ce trafic."
+      />
+      <Line tone="neutral" label="Adresse exacte de cette page" hint={<Copyable value={window.location.origin} what="adresse du cockpit" onCopy={onCopy} />} />
+    </>
+  );
 }
 
 export function DiagnosticsPage() {
@@ -220,6 +371,17 @@ export function DiagnosticsPage() {
       setReloadingModels(false);
       void load();
     }
+  };
+
+  const copyValue = (value: string, what: string) => {
+    if (!navigator.clipboard) {
+      toast.warning("Copie indisponible", "Sélectionnez la valeur puis copiez-la manuellement.");
+      return;
+    }
+    navigator.clipboard.writeText(value).then(
+      () => toast.success("Copié", `${what.charAt(0).toUpperCase()}${what.slice(1)} dans le presse-papiers.`),
+      () => toast.warning("Copie refusée par le navigateur", "Sélectionnez la valeur puis copiez-la manuellement."),
+    );
   };
 
   const runCopilotCheck = async () => {
@@ -396,6 +558,16 @@ export function DiagnosticsPage() {
                   <Button icon="download" loading={backfilling} disabled={s.events.backfilling || !s.opencode.reachable} onClick={() => void backfill()}>
                     Rattraper l'historique
                   </Button>
+                </div>
+              </Card>
+
+              <Card title="Accès à l'interface" subtitle="Comment cette page vous parvient, sur ce PC uniquement.">
+                <div className="diag-lines">
+                  {s.security.localScheme === "http" || s.security.tls === null ? (
+                    <LocalHttpLines status={s} onCopy={copyValue} />
+                  ) : (
+                    <LocalHttpsLines tls={s.security.tls} onCopy={copyValue} />
+                  )}
                 </div>
               </Card>
 

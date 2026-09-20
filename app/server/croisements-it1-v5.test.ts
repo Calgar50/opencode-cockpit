@@ -12,7 +12,8 @@
 //   2. documentation (DOC1, L7a, L7b-1, L7b-2) : liens internes et ancres (calculées comme GitHub) de README.md,
 //      docs/RECAPITULATIF.md et e2e/README.md ; chaque scénario du banc est cité dans e2e/README.md et chaque scénario cité dans la
 //      documentation existe ; chaque scénario it1 qui agit sur opencode tourne sous le témoin P6 ; chaque endroit du banc qui
-//      suppose le HTTP porte la mention D-05 et est nommé par e2e/README.md et le RECAPITULATIF ; le RECAPITULATIF ne garde pas en
+//      aucun scénario ne suppose plus le HTTP ni ne parle au cockpit hors du transport du banc (écart D-05 levé par R105b), et les
+//      deux documents le disent ; le RECAPITULATIF ne garde pas en
 //      « reste à faire » ce que son §10 donne pour fait (relecture 1-vague-5).
 // Le banc e2e lui-même (run-e2e.sh --faux sur tous les scénarios) est joué par l'intégrateur, hors de npm test (décision D-06).
 import assert from "node:assert/strict";
@@ -356,21 +357,29 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
     assert.match(readme, /Chaque autre scénario qui agit sur opencode \(.*?\) le fait sous le témoin P6/);
   });
 
-  it("écart D-05 : chaque endroit des scénarios qui suppose le HTTP porte la mention D-05 ; e2e/README.md et le RECAPITULATIF les nomment tous", () => {
+  it("écart D-05 levé : aucun scénario ne suppose le HTTP ni n'appelle le cockpit hors du transport du banc ; e2e/README.md et le RECAPITULATIF le disent", () => {
     // fetch brut vers l'adresse du cockpit, adresse ou protocole de la page exigés en HTTP.
     const suppose = /fetch\(`\$\{ctx\.url\}|protocol === 'http:'|startsWith\("http:\/\/127\.0\.0\.1:"\)/;
-    const nonMarques: string[] = [];
-    const fichiers = new Set<string>();
+    const endroits: string[] = [];
     for (const name of fs.readdirSync(SCENARIOS_DIR).filter((n) => n.endsWith(".mjs"))) {
       const lines = fs.readFileSync(path.join(SCENARIOS_DIR, name), "utf8").split(/\r?\n/);
       lines.forEach((line, i) => {
-        if (!suppose.test(line)) return;
-        fichiers.add(name);
-        if (!lines.slice(Math.max(0, i - 3), i + 1).some((l) => l.includes("D-05"))) nonMarques.push(`${name}:${i + 1}`);
+        if (suppose.test(line)) endroits.push(`${name}:${i + 1}`);
       });
     }
-    assert.deepEqual([...fichiers].sort(), ["it1-api-commun.mjs", "it1-ui-commun.mjs", "it1-ui-m25.mjs"]);
-    assert.deepEqual(nonMarques, [], "endroits qui supposent le HTTP sans la mention D-05 (3 lignes au-dessus au plus)");
+    assert.deepEqual(endroits, [], "endroits qui supposent encore le HTTP (le banc sert en HTTPS épinglé depuis R105b)");
+    // Aucun scénario ne parle au cockpit hors du transport du banc : ni fetch nu, ni vérification TLS coupée, ni
+    // connexion par mot de passe. Le seul fetch permis est celui du mode HTTP explicite, dans e2e/lib/cockpit.mjs.
+    const horsBanc = /\bfetch\(|NODE_TLS_REJECT_UNAUTHORIZED|rejectUnauthorized:\s*false|ignore-certificate-errors(?!-spki-list)|\/api\/login/;
+    const fautifs: string[] = [];
+    for (const name of fs.readdirSync(SCENARIOS_DIR).filter((n) => n.endsWith(".mjs"))) {
+      const lines = fs.readFileSync(path.join(SCENARIOS_DIR, name), "utf8").split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (horsBanc.test(line)) fautifs.push(`${name}:${i + 1}`);
+      });
+    }
+    assert.deepEqual(fautifs, [], "accès au cockpit hors du transport épinglé du banc");
+    assert.doesNotMatch(fs.readFileSync(path.join(REPO_DIR, "e2e", "lib", "cockpit.mjs"), "utf8"), /D-05/, "e2e/lib/cockpit.mjs : mention D-05 restante");
     const paragraphes = (file: string) =>
       fs
         .readFileSync(path.join(REPO_DIR, file), "utf8")
@@ -379,7 +388,7 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
         .join("\n");
     for (const doc of [path.join("e2e", "README.md"), path.join("docs", "RECAPITULATIF.md")]) {
       const texte = paragraphes(doc);
-      assert.deepEqual([...fichiers].filter((name) => !texte.includes(`\`${name}\``)), [], `${doc} : fichiers à reprendre au rebase non nommés`);
+      assert.match(texte, /levé/, `${doc} : l'écart D-05 n'est pas donné pour levé`);
       assert.doesNotMatch(texte, /les deux endroits à reprendre/, `${doc} : « les deux endroits » seulement`);
     }
   });

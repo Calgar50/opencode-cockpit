@@ -1,29 +1,30 @@
 // Flux temps réel du cockpit (SSE /api/events) : un seul EventSource partagé par toute l'interface.
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { INITIAL_STREAM_STATE, nextStreamState, type StreamEvent, type StreamState, type StreamStatus } from "../../server/shared/stream-status.ts";
 import type { BrowserEvent } from "./types.ts";
 
-export type StreamStatus = "connecting" | "open" | "error";
+export type { StreamStatus } from "../../server/shared/stream-status.ts";
 
 class EventBus {
   #source: EventSource | null = null;
   #listeners = new Set<(event: BrowserEvent) => void>();
   #statusListeners = new Set<() => void>();
-  #status: StreamStatus = "connecting";
+  #state: StreamState = INITIAL_STREAM_STATE;
   #everOpened = false;
 
   get status(): StreamStatus {
-    return this.#status;
+    return this.#state.status;
   }
 
   connect(): void {
     if (this.#source) return;
     const source = new EventSource("/api/events");
     this.#source = source;
-    this.#setStatus("connecting");
+    this.#reset();
     source.addEventListener("hello", () => {
       const reconnected = this.#everOpened;
       this.#everOpened = true;
-      this.#setStatus("open");
+      this.#apply("hello");
       if (reconnected) this.#emit({ kind: "cockpit", type: "stream.reconnected", data: null });
     });
     source.onmessage = (message) => {
@@ -33,13 +34,15 @@ class EventBus {
         // Message illisible : ignoré.
       }
     };
-    source.onerror = () => this.#setStatus("error");
+    // Transport rétabli : le compteur d'erreurs n'est remis à zéro que par la trame « hello » du serveur.
+    source.onopen = () => this.#apply("open");
+    source.onerror = () => this.#apply("error");
   }
 
   disconnect(): void {
     this.#source?.close();
     this.#source = null;
-    this.#setStatus("connecting");
+    this.#reset();
   }
 
   subscribe(listener: (event: BrowserEvent) => void): () => void {
@@ -62,10 +65,18 @@ class EventBus {
     }
   }
 
-  #setStatus(status: StreamStatus): void {
-    if (this.#status === status) return;
-    this.#status = status;
-    for (const listener of this.#statusListeners) listener();
+  #apply(event: StreamEvent): void {
+    this.#store(nextStreamState(this.#state, event));
+  }
+
+  #reset(): void {
+    this.#store(INITIAL_STREAM_STATE);
+  }
+
+  #store(state: StreamState): void {
+    const changed = this.#state.status !== state.status;
+    this.#state = state;
+    if (changed) for (const listener of this.#statusListeners) listener();
   }
 }
 

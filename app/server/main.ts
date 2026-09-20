@@ -1,4 +1,3 @@
-import { serve } from "@hono/node-server";
 import { ArchiveService } from "./archive.ts";
 import { createCockpitApp } from "./app-factory.ts";
 import { AssistantService, knownDirectories, probeSessionsBusy } from "./assistants.ts";
@@ -8,7 +7,6 @@ import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
-import { type AppEnv, loadEnv } from "./env.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
@@ -19,31 +17,35 @@ import { EventProcessor } from "./processor.ts";
 import { ProjectsService } from "./projects.ts";
 import { QuotaSync } from "./quota.ts";
 import { registerAiRoutes, registerAssistantRoutes } from "./routes-assistants.ts";
+import { AuthTickets } from "./security.ts";
+import { type LocalServer, logHttpsFailure, prepareStartup, startLocalServer } from "./server-start.ts";
 import { SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import { StudioService } from "./studio.ts";
 import { TierService } from "./tiers.ts";
+import { TLS_RENEW_BEFORE_DAYS } from "./tls.ts";
 import { trustCorporateCertificates } from "./tls-trust.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const DAY_MS = 86_400_000;
 const log = createLogger();
 
-let env: AppEnv;
-try {
-  env = loadEnv();
-} catch (err) {
-  log.error(`configuration invalide : ${errorMessage(err)}`);
-  process.exit(1);
-}
-
-// Appels sortants du cockpit (GitHub, Copilot) derrière un proxy qui inspecte le HTTPS : autorités de certs/ ajoutées.
-const trust = trustCorporateCertificates(env.certsDir);
-if (trust.certificates > 0) log.info("certificats d'entreprise chargés", { files: trust.files, certificates: trust.certificates });
-if (trust.errors.length > 0 || trust.rejected > 0) {
-  log.warn("certificats d'entreprise en partie ignorés", { certificates: trust.certificates, rejected: trust.rejected, errors: trust.errors.slice(0, 10) });
-}
-// Même secours que le superviseur d'opencode (exactement « 1 ») : bandeau rouge dans l'interface.
-if (env.tlsInsecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+// Configuration (mode d'accès local compris), puis certificat du serveur en HTTPS : sortie 1 avant la base et avant toute écoute.
+const { env, listen, tls } = await prepareStartup({
+  processEnv: process.env,
+  log,
+  exit: (code) => process.exit(code),
+  afterEnv: (env) => {
+    // Appels sortants du cockpit (GitHub, Copilot) derrière un proxy qui inspecte le HTTPS : autorités de certs/ ajoutées.
+    const trust = trustCorporateCertificates(env.certsDir);
+    if (trust.certificates > 0) log.info("certificats d'entreprise chargés", { files: trust.files, certificates: trust.certificates });
+    if (trust.errors.length > 0 || trust.rejected > 0) {
+      log.warn("certificats d'entreprise en partie ignorés", { certificates: trust.certificates, rejected: trust.rejected, errors: trust.errors.slice(0, 10) });
+    }
+    // Même secours que le superviseur d'opencode (exactement « 1 ») : bandeau rouge dans l'interface.
+    if (env.tlsInsecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  },
+});
 
 const db = openDb(env.dataDir);
 const settings = new SettingsStore(db);
@@ -163,6 +165,8 @@ resyncOnReconnect(hub, copilotConfig);
 // Adresse fausse relue pendant une réponse (« correction différée ») : synchro relancée dès qu'une conversation passe au repos.
 resyncOnIdle(hub, copilotConfig);
 
+// Tickets de connexion à usage unique (/api/health puis /auth?k=) : en mémoire, invalidés par un redémarrage.
+const tickets = new AuthTickets();
 const routeDeps = { assistants, tiers, settings, hub, log };
 // Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
 const cockpit = createCockpitApp({
@@ -188,14 +192,55 @@ const cockpit = createCockpitApp({
   copilotConfig,
   configQueue,
   sessions,
+  tls,
+  tickets,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 reloadBusy = () => cockpit.c11.reloadBusy();
 const { app } = cockpit;
 
-const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port }, (info) => {
-  log.info("cockpit à l'écoute", { host: env.host, port: info.port, version: env.version, tlsInsecure: env.tlsInsecure });
-});
+// Écoute unique : HTTPS (défaut) ou HTTP explicite, jamais les deux.
+let server: LocalServer;
+try {
+  server = startLocalServer({
+    app,
+    hostname: env.host,
+    port: env.port,
+    listen,
+    onListening: (port) => {
+      log.info("cockpit à l'écoute", {
+        host: env.host,
+        port,
+        scheme: env.localScheme,
+        version: env.version,
+        tlsInsecure: env.tlsInsecure,
+        ...(tls === null ? {} : { sha256: tls.info.sha256, notAfter: tls.info.notAfter }),
+      });
+    },
+  });
+} catch (err) {
+  logHttpsFailure(log, err);
+  db.close();
+  process.exit(1);
+}
+tls?.refusals.start();
+
+// Rappel quotidien, sans jamais recharger le certificat à chaud (un flux SSE en cours serait coupé) : échéance proche en HTTPS,
+// mode HTTP en HTTP.
+setInterval(() => {
+  if (tls !== null) {
+    const daysLeft = Math.floor((Date.parse(tls.info.notAfter) - Date.now()) / DAY_MS);
+    if (daysLeft < TLS_RENEW_BEFORE_DAYS) {
+      log.warn("certificat TLS local proche de l'échéance : renouvelé au prochain démarrage", {
+        notAfter: tls.info.notAfter,
+        daysLeft,
+        remede: ".\\cockpit.ps1 restart",
+      });
+    }
+  } else {
+    log.warn("rappel : mode HTTP local choisi à l'installation, trafic non chiffré sur la boucle locale", { confirmedAt: env.localHttpConfirmedAt });
+  }
+}, DAY_MS).unref();
 
 // La liste des IA et le solde Copilot ne dépendent pas d'opencode : lus dès le démarrage, même s'il ne répond pas.
 catalog.startAutoRefresh(15 * 60_000, (err) => log.warn("catalogue des modèles indisponible", { error: err.message }));
@@ -231,8 +276,11 @@ const shutdown = (signal: string) => {
   copilotConfig.stop();
   lookup.close();
   quota.stop();
-  // Les flux SSE ouverts retiennent le serveur : arrêt forcé après 5 s.
+  tls?.refusals.stop();
+  // Filet de sécurité : sortie forcée après 5 s.
   setTimeout(() => process.exit(0), 5_000).unref();
+  // Les flux SSE ouverts retiendraient close() jusqu'à leur fin : connexions fermées d'abord (sortie en quelques millisecondes).
+  server.closeAllConnections();
   server.close(() => {
     db.close();
     process.exit(0);

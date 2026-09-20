@@ -23,10 +23,31 @@ export async function run(ctx) {
   if (!bootstrap || typeof bootstrap !== "object") throw new Error("/api/bootstrap n'a rien rendu.");
   if (bootstrap.opencode?.reachable !== true) throw new Error(`le cockpit ne joint pas opencode : ${JSON.stringify(bootstrap.opencode)}`);
 
+  // 1 bis. Accès local : le schéma servi est celui du banc et, en HTTPS, l'empreinte annoncée par le Diagnostic est celle
+  // que le banc a lue sur le volume et épinglée.
+  if (sante.scheme !== ctx.schema) throw new Error(`schéma servi « ${sante.scheme} », attendu « ${ctx.schema} ».`);
+  const securite = (await ctx.api.get("/api/system/status"))?.security;
+  if (securite?.localScheme !== ctx.schema) throw new Error(`Diagnostic : schéma « ${securite?.localScheme} », attendu « ${ctx.schema} ».`);
+  if (ctx.schema === "https") {
+    if (securite.tls?.sha256 !== ctx.epinglage?.sha256) throw new Error(`Diagnostic : empreinte ${securite.tls?.sha256 ?? "absente"}, épinglée ${ctx.epinglage?.sha256}.`);
+    if (securite.tls?.spkiSha256Base64 !== ctx.epinglage?.spki) throw new Error("Diagnostic : clé publique différente de celle épinglée.");
+  } else if (securite.tls !== null) {
+    throw new Error("Diagnostic : certificat annoncé en mode HTTP explicite.");
+  }
+
   // 2. La page se charge et l'ouverture de session a bien eu lieu (la barre de navigation n'existe que connecté).
   const titre = await page.evaluer("document.title");
   if (titre !== "opencode cockpit") throw new Error(`titre inattendu : « ${titre} »`);
   await page.attendreQue("document.querySelector('nav.rail')", { libelle: "barre de navigation du cockpit" });
+  const protocole = await page.evaluer("location.protocol");
+  if (protocole !== `${ctx.schema}:`) throw new Error(`page servie en « ${protocole} », attendu « ${ctx.schema}: ».`);
+  if ((await page.evaluer("window.isSecureContext")) !== true) throw new Error("la page n'est pas un contexte sûr.");
+
+  // 2 bis. Flux d'événements (SSE) sous la CSP réelle : la page reçoit la trame « hello » du cockpit.
+  const limiteFlux = Date.now() + 10_000;
+  const hello = () => page.evenementsFlux().some((t) => t.evenement === "hello" && t.url?.startsWith(`${ctx.url}/api/events`));
+  while (!hello() && Date.now() < limiteFlux) await new Promise((r) => setTimeout(r, 150));
+  if (!hello()) throw new Error(`aucune trame « hello » du flux d'événements reçue par la page (${page.evenementsFlux().length} trame(s)).`);
 
   // 3. Parcours au clavier : la première tabulation donne le focus à un élément de la page.
   await page.touche("Tab");

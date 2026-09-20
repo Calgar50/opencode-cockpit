@@ -1,14 +1,13 @@
-// Scénario e2e de l'interface de l'itération 1 (L7b-2) : mesure M25 en HTTP, flux d'événements (SSE) et animations (WAAPI) sous la CSP.
+// Scénario e2e de l'interface de l'itération 1 (L7b-2) : mesure M25, flux d'événements (SSE) et animations (WAAPI) sous la CSP.
 //
-// Spécification §8 M25 (« WAAPI et SSE (L14), puis WebGL (L29), sous la CSP réelle, en HTTPS avec avertissement accepté ») ; décision
-// D-05 du découpage : e2e en HTTP jusqu'au rebase de la 1.0.5, M25 mesurée en HTTP sous la CSP réelle, écart noté au RECAPITULATIF.
-// A9 (décisions du 19/09) : porte R105b souple pour les paquets e2e ; tant que chantier/1.1 n'a pas le banc HTTPS épinglé (R105b),
-// le HTTP explicite est gardé, avec la mention « en attente » pour le HTTPS. La partie SSE en HTTPS épinglé a été mesurée par R105b
+// Spécification §8 M25 (« WAAPI et SSE (L14), puis WebGL (L29), sous la CSP réelle, en HTTPS avec avertissement accepté »). L'écart
+// D-05 du découpage (e2e en HTTP jusqu'au rebase de la 1.0.5) est levé depuis R105b : le banc sert en HTTPS épinglé par défaut, et
+// M25 y est mesurée. Le mode HTTP explicite reste joué par « --http ». La partie SSE en HTTPS épinglé avait été mesurée par R105b
 // sur tmp/r105-base (mesures/M25-r105b.md) ; la partie WebGL appartient à L29.
 //
 // Ce que le scénario établit (tous les modes du banc ; la partie WAAPI en direct demande un tour, joué aussi en « --reel-hors-ligne ») :
 //   1. CSP réelle servie avec la page : default-src, script-src et connect-src sur 'self', ni 'unsafe-eval' ni script en ligne ;
-//      page en HTTP sur la boucle locale (contexte sûr) ;
+//      page servie sur la boucle locale dans le schéma du banc (contexte sûr) ;
 //   2. SSE : le flux /api/events est ouvert par la page (réponse 200, jamais en échec), la pastille est au vert ; un réglage changé
 //      par l'API (mode Avancé) arrive par le flux : la page l'applique sans relire l'amorçage ni les réglages ; retour au mode Simple
 //      de même ;
@@ -34,10 +33,10 @@ import {
 } from "./it1-ui-commun.mjs";
 
 export async function run(ctx) {
-  // 1. CSP réelle et HTTP explicite (D-05 : CSP lue par un fetch brut vers ctx.url, refusé en HTTPS épinglé ; à reprendre au rebase).
-  const reponse = await fetch(`${ctx.url}/`, { headers: { cookie: ctx.api.cookie } });
-  const csp = reponse.headers.get("content-security-policy") ?? "";
-  await reponse.body?.cancel();
+  // 1. CSP réelle, lue par le transport du banc (HTTPS épinglé par défaut depuis R105b, HTTP explicite avec « --http »).
+  const reponse = await ctx.api.brut("GET", "/");
+  exiger(reponse.code === 200, `page d'accueil refusée (code ${reponse.code}).`);
+  const csp = reponse.entetes.get("content-security-policy") ?? "";
   const directives = new Map(
     csp
       .split(";")
@@ -50,8 +49,10 @@ export async function run(ctx) {
   }
   exiger(!csp.includes("unsafe-eval"), "CSP : 'unsafe-eval' présent.");
   const page = await preparerPage(ctx);
-  // D-05 : « http: » exigé tant que le banc sert en HTTP ; en HTTPS épinglé, le schéma servi est celui du banc.
-  exiger(await page.evaluer("location.protocol === 'http:' && window.isSecureContext === true"), "page hors HTTP ou hors contexte sûr.");
+  // Le schéma servi est celui du banc : « https: » par défaut (épinglé, R105b), « http: » avec « --http ».
+  exiger(await page.evaluer("window.isSecureContext === true"), "page hors contexte sûr.");
+  const protocole = await page.evaluer("location.protocol");
+  exiger(protocole === `${ctx.schema}:`, `page servie en « ${protocole} », attendu « ${ctx.schema}: ».`);
 
   await avecTemoinP6(ctx, async () => {
     // 2. SSE : flux ouvert, réglage reçu par le flux et appliqué sans relecture.
@@ -88,9 +89,9 @@ export async function run(ctx) {
       exiger(sansFin === 0, `${sansFin} animation(s) sans fin dans la page.`);
       releve(
         ctx,
-        `M25 en HTTP (D-05) : CSP « ${csp} » ; flux ouvert, réglage reçu par le flux en ${latence} ms ; ${vus.animations.length} transition(s) WAAPI ` +
-          `de ${[...new Set(vus.animations.map((a) => a.duree))].join(", ")} ms sur ${[...new Set(vus.animations.flatMap((a) => a.proprietes))].join(" et ")} ; ` +
-          `${vus.violations.length} violation de la CSP ; HTTPS épinglé : en attente de R105b dans chantier/1.1`,
+        `M25 en ${ctx.schema === "https" ? "HTTPS épinglé" : "HTTP explicite"} : CSP « ${csp} » ; flux ouvert, réglage reçu par le flux en ${latence} ms ; ` +
+          `${vus.animations.length} transition(s) WAAPI de ${[...new Set(vus.animations.map((a) => a.duree))].join(", ")} ms ` +
+          `sur ${[...new Set(vus.animations.flatMap((a) => a.proprietes))].join(" et ")} ; ${vus.violations.length} violation de la CSP`,
       );
     } finally {
       await changerMode(ctx, modeAvant === "avance" ? "avance" : "simple");
