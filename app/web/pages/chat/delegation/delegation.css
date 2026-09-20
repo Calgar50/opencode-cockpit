@@ -1,0 +1,205 @@
+/* Propriétaire : L1f. Interface du portillon (spécification §3.14) : avis du mode Simple, carte détaillée du mode Avancé, bandeaux du
+   Diagnostic et état des agents internes. Aucune animation (web-animations.test.ts) ; l'état se lit par un mot, jamais par la couleur
+   seule ; à 400 px, les listes passent sur une colonne et le tableau des droits défile dans sa carte. */
+
+/* Avis du mode Simple, en fin de fil. */
+.delegation-notice {
+  align-items: flex-start;
+  margin-left: 34px;
+  color: var(--text-2);
+}
+.delegation-notice svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* Carte détaillée d'une délégation (mode Avancé), dans la demande d'autorisation. */
+.delegation-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.delegation-details-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.delegation-details-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.delegation-details-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.delegation-details-facts dt {
+  color: var(--text-3);
+}
+.delegation-details-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.delegation-details-rights {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.delegation-details-rights table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+}
+.delegation-details-rights caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 4px;
+}
+.delegation-details-rights th,
+.delegation-details-rights td {
+  text-align: left;
+  padding: 3px 10px 3px 0;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+.delegation-details-rights thead th {
+  color: var(--text-3);
+  font-weight: 500;
+  border-top: none;
+}
+.delegation-details-rights tbody th {
+  font-weight: 500;
+}
+/* « sans demander » : le mot dit l'état, le gras le souligne. */
+.delegation-details-rights td.allow {
+  font-weight: 600;
+  color: var(--warning-ink);
+}
+.delegation-details-rights td.inconnu {
+  color: var(--text-3);
+}
+.delegation-details-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.delegation-details-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--warning-ink);
+}
+.delegation-details-warning svg,
+.delegation-details-refus svg {
+  flex: none;
+  margin-top: 1px;
+}
+.delegation-details-refus {
+  align-items: flex-start;
+  margin: 0;
+}
+
+/* Diagnostic : bandeaux du travail délégué et agents internes (carte « Travail délégué et autonomie »). */
+.delegation-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.delegation-diagnostics h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.delegation-banners {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.delegation-banners li {
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+.delegation-banners li svg {
+  flex: none;
+  margin-top: 2px;
+}
+.delegation-internal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.delegation-internal-item {
+  display: grid;
+  grid-template-columns: 16px max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.delegation-internal-item svg {
+  align-self: center;
+}
+.delegation-internal-name {
+  font-weight: 600;
+}
+.delegation-internal-name code {
+  font-weight: 400;
+  margin-left: 6px;
+}
+.delegation-internal-state {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.delegation-internal-item.echec .delegation-internal-state {
+  color: var(--critical-ink);
+}
+
+@media (max-width: 480px) {
+  .delegation-notice {
+    margin-left: 0;
+  }
+  .delegation-details-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .delegation-details-facts dd {
+    margin-bottom: 4px;
+  }
+  .delegation-internal-item {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+  .delegation-internal-state {
+    grid-column: 2;
+  }
+}
+
+@media (forced-colors: active) {
+  .delegation-details,
+  .delegation-notice,
+  .delegation-banners li {
+    border: 1px solid CanvasText;
+  }
+  .delegation-details-rights td.allow {
+    text-decoration: underline;
+  }
+}

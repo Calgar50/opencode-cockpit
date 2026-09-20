@@ -82,10 +82,13 @@
 
 /* --- Carte ---------------------------------------------------------------------------- */
 
+/* Largeur bornée aussi par la hauteur de la fenêtre (56vh de large = 22vh de haut, cadre 560 × 220) : la carte laisse la place au
+   fil et à la saisie dans une fenêtre basse (répétition générale de l'itération 1). Boutons des assistants en pourcentages : ils
+   suivent la carte. */
 .neon-map-wrap {
   position: relative;
   width: 100%;
-  max-width: 560px;
+  max-width: min(560px, 56vh);
 }
 
 .neon-map {

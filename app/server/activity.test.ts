@@ -230,6 +230,7 @@ describe("captures : fenêtres, repère, jamais démarré, détaché", () => {
       assert.equal(rows.length, 2, label);
       assert.equal(root?.calls, 1, `${label} : un seul appel d'IA facturé dans la racine (la reprise)`);
       assert.deepEqual([child?.state, child?.source, child?.commande, child?.calls, child?.detache], ["termine", "raccourci", "revue-croisee", 2, false], label);
+      assert.equal(child?.sansConfirmation, true, `${label} : raccourci lancé sans demande`);
       const line = rowOf(timeline(state), ROOT) as TimelineRow | undefined;
       assertWindows(line, "generation", T0_P2, [[2.89, 7.03]], `${label} racine`);
       assertWindows(line, "attente-delegation", T0_P2, [[0.05, 2.89]], `${label} racine`);
@@ -586,6 +587,33 @@ describe("attentes d'une commande, délégation close sans résultat, relecture 
     assert.equal(liveRows(orphan, 400)[1]?.detache, true);
   });
 
+  it("« lancé sans confirmation » (sansConfirmation) : commande sans demande pour l'appel ; une commande remplie par l'IA et demandée ne l'est jamais, quel que soit l'ordre des faits", () => {
+    const base = [busy(R, 100), ...call(R, "msg_r", 110, null, 0), created(D, R, 140, "delegation", "general")];
+    const envoyee = (commande: string | null) =>
+      fact(R, "consigne", 141, { etat: "envoyee", callId: "call_1", messageId: "msg_r", enfant: D, agent: "general", source: commande === null ? "ia" : "raccourci", commande, reprise: false }, "call_1");
+    const asked = fact(R, "attente", 130, { permission: "task", messageId: "msg_r", callId: "call_1", agent: "general" }, "per_1");
+    const once = fact(R, "reponse", 135, { reponse: "once" }, "per_1");
+    const child = (list: readonly ActivityFact[]) => {
+      const row = liveRows(facts(emptyActivity(R), list), 200).find((r) => r.key === D);
+      return [row?.source, row?.commande, row?.sansConfirmation];
+    };
+    // Raccourci `subtask` (capture p2) : aucune demande pour l'appel.
+    assert.deepEqual(child([...base, envoyee("revue")]), ["raccourci", "revue", true]);
+    // L'IA remplit `command` : opencode pose la demande, accordée « once », puis lance l'enfant (ordre de la capture p1).
+    assert.deepEqual(child([...base, asked, once, envoyee("revue")]), ["raccourci", "revue", false]);
+    // Attente relue après la consigne (faits d'un autre ordre) : même ligne.
+    assert.deepEqual(child([...base, envoyee("revue"), asked, once]), ["raccourci", "revue", false]);
+    // Sans commande : jamais, avec ou sans demande.
+    assert.deepEqual(child([...base, envoyee(null)]), ["ia", null, false]);
+    assert.deepEqual(child([...base, asked, once, envoyee(null)]), ["ia", null, false]);
+    // Délégation en attente de votre accord (sans session) : jamais non plus.
+    const waiting = facts(emptyActivity(R), [busy(R, 100), ...call(R, "msg_r", 110, null, 0), fact(R, "consigne", 120, { etat: "prepare", callId: "call_1", messageId: "msg_r" }, "call_1"), asked]);
+    assert.deepEqual(liveRows(waiting, 150).map((row) => [row.key, row.sansConfirmation]), [
+      [R, false],
+      ["appel:ses_racine:call_1", false],
+    ]);
+  });
+
   it("message qui délègue clos sans résultat reçu : la délégation ne retient plus la session", () => {
     const waiting = facts(emptyActivity(R), [busy(R, 100), ...call(R, "msg_r", 110, null, 0), created(D, R, 120), sent(R, "call_1", D, 121), busy(D, 122), idle(D, 200)]);
     assert.equal(liveRows(waiting, 250)[0]?.state, "attend-delegation");
@@ -707,6 +735,24 @@ describe("applyEvent", () => {
     assert.equal(applyEvent(flooded, message("msg_d1", undefined, "plan", "user", 5, D)), flooded);
     assert.equal(liveRows(flooded, 10).length, ACTIVITY_MAX_SESSIONS);
     assert.equal(activityStatus(flooded).partial, true);
+  });
+
+  it("informations de session : leur assistant (opencode 1.18.30 : celui de la dernière demande) est celui de la ligne ; absent ou illisible, le précédent reste ; relu = direct", () => {
+    const state = facts(emptyActivity(R), [busy(R, 1)]);
+    const session = (info: Record<string, unknown>) => ({ kind: "opencode" as const, event: { type: "session.updated", properties: { info } } });
+    // session.created de la racine : sans assistant (opencode 1.18.30) ; session.updated de la demande : avec.
+    const bare = applyEvent(state, session({ id: R, title: "Plan" }));
+    assert.equal(liveRows(bare, 10)[0]?.agent, null);
+    const prompted = applyEvent(bare, session({ id: R, title: "Plan", agent: "orchestrateur" }));
+    assert.deepEqual([liveRows(prompted, 10)[0]?.agent, liveRows(prompted, 10)[0]?.title], ["orchestrateur", "Plan"]);
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan", agent: "orchestrateur" })), prompted, "mêmes informations : même état");
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan" })), prompted, "assistant absent : le précédent reste");
+    assert.equal(applyEvent(prompted, session({ id: R, title: "Plan", agent: "Assistant libre\nx" })), prompted, "nom illisible : ignoré");
+    assert.equal(liveRows(applyEvent(prompted, session({ id: R, title: "Plan", agent: "build" })), 10)[0]?.agent, "build");
+    // Relecture des seules informations de la racine (conversation avec des faits) : même ligne qu'en direct, sans aucun message.
+    const reread = replayMessages(state, { sessions: [{ id: R, title: "Plan", agent: "orchestrateur" }], messages: [] });
+    assert.deepEqual(liveRows(reread, 10), liveRows(prompted, 10));
+    assert.equal(reread.facts, state.facts, "faits inchangés");
   });
 });
 

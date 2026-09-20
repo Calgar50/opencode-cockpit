@@ -1,5 +1,6 @@
 // Tests d'intégration : registre des coûts sur SQLite réel, et sécurité HTTP sur un vrai serveur.
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import fs from "node:fs";
@@ -28,9 +29,10 @@ import type { EventProcessor } from "./processor.ts";
 import { ProjectsService } from "./projects.ts";
 import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
-import { SessionTracker } from "./sessions.ts";
+import { purposeOf, SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
 import { MESSAGES, type Run } from "./shared/assistant-rules.ts";
+import { isClassifierRoot } from "./shared/session-purpose.ts";
 import { StudioService, StudioValidationError } from "./studio.ts";
 import { TierService } from "./tiers.ts";
 
@@ -195,6 +197,40 @@ describe("registre des coûts", () => {
     sessions.upsert(session("ses_r"));
     assert.equal(sessions.get("ses_gc")?.root_id, "ses_r");
     assert.equal(ledger.sessionUsage("ses_r").cost, 0.01);
+  });
+
+  it("classement (P12) : une conversation suivie n'est jamais reclassée par son titre, écrit par l'IA de titre d'opencode ; seul le titre exact « [cockpit] classement » d'une racine compte, à l'insertion ; usage forcé par le serveur et métadonnées du cockpit, si", () => {
+    const { sessions } = setup();
+    // Créée sans titre puis titrée par l'IA d'après le premier message (opencode session/prompt.ts, ensureTitle) : reste « chat ».
+    sessions.upsert(session("ses_titree"));
+    for (const title of ["[cockpit] Bouton Arrêter inopérant", "[cockpit] classement"]) {
+      const row = sessions.upsert({ ...session("ses_titree"), title });
+      assert.deepEqual([row.title, row.purpose, sessions.isHidden("ses_titree")], [title, "chat", false]);
+    }
+    // À l'insertion (rattrapage, session inconnue) : titre exact d'une racine seulement, jamais un préfixe ni un enfant.
+    assert.equal(sessions.upsert({ ...session("ses_prefixe"), title: "[cockpit] Bouton Arrêter inopérant" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_casse"), title: "[cockpit] Classement" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_enfant", "ses_titree"), title: "[cockpit] classement" }).purpose, "chat");
+    assert.equal(sessions.upsert({ ...session("ses_classement"), title: "[cockpit] classement" }).purpose, "classifier");
+    assert.equal(purposeOf({ title: "[cockpit] classement complet" }, null), "chat");
+    // Même règle pour le rattrapage (processor.ts) et la liste des conversations de l'interface (ChatPage.tsx).
+    assert.deepEqual(
+      [
+        { title: "[cockpit] classement" },
+        { title: "Classement", metadata: { cockpit: "classifier" } },
+        { title: "[cockpit] Bouton Arrêter inopérant" },
+        { title: "[cockpit] Classement" },
+        { title: "[cockpit] classement", parentID: "ses_titree" },
+        { title: "Classement", metadata: "classifier" },
+      ].map(isClassifierRoot),
+      [true, true, false, false, false, false],
+    );
+    // Session de classement créée par le serveur (classifier.ts), déjà enregistrée en « chat » par session.created : classement.
+    sessions.upsert(session("ses_serveur"));
+    assert.equal(sessions.upsert({ ...session("ses_serveur"), title: "[cockpit] classement" }, "classifier").purpose, "classifier");
+    // Métadonnée posée par le serveur seul (le proxy la refuse) : classement, même pour une session déjà suivie.
+    sessions.upsert(session("ses_meta"));
+    assert.equal(sessions.upsert({ ...session("ses_meta"), metadata: { cockpit: "classifier" } }).purpose, "classifier");
   });
 
   it("garde-fou : modèles chers puis budget atteint, confirmation possible", () => {
@@ -495,10 +531,11 @@ const FIXTURE_SKILLS = [
 const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" };
 
 describe("serveur HTTP (sécurité et proxy)", () => {
-  const token = "t".repeat(48);
+  // Jeton de test public au format généré par install.ps1 (64 hexadécimaux) : preuve et ticket servis (1.0.5).
+  const token = "5a".repeat(32);
   // Secret de session posé dans la base avant createApp (sinon un secret aléatoire y est créé au démarrage).
   const sessionSecret = "s".repeat(43);
-  const cookie = `cockpit_session=${sessionValue(token, sessionSecret)}`;
+  const cookie = `__Host-cockpit_session=${sessionValue(token, sessionSecret)}`;
   const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
   const warnings: string[] = [];
   /** Lignes info et warn du journal, avec leurs champs : aucune valeur de configuration ne doit y partir. */
@@ -689,6 +726,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       allowedProviders: ["github-copilot"],
       copilotApiUrl: null,
       autonomy: true,
+      // Harnais en HTTP (1.0.5) : dossier TLS jamais créé ni lu.
+      localScheme: "http",
+      localHttpConfirmedAt: "2026-09-15T10:32:00Z",
+      tlsDir: path.join(tmp, "tls"),
+      opensslPath: "/usr/bin/openssl",
       version: "test",
     };
     const base = setup();
@@ -810,6 +852,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
         },
       },
       configQueue,
+      // Harnais en HTTP : aucun certificat.
+      tls: null,
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));
@@ -843,6 +887,28 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   const authed = { cookie };
   const mutating = { cookie, "x-cockpit-csrf": "1", "content-type": "application/json" };
   const confirmedHeaders = { ...mutating, "x-cockpit-confirm": "1" };
+  /** En-têtes Set-Cookie d'une réponse, un par cookie. */
+  const setCookiesOf = (res: { headers: http.IncomingHttpHeaders }): string[] => res.headers["set-cookie"] ?? [];
+  /** HMAC du jeton de test, recalculé ici sans le code du cockpit (préfixes du contrat 1.0.5). */
+  const tokenMac = (usage: "health-proof" | "auth-ticket" | "auth-ticket-request", value: string) =>
+    crypto.createHmac("sha256", token).update(`opencode-cockpit/${usage}/v1\n${value}`).digest("hex");
+  /** Lien d'ouverture comme les scripts 1.0.5 : défi et demande de ticket signée, preuve du jeton vérifiée, ticket à usage unique signé. */
+  const ticketLink = async (): Promise<string> => {
+    const challenge = crypto.randomBytes(32).toString("hex");
+    const health = await call("GET", `/api/health?challenge=${challenge}&ticket=${tokenMac("auth-ticket-request", challenge)}`);
+    assert.equal(health.status, 200, health.body);
+    const body = JSON.parse(health.body) as { scheme?: string; proof?: string | null; ticket?: string };
+    assert.equal(body.scheme, env.localScheme);
+    assert.equal(body.proof, tokenMac("health-proof", challenge));
+    const ticket = body.ticket ?? "";
+    assert.match(ticket, /^[0-9a-f]{64}$/);
+    return `/auth?k=${ticket}.${tokenMac("auth-ticket", ticket)}`;
+  };
+  /** Aide de connexion du harnais : ticket puis /auth?k=, cookie de session rendu (nom=valeur). */
+  const loginByTicket = async (headers: Record<string, string> = {}) => {
+    const res = await call("GET", await ticketLink(), headers);
+    return { ...res, cookie: (setCookiesOf(res)[0] ?? "").split(";")[0] ?? "" };
+  };
   const APP = encodeURIComponent("/workspace/app");
   const text = (value: string) => [{ type: "text", text: value }];
   /** Demandes réellement relayées à opencode (POST) dont l'URL contient `fragment`. */
@@ -885,27 +951,49 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.match(String(list.headers["content-type"]), /^application\/json/);
   });
 
-  it("exige la session sur l'API", async () => {
+  it("exige la session sur l'API ; le cookie à l'ancien nom seul ne suffit plus", async () => {
     assert.equal((await call("GET", "/api/settings")).status, 401);
     assert.equal((await call("GET", "/api/settings", authed)).status, 200);
+    // Même valeur sous le nom des versions < 1.0.5 : refusée.
+    assert.equal((await call("GET", "/api/settings", { cookie: cookie.slice("__Host-".length) })).status, 401);
+    // Les deux noms présents : seul le nom préfixé est lu.
+    assert.equal((await call("GET", "/api/settings", { cookie: `cockpit_session=faux; ${cookie}` })).status, 200);
   });
 
-  it("ouvre une session avec le bon jeton seulement, cookie durci", async () => {
-    const bad = await call("GET", "/auth?t=mauvais");
+  it("ouvre une session avec un ticket valide seulement, cookie __Host- durci, ancien nom effacé, lien à usage unique", async () => {
+    const bad = await call("GET", "/auth?k=mauvais");
     assert.equal(bad.status, 303);
     assert.equal(bad.headers.location, "/?auth=failed");
-    const good = await call("GET", `/auth?t=${token}`);
-    const setCookie = String(good.headers["set-cookie"]);
-    assert.match(setCookie, /HttpOnly/);
-    assert.match(setCookie, /Secure/);
-    assert.match(setCookie, /SameSite=Strict/);
-    assert.ok(!setCookie.includes(token));
+    assert.deepEqual(setCookiesOf(bad), []);
+    // Lien d'une version antérieure : jamais comparé, aucun cookie, même avec le bon jeton.
+    const legacy = await call("GET", `/auth?t=${token}`);
+    assert.equal(legacy.status, 303);
+    assert.equal(legacy.headers.location, "/?auth=ancien-lien");
+    assert.deepEqual(setCookiesOf(legacy), []);
+    const link = await ticketLink();
+    const good = await call("GET", link);
+    assert.equal(good.status, 303);
+    assert.equal(good.headers.location, "/");
+    const [session, legacyCleared, ...others] = setCookiesOf(good);
+    assert.match(session ?? "", /^__Host-cockpit_session=\d+\.[A-Za-z0-9_-]{43}; Max-Age=2592000; Path=\/; HttpOnly; Secure; SameSite=Strict$/);
+    assert.equal(legacyCleared, "cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict");
+    assert.deepEqual(others, []);
+    assert.ok(!String(good.headers["set-cookie"]).includes(token));
+    const replay = await call("GET", link);
+    assert.equal(replay.headers.location, "/?auth=failed");
+    assert.deepEqual(setCookiesOf(replay), []);
   });
 
-  it("bloque les requêtes modifiantes sans en-tête anti-CSRF ou d'une autre origine", async () => {
+  it("bloque les requêtes modifiantes sans en-tête anti-CSRF ou d'une autre origine (origine au schéma servi seulement)", async () => {
+    assert.equal(env.localScheme, "http");
+    const put = (origin?: string) => call("PUT", "/api/settings", origin === undefined ? mutating : { ...mutating, origin }, "{}");
     assert.equal((await call("PUT", "/api/settings", { cookie, "content-type": "application/json" }, "{}")).status, 403);
-    assert.equal((await call("PUT", "/api/settings", { ...mutating, origin: "http://evil.example" }, "{}")).status, 403);
-    assert.equal((await call("PUT", "/api/settings", { ...mutating, origin: `http://127.0.0.1:${port}` }, "{}")).status, 200);
+    assert.equal((await put("http://evil.example")).status, 403);
+    assert.equal((await put(`http://127.0.0.1:${port}`)).status, 200);
+    // Même hôte, autre schéma que celui servi : refusé.
+    assert.equal((await put(`https://127.0.0.1:${port}`)).status, 403);
+    assert.equal((await put("null")).status, 403);
+    assert.equal((await put()).status, 200);
   });
 
   it("relaie vers opencode avec authentification et filtre les paramètres", async () => {
@@ -927,11 +1015,12 @@ describe("serveur HTTP (sécurité et proxy)", () => {
 
   it("ignore les tentatives de connexion émises par une autre page (pas de verrouillage à distance)", async () => {
     for (let i = 0; i < 25; i++) {
-      const res = await call("GET", "/auth?t=mauvais", { "sec-fetch-site": "cross-site", "sec-fetch-dest": "image" });
+      const res = await call("GET", "/auth?k=mauvais", { "sec-fetch-site": "cross-site", "sec-fetch-dest": "image" });
       assert.equal(res.status, 403);
     }
-    const good = await call("GET", `/auth?t=${token}`, { "sec-fetch-site": "none", "sec-fetch-dest": "document" });
+    const good = await loginByTicket({ "sec-fetch-site": "none", "sec-fetch-dest": "document" });
     assert.equal(good.status, 303);
+    assert.equal(good.headers.location, "/");
   });
 
   it("n'expose que les routes opencode utilisées par l'interface", async () => {
@@ -1004,6 +1093,25 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     const enterprise = { inputs: { deploymentType: "enterprise", enterpriseUrl: "https://Entreprise.ghe.com/" } };
     assert.equal(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "entreprise.ghe.com"), undefined);
     assert.notEqual(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "autre.ghe.com"), undefined);
+  });
+
+  it("refuse un titre de conversation « [cockpit] … », réservé au classement du cockpit, à la création comme au renommage ; P12", async () => {
+    const relayedTitles = () => upstreamRequests.filter((r) => r.body.includes("ockpit]")).length;
+    const before = relayedTitles();
+    for (const title of ["[cockpit] classement", "[cockpit] Bouton Arrêter inopérant", "  [Cockpit] notes"]) {
+      const expected = forbiddenProxyBody("POST", "/session", { title }, null);
+      assert.match(expected ?? "", /^Titre refusé : « \[cockpit\] » /);
+      const created = await call("POST", "/api/oc/session", mutating, JSON.stringify({ title }));
+      assert.equal(created.status, 403, created.body);
+      assert.deepEqual(JSON.parse(created.body), { error: "forbidden-body", message: expected });
+      const renamed = await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title }));
+      assert.equal(renamed.status, 403, renamed.body);
+      assert.deepEqual(JSON.parse(renamed.body), { error: "forbidden-body", message: expected });
+    }
+    assert.equal(relayedTitles(), before, "aucun titre « [cockpit] » relayé");
+    // Crochet ailleurs que tout au début : titre accepté.
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ title: "Revue du [cockpit]" }))).status, 204);
+    assert.equal((await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title: "Notes cockpit" }))).status, 200);
   });
 
   it("refuse les pièces jointes hors du workspace", async () => {
@@ -2787,14 +2895,24 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   });
 
   // Dernier test de la série : la déconnexion révoque le cookie partagé par les tests précédents.
-  it("déconnexion : le cookie et toutes ses copies sont révoqués, une nouvelle connexion en délivre un autre", async () => {
+  it("déconnexion : le cookie et toutes ses copies sont révoqués, les deux noms effacés, une nouvelle connexion en délivre un autre", async () => {
     assert.equal((await call("GET", "/api/settings", authed)).status, 200);
-    assert.equal((await call("POST", "/api/logout", mutating, "{}")).status, 200);
+    const logout = await call("POST", "/api/logout", mutating, "{}");
+    assert.equal(logout.status, 200);
+    assert.deepEqual(setCookiesOf(logout), [
+      "__Host-cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict",
+      "cockpit_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict",
+    ]);
     assert.equal((await call("GET", "/api/settings", authed)).status, 401);
-    const login = await call("POST", "/api/login", { "x-cockpit-csrf": "1", "content-type": "application/json" }, JSON.stringify({ token }));
-    assert.equal(login.status, 200, login.body);
-    const fresh = String(login.headers["set-cookie"]).split(";")[0] ?? "";
-    assert.match(fresh, /^cockpit_session=\d+\.[A-Za-z0-9_-]{43}$/);
+    // Mode HTTP : le jeton ne se saisit jamais dans une page, la connexion passe par un ticket.
+    const typed = await call("POST", "/api/login", { "x-cockpit-csrf": "1", "content-type": "application/json" }, JSON.stringify({ token }));
+    assert.equal(typed.status, 403, typed.body);
+    assert.equal((JSON.parse(typed.body) as { error?: string }).error, "login-disabled");
+    assert.deepEqual(setCookiesOf(typed), []);
+    const login = await loginByTicket();
+    assert.equal(login.status, 303, login.body);
+    const fresh = login.cookie;
+    assert.match(fresh, /^__Host-cockpit_session=\d+\.[A-Za-z0-9_-]{43}$/);
     assert.notEqual(fresh, cookie);
     assert.equal((await call("GET", "/api/settings", { cookie: fresh })).status, 200);
     assert.equal((await call("GET", "/api/settings", authed)).status, 401);

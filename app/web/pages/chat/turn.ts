@@ -429,15 +429,17 @@ const PLANNED_UNKNOWN: Planned = Object.freeze({ kind: "inconnu", text: "inconnu
 /**
  * « Prévu » (§5.1) d'une ligne du Déroulé : ce que votre demande a lancé (la conversation, un raccourci), ce que l'IA a décidé
  * seule (un appel task écrit par l'IA, avec ou sans session), ou « inconnu » sans fait qui le dise (registre d'avant la 1.1, session
- * venue d'ailleurs) : une origine inconnue est dite inconnue (P12). `row` null : ligne sans acteur connu.
+ * venue d'ailleurs) : une origine inconnue est dite inconnue (P12). `row` null : ligne sans acteur connu. Un raccourci n'est
+ * « prévu » que lancé sans demande (row.sansConfirmation) : un appel task porteur d'une commande qui a posé une demande a été
+ * écrit par l'IA, qui peut remplir le paramètre `command` elle-même.
  */
-export function plannedOf(row: Pick<LiveRow, "depth" | "role" | "source" | "commande" | "sansSession"> | null): Planned {
+export function plannedOf(row: Pick<LiveRow, "depth" | "role" | "source" | "commande" | "sansConfirmation" | "sansSession"> | null): Planned {
   if (row === null) return PLANNED_UNKNOWN;
   if (row.depth === 0) return { kind: "prevu", text: "votre demande" };
   if (row.role === "controle") return { kind: "controle", text: "contrôle du cockpit" };
   if (row.role === "etape") return { kind: "prevu", text: "étape prévue par l'équipe" };
-  if (row.source === "raccourci") return { kind: "prevu", text: row.commande ? `raccourci /${row.commande}` : "raccourci" };
-  if (row.source === "ia" || row.sansSession) return { kind: "non-prevu", text: "non prévu : décidé par l'IA" };
+  if (row.source === "raccourci" && row.sansConfirmation) return { kind: "prevu", text: row.commande ? `raccourci /${row.commande}` : "raccourci" };
+  if (row.source === "ia" || row.source === "raccourci" || row.sansSession) return { kind: "non-prevu", text: "non prévu : décidé par l'IA" };
   return PLANNED_UNKNOWN;
 }
 

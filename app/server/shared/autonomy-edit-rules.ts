@@ -146,7 +146,8 @@ function own(record: JsonRecord, key: string): unknown {
 /**
  * E3 : vrai si une demande apply_patch supprime ou déplace un fichier (`files[].type` delete ou move, ou `movePath` présent).
  * Prudence : `files` qui n'est pas un tableau, entrée qui n'est pas un objet ou type inconnu → vrai. Forme edit/write (sans
- * `files`) → faux : le vidage s'y lit dans le diff (diffRemovalRatio).
+ * `files`) → faux : le vidage s'y lit dans le diff (diffRemovalRatio). Un « add » qui viserait un fichier existant ne se lit ni
+ * ici ni dans son patch (« @@ -0,0 ») : le serveur le relève sur le disque (edit-facts.ts, relecture 2-vague-1).
  */
 export function applyPatchDeletesOrMoves(metadata: unknown): boolean {
   if (!isRecord(metadata)) return false;

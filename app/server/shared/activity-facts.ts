@@ -504,6 +504,8 @@ function toolFacts(part: Record<string, unknown>, messageId: string, s: Facts): 
     if (status === "pending") return [s.fact("consigne", callId, { etat: "prepare", callId, messageId })];
     if (status === "running") {
       if (enfant === null) return [];
+      // Source « raccourci » : `command` rempli, comme le fait opencode pour un raccourci `subtask`. L'IA peut aussi le remplir
+      // (paramètre facultatif de l'outil `task`) : seule l'absence de demande pour cet appel prouve un lancement sans confirmation.
       const commande = nameOf(input.command);
       return [
         s.fact("consigne", callId, {

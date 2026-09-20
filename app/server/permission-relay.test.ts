@@ -10,7 +10,7 @@ import { openMemoryDb, transaction } from "./db.ts";
 import { EventHub } from "./hub.ts";
 import { createLogger } from "./log.ts";
 import { OpencodeError, type OpencodeClient } from "./opencode.ts";
-import { createPermissionGate, REJECT_HOLD_MAX_MS, REJECT_MESSAGE_MAX } from "./permission-gate.ts";
+import { createPermissionGate, finishedToolSession, REJECT_HOLD_MAX_MS, REJECT_MESSAGE_MAX } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakePermissionRequest, FakeSession, FakeToolScript } from "./test-support/fake-opencode.ts";
@@ -639,6 +639,166 @@ describe("L1b : rejectWhenAlone", () => {
     stub.emit("permission.replied", { sessionID: "ses_a", requestID: "per_t2", reply: "reject" });
     assert.equal(await within(first.promise, "première demande emportée"), "expiree");
     assert.deepEqual(stub.replies(), []);
+  });
+
+  it("appel d'outil voisin du même message en préparation ou en cours, sans demande listée : retenu ; lu APRÈS GET /permission ; réveillé par la fin d'un appel de cette conversation seulement, puis envoyé", async () => {
+    const tool = { messageID: "msg_a", callID: "call_task" };
+    let parts: Array<Record<string, unknown>> = [
+      { type: "text", text: "Je modifie, puis je délègue." },
+      { type: "tool", callID: "call_task", state: { status: "running" } },
+      { type: "tool", callID: "call_edit", state: { status: "running" } },
+      { type: "tool", callID: "call_ls", state: { status: "completed" } },
+    ];
+    const stub = stubGate((method, pathname) => {
+      if (pathname === "/permission") return [{ id: "per_task", sessionID: "ses_a", tool }];
+      if (pathname === "/session/ses_a/message/msg_a") return { info: { id: "msg_a", role: "assistant" }, parts };
+      if (method === "POST") return true;
+      throw new Error(`route inattendue : ${method} ${pathname}`);
+    });
+    const refusal = track(stub.gate.rejectWhenAlone("per_task", "ses_a", "/workspace/projet", MESSAGE, "cockpit"));
+    await until(() => stub.calls.length === 2);
+    await queueIdle(stub.gate);
+    assert.equal(refusal.done(), false, "retenu : l'appel voisin peut encore poser sa demande");
+    assert.deepEqual(stub.replies(), []);
+    assert.equal(stub.gate.emitted.has("per_task"), false, "rien n'est inscrit");
+    assert.deepEqual(
+      stub.calls.map((c) => [c.method, c.pathname, c.query]),
+      [
+        ["GET", "/permission", { directory: "/workspace/projet" }],
+        ["GET", "/session/ses_a/message/msg_a", { directory: "/workspace/projet" }],
+      ],
+      "message relu après la liste des demandes, dans le même dossier",
+    );
+
+    // Aucun réveil : appel qui passe en cours, partie de texte, fin d'un appel d'une autre conversation, nouvelle demande.
+    const before = stub.calls.length;
+    stub.emit("message.part.updated", { sessionID: "ses_a", part: { sessionID: "ses_a", type: "tool", callID: "call_edit", state: { status: "running" } } });
+    stub.emit("message.part.updated", { sessionID: "ses_a", part: { sessionID: "ses_a", type: "text", text: "…" } });
+    stub.emit("message.part.updated", { sessionID: "ses_b", part: { sessionID: "ses_b", type: "tool", callID: "call_x", state: { status: "completed" } } });
+    stub.emit("permission.asked", { sessionID: "ses_a", id: "per_autre" });
+    assert.equal(stub.calls.length, before, "aucun appel réseau dans la dérivation");
+    await queueIdle(stub.gate);
+    assert.equal(stub.calls.length, before, "aucune nouvelle évaluation");
+
+    // Fin de l'appel voisin : nouvelle évaluation, refus envoyé.
+    parts = parts.map((p) => (p.callID === "call_edit" ? { ...p, state: { status: "completed" } } : p));
+    stub.emit("message.part.updated", { sessionID: "ses_a", part: { sessionID: "ses_a", type: "tool", callID: "call_edit", state: { status: "completed" } } });
+    assert.equal(await within(refusal.promise, "refus envoyé après la fin de l'appel voisin"), "ok");
+    assert.deepEqual(
+      stub.replies().map((c) => [c.pathname, c.body, c.registered]),
+      [["/permission/per_task/reply", { reply: "reject", message: MESSAGE }, true]],
+    );
+  });
+
+  it("appels voisins : demande voisine déjà listée (règle F-c), refus retenus voisins (un seul envoi) ; message introuvable ou arrêté → envoyé ; message ou champ `tool` illisible, opencode injoignable, refus du navigateur pendant la lecture → rien d'envoyé", async () => {
+    const message = (parts: unknown[], info: Record<string, unknown> = { id: "msg_a", role: "assistant" }) => ({ info, parts });
+    const running = (callID: string) => ({ type: "tool", callID, state: { status: "running" } });
+    const gateOn = (list: unknown[], read: () => unknown) =>
+      stubGate((method, pathname) => {
+        if (pathname === "/permission") return list;
+        if (pathname === "/session/ses_a/message/msg_a") return read();
+        if (method === "POST") return true;
+        throw new Error(`route inattendue : ${method} ${pathname}`);
+      });
+
+    // Demande voisine listée dont l'appel est en cours : c'est la règle F-c qui retient (autre demande en attente).
+    const listed = gateOn(
+      [
+        { id: "per_task", sessionID: "ses_a", tool: { messageID: "msg_a", callID: "call_task" } },
+        { id: "per_bash", sessionID: "ses_a", tool: { messageID: "msg_a", callID: "call_bash" } },
+      ],
+      () => message([running("call_task"), running("call_bash")]),
+    );
+    const held = track(listed.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"));
+    await until(() => listed.calls.length === 2);
+    await queueIdle(listed.gate);
+    assert.equal(held.done(), false, "demande voisine en attente : retenu");
+
+    // Deux délégations du même message, toutes deux refusées par le cockpit : leurs appels en cours ne retiennent pas, un seul envoi.
+    const twins = gateOn(
+      [
+        { id: "per_t1", sessionID: "ses_a", tool: { messageID: "msg_a", callID: "call_t1" } },
+        { id: "per_t2", sessionID: "ses_a", tool: { messageID: "msg_a", callID: "call_t2" } },
+      ],
+      () => message([running("call_t1"), running("call_t2")]),
+    );
+    const first = track(twins.gate.rejectWhenAlone("per_t1", "ses_a", null, MESSAGE, "cockpit"));
+    await until(() => twins.lookups() === 1);
+    await queueIdle(twins.gate);
+    assert.equal(first.done(), false);
+    assert.equal(await within(twins.gate.rejectWhenAlone("per_t2", "ses_a", null, MESSAGE, "cockpit"), "second refus"), "ok");
+    assert.equal(await within(first.promise, "premier refus emporté"), "ok");
+    assert.equal(twins.replies().length, 1, "un seul refus envoyé");
+
+    // Message introuvable (404) ou arrêté (erreur du message) : aucun appel voisin ne posera de demande, le refus part.
+    const tool = { messageID: "msg_a", callID: "call_task" };
+    const alone = [{ id: "per_task", sessionID: "ses_a", tool }];
+    const gone = gateOn(alone, () => {
+      throw new OpencodeError(404, { name: "NotFoundError", data: { message: "Message not found: msg_a" } });
+    });
+    assert.equal(await gone.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"), "ok", "message introuvable");
+    const aborted = gateOn(alone, () => message([running("call_task"), running("call_edit")], { id: "msg_a", role: "assistant", error: { name: "MessageAbortedError" } }));
+    assert.equal(await aborted.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"), "ok", "réponse arrêtée");
+
+    // Appel voisin dont l'IA écrit encore l'entrée (« pending ») : il retient aussi.
+    const writing = gateOn(alone, () => message([running("call_task"), { type: "tool", callID: "call_write", state: { status: "pending" } }]));
+    const writingHeld = track(writing.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"));
+    await until(() => writing.calls.length === 2);
+    await queueIdle(writing.gate);
+    assert.equal(writingHeld.done(), false, "appel voisin en préparation : retenu");
+    assert.deepEqual(writing.replies(), []);
+
+    // Vérification impossible : rien n'est envoyé (jamais un refus qui emporterait une demande pas encore vue).
+    for (const [label, read] of [
+      ["message illisible", () => ({ info: { id: "msg_a" } })],
+      ["opencode injoignable", () => {
+        throw new Error("fetch failed");
+      }],
+    ] as const) {
+      const unreadable = gateOn(alone, read);
+      assert.equal(await unreadable.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"), "echec", label);
+      assert.deepEqual(unreadable.replies(), [], label);
+    }
+    const invalid = gateOn([{ id: "per_task", sessionID: "ses_a", tool: { messageID: "../msg", callID: "call_task" } }], () => {
+      throw new Error("message lu malgré un champ tool illisible");
+    });
+    assert.equal(await invalid.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"), "echec", "champ tool illisible");
+    assert.deepEqual(invalid.calls.map((c) => c.pathname), ["/permission"]);
+
+    // Refus du navigateur inscrit pendant la lecture du message : il l'emporte.
+    const reading = Promise.withResolvers<void>();
+    const late = stubGate(async (method, pathname) => {
+      if (pathname === "/permission") return alone;
+      if (pathname === "/session/ses_a/message/msg_a") {
+        await reading.promise;
+        return message([running("call_task")]);
+      }
+      throw new Error(`route inattendue : ${method} ${pathname}`);
+    });
+    const refusal = track(late.gate.rejectWhenAlone("per_task", "ses_a", null, MESSAGE, "cockpit"));
+    await until(() => late.calls.length === 2);
+    late.gate.emitted.record({ requestId: "per_task", reply: "reject", by: "vous", at: 3 });
+    reading.resolve();
+    assert.equal(await refusal.promise, "deja-repondu");
+    assert.deepEqual(late.replies(), []);
+  });
+
+  it("finishedToolSession : seule la fin d'un appel d'outil (terminé ou en erreur) désigne une conversation", () => {
+    const part = (state: unknown, extra: Record<string, unknown> = {}) => ({ part: { sessionID: "ses_a", type: "tool", callID: "c", state, ...extra } });
+    assert.equal(finishedToolSession(part({ status: "completed" })), "ses_a");
+    assert.equal(finishedToolSession(part({ status: "error" })), "ses_a");
+    assert.equal(finishedToolSession({ sessionID: "ses_b", part: { type: "tool", state: { status: "completed" } } }), "ses_b", "conversation de l'événement à défaut de celle de la partie");
+    for (const [label, value] of [
+      ["en préparation", part({ status: "pending" })],
+      ["en cours", part({ status: "running" })],
+      ["partie de texte", { part: { sessionID: "ses_a", type: "text", text: "fin" } }],
+      ["état illisible", part("completed")],
+      ["identifiant illisible", part({ status: "completed" }, { sessionID: "../ses" })],
+      ["sans partie", { sessionID: "ses_a" }],
+      ["rien", null],
+    ] as const) {
+      assert.equal(finishedToolSession(value), null, label);
+    }
   });
 
   it("rechargement d'opencode (server.instance.disposed, global.disposed) : réveil, demande retirée sans événement → « expiree »", async () => {

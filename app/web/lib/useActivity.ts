@@ -6,9 +6,11 @@
 // - deltas jamais lus (`message.part.delta`), et rien d'une session hors de l'arbre : seuls les faits `activite.fait` de la racine,
 //   les informations de session et les messages utilisateur de l'arbre (réducteur), et les parties d'outil de l'arbre (détail de
 //   « travaille ») sont lus ;
-// - relecture à l'ouverture et sur `stream.reconnected` : faits persistés (GET …/facts), titres (GET /session/:id/children, 3 niveaux
-//   et 50 sessions au plus), et messages (GET /session/:id/message) seulement pour une conversation sans faits (avant la 1.1) ; une
-//   relecture dépassée par une plus récente est ignorée ; ce que la relecture révèle n'est jamais annoncé ;
+// - relecture à l'ouverture et sur `stream.reconnected` : faits persistés (GET …/facts), informations de la conversation elle-même
+//   (GET /session/:id : titre et assistant de sa dernière demande, comme session.updated en direct), titres (GET
+//   /session/:id/children, 3 niveaux et 50 sessions au plus), et messages (GET /session/:id/message) seulement pour une conversation
+//   sans faits (avant la 1.1) ; une relecture dépassée par une plus récente est ignorée ; ce que la relecture révèle n'est jamais
+//   annoncé ;
 // - annonces (≤ 1 / 2 s, codes de L4c) remises à `onAnnounce`, qui les met en phrases et les confie à l'annonceur de la page.
 // `ActivityStore` n'importe aucun composant (.tsx) : il se teste sous Node avec une source et une horloge factices
 // (server/activity-live.test.ts) ; `useActivity` le branche sur le flux du cockpit.
@@ -99,6 +101,22 @@ export function bannerVisible(state: ActivityState, rows: readonly LiveRow[], st
   return state.facts.some((fact) => fact.kind === "attente" || fact.kind === "decision");
 }
 
+/**
+ * Repli d'office de la bande néon et de « Qui travaille ? » tant qu'une demande attend votre réponse (ligne avec [Répondre] :
+ * modification, commande ou délégation) : en mode Simple seulement, où la bande est repliée par défaut et où la place va à la carte
+ * de la demande. En mode Avancé, jamais (clôture de l'itération 1, §5.1 : bande dépliée par défaut, une ligne par acteur ; §5.7.1 et
+ * §5.7.3 : attente de votre accord et préparation en pointillé fixe visibles sans clic) : si la hauteur de la fenêtre manque, les
+ * bornes de activity.css, neon.css et chat.css gardent la carte de la demande, ses boutons et « Arrêter » dans la fenêtre.
+ */
+export function replierPendantLaDemande(advanced: boolean, rows: readonly LiveRow[]): boolean {
+  return !advanced && demandeEnAttente(rows);
+}
+
+/** Une demande de l'arbre attend votre réponse (une ligne porte [Répondre]). */
+export function demandeEnAttente(rows: readonly LiveRow[]): boolean {
+  return rows.some((row) => row.permissionId !== null);
+}
+
 /** Ligne résumée du bandeau replié ou à 400 px : une attente de votre accord, sinon un acteur au travail, sinon la racine. */
 export function mainRow(rows: readonly LiveRow[]): LiveRow | null {
   return rows.find((row) => row.state === "attente-accord") ?? rows.find((row) => row.depth > 0 && ACTIVE_STATES.has(row.state)) ?? rows[0] ?? null;
@@ -107,6 +125,8 @@ export function mainRow(rows: readonly LiveRow[]): LiveRow | null {
 /** Lectures d'une relecture (navigateur : API du cockpit et proxy opencode). */
 export interface ActivitySource {
   facts(rootId: string): Promise<FactsResponse>;
+  /** Informations d'une session (GET /session/:id) ; null ou autre chose qu'un objet : rien à relire. */
+  session(sessionId: string, directory: string): Promise<unknown>;
   children(sessionId: string, directory: string): Promise<readonly unknown[]>;
   messages(sessionId: string, directory: string): Promise<readonly unknown[]>;
 }
@@ -229,13 +249,15 @@ export class ActivityStore {
       this.#factsPartial = persisted.partial === true;
       const reconstruct = this.#state.facts.length === 0;
       this.#settle(false);
-      const sessions = await this.#tree(stale);
+      const [root, sessions] = await Promise.all([this.#root(), this.#tree(stale)]);
       if (stale()) return;
       const ids = [this.rootId, ...sessions.map((info) => (isRecord(info) && typeof info.id === "string" ? info.id : null)).filter((id) => id !== null)];
       const messages = reconstruct ? (await mapLimited(ids, READ_CONCURRENCY, (id) => this.#source.messages(id, this.#directory))).flat() : [];
       if (stale()) return;
       // Conversation neuve (ni faits, ni sessions, ni messages) : rien à reconstruire, les faits arriveront en direct.
-      if (!reconstruct || sessions.length > 0 || messages.length > 0) this.#state = replayMessages(this.#state, { sessions, messages });
+      if (!reconstruct || sessions.length > 0 || messages.length > 0) {
+        this.#state = replayMessages(this.#state, { sessions: root === null ? sessions : [root, ...sessions], messages });
+      }
       this.#settle(false);
     } catch (err) {
       if (stale()) return;
@@ -253,6 +275,20 @@ export class ActivityStore {
     this.#announced = this.#state;
     this.#queue = EMPTY_ANNOUNCEMENTS;
     this.#schedule();
+  }
+
+  /**
+   * Informations de la conversation elle-même (titre, assistant de sa dernière demande) : ce que session.updated donne en direct à un
+   * onglet ouvert avant. Une lecture en échec est seulement sautée, comme les titres de l'arbre.
+   */
+  async #root(): Promise<Record<string, unknown> | null> {
+    try {
+      const info = await this.#source.session(this.rootId, this.#directory);
+      return isRecord(info) && info.id === this.rootId ? info : null;
+    } catch (err) {
+      console.warn("« Qui travaille ? » : informations de la conversation illisibles", err);
+      return null;
+    }
   }
 
   /** Sessions de l'arbre, niveau par niveau (3 niveaux et 50 sessions au plus) ; une lecture en échec est seulement sautée. */
@@ -379,6 +415,7 @@ export class ActivityStore {
 
 const browserSource: ActivitySource = {
   facts: (rootId) => activityApi.facts(rootId, 0),
+  session: (sessionId, directory) => oc.session(sessionId, directory),
   children: (sessionId, directory) => oc.children(sessionId, directory),
   messages: (sessionId, directory) => oc.messages(sessionId, directory),
 };

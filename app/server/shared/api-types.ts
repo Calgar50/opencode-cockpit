@@ -439,3 +439,77 @@ export interface RestorePrudentResponse {
   /** opencode redémarré pour appliquer les règles (false : elles l'étaient déjà). */
   restarted: boolean;
 }
+
+// --- Accès local 1.0.5 : schéma servi, preuve du jeton, ticket, certificat ----------------------------------------------
+
+/** Schéma servi sur la boucle locale : HTTPS par défaut, HTTP seulement après install.ps1 -Http confirmé. */
+export type LocalScheme = "https" | "http";
+
+/**
+ * GET /api/health (public, jamais journalisé avec ses paramètres).
+ * - `proof` : présent seulement avec `?challenge=<64 hex>` ; HMAC-SHA256(jeton, « opencode-cockpit/health-proof/v1\n » + défi) en
+ *   hexadécimal ; null si le jeton n'a pas le format généré par install.ps1 (64 hexadécimaux minuscules). Défi invalide : 400.
+ * - `ticket` : nonce de connexion à usage unique (10 min), présent seulement avec un défi valide, un jeton au format généré et
+ *   `&ticket=<HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket-request/v1\n » + défi)>`. Demande non signée par le jeton, ou défi
+ *   déjà servi avec un ticket : 403 `ticket-refused`, sans ticket créé ni évincé.
+ *   Lien d'ouverture : /auth?k=<ticket>.<HMAC-SHA256(jeton, « opencode-cockpit/auth-ticket/v1\n » + ticket)>.
+ */
+export interface HealthBody {
+  ok: true;
+  version: string;
+  scheme: LocalScheme;
+  proof?: string | null;
+  ticket?: string;
+}
+
+/** Retour de /auth vers l'interface : /?auth=failed (ticket refusé) ou /?auth=ancien-lien (lien /auth?t= d'une version < 1.0.5). */
+export type AuthRedirectReason = "failed" | "ancien-lien";
+
+/** 403 de POST /api/login en mode HTTP : le jeton ne se saisit jamais dans une page, connexion par .\cockpit.ps1 open. */
+export interface LoginDisabledError {
+  error: "login-disabled";
+  message: string;
+}
+
+/** Certificat servi en HTTPS (GET /api/system/status) : empreintes et dates, jamais la clé. */
+export interface TlsStatus {
+  source: "genere";
+  /** SHA-256 du certificat, « AB:CD:… ». */
+  sha256: string;
+  /** SHA-256 de la clé publique (SPKI) en base64. */
+  spkiSha256Base64: string;
+  notBefore: string;
+  notAfter: string;
+  /** Jours pleins avant l'échéance (négatif une fois dépassée). */
+  daysLeft: number;
+  /** Entrées subjectAltName (IP:… ou DNS:…). */
+  san: string[];
+  /** Valeurs de COCKPIT_ALLOWED_HOSTS écartées du certificat. */
+  ignoredHosts: number;
+  generatedAt: string;
+  previousSha256: string | null;
+  /** Poignées TLS refusées sur 24 h (HTTP en clair sur le port TLS, certificat refusé par le client…). */
+  refusals24h: number;
+  /** Trafic cockpit ↔ opencode : HTTP sur le réseau Docker, sans port publié. */
+  internalTraffic: "http-docker";
+}
+
+/** Certificat servi, résumé pour GET /api/bootstrap. */
+export type TlsSummary = Pick<TlsStatus, "sha256" | "notAfter" | "daysLeft">;
+
+/** Champs ajoutés en 1.0.5 à `security` de GET /api/bootstrap. */
+export interface BootstrapLocalAccess {
+  localScheme: LocalScheme;
+  /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */
+  localHttpConfirmedAt: string | null;
+  /** null en HTTP. */
+  tls: TlsSummary | null;
+}
+
+/** Champs ajoutés en 1.0.5 à `security` de GET /api/system/status. */
+export interface StatusLocalAccess {
+  localScheme: LocalScheme;
+  localHttpConfirmedAt: string | null;
+  /** null en HTTP. */
+  tls: TlsStatus | null;
+}

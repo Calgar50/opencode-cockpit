@@ -37,7 +37,8 @@ const RULES: Array<[RegExp, string]> = [
     /((?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key)["']?\s*[:=]\s*)(["']?)[^\s"',;]+\2/gi,
     `$1$2${MASK}$2`,
   ],
-  [/(\bAuthorization\s*:\s*(?:Bearer|Basic|token)\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1${MASK}`],
+  // Authorization: Bearer …, y compris écrit en JSON ("Authorization": "Bearer …", guillemets échappés compris).
+  [/(\bAuthorization(?:\\?["'])?\s*:\s*(?:\\?["'])?(?:Bearer|Basic|token)\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1${MASK}`],
 ];
 
 export function redactSecrets(text: string): string {

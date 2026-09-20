@@ -9,11 +9,17 @@
 //   existant, puis le reste tel qu'écrit. Chaque composant existant doit porter son nom exact sur le disque : un alias du système
 //   de fichiers (nom court 8.3 `ENV~1` pour `.env`, flux NTFS `a:b`, point final) rend les faits inconnus, et une casse différente
 //   est remplacée par la casse du disque ; ce nom est cherché parmi 10 000 entrées au plus du dossier parent (au-delà : inconnu) ;
+// - l'existence d'un argument de git diff ou git grep (révision possible sinon) ;
 // - le sous-arbre d'une recherche récursive (grep -r, rg, git grep) : chemins sensibles, fichiers cachés compris, sans descendre
 //   dans un dossier sensible ni dans un lien ; au plus 10 000 entrées lues, au-delà : parcours impossible ;
 // - `.git` : un DOSSIER (ni fichier `gitdir:`, ni lien, ni `commondir` qui ferait lire la configuration d'un autre dossier) et le
 //   texte de `.git/config`, fichier ordinaire lu sans suivre de lien, borné à 64 Kio (au-delà, UTF-8 invalide ou octet nul :
-//   illisible, donc attente).
+//   illisible, donc attente) ;
+// - ce qui lance un programme sans clé de configuration (relecture 2-vague-1) : hook actif (entrée de `.git/hooks` hors
+//   `*.sample`, 256 entrées lues au plus), sous-module (`.gitmodules`, `.git/modules`, lien de sous-module de l'index) ;
+// - les chemins suivis de l'index `.git/index` (versions 2 à 4, SHA-1 ou SHA-256, 16 Mio au plus), lus sans suivre de lien :
+//   ceux que sensitivePath juge sensibles, et les liens de sous-module. Index absent : vide (git fait de même). Index scindé ou
+//   clairsemé (extension obligatoire « link » ou « sdir »), forme inattendue ou trop grand : illisible, donc attente.
 // Jamais d'exécution de git ni d'aucun programme : M10 a mesuré que certaines sous-commandes ne lancent pas un `core.fsmonitor`
 // piégé, mais la porte n'en a pas besoin. M11 : la configuration git GLOBALE du conteneur opencode (~/.gitconfig) est hors de tout
 // volume du cockpit, illisible ici ; G04 ne vaut que pour le dépôt (« G04 limité au dépôt », README et Diagnostic).
@@ -49,6 +55,8 @@ export interface ShellFactsLimits {
 }
 
 export const SHELL_GIT_CONFIG_MAX_BYTES = 64 * 1024;
+export const SHELL_GIT_INDEX_MAX_BYTES = 16 * 1024 * 1024;
+export const SHELL_GIT_HOOKS_MAX_ENTRIES = 256;
 export const SHELL_SYMLINK_MAX_HOPS = 40;
 export const SHELL_RESOLVE_MAX_STEPS = 4096;
 export const SHELL_WALK_MAX_ENTRIES = 10_000;
@@ -56,7 +64,7 @@ export const SHELL_DIR_SCAN_MAX_ENTRIES = 10_000;
 /** Un seul chemin sensible suffit à la porte : le parcours s'arrête après ce nombre. */
 const WALK_MAX_REPORTED = 20;
 
-const NO_GIT: ShellGitFacts = Object.freeze({ gitIsDirectory: false, configText: null });
+const NO_GIT: ShellGitFacts = Object.freeze({ gitIsDirectory: false, configText: null, launcher: null, trackedSensitive: null });
 const NUL = String.fromCharCode(0);
 const posix = path.posix;
 
@@ -128,6 +136,12 @@ class DiskReader {
   async pathFacts(arg: string): Promise<ShellPathFacts | null> {
     const resolved = await this.#resolve(arg).catch(() => null);
     return resolved === null ? null : resolved.facts;
+  }
+
+  /** `arg` existe sur le disque (liens suivis : un lien pendant compte comme absent, donc révision possible) ; null : inconnu. */
+  async exists(arg: string): Promise<boolean | null> {
+    const resolved = await this.#resolve(arg).catch(() => null);
+    return resolved === null ? null : resolved.kind !== "absent";
   }
 
   /**
@@ -337,32 +351,83 @@ class DiskReader {
     } catch (err) {
       if (errorCode(err) !== "ENOENT") return NO_GIT;
     }
-    return Object.freeze({ gitIsDirectory: true, configText: await readBoundedText(path.join(gitDir, "config")) });
+    const configText = await readBoundedText(path.join(gitDir, "config"));
+    const index = await readGitIndex(path.join(gitDir, "index"));
+    const launcher = (await hookLauncher(gitDir)) ?? (await submoduleLauncher(localDir, gitDir, index));
+    const trackedSensitive = index === null ? null : Object.freeze(index.paths.filter((file) => sensitivePath(file) !== null).slice(0, WALK_MAX_REPORTED));
+    return Object.freeze({ gitIsDirectory: true, configText, launcher, trackedSensitive });
   }
 }
 
-/** Texte d'un fichier ordinaire (jamais un lien), UTF-8 valide, sans octet nul, de 64 Kio au plus ; null sinon. */
-async function readBoundedText(file: string): Promise<string | null> {
+/**
+ * Hook actif : toute entrée de `.git/hooks` qui ne finit pas par `.sample` (git ne lance que les fichiers exécutables d'un nom
+ * de hook, mais sur un montage Windows tout fichier paraît exécutable, et la liste des hooks grandit avec git). Premier nom par
+ * ordre alphabétique, « hooks-illisibles » (lien, fichier, droits, plus de SHELL_GIT_HOOKS_MAX_ENTRIES entrées) ; null : aucun.
+ */
+async function hookLauncher(gitDir: string): Promise<string | null> {
+  const hooks = path.join(gitDir, "hooks");
+  const names: string[] = [];
+  try {
+    if (!(await fs.lstat(hooks)).isDirectory()) return "hooks-illisibles";
+    for await (const entry of await fs.opendir(hooks)) {
+      if (names.length >= SHELL_GIT_HOOKS_MAX_ENTRIES) return "hooks-illisibles";
+      names.push(entry.name);
+    }
+  } catch (err) {
+    return errorCode(err) === "ENOENT" && names.length === 0 ? null : "hooks-illisibles";
+  }
+  const active = names.filter((name) => !name.endsWith(".sample")).sort((a, b) => (a < b ? -1 : 1));
+  return active.length > 0 ? `hook:${active[0]}` : null;
+}
+
+/**
+ * Sous-module : git status et git diff visitent chaque lien de sous-module peuplé de l'index et y lancent git, qui lit ALORS la
+ * configuration et les hooks du sous-module. `.gitmodules` ou `.git/modules` présents (ou illisibles), lien de sous-module dans
+ * l'index, index illisible : un détail ; null : aucun.
+ */
+async function submoduleLauncher(localDir: string, gitDir: string, index: GitIndex | null): Promise<string | null> {
+  const markers: ReadonlyArray<readonly [string, string]> = [
+    [".gitmodules", path.join(localDir, ".gitmodules")],
+    [".git/modules", path.join(gitDir, "modules")],
+  ];
+  for (const [name, file] of markers) {
+    try {
+      await fs.lstat(file);
+      return `sous-module:${name}`;
+    } catch (err) {
+      if (errorCode(err) !== "ENOENT") return `illisible:${name}`;
+    }
+  }
+  if (index === null) return "index-illisible";
+  const gitlink = index.gitlinks[0];
+  return gitlink === undefined ? null : `sous-module:${gitlink}`;
+}
+
+/**
+ * Octets d'un fichier ordinaire (jamais un lien), `max` au plus ; « absent » s'il n'existe pas (ENOENT), pour le distinguer d'un
+ * fichier illisible ; null sinon, ou si sa taille change pendant la lecture.
+ */
+async function readBoundedBytes(file: string, max: number): Promise<Buffer | "absent" | null> {
   let handle: fs.FileHandle;
   try {
     if (!(await fs.lstat(file)).isFile()) return null;
     // O_NOFOLLOW (Linux) : un lien posé après le contrôle est refusé à l'ouverture.
     handle = await fs.open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-  } catch {
-    return null;
+  } catch (err) {
+    return errorCode(err) === "ENOENT" ? "absent" : null;
   }
   try {
-    if (!(await handle.stat()).isFile()) return null;
-    const buffer = Buffer.alloc(SHELL_GIT_CONFIG_MAX_BYTES + 1);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > max) return null;
+    // Un octet de plus que la taille annoncée : un fichier qui a grandi entre-temps est vu, jamais lu à moitié.
+    const buffer = Buffer.alloc(info.size + 1);
     let total = 0;
     while (total < buffer.length) {
       const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
       if (bytesRead === 0) break;
       total += bytesRead;
     }
-    if (total > SHELL_GIT_CONFIG_MAX_BYTES) return null;
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total));
-    return text.includes(NUL) ? null : text;
+    return total === info.size ? buffer.subarray(0, total) : null;
   } catch {
     return null;
   } finally {
@@ -370,9 +435,129 @@ async function readBoundedText(file: string): Promise<string | null> {
   }
 }
 
+/** Texte d'un fichier ordinaire (jamais un lien), UTF-8 valide, sans octet nul, de 64 Kio au plus ; null sinon. */
+async function readBoundedText(file: string): Promise<string | null> {
+  const bytes = await readBoundedBytes(file, SHELL_GIT_CONFIG_MAX_BYTES);
+  if (bytes === null || bytes === "absent") return null;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return text.includes(NUL) ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/** Chemins de l'index git (dans l'ordre de l'index, étapes de conflit comprises) et liens de sous-module (mode 160000). */
+interface GitIndex {
+  paths: readonly string[];
+  gitlinks: readonly string[];
+}
+
+const EMPTY_INDEX: GitIndex = Object.freeze({ paths: Object.freeze([]), gitlinks: Object.freeze([]) });
+
+/** Index `.git/index` : absent → vide (git fait de même) ; lien, trop grand, forme inattendue ou illisible → null. */
+async function readGitIndex(file: string): Promise<GitIndex | null> {
+  const bytes = await readBoundedBytes(file, SHELL_GIT_INDEX_MAX_BYTES);
+  if (bytes === "absent") return EMPTY_INDEX;
+  return bytes === null ? null : parseGitIndex(bytes);
+}
+
+/**
+ * Lecture stricte de l'index (gitformat-index) sans connaître la taille de l'empreinte : SHA-1 (20 octets) et SHA-256 (32) sont
+ * essayés. Une seule lecture tient en général ; si les deux tiennent (index fabriqué), les chemins des deux comptent.
+ */
+export function parseGitIndex(buffer: Buffer): GitIndex | null {
+  const sha1 = parseGitIndexWith(buffer, 20);
+  const sha256 = parseGitIndexWith(buffer, 32);
+  if (sha1 === null || sha256 === null) return sha1 ?? sha256;
+  return { paths: [...new Set([...sha1.paths, ...sha256.paths])], gitlinks: [...new Set([...sha1.gitlinks, ...sha256.gitlinks])] };
+}
+
+/** Types d'objet permis dans une entrée (mode >> 12) : fichier, lien symbolique, lien de sous-module. Un dossier clairsemé : non. */
+const INDEX_FILE = 0o10;
+const INDEX_SYMLINK = 0o12;
+const INDEX_GITLINK = 0o16;
+
+/** Entier de longueur variable d'un index v4 (préfixe à retirer du nom précédent) ; null si tronqué ou démesuré. */
+function readIndexVarint(buffer: Buffer, at: number): { value: number; next: number } | null {
+  let byte = buffer[at];
+  if (byte === undefined) return null;
+  let value = byte & 127;
+  let next = at + 1;
+  while ((byte & 128) !== 0) {
+    byte = buffer[next];
+    if (byte === undefined || value > 0xffff) return null;
+    value = (value + 1) * 128 + (byte & 127);
+    next += 1;
+  }
+  return { value, next };
+}
+
+function parseGitIndexWith(buffer: Buffer, hashSize: number): GitIndex | null {
+  if (buffer.length < 12 + hashSize || buffer.toString("latin1", 0, 4) !== "DIRC") return null;
+  const version = buffer.readUInt32BE(4);
+  const count = buffer.readUInt32BE(8);
+  if (version < 2 || version > 4) return null;
+  const end = buffer.length - hashSize;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const paths: string[] = [];
+  const gitlinks: string[] = [];
+  let previous: Buffer = Buffer.alloc(0);
+  let at = 12;
+  for (let k = 0; k < count; k++) {
+    const start = at;
+    // 40 octets de métadonnées, l'empreinte, 2 octets d'indicateurs (plus 2 en version 3 et 4 quand le bit « étendu » est mis).
+    at += 40 + hashSize + 2;
+    if (at > end) return null;
+    const mode = buffer.readUInt32BE(start + 24);
+    const flags = buffer.readUInt16BE(at - 2);
+    if ((flags & 0x4000) !== 0) {
+      if (version < 3) return null;
+      at += 2;
+    }
+    let name: Buffer;
+    if (version === 4) {
+      const strip = readIndexVarint(buffer, at);
+      const nul = strip === null ? -1 : buffer.indexOf(0, strip.next);
+      if (strip === null || nul < 0 || nul >= end || strip.value > previous.length) return null;
+      name = Buffer.concat([previous.subarray(0, previous.length - strip.value), buffer.subarray(strip.next, nul)]);
+      at = nul + 1;
+    } else {
+      const nul = buffer.indexOf(0, at);
+      if (nul < 0 || nul >= end) return null;
+      name = buffer.subarray(at, nul);
+      // 1 à 8 octets nuls : l'entrée finit sur un multiple de 8 octets.
+      const next = start + ((at - start + name.length + 8) & ~7);
+      if (next > end || buffer.subarray(nul, next).some((byte) => byte !== 0)) return null;
+      at = next;
+    }
+    const type = mode >>> 12;
+    if (mode >>> 16 !== 0 || (type !== INDEX_FILE && type !== INDEX_SYMLINK && type !== INDEX_GITLINK)) return null;
+    if (name.length === 0 || (flags & 0x0fff) !== Math.min(name.length, 0x0fff)) return null;
+    let text: string;
+    try {
+      text = decoder.decode(name);
+    } catch {
+      return null;
+    }
+    paths.push(text);
+    if (type === INDEX_GITLINK) gitlinks.push(text);
+    previous = name;
+  }
+  // Extensions : signature, taille, données. Une extension obligatoire (première lettre hors A-Z : « link » de l'index scindé,
+  // « sdir » de l'index clairsemé) cache des chemins que cette lecture ne voit pas.
+  while (at < end) {
+    const first = buffer[at] ?? 0;
+    if (at + 8 > end || first < 0x41 || first > 0x5a) return null;
+    at += 8 + buffer.readUInt32BE(at + 4);
+  }
+  return at === end ? { paths, gitlinks } : null;
+}
+
 interface Questions {
   paths: string[];
   walks: string[];
+  exists: string[];
   git: boolean;
 }
 
@@ -380,6 +565,7 @@ interface Questions {
 function questionsOf(command: string, conversationDir: string): Questions {
   const paths = new Set<string>();
   const walks = new Set<string>();
+  const exists = new Set<string>();
   let git = false;
   const dir = normalizeAbsolute(conversationDir) ?? "/";
   const favourable: ShellContext = {
@@ -395,14 +581,18 @@ function questionsOf(command: string, conversationDir: string): Questions {
         walks.add(arg);
         return [];
       },
+      exists(arg: string): boolean {
+        exists.add(arg);
+        return true;
+      },
     },
     get git(): ShellGitFacts {
       git = true;
-      return { gitIsDirectory: true, configText: "" };
+      return { gitIsDirectory: true, configText: "", launcher: null, trackedSensitive: [] };
     },
   };
   classifyCommand(command, favourable);
-  return { paths: [...paths], walks: [...walks], git };
+  return { paths: [...paths], walks: [...walks], exists: [...exists], git };
 }
 
 /**
@@ -420,8 +610,10 @@ export async function collectShellContext(
   const dirOk = await reader.conversationDirOk();
   const resolved = new Map<string, ShellPathFacts | null>();
   const walks = new Map<string, readonly string[] | null>();
+  const existing = new Map<string, boolean | null>();
   for (const arg of questions.paths) resolved.set(arg, dirOk ? await reader.pathFacts(arg) : null);
   for (const arg of questions.walks) walks.set(arg, dirOk ? await reader.sensitiveEntries(arg) : null);
+  for (const arg of questions.exists) existing.set(arg, dirOk ? await reader.exists(arg) : null);
   const git = dirOk && questions.git ? await reader.gitFacts() : NO_GIT;
   return {
     conversationDir,
@@ -433,6 +625,9 @@ export async function collectShellContext(
       },
       sensitiveEntries(arg: string): readonly string[] | null {
         return walks.get(arg) ?? null;
+      },
+      exists(arg: string): boolean | null {
+        return existing.get(arg) ?? null;
       },
     }),
   };

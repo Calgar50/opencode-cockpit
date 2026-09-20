@@ -11,8 +11,22 @@
 //   Rendu au « once » seulement quand ce refus est en cours (lancé par la dérivation ou par le « once » lui-même) ;
 // - « elle attend votre réponse » (avis Simple sans refus) : trop de refus Simple en cours (SIMPLE_JOBS_MAX), aucun refus n'est lancé
 //   pour cette demande, rien n'est relayé ; elle reste à l'utilisateur.
+// L1f (interface du portillon et Diagnostic, spécification §3.14, §3.11 ; textes rangés ici pour être contrôlés par le test « textes »,
+// les composants de chat/delegation et DelegationDiagnostics les lisent) : carte détaillée du mode Avancé, bandeaux du Diagnostic et
+// état des agents internes. Honnêteté, chaque phrase tenue par diagnostics-11.test.ts ou par le code cité :
+// - « Tout @fichier … est lu sans vous demander » : opencode joint le fichier cité à la consigne de l'enfant sans demande
+//   (§4.10) ; la garde (L1d, « consigne-refusee ») refuse « Autoriser une fois » pour une consigne qui cite un fichier existant ;
+// - « Le cockpit arrête la conversation au-delà du plafond » : DelegationWatch (L1e), dans les deux modes, plafonds budget.delegation
+//   (nombre et dépense) d'une conversation du cockpit ;
+// - extensions : leurs outils ne sont visés par aucune règle d'autorisation (oc-uncontrolled.ts, §4.10), d'où « peuvent » ;
+// - bandeaux : chacun n'est affiché que si son relevé l'a constaté (diagnostics-11.ts) ; aucune phrase ne dit « aucun » ; un relevé
+//   impossible est dit par le bandeau « illisible » (train it1 V4), qui annonce qu'un bandeau « peut manquer », jamais qu'il manque ;
+// - agents internes : « installation en attente d'un moment sans réponse en cours » (§3.11) seulement avec une reprise planifiée ;
+//   « refusée par opencode » : échec sans reprise (retour arrière de L1g), nouvel essai au prochain ensureAll (démarrage du cockpit,
+//   redémarrage d'opencode).
+import type { DelegationDetailsView, DelegationRefusalCode, RuleActionLite } from "./activity-types.ts";
 import { formatUsd } from "./assistant-rules.ts";
-import type { DelegationRefusalCode } from "./activity-types.ts";
+import type { DelegationBanner, DelegationCheck, InternalAgentStatus } from "./cockpit-event-types.ts";
 
 export const TEXTES = {
   simple: {
@@ -20,8 +34,116 @@ export const TEXTES = {
     avis: "En mode Simple, l'IA ne délègue pas : elle continue seule.",
     /** « Autoriser une fois » en mode Simple quand le refus d'office n'a pas pu être lancé (trop de refus en cours). */
     avisAttente: "En mode Simple, l'IA ne délègue pas, mais le cockpit n'a pas pu refuser cette demande pour l'instant : elle attend votre réponse. Choisissez « Refuser ».",
+    /** Titre de la partie « travail délégué » du Diagnostic. */
+    titreDiagnostic: "Travail délégué",
+    /** Bandeaux du Diagnostic (§3.14), par code de DelegationBanner ; {noms} : noms concernés, séparés par des virgules. */
+    diagnostic: {
+      profondeur: "Réglage d'opencode : un travail délégué peut à son tour déléguer du travail (par défaut, il ne le peut pas).",
+      "arriere-plan": "Réglage d'opencode : un travail délégué peut continuer en tâche de fond, sans que la conversation attende son résultat.",
+      extension:
+        "Extensions d'opencode installées : {noms}. Les outils qu'elles ajoutent ne sont visés par aucune règle d'autorisation du cockpit : ils peuvent s'exécuter sans vous demander.",
+      "task-allow":
+        "Assistants qui délèguent du travail sans vous demander : {noms}. Le cockpit arrête la conversation au-delà du plafond de délégations ou de dépense de la demande.",
+      illisible:
+        "Diagnostic incomplet : une partie des réglages d'opencode n'a pas pu être lue (opencode ne répond pas, ou sa réponse est inattendue). Un réglage qui laisse déléguer du travail sans vous demander peut manquer ici.",
+    },
+    /** Agents internes du cockpit (§3.11), sans le mot « agent ». */
+    agentsInternes: {
+      titre: "Outils internes du cockpit",
+      /** Nom affiché par nom réservé (studio.ts, INTERNAL_AGENTS). */
+      noms: {
+        "cockpit-classifier": "Classement des archives",
+        "cockpit-controle": "IA de contrôle",
+      },
+      /** Nom réservé sans libellé connu. */
+      inconnu: "Outil interne du cockpit",
+    },
   },
-  avance: {},
+  avance: {
+    titreDiagnostic: "Travail délégué (sous-agents)",
+    diagnostic: {
+      profondeur:
+        "subagent_depth vaut plus de 1 dans la configuration d'opencode : un sous-agent peut lancer ses propres sous-agents (par défaut : 1, un sous-agent ne délègue pas).",
+      "arriere-plan":
+        "Sous-agents en arrière-plan activés (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ou OPENCODE_EXPERIMENTAL) : un sous-agent peut travailler en tâche de fond, sans que la conversation attende son résultat.",
+      extension:
+        "Extensions (plugins) déclarées dans la configuration d'opencode ou déposées dans oc-config/plugin(s)/ : {noms}. Leurs outils ne sont visés par aucune règle du cockpit et peuvent s'exécuter sans demande d'autorisation.",
+      "task-allow":
+        "Agents dont la règle task vaut allow pour au moins un agent (délégation sans demande d'autorisation) : {noms}. Le cockpit compte ces délégations et arrête la conversation au-delà du plafond de délégations ou de dépense de la demande (budget.delegation).",
+      illisible:
+        "Relevés impossibles : {noms} (opencode muet, réponse inattendue ou dossier illisible ; détail dans le journal du cockpit). Les bandeaux qui en dépendent peuvent manquer.",
+    },
+    /** Relevés nommés par le bandeau « illisible » (DelegationCheck). */
+    releves: {
+      configuration: "configuration effective (GET /config)",
+      profondeur: "subagent_depth",
+      "arriere-plan": "sous-agents en arrière-plan (GET /experimental/capabilities)",
+      extensions: "entrée plugin de la configuration",
+      "fichiers-extensions": "oc-config/plugin(s)/",
+      agents: "règles task des agents (GET /agent)",
+    } satisfies Record<DelegationCheck, string>,
+    agentsInternes: {
+      titre: "Agents internes du cockpit",
+    },
+    /** Carte détaillée d'une délégation en attente (§3.14, mode Avancé). */
+    carte: {
+      titre: "Détails de la délégation",
+      chargement: "Lecture des détails de la délégation…",
+      illisible: "Détails de la délégation illisibles : opencode ne répond pas.",
+      plusEnAttente: "Détails de la délégation indisponibles : cette demande d'autorisation n'est plus en attente.",
+      indisponible: "Détails de la délégation indisponibles.",
+      reessayer: "Réessayer",
+      cible: "Assistant demandé",
+      cibleInconnue: "inconnu d'opencode",
+      cibleInterne: "interne au cockpit",
+      ciblePortee: {
+        primary: "réservé aux conversations",
+        subagent: "pour le travail délégué",
+        all: "conversations et travail délégué",
+      },
+      ia: "IA du travail délégué",
+      iaInconnue: "inconnue",
+      iaRefusee: "non autorisée par le cockpit ou indisponible pour votre compte GitHub Copilot",
+      estimation: "Estimation",
+      estimationValeur: "≈ {montant} en général",
+      estimationInconnue: "impossible (IA inconnue ou hors du catalogue)",
+      compteurs: "Cette demande",
+      compteursValeur: "délégations : {delegations} sur {delegationsMax} · dépense : {depense} sur {plafond}",
+      droits: "Droits comparés",
+      colonneDroit: "Droit",
+      colonneAppelant: "Assistant qui délègue",
+      colonneCible: "Assistant demandé",
+      droitsNoms: {
+        read: "Lire un fichier",
+        edit: "Modifier un fichier",
+        bash: "Lancer une commande",
+        webfetch: "Consulter une page web",
+        websearch: "Chercher sur Internet",
+        task: "Déléguer du travail",
+        external_directory: "Sortir du dossier de travail",
+      },
+      actions: {
+        allow: "sans demander",
+        ask: "demande votre accord",
+        deny: "refusé",
+      },
+      actionInconnue: "inconnu",
+      droitsNote: "Règles des assistants, sans les refus que le cockpit ajoute à la conversation.",
+      arobase:
+        "Tout @fichier cité dans la consigne est lu sans vous demander : le cockpit refuse « Autoriser une fois » pour une consigne qui cite un fichier existant avec « @ ».",
+      refusPrevu: "« Autoriser une fois » sera refusé par le cockpit : {raison}",
+      refusPrevuSansRaison: "« Autoriser une fois » sera refusé par le cockpit.",
+      raisons: {
+        "demande-morte": "cette demande d'autorisation n'est plus active.",
+        "cible-refusee": "l'assistant demandé est inconnu, réservé aux conversations ou interne au cockpit.",
+        "task-id-hors-arbre": "l'IA veut reprendre un travail qui n'appartient pas à cette conversation.",
+        "consigne-refusee": "la consigne cite un fichier avec « @ », une commande « !` » ou une adresse web, ou elle est illisible.",
+        "ia-refusee": "son IA n'est pas autorisée par le cockpit ou n'est pas disponible pour votre compte GitHub Copilot.",
+        "budget-refuse": "le garde-fou budgétaire refuse (budget du mois atteint, ou IA plus chère que le prix fixé au-delà du seuil).",
+        "plafond-atteint": "le plafond de délégations ou de dépense de cette demande est atteint.",
+      },
+    },
+  },
   partout: {
     /** Message joint au refus Simple, lu par l'IA (refus avec message : elle peut continuer seule). */
     messageIa: "Travaille seul : le mode Simple n'autorise pas la délégation.",
@@ -54,6 +176,15 @@ export const TEXTES = {
     erreurs: {
       identifiant: "Identifiant de conversation ou de demande invalide.",
       inconnue: "Aucune demande de travail délégué en attente avec cet identifiant dans cette conversation.",
+    },
+    /** État d'installation d'un agent interne (§3.11, InternalAgentState), dans les deux modes ; {heure} : heure du prochain essai. */
+    agentsInternes: {
+      installe: "installé",
+      enAttente: "installation en attente",
+      enAttenteReprise: "installation en attente d'un moment sans réponse en cours ; nouvel essai vers {heure}",
+      echecReprise: "installation en échec ; nouvel essai vers {heure}",
+      refusee: "installation refusée par opencode ; nouvel essai au prochain démarrage du cockpit ou redémarrage d'opencode",
+      nonSuivi: "installation non suivie",
     },
   },
 };
@@ -121,4 +252,125 @@ export function verificationImpossible(): string {
 /** Messages d'erreur de la route des détails : 400 et 404. */
 export function erreurDetails(erreur: "identifiant" | "inconnue"): string {
   return TEXTES.partout.erreurs[erreur];
+}
+
+// --- L1f : Diagnostic ----------------------------------------------------------------------------------------------------------
+
+/** Titre de la partie « travail délégué » du Diagnostic. */
+export function titreDiagnostic(advanced: boolean): string {
+  return advanced ? TEXTES.avance.titreDiagnostic : TEXTES.simple.titreDiagnostic;
+}
+
+/** Libellé d'un relevé du bandeau « illisible » (mode Avancé) ; relevé inconnu (serveur plus récent) : son code. */
+function libelleReleve(nom: string): string {
+  const releves: Readonly<Record<string, string>> = TEXTES.avance.releves;
+  return Object.hasOwn(releves, nom) ? (releves[nom] ?? nom) : nom;
+}
+
+/**
+ * Phrase d'un bandeau du Diagnostic (§3.14) ; les noms (déjà bornés par le collecteur) sont joints par des virgules, et ceux d'un
+ * bandeau « illisible » (relevés impossibles) remplacés par leur libellé. null : code inconnu de cette interface (serveur plus
+ * récent), rien n'est affiché pour lui.
+ */
+export function bandeauDiagnostic(banner: DelegationBanner, advanced: boolean): string | null {
+  const textes: Readonly<Record<string, string>> = advanced ? TEXTES.avance.diagnostic : TEXTES.simple.diagnostic;
+  const gabarit = Object.hasOwn(textes, banner.code) ? textes[banner.code] : undefined;
+  if (gabarit === undefined) return null;
+  const noms = Array.isArray(banner.noms) ? banner.noms : [];
+  return remplir(gabarit, { noms: (banner.code === "illisible" ? noms.map(libelleReleve) : noms).join(", ") });
+}
+
+/** Titre de la liste des agents internes. */
+export function titreAgentsInternes(advanced: boolean): string {
+  return advanced ? TEXTES.avance.agentsInternes.titre : TEXTES.simple.agentsInternes.titre;
+}
+
+/** Libellé d'un agent interne par son nom réservé ; null : nom sans libellé connu. */
+export function libelleAgentInterne(nom: string): string | null {
+  const noms: Readonly<Record<string, string>> = TEXTES.simple.agentsInternes.noms;
+  return Object.hasOwn(noms, nom) ? (noms[nom] ?? null) : null;
+}
+
+/** Nom affiché d'un agent interne : libellé connu ; sinon, en mode Avancé, le nom réservé, et en mode Simple un libellé générique. */
+export function nomAgentInterne(nom: string, advanced: boolean): string {
+  return libelleAgentInterne(nom) ?? (advanced ? nom : TEXTES.simple.agentsInternes.inconnu);
+}
+
+/**
+ * État d'installation d'un agent interne (§3.11, L1g) ; `heure` met en forme l'heure du prochain essai. « en-attente » sans
+ * échéance : aucune tentative encore (avant le premier ensureAll) ; « echec » sans échéance : refusé par opencode, aucune reprise
+ * automatique (internal-agents.ts).
+ */
+export function etatAgentInterne(status: Pick<InternalAgentStatus, "etat" | "prochainEssai">, heure: (ms: number) => string): string {
+  const t = TEXTES.partout.agentsInternes;
+  const essai = status.prochainEssai;
+  switch (status.etat) {
+    case "installe":
+      return t.installe;
+    case "en-attente":
+      return essai === null ? t.enAttente : remplir(t.enAttenteReprise, { heure: heure(essai) });
+    case "echec":
+      return essai === null ? t.refusee : remplir(t.echecReprise, { heure: heure(essai) });
+    default:
+      return t.nonSuivi;
+  }
+}
+
+// --- L1f : carte détaillée du mode Avancé ------------------------------------------------------------------------------------
+
+/**
+ * Assistant demandé : titre (et nom s'il diffère), portée, « interne au cockpit ». Titre et nom viennent d'opencode ou du Studio :
+ * l'appelant les borne et retire les caractères cachés avant (texte rendu tel quel, jamais du HTML).
+ */
+export function libelleCible(cible: DelegationDetailsView["cible"]): string {
+  const c = TEXTES.avance.carte;
+  if (cible === null) return c.cibleInconnue;
+  const portees: Readonly<Record<string, string>> = c.ciblePortee;
+  const parts = [
+    cible.titre === cible.nom || cible.titre === "" ? cible.nom : `${cible.titre} (${cible.nom})`,
+    Object.hasOwn(portees, cible.mode) ? (portees[cible.mode] ?? cible.mode) : cible.mode,
+  ];
+  if (cible.interne) parts.push(c.cibleInterne);
+  return parts.join(" · ");
+}
+
+/** IA du travail délégué, avec la raison d'un refus. */
+export function libelleIa(ia: DelegationDetailsView["ia"]): string {
+  const c = TEXTES.avance.carte;
+  const nom = ia.model ?? c.iaInconnue;
+  return ia.disponible ? nom : `${nom} : ${c.iaRefusee}`;
+}
+
+/** Estimation « en général » d'un travail délégué ; null : impossible (IA inconnue ou hors du catalogue). */
+export function phraseEstimation(usd: number | null): string {
+  const c = TEXTES.avance.carte;
+  return usd === null || !Number.isFinite(usd) ? c.estimationInconnue : remplir(c.estimationValeur, { montant: formatUsd(usd) });
+}
+
+/** Compteurs de la demande : délégations et dépense, sur leurs plafonds. */
+export function phraseCompteurs(compteurs: DelegationDetailsView["compteurs"]): string {
+  return remplir(TEXTES.avance.carte.compteursValeur, {
+    delegations: compteurs.delegations,
+    delegationsMax: compteurs.delegationsMax,
+    depense: formatUsd(compteurs.depenseUsd),
+    plafond: formatUsd(compteurs.plafondUsd),
+  });
+}
+
+/** Nom d'un droit comparé ; un droit sans libellé garde son nom de permission. */
+export function libelleDroit(permission: string): string {
+  const noms: Readonly<Record<string, string>> = TEXTES.avance.carte.droitsNoms;
+  return Object.hasOwn(noms, permission) ? (noms[permission] ?? permission) : permission;
+}
+
+/** Action d'une règle ; null ou action inconnue : « inconnu ». */
+export function libelleAction(action: RuleActionLite | null): string {
+  const c = TEXTES.avance.carte;
+  return action !== null && Object.hasOwn(c.actions, action) ? c.actions[action] : c.actionInconnue;
+}
+
+/** Refus que la garde opposerait à « Autoriser une fois » ; un code inconnu garde la phrase sans raison. */
+export function phraseRefusPrevu(code: DelegationRefusalCode): string {
+  const c = TEXTES.avance.carte;
+  return Object.hasOwn(c.raisons, code) ? remplir(c.refusPrevu, { raison: c.raisons[code] }) : c.refusPrevuSansRaison;
 }

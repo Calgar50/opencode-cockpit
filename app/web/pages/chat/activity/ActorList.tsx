@@ -8,9 +8,9 @@
 import {
   libelleDuree,
   libelleEtatActeur,
-  libelleRaccourci,
   libelleRepondre,
   libelleVoir,
+  mentionsRaccourci,
   nomActeur,
   TEXTES,
 } from "../../../../server/shared/activity-texts.ts";
@@ -47,14 +47,23 @@ const ICONS: Readonly<Record<ActorState, IconName>> = {
   "non-choisi": "minus",
 };
 
-/** Mode Avancé : titre de la conversation déléguée, raccourci, reprise, lancement détaché. */
-function ActorExtra({ row }: { row: LiveRow }) {
-  const parts = [
-    row.title,
-    row.commande === null ? "" : libelleRaccourci(row.commande),
-    row.reprise ? TEXTES.avance.reprise : "",
-    row.detache ? TEXTES.avance.detache : "",
-  ].filter((part) => part !== "");
+/**
+ * Mode Avancé : titre de la conversation déléguée, raccourci, reprise, lancement détaché. Dans les deux modes, « lancé sans
+ * confirmation » pour un travail délégué lancé par un raccourci `subtask` sans demande d'autorisation (§6 l.1048 : opencode ne
+ * demande rien). La phrase et le nom du raccourci suivent row.sansConfirmation, jamais la seule commande : l'IA peut remplir le
+ * paramètre `command` de l'outil `task` (nom choisi par elle), et opencode pose alors une demande d'autorisation.
+ */
+function ActorExtra({ row, advanced }: { row: LiveRow; advanced: boolean }) {
+  const parts = (
+    advanced
+      ? [
+          row.title,
+          ...mentionsRaccourci(row.commande, row.sansConfirmation, true),
+          row.reprise ? TEXTES.avance.reprise : "",
+          row.detache ? TEXTES.avance.detache : "",
+        ]
+      : mentionsRaccourci(row.commande, row.sansConfirmation, false)
+  ).filter((part) => part !== "");
   if (parts.length === 0) return null;
   return (
     <div className="actor-extra tiny muted">
@@ -79,7 +88,7 @@ function ActorRow({ row, advanced, details, onReply, onOpenSession }: Omit<Actor
           <span className="actor-name">{nom}</span>
           <span className="actor-state">{libelleEtatActeur(row, detail, advanced)}</span>
         </div>
-        {advanced ? <ActorExtra row={row} /> : null}
+        <ActorExtra row={row} advanced={advanced} />
       </div>
       <span className="actor-time tabular small muted">{row.durationMs === null ? null : libelleDuree(formatDuration(row.durationMs), treeWorking([row]))}</span>
       <span className="actor-cost tabular small">{row.calls > 0 || row.cost > 0 ? formatUsd(row.cost) : null}</span>

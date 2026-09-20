@@ -13,7 +13,9 @@
 //   4. classifieur + cockpit-controle gardés : un seul nom par agent interne (Studio, module, IA de contrôle) ; installation
 //      différée pendant une réponse → aucun contrôle (« agent-non-installe ») ; au repos, fichier installé, lu comme opencode le
 //      lit (mesure L11b), puis contrôle lancé ;
-//   5. faits de modification (L10b) × règles (L9b) : E5 et plafond de fichiers cohérents ; phrases des codes E.
+//   5. faits de modification (L10b) × règles (L9b) : E5 et plafond de fichiers cohérents ; phrases des codes E ;
+//   6. relecture 2-vague-1 : la carte « Règle : … » dit vrai pour chaque cause que les faits rendent sous P02, P03, G04 et E1
+//      (faits non vérifiables : plafond, dossier illisible, boucle de liens, historique ou index git, fichier à deux noms).
 // Aucun appel facturé : faux opencode seulement (M7, M8 et la barrière des 60 restent des recettes en attente).
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -27,7 +29,7 @@ import { CONTROL_AGENT_PROMPT, favorableShellVerdict } from "./control-ai.ts";
 import { collectEditFacts } from "./edit-facts.ts";
 import { INSTALLED_AGENTS } from "./internal-agents.ts";
 import { ProjectsService } from "./projects.ts";
-import { collectShellContext, type ShellFactsProjects } from "./shell-facts.ts";
+import { collectShellContext, type ShellFactsLimits, type ShellFactsProjects } from "./shell-facts.ts";
 import { isInternalAgentName } from "./shared/agent-choice.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
 import { descriptionChoix } from "./shared/autonomy-choice-texts.ts";
@@ -600,5 +602,114 @@ describe("croisements it2 V1 : faits de modification (L10b) × règles (L9b)", (
     }
     assert.match(phraseRegle("E5", { mode: "simple", controleIa: true }), /retour à « Demander à chaque fois »/);
     assert.match(phraseRetour("plafond-fichiers") ?? "", /plafond de fichiers modifiés atteint/);
+  });
+});
+
+// --- 6. Phrase vraie pour chaque cause (relecture 2-vague-1) --------------------------------------------------------------------
+
+describe("croisements it2 V1 : la carte dit vrai pour chaque cause que les faits (L8b, L10b) rendent sous un code (L9b)", () => {
+  const NON_VERIFIE = /que le cockpit n'a pas pu vérifier/u;
+  const cartes = (regle: string): string[] => MODES.flatMap((mode) => [true, false].map((controleIa) => regleCarte(regle, { mode, controleIa })));
+
+  async function shellVerdict(projects: ShellFactsProjects, command: string, limits: ShellFactsLimits = {}): Promise<ShellVerdict> {
+    const facts = await collectShellContext(command, DOSSIER, projects, limits);
+    return classifyCommand(command, { ...facts, workdir: null, allowJudge: false });
+  }
+
+  /** Verdict attendu, puis la carte « Règle : … » de ce code, dans les deux modes et les deux variantes : elle nomme la cause. */
+  function expectCard(verdict: ShellVerdict | { verdict: string; regle: string; detail?: string }, regle: string, detail: string | null, cause: RegExp, label: string): void {
+    assert.deepEqual([verdict.verdict, verdict.regle], ["attente", regle], `${label} : ${JSON.stringify(verdict)}`);
+    if (detail !== null) assert.equal(verdict.detail, detail, label);
+    for (const carte of cartes(regle)) assert.match(carte, cause, `${label} : ${carte}`);
+  }
+
+  /** Lien symbolique ; faux quand Windows refuse d'en créer (EPERM) : le cas est alors sauté. */
+  function link(t: TestContext, target: string, file: string): boolean {
+    try {
+      fs.symlinkSync(target, file, "file");
+      return true;
+    } catch (err) {
+      if (process.platform !== "win32" || (err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+      t.diagnostic("EPERM : Windows refuse les liens symboliques de fichier sans le mode développeur ; cas obligatoire sous Linux");
+      return false;
+    }
+  }
+
+  it("P03 : parcours au-delà du plafond, historique et index git illisible — pas un fichier sensible, un contenu non vérifié", async (t) => {
+    const root = workspace(t);
+    const projects = projectsOf(root);
+    expectCard(await shellVerdict(projects, "grep -rn TODO src", { walkMaxEntries: 1 }), "P03", "parcours-impossible:src", NON_VERIFIE, "plafond, grep -r");
+    expectCard(await shellVerdict(projects, "git grep -n TODO", { walkMaxEntries: 1 }), "P03", "parcours-impossible:.", NON_VERIFIE, "plafond, git grep");
+    expectCard(await shellVerdict(projects, "git show HEAD"), "P03", "historique:HEAD", NON_VERIFIE, "historique");
+    fs.writeFileSync(path.join(root, "proj", ".git", "index"), "pas un index");
+    expectCard(await shellVerdict(projects, "git diff"), "P03", "index-illisible", NON_VERIFIE, "index illisible");
+    // La cause sensible reste nommée par la même phrase.
+    expectCard(await shellVerdict(projects, "cat .env"), "P03", "environnement:.env", /\.env/u, "fichier sensible");
+  });
+
+  it("P03 : dossier que le cockpit n'a pas le droit de lire", async (t) => {
+    if (process.platform === "win32" || process.getuid?.() === 0) {
+      t.skip("chmod ne retire pas le droit de lire sous Windows ni pour root ; cas obligatoire pour un utilisateur ordinaire sous Linux");
+      return;
+    }
+    const root = workspace(t);
+    const locked = path.join(root, "proj", "src", "verrou");
+    fs.mkdirSync(locked);
+    fs.chmodSync(locked, 0o000);
+    try {
+      expectCard(await shellVerdict(projectsOf(root), "grep -rn TODO src"), "P03", "parcours-impossible:src", NON_VERIFIE, "dossier illisible");
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  it("P02 : boucle de liens et nom introuvable dans une lecture bornée du dossier — pas un chemin qui sort, un chemin non vérifié", async (t) => {
+    const root = workspace(t);
+    const projects = projectsOf(root);
+    expectCard(await shellVerdict(projects, "cat src/app.ts", { dirScanMaxEntries: 0 }), "P02", "src/app.ts", NON_VERIFIE, "lecture du dossier bornée");
+    if (!link(t, "boucle", path.join(root, "proj", "src", "boucle"))) return;
+    expectCard(await shellVerdict(projects, "cat src/boucle"), "P02", "src/boucle", NON_VERIFIE, "boucle de liens");
+  });
+
+  it("G04 : hook actif et index illisible — la carte nomme le hook et le dépôt non vérifié", async (t) => {
+    const root = workspace(t);
+    const projects = projectsOf(root);
+    fs.mkdirSync(path.join(root, "proj", ".git", "hooks"));
+    fs.writeFileSync(path.join(root, "proj", ".git", "hooks", "post-index-change"), `#!/bin/sh${NL}`);
+    expectCard(await shellVerdict(projects, "git status"), "G04", "hook:post-index-change", /hook/u, "hook");
+    fs.rmSync(path.join(root, "proj", ".git", "hooks"), { recursive: true });
+    fs.writeFileSync(path.join(root, "proj", ".git", "index"), "pas un index");
+    expectCard(await shellVerdict(projects, "git status"), "G04", "index-illisible", NON_VERIFIE, "index illisible");
+  });
+
+  it("E1 : fichier intérieur à deux noms (les deux dans le dossier) et cible qui est un dossier — pas un fichier hors du dossier, un fichier non vérifié", async (t) => {
+    const root = workspace(t);
+    const projects = projectsOf(root);
+    const request = (name: string) => {
+      const filepath = `${DOSSIER}/${name}`;
+      const diff = [`Index: ${filepath}`, "=".repeat(67), `--- ${filepath}`, `+++ ${filepath}`, "@@ -1,3 +1,3 @@", " ligne 1", "-ligne 2", "+ligne deux", " ligne 3", ""].join(NL);
+      return { id: "per_1", sessionID: "ses_1", permission: "edit", patterns: [name], always: ["*"], metadata: { filepath, diff } };
+    };
+    fs.linkSync(path.join(root, "proj", "a.txt"), path.join(root, "proj", "a-bis.txt"));
+    const twoNames = await collectEditFacts(request("a.txt"), DOSSIER, projects, new Set());
+    assert.deepEqual(twoNames.paths.map((p) => [p.resolved, p.inside]), [[null, false]], "les deux noms sont dans le dossier : non vérifié, pas « dehors »");
+    expectCard(classifyEdit(twoNames, CAPS.fichiersMax), "E1", null, NON_VERIFIE, "deux noms");
+    expectCard(classifyEdit(await collectEditFacts(request("src"), DOSSIER, projects, new Set()), CAPS.fichiersMax), "E1", null, NON_VERIFIE, "dossier");
+  });
+
+  it("E3 : « add » d'apply_patch sur un fichier existant — la carte parle de remplacement, pas seulement de vidage", async (t) => {
+    const projects = projectsOf(workspace(t));
+    const filePath = `${DOSSIER}/b.txt`;
+    const patch = [`Index: ${filePath}`, "=".repeat(67), `--- ${filePath}`, `+++ ${filePath}`, "@@ -0,0 +1,1 @@", "+remplace", ""].join(NL);
+    const request = {
+      id: "per_2",
+      sessionID: "ses_1",
+      permission: "edit",
+      patterns: ["b.txt"],
+      always: ["*"],
+      metadata: { filepath: "b.txt", diff: patch, files: [{ filePath, relativePath: "b.txt", type: "add", patch, additions: 1, deletions: 0 }] },
+    };
+    const facts = await collectEditFacts(request, DOSSIER, projects, new Set());
+    expectCard(classifyEdit(facts, CAPS.fichiersMax), "E3", null, /remplacement/u, "add sur b.txt");
   });
 });

@@ -169,7 +169,11 @@ export interface DelegationView {
   agent: string;
   command: string | null;
   source: DelegationSource;
-  /** Lancée sans demande (raccourci `subtask`, agent `task: allow`). */
+  /**
+   * Lancée sans demande par un raccourci `subtask` (§4.10, §6 l.1048) : source « raccourci » et aucune demande connue pour l'appel.
+   * Une commande remplie par l'IA passe par une demande : jamais marquée. Un agent `task: allow` ne l'est pas non plus (l'absence
+   * d'une demande vue dans le flux ne prouve rien) : DelegationWatch surveille ses plafonds et le Diagnostic le signale (§3.14).
+   */
   sansConfirmation: boolean;
   state: DelegationState;
   permissionId: string | null;

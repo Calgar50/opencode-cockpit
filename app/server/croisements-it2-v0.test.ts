@@ -96,7 +96,7 @@ function contexteOuvert(): ShellContext {
       resolve: (arg) => ({ inside: true, symlinkOut: false, real: arg.startsWith("/") ? arg : `/workspace/fl/${arg}` }),
       sensitiveEntries: () => [],
     },
-    git: { gitIsDirectory: true, configText: "[core]\n\trepositoryformatversion = 0\n" },
+    git: { gitIsDirectory: true, configText: "[core]\n\trepositoryformatversion = 0\n", launcher: null, trackedSensitive: [] },
     allowJudge: true,
   };
 }

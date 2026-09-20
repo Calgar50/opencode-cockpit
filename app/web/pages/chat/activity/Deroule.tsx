@@ -4,7 +4,9 @@
 // [Tableau] ; emplacement du Journal du contrôle (rempli par L12c) ; « Temps d'attente non enregistré avant la 1.1 ». La pause
 // d'une équipe (hachure + « vérification ») viendra avec les équipes (itération 4) : aucun fait ne la porte encore.
 // Un seul modèle (P12) : le réducteur server/shared/activity.ts (L4c) sur les faits de la conversation (GET …/facts, puis
-// `activite.fait` en direct) ; une conversation sans faits (avant la 1.1) est reconstruite depuis le registre (GET …/activity) et
+// `activite.fait` en direct), avec les informations de session d'opencode (GET /session/:id et /children à la relecture,
+// session.updated en direct : titres et assistant de la conversation) ; une conversation sans faits (avant la 1.1) est reconstruite
+// depuis le registre (GET …/activity) et
 // l'arbre d'opencode (GET /session/:id/children), ou les délégations du registre quand opencode ne l'a plus (Archives). Ce même
 // état sert le pied de tour de la transcription (MessageView, useConversationValue) : au plus 4 avis par seconde.
 // Propriétés figées dans ../slots.ts. Titres et noms venus d'opencode : texte échappé par React. Aucune animation
@@ -23,6 +25,7 @@ import {
   type LiveRow,
   liveRows,
   replayFacts,
+  replayMessages,
   type TimelineBarKind,
   timeline,
   totals,
@@ -116,7 +119,11 @@ class ConversationStore {
       let next: ConversationActivity;
       if (persisted.facts.length > 0) {
         const base = this.#data.state?.source === "faits" ? this.#data.state : emptyActivity(this.rootId);
-        next = { state: replayFacts(base, persisted.facts), partial: persisted.partial, error: null };
+        // Titres (mode Avancé) et assistant de la conversation (« Conversation · … »), comme en direct (session.updated) : informations
+        // de la conversation et de ses enfants, relues par le même réducteur, sans aucun message.
+        const sessions = await this.#sessions();
+        if (seq !== this.#seq) return;
+        next = { state: replayMessages(replayFacts(base, persisted.facts), { sessions, messages: [] }), partial: persisted.partial, error: null };
       } else {
         // Avant la 1.1 : aucun fait. Registre des coûts et arbre des sessions ; les attentes n'ont pas été enregistrées.
         const [activity, sessions] = await Promise.all([activityApi.activity(this.rootId), this.#tree()]);
@@ -138,9 +145,28 @@ class ConversationStore {
 
   /** Arbre des sessions d'après opencode, borné comme le réducteur (3 niveaux, 50 sessions). */
   async #tree(): Promise<LedgerSession[]> {
-    const out: LedgerSession[] = [{ id: this.rootId, parentId: null, purpose: "chat" }];
+    const children = await this.#children();
+    return [
+      { id: this.rootId, parentId: null, purpose: "chat" },
+      ...children.map(({ session, parentId }) => ({ id: session.id, parentId, purpose: purposeOf(session), title: session.title })),
+    ];
+  }
+
+  /**
+   * Informations de session d'une conversation qui a des faits, telles qu'opencode les sert : la conversation elle-même (titre,
+   * assistant de sa dernière demande), puis ses enfants (titres), bornés comme le réducteur.
+   */
+  async #sessions(): Promise<OcSession[]> {
+    // Conversation qu'opencode n'a plus (supprimée, gardée aux Archives) : rien à relire, les faits suffisent au Déroulé.
+    const [root, children] = await Promise.all([oc.session(this.rootId).then((info) => info, () => null), this.#children()]);
+    return [...(root === null ? [] : [root]), ...children.map(({ session }) => session)];
+  }
+
+  /** Enfants d'après opencode, chacun avec la session qui l'a lancé : 3 niveaux et 50 sessions au plus, conversation comprise. */
+  async #children(): Promise<Array<{ session: OcSession; parentId: string }>> {
+    const out: Array<{ session: OcSession; parentId: string }> = [];
     let frontier = [this.rootId];
-    for (let depth = 0; depth < ACTIVITY_MAX_DEPTH && frontier.length > 0 && out.length < ACTIVITY_MAX_SESSIONS; depth++) {
+    for (let depth = 0; depth < ACTIVITY_MAX_DEPTH && frontier.length > 0 && out.length + 1 < ACTIVITY_MAX_SESSIONS; depth++) {
       // Une session qu'opencode n'a plus (conversation supprimée, gardée aux Archives) n'a pas d'enfants lisibles : l'arbre vient
       // alors des délégations du registre (withDelegations).
       const results = await Promise.allSettled(frontier.map((id) => oc.children(id)));
@@ -149,8 +175,8 @@ class ConversationStore {
         const parentId = frontier[index] as string;
         if (result.status !== "fulfilled") return;
         for (const child of result.value) {
-          if (out.length >= ACTIVITY_MAX_SESSIONS) return;
-          out.push({ id: child.id, parentId, purpose: purposeOf(child), title: child.title });
+          if (out.length + 1 >= ACTIVITY_MAX_SESSIONS) return;
+          out.push({ session: child, parentId });
           next.push(child.id);
         }
       });
