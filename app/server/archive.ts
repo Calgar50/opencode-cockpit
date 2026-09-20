@@ -584,7 +584,7 @@ export class ArchiveService {
       .sort((a, b) => b[1] - a[1])
       .map(([name, n]) => `${name} ×${n}`)
       .join(", ");
-    return [
+    const base = [
       "---",
       header.trimEnd(),
       "---",
@@ -602,6 +602,16 @@ export class ArchiveService {
     ]
       .filter((line, i, all) => !(line === "" && all[i - 1] === ""))
       .join("\n");
+    // <c5:markdown>
+    // La construction (L46a, D-5-10) ajoute EN FIN D'EXPORT le résumé des lancements d'équipe de la conversation, quand il n'est
+    // pas vide. Le résumé est composé ICI, et non à l'écriture du fichier : l'export du dossier d'archives (`#writeMarkdown`) et
+    // le téléchargement de l'interface (`GET /api/archive/:id/export.md`, les deux boutons « Exporter en Markdown ») lisent la
+    // MÊME méthode, donc disent la même chose. Le résumé ne contient AUCUN extrait de résultat (`teamRunsMarkdown` ne lit même
+    // pas la colonne) : les extraits masqués restent visibles dans l'interface seulement. Sans lancement d'équipe,
+    // `teamRunsMarkdown` rend "" et l'export est celui de l'itération 1, à l'octet.
+    const equipes = teamRunsMarkdown(this.#d.db, sessionId);
+    return equipes === "" ? base : `${base}\n\n${equipes}`;
+    // </c5:markdown>
   }
 
   async #writeMarkdown(sessionId: string): Promise<void> {
@@ -616,15 +626,9 @@ export class ArchiveService {
       `${created.slice(0, 10)}_${slugify(conv.title, 50)}_${conv.sessionId.slice(-8)}.md`,
     );
     const target = await assertInside(this.#d.archiveDir, path.join(this.#d.archiveDir, relative));
-    // <c5:markdown>
-    // La construction (L46a, D-5-10) ajoute EN FIN DE FICHIER le résumé des lancements d'équipe de la conversation, quand il
-    // n'est pas vide : seule la valeur écrite change (`contenu` au lieu de `content`), le reste de la méthode est d'avant.
-    // Le résumé ne contient AUCUN extrait de résultat (`teamRunsMarkdown` ne lit même pas la colonne) : les extraits masqués
-    // restent visibles dans l'interface seulement. Sans lancement d'équipe, l'export est celui de l'itération 1, à l'octet.
-    const equipes = teamRunsMarkdown(this.#d.db, sessionId);
-    const contenu = equipes === "" ? content : `${content}\n\n${equipes}`;
-    await writeFileAtomic(target, contenu);
-    // </c5:markdown>
+    // Le résumé des lancements d'équipe (L46a, D-5-10) est déjà dans `content` : il est composé par `markdown()`, section
+    // `c5:markdown`, pour que le fichier écrit ici et le téléchargement de l'interface soient identiques.
+    await writeFileAtomic(target, content);
     const previous = this.#row(sessionId)?.archive_path;
     if (previous && previous !== relative) await this.#removeFile(previous);
     this.#d.db.prepare("UPDATE conversations SET archive_path = ? WHERE session_id = ?").run(relative, sessionId);

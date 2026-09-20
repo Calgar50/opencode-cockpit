@@ -518,6 +518,29 @@ describe("archive.ts : le résumé des lancements est ajouté en fin de fichier"
     assert.ok(!contenu.includes("SECRET-DU-RESULTAT"));
   });
 
+  // Le fichier du dossier d'archives et le téléchargement de l'interface doivent dire la MÊME chose : les deux boutons
+  // « Exporter en Markdown » (ArchiveDetail.tsx, ChatPage.tsx) passent par GET /api/archive/:id/export.md, et c'est cet
+  // export-là que l'utilisateur emporte. Sans résumé, D-5-10 serait tenue sur le disque seulement.
+  it("route GET /api/archive/:id/export.md : même contenu que le fichier, résumé compris", async (t: TestContext) => {
+    const h = await startCockpit(t, {});
+    seedConversation(h.db, RACINE, "Conversation avec équipe");
+    seedRun(h.db, { id: "run_1", teamId: null, titre: "Revue SQL sur réplica" });
+    seedStep(h.db, { runId: "run_1", stepId: "e1", ordre: 1, titre: "Rédaction", agent: "redacteur", cost: 0.5, extrait: "SECRET-DU-RESULTAT" });
+
+    await h.deps.archive.update(RACINE, { pinned: true });
+    const relatif = (h.db.prepare("SELECT archive_path FROM conversations WHERE session_id = ?").get(RACINE) as { archive_path: string | null })
+      .archive_path;
+    assert.ok(relatif, "fichier d'archive écrit");
+    const fichier = fs.readFileSync(path.join(h.deps.env.archiveDir, relatif), "utf8");
+
+    const res = await h.call("GET", `/api/archive/${RACINE}/export.md`, { headers: h.headers.authed });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes("## Déroulé de l'équipe « Revue SQL sur réplica »"), res.body.slice(-400));
+    assert.ok(!res.body.includes("SECRET-DU-RESULTAT"), "aucun extrait dans l'export téléchargé (D-5-10)");
+    assert.ok(!res.body.includes("Extrait"), res.body.slice(-400));
+    assert.equal(res.body, fichier, "le téléchargement et le fichier du dossier d'archives ne peuvent pas différer");
+  });
+
   it("conversation sans équipe : l'export est exactement celui de l'itération 1", async (t: TestContext) => {
     const h = await startCockpit(t, {});
     seedConversation(h.db, "ses_sans_equipe", "Conversation sans équipe");
@@ -529,6 +552,10 @@ describe("archive.ts : le résumé des lancements est ajouté en fin de fichier"
     const contenu = fs.readFileSync(path.join(h.deps.env.archiveDir, relatif), "utf8");
     assert.equal(contenu, h.deps.archive.markdown("ses_sans_equipe"));
     assert.ok(!contenu.includes("Déroulé de l'équipe"));
+    const res = await h.call("GET", "/api/archive/ses_sans_equipe/export.md", { headers: h.headers.authed });
+    assert.equal(res.status, 200);
+    assert.equal(res.body, contenu, "sans lancement d'équipe, le téléchargement reste celui de l'itération 1, à l'octet");
+    assert.ok(!res.body.includes("Déroulé de l'équipe"));
   });
 });
 
