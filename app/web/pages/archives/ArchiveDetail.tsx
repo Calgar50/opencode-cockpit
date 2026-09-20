@@ -11,6 +11,7 @@ import { formatDateTime, formatInt, formatTokens, formatUsd, plural, relativeTim
 import { navigate, routeHref } from "../../lib/router.ts";
 import type { Conversation, ModelInfo } from "../../lib/types.ts";
 import { Deroule } from "../chat/activity/Deroule.tsx";
+import { RevoirEntree } from "../salle-controle/revoir/RevoirEntree.tsx"; // [3d]
 import { ClassificationBadge, classificationMethod, DeletedBadge, formatConfidence } from "./shared.tsx";
 
 type Action = "title" | "category" | "tags" | "summary" | "pin" | "classify" | "refresh" | "delete";
@@ -481,6 +482,10 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
             )}
           </Card>
         </aside>
+
+        {/* [3d] début : entrée « Revoir » des Archives (itération 3, L28b) */}
+        <RevoirEntree rootId={sessionId} placement="archives" />
+        {/* [3d] fin */}
 
         <Deroule rootId={sessionId} placement="archives" advanced={boot.ui.mode === "avance"} />
 
