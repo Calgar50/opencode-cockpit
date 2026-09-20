@@ -532,9 +532,10 @@ describe("câblage 1.1 : ports neutres", () => {
       // <c5:production>
       // Construction (itération 5), en fin de MODULE_ORDER et de STEP_ORDER.routes : L44c inscrit le crochet de la Seconde
       // lecture, DERNIER de beforeBilledSend (D-5-06), et sa route ; L44b et L46a montent les leurs dans le groupe
-      // « construction ». Le module `chronologie` reste le squelette de T5a jusqu'à L47b : il n'inscrit rien.
+      // « construction ». Le module `chronologie` monte la sienne depuis L47b (train de V2).
       { kind: "routes", key: "construction", module: "methods" },
       { kind: "routes", key: "construction", module: "secondReading" },
+      { kind: "routes", key: "construction", module: "chronologie" },
       { kind: "routes", key: "construction", module: "teamCosts" },
       // </c5:production>
     ]);
@@ -555,8 +556,8 @@ describe("câblage 1.1 : ports neutres", () => {
     assert.equal(wiring.derivations.length, 3);
     assert.equal(wiring.startup.length, 1);
     // <c5:production>
-    // 6 inscriptions de routes de l'it1, plus les trois du groupe « construction » (L44b, L44c, L46a).
-    assert.equal(wiring.routes.length, 9);
+    // 6 inscriptions de routes de l'it1, plus les quatre du groupe « construction » (L44b, L44c, L47b, L46a).
+    assert.equal(wiring.routes.length, 10);
     // </c5:production>
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.

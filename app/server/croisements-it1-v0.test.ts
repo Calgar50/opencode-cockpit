@@ -303,10 +303,11 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
       // <c5:inscriptions>
-      // Construction (itération 5, V1) : les routes du groupe « construction » de L44b (methods), L44c (secondReading) et L46a
-      // (teamCosts). Le crochet de la Seconde lecture est ajouté plus haut, dans la même section.
+      // Construction (itération 5, V1 et V2) : les routes du groupe « construction » de L44b (methods), L44c (secondReading),
+      // L47b (chronologie) et L46a (teamCosts). Le crochet de la Seconde lecture est ajouté plus haut, dans la même section.
       { kind: "routes", key: "construction", module: "methods" },
       { kind: "routes", key: "construction", module: "secondReading" },
+      { kind: "routes", key: "construction", module: "chronologie" },
       { kind: "routes", key: "construction", module: "teamCosts" },
       // </c5:inscriptions>
     ]);

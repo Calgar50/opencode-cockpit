@@ -91,13 +91,13 @@ describe("construction : câblage propre", () => {
   });
 
   // <c5:inscriptions-v1>
-  // Train de V1 : les modules livrés inscrivent ce que leur fiche annonce ; ceux qui restent des squelettes de T5a n'inscrivent
-  // toujours rien. La table est exhaustive et nommée module par module : un squelette qui se mettrait à inscrire, comme un module
-  // livré qui perdrait une inscription ou en gagnerait une autre, fait tomber ce test. `chronologie` est livré par L47b (V2).
+  // Train de V2 : les quatre modules de la construction sont livrés et inscrivent ce que leur fiche annonce. La table est
+  // exhaustive et nommée module par module : un module qui perdrait une inscription ou en gagnerait une autre fait tomber ce
+  // test. `chronologie` a reçu sa route au train de V2 (L47b) ; elle n'inscrit aucun crochet.
   const INSCRIPTIONS_ATTENDUES: Record<ConstructionModuleName, readonly string[]> = {
     methods: ["routes/construction"], // L44b, V1
     secondReading: ["hook/beforeBilledSend", "routes/construction"], // L44c, V1
-    chronologie: [], // squelette jusqu'à L47b (V2)
+    chronologie: ["routes/construction"], // L47b, V2
     teamCosts: ["routes/construction"], // L46a, V1
   };
 
@@ -129,11 +129,15 @@ describe("construction : câblage propre", () => {
     }
   });
 
-  it("périmètre des animations : les deux dossiers de la construction sont ajoutés juste après SCOPES, et ils existent", () => {
+  it("périmètre des animations : les dossiers de la construction sont ajoutés juste après SCOPES, et ils existent", () => {
     const source = fs.readFileSync(path.join(import.meta.dirname, "web-animations.test.ts"), "utf8");
     const apresScopes = source.slice(source.indexOf("const SCOPES ="));
-    assert.ok(apresScopes.includes('SCOPES.push("pages/costs", "pages/archives");'), "section du périmètre de la construction");
-    for (const dossier of ["pages/costs", "pages/archives"]) {
+    // Train de V2 : les deux dossiers neufs de L44d et de L44e entrent dans le périmètre, comme le prévoit le §5.3.
+    assert.ok(
+      apresScopes.includes('SCOPES.push("pages/costs", "pages/archives", "pages/assistants/methods", "pages/chat/methods");'),
+      "section du périmètre de la construction",
+    );
+    for (const dossier of ["pages/costs", "pages/archives", "pages/assistants/methods", "pages/chat/methods"]) {
       assert.ok(fs.statSync(path.join(import.meta.dirname, "..", "web", dossier)).isDirectory(), dossier);
     }
   });

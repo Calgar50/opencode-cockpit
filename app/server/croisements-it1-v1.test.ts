@@ -54,12 +54,12 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     // d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0 inchangé
     // ci-dessous.
     // <c5:inscriptions>
-    // Construction (itération 5, V1) : les six inscriptions de l'it1 gagnent les trois routes du groupe « construction »
-    // (L44b methods, L44c secondReading, L46a teamCosts). `chronologie` reste inerte jusqu'à L47b.
+    // Construction (itération 5, V1 et V2) : les six inscriptions de l'it1 gagnent les quatre routes du groupe « construction »
+    // (L44b methods, L44c secondReading, L47b chronologie, L46a teamCosts).
     assert.equal(
       h.cockpit.wiring.routes.length,
-      9,
-      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, construction ×3",
+      10,
+      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, construction ×4",
     );
     // </c5:inscriptions>
 

@@ -134,19 +134,20 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
   });
 
   // <c5:inscriptions-v1>
-  // Train de V1 : L44b (`methods`), L44c (`secondReading`) et L46a (`teamCosts`) livrent leur comportement ; `chronologie` reste
-  // le squelette de T5a jusqu'à L47b (V2). L'assertion « rien d'inscrit » est donc bornée aux modules non encore livrés, et la
-  // liste des inscriptions de la construction est vérifiée EXACTEMENT, pour qu'un module livré ne puisse ni en perdre une ni en
-  // gagner une au passage. Les adresses suivent : celle de la chronologie doit toujours rendre le 404 générique.
-  const MODULES_LIVRES: readonly string[] = ["methods", "secondReading", "teamCosts"];
+  // Train de V2 : les QUATRE modules de la construction sont livrés — L44b (`methods`), L44c (`secondReading`), L46a
+  // (`teamCosts`) en V1, L47b (`chronologie`) en V2. Plus aucun squelette de T5a ne reste inerte, d'où la liste vide des modules
+  // non livrés. La liste des inscriptions de la construction est vérifiée EXACTEMENT, pour qu'un module livré ne puisse ni en
+  // perdre une ni en gagner une au passage. Les adresses suivent : celle de la chronologie est désormais montée.
+  const MODULES_LIVRES: readonly string[] = ["methods", "secondReading", "chronologie", "teamCosts"];
   const INSCRIPTIONS_V1: readonly { kind: string; key: string; module: string }[] = [
     { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
+    { kind: "routes", key: "construction", module: "chronologie" },
     { kind: "routes", key: "construction", module: "methods" },
     { kind: "routes", key: "construction", module: "secondReading" },
     { kind: "routes", key: "construction", module: "teamCosts" },
   ];
 
-  it("modules de V1 livrés, chronologie encore inerte : inscriptions exactes, et GET de la chronologie → 404", async (t) => {
+  it("modules de V1 et de V2 livrés : inscriptions exactes, et la route de la chronologie est montée", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
     const wiring = h.cockpit.wiring;
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -155,34 +156,26 @@ describe("croisement 5a V0 : câblage de la construction dans la 1.1", () => {
     assert.deepEqual(
       inscrites.filter((r) => !MODULES_LIVRES.includes(r.module)),
       [],
-      "un squelette de T5a inscrit quelque chose : L47b (chronologie) n'est pas encore livré",
+      "un module hors des quatre modules livrés inscrit quelque chose",
     );
     assert.deepEqual(
       [...inscrites].sort((a, b) => `${a.kind}/${a.key}/${a.module}`.localeCompare(`${b.kind}/${b.key}/${b.module}`)),
       [...INSCRIPTIONS_V1],
-      "les inscriptions de la construction ne sont pas exactement celles des trois paquets de V1",
+      "les inscriptions de la construction ne sont pas exactement celles des quatre paquets livrés",
     );
     // Les adresses sont lues dans CONSTRUCTION_ROUTE_PATHS, jamais recopiées ici : une adresse du client qui s'écarterait des
     // fiches ferait tomber ce test en même temps que celui du client, au lieu de traverser le train avec tout au vert.
-    // Le 404 attendu pour la chronologie est le 404 GÉNÉRIQUE de `/api/*` (« Route inconnue. ») : il prouve qu'aucune route déjà
-    // montée par http.ts ne capte l'adresse. C'est ce qui serait arrivé à `/api/archive/equipes`, avalé par
-    // `app.get("/api/archive/:id")`.
-    const inertes: readonly [string, string][] = [["GET", constructionPath(CHEMINS.chronologie, ROOT)]];
-    for (const [methode, adresse] of inertes) {
-      const entetes = methode === "GET" ? h.headers.authed : h.headers.mutating;
-      const res = await h.call(methode, adresse, { headers: entetes });
-      assert.equal(res.status, 404, `${methode} ${adresse} → ${res.status}`);
-      assert.deepEqual(res.json(), { error: "not-found", message: "Route inconnue." }, `${methode} ${adresse} : capté par une route existante`);
-    }
-    // Les cinq adresses des modules livrés sont montées : elles ne rendent plus le 404 générique. Leur comportement propre est
-    // vérifié par croisements-c5a-v1.test.ts et par les tests de chaque paquet ; ici on prouve seulement qu'elles existent et
-    // qu'aucune route existante ne les avale.
+    // Les six adresses des modules livrés sont montées : elles ne rendent plus le 404 générique de `/api/*` (« Route
+    // inconnue. »). Cela prouve aussi qu'aucune route déjà montée par http.ts ne les avale — ce qui serait arrivé à
+    // `/api/archive/equipes`, capté par `app.get("/api/archive/:id")`. Leur comportement propre est vérifié par
+    // croisements-c5a-v1.test.ts, par croisements-c5a-v2.test.ts et par les tests de chaque paquet.
     const montees: readonly [string, string][] = [
       ["GET", CHEMINS.methodes],
       ["POST", CHEMINS.secondeLectureEstimation],
       ["GET", `${CHEMINS.coutsEquipes}?${TEAM_COSTS_MONTH_PARAM}=2026-09`],
       ["GET", constructionPath(CHEMINS.archivesEquipes, ROOT)],
       ["GET", CHEMINS.equipesConversations],
+      ["GET", constructionPath(CHEMINS.chronologie, ROOT)],
     ];
     for (const [methode, adresse] of montees) {
       const entetes = methode === "GET" ? h.headers.authed : h.headers.mutating;

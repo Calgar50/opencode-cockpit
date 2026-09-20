@@ -21,9 +21,9 @@ const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delega
 // <c5:perimetre>
 // Itération 5 (T5a) : dossiers de la construction déjà présents, où les coûts par équipe (L46b) et les archives d'équipe (L46b,
 // L44f) ajoutent des vues. Ce sont des PRÉFIXES de dossiers, seule forme reconnue par inScope. Les dossiers neufs
-// pages/assistants/methods (L44d) et pages/chat/methods (L44e) sont ajoutés par l'intégrateur du train de V2, quand ils existent ;
+// pages/assistants/methods (L44d) et pages/chat/methods (L44e) ont été ajoutés par l'intégrateur du train de V2, une fois créés ;
 // pages/chat/activity couvre déjà la chronologie (L47b).
-SCOPES.push("pages/costs", "pages/archives");
+SCOPES.push("pages/costs", "pages/archives", "pages/assistants/methods", "pages/chat/methods");
 // </c5:perimetre>
 
 /** Fichiers sans aucune boucle (nom de fichier, où qu'il soit sous web/). */
