@@ -1,0 +1,174 @@
+/* Propriétaire : L12c. Journal du contrôle et repères du Déroulé (spécification §4.12, §5.5, §5.6, P7).
+   Aucune animation : la décision se lit en mot et en icône, jamais à la couleur seule. Le tableau défile à l'horizontale quand
+   la place manque (400 px) ; la règle et la raison d'un repère s'affichent au focus du bouton, jamais par un survol seul.
+   Textes secondaires : --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes), jamais une opacité. */
+
+/* --- Journal du contrôle -------------------------------------------------------------------------------------------------- */
+
+.journal-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.journal-table th,
+.journal-table td {
+  font-size: 12px;
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.journal-qui {
+  font-weight: 600;
+  text-align: left;
+  min-width: 90px;
+}
+.journal-action {
+  display: inline-block;
+  max-width: 28ch;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.journal-decision .journal-mot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.journal-raison {
+  min-width: 14ch;
+  max-width: 40ch;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+/* --- Repères des lignes d'acteur du Déroulé -------------------------------------------------------------------------------- */
+
+.journal-reperes {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.journal-repere {
+  min-width: 0;
+}
+.journal-repere-bouton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.journal-repere-bouton:hover {
+  background: var(--surface-3);
+}
+.journal-repere-bouton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Le bord double la distinction déjà portée par le mot et l'icône : jamais la couleur seule. */
+.journal-repere-bouton.journal-repere--attente {
+  border-color: var(--warning-ink);
+}
+.journal-repere-bouton.journal-repere--refus-auto,
+.journal-repere-bouton.journal-repere--non-controle {
+  border-color: var(--critical);
+}
+.journal-repere-nombre {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.journal-repere-detail {
+  list-style: none;
+  margin: 3px 0 0;
+  padding: 3px 6px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.journal-repere-detail li + li {
+  margin-top: 2px;
+}
+
+/* --- Diagnostic de l'autonomie (pages/diagnostics/AutonomyDiagnostics.tsx) ------------------------------------------------- */
+
+.autonomy-diagnostics h4 {
+  font-size: 13px;
+  margin: 10px 0 6px;
+}
+.autonomy-diagnostic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.autonomy-diagnostic-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12px;
+}
+.autonomy-diagnostic-item .icon {
+  align-self: center;
+  flex: none;
+  color: var(--text-2);
+}
+.autonomy-diagnostic-item.attention .icon {
+  color: var(--warning-ink);
+}
+.autonomy-diagnostic-name {
+  font-weight: 600;
+}
+.autonomy-diagnostic-name code {
+  margin-left: 6px;
+  font-size: 11px;
+}
+.autonomy-diagnostic-state {
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- 400 px ---------------------------------------------------------------------------------------------------------------- */
+
+@media (max-width: 480px) {
+  .journal-action {
+    max-width: 18ch;
+  }
+  .journal-raison {
+    max-width: 24ch;
+  }
+  .journal-reperes {
+    gap: 4px;
+  }
+}
+
+/* --- Mode contrasté --------------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .journal-wrap {
+    border-color: CanvasText;
+  }
+  .journal-repere-bouton {
+    border-color: CanvasText;
+  }
+  .journal-repere-bouton:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .journal-repere-detail {
+    border-left-color: CanvasText;
+  }
+  .autonomy-diagnostic-item .icon,
+  .autonomy-diagnostic-item.attention .icon {
+    color: CanvasText;
+  }
+}
