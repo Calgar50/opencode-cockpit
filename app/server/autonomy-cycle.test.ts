@@ -705,16 +705,52 @@ describe("L10a : délégation", () => {
     child: { agent, text: "Résumé du sous-agent." },
   });
 
-  it("politique de délégation « refus » : ligne « refus-auto », aucune réponse envoyée par l'autonomie", async (t) => {
-    const delegationPolicy: DelegationPolicyPort = { decide: async () => ({ verdict: "refus", regle: "D6" }) };
+  it("politique de délégation « refus » : attente tant que le refus n'est pas parti, puis « refus-auto » ; aucune réponse envoyée par l'autonomie", async (t) => {
+    // Contrat de L10e : le refus part HORS de l'appel, et son sort est rendu au cycle. Ici, il part.
+    const delegationPolicy: DelegationPolicyPort = {
+      decide: async (input) => {
+        queueMicrotask(() => input.onRefusalSettled?.("ok", "D6"));
+        return { verdict: "refus", regle: "D6" };
+      },
+    };
+    const { h, choices } = await startCycle(t, { ports: { delegationPolicy } });
+    const conv = await conversation(h, "Autonome");
+    choices.set(conv.id, "autonome");
+    const request = await ask(h, conv, taskTool("explore"));
+    const decision = await until(() => decisions(h).find((row) => row.permission_id === request.id && row.verdict === "refus-auto"));
+    assert.deepEqual([decision.verdict, decision.regle, decision.par, decision.relais], ["refus-auto", "D6", "cockpit", "ok"]);
+    assert.deepEqual(
+      decisions(h).filter((row) => row.permission_id === request.id).map((row) => row.verdict),
+      ["attente", "refus-auto"],
+      "l'attente d'abord, le refus une fois parti",
+    );
+    assert.deepEqual(repliesTo(h, request.id), [], "le refus appartient à L1d et L10e, jamais à ce module");
+    await until(() => requestRow(h, conv.id).refus === 1 && requestRow(h, conv.id).attentes === 0);
+    assertOneFactPerDecision(h);
+    assertNeverForbidden(h);
+  });
+
+  it("politique de délégation « refus » retenu par le portillon : la ligne reste « attente », le compteur de refus ne bouge pas", async (t) => {
+    const delegationPolicy: DelegationPolicyPort = {
+      decide: async (input) => {
+        queueMicrotask(() => input.onRefusalSettled?.("retenu", "D6"));
+        return { verdict: "refus", regle: "D6" };
+      },
+    };
     const { h, choices } = await startCycle(t, { ports: { delegationPolicy } });
     const conv = await conversation(h, "Autonome");
     choices.set(conv.id, "autonome");
     const request = await ask(h, conv, taskTool("explore"));
     const decision = await decisionOf(h, request.id);
-    assert.deepEqual([decision.verdict, decision.regle, decision.par, decision.relais], ["refus-auto", "D6", "cockpit", null]);
-    assert.deepEqual(repliesTo(h, request.id), [], "le refus appartient à L1d et L10e, jamais à ce module");
-    await until(() => requestRow(h, conv.id).refus === 1);
+    assert.deepEqual([decision.verdict, decision.regle, decision.relais], ["attente", "D6", null]);
+    await flush();
+    assert.deepEqual(
+      decisions(h).filter((row) => row.permission_id === request.id).map((row) => row.verdict),
+      ["attente"],
+      "aucune ligne « Refusé automatiquement » pour un refus qui n'est pas parti",
+    );
+    assert.deepEqual([requestRow(h, conv.id).refus, requestRow(h, conv.id).attentes], [0, 1]);
+    assert.deepEqual(repliesTo(h, request.id), []);
     assertOneFactPerDecision(h);
     assertNeverForbidden(h);
   });

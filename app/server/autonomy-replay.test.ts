@@ -197,7 +197,9 @@ describe("L12c : « différé = direct » des décisions et des choix (autonomie
       ],
     );
     const kinds = (facts: readonly ActivityFact[], kind: string) => facts.filter((fact) => fact.kind === kind);
-    assert.equal(kinds(direct, "decision").length, 4, "un fait « decision » par ligne du journal");
+    // Invariant général (§7.4, D-01), et non le seul compte de cette fixture : TOUT écrivain du Journal (L10a comme L10c) pose
+    // son fait, sans quoi le Déroulé ne lit jamais la ligne qu'il vient d'écrire.
+    assert.equal(kinds(direct, "decision").length, decisions.length, "un fait « decision » par ligne du journal");
     assert.deepEqual(
       kinds(direct, "choix").map((fact) => [fact.data.choix, fact.data.cause]),
       [

@@ -23,11 +23,13 @@
 // l'avis affiché en mode Simple garde le texte court de la décision n° 4 jusqu'aux équipes (L38).
 // Repli M9 (`REPLI_ATTENTE_SIMPLE`, L1d, désactivé) : levé, il vaut aussi en Autonome — plus aucun refus d'office, la délégation
 // attend votre accord. La recette M9 reste EN ATTENTE (facturée, non autorisée).
-// Limites (dites) : le refus Simple part hors de l'appel, car la retenue F-c dure jusqu'à 45 s et le cycle examine une demande à
-// la fois par conversation (l'attendre bloquerait, et retiendrait la demande voisine qui, elle, retient le refus) ; resté
-// « retenu » à la borne ou en échec, rien n'est envoyé, aucun fait n'est écrit, la demande attend votre accord, et la ligne du
-// Journal écrite par le cycle dit un refus qui n'est pas parti. Au-delà de REFUS_EN_COURS_MAX refus en cours, aucun n'est lancé et
-// la délégation attend votre accord. Faits ou plafonds illisibles : attente, jamais un refus sans certitude.
+// 5. SORT DU REFUS RENDU AU CYCLE (`input.onRefusalSettled`) : le refus part hors de l'appel, car la retenue F-c dure jusqu'à 45 s
+//    et le cycle examine une demande à la fois par conversation (l'attendre bloquerait, et retiendrait la demande voisine qui,
+//    elle, retient le refus). Le cycle écrit donc d'abord une ligne « attente », vraie à cet instant, puis la décision
+//    « Refusé automatiquement » quand ce rappel dit « ok ». Le Journal ne dit jamais un refus qui n'est pas parti.
+// Limites (dites) : resté « retenu » à la borne ou en échec, rien n'est envoyé, aucun fait n'est écrit et la demande attend votre
+// accord. Au-delà de REFUS_EN_COURS_MAX refus en cours, aucun n'est lancé et la délégation attend votre accord. Faits ou plafonds
+// illisibles : attente, jamais un refus sans certitude.
 // neutralDelegationPolicy reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import { conversationCaps } from "./autonomy-requests.ts";
 import type { Cockpit11, Cockpit11Module, DelegationPolicyInput, DelegationPolicyPort, DelegationPolicyVerdict, WaitUpsert } from "./contracts-11.ts";
@@ -35,7 +37,7 @@ import { errorMessage } from "./log.ts";
 import { assertFact } from "./shared/activity-facts.ts";
 import type { ActivityFact, ReponseFactData } from "./shared/activity-types.ts";
 import { classifyDelegation } from "./shared/autonomy-rules.ts";
-import type { AutonomyCaps, DelegationFacts } from "./shared/autonomy-types.ts";
+import type { AutonomyCaps, DelegationFacts, RelayOutcome } from "./shared/autonomy-types.ts";
 import { messageRefusSimple } from "./shared/delegation-texts.ts";
 import { REPLI_ATTENTE_SIMPLE } from "./task-once-guard.ts";
 
@@ -76,6 +78,8 @@ export function createDelegationPolicy(c11: Cockpit11, options: DelegationPolicy
   const log = c11.log;
   /** Refus Simple lancés et pas encore terminés : un même refus n'est jamais lancé deux fois. */
   const running = new Set<string>();
+  /** Rappels du cycle qui attendent le sort d'un refus lancé, par demande d'autorisation ; vidés dès que le sort est connu. */
+  const waiting = new Map<string, Array<NonNullable<DelegationPolicyInput["onRefusalSettled"]>>>();
 
   /**
    * Plafonds qui s'appliquent à la délégation (§4.8.1) : ceux de la demande autonome en cours, sinon ceux de la conversation
@@ -113,31 +117,55 @@ export function createDelegationPolicy(c11: Cockpit11, options: DelegationPolicy
    * tant qu'une autre demande de la conversation attend (F-c) — votre autre demande n'est jamais annulée. Rien n'est écrit au nom
    * du cockpit quand le refus n'est pas parti (retenu à la borne, demande déjà répondue ou expirée, échec).
    */
-  const refuse = async (input: DelegationPolicyInput, target: string | null): Promise<void> => {
+  const refuse = async (input: DelegationPolicyInput, target: string | null, regle: string | null): Promise<void> => {
     const outcome = await c11.gate.rejectWhenAlone(input.permissionId, input.sessionId, input.directory, messageRefusSimple(), "cockpit");
     if (outcome === "ok") {
       log.info("délégation refusée : mode Simple, délégation hors des règles ou des plafonds", { rootId: input.rootId, permissionId: input.permissionId });
       record(input, target);
-      return;
-    }
-    if (outcome === "retenu") {
+    } else if (outcome === "retenu") {
       log.info("délégation : refus retenu jusqu'à la borne, la demande attend votre accord", { rootId: input.rootId, permissionId: input.permissionId });
-      return;
+    } else {
+      log.warn("délégation : refus non relayé", { rootId: input.rootId, permissionId: input.permissionId, relais: outcome });
     }
-    log.warn("délégation : refus non relayé", { rootId: input.rootId, permissionId: input.permissionId, relais: outcome });
+    // Sort rendu au cycle (L10a), écrivain unique du Journal : lui seul décide quelle ligne écrire, et seulement une fois le
+    // sort connu. Une erreur du rappel ne doit pas changer ce que ce module a fait : elle est dite, jamais propagée.
+    settle(input.permissionId, outcome, regle);
+  };
+
+  /**
+   * Sort du refus rendu au cycle, une seule fois (même en échec) : sans lui, le Journal garderait une ligne « attente » qui ne
+   * deviendra jamais la décision, ou dirait un refus qui n'est pas parti. Tous les examens qui ont mené à CE refus sont prévenus.
+   */
+  const settle = (permissionId: string, outcome: RelayOutcome | "retenu", regle: string | null): void => {
+    const hooks = waiting.get(permissionId) ?? [];
+    waiting.delete(permissionId);
+    for (const hook of hooks) {
+      try {
+        hook(outcome, regle);
+      } catch (err) {
+        log.warn("délégation : sort du refus non rendu au cycle", { permissionId, error: errorMessage(err) });
+      }
+    }
   };
 
   /** Lance le refus Simple hors de l'appel ; false : non lancé (borne atteinte), la délégation attend votre accord. */
-  const startRefusal = (input: DelegationPolicyInput, target: string | null): boolean => {
-    if (running.has(input.permissionId)) return true;
-    if (running.size >= REFUS_EN_COURS_MAX) {
+  const startRefusal = (input: DelegationPolicyInput, target: string | null, regle: string | null): boolean => {
+    const enCours = running.has(input.permissionId);
+    if (!enCours && running.size >= REFUS_EN_COURS_MAX) {
       log.warn("délégation : refus non lancé, trop de refus en cours ; la demande attend votre accord", { permissionId: input.permissionId });
       return false;
     }
+    // Un second examen de la même demande ne relance rien, mais son rappel attend le même sort : aucune ligne « attente » orpheline.
+    const hook = input.onRefusalSettled;
+    if (hook !== undefined) waiting.set(input.permissionId, [...(waiting.get(input.permissionId) ?? []), hook]);
+    if (enCours) return true;
     running.add(input.permissionId);
     defer(() => {
-      refuse(input, target)
-        .catch((err: unknown) => log.warn("délégation : refus en échec", { permissionId: input.permissionId, error: errorMessage(err) }))
+      refuse(input, target, regle)
+        .catch((err: unknown) => {
+          log.warn("délégation : refus en échec", { permissionId: input.permissionId, error: errorMessage(err) });
+          settle(input.permissionId, "echec", regle);
+        })
         .finally(() => running.delete(input.permissionId));
     });
     return true;
@@ -166,7 +194,7 @@ export function createDelegationPolicy(c11: Cockpit11, options: DelegationPolicy
     if (verdict.verdict !== "refus") return verdict;
     // Mode Simple seulement (classifyDelegation) : l'IA continue seule (décision n° 4). Repli M9 levé, ou refus non lancé à la
     // borne : la demande attend votre accord, avec la même règle.
-    if (repli || !startRefusal(input, facts.target?.name ?? null)) return { verdict: "attente", regle: verdict.regle };
+    if (repli || !startRefusal(input, facts.target?.name ?? null, verdict.regle)) return { verdict: "attente", regle: verdict.regle };
     return verdict;
   };
 

@@ -21,8 +21,9 @@ import { reloadOccupancy, reloadRefusal } from "./reload-guard.ts";
 import { registerAiRoutes } from "./routes-assistants.ts";
 import type { TierService } from "./tiers.ts";
 import type { SessionRow } from "./sessions.ts";
+import { activityStatus, emptyActivity, liveRows, replayFacts } from "./shared/activity.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
-import { phrasePlafond, phraseRetour } from "./shared/autonomy-texts.ts";
+import { phrasePlafond, phraseRegle, phraseRetour, regleCarte, TEXTES } from "./shared/autonomy-texts.ts";
 import { raisonNonControle } from "./shared/autonomy-watch-texts.ts";
 import type { AutonomyCaps, ConversationAutonomyView } from "./shared/autonomy-types.ts";
 import { isNoRequestShellForm } from "./shared/shell-gate.ts";
@@ -166,6 +167,14 @@ const facts = (h: CockpitHarness, rootId: string, kind: string): ActivityFact[] 
 
 /** Faits « statut » d'un arrêt, d'un plafond ou d'un redémarrage (`data.cause`) ; ceux du Déroulé (L4b) portent `etat`. */
 const statuts = (h: CockpitHarness, rootId: string): ActivityFact[] => facts(h, rootId, "statut").filter((fact) => fact.data.cause !== undefined);
+
+/** Faits d'une conversation tels que `GET …/facts` les sert : ce que le Déroulé rejoue (replayFacts). */
+const c11Facts = (h: CockpitHarness, rootId: string): ActivityFact[] => h.cockpit.c11.ports.facts.since(rootId, 0).facts;
+
+/** Appel `bash` passé sans contrôle, identifiant fixé pour vérifier le `ref` des faits. */
+const CALL_FL = "call_sanscontrole";
+/** Demande d'autorisation encore ouverte au moment de la détection (rejeu du réducteur). */
+const PERMISSION_OUVERTE = "per_attenteouverte";
 
 const decisions = (h: CockpitHarness, rootId: string) =>
   h.db.prepare("SELECT * FROM autonomy_decisions WHERE root_id = ? ORDER BY id").all(rootId) as Array<Record<string, unknown>>;
@@ -398,23 +407,52 @@ describe("L10c : « Passé sans contrôle »", () => {
     assert.equal(ligne?.raison, raisonNonControle());
     assert.equal(ligne?.resume, "x=1");
     assert.equal(ligne?.request_id, close.id);
+    // D-01 : une ligne de Journal, un fait « decision » — sans lui le Déroulé ne lit jamais le Journal du contrôle (L12c).
+    const decision = await until(() => facts(h, conv.id, "decision").at(0));
+    assert.deepEqual(decision.data, { verdict: "non-controle", regle: NON_CONTROLE_RULE });
+    assert.equal(facts(h, conv.id, "decision").length, decisions(h, conv.id).length, "un fait « decision » par ligne de Journal");
+    // Côté réducteur, l'arrêt de L1c est bien vu : c'est la contrepartie du cas sans arrêt ci-dessous.
+    const etat = replayFacts(emptyActivity(conv.id), c11Facts(h, conv.id));
+    assert.equal(activityStatus(etat).arret?.cause, "non-controle", "un vrai arrêt reste enregistré comme tel");
     h.assertNoGlobalRestart();
   });
 
-  it("hors d'un choix automatique : Journal et fait `statut`, rien n'est arrêté", async (t) => {
+  it("hors d'un choix automatique : Journal, fait « decision » et fait « detection » ; aucune attente n'est fermée", async (t) => {
     const bench = await startBench(t);
     const { h } = bench;
     const conv = await conversation(h);
-    h.fake.script(conv.id, { tools: [{ tool: "bash", input: { command: "> f" } }], followUp: { text: "Fait." } });
+    h.fake.script(conv.id, { tools: [{ tool: "bash", callID: CALL_FL, input: { command: "> f" } }], followUp: { text: "Fait." } });
     assert.equal((await prompt(h, conv.id)).status, 204);
 
     const ligne = await until(() => decisions(h, conv.id).at(0), 5_000);
     assert.equal(ligne.verdict, "non-controle");
     assert.equal(ligne.choix, "demander");
     assert.equal(ligne.request_id, null);
-    assert.equal(statuts(h, conv.id).at(0)?.data.cause, "non-controle");
     assert.deepEqual(aborts(h), []);
     assert.deepEqual(requests(h, conv.id), []);
+    // Rien n'a été arrêté : aucun fait d'arrêt (`statut {cause}`), seulement un fait de détection.
+    assert.deepEqual(statuts(h, conv.id), [], "aucun fait d'arrêt : rien n'a été arrêté");
+    const detection = await until(() => facts(h, conv.id, "detection").at(0));
+    assert.deepEqual([detection.data, detection.ref], [{ cas: "non-controle" }, CALL_FL]);
+    const decision = await until(() => facts(h, conv.id, "decision").at(0));
+    assert.deepEqual([decision.data, decision.ref], [{ verdict: "non-controle", regle: NON_CONTROLE_RULE }, CALL_FL]);
+    assert.equal(facts(h, conv.id, "decision").length, decisions(h, conv.id).length, "un fait « decision » par ligne de Journal");
+
+    // Rejeu dans le réducteur (§3.10) sur la suite réelle, arrêtée à la détection et complétée d'une attente d'accord ouverte
+    // (scénario de la fiche : l'assistant demande l'autorisation de modifier un fichier, puis lance `> f` dans le même tour).
+    const tous = c11Facts(h, conv.id);
+    const iDetection = tous.findIndex((fait) => fait.kind === "detection");
+    assert.ok(iDetection >= 0, "fait de détection enregistré");
+    const cible = tous[iDetection] as ActivityFact;
+    // Le repos de fin de tour est écarté (la conversation attend encore) ; TOUT ce qui suit la détection est gardé, pour qu'un
+    // fait d'arrêt écrit à sa place ou à côté d'elle soit vu par ce rejeu.
+    const sansRepos = (liste: readonly ActivityFact[]): ActivityFact[] => liste.filter((fait) => fait.data.etat !== "repos");
+    const attente: ActivityFact = { rootId: conv.id, sessionId: conv.id, kind: "attente", ref: PERMISSION_OUVERTE, data: { permission: "edit" }, at: cible.at - 1 };
+    const etat = replayFacts(emptyActivity(conv.id), [...sansRepos(tous.slice(0, iDetection)), attente, ...sansRepos(tous.slice(iDetection))]);
+    const racine = liveRows(etat, Date.now()).find((row) => row.key === conv.id);
+    assert.equal(racine?.state, "attente-accord", "le Déroulé dit toujours « En attente de votre accord »");
+    assert.equal(racine?.permissionId, PERMISSION_OUVERTE, "la demande d'autorisation ouverte reste répondable");
+    assert.equal(activityStatus(etat).arret, null, "aucune conversation arrêtée : rien n'a été arrêté");
   });
 
   it("« echo a > f » n'est pas une forme sans demande (MX2 §3) : aucun faux positif", async (t) => {
@@ -432,6 +470,22 @@ describe("L10c : « Passé sans contrôle »", () => {
     assert.equal(requests(h, conv.id).at(-1)?.fin, null);
     assert.deepEqual(decisions(h, conv.id), []);
     assert.deepEqual(aborts(h), []);
+  });
+
+  it("le code de règle écrit au Journal a sa phrase : le repère du Déroulé ne dit jamais « Règle inconnue… »", () => {
+    for (const mode of ["simple", "avance"] as const) {
+      for (const controleIa of [true, false]) {
+        const phrase = phraseRegle(NON_CONTROLE_RULE, { mode, controleIa });
+        assert.notEqual(phrase, TEXTES.partout.regles.inconnue, `${mode} / controleIa ${String(controleIa)}`);
+        assert.ok(phrase.length > 0 && !/[{}]/.test(phrase), phrase);
+        // La règle dit QUELLE forme est passée ; la raison du Journal dit que le cockpit l'a vue après coup : jamais le même texte.
+        assert.notEqual(phrase, raisonNonControle(), "la phrase de la règle ne répète pas la raison du Journal");
+      }
+    }
+    assert.equal(
+      regleCarte(NON_CONTROLE_RULE, { mode: "simple", controleIa: true }),
+      "Règle : Commande qu'opencode a lancée sans demande d'autorisation (affectation, déclaration ou redirection seule)",
+    );
   });
 
   it("un appel `bash` qui a posé sa demande n'est jamais « passé sans contrôle », même sur une forme F-l", async (t) => {

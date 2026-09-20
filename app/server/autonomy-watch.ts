@@ -18,9 +18,11 @@
 //    La phrase affichée est TOUJOURS celle de L9b (`phrasePlafond`, `phraseFin`, `phraseRetour`) : aucune n'est écrite ici.
 // 2. « PASSÉ SANS CONTRÔLE » (§4.10). Une partie `bash` TERMINÉE (`completed` ou `error`) dont le `callID` n'a porté aucun
 //    `permission.asked`, et dont la commande est reconnue par `isNoRequestShellForm` (L8a, formes F-l), a échappé au contrôle.
-//    En choix automatique : `stopTree(rootId, « non-controle »)`. Ailleurs (« Demander à chaque fois », « Plan d'abord ») :
-//    une ligne de Journal et un fait `statut {cause: non-controle}`, sans rien arrêter. Une ligne de Journal est écrite dans les
-//    deux cas (verdict `non-controle`, §4.12).
+//    En choix automatique : `stopTree(rootId, « non-controle »)`, qui écrit lui-même le fait `statut {cause: non-controle}` de
+//    l'arrêt. Ailleurs (« Demander à chaque fois », « Plan d'abord ») : une ligne de Journal et un fait `detection
+//    {cas: non-controle}`, sans rien arrêter — jamais un fait `statut {cause}`, que le réducteur d'activité lit comme un ARRÊT de
+//    la conversation (il fermerait l'attente d'accord en cours). Une ligne de Journal est écrite dans les deux cas (verdict
+//    `non-controle`, §4.12), et avec elle UN fait `decision` (D-01, §7.4), sans lequel le Déroulé ne lit jamais le Journal.
 //    Mesure MX2 §2 (M5, [MESURÉ] ×3) : la partie `bash` est publiée 3 à 4 ms AVANT l'effet disque, mais un `abort` envoyé 2,6 ms
 //    avant l'effet n'empêche pas la commande. La prévention n'est pas fiable : la DÉTECTION APRÈS COUP reste la parade, et la
 //    phrase « le cockpit les repère après coup » est conservée telle quelle. Ce module agit donc sur l'état terminal de la partie,
@@ -57,7 +59,7 @@ import { errorMessage } from "./log.ts";
 import type { OcGlobalEvent } from "./opencode.ts";
 import { redactSecrets } from "./redact.ts";
 import { assertFact } from "./shared/activity-facts.ts";
-import type { ActivityFact, StatutCause, StatutFactData } from "./shared/activity-types.ts";
+import type { ActivityFact, DecisionFactData, DetectionFactData, StatutCause, StatutFactData } from "./shared/activity-types.ts";
 import { AUTONOMY_RULES_VERSION, type CapHit, capReached } from "./shared/autonomy-rules.ts";
 import { phrasePlafond, phraseRetour } from "./shared/autonomy-texts.ts";
 import type { AutonomyChoice, AutonomyRequestView, ChoiceCause } from "./shared/autonomy-types.ts";
@@ -253,11 +255,11 @@ export function createCapWatch(c11: Cockpit11, options: CapWatchOptions = {}): C
 
   // --- Écritures communes --------------------------------------------------------------------------------------------------------
 
-  /** Fait `statut {cause}` de la conversation (écrivain des faits : ports.facts, L4b). */
-  const statutFact = (rootId: string, sessionId: string, cause: StatutCause, motif: string | null, ref: string | null = null): void => {
+  /** Fait `statut {cause}` de la conversation (écrivain des faits : ports.facts, L4b) : un ARRÊT, jamais une simple détection. */
+  const statutFact = (rootId: string, sessionId: string, cause: StatutCause, motif: string | null): void => {
     const data: StatutFactData = { cause, ...(motif === null ? {} : { motif }) };
     try {
-      const fact: ActivityFact = { rootId, sessionId, kind: "statut", ref, data, at: now() };
+      const fact: ActivityFact = { rootId, sessionId, kind: "statut", ref: null, data, at: now() };
       c11.ports.facts.append([assertFact(fact)]);
     } catch (err) {
       log.warn("surveillance : fait « statut » non écrit", { rootId, cause, error: errorMessage(err) });
@@ -349,8 +351,11 @@ export function createCapWatch(c11: Cockpit11, options: CapWatchOptions = {}): C
 
   // --- 2. « Passé sans contrôle » --------------------------------------------------------------------------------------------------
 
-  /** Une ligne du Journal du contrôle (§4.12) : verdict « non-controle », par le cockpit, jamais un texte de message. */
-  const journal = (input: { rootId: string; sessionId: string; requestId: string | null; callId: string; command: string; choix: AutonomyChoice }): void => {
+  /**
+   * Une ligne du Journal du contrôle (§4.12) : verdict « non-controle », par le cockpit, jamais un texte de message.
+   * Rend l'heure de la ligne, ou null si elle n'a pas pu être écrite (le fait « decision » suit la ligne, jamais l'inverse).
+   */
+  const journal = (input: { rootId: string; sessionId: string; requestId: string | null; callId: string; command: string; choix: AutonomyChoice }): number | null => {
     const at = now();
     const resume = redactSecrets(input.command).replace(/\s+/g, " ").trim().slice(0, RESUME_MAX);
     try {
@@ -361,8 +366,38 @@ export function createCapWatch(c11: Cockpit11, options: CapWatchOptions = {}): C
            VALUES (?, ?, ?, NULL, 'bash', ?, ?, ?, ?, 'non-controle', 'cockpit', ?, NULL, NULL, NULL, NULL, ?, ?)`,
         )
         .run(input.requestId, input.rootId, input.sessionId, resume, input.choix, NON_CONTROLE_RULE, AUTONOMY_RULES_VERSION, raisonNonControle(), at, at);
+      return at;
     } catch (err) {
       log.warn("autonomie : « Passé sans contrôle » non journalisé", { rootId: input.rootId, error: errorMessage(err) });
+      return null;
+    }
+  };
+
+  /**
+   * Fait « decision » de la ligne de Journal (D-01, §7.4 : UN fait par ligne de `autonomy_decisions`). Sans lui, le Déroulé (L12c)
+   * ne lit jamais le Journal du contrôle : il ne le demande que si un fait « decision » existe. `ref` est l'appel d'outil, car
+   * aucune demande d'autorisation n'a été posée (`permission_id` reste nul).
+   */
+  const decisionFact = (rootId: string, sessionId: string, callId: string, at: number): void => {
+    const data: DecisionFactData = { verdict: "non-controle", regle: NON_CONTROLE_RULE };
+    try {
+      c11.ports.facts.append([assertFact({ rootId, sessionId, kind: "decision", ref: callId, data, at })]);
+    } catch (err) {
+      log.warn("autonomie : fait « decision » non écrit", { rootId, callId, error: errorMessage(err) });
+    }
+  };
+
+  /**
+   * Fait de DÉTECTION d'une commande passée sans contrôle, quand RIEN n'est arrêté. Jamais un fait `statut {cause}` : celui-là est
+   * réservé aux vrais arrêts de L1c, et le réducteur d'activité (shared/activity.ts) le lit comme un arrêt de la conversation —
+   * il fermerait les attentes d'accord en cours et dirait la conversation arrêtée alors qu'elle attend l'utilisateur.
+   */
+  const detectionFact = (rootId: string, sessionId: string, callId: string): void => {
+    const data: DetectionFactData = { cas: "non-controle" };
+    try {
+      c11.ports.facts.append([assertFact({ rootId, sessionId, kind: "detection", ref: callId, data, at: now() })]);
+    } catch (err) {
+      log.warn("surveillance : fait « detection » non écrit", { rootId, callId, error: errorMessage(err) });
     }
   };
 
@@ -371,18 +406,20 @@ export function createCapWatch(c11: Cockpit11, options: CapWatchOptions = {}): C
     const choix = choiceOf(rootId);
     const view = current(rootId);
     log.warn("autonomie : commande lancée sans demande d'autorisation, vue après coup", { rootId, sessionId, callId, choix });
-    journal({ rootId, sessionId, requestId: view?.id ?? null, callId, command, choix });
+    const at = journal({ rootId, sessionId, requestId: view?.id ?? null, callId, command, choix });
+    if (at !== null) decisionFact(rootId, sessionId, callId, at);
     if (!isAutomatic(choix)) {
-      statutFact(rootId, sessionId, "non-controle", null, callId);
+      detectionFact(rootId, sessionId, callId);
       return;
     }
     try {
       // stopTree (L1c) : fin « non-controle » de la demande et fait statut {cause: non-controle}.
       await c11.ports.stopTree.run(rootId, "non-controle");
     } catch (err) {
+      // Arrêt en échec : rien n'a été arrêté, donc aucun fait d'arrêt — seulement la détection, et la fin de la demande.
       log.warn("autonomie : arrêt de l'arbre en échec après une commande sans contrôle", { rootId, error: errorMessage(err) });
       endRequest(rootId, "non-controle");
-      statutFact(rootId, sessionId, "non-controle", null, callId);
+      detectionFact(rootId, sessionId, callId);
     }
   };
 

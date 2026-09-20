@@ -215,12 +215,14 @@ interface IaInfo {
 
 /**
  * Sort d'un examen, avant le relais : « auto » (un « once » peut partir), « attente » (la demande reste à l'utilisateur) ou
- * « refus » (décidé par la politique de délégation, L10e, qui l'a envoyé elle-même : ce module n'envoie jamais de refus).
+ * « refus » (décidé par la politique de délégation, L10e, qui l'a LANCÉ elle-même : ce module n'envoie jamais de refus). Un
+ * « refus » est journalisé « attente » tant que son envoi n'a pas abouti : la décision définitive est écrite par `refusalSettled`.
  */
 type Outcome =
   | { kind: "auto"; regle: string; par: DecisionBy; raison: string; ia?: IaInfo; files?: readonly string[]; delegation?: boolean }
   | { kind: "attente"; regle: string; par: DecisionBy; raison: string; ia?: IaInfo }
-  | { kind: "refus"; regle: string; raison: string };
+  /** `armer` : appelé par l'examen une fois la ligne « attente » écrite ; il applique le sort du refus, déjà connu ou à venir. */
+  | { kind: "refus"; regle: string; raison: string; armer: () => void };
 
 interface Job extends AskedPermission {
   rootId: string;
@@ -499,18 +501,51 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
     return judgeOutcome(job, directory, requestId, command);
   };
 
-  const taskOutcome = async (job: Job, directory: string): Promise<Outcome> => {
+  /**
+   * Refus Simple d'une délégation, une fois son sort connu (L10e l'envoie hors de l'appel : la retenue F-c peut le garder jusqu'à
+   * 45 s). « ok » : le refus est parti, la décision définitive « Refusé automatiquement » est écrite ici, et le compteur d'attentes
+   * de la demande devient un compteur de refus. Sinon rien de plus : la ligne « attente » déjà écrite dit vrai, la délégation
+   * attend votre accord.
+   */
+  const refusalSettled = (job: Job, choix: AutonomyChoice, requestId: string | null, relais: RelayOutcome | "retenu", regle: string | null): void => {
+    if (relais !== "ok") {
+      log.info("autonomie : refus de délégation non parti, la demande attend votre accord", { rootId: job.rootId, permissionId: job.permissionId, relais });
+      return;
+    }
+    const code = regle ?? "D1";
+    count(requestId, { refus: 1, attentes: -1 });
+    record({ job, choix, requestId, verdict: "refus-auto", regle: code, par: "cockpit", raison: phrase(code), relais: "ok", ia: null });
+  };
+
+  const taskOutcome = async (job: Job, directory: string, choix: AutonomyChoice, requestId: string | null): Promise<Outcome> => {
+    // Le sort du refus peut arriver AVANT que l'examen ait écrit sa ligne « attente » (une politique plus rapide que le portillon
+    // réel) : il est alors gardé et appliqué par `armer`, pour que le Journal garde l'ordre des deux temps et ses compteurs justes.
+    let ecrite = false;
+    let garde: [RelayOutcome | "retenu", string | null] | null = null;
+    const appliquer = ([relais, regle]: [RelayOutcome | "retenu", string | null]): void => refusalSettled(job, choix, requestId, relais, regle);
     const policy = await c11.ports.delegationPolicy.decide({
       rootId: job.rootId,
       sessionId: job.sessionId,
       permissionId: job.permissionId,
       directory,
       mode: mode(),
+      onRefusalSettled: (relais, regle) => {
+        if (ecrite) appliquer([relais, regle]);
+        else garde = [relais, regle];
+      },
     });
     const regle = policy.regle ?? "D1";
     if (policy.verdict === "auto") return { kind: "auto", regle: policy.regle ?? DELEGATION_AUTO_RULE, par: "regles", raison: phrase(policy.regle ?? DELEGATION_AUTO_RULE), delegation: true };
-    // « refus » : la politique de délégation (L10e) a envoyé elle-même le refus Simple ; ce module n'en envoie jamais.
-    if (policy.verdict === "refus") return { kind: "refus", regle, raison: phrase(regle) };
+    // « refus » : la politique de délégation (L10e) a LANCÉ elle-même le refus Simple ; ce module n'en envoie jamais.
+    if (policy.verdict === "refus") {
+      const armer = (): void => {
+        ecrite = true;
+        const connu = garde;
+        garde = null;
+        if (connu !== null) appliquer(connu);
+      };
+      return { kind: "refus", regle, raison: phrase(regle), armer };
+    }
     return { kind: "attente", regle, par: "regles", raison: phrase(regle) };
   };
 
@@ -571,7 +606,7 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
           outcome = await bashOutcome(job, directory, choix, requestId);
           break;
         case "task":
-          outcome = await taskOutcome(job, directory);
+          outcome = await taskOutcome(job, directory, choix, requestId);
           break;
         case "auto":
           outcome = { kind: "auto", regle: route.regle, par: "regles", raison: phrase(route.regle) };
@@ -581,8 +616,11 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
       }
       if (outcome.kind === "auto") return await relay(job, choix, requestId, outcome);
       if (outcome.kind === "refus") {
-        count(requestId, { refus: 1 });
-        return record({ job, choix, requestId, verdict: "refus-auto", regle: outcome.regle, par: "cockpit", raison: outcome.raison, relais: null, ia: null });
+        // L10e a LANCÉ le refus hors de l'appel ; son sort n'est pas encore connu (retenue F-c jusqu'à 45 s, échec). Le Journal
+        // dit donc l'attente, vraie à cet instant ; `refusalSettled` écrit la décision définitive quand le refus est parti.
+        await wait(job, choix, requestId, { kind: "attente", regle: outcome.regle, par: "regles", raison: outcome.raison });
+        outcome.armer();
+        return;
       }
       return await wait(job, choix, requestId, outcome);
     } finally {

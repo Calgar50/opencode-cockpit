@@ -15,9 +15,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { createDelegationPolicy, delegationPolicyModuleWith, FAITS_ILLISIBLES_RULE, REFUS_EN_COURS_MAX } from "./autonomy-delegation.ts";
-import type { ActivationPort, Cockpit11, ConversationAutonomyPort, DelegationPolicyInput, WaitUpsert } from "./contracts-11.ts";
+import type { ActivationPort, Cockpit11, ConversationAutonomyPort, DelegationPolicyInput, PermissionGate, WaitUpsert } from "./contracts-11.ts";
 import { openMemoryDb } from "./db.ts";
+import type { AppDeps } from "./http.ts";
 import { createLogger } from "./log.ts";
+import { createPermissionGate } from "./permission-gate.ts";
+import { SessionTracker } from "./sessions.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
 import { DELEGATION_AUTO_RULE, DELEGATION_RULE_ORDER, type DelegationRule } from "./shared/autonomy-rules.ts";
@@ -198,9 +201,13 @@ describe("L10e : règles D1 à D7 sur doublures", () => {
 describe("L10e : refus Simple (décision n° 4)", () => {
   it("message de L1d, par le cockpit, hors de l'appel ; attente close et fait « reponse » une fois parti", async () => {
     const stub = stubPolicy({ facts: { delegationsSoFar: 5 } });
-    const verdict = await stub.service.port.decide(entree({ permissionId: "per_b", sessionId: "ses_enfant" }));
+    const sorts: Array<[string, string | null]> = [];
+    const verdict = await stub.service.port.decide(
+      entree({ permissionId: "per_b", sessionId: "ses_enfant", onRefusalSettled: (relais, regle) => void sorts.push([relais, regle]) }),
+    );
     assert.deepEqual(verdict, { verdict: "refus", regle: "D6" });
     assert.deepEqual([stub.calls.rejects, stub.calls.waits, stub.calls.facts], [[], [], []], "rien pendant l'appel");
+    assert.deepEqual(sorts, [], "le sort du refus n'est pas rendu avant l'envoi");
     assert.deepEqual(stub.service.refusEnCours(), ["per_b"]);
     await stub.vider();
     assert.deepEqual(stub.calls.rejects, [
@@ -214,32 +221,66 @@ describe("L10e : refus Simple (décision n° 4)", () => {
       [["reponse", "per_b", "ses_racine", "ses_enfant", { reponse: "reject", par: "cockpit" }]],
     );
     assert.deepEqual(stub.service.refusEnCours(), [], "refus terminé");
+    assert.deepEqual(sorts, [["ok", "D6"]], "le sort du refus est rendu au cycle, une seule fois, avec sa règle");
   });
 
-  it("refus retenu, expiré, déjà répondu ou en échec : rien n'est écrit au nom du cockpit", async () => {
+  it("refus retenu, expiré, déjà répondu ou en échec : rien n'est écrit au nom du cockpit, et le cycle l'apprend", async () => {
     for (const outcome of ["retenu", "deja-repondu", "expiree", "echec"] as const) {
       const stub = stubPolicy({ facts: { guardAccepts: false }, reject: async () => outcome });
-      assert.equal((await stub.service.port.decide(entree())).verdict, "refus", outcome);
+      const sorts: Array<[string, string | null]> = [];
+      assert.equal((await stub.service.port.decide(entree({ onRefusalSettled: (relais, regle) => void sorts.push([relais, regle]) }))).verdict, "refus", outcome);
       await stub.vider();
       assert.equal(stub.calls.rejects.length, 1, outcome);
       assert.deepEqual([stub.calls.waits, stub.calls.facts], [[], []], outcome);
+      // Sans ce rappel, le cycle laisserait au Journal une ligne « Refusé automatiquement » pour un refus qui n'est pas parti.
+      assert.deepEqual(sorts, [[outcome, "D5"]], outcome);
     }
-    // Refus qui lève : le travail différé ne casse pas le cockpit, et rien n'est écrit.
+    // Refus qui lève : le travail différé ne casse pas le cockpit, rien n'est écrit, et le cycle apprend l'échec.
     const casse = stubPolicy({
       facts: { guardAccepts: false },
       reject: async () => {
         throw new Error("portillon en erreur");
       },
     });
-    assert.equal((await casse.service.port.decide(entree())).verdict, "refus");
+    const sorts: Array<[string, string | null]> = [];
+    assert.equal((await casse.service.port.decide(entree({ onRefusalSettled: (relais, regle) => void sorts.push([relais, regle]) }))).verdict, "refus");
     await casse.vider();
     assert.deepEqual([casse.calls.waits, casse.calls.facts, casse.service.refusEnCours()], [[], [], []]);
+    assert.deepEqual(sorts, [["echec", "D5"]], "un portillon en erreur rend « echec », jamais rien");
+  });
+
+  it("un rappel qui lève ne change rien à ce que le refus a fait (le cycle est dit, jamais propagé)", async () => {
+    const stub = stubPolicy({ facts: { delegationsSoFar: 5 } });
+    assert.equal(
+      (
+        await stub.service.port.decide(
+          entree({
+            onRefusalSettled: () => {
+              throw new Error("cycle en erreur");
+            },
+          }),
+        )
+      ).verdict,
+      "refus",
+    );
+    await stub.vider();
+    assert.equal(stub.calls.rejects.length, 1, "le refus est bien parti");
+    assert.equal(stub.calls.waits.length, 1, "l'attente d'accord est close");
+    assert.equal(stub.calls.facts.length, 1, "le fait « reponse » est écrit");
+    assert.deepEqual(stub.service.refusEnCours(), [], "le refus est retiré des refus en cours");
   });
 
   it("une même demande ne lance qu'un refus ; au-delà de REFUS_EN_COURS_MAX la délégation attend votre accord", async () => {
     const stub = stubPolicy({ facts: { promptRisk: "url" } });
-    for (let i = 0; i < 3; i++) assert.equal((await stub.service.port.decide(entree())).verdict, "refus", `essai ${i}`);
+    const sorts: Array<[string, string | null]> = [];
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await stub.service.port.decide(entree({ onRefusalSettled: (relais, regle) => void sorts.push([relais, regle]) }))).verdict, "refus", `essai ${i}`);
+    }
     assert.deepEqual([stub.differe.length, stub.service.refusEnCours()], [1, ["per_a"]], "un seul refus lancé");
+    await stub.vider();
+    // Chaque examen a écrit sa ligne « attente » : chacun doit apprendre le sort, sans quoi une ligne resterait orpheline.
+    assert.deepEqual(sorts, [["ok", "D3"], ["ok", "D3"], ["ok", "D3"]], "les trois examens apprennent le même sort");
+    assert.equal(stub.calls.rejects.length, 1, "un seul refus envoyé");
 
     const borne = stubPolicy({ facts: { promptRisk: "url" } });
     for (let i = 0; i < REFUS_EN_COURS_MAX; i++) {
@@ -327,6 +368,8 @@ interface BenchOptions {
   settings?: Record<string, unknown>;
   modules?: CockpitHarnessOptions["modules"];
   agents?: FakeAgent[];
+  /** Sort imposé au refus du portillon (retenue F-c, échec) ; absent : le vrai portillon envoie le refus. */
+  rejet?: RelayOutcome | "retenu";
 }
 
 interface Bench {
@@ -337,11 +380,22 @@ interface Bench {
 async function startBench(t: TestContext, options: BenchOptions = {}): Promise<Bench> {
   const root = workspace(t);
   const choices = new Map<string, AutonomyChoice>();
+  const rejet = options.rejet;
   const h = await startCockpit(t, {
     modules: options.modules ?? MODULES,
     env: { workspaceDir: root },
     settings: { ui: { mode: options.mode ?? "simple" }, ...(options.settings ?? {}) },
     ports: { conversationAutonomy: choicePort(choices), activation: PERMIS },
+    // Portillon réel dont le seul refus rend le sort imposé : la retenue F-c (jusqu'à 45 s) et l'échec sont autrement
+    // inobservables sur le faux opencode, alors qu'ils décident de ce que le Journal a le droit d'écrire.
+    ...(rejet === undefined
+      ? {}
+      : {
+          gate: (deps: AppDeps): PermissionGate => {
+            const real = createPermissionGate({ client: deps.client, db: deps.db, log: deps.log, hub: deps.hub, sessions: new SessionTracker(deps.db, deps.client) });
+            return { ...real, rejectWhenAlone: async () => rejet };
+          },
+        }),
   });
   if (options.agents) h.fake.setAgents([...nativeAgents(), ...options.agents]);
   return { h, choices };
@@ -399,6 +453,9 @@ const decisions = (h: CockpitHarness): DecisionRow[] => h.db.prepare("SELECT * F
 
 const decisionOf = (h: CockpitHarness, permissionId: string): Promise<DecisionRow> =>
   until(() => decisions(h).find((row) => row.permission_id === permissionId));
+
+/** Toutes les lignes de Journal d'une demande d'autorisation, dans l'ordre d'écriture. */
+const lignesDe = (h: CockpitHarness, permissionId: string): DecisionRow[] => decisions(h).filter((row) => row.permission_id === permissionId);
 
 /** Réponses d'autorisation réellement envoyées à opencode. */
 const replies = (h: CockpitHarness): Array<{ id: string; body: unknown }> =>
@@ -489,9 +546,23 @@ describe("L10e : délégation en Autonome, intégration", () => {
       assert.equal(ligne.regle, "D6", mode);
 
       if (mode === "simple") {
-        assert.equal(ligne.verdict, "refus-auto", "décision n° 4 : l'IA continue seule");
+        // Le refus part HORS de l'appel : à cet instant son sort est inconnu, le Journal dit donc l'attente, qui est vraie.
+        assert.equal(ligne.verdict, "attente", "rien n'est journalisé « refusé » avant que le refus soit parti");
         await within(h.fake.settled(session.id), "tour terminé");
         assert.deepEqual(repliesTo(h, request.id), [{ reply: "reject", message: messageRefusSimple() }]);
+        // Refus parti : la décision définitive est écrite (décision n° 4, l'IA continue seule), avec son relais.
+        const definitive = await until(() => lignesDe(h, request.id).find((row) => row.verdict === "refus-auto"));
+        assert.deepEqual([definitive.regle, definitive.par, definitive.relais], ["D6", "cockpit", "ok"]);
+        assert.deepEqual(
+          lignesDe(h, request.id).map((row) => row.verdict),
+          ["attente", "refus-auto"],
+          "le Journal garde les deux temps, dans l'ordre",
+        );
+        const compteurs = await until(() => {
+          const vue = h.cockpit.c11.ports.requests.current(session.id);
+          return vue !== null && vue.refus === 1 ? vue : null;
+        });
+        assert.deepEqual([compteurs.refus, compteurs.attentes], [1, 0], "l'attente est devenue un refus, jamais les deux");
         const attente = await until(
           () => h.db.prepare("SELECT reply, replied_by FROM permission_waits WHERE permission_id = ?").get(request.id) as { reply: string; replied_by: string } | undefined,
         );
@@ -508,6 +579,40 @@ describe("L10e : délégation en Autonome, intégration", () => {
       }
       assertNeverForbidden(h);
       h.assertNoGlobalRestart();
+      await h.close();
+    }
+  });
+
+  it("refus retenu (F-c) ou en échec : le Journal ne dit JAMAIS « Refusé automatiquement », la délégation attend votre accord", async (t) => {
+    for (const rejet of ["retenu", "echec"] as const) {
+      const { h, choices } = await startBench(t, { rejet });
+      const session = await conversation(h, `Refus ${rejet}`);
+      choices.set(session.id, "autonome");
+      const cinq = async (): Promise<void> => {
+        for (let i = 0; i < 5; i++) {
+          h.cockpit.c11.ports.facts.work.markDelegation({ rootId: session.id, parentSessionId: session.id, callId: `call_${i}`, agent: "general" }, "travaille", null);
+        }
+      };
+      await send(h, session, [task("general", { description: "sixième", beforeAsk: cinq })]);
+      const [request] = await asked(h, session.id, 1);
+      assert.ok(request);
+      const ligne = await decisionOf(h, request.id);
+      assert.deepEqual([ligne.regle, ligne.verdict], ["D6", "attente"], rejet);
+      await flush();
+
+      // Rien n'est parti : le Journal, trace de référence du §4.12, ne doit pas dire un refus qui n'a pas eu lieu.
+      assert.deepEqual(lignesDe(h, request.id).map((row) => row.verdict), ["attente"], `${rejet} : aucune ligne « refus-auto »`);
+      const vue = h.cockpit.c11.ports.requests.current(session.id);
+      assert.deepEqual([vue?.refus, vue?.attentes], [0, 1], `${rejet} : compteur de refus inchangé`);
+      // La demande attend toujours l'utilisateur chez opencode, et aucun fait « reponse » n'a été écrit au nom du cockpit.
+      assert.deepEqual(repliesTo(h, request.id), [], rejet);
+      assert.ok(h.fake.pendingPermissions().some((p) => p.id === request.id), `${rejet} : la demande attend toujours votre accord`);
+      assert.deepEqual(
+        h.db.prepare("SELECT kind FROM activity_facts WHERE ref = ? AND kind = 'reponse'").all(request.id),
+        [],
+        `${rejet} : aucun fait « reponse »`,
+      );
+      assertNeverForbidden(h);
       await h.close();
     }
   });

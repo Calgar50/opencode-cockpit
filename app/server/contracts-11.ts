@@ -360,6 +360,13 @@ export interface DelegationPolicyInput {
   permissionId: string;
   directory: string | null;
   mode: UiMode;
+  /**
+   * Sort du refus Simple, une fois connu (L10e l'envoie HORS de l'appel : la retenue F-c le garde jusqu'à 45 s tant qu'une autre
+   * demande de la conversation attend). Appelé une seule fois, et seulement quand un refus a été lancé. « ok » : le refus est
+   * parti ; « retenu », « echec », « deja-repondu », « expiree » : rien n'a été envoyé, la demande attend toujours votre accord.
+   * Le cycle (L10a) s'en sert pour n'écrire la décision « Refusé automatiquement » au Journal qu'une fois le refus parti.
+   */
+  onRefusalSettled?: (relais: RelayOutcome | "retenu", regle: string | null) => void;
 }
 
 export interface DelegationPolicyVerdict {

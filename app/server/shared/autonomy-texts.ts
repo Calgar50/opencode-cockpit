@@ -111,6 +111,8 @@ export const TEXTES = {
       D5: "Le garde-fou budgétaire refuse ce travail délégué",
       D6: "Plafond de délégations de la demande atteint",
       D7: "Coût estimé supérieur au reste du plafond d'arrêt",
+      // « Passé sans contrôle » (§4.10) : famille des formes qu'opencode lance sans rien demander, vues après coup par L10c.
+      "F-l": "Commande qu'opencode a lancée sans demande d'autorisation (affectation, déclaration ou redirection seule)",
       // Routes (§4.3 étape 4, §4.1).
       "R-web": "Accès au web",
       "R-hors-projet": "Dossier hors du projet",

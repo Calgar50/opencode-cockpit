@@ -300,13 +300,18 @@ function maxUsd(plafondMaxUsd: number): number {
   return Math.min(max, Math.max(min, plafondMaxUsd));
 }
 
-/** Plafond `cle` ramené dans ses bornes : valeur illisible → `defaut`, entiers arrondis, coût à deux décimales. */
+/**
+ * Plafond `cle` ramené dans ses bornes : valeur illisible → `defaut`, entiers arrondis, coût à deux décimales.
+ * L'arrondi passe AVANT le dernier bornage : un plafond maximal à trois décimales (0,505 $, que le schéma des réglages accepte)
+ * donnerait sinon 0,51 $, que `PUT …/autonomie` refuse en 400 — le choix deviendrait inactivable dans toute conversation.
+ */
 export function clampCap(cle: CapKey, valeur: number, defaut: number, plafondMaxUsd = CAP_BOUNDS.plafondUsd.max): number {
   const bounds = CAP_BOUNDS[cle];
   const high = cle === "plafondUsd" ? maxUsd(plafondMaxUsd) : bounds.max;
   const source = Number.isFinite(valeur) ? valeur : defaut;
   const borne = Math.min(high, Math.max(bounds.min, Number.isFinite(source) ? source : bounds.min));
-  return bounds.entier ? Math.round(borne) : Math.round(borne * 100) / 100;
+  const arrondi = bounds.entier ? Math.round(borne) : Math.round(borne * 100) / 100;
+  return Math.min(high, arrondi);
 }
 
 /** Plafonds ramenés dans leurs bornes, clé par clé (valeurs du serveur comprises : elles peuvent venir d'un réglage abaissé). */

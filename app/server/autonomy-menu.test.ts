@@ -953,6 +953,22 @@ describe("autonomy-menu : plafonds bornés comme le serveur les borne (§4.8.1)"
     assert.equal(clampCap("plafondUsd", 3, 1, Number.NaN), 3);
   });
 
+  it("plafondMaxUsd à trois décimales : l'arrondi du coût ne dépasse jamais le plafond maximal (le serveur refuserait le choix)", () => {
+    // Le schéma des réglages accepte 0,505 (min 0,01, max 50, aucun pas) : la confirmation ne doit pas proposer 0,51, que
+    // PUT …/autonomie refuse en 400 « invalid » — « Autonome avec contrôle » deviendrait inactivable partout.
+    const reglages = {
+      ...DEFAULT_SETTINGS,
+      budget: { ...DEFAULT_SETTINGS.budget, autonomie: { ...DEFAULT_SETTINGS.budget.autonomie, plafondMaxUsd: 0.505, plafondUsd: 0.5 } },
+    };
+    assert.equal(settingsSchema.safeParse(reglages).success, true, "0,505 doit passer le schéma");
+    for (const max of [0.015, 0.505, 1.505, 2.345]) {
+      assert.ok(clampCap("plafondUsd", 50, 1, max) <= max, `clampCap au-dessus de ${String(max)}`);
+      assert.ok(clampCaps({ ...defaultCaps(), plafondUsd: 1 }, max).plafondUsd <= max, `clampCaps au-dessus de ${String(max)}`);
+    }
+    assert.equal(clampCap("plafondUsd", 5, 1, 0.505), 0.505);
+    assert.equal(clampCaps({ ...defaultCaps(), plafondUsd: 1 }, 0.505).plafondUsd, 0.505);
+  });
+
   it("clampCaps : chaque plafond ramené dans ses bornes, y compris ceux qui viennent du serveur", () => {
     const borne = clampCaps({ plafondUsd: 40, actionsMax: 0, delegationsMax: -3, dureeMinutes: 9_000, fichiersMax: 25.6, controlesIaMax: 20 }, 5);
     assert.deepEqual(borne, {

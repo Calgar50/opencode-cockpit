@@ -342,10 +342,13 @@ describe("croisements it2 V3 : 6e délégation en Autonome (L10e) × surveillanc
       assert.notEqual(ligne.regle, DELEGATION_AUTO_RULE);
 
       if (mode === "simple") {
-        // Décision n° 4 : refus avec le message de L1d, l'IA continue seule.
-        assert.equal(ligne.verdict, "refus-auto");
+        // Décision n° 4 : refus avec le message de L1d, l'IA continue seule. Le refus part hors de l'appel (retenue F-c) : le
+        // Journal dit d'abord l'attente, puis « Refusé automatiquement » une fois le refus parti.
+        assert.equal(ligne.verdict, "attente", "rien n'est journalisé « refusé » avant l'envoi");
         await within(h.fake.settled(root.id), "tour terminé");
         assert.deepEqual(repliesTo(h, demande.id), [{ reply: "reject", message: messageRefusSimple() }]);
+        const definitive = await until(() => decisions(h).filter((row) => row.permission_id === demande.id).find((row) => row.verdict === "refus-auto"));
+        assert.deepEqual([definitive.regle, definitive.par, definitive.relais], ["D6", "cockpit", "ok"]);
       } else {
         assert.equal(ligne.verdict, "attente", "mode Avancé : votre accord");
         await flush();
@@ -428,7 +431,8 @@ describe("croisements it2 V3 : « différé = direct » sur la fixture d'autonom
     assert.equal(body.partial, false, "aucune borne de faits atteinte par la fixture");
 
     assert.deepEqual(body.facts, direct, "faits relus = faits publiés, câblage complet");
-    assert.equal(direct.filter((fact) => fact.kind === "decision").length, 4, "un fait « decision » par ligne du Journal");
+    // Invariant général (§7.4, D-01) plutôt que le compte de cette fixture : une ligne de Journal sans son fait resterait invisible.
+    assert.equal(direct.filter((fact) => fact.kind === "decision").length, decisions(h).length, "un fait « decision » par ligne du Journal");
     assert.deepEqual(
       direct.filter((fact) => fact.kind === "choix").map((fact) => [fact.data.choix, fact.data.cause]),
       [
