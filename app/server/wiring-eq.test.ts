@@ -300,9 +300,10 @@ describe("câblage des équipes : ports neutres et apply", () => {
   });
 
   // Les modules réels arrivent paquet par paquet et ajoutent leurs propres inscriptions (L37a : routes « teams » ; L37b :
-  // dérivation, abonnement, démarrage et routes « team-runs » du runner). Le test porte donc sur les inscriptions attendues,
-  // présentes UNE fois chacune, et sur leur neutralité au repos, jamais sur l'absence des autres.
-  it("production (tous les modules) : routes, verrou, décorateur, prédicat et inscriptions du runner posés une fois, neutres tant que rien ne travaille", async () => {
+  // dérivation, abonnement, démarrage et routes « team-runs » du runner ; L37c : dérivation du rechargement, abonnement du
+  // plafond et routes d'incident de teamGuards, en plus des deux inscriptions posées par T4). Le test porte donc sur les
+  // inscriptions attendues, présentes UNE fois chacune, et sur leur neutralité au repos, jamais sur l'absence des autres.
+  it("production (tous les modules) : routes, verrou, décorateur, prédicat et inscriptions du runner et des verrous posés une fois, neutres tant que rien ne travaille", async () => {
     const { deps, c11, innerCalls } = fakeCockpit();
     const wiring = buildEquipes(deps);
     assert.deepEqual(wiring.modules, [...EQ_MODULE_ORDER]);
@@ -316,6 +317,9 @@ describe("câblage des équipes : ports neutres et apply", () => {
       "hub/opencode.connection/teamRunner",
       "startup/startup/teamRunner",
       "routes/team-runs/teamRunner",
+      "derivation/teamGuards/teamGuards",
+      "hub/usage.updated/teamGuards",
+      "routes/team-runs/teamGuards",
     ]) {
       assert.equal(inscriptions.filter((entry) => entry === attendue).length, 1, `${attendue} : une seule fois`);
     }
