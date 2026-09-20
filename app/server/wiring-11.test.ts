@@ -468,7 +468,7 @@ describe("câblage 1.1 : ports neutres", () => {
     await assertNeutralPorts(buildCockpit11(off.deps, { modules: [] }), off, false);
   });
 
-  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), route du Diagnostic ; squelettes T0 restants neutres", async () => {
+  it("production (tous les modules réels) : modules livrés en V2 inscrits (L1c stopTree, L3 plancher, L6a choix d'autonomie, L4b faits), garde du « task once » (L1d), surveillance des délégations (L1e), plans (L6b), demandes et cycle d'autonomie (L10a), route du Diagnostic ; squelettes T0 restants neutres", async () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -477,13 +477,18 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      // L10a : la demande autonome s'ouvre à l'envoi, après l'activation (rang « requests » de STEP_ORDER).
+      { kind: "hook", key: "beforeBilledSend", module: "requests" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
       { kind: "derivation", key: "facts", module: "facts" },
       { kind: "derivation", key: "taskGuard", module: "taskGuard" },
       // L1e : surveillance des délégations lancées sans demande (dérivation et abonnement usage.updated), port toujours vide.
       { kind: "derivation", key: "delegationWatch", module: "delegationWatch" },
+      // L10a : cycle d'une décision (dérivation permission.asked) et relecture de GET /permission à la reconnexion d'opencode.
+      { kind: "derivation", key: "autonomy", module: "autonomy" },
       { kind: "hub", key: "usage.updated", module: "delegationWatch" },
+      { kind: "hub", key: "opencode.connection", module: "autonomy" },
       { kind: "startup", key: "startup", module: "conversationAutonomy" },
       { kind: "routes", key: "conversations", module: "stopTree" },
       { kind: "routes", key: "delegations", module: "taskGuard" },
@@ -500,10 +505,10 @@ describe("câblage 1.1 : ports neutres", () => {
         wiring.hooks.beforeOnceRelay.length,
         wiring.hooks.abort.length,
       ],
-      [1, 1, 2, 1, 1],
+      [1, 1, 3, 1, 1],
     );
-    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated"]);
-    assert.equal(wiring.derivations.length, 3);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection"]);
+    assert.equal(wiring.derivations.length, 4);
     assert.equal(wiring.startup.length, 1);
     assert.equal(wiring.routes.length, 6);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
