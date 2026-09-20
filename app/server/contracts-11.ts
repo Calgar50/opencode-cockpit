@@ -8,6 +8,9 @@ import type { ArchiveService } from "./archive.ts";
 import type { SessionsOccupancy } from "./assistants.ts";
 import type { ModelCatalog } from "./catalog.ts";
 import type { ConfigWriteQueue } from "./config-queue.ts";
+// <c5:import>
+import type { ConstructionModuleName, ConstructionRouteGroup } from "./construction-contracts.ts";
+// </c5:import>
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import type { AppDeps, TierPort } from "./http.ts";
@@ -168,7 +171,7 @@ export interface HubEventMap {
 export type HubEventType = keyof HubEventMap;
 
 /** Groupes de routes 1.1, montés dans cet ordre juste avant le 404 de /api/*. */
-export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11";
+export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11" | ConstructionRouteGroup; // c5
 
 /** Registre remis à install() : chaque inscription est rangée par STEP_ORDER ; un couple absent de la table est refusé. */
 export interface Registrar {
@@ -438,4 +441,4 @@ export interface Cockpit11Ports {
 export type PortName = keyof Cockpit11Ports;
 
 /** « gate » : module sans port (le portillon est une dépendance). Les autres modules portent le nom de leur port. */
-export type ModuleName = "gate" | PortName;
+export type ModuleName = "gate" | PortName | ConstructionModuleName; // c5

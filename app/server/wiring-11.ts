@@ -33,6 +33,9 @@ import { neutralPlans, plansModule } from "./plans.ts";
 import { floorsModule, neutralFloors } from "./session-floor-service.ts";
 import { neutralStopTree, stopTreeModule } from "./stop-tree.ts";
 import { neutralTaskGuard, taskGuardModule } from "./task-once-guard.ts";
+// <c5:import>
+import { CONSTRUCTION_MODULE_ORDER, CONSTRUCTION_MODULES, CONSTRUCTION_ROUTES } from "./wiring-construction.ts";
+// </c5:import>
 
 /**
  * Porte I1 tenue par le code (plan §2.6). Tant qu'elle vaut false, le port activation réel répond comme le port neutre (refus
@@ -58,6 +61,7 @@ export const MODULE_ORDER = [
   "capWatch",
   "internalAgents",
   "diagnostics",
+  ...CONSTRUCTION_MODULE_ORDER, // c5
 ] as const satisfies readonly ModuleName[];
 
 export interface StepOrder {
@@ -76,7 +80,7 @@ export const STEP_ORDER = {
   hooks: {
     createSession: ["floors"],
     sessionCreated: ["floors"],
-    beforeBilledSend: ["floors", "plans", "activation", "requests"],
+    beforeBilledSend: ["floors", "plans", "activation", "requests", "secondReading"], // c5
     beforeOnceRelay: ["taskGuard"],
     abort: ["stopTree"],
   },
@@ -96,6 +100,7 @@ export const STEP_ORDER = {
     ["autonomy", "conversationAutonomy"],
     ["plans", "plans"],
     ["diagnostic-11", "diagnostics"],
+    ...CONSTRUCTION_ROUTES, // c5
   ],
 } as const satisfies StepOrder;
 
@@ -125,6 +130,7 @@ export const MODULES: { readonly [N in ModuleName]: Cockpit11Module } = {
   capWatch: capWatchModule,
   internalAgents: internalAgentsModule,
   diagnostics: diagnosticsModule,
+  ...CONSTRUCTION_MODULES, // c5
 };
 
 /** Ports neutres (= comportement 1.0.4) : ceux de tout module non installé, même quand son code réel est fusionné. */

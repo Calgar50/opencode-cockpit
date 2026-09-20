@@ -29,6 +29,9 @@ import { SettingsStore } from "./settings.ts";
 import { ID, ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
 import type { StudioService } from "./studio.ts";
 import { ACTIVATION_OUVERTE, buildCockpit11, type Cockpit11Wiring, MODULE_ORDER, MODULES, NEUTRAL_PORTS, STEP_ORDER } from "./wiring-11.ts";
+// <c5:import>
+import { CONSTRUCTION_MODULE_ORDER } from "./wiring-construction.ts";
+// </c5:import>
 
 /** Jeton de test généré à chaque exécution, jamais imprimé. */
 const TOKEN = crypto.randomBytes(36).toString("base64url");
@@ -264,12 +267,18 @@ describe("câblage 1.1 : ordre figé", () => {
       "capWatch",
       "internalAgents",
       "diagnostics",
+      // <c5:ordre>
+      "methods",
+      "secondReading",
+      "chronologie",
+      "teamCosts",
+      // </c5:ordre>
     ]);
     assert.deepEqual(STEP_ORDER, {
       hooks: {
         createSession: ["floors"],
         sessionCreated: ["floors"],
-        beforeBilledSend: ["floors", "plans", "activation", "requests"],
+        beforeBilledSend: ["floors", "plans", "activation", "requests", "secondReading"], // c5
         beforeOnceRelay: ["taskGuard"],
         abort: ["stopTree"],
       },
@@ -287,6 +296,12 @@ describe("câblage 1.1 : ordre figé", () => {
         ["autonomy", "conversationAutonomy"],
         ["plans", "plans"],
         ["diagnostic-11", "diagnostics"],
+        // <c5:routes>
+        ["construction", "methods"],
+        ["construction", "secondReading"],
+        ["construction", "chronologie"],
+        ["construction", "teamCosts"],
+        // </c5:routes>
       ],
     });
   });
@@ -294,7 +309,11 @@ describe("câblage 1.1 : ordre figé", () => {
   it("MODULES et NEUTRAL_PORTS : un module réel par nom, un port neutre par module sauf gate", () => {
     assert.deepEqual(Object.keys(MODULES), [...MODULE_ORDER]);
     for (const name of MODULE_ORDER) assert.equal(MODULES[name].name, name);
-    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => name !== "gate").sort());
+    // <c5:ports>
+    // La construction n'ajoute aucun port (D-5-04) : ses modules n'ont pas de port neutre, comme « gate ».
+    const SANS_PORT: readonly ModuleName[] = ["gate", ...CONSTRUCTION_MODULE_ORDER];
+    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => !SANS_PORT.includes(name)).sort());
+    // </c5:ports>
   });
 
   it("modules factices : crochets, dérivations, abonnements, démarrage et routes rangés par STEP_ORDER", async () => {
@@ -379,6 +398,14 @@ describe("câblage 1.1 : ordre figé", () => {
       },
       { name: "internalAgents", install: (reg) => reg.startup(async () => void trace.push("internalAgents")) },
       { name: "diagnostics", install: (reg) => reg.routes("diagnostic-11", () => void trace.push("diagnostic-11")) },
+      // <c5:factices>
+      // Squelettes de la construction (T5a) : déclarés pour que wiring.modules couvre MODULE_ORDER ; ils n'inscrivent rien tant
+      // que L44b, L44c, L47b et L46a ne sont pas livrés. Leurs inscriptions arrivent ici au train de la vague qui les apporte.
+      { name: "methods", install: () => undefined },
+      { name: "secondReading", install: () => undefined },
+      { name: "chronologie", install: () => undefined },
+      { name: "teamCosts", install: () => undefined },
+      // </c5:factices>
     ];
     const wiring = buildCockpit11(s.deps, { modules: [...factices].reverse() });
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
