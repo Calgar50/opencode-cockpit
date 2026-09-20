@@ -11,10 +11,13 @@ import type { OcError, OcFilePart, OcPart, OcTextPart } from "../../lib/types.ts
 import { DelegationCard } from "./activity/DelegationCard.tsx";
 import { useConversationValue } from "./activity/Deroule.tsx";
 // <c5:methodes-import>
-// Itération 5 (L44e) : bulle repliée de la méthode demandée et présence de sa section dans la réponse (D-5-08, spéc. §6 l.1051).
+// Itération 5 (L44e) : bulle repliée de la méthode demandée, présence de sa section dans la réponse (D-5-08, spéc. §6 l.1051),
+// bouton « Seconde lecture » sous une réponse terminée et pied de la réponse du Relecteur (C §9.7, D-5-22).
+import { estDemandeDeSecondeLecture, secondReadingFooter } from "../../../server/shared/chat-methods-view.ts";
 import { splitMessageMethods } from "../../../server/shared/methods.ts";
 import { MethodBubble } from "./methods/MethodBubble.tsx";
 import { MethodPresence } from "./methods/MethodPresence.tsx";
+import { SecondReadingButton, SecondReadingFooter } from "./methods/SecondReadingButton.tsx";
 // </c5:methodes-import>
 import { relativePath, ToolCard } from "./ToolCard.tsx";
 import { type MessageEntry, type Turn, turnTotals } from "./transcript.ts";
@@ -236,6 +239,12 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
   const demande = turn.user ? texteDuMessage(turn.user) : "";
   const methodesDemandees = splitMessageMethods(demande).methodes;
   const reponse = turn.replies.map(texteDuMessage).join("\n");
+  // Ce tour EST une seconde lecture quand sa demande ouvre par le début fixe du message du Relecteur : même règle que le crochet
+  // du serveur, qui a requalifié la ligne `chat_turns`. Le pied dit alors ce que cette relecture ne remplace pas.
+  const secondeLecture = estDemandeDeSecondeLecture(demande);
+  const pied = secondReadingFooter(demande);
+  // Le bouton n'est proposé que sous une réponse d'une conversation RACINE : le tiroir d'un travail délégué n'en est pas une.
+  const sessionDeTour = turn.replies[0]?.info.sessionID ?? null;
   // </c5:methodes-demande>
   return (
     <article className="turn">
@@ -285,6 +294,21 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
               réponse ». Tant que la réponse s'écrit, rien n'est affirmé : la section peut encore arriver. */}
           {totals.running ? null : <MethodPresence demandees={methodesDemandees} reponse={reponse} />}
           {/* </c5:methodes-presence> */}
+          {/* <c5:seconde-lecture> */}
+          {/* Pied de la réponse du Relecteur, puis « Seconde lecture (≈ {x} $) » sous une réponse terminée : ni en cours, ni
+              message repère, ni la relecture elle-même (C §9.7). Le composeur garde son assistant. */}
+          {pied !== null && !totals.running ? <SecondReadingFooter texte={pied} /> : null}
+          {conversationRoot && sessionDeTour !== null ? (
+            <SecondReadingButton
+              sessionId={sessionDeTour}
+              cle={turn.key}
+              assistant={agents.join(", ")}
+              terminee={!totals.running}
+              repere={turn.replies.every(isUnbilledMarker)}
+              estSecondeLecture={secondeLecture}
+            />
+          ) : null}
+          {/* </c5:seconde-lecture> */}
           {totals.running ? null : <TurnFooter turn={turn} conversationRoot={conversationRoot} advanced={advanced} />}
         </div>
       ) : null}
