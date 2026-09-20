@@ -1,6 +1,10 @@
 // Assistants prêts à l'emploi (catalogue livré) : cartes, aperçu et fenêtre d'installation (§9.3).
 import { type CSSProperties, useCallback, useEffect, useId, useState } from "react";
 import { NAME_RE, RIGHTS_INFO, TIER_LABELS, USE_CASE_INFO } from "../../../server/shared/assistant-rules.ts";
+// <c5:equipier-import>
+import { EQUIPIER_ROLE } from "../../../server/shared/construction-constants.ts";
+import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
+// </c5:equipier-import>
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { useReloadGuard } from "../../components/reloadGuard.ts";
@@ -51,6 +55,15 @@ function CatalogueCard({ item, onOpen }: { item: CatalogueItem; onOpen: () => vo
         {item.fiches.length > 0 ? ` · Fiches : ${item.fiches.length}` : ""}
       </p>
       <div className="row wrap" style={{ gap: 6 }}>
+        {/* <c5:equipier> */}
+        {/* Assistant d'équipe (rôle « equipier », L45a) : mot ET icône, jamais une couleur seule. */}
+        {item.role === EQUIPIER_ROLE ? (
+          <Badge title={TEXTES_C5.partout.assistantsEquipe.phrase}>
+            <Icon name="users" size={12} />
+            Assistant d'équipe
+          </Badge>
+        ) : null}
+        {/* </c5:equipier> */}
         <Badge tone="warning">{item.review}</Badge>
         {item.tierStatus === "indisponible" ? <Badge tone="critical">IA indisponible</Badge> : null}
       </div>
