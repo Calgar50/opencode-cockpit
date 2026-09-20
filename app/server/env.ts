@@ -44,6 +44,17 @@ export interface AppEnv {
   copilotApiUrl: string | null;
   /** COCKPIT_AUTONOMY (1.1) : false coupe « Modifications automatiques » et « Autonome avec contrôle ». */
   autonomy: boolean;
+  /**
+   * Schéma servi sur la boucle locale (COCKPIT_LOCAL_SCHEME) : https par défaut ; http seulement avec une date de confirmation
+   * valable (COCKPIT_LOCAL_HTTP_CONFIRMED, écrite par install.ps1 après la saisie). Jamais les deux, jamais de repli automatique.
+   */
+  localScheme: LocalScheme;
+  /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */
+  localHttpConfirmedAt: string | null;
+  /** Volume du certificat TLS local (COCKPIT_TLS_DIR, chemin absolu) ; ni lu ni écrit par le serveur en mode HTTP. */
+  tlsDir: string;
+  /** Binaire openssl lancé par execFile pour générer le certificat (COCKPIT_OPENSSL, chemin absolu). */
+  opensslPath: string;
   version: string;
 }
 
@@ -90,6 +101,52 @@ export function parseAutonomy(value: string | undefined): boolean {
   if (raw === "" || raw === "on") return true;
   if (raw === "off") return false;
   throw new EnvError("COCKPIT_AUTONOMY : valeur refusée (on ou off).");
+}
+
+export type LocalScheme = "https" | "http";
+
+export interface LocalAccess {
+  localScheme: LocalScheme;
+  localHttpConfirmedAt: string | null;
+}
+
+const CONFIRMED_AT = /^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/;
+
+/**
+ * Date de confirmation du mode HTTP : expression stricte, puis aller-retour (Date.parse accepte le 30 février ou le 31 septembre).
+ * Même règle que les scripts PowerShell, vérifiée par tests/vectors/local-access.json.
+ */
+export function isValidConfirmedAt(at: string): boolean {
+  if (!CONFIRMED_AT.test(at)) return false;
+  const date = new Date(at);
+  // Finitude d'abord : toISOString lève RangeError sur une date invalide.
+  return Number.isFinite(date.getTime()) && date.toISOString() === `${at.slice(0, 19)}.000Z`;
+}
+
+/**
+ * Mode d'accès local. Absent, vide ou « https » : HTTPS (date ignorée). « http » : HTTP seulement avec une date valable.
+ * Toute autre valeur refuse le démarrage. Le message nomme la clé sans jamais recopier la valeur lue.
+ */
+export function parseLocalAccess(env: NodeJS.ProcessEnv): LocalAccess {
+  const scheme = (env.COCKPIT_LOCAL_SCHEME ?? "").trim();
+  if (scheme === "" || scheme === "https") return { localScheme: "https", localHttpConfirmedAt: null };
+  if (scheme !== "http") {
+    throw new EnvError("COCKPIT_LOCAL_SCHEME : valeur refusée (https ou http attendu, en minuscules).");
+  }
+  const confirmedAt = (env.COCKPIT_LOCAL_HTTP_CONFIRMED ?? "").trim();
+  if (!isValidConfirmedAt(confirmedAt)) {
+    throw new EnvError(
+      "COCKPIT_LOCAL_HTTP_CONFIRMED : date de confirmation du mode HTTP absente ou invalide (AAAA-MM-JJTHH:MM:SSZ attendue).",
+    );
+  }
+  return { localScheme: "http", localHttpConfirmedAt: confirmedAt };
+}
+
+/** Chemin absolu exigé (vide = valeur par défaut) ; le message ne recopie pas la valeur lue. */
+function absolutePath(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
+  const value = env[key]?.trim() || fallback;
+  if (!path.isAbsolute(value)) throw new EnvError(`${key} : chemin absolu attendu.`);
+  return path.resolve(value);
 }
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength: number): string {
@@ -142,6 +199,9 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     allowedProviders: parseAllowedProviders(env.COCKPIT_ALLOWED_PROVIDERS),
     copilotApiUrl: parseCopilotApiUrl(env.COCKPIT_COPILOT_API_URL, githubEnterpriseDomain),
     autonomy: parseAutonomy(env.COCKPIT_AUTONOMY),
+    ...parseLocalAccess(env),
+    tlsDir: absolutePath(env, "COCKPIT_TLS_DIR", "/tls"),
+    opensslPath: absolutePath(env, "COCKPIT_OPENSSL", "/usr/bin/openssl"),
     version: env.COCKPIT_VERSION?.trim() || "dev",
   };
 }

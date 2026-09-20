@@ -3,8 +3,9 @@
 > État au 15 septembre 2026. Ce document rassemble tout : ce qui a été construit, d'où vient l'interface, où se trouvent les fichiers, comment installer et lancer les scripts au travail, ce qui a été vérifié, corrigé et testé, et ce qui reste à vérifier.
 
 > **Où en est la publication ?**
+> - La **version 1.0.5** est en préparation, **non publiée** : HTTPS local par défaut (certificat auto-signé créé par le cockpit, avertissement du navigateur au premier accès, jamais approuvé dans Windows), mode HTTP local explicite (`install.ps1 -Http`, confirmation tapée, bandeau permanent), vérification du cockpit avant toute ouverture (empreinte du certificat, preuve du jeton, lien de connexion à usage unique), vérification du poste avant de passer en HTTPS, et retour arrière par `cockpit.ps1 rollback` (voir [section 9](#9-ce-qui-a-été-fait-étape-par-étape)).
 > - La **version 1.0.4** est prête localement, **non publiée**. Les demandes facturées sont refusées tant qu'opencode est injoignable, redémarre ou n'a pas vérifié l'adresse de l'API Copilot, y compris au démarrage du cockpit. La correction de l'adresse part dès la fin de la réponse en cours, et les messages de refus sont exacts (voir [section 9](#9-ce-qui-a-été-fait-étape-par-étape)).
-> - La **version 1.0.3** est publiée sur GitHub le 14 septembre 2026 : release, images GHCR et archive hors ligne. **C'est elle qu'on installe au travail.** L'adresse de l'API Copilot y est vérifiée dans l'état réel d'opencode et revérifiée après chaque redémarrage.
+> - La **version 1.0.3** est publiée sur GitHub le 14 septembre 2026 : release, images GHCR et archive hors ligne. **C'est la dernière version publiée, donc celle à installer aujourd'hui**, au travail comme ailleurs. L'adresse de l'API Copilot y est vérifiée dans l'état réel d'opencode et revérifiée après chaque redémarrage.
 > - La **version 1.0.2**, publiée le même jour, applique réellement les profils de permissions, « Revenir au profil Prudent » et le fichier brut de configuration, par un redémarrage d'opencode (défaut présent depuis la 1.0.0).
 > - La **version 1.0.1**, publiée le même jour, apporte le réseau d'entreprise à routage par abonnement Copilot, les IA du compte lues directement chez GitHub et affichées disponibles ou non, l'interface démarrée même sans opencode et `cockpit.ps1 diag`.
 > - La **version 1.0.0**, publiée le même jour, regroupe deux étapes de développement jamais publiées : **0.1.1**, les corrections du 13 septembre, et **0.2.0**, les assistants, les niveaux d'IA et le mode Simple (voir [section 9](#9-ce-qui-a-été-fait-étape-par-étape)). Ces numéros restent cités plus bas pour retracer l'historique.
@@ -52,7 +53,7 @@
 | Archive d'images hors ligne 1.0.0 | `opencode-cockpit-images-1.0.0.tar.gz` et son `.sha256`, dans la release |
 | Images Docker 1.0.0 | `ghcr.io/calgar50/opencode-cockpit-opencode:1.0.0` et `ghcr.io/calgar50/opencode-cockpit-app:1.0.0` |
 | Release 0.1.0 (ancienne, à ne plus installer) | https://github.com/Calgar50/opencode-cockpit/releases/tag/v0.1.0 |
-| Interface une fois installée | http://127.0.0.1:7777 |
+| Interface une fois installée | **https**://127.0.0.1:7777 (avertissement du navigateur au premier accès) ; http://127.0.0.1:7777 si le mode HTTP local a été choisi |
 | CI (tests, build, audit) et release | GitHub Actions, onglet « Actions » du dépôt |
 
 ---
@@ -99,12 +100,15 @@ opencode possède sa propre interface web. Elle n'est **ni utilisée ni exposée
 opencode-cockpit\
 ├─ install.ps1              ← INSTALLATION (à lancer en premier, et pour mettre à jour)
 ├─ cockpit.ps1              ← USAGE QUOTIDIEN (open, restart, logs, backup, restore…)
+├─ CockpitTls.ps1           ← vérification du cockpit et isolation de compose (utilisée par les deux scripts)
 ├─ README.md                ← documentation d'utilisation
 ├─ docs\RECAPITULATIF.md    ← ce document
 ├─ VERSION                  ← numéro de version
 ├─ docker-compose.yml       ← définition des 2 conteneurs (ne pas modifier : tout passe par .env)
 ├─ .env.example             ← modèle de configuration
 ├─ .env                     ← CRÉÉ par install.ps1 : secrets et réglages (jamais versionné, jamais partagé)
+│                             (le certificat HTTPS local, lui, est dans le volume Docker cockpit-tls,
+│                              hors du dossier et hors des sauvegardes)
 ├─ certs\                   ← certificats d'entreprise (windows-trust.pem créé par install.ps1)
 ├─ archives\                ← CRÉÉ : conversations classées en Markdown
 ├─ backups\                 ← CRÉÉ par « cockpit.ps1 backup »
@@ -154,7 +158,7 @@ opencode-cockpit\
    ```
 4. **Si vous avez pris le ZIP**, débloquer les scripts téléchargés :
    ```powershell
-   Unblock-File .\install.ps1, .\cockpit.ps1
+   Unblock-File .\install.ps1, .\cockpit.ps1, .\CockpitTls.ps1
    ```
 5. **Lancer l'installation** en indiquant le dossier qui contient vos projets (voir le choix du dossier juste après) :
    ```powershell
@@ -166,7 +170,11 @@ opencode-cockpit\
      ```
      Si la stratégie est imposée par la DSI, cela peut rester bloqué : demandez l'autorisation.
    - La première construction des images prend quelques minutes.
-6. **Le navigateur s'ouvre, déjà connecté au cockpit.** Si le cockpit ne répond pas dans les 4 minutes, le script affiche un avertissement : consultez `.\cockpit.ps1 logs`, puis lancez `.\cockpit.ps1 open`. Acceptez d'abord les 6 règles d'or de la fenêtre « Avant de commencer » (case « J'ai lu ces règles et je les appliquerai. », puis **Commencer**), puis allez dans **Paramètres › Connexion › Connecter**. Le cockpit affiche un code :
+6. **Le navigateur s'ouvre sur un avertissement de certificat** (« Votre connexion n'est pas privée ») : c'est attendu en HTTPS local. Comparez l'empreinte affichée par le script avec celle du certificat présenté, puis **Avancé › Continuer vers 127.0.0.1 (non sécurisé)**. Vous êtes alors **connecté au cockpit**, sans rien saisir. Si le cockpit ne répond pas dans les 4 minutes, le script affiche un avertissement : consultez `.\cockpit.ps1 logs`, puis lancez `.\cockpit.ps1 open`.
+
+   *Poste où Edge ne propose pas « Continuer » :* le script s'arrête **avant toute modification** et affiche deux issues : demander l'exception `SSLErrorOverrideAllowedForOrigins = https://127.0.0.1:7777` à l'informatique, ou choisir le mode HTTP local (`.\install.ps1 -Http`, confirmation `HTTP EN CLAIR`). Pour le savoir à l'avance, sans rien modifier : `.\install.ps1 -TlsPreflight`.
+
+   Acceptez ensuite les 6 règles d'or de la fenêtre « Avant de commencer » (case « J'ai lu ces règles et je les appliquerai. », puis **Commencer**), puis allez dans **Paramètres › Connexion › Connecter**. Le cockpit affiche un code :
    - cliquez **Copier le code**, puis **Ouvrir GitHub** ;
    - collez le code sur la page GitHub et autorisez l'accès ;
    - revenez au cockpit : la connexion se termine toute seule. Le code expire au bout d'environ 15 minutes.
@@ -198,6 +206,7 @@ Indiquez le dossier **parent** de vos dépôts, par exemple `C:\dev`, qui contie
 | Rien d'autre ne fonctionne pour les certificats | **Dernier recours :** `.\install.ps1 -InsecureTls`. La vérification TLS est désactivée, un bandeau rouge le rappelle, et le réglage est mémorisé. `.\install.ps1 -SecureTls` la réactive. |
 | Chaque demande échoue (`AI_APICallError`, `Unable to connect`, `Forbidden`) et des IA désactivées par l'organisation apparaissent : le pare-feu n'ouvre que l'adresse de l'abonnement Copilot | 1.0.1 : le cockpit prend de lui-même l'adresse que GitHub annonce pour l'abonnement quand l'adresse générale est bloquée. Pour l'imposer : `.\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser` (ou `api.enterprise.githubcopilot.com`). Vérifier : **Diagnostic › Tester la connexion Copilot**. |
 | Démarrage bloqué sur « Starting », journal d'opencode vide | 1.0.1 : `.\cockpit.ps1 diag` (état des conteneurs, accès réseau testés depuis opencode, journal). L'interface démarre même quand opencode ne répond pas. |
+| Edge ne propose pas « Continuer » sur l'avertissement de certificat de `127.0.0.1` | 1.0.5 : demander à l'informatique l'exception Edge `SSLErrorOverrideAllowedForOrigins = https://127.0.0.1:7777`, puis `.\install.ps1`. Sinon : `.\install.ps1 -Http` (mode HTTP local, confirmation demandée, trafic en clair sur ce PC). Pour vérifier avant d'installer, sans rien modifier : `.\install.ps1 -TlsPreflight`. |
 
 **Ajouter un certificat d'entreprise à la main :**
 
@@ -205,7 +214,7 @@ Indiquez le dossier **parent** de vos dépôts, par exemple `C:\dev`, qui contie
 - Un `.cer` binaire se convertit : `certutil -encode .\racine.cer .\certs\racine.pem`.
 - `.\cockpit.ps1 certs` ne réécrit que `certs\windows-trust.pem` : vos fichiers ajoutés sont conservés.
 - **Diagnostic › Réseau et sécurité** affiche le nombre de fichiers de certificats chargés par le conteneur opencode et l'état de la vérification TLS. Le serveur du cockpit (1.0.1) note dans son journal les certificats qu'il charge et ceux qu'il ignore.
-- Ces certificats servent au conteneur opencode, à la construction des images et, depuis la 1.0.1, au serveur du cockpit (liste des IA et solde lus chez GitHub).
+- Ces certificats servent au conteneur opencode, à la construction des images et, depuis la 1.0.1, au serveur du cockpit (liste des IA et solde lus chez GitHub). Ils ne concernent que le trafic **sortant** : ne jamais placer dans `certs\` le certificat ni la clé du cockpit lui-même (ils sont dans le volume `cockpit-tls`, voir [section 8](#8-sécurité)).
 
 ### Mettre à jour
 
@@ -245,24 +254,29 @@ Indiquez le dossier **parent** de vos dépôts, par exemple `C:\dev`, qui contie
 | `-SecureTls` | Réactiver la vérification TLS | — |
 | `-NoStart` | Préparer sans démarrer les conteneurs | — |
 | `-NoBrowser` | Ne pas ouvrir le navigateur à la fin | — |
+| `-TlsPreflight` | Vérifier le poste (stratégie du navigateur, `curl.exe`, voie de vérification) **sans rien modifier** et sans Docker, puis s'arrêter | — |
+| `-AcceptBrowserBlock` | Passer outre la garde du navigateur pour une entrée en HTTPS, quand `edge://policy` montre que la lecture du registre se trompe. Non mémorisé. | — |
+| `-Http` | Mode HTTP local : le cockpit est servi en `http://127.0.0.1:<port>`. Confirmation `HTTP EN CLAIR` demandée, choix mémorisé dans `.env` avec sa date. | — |
+| `-Https` | Retour en HTTPS. Nouveau jeton (l'ancien a circulé en clair), reconnexion nécessaire. | mode par défaut |
 
 **Ce que fait le script, dans l'ordre :**
 
 1. Vérifie que Docker et Docker Compose v2 répondent.
 2. Lit `.env` s'il existe et reprend le mode d'installation mémorisé. Pour un `.env` de la 0.1.0, sans mode : réutilise les images publiées qu'il désigne (mode Load, non mémorisé), sinon `Build`.
-3. Détermine le dossier des projets (paramètre, `.env` ou question), propose de le créer, et demande confirmation s'il est trop large.
-4. Prépare la configuration en mémoire :
-   - port ;
-   - secrets aléatoires de 64 caractères, conservés s'ils existent ;
+3. **Pré-contrôles, avant toute modification** : mode d'accès inscrit dans `.env`, images du mode Load, et garde du navigateur pour une entrée en HTTPS (installation neuve, passage depuis une version antérieure à la 1.0.5, `-Https`). Tout ce qui bloque est affiché en **un seul message**, suivi d'un seul arrêt : `.env`, images et conteneurs sont alors inchangés. Puis, avec `-Http`, la confirmation `HTTP EN CLAIR`.
+4. Détermine le dossier des projets (paramètre, `.env` ou question), propose de le créer, et demande confirmation s'il est trop large.
+5. Prépare la configuration en mémoire :
+   - port, mode d'accès et date de confirmation du mode HTTP ;
+   - secrets aléatoires de 64 caractères, conservés s'ils existent. Le jeton est **remplacé** à la sortie du mode HTTP local, au passage depuis une version antérieure à la 1.0.5, et s'il n'a pas le format généré ;
    - proxy, TLS, fuseau horaire.
-5. Exporte les autorités de certification de confiance de Windows (hors certificats expirés) vers `certs\windows-trust.pem`, sauf avec `-SkipCertificates`.
-6. Crée `archives\`. En mode Load avec archive, charge les images (`docker load`).
-7. Écrit `.env` et restreint ses droits à votre compte Windows. Si le script s'arrête avant cette étape, `.env` n'est ni créé ni modifié.
-8. Construit (Build) ou télécharge (Pull) les images. En cas d'échec, `.env` retrouve les images précédentes, pour que `start` et `restart` continuent de fonctionner.
-9. Sauf avec `-NoStart` : donne les volumes Docker à l'utilisateur des conteneurs, puis démarre.
-10. Attend que le cockpit réponde (jusqu'à 4 minutes). S'il répond, ouvre `http://127.0.0.1:<port>` déjà connecté (port de `-Port` ou de `COCKPIT_PORT`, `7777` par défaut ; rien ne s'ouvre avec `-NoBrowser`). Sinon, affiche un avertissement qui renvoie vers `.\cockpit.ps1 logs`, puis s'arrête : lancez `.\cockpit.ps1 open` une fois le cockpit prêt.
+6. Exporte les autorités de certification de confiance de Windows (hors certificats expirés) vers `certs\windows-trust.pem`, sauf avec `-SkipCertificates`.
+7. Crée `archives\`. En mode Load avec archive, charge les images (`docker load`).
+8. Écrit `.env` et restreint ses droits à votre compte Windows. Si le script s'arrête avant cette étape, `.env` n'est ni créé ni modifié.
+9. Construit (Build) ou télécharge (Pull) les images. En cas d'échec, `.env` retrouve les images précédentes, pour que `start` et `restart` continuent de fonctionner.
+10. Sauf avec `-NoStart` : donne les volumes Docker à l'utilisateur des conteneurs, prépare aussi le volume `cockpit-tls` du certificat local, puis démarre.
+11. Attend que le cockpit réponde avec le mode attendu et la preuve du jeton — et, en HTTPS, l'empreinte du certificat épinglée — jusqu'à 4 minutes. S'il répond, affiche l'empreinte et ouvre `https://127.0.0.1:<port>` (ou `http://…` en mode HTTP local) avec un **lien de connexion à usage unique** (port de `-Port` ou de `COCKPIT_PORT`, `7777` par défaut ; rien ne s'ouvre avec `-NoBrowser`). Sinon, affiche un avertissement qui renvoie vers `.\cockpit.ps1 logs`, puis s'arrête : lancez `.\cockpit.ps1 open` une fois le cockpit prêt.
 
-Relancer `install.ps1` est sans danger : secrets, réglages et mode d'installation sont conservés.
+Relancer `install.ps1` est sans danger : secrets, réglages, mode d'installation et mode d'accès sont conservés. Le passage depuis une version antérieure à la 1.0.5 affiche un bloc qui rappelle la nouvelle adresse, le nouveau jeton et le retour arrière possible — même avec `-NoBrowser`.
 
 ### `cockpit.ps1`
 
@@ -270,18 +284,21 @@ Toujours lancé depuis le dossier du projet : `.\cockpit.ps1 <commande>`.
 
 | Commande | Effet |
 |---|---|
-| `open` | Ouvre l'interface déjà connectée (utile si l'interface demande un jeton) |
-| `start` | Démarre les conteneurs (applique aussi une modification de `.env`) |
+| `open` | Vérifie le cockpit (empreinte du certificat en HTTPS, preuve du jeton dans les deux modes), puis ouvre l'interface déjà connectée. **Aucune page n'est ouverte si la vérification échoue.** |
+| `start` | Démarre les conteneurs (applique aussi une modification de `.env`). Refuse un mode d'accès invalide dans `.env`. |
 | `stop` | Arrête les conteneurs |
-| `restart` | **Recrée** les conteneurs : relit `.env`, et `certs\` pour opencode |
-| `status` | État des conteneurs et du cockpit |
+| `restart` | **Recrée** les conteneurs : relit `.env`, et `certs\` pour opencode. Garde le certificat HTTPS local, et applique `.env` seul : les variables du shell et un fichier `docker-compose.override.yml` sont ignorés. |
+| `status` | État des conteneurs et du cockpit, mode d'accès, empreinte du certificat et jours restants avant son échéance |
 | `logs` | Journaux en direct. `logs opencode` montre le journal complet d'opencode (superviseur et serveur) ; `logs cockpit` celui du cockpit. |
-| `certs` | Réexporte les certificats Windows, puis recrée les conteneurs |
-| `update` | `git pull`, puis `install.ps1` dans le mode mémorisé. Dossier sans git : avertissement seulement. |
+| `certs` | Réexporte les certificats Windows, puis recrée les conteneurs. Ne touche pas au certificat HTTPS du cockpit. |
+| `tls` | Certificat HTTPS local servi (empreinte SHA-256, dates, noms couverts) et stratégie du navigateur. En mode HTTP local : rappelle qu'aucun certificat n'est servi. |
+| `tls -Renew` | Après avoir tapé `RENOUVELER` : efface la clé et le certificat local, puis le cockpit crée une nouvelle paire à son redémarrage. Nouvelle empreinte, donc nouvel avertissement du navigateur. Le fichier d'informations publié (`cockpit-tls.json`, sans secret) reste : `tls` et la page Diagnostic affichent l'empreinte précédente. |
+| `update` | `git pull`, puis `install.ps1` dans le mode mémorisé (le mode d'accès est repris tel quel). Dossier sans git : avertissement seulement. |
+| `rollback` | Revient à la version précédente, après avoir tapé `REVENIR`. Conditions : dépôt git propre, aucun commit local non publié, étiquette de la version cible présente. Remet dans `.env` les images, le mode d'installation et la version mémorisés, repositionne la branche sur l'étiquette sans jamais écraser un fichier, puis relance l'`install.ps1` de cette version. Sans git : affiche la marche à suivre. Retour limité aux scripts si les conteneurs sont restés dans l'ancienne version. |
 | `backup` | Sauvegarde dans `backups\cockpit-AAAAMMJJ-HHMMSS.tar.gz` (détail ci-dessous) |
 | `restore <fichier>` | Restaure une sauvegarde (détail ci-dessous) |
 | `uninstall` | Supprime les conteneurs ; les données restent dans les volumes Docker |
-| `uninstall -Purge` | Après avoir tapé `SUPPRIMER` : supprime aussi les volumes, les images désignées dans `.env` (construites, téléchargées ou chargées) et les images construites sur ce poste. Les images de versions précédentes restent (`docker image ls`, puis `docker image rm`). `archives\`, `backups\`, `certs\` et `.env` sont conservés. |
+| `uninstall -Purge` | Après avoir tapé `SUPPRIMER` : supprime aussi les volumes — dont `cockpit-tls`, le certificat HTTPS local, d'où un nouvel avertissement du navigateur à la réinstallation —, les images désignées dans `.env` (construites, téléchargées ou chargées) et les images construites sur ce poste. Les images de versions précédentes restent (`docker image ls`, puis `docker image rm`). `archives\`, `backups\`, `certs\` et `.env` sont conservés. |
 | `help` | Aide |
 
 ### Sauvegarder et restaurer
@@ -295,6 +312,7 @@ Toujours lancé depuis le dossier du projet : `.\cockpit.ps1 <commande>`.
 | Volume `oc-data` : données d'opencode (sessions) | oui, **sans `auth.json`** (jeton GitHub Copilot) |
 | Dossier `archives\` (exports Markdown) | oui |
 | `.env`, `certs\` | non |
+| Volume `cockpit-tls` (certificat HTTPS local et sa clé) | non |
 
 **`restore <fichier>`**, par exemple `.\cockpit.ps1 restore .\backups\cockpit-20260913-180000.tar.gz` :
 
@@ -482,8 +500,8 @@ Ce qui suit est dans le code du chantier 1.1, pas dans une version publiée. L'u
 
 ```mermaid
 flowchart LR
-  B[Navigateur<br/>interface React] -- "127.0.0.1:7777<br/>/api, /api/oc/*, /api/events" --> C[Conteneur cockpit<br/>Node 24 · Hono · SQLite]
-  C -- "réseau Docker interne<br/>API HTTP + flux d'événements" --> O[Conteneur opencode<br/>1.18.30 + superviseur]
+  B[Navigateur<br/>interface React] -- "HTTPS 127.0.0.1:7777 (HTTP local si choisi)<br/>/api, /api/oc/*, /api/events" --> C[Conteneur cockpit<br/>Node 24 · Hono · SQLite]
+  C -- "réseau Docker interne, HTTP<br/>API + flux d'événements" --> O[Conteneur opencode<br/>1.18.30 + superviseur]
   O -- "HTTPS via proxy<br/>+ certificats d'entreprise" --> G[(GitHub Copilot)]
   O -. "/workspace" .- W[(Vos projets)]
   C -. "Markdown" .- A[(archives\)]
@@ -585,15 +603,18 @@ Catégories par défaut, toutes modifiables : Débogage, Fonctionnalité, Refact
 ### Réglages par défaut
 
 - **Exposition réseau :**
-  - interface publiée **uniquement** sur `127.0.0.1` ;
+  - interface publiée **uniquement** sur `127.0.0.1`, en HTTPS (certificat auto-signé local, créé par le cockpit au premier démarrage et rangé dans un volume réservé) ou en HTTP local, si ce mode a été choisi à l'installation ;
   - opencode n'a **aucun** port publié et exige un mot de passe aléatoire.
 - **Accès à l'interface :**
-  - jeton de 256 bits ; le cookie de session (`HttpOnly`, `Secure`, `SameSite=Strict`) porte sa date d'émission et une signature calculée avec un secret aléatoire du serveur. L'expiration de 30 jours est vérifiée par le serveur, et la déconnexion change ce secret : toutes les sessions ouvertes sont révoquées. Après la mise à jour depuis la 0.1.0, il faut se reconnecter une fois (`.\cockpit.ps1 open`) ;
+  - jeton de 256 bits ; le cookie de session `__Host-cockpit_session` (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, sans `Domain`) porte sa date d'émission et une signature calculée avec un secret aléatoire du serveur. L'expiration de 30 jours est vérifiée par le serveur, et la déconnexion change ce secret : toutes les sessions ouvertes sont révoquées. Après la mise à jour vers la 1.0.5, le jeton est remplacé et il faut se reconnecter une fois (`.\cockpit.ps1 open`) ; c'était déjà le cas après la mise à jour depuis la 0.1.0 ;
   - 20 jetons erronés en 5 minutes bloquent temporairement la connexion ;
   - contrôle de l'en-tête `Host` (anti DNS rebinding) ;
-  - en-tête anti-CSRF obligatoire et vérification de l'origine ;
+  - en-tête anti-CSRF obligatoire et vérification de l'origine (schéma servi et hôte) ;
   - CSP stricte, aucun script en ligne ;
-  - le lien de connexion `/auth` refuse les requêtes émises par une autre page.
+  - le lien de connexion `/auth` refuse les requêtes émises par une autre page, y compris après l'avertissement de certificat (Edge et Chrome 153 envoient alors `Sec-Fetch-Site: none`, mesuré). C'est un **lien à usage unique**, valable 10 minutes, qui ne contient jamais le jeton permanent. En mode HTTP local, la connexion par saisie du jeton est refusée par le serveur, et l'écran de connexion ne propose pas de champ.
+- **Certificat HTTPS local :** créé par le cockpit au premier démarrage (ECDSA P-256, 397 jours, renouvelé au démarrage moins de 30 jours avant son échéance, jamais en cours d'utilisation). La clé est écrite dans le volume `cockpit-tls`, monté **seulement** dans le conteneur du cockpit, avec des droits réservés à l'utilisateur du serveur ; elle n'entre ni dans les images, ni dans le contexte de construction, ni dans les sauvegardes, ni dans les journaux, ni dans l'API. Le certificat n'est **jamais** ajouté au magasin de Windows : l'avertissement du navigateur est le prix de ce choix, et il se lève en comparant l'empreinte affichée par `.\cockpit.ps1 tls`.
+- **Mode HTTP local, si vous l'avez choisi** (`install.ps1 -Http`, confirmation `HTTP EN CLAIR`) : le cookie de session et tout le contenu des pages circulent **en clair** entre le navigateur et le cockpit, sur ce PC. Peuvent le lire : les outils de sécurité du poste qui inspectent le trafic (EDR, DLP, protection web), qui peuvent enregistrer les adresses complètes et les cookies ; un programme lancé avec les droits administrateur ; tout compte capable de piloter Docker Desktop, puisque le trafic traverse la machine virtuelle et le réseau de Docker — ce compte peut de toute façon lire le jeton dans le conteneur, dans les deux modes. Ne change pas : écoute limitée à `127.0.0.1`, jeton de 256 bits, cookie `__Host-`, contrôles d'hôte et d'origine, CSP, et chiffrement du trafic vers GitHub Copilot. Le mode est visible en permanence (bandeau de l'interface, carte Diagnostic, messages des scripts) et n'est jamais choisi automatiquement.
+- **Limite commune aux deux modes :** les cookies n'isolent pas les ports. Un autre serveur local ouvert en `http://127.0.0.1:<autre port>` pendant une session reçoit le cookie du cockpit. C'était déjà vrai avant la 1.0.5.
 - **Proxy vers opencode :**
   - **liste blanche minimale** : seules les routes utilisées par l'interface sont relayées. Partage public, mise à jour à distance, injection d'identifiants, terminal, exécution shell directe et routes de lecture de fichiers (`/file*`) ne sont pas relayés ;
   - les dossiers transmis (`directory`) sont bornés au workspace ;
@@ -628,7 +649,7 @@ Catégories par défaut, toutes modifiables : Débogage, Fonctionnalité, Refact
   - réponses de l'API servies avec une CSP « sandbox » et un type de contenu limité à JSON ou au flux d'événements.
 - **Écritures de configuration vérifiées :** le serveur refuse un modèle de classement, un modèle par défaut, un modèle d'agent ou une liste `enabled_providers` qui sortiraient de `COCKPIT_ALLOWED_PROVIDERS`. Appliquer un profil de permissions retire les clés `permission` en double, redémarre opencode pour appliquer le fichier (1.0.2), puis relit la configuration pour vérifier que les règles ont vraiment été appliquées. Si opencode ne repart pas ou refuse le fichier, la version précédente est remise.
 - **Emplacement du cockpit :** `install.ps1` et `cockpit.ps1` refusent que le dossier du cockpit et le dossier des projets se contiennent l'un l'autre, car l'agent pourrait sinon réécrire les scripts lancés sous Windows.
-- **Images :** le paquet opencode de la plateforme est téléchargé puis vérifié par une empreinte SHA-512 épinglée, sans script d'installation lancé en root ; aucun argument de proxy n'est déclaré dans les Dockerfile, et les certificats d'entreprise sont montés pendant la construction au lieu d'être copiés, donc aucun identifiant ne reste dans l'historique des images.
+- **Images :** le paquet opencode de la plateforme est téléchargé puis vérifié par une empreinte SHA-512 épinglée, sans script d'installation lancé en root ; aucun argument de proxy n'est déclaré dans les Dockerfile. Depuis la 1.0.5, les certificats d'entreprise sont montés pendant la construction (`RUN --mount`) au lieu d'être copiés dans **les deux** images, et un `.dockerignore` tient les clés et `.env` hors du contexte de construction : aucun identifiant ni aucune clé ne reste dans l'historique des images.
   - Markdown nettoyé (DOMPurify).
 - **Chaîne d'approvisionnement :** versions épinglées, image de base épinglée par empreinte, GitHub Actions épinglées par SHA, `npm audit` en CI.
 
@@ -905,6 +926,35 @@ Ce que l'autonomie contrôlée change pour la sécurité. Les tests et mesures q
     - **Adresse fausse pendant une réponse en cours.** Écrire la correction tout de suite couperait cette réponse. Les autres demandes sont donc refusées (« L'adresse de l'API Copilot sera corrigée dès la fin de la réponse en cours : réessayez une fois cette réponse terminée »), et la correction part **dès la fin de la réponse**, signalée par opencode. Le déblocage forcé à 90 s ne s'applique jamais à la synchronisation qui corrige.
     - **Messages de refus selon la cause** : vérification de l'adresse, reconnexion, correction différée ou redémarrage réel.
     - **Écriture incertaine.** Un réglage avancé ou une libération du Studio en erreur, ou hors délai, déclenche une revérification.
+24. **1.0.5 : HTTPS local et mode HTTP explicite.** Jusqu'à la 1.0.4, l'interface était servie en clair sur la boucle locale et le jeton permanent partait dans le lien d'ouverture. La 1.0.5 sert le cockpit en HTTPS par défaut, avec un certificat auto-signé créé sur le poste, et garde un mode HTTP local pour les postes où le navigateur interdit l'avertissement de certificat.
+    - **Mesures faites avant d'écrire le code**, sur des bancs jetables supprimés ensuite :
+      - un seul point d'écoute est servi à la fois : HTTPS **ou** HTTP, jamais les deux, jamais de redirection ni de repli automatique ;
+      - le certificat est produit par le paquet Debian `openssl` ajouté à l'image, appelé par chemin absolu, et non par du code de cryptographie écrit pour l'occasion : l'hypothèse de départ (Node suffirait seul) s'est révélée fausse ;
+      - remplacer le certificat pendant que le cockpit tourne coupe le flux d'événements de l'interface : le renouvellement n'a donc lieu qu'au démarrage ;
+      - le cookie `__Host-cockpit_session` est accepté par Edge et par Chrome 153 sur `http://127.0.0.1` : le même nom de cookie sert dans les deux modes ;
+      - en Windows PowerShell 5.1, `curl.exe` sait épingler un certificat, et le HMAC-SHA256 calculé par PowerShell est identique à celui de Node : c'est ce qui permet au script de faire prouver au serveur qu'il connaît le jeton avant d'ouvrir la moindre page. Une ligne d'erreur d'un programme appelé directement interrompt le script : `curl` et `git` sont donc lancés comme des processus, sorties séparées et délai borné ;
+      - `docker compose` fait passer les variables du shell avant `.env` et charge un `docker-compose.override.yml` voisin : toutes les commandes docker des scripts masquent ces variables et désignent le fichier `docker-compose.yml` explicitement, pour que le mode servi soit toujours celui de `.env` ;
+      - `git checkout -B` peut écraser sans prévenir un fichier ignoré par la version en place : le retour arrière emploie `--no-overwrite-ignore` et refuse plutôt que d'écraser ;
+      - Node et PowerShell n'acceptent pas les mêmes dates (Node accepte un 30 février) : la date de confirmation du mode HTTP est validée des deux côtés par la même règle, vérifiée par un fichier de vecteurs commun aux tests Node et PowerShell.
+    - **Décisions prises le 15 septembre 2026 :** HTTPS par défaut ; mode HTTP local gardé, mais explicite (paramètre dédié, confirmation tapée, bandeau permanent, jamais de bascule automatique) ; publication prévue même si le poste géré du travail bloque le HTTPS ; voie de secours compilée par PowerShell réservée au cas où `curl.exe` manque ; retour arrière qui repositionne la copie git après la saisie de `REVENIR`, et seulement si le dossier est propre ; port `7777` et exception de navigateur la plus étroite possible ; certificat de 397 jours renouvelé 30 jours avant son échéance ; lien de connexion à usage unique, pour que le jeton permanent ne circule plus dans aucune adresse.
+    - **Écarts avec la spécification d'origine :** le certificat issu d'une autorité interne d'entreprise est reporté hors de la 1.0.5 ; `thisisunsafe` et l'import du certificat dans le magasin de Windows ne sont pas pris en charge ; `/auth?t=<jeton>` est remplacé par le lien à usage unique ; `/api/health` renvoie désormais le mode servi et la preuve du jeton.
+    - **Répétition générale et revue de sécurité (17 septembre 2026) : 32 contrôles OK sur 34.** Sur ce PC, avec des piles Docker jetables, un dépôt git synthétique, et Edge et Chrome réels :
+      - installations neuves en HTTPS et en HTTP ;
+      - passage en HTTP refusé sans la saisie exacte, puis accepté ; retour en HTTPS avec un nouveau jeton, l'ancien étant refusé ;
+      - mise à jour depuis la 1.0.4 arrêtée par la garde Edge, puis réussie ; retour arrière refusé dans quatre situations, puis réussi ;
+      - poste verrouillé simulé, isolation de `docker compose`, sauvegarde sans clé ni secret, aucun secret dans les journaux ;
+      - trafic capturé par un conteneur en réseau hôte : en HTTP, le contenu de la page et le nom du cookie sont lisibles (10 et 12 occurrences sur 5 requêtes) ; en HTTPS, aucune occurrence sur 907 lignes capturées.
+
+      **Les 2 écarts, corrigés ensuite** : l'étape 12 du test de fumée signalait les clés d'auto-test FIPS du paquet Debian `libgnutls30`, présentes dans l'image de base (elle n'examine plus que les couches ajoutées) ; `tls -Renew` effaçait le certificat et `cockpit-tls.json`, et le serveur ne pouvait plus annoncer l'empreinte précédente (le JSON est désormais gardé). **Corrigés aussi** : l'étape 13 ne chargeait pas l'image avec le constructeur de GitHub Actions, et au premier lancement la fenêtre des règles recouvrait le bandeau du mode HTTP. **Revue de sécurité** : aucun secret dans le diff ni dans les 17 commits, aucune régression depuis la 1.0.0 ; `.dockerignore` étendu aux `.env` des sous-dossiers ; `diag` ne compile plus rien quand `curl.exe` manque. La répétition complète n'a pas été rejouée après ces corrections.
+
+25. **Chantier 1.1 (non publié) : banc e2e en HTTPS épinglé (R105b), écart D-05 levé.** Le banc de bout en bout du chantier (`scripts/run-e2e.sh`, piles Docker jetables, faux opencode, Edge ou Chromium piloté) tournait, depuis l'intégration de la 1.0.5, dans le mode HTTP explicite de la 1.0.5 : c'était l'écart D-05 à la spécification, qui demande un banc en HTTPS épinglé, jamais `-k`. Il sert désormais en HTTPS, comme une installation 1.0.5, et s'y connecte comme `.\cockpit.ps1 open` :
+    - **certificat lu sur le volume** `cockpit-tls` de la pile jetable (fichiers publics seulement, jamais la clé), contre-vérifié (un seul certificat, empreintes recalculées, clé P-256, adresse `127.0.0.1` couverte, dates) ;
+    - **épinglage** : ce certificat seul pour autorité, vérification TLS complète, empreinte et clé publique comparées à chaque connexion ; le navigateur n'accepte que cette clé publique (`--ignore-certificate-errors-spki-list`). Jamais `-k`, `NODE_TLS_REJECT_UNAUTHORIZED=0` ni `--ignore-certificate-errors` ;
+    - **contre-épreuves à chaque exécution** : une autre empreinte et le magasin d'autorités par défaut doivent être refusés, sinon le banc s'arrête. Vérifié : lancé avec `NODE_TLS_REJECT_UNAUTHORIZED=0`, il refuse (code 1) et démonte sa pile ;
+    - connexion par ticket à usage unique, comme avant ; **`--http`** garde le mode HTTP explicite de la 1.0.5 ;
+    - variables `COCKPIT_*` et `E2E_*` du shell retirées de l'environnement de `docker compose` : le fichier du banc l'emporte toujours ;
+    - scénario de fumée étendu : schéma servi, empreinte du Diagnostic égale à celle épinglée, page en contexte sûr, trame `hello` du flux d'événements reçue par la page ;
+    - **M25 (flux d'événements) remesurée**, Edge 153 et Chrome 153, sous la CSP réelle, 4 passages : **0 violation CSP** sur 24 parcours (HTTPS épinglé, HTTPS avec l'avertissement accepté à la main, HTTP explicite) ; reconnexion seule après un redémarrage du conteneur (24 sur 24 ; en HTTPS épinglé, 2,3 à 2,5 s après la commande, une seule nouvelle requête, même certificat) et après un arrêt de 10 s (12 sur 12 ; 3 tentatives refusées pendant l'arrêt, puis reconnexion 0,9 à 1,2 s après la relance) ; flux conservé à une coupure réseau de 3 s ; sans épinglage, ou épinglé sur une autre clé, la page n'est pas servie (« Erreur de confidentialité »). Un défaut de l'interface, sans lien avec le HTTPS, a été vu pendant ces mesures : voir [section 11](#11-limites-et-points-à-vérifier).
 
 ### Chantier 1.1 : itération 1 (non publiée)
 
@@ -947,6 +997,12 @@ L'itération 2, « autonomie contrôlée », donne à une conversation le droit 
 
 | Validation | Version | Résultat |
 |---|---|---|
+| Banc e2e en HTTPS épinglé (R105b, écart D-05 levé) | 1.1 (chantier) | Gardes du banc (`--gardes`) : **47**, aucune tombée (30 avant R105b). Banc complet contre le faux opencode : HTTPS épinglé **1 scénario, 0 échec** (fumée 1,8 s, exécution 14 s, images en cache) ; `--http` **1 scénario, 0 échec** (fumée 1,5 s, exécution 15 s). Banc lancé avec `NODE_TLS_REJECT_UNAUTHORIZED=0` : refusé par la contre-épreuve (code 1). `npm test` : **760 tests, 758 réussis, 0 échec, 2 sautés** (droits POSIX sous Windows), deux passages ; vérification des types : 0 erreur ; build : 162 modules. M25 : voir l'étape 25 de l'historique. |
+| Tests automatisés (`npm test`) | 1.0.5 | **355 / 355** (52 suites) sous Linux avec `openssl` obligatoire, comme le job CI, aucun cas sauté. Sous Windows : **319 / 321**, 0 échec, 2 cas sautés (droits POSIX), et les suites `openssl` sautées. Cas ajoutés : un seul mode servi et jamais de repli automatique ; lecture stricte du mode et de la date de confirmation, par vecteurs communs aux tests Node et PowerShell ; certificat créé, vérifié, renouvelé et jamais changé en cours d'exécution ; droits du volume du certificat ; cookie `__Host-` et effacement de l'ancien cookie ; contrôle d'origine et d'hôte dans les deux modes ; preuve du jeton et lien de connexion à usage unique (expiration, réutilisation, lien d'une ancienne version) ; connexion par saisie du jeton refusée en mode HTTP local ; contrôle de santé de Docker insensible aux variables de proxy et à `NODE_TLS_REJECT_UNAUTHORIZED` ; journal sans adresse, message ni contenu de certificat. |
+| Vérification de types TypeScript, build de l'interface | 1.0.5 | 0 erreur, build réussi (147 modules) |
+| Test de fumée des images (deux modes) | 1.0.5 | **14 étapes, 114 contrôles, 0 échec**, sur Docker Desktop 29.8, deux fois : avec le constructeur par défaut, puis avec un constructeur `docker-container` comme celui de GitHub Actions, qui a aussi construit l'image. Contrôles : certificat et droits, épinglage par `curl`, preuve du jeton, `POST /api/login` refusé en mode HTTP local, volume du certificat ni lu ni écrit dans ce mode, `tls -Renew` avec l'empreinte précédente, aucun bloc de clé privée dans les couches ajoutées à l'image de base, contexte de construction propre (`.env` de la racine et des sous-dossiers compris). Détection vérifiée sur une image piégée, avec un faux bloc de clé privée dans une couche ajoutée : couche signalée, fichier nommé, test en échec. Les jobs GitHub n'ont pas encore tourné. |
+| Tests PowerShell 5.1 (job Windows de la CI) | 1.0.5 | Sur ce PC : `Test-CockpitTls` **381** vérifications, `Test-Install` **161**, `Test-Cockpit` **113**, 0 échec ; `Validate-Scripts` conforme (auto-test de 52 cas) ; 0 erreur du parseur. Le job Windows de GitHub n'a pas encore tourné. Couverture : scripts en ASCII avec BOM et analysés par le parseur de PowerShell 5.1, règles statiques (paramètres exacts, confirmations en liste fermée, isolation de `docker compose`, appels natifs par processus), vecteurs communs, aucune page ouverte sans vérification réussie, retour arrière sans écrasement de fichier. |
+| Répétition générale 1.0.5 (deux modes, bascule, mise à jour depuis la 1.0.4, retour arrière, capture du trafic local) | 1.0.5 | **32 contrôles OK sur 34** (détail à l'étape 24 de l'historique). Les 2 écarts (faux positif de l'étape 12 du test de fumée, empreinte précédente perdue par `tls -Renew`) sont corrigés et vérifiés par le test de fumée et les tests ; la répétition complète n'a pas été rejouée. |
 | Tests automatisés (`npm test`) | 1.0.4 | **234 / 234** (32 suites). Cas couverts : coupure du flux au-delà de 90 s (aucun déblocage forcé, un seul avertissement, levée par la reconnexion) ; démarrage avec ou sans adresse imposée, opencode injoignable au démarrage, écriture pendant la première lecture de la liste des IA ; correction différée (épisode ouvert, fin de réponse par `session.idle` et par `session.status`, rafale de 50 événements donnant 2 synchronisations, deux conversations, déblocage forcé compté depuis la première détection, synchronisation qui démarre après 90 s sans déblocage ni fenêtre sans garde, tentative planifiée avant l'échéance, épisode expiré) ; messages de refus selon la cause, vérifiés à travers le vrai proxy ; écriture incertaine du réglage avancé et du Studio. **81 mutations** volontaires : 80 détectées, 1 équivalente. |
 | Vérification de types TypeScript, build de l'interface | 1.0.4 | 0 erreur |
 | Répétitions générales sur une pile Docker jetable : opencode 1.18.30 réel, cockpit 1.0.4, proxy de test (jeton factice) | 1.0.4 | **N° 1 (passe 1).** opencode arrêté 108 s : 21 demandes sur 21 refusées (« reconnexion »), y compris après 90 s, puis admission après la revérification, vers Business. Messages exacts pendant l'écriture de la synchronisation. Écart : la correction différée ne partait qu'après le déblocage forcé (corrigé en passe 2). **N° 2 (passe 2).** Écart : quand opencode était arrêté plus de 90 s au démarrage du cockpit, la première demande partait vers l'adresse d'office (corrigé). **N° 3 (version finale, deux passages) : aucune demande vers l'adresse d'office.** Adresse fausse pendant une réponse en tentatives : l'autre conversation est refusée 35 fois (texte exact), la correction est écrite 20 ms après la fin de la réponse, puis la demande est admise 2,9 s plus tard, vers Business, sans déblocage forcé. Démarrage : refus jusqu'à la première synchronisation ; opencode arrêté 100 s au démarrage : 100 refus sur 100, aucun déblocage forcé, puis admission vers Business. Clic « Redémarrer opencode » pendant une lecture lente de la liste des IA : 107 refus « vérification », aucune admission avant la synchronisation. Aucun secret dans les journaux ; piles de test supprimées. |
@@ -1008,7 +1064,7 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 | Cockpit réel sur un faux fournisseur (MX1, M-B1) | Possible sans toucher au code : `COCKPIT_ALLOWED_PROVIDERS` limité au faux, adresse Copilot vide, aucun jeton. Le verrou « Copilot seul » tient : autre fournisseur refusé (403), IA hors catalogue refusée (409), faux refusé dans le réglage par défaut ; une adresse Copilot non officielle empêche le cockpit de démarrer. D'où le mode `--reel-hors-ligne` du banc e2e. |
 | Base de données (migration 5) | Une base passée en version 5 reste lisible par les 1.0.2 à 1.0.4 : les tests rejouent sur une base v5 les requêtes SQL relevées dans leur code. La 1.0.5 sera ajoutée à son intégration. |
 | e2e par l'API (`scripts/run-e2e.sh`, 19 septembre, cockpit en HTTP) | 6 scénarios `it1-api-*` : plancher exact à la création, relu et après un tour ; fichier `.pfx` refusé sans demande à un travail délégué `explore` ; « Arrêter » (demande en attente refusée, conversation arrêtée la première, plus aucune session occupée, « une fois » tardif refusé) ; titre et archive intacts sous le plancher ; Plan d'abord (plancher exact, outils retirés à la conversation et à son travail délégué). Chaque scénario vérifie qu'opencode n'est jamais libéré, et, en `--faux`, qu'aucune configuration n'est écrite et qu'aucune réponse autre que « une fois » ou « refuser » ne part. **`--faux` : 6 sur 6**, deux passages. **`--reel-hors-ligne` : 6 sur 6**, deux passages ; les parties qui demandent un appel d'outil (lecture du `.pfx`, délégation, arbre occupé pour « Arrêter ») y sont annoncées « non joué », le faux fournisseur ne rendant que du texte. Outils envoyés à l'IA sous chaque plancher : exactement ceux de M2. **12 mutations** des gardes, 12 détectées par le bon scénario. Piles supprimées, aucun secret dans les journaux. |
-| e2e de l'interface (`scripts/run-e2e.sh`, 19 septembre, cockpit en HTTP) | 8 scénarios `it1-ui-*`, joués dans la vraie page au clic et au clavier : délégation en mode Avancé (carte « Détails de la délégation », « Autoriser une fois » cliqué, faisceau rose puis bleu dans l'ordre des faits ; vérifiée sur le faux opencode par `it1-ui-delegation`, et sur opencode 1.18.30 réel hors ligne seulement avec un fournisseur scripté hors dépôt, voir la ligne « Clôture de l'itération 1 » : le faux fournisseur du dépôt ne délègue pas) ; « Arrêter » visible pendant le travail délégué, qui arrête tout l'arbre (consigne figée en gris) ; démonstration en Simple et en Avancé sans aucune requête de la page ni d'opencode ; raccourci délégué dit « lancé sans confirmation » ; M25 en HTTP (CSP réelle, flux d'événements, transitions de 900 ms jouées une fois, aucune violation) ; sélecteur « Autonomie » au clavier seul ; répétition de M1 sans IA réelle. Captures à 1440, 1024 et 400 px dans les deux thèmes, console muette. **`--faux` : 15 scénarios sur 15** (avec `000-smoke` et les `it1-api-*`) ; **`--reel-hors-ligne` : 14 sur 14**, les parties qui demandent une délégation y étant annoncées « non joué ». **17 mutations** des vérifications, 17 concluantes. Après la relecture de la vague 5, chaque scénario `it1-ui-*` qui agit sur opencode tourne sous le témoin P6 et P4 (opencode jamais libéré ni reconfiguré, seulement « une fois » ou « refuser » envoyés) : rejoués, `--faux` 8 sur 8 et `--reel-hors-ligne` 8 sur 8. |
+| e2e de l'interface (`scripts/run-e2e.sh`, 19 septembre, cockpit en HTTP) | 8 scénarios `it1-ui-*`, joués dans la vraie page au clic et au clavier : délégation en mode Avancé (carte « Détails de la délégation », « Autoriser une fois » cliqué, faisceau rose puis bleu dans l'ordre des faits ; vérifiée sur le faux opencode par `it1-ui-delegation`, et sur opencode 1.18.30 réel hors ligne seulement avec un fournisseur scripté hors dépôt, voir la ligne « Clôture de l'itération 1 » : le faux fournisseur du dépôt ne délègue pas) ; « Arrêter » visible pendant le travail délégué, qui arrête tout l'arbre (consigne figée en gris) ; démonstration en Simple et en Avancé sans aucune requête de la page ni d'opencode ; raccourci délégué dit « lancé sans confirmation » ; M25 en HTTP (CSP réelle, flux d'événements, transitions de 900 ms jouées une fois, aucune violation) ; sélecteur « Autonomie » au clavier seul ; répétition de M1 sans IA réelle. Captures à 1440, 1024 et 400 px dans les deux thèmes, console muette. **`--faux` : 15 scénarios sur 15** (avec `000-smoke` et les `it1-api-*`) ; **`--reel-hors-ligne` : 14 sur 14**, les parties qui demandent une délégation y étant annoncées « non joué ». **17 mutations** des vérifications, 17 concluantes. Après la relecture de la vague 5, chaque scénario `it1-ui-*` qui agit sur opencode tourne sous le témoin P6 et P4 (opencode jamais libéré ni reconfiguré, seulement « une fois » ou « refuser » envoyés) : rejoués, `--faux` 8 sur 8 et `--reel-hors-ligne` 8 sur 8. **À l'intégration de la 1.0.5 (banc en HTTPS épinglé, écart D-05 levé), les 15 scénarios `it1-*` ont été rejoués en `--faux` : 15 sur 15, aucun échec**, M25 comprise. |
 | Répétition générale de l'itération 1, corrections (1), 19 septembre | Trois constats corrigés, chacun avec son test : refus du mode Simple qui emportait une autre demande du même tour (moyen), mise en page du chat pendant une délégation (moyen), focus perdu après « Plan d'abord (nouvelle conversation) » au clavier (bas). `npm test` : **1 320 tests** (276 suites), 1 318 passent, 0 échec, 2 sautés sous Windows, deux passages ; **23 mutations** des corrections, 23 détectées. e2e `--faux` : 15 scénarios sur 15, dont le nouveau `it1-ui-mise-en-page` ; sur le code d'avant les corrections, `it1-ui-mise-en-page` et `it1-ui-selecteur-clavier` échouent sur les défauts relevés (fil à 0 px, boutons hors de la fenêtre, zone principale débordée de 639 px ; focus perdu). Sur opencode 1.18.30 réel hors ligne, scénarios de la répétition rejoués sur le code corrigé : délégation + commande, **8 conformes sur 8**, premier appel d'un opencode neuf compris (7 sur 8 avant) ; délégation + modification, **4 sur 4** (1 sur 4 avant) ; mise en page mesurée aux quatre tailles (limite en [section 11](#11-limites-et-points-à-vérifier)). Piles supprimées, aucun appel facturé. |
 | Clôture de l'itération 1, 19 septembre | Régression de la correction précédente levée (revue de l'itération : rejeu `rg-reel-7` en échec, 2 sur 2) : en mode Avancé, une demande d'autorisation, quelle qu'elle soit (modification, commande, délégation), ne replie plus la carte des agents ni « Qui travaille ? » ; la carte montre sans clic l'attente de votre accord (hexagone hachuré, cadenas, ambre) et la délégation en préparation (pointillé rose fixe). Mode Simple inchangé. `npm test` : **1 322 tests** (276 suites), 1 320 passent, 0 échec, 2 sautés sous Windows, deux passages ; les tests modifiés (`neon-band`, `croisements-it1-v3` et `v4`, `activity-live`) échouent sur le code d'avant. **Sur le faux opencode** (`--faux`, 15 scénarios `it1-*` sur 15) : `it1-ui-delegation` pose désormais la demande 5 ms après la partie `task`, comme opencode réel, et vérifie les signes de la carte pendant la demande, sans clic ni défilement, à 1440 × 900 ; sur le code d'avant, il échoue (« faisceau de préparation dessiné » jamais vu), comme `it1-ui-mise-en-page` (carte repliée). `it1-ui-mise-en-page` : boutons de la demande et « Arrêter » atteignables aux quatre tailles, zone principale jamais défilée ; signes visibles sans défiler à 1440 et 1280, atteints en faisant défiler la seule région d'activité à 1024 × 768 (la saisie y prend 428 px). **Sur opencode 1.18.30 réel hors ligne** (`--reel-hors-ligne`) : les 15 scénarios `it1-*` du dépôt passent, leurs parties de délégation « non jouées » ; avec le fournisseur scripté de la répétition générale, hors dépôt, `rg-reel-7` passe **4 fois sur 4** (avant : en échec 3 fois sur 3, 2 à la revue et 1 à la reproduction), et sa variante qui relève les signes de la carte les voit sans clic ni défilement à 1440 × 900, deux bandeaux affichés (4 sur 4). Mise en page mesurée avec les deux bandeaux du banc et l'avis « IA indisponible » : voir la [section 11](#11-limites-et-points-à-vérifier). Aucun appel facturé. |
 | Vérification de la clôture, 19 septembre | Un constat moyen corrigé : pendant une demande en mode Avancé, « Qui travaille ? » (titre, lignes, [Répondre]) était rendu mais caché sous le fil et la carte de la demande, dès 1440 × 900, alors que le banc le comptait comme affiché (lignes relevées par `getClientRects`). Correction (`activity.css`, `chat.css`) : « Qui travaille ? » garde toute sa hauteur sous la carte des agents, qui prend la place restante et s'y réduit (unités de conteneur, jusqu'à la mini-carte), puis défile ; la carte de la demande cède quatre fois plus vite que la région ; à 400 px, le bandeau d'une ligne passe avant la bande. Le banc relève désormais VU, par elementFromPoint, le titre, chaque ligne et [Répondre] (`it1-ui-commun`, pour `it1-ui-delegation` et `it1-ui-mise-en-page`), et `it1-ui-mise-en-page` ajoute une modification en attente sur la racine, à 1440. Sur le code d'avant, `it1-ui-delegation` et `it1-ui-mise-en-page` échouent (titre de « Qui travaille ? » recouvert), comme le test de sources ajouté à `croisements-it1-v4`. `npm test` : **1 323 tests** (276 suites), 1 321 passent, 0 échec, 2 sautés sous Windows, deux passages ; build OK ; gardes du banc : 30, aucune tombée. e2e `--faux` : **15 scénarios `it1-*` sur 15**. Sur opencode 1.18.30 réel hors ligne, avec le fournisseur scripté de la répétition générale (hors dépôt) : `rg-reel-7` et sa variante, qui relève désormais aussi « Qui travaille ? », passent **4 fois sur 4** à 1440 × 900 (deux bandeaux, avis de la saisie, panneau « Contexte » ouvert : titre, lignes, [Répondre], attente et préparation vus sans défiler). Mise en page mesurée aux quatre tailles, avec et sans les bandeaux du banc : voir la [section 11](#11-limites-et-points-à-vérifier). Aucun appel facturé. |
@@ -1043,12 +1099,12 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
   - **M9** : après le refus d'une délégation en mode Simple, avec son message, l'Assistant général continue-t-il seul, sans tourner en rond, sur une IA Copilot ? L'avis « elle continue seule » en dépend. Repli prévu si la recette échoue : le refus devient une attente de votre réponse (réglage interne, coupé aujourd'hui).
   - **M12 réel** : le mécanisme est tranché par MX1 ([section 10](#10-validations-réalisées)) ; reste le comportement d'une IA Copilot qui lance plusieurs `task` dans une même réponse.
   - **M16 réel** : tranché hors ligne (MX1 et e2e : titre écrit sous le plancher par la petite IA du faux fournisseur) ; reste le titre écrit par une petite IA Copilot.
-  - **M25 en HTTPS** : animations et flux d'événements sous la CSP réelle, en HTTPS, dans Edge et Chrome, à rejouer dans la 1.1 après l'intégration de la 1.0.5.
+  - **M25 en HTTPS, second navigateur** : depuis l'intégration de la 1.0.5 dans le chantier, `it1-ui-m25` est joué par le banc en **HTTPS épinglé** (CSP réelle servie, flux d'événements ouvert, réglage reçu par le flux en 13 ms, 4 transitions de 900 ms sur `opacity` et `transform`, 0 violation de la CSP) ; reste à le rejouer dans l'autre navigateur que celui du banc, et sous WebGL (L29).
   - **NVDA** : un passage au lecteur d'écran sur « Qui travaille ? », la carte du travail en direct, le sélecteur « Autonomie », la carte de plan et la démonstration.
   - **Captures** des nouvelles vues en couleurs forcées (contraste élevé de Windows). Celles à 1440, 1024 et 400 px, thèmes clair et sombre, sont prises par le banc e2e (`it1-ui-*`).
   - **Délégation à 85 % du budget** (spécification §7.11) : sur Copilot réel, budget du mois à 85 % (au-delà du seuil de 80 % du garde-fou), « Autoriser une fois » d'une délégation, avec une IA de plus de 15 $/M tokens en sortie puis une moins chère : confirmation demandée quand le garde-fou l'exige, coût réel du travail délégué compté dans le plafond de la demande et dans la dépense du mois. Le mécanisme (409 sans confirmation, « une fois » relayé après votre confirmation) n'est vérifié que par les tests, sur le faux opencode.
   - **e2e `--reel` de l'itération 1** (`scripts/run-e2e.sh --reel`, appels facturés, sur votre accord et dans une enveloppe que vous fixez) : les scénarios `it1-*` sur une IA Copilot réelle, dont M1 (`it1-ui-m1-noreply`) et la délégation visible. Jamais lancé ; les mêmes scénarios passent en `--faux` et en `--reel-hors-ligne`.
-- **Écart D-05 : e2e en HTTP.** La spécification voulait des e2e en HTTPS épinglé dès l'itération 1. Le HTTPS étant sorti à part en 1.0.5, le banc sert le cockpit en HTTP ; il passera en HTTPS épinglé quand la 1.0.5 sera intégrée dans la 1.1. Les endroits à reprendre portent tous la mention `D-05` : deux dans `e2e/lib/cockpit.mjs` (santé, cookie), et dans les scénarios de l'itération 1, `it1-api-commun.mjs` (flux d'événements du témoin P6 lu par un `fetch` brut), `it1-ui-commun.mjs` (adresse en `http://`, CSP lue par un `fetch` brut, page exigée en `http:`) et `it1-ui-m25.mjs` (CSP lue par un `fetch` brut, page exigée en `http:`) ; dans ceux de l'itération 2, `it2-api-commun.mjs` (deux `fetch` bruts pour la confirmation d'un choix automatique, qui exige un en-tête que le client d'API du banc ne sait pas poser, réunis dans une seule section « Requêtes brutes (D-05) »). Sans cette reprise, ces quatre scénarios échoueraient sur un banc en HTTPS épinglé, qui refuse un `fetch` sans épinglage.
+- **Écart D-05 : levé.** La spécification voulait des e2e en HTTPS épinglé dès l'itération 1 ; le HTTPS étant sorti à part en 1.0.5, le banc a servi le cockpit en HTTP jusqu'au rebase. Depuis R105b (étape 25) et l'intégration de la 1.0.5 dans le chantier, le banc sert en **HTTPS épinglé par défaut** et les scénarios de l'itération 1 y passent : le flux d'événements du témoin P6 (`it1-api-commun.mjs`) est ouvert par le transport épinglé du banc (`ctx.api.flux`), la CSP de la page (`it1-ui-commun.mjs`, `it1-ui-m25.mjs`) est lue par `ctx.api.brut`, et l'adresse comme le protocole de la page sont comparés au schéma du banc. Il ne reste plus un seul `fetch` sans épinglage vers le cockpit, dans `e2e/lib/` comme dans les scénarios ; `croisements-it1-v5` le vérifie. Le mode HTTP explicite de la 1.0.5 reste jouable par `--http`.
 - **[Ajouter les résultats obtenus à la conversation]** : prévu avec « Arrêter » par la spécification, reporté à l'itération 4 (étapes d'équipe). « Arrêter » n'ajoute aucun résultat partiel.
 - **« Modifications automatiques » et « Autonome avec contrôle »** : affichés et désactivés à la fin de l'itération 1 ; l'itération 2 les rend utilisables, et son IA de contrôle est appelée pour les commandes inconnues du cockpit (voir le bloc « itération 2 » ci-dessous).
 - **Plafonds de délégation** (5 délégations et 1,00 $ par demande) : valeurs par défaut, réglables dans **Paramètres › Budget** depuis l'itération 2, dans les deux modes. La dépense d'une demande ignore l'appel qui écrit le titre (mesuré) : le dépassement du plafond de coût peut atteindre l'appel en cours de chaque conversation occupée, plus ce petit appel.
@@ -1129,6 +1185,17 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 - **Démarrage du cockpit :** une synchronisation déclenchée par la lecture de la liste des IA peut vérifier et corriger l'adresse avant que le cockpit voie opencode joignable. La garde est alors levée plus tôt, sur une adresse déjà vérifiée ; mesuré sans aucune demande vers l'adresse d'office.
 - **Conversations du classement automatique :** leur fin ne relance pas la correction différée, qui attend la tentative planifiée (30 s au plus).
 
+**1.0.5, pas vérifié ici :**
+
+- **Le poste géré du travail :** toutes les mesures du HTTPS local viennent du PC de développement, sans proxy, sans stratégie de navigateur, sans contrôle d'exécution et sans outil de sécurité d'entreprise. Restent à vérifier au travail : les stratégies réellement appliquées à Edge (`edge://policy` fait foi, le registre n'est qu'un indice), la réaction de l'antivirus ou de l'EDR à la petite classe .NET compilée quand `curl.exe` manque, et ce que les outils de sécurité du poste enregistrent du trafic local.
+- **Windows 10 et autres navigateurs :** mesures faites sous Windows 11 avec Edge et Chrome 153. Un navigateur imposé par l'entreprise peut se comporter autrement sur l'avertissement de certificat.
+- **Capture du trafic local sous Docker Desktop :** la liste « qui peut lire le trafic en clair » du mode HTTP local repose sur le chemin suivi par le trafic (machine virtuelle et réseau de Docker). Elle est vérifiée en répétition générale sur le PC de développement, pas sur un poste géré.
+
+**Chantier 1.1 (non publié), vu pendant la mesure M25 du banc e2e (étape 25) :**
+
+- **Écran « Le cockpit ne répond pas » qui restait après une coupure — corrigé :** si l'interface rechargeait ses données au moment d'une coupure (réseau coupé quelques secondes, cockpit arrêté), cet écran remplaçait toute l'interface et y restait, même quand le cockpit répondait de nouveau et que le flux d'événements s'était reconnecté. Vu 4 fois en 4 passages de mesure ; le défaut était déjà dans la 1.0.5 et ne dépendait pas du mode HTTPS ou HTTP. Corrigé dans le chantier (décision U4, sur `tmp/r105-base`, entré par la fusion de la 1.0.5) : l'amorçage réessaie de lui-même, avec une attente croissante et bornée, et repart aussitôt au retour du réseau, au retour de l'onglet ou à la reconnexion du flux ; une interface déjà chargée reste en place, la reprise étant signalée par un bandeau et non plus par l'écran d'erreur. **Réessayer** reste possible. Vérifié par `boot-recovery.test.ts` et par le scénario e2e `010-reprise-apres-coupure.mjs`.
+- **Mise en veille du poste :** la reconnexion du flux après une veille, avec l'avertissement de certificat accepté, reste à vérifier à la main (recette M30).
+
 **1.0.2, pas vérifié ici :**
 
 - **Refus pendant une réponse :** couvert par les tests automatisés, pas par la répétition générale, faute d'IA joignable pour garder une réponse en cours.
@@ -1161,10 +1228,16 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 
 | Symptôme | Solution |
 |---|---|
-| Écran « Accès protégé par jeton » | `.\cockpit.ps1 open`, ou coller la valeur de `COCKPIT_TOKEN` du fichier `.env`. La connexion dure 30 jours. |
-| « Hôte non autorisé » | Ouvrir uniquement `http://127.0.0.1:7777` ou `http://localhost:7777`, pas le nom ni l'adresse IP du PC |
-| « Trop de tentatives » | 20 jetons erronés en 5 minutes : patienter quelques minutes |
-| `SELF_SIGNED_CERT_IN_CHAIN` dans **Diagnostic › Journal** | `.\cockpit.ps1 certs`, sinon certificat PEM dans `certs\` puis `.\cockpit.ps1 restart`. Pendant la construction des images : relancer `.\install.ps1`. |
+| Écran « Accès protégé par jeton » | `.\cockpit.ps1 open` ; en HTTPS, on peut aussi coller la valeur de `COCKPIT_TOKEN` du fichier `.env` après avoir vérifié l'empreinte du certificat. En mode HTTP local, la saisie du jeton n'est pas proposée : c'est voulu. La connexion dure 30 jours. |
+| « Hôte non autorisé » | Ouvrir uniquement `https://127.0.0.1:7777` (ou `http://127.0.0.1:7777` en mode HTTP local), pas le nom ni l'adresse IP du PC |
+| « Trop de tentatives » | 20 jetons erronés ou liens de connexion invalides en 5 minutes : patienter quelques minutes |
+| `SELF_SIGNED_CERT_IN_CHAIN` dans **Diagnostic › Journal** | `.\cockpit.ps1 certs`, sinon certificat PEM dans `certs\` puis `.\cockpit.ps1 restart`. Pendant la construction des images : relancer `.\install.ps1`. Sans rapport avec l'avertissement du navigateur sur le certificat local. |
+| « Votre connexion n'est pas privée » (`NET::ERR_CERT_AUTHORITY_INVALID`) | Normal au premier accès : comparer l'empreinte affichée par `.\cockpit.ps1 tls`, puis **Avancé › Continuer vers 127.0.0.1 (non sécurisé)** |
+| « 127.0.0.1 est actuellement inaccessible », sans bouton **Continuer** | Le poste interdit de passer l'avertissement : exception `SSLErrorOverrideAllowedForOrigins = https://127.0.0.1:7777`, ou `.\install.ps1 -Http` |
+| `ERR_EMPTY_RESPONSE`, « 127.0.0.1 n'a envoyé aucune donnée » | Ancienne adresse `http://` d'un cockpit passé en HTTPS : ouvrir `https://127.0.0.1:7777` et corriger le favori |
+| Bannière « Connexion au cockpit perdue » | Flux d'événements coupé : cliquer **Recharger**. Un nouvel avertissement de certificat signifie un certificat renouvelé : comparer l'empreinte avec `.\cockpit.ps1 tls` |
+| « Lien de connexion invalide, expiré ou déjà utilisé », « Lien d'une ancienne version » | Le lien ne sert qu'une fois, pendant 10 minutes : relancer `.\cockpit.ps1 open` |
+| Conteneur cockpit qui redémarre en boucle, journal « HTTPS local impossible » | Droits du volume du certificat : `.\install.ps1`, ou `.\cockpit.ps1 tls -Renew` |
 | `ECONNREFUSED`, `ETIMEDOUT` dans **Diagnostic › Journal** | Proxy absent ou erroné : `.\install.ps1 -Proxy http://…` |
 | `AI_APICallError` (`Unable to connect`, `Forbidden`, 503) à chaque demande | Pare-feu à routage par abonnement : **Diagnostic › Tester la connexion Copilot**, puis `.\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser` si seule l'adresse Business est joignable |
 | Des IA désactivées par l'organisation apparaissent comme utilisables | Liste non vérifiée auprès de GitHub : raison dans **Diagnostic**, puis **Tester la connexion Copilot** |
@@ -1176,6 +1249,8 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 | opencode ne répond plus après une modification de configuration | **Diagnostic › Redémarrer opencode** |
 | « Arguments refusés » sur une `/commande` | L'argument contient à la fois un « ! » et un accent grave, même éloignés (``ça plante ! voir `main.ts` `` est refusé), ou une référence `@` qui commence par `~`, contient `..` ou sort du workspace. Retirer le « ! » ou les accents graves, écrire un chemin relatif au dépôt, ou demander à l'agent de lancer la commande (avec autorisation) |
 | `git commit` ou `git push` échoue depuis l'agent | Normal : voir [section 11](#11-limites-et-points-à-vérifier). Commiter depuis Windows. |
+
+Quand c'est un **script** qui affiche un message et s'arrête, le README donne la commande correspondante : tableau « Message affiché par un script → commande à lancer », à la fin de sa section Dépannage.
 
 ---
 
@@ -1191,7 +1266,7 @@ Créé et maintenu par `install.ps1`, qui le **réécrit entièrement** à chaqu
 |---|---|
 | `WORKSPACE_DIR` | Dossier des projets (barres obliques, ex. `C:/dev`) |
 | `ARCHIVE_DIR` | Dossier des exports Markdown (défaut `./archives`) |
-| `COCKPIT_PORT` | Port local de l'interface (défaut `7777`) |
+| `COCKPIT_PORT` | Port local de l'interface (défaut `7777`). En HTTPS, le changer impose de redemander l'exception `SSLErrorOverrideAllowedForOrigins` sur un poste géré, car elle porte sur l'adresse **et** le port. |
 | `COCKPIT_TOKEN` | Jeton d'accès à l'interface. **Secret.** |
 | `OPENCODE_SERVER_PASSWORD` | Mot de passe du serveur opencode. **Secret.** |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Proxy d'entreprise et exceptions |
@@ -1205,7 +1280,10 @@ Créé et maintenu par `install.ps1`, qui le **réécrit entièrement** à chaqu
 | `COCKPIT_VERSION` | Numéro de version recopié du fichier `VERSION` par `install.ps1`. Il est intégré aux images construites sur le poste et affiché dans l'interface ; sans lui : « version de développement ». |
 | `COCKPIT_ALLOWED_PROVIDERS` | Facultatif, absent du fichier généré. Fournisseurs d'IA acceptés par le serveur du cockpit, séparés par des virgules ; défaut `github-copilot`. Toute autre valeur affiche en permanence le bandeau rouge « Mode test ». Réservé aux essais : la répétition générale l'utilise pour un modèle gratuit. |
 | `COCKPIT_COPILOT_API_URL` | 1.0.1. Adresse d'API Copilot imposée à opencode et au cockpit (ex. `https://api.business.githubcopilot.com`). Vide : adresse générale si elle est joignable, sinon celle que GitHub annonce pour l'abonnement. Seules les adresses officielles de Copilot sont acceptées ; une autre valeur empêche le cockpit de démarrer. Réglé par `install.ps1 -CopilotApiUrl`. |
-| `COCKPIT_ALLOWED_HOSTS` | Facultatif, absent du fichier généré (une ligne ajoutée à la main est conservée). Noms d'hôte acceptés dans l'en-tête `Host`, séparés par des virgules, sans port ; défaut `localhost,127.0.0.1,[::1]`. La valeur remplace ce défaut. Seuls des noms en `.localhost` fonctionnent en plus : ailleurs, le navigateur refuse le cookie de connexion. |
+| `COCKPIT_ALLOWED_HOSTS` | Facultatif, absent du fichier généré (une ligne ajoutée à la main est conservée). Noms d'hôte acceptés dans l'en-tête `Host`, séparés par des virgules, sans port ; défaut `localhost,127.0.0.1,[::1]`. La valeur remplace ce défaut. Seuls des noms en `.localhost` fonctionnent en plus : ailleurs, le navigateur refuse le cookie de connexion. En HTTPS, chaque nom valide entre dans le certificat : le modifier crée un nouveau certificat, donc une nouvelle empreinte et un nouvel avertissement. Les valeurs invalides sont ignorées et signalées dans le journal. |
+| `COCKPIT_LOCAL_SCHEME` | 1.0.5. Mode d'accès local : `https` (défaut, y compris si la ligne est absente ou vide) ou `http`. Écrite par `install.ps1 -Http` et `install.ps1 -Https` ; toute autre valeur empêche le démarrage du cockpit et fait refuser les commandes des scripts. |
+| `COCKPIT_LOCAL_HTTP_CONFIRMED` | 1.0.5. Date UTC (`AAAA-MM-JJTHH:MM:SSZ`) de la confirmation du mode HTTP local, écrite par `install.ps1` après la saisie de `HTTP EN CLAIR` ; vidée dès le retour en HTTPS. Obligatoire avec `COCKPIT_LOCAL_SCHEME=http`, affichée dans le bandeau de l'interface. **Ne pas la modifier à la main.** |
+| `COCKPIT_PREVIOUS_VERSION`, `COCKPIT_PREVIOUS_APP_IMAGE`, `COCKPIT_PREVIOUS_OPENCODE_IMAGE`, `COCKPIT_PREVIOUS_INSTALL_MODE` | 1.0.5. Version, images et mode d'installation d'avant le passage à la 1.0.5, écrits une seule fois par `install.ps1` et lus par `.\cockpit.ps1 rollback`. **Ne pas les modifier à la main.** |
 | `COCKPIT_AUTONOMY` | 1.1. Facultatif, absent du fichier généré (une ligne ajoutée à la main est conservée). `on` (défaut, valeur vide comprise) : les quatre choix d'autonomie sont proposés. `off` : « Modifications automatiques » et « Autonome avec contrôle » sont coupés pour tout le cockpit, avec la raison affichée dans le sélecteur ; « Demander à chaque fois » et « Plan d'abord » restent possibles. Toute autre valeur empêche le cockpit de démarrer. **Non modifiable depuis l'interface** : modifiez `.env`, puis `.\cockpit.ps1 restart`. État affiché dans **Diagnostic › Travail délégué et autonomie**. |
 | `TZ` | Fuseau horaire (défaut `Europe/Paris`) |
 
@@ -1220,7 +1298,10 @@ npm ci --ignore-scripts
 npm run typecheck   # vérification des types
 npm test            # tests unitaires et d'intégration
 npm run build       # construit l'interface
+npm run dev:link    # lien de connexion à usage unique vers le serveur de développement
 ```
+
+Le serveur de développement tourne en mode HTTP local : `app\.env.dev` (jamais versionné) contient `COCKPIT_LOCAL_SCHEME=http` et `COCKPIT_LOCAL_HTTP_CONFIRMED=<date UTC>` en plus des clés habituelles. `npm run dev:link` vérifie que le serveur connaît le jeton, puis affiche un lien à usage unique : le jeton n'apparaît jamais dans l'adresse.
 
 **Publier une nouvelle version :**
 

@@ -24,7 +24,7 @@ import type { AppEnv } from "./env.ts";
 import { createApp } from "./http.ts";
 import { type BrowserEvent, EventHub } from "./hub.ts";
 import { createLogger, type Logger } from "./log.ts";
-import { sessionValue } from "./security.ts";
+import { SESSION_COOKIE_NAME, sessionValue } from "./security.ts";
 import { SettingsStore } from "./settings.ts";
 import { ID, ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
 import type { StudioService } from "./studio.ts";
@@ -57,6 +57,11 @@ function testEnv(autonomy: boolean): AppEnv {
     allowedProviders: ["github-copilot"],
     copilotApiUrl: null,
     autonomy,
+    // Montage en HTTP (1.0.5) : dossier TLS jamais créé ni lu.
+    localScheme: "http",
+    localHttpConfirmedAt: "2026-09-15T10:32:00Z",
+    tlsDir: "/tls",
+    opensslPath: "/usr/bin/openssl",
     version: "test",
   };
 }
@@ -127,9 +132,11 @@ function mount(s: ReturnType<typeof setup>, routes: ReadonlyArray<(app: Hono) =>
     copilot: stub(),
     copilotConfig: stub(),
     routes: [...routes],
+    // Montage en HTTP : aucun certificat.
+    tls: null,
   });
   const host = "127.0.0.1:7777";
-  const cookie = `cockpit_session=${sessionValue(TOKEN, secret)}`;
+  const cookie = `${SESSION_COOKIE_NAME}=${sessionValue(TOKEN, secret)}`;
   const request = (method: string, pathname: string, headers: Record<string, string>, body?: string) =>
     app.request(pathname, { method, headers: { host, ...headers }, ...(body === undefined ? {} : { body }) });
   return {

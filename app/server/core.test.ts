@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { Hono } from "hono";
 import { parse as parseJsonc } from "jsonc-parser";
 import { z } from "zod";
 import { type ArchiveService, buildDigest, type Conversation, type ConversationDigest, ftsQuery, isDefaultTitle, projectOf } from "./archive.ts";
@@ -11,7 +13,7 @@ import { catalogLite, ModelCatalog } from "./catalog.ts";
 import { Classifier, extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
 import { ControlService } from "./control.ts";
 import { openDb, openMemoryDb } from "./db.ts";
-import { type AppEnv, EnvError, loadEnv, parseAllowedProviders } from "./env.ts";
+import { type AppEnv, EnvError, isValidConfirmedAt, loadEnv, parseAllowedProviders, parseLocalAccess } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { PathError, readInside, safeSegment, slugify } from "./fsutil.ts";
 import { classifyHeuristic } from "./heuristic.ts";
@@ -23,7 +25,13 @@ import { COPILOT_PRICES, computeCost, priceFromCatalog, resolveMessageCost } fro
 import { redactSecrets } from "./redact.ts";
 import {
   attemptLogin,
+  authTicketMac,
+  authTicketRequestMac,
+  csrfGuard,
+  healthProof as serverHealthProof,
+  hostGuard,
   hostnameOf,
+  isGeneratedToken,
   isValidSession,
   LoginLimiter,
   newSessionSecret,
@@ -412,6 +420,51 @@ describe("sécurité et utilitaires", () => {
     assert.equal(await attemptLogin(limiter, token, token, 0), "ok");
   });
 
+  it("anti-CSRF selon le schéma servi : https et http symétriques (origine au même schéma et au même hôte, ou absente)", async () => {
+    const host = "127.0.0.1:7777";
+    const statusFor = async (scheme: "https" | "http", origin: string | undefined): Promise<number> => {
+      const app = new Hono();
+      app.use("*", csrfGuard(scheme));
+      app.put("/api/x", (c) => c.json({ ok: true }));
+      const headers: Record<string, string> = { host, "x-cockpit-csrf": "1" };
+      if (origin !== undefined) headers.origin = origin;
+      return (await app.request(`http://${host}/api/x`, { method: "PUT", headers })).status;
+    };
+    const cases: Array<[string | undefined, number, number]> = [
+      // origine, statut en https, statut en http
+      [`https://${host}`, 200, 403],
+      [`http://${host}`, 403, 200],
+      ["https://evil.example", 403, 403],
+      ["http://evil.example", 403, 403],
+      [`https://127.0.0.1:7778`, 403, 403],
+      ["null", 403, 403],
+      [undefined, 200, 200],
+    ];
+    for (const [origin, https, http] of cases) {
+      assert.equal(await statusFor("https", origin), https, `https ${origin}`);
+      assert.equal(await statusFor("http", origin), http, `http ${origin}`);
+    }
+    // En-tête anti-CSRF toujours exigé, et lecture sans contrôle d'origine (GET).
+    const app = new Hono();
+    app.use("*", csrfGuard("https"));
+    app.put("/api/x", (c) => c.json({ ok: true }));
+    app.get("/api/x", (c) => c.json({ ok: true }));
+    assert.equal((await app.request(`http://${host}/api/x`, { method: "PUT", headers: { host, origin: `https://${host}` } })).status, 403);
+    assert.equal((await app.request(`http://${host}/api/x`, { headers: { host, origin: `http://${host}` } })).status, 200);
+  });
+
+  it("garde d'hôte : 421 avec l'adresse du schéma servi", async () => {
+    for (const scheme of ["https", "http"] as const) {
+      const app = new Hono();
+      app.use("*", hostGuard(["localhost", "127.0.0.1"], scheme));
+      app.get("/", (c) => c.text("ok"));
+      const refused = await app.request("http://127.0.0.1:7777/", { headers: { host: "evil.example:7777" } });
+      assert.equal(refused.status, 421);
+      assert.equal(await refused.text(), `Hôte non autorisé. Ouvrez le cockpit via ${scheme}://127.0.0.1 ou ${scheme}://localhost.`);
+      assert.equal((await app.request("http://127.0.0.1:7777/", { headers: { host: "127.0.0.1:7777" } })).status, 200);
+    }
+  });
+
   it("COCKPIT_TLS_INSECURE : seule la valeur 1 coupe la vérification (même règle que le superviseur d'opencode)", () => {
     const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
     assert.equal(loadEnv({ ...base, COCKPIT_TLS_INSECURE: "1" }).tlsInsecure, true);
@@ -447,6 +500,194 @@ describe("sécurité et utilitaires", () => {
     assert.equal(store.update({ budget: { autonomie: { plafondUsd: 2 } } }).budget.autonomie.plafondUsd, 2);
     assert.deepEqual(settingsPathsOutsideSimple(store.get(), { budget: { autonomie: { actionsMax: 10 }, delegation: { maxPerRequest: 2 } } }), []);
     assert.notDeepEqual(settingsPathsOutsideSimple(store.get(), { teams: { concurrentSteps: 2 } }), []);
+  });
+
+  describe("accès local HTTPS ou HTTP : vecteurs communs (tests/vectors/local-access.json)", () => {
+    const HEX64 = /^[0-9a-f]{64}$/;
+    const raw = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "tests", "vectors", "local-access.json"));
+    const vectors = z
+      .strictObject({
+        schema: z.literal(1),
+        note: z.string().min(1),
+        localAccess: z
+          .array(
+            z.strictObject({
+              name: z.string().min(1),
+              scheme: z.string().nullable(),
+              confirmedAt: z.string().nullable(),
+              valid: z.boolean(),
+              localScheme: z.enum(["https", "http"]).nullable(),
+            }),
+          )
+          .min(1),
+        dates: z.strictObject({ accepted: z.array(z.string()).min(1), rejected: z.array(z.string()).min(1) }),
+        hmac: z.strictObject({
+          token: z.string().regex(HEX64),
+          healthProof: z.strictObject({ challenge: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
+          authTicketRequest: z.strictObject({ challenge: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
+          authTicket: z.strictObject({ nonce: z.string().regex(HEX64), expected: z.string().regex(HEX64) }),
+        }),
+      })
+      .parse(JSON.parse(raw.toString("utf8")));
+    const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
+    const envOf = (scheme: string | null, confirmedAt: string | null): NodeJS.ProcessEnv => ({
+      ...base,
+      ...(scheme === null ? {} : { COCKPIT_LOCAL_SCHEME: scheme }),
+      ...(confirmedAt === null ? {} : { COCKPIT_LOCAL_HTTP_CONFIRMED: confirmedAt }),
+    });
+
+    it("fichier en ASCII pur (lu aussi par PowerShell 5.1), noms de cas uniques", () => {
+      for (const byte of raw) assert.ok(byte === 10 || (byte >= 32 && byte <= 126), `octet ${byte}`);
+      const names = vectors.localAccess.map((v) => v.name);
+      assert.equal(new Set(names).size, names.length);
+    });
+
+    it("matrice : HTTPS par défaut, HTTP seulement avec une date valable, toute autre valeur refusée", () => {
+      for (const v of vectors.localAccess) {
+        const env = envOf(v.scheme, v.confirmedAt);
+        if (v.valid) {
+          assert.notEqual(v.localScheme, null, v.name);
+          const expected = { localScheme: v.localScheme, localHttpConfirmedAt: v.localScheme === "http" ? (v.confirmedAt ?? "").trim() : null };
+          assert.deepEqual(parseLocalAccess(env), expected, v.name);
+          const loaded = loadEnv(env);
+          assert.deepEqual({ localScheme: loaded.localScheme, localHttpConfirmedAt: loaded.localHttpConfirmedAt }, expected, v.name);
+        } else {
+          assert.equal(v.localScheme, null, v.name);
+          const key = (v.scheme ?? "").trim() === "http" ? "COCKPIT_LOCAL_HTTP_CONFIRMED" : "COCKPIT_LOCAL_SCHEME";
+          assert.throws(() => parseLocalAccess(env), (err: unknown) => err instanceof EnvError && err.message.startsWith(`${key} :`), v.name);
+          assert.throws(() => loadEnv(env), EnvError, v.name);
+        }
+      }
+      // Cas exigés par le plan (§3.2.2, lot 1) : ils ne doivent pas disparaître du fichier commun.
+      const verdict = (scheme: string | null, confirmedAt: string | null) =>
+        vectors.localAccess.find((v) => v.scheme === scheme && v.confirmedAt === confirmedAt)?.localScheme;
+      const at = "2026-09-15T10:32:00Z";
+      assert.equal(verdict(null, null), "https");
+      assert.equal(verdict("", null), "https");
+      assert.equal(verdict("https", null), "https");
+      assert.equal(verdict("http", at), "http");
+      assert.equal(verdict(" http ", at), "http");
+      assert.equal(verdict("http", ` ${at} `), "http");
+      assert.equal(verdict("http", null), null);
+      for (const scheme of ["HTTP", "Https", "htps", "https,http", "1", '"http"']) {
+        const v = vectors.localAccess.find((c) => c.scheme === scheme);
+        assert.ok(v !== undefined && !v.valid, scheme);
+      }
+    });
+
+    it("dates : expression stricte puis aller-retour (30 et 31 février, 31 septembre, 29 février 2027, 24:00, :60…)", () => {
+      const planned = [
+        "2026-02-30T00:00:00Z",
+        "2026-02-31T00:00:00Z",
+        "2026-09-31T10:00:00Z",
+        "2027-02-29T00:00:00Z",
+        "2026-09-15T24:00:00Z",
+        "2026-09-15T10:60:00Z",
+        "2026-09-15T10:32:60Z",
+        "0000-01-01T00:00:00Z",
+        "1999-12-31T23:59:59Z",
+        "2026-09-15T10:32:00z",
+        "2026-09-15 10:32:00Z",
+        "2026-09-15T10:32:00.000Z",
+        "2026-09-15T10:32:00+00:00",
+        "2026-9-15T10:32:00Z",
+        "",
+      ];
+      for (const date of planned) assert.ok(vectors.dates.rejected.includes(date), date);
+      for (const date of ["2026-09-15T10:32:00Z", "2028-02-29T00:00:00Z"]) assert.ok(vectors.dates.accepted.includes(date), date);
+      for (const date of vectors.dates.accepted) {
+        assert.equal(isValidConfirmedAt(date.trim()), true, date);
+        assert.deepEqual(parseLocalAccess(envOf("http", date)), { localScheme: "http", localHttpConfirmedAt: date.trim() }, date);
+      }
+      for (const date of vectors.dates.rejected) {
+        assert.equal(isValidConfirmedAt(date.trim()), false, date);
+        assert.throws(() => parseLocalAccess(envOf("http", date)), EnvError, date);
+      }
+    });
+
+    it("message d'erreur : nomme la clé, ne recopie jamais la valeur lue", () => {
+      const marker = "MARQUEUR-7f3a91";
+      const cases: Array<[NodeJS.ProcessEnv, string, string]> = [
+        [envOf(marker, null), "COCKPIT_LOCAL_SCHEME", marker],
+        [envOf(`http${marker}`, "2026-09-15T10:32:00Z"), "COCKPIT_LOCAL_SCHEME", marker],
+        [envOf("http", marker), "COCKPIT_LOCAL_HTTP_CONFIRMED", marker],
+        [envOf("http", "2026-02-30T00:00:00Z"), "COCKPIT_LOCAL_HTTP_CONFIRMED", "2026-02-30"],
+        [{ ...base, COCKPIT_TLS_DIR: `${marker}/tls` }, "COCKPIT_TLS_DIR", marker],
+        [{ ...base, COCKPIT_OPENSSL: marker }, "COCKPIT_OPENSSL", marker],
+      ];
+      for (const [env, key, value] of cases) {
+        assert.throws(
+          () => loadEnv(env),
+          (err: unknown) => err instanceof EnvError && err.message.includes(key) && !err.message.includes(value),
+          key,
+        );
+      }
+    });
+
+    it("COCKPIT_TLS_DIR et COCKPIT_OPENSSL : chemins absolus exigés, /tls et /usr/bin/openssl par défaut", () => {
+      const env = loadEnv(base);
+      assert.equal(env.tlsDir, path.resolve("/tls"));
+      assert.equal(env.opensslPath, path.resolve("/usr/bin/openssl"));
+      assert.equal(loadEnv({ ...base, COCKPIT_TLS_DIR: " /srv/tls " }).tlsDir, path.resolve("/srv/tls"));
+      assert.equal(loadEnv({ ...base, COCKPIT_OPENSSL: "" }).opensslPath, path.resolve("/usr/bin/openssl"));
+      for (const value of ["tls", "./tls", "../tls"]) assert.throws(() => loadEnv({ ...base, COCKPIT_TLS_DIR: value }), EnvError, value);
+      for (const value of ["openssl", "bin/openssl"]) assert.throws(() => loadEnv({ ...base, COCKPIT_OPENSSL: value }), EnvError, value);
+    });
+
+    it("README : réglages du serveur de développement HTTPS acceptés tels qu'écrits (chemins absolus)", () => {
+      const readme = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "README.md"), "utf8");
+      const settings = [...readme.matchAll(/`(COCKPIT_TLS_DIR|COCKPIT_OPENSSL)=([^`]*)`/g)].map((m) => ({ key: m[1] ?? "", value: m[2] ?? "" }));
+      assert.deepEqual([...new Set(settings.map((s) => s.key))].sort(), ["COCKPIT_OPENSSL", "COCKPIT_TLS_DIR"]);
+      for (const { key, value } of settings) {
+        // Valeur à remplacer (<…>) : elle doit annoncer un chemin absolu ; valeur littérale : acceptée par le serveur telle quelle.
+        if (value.startsWith("<")) assert.match(value, /chemin absolu/, key);
+        else assert.doesNotThrow(() => loadEnv({ ...base, [key]: value }), `${key}=${value}`);
+      }
+    });
+
+    it("HMAC des vecteurs cohérents : clé = jeton en UTF-8, préfixes distincts pour la preuve, la demande de ticket et le ticket", () => {
+      const { token, healthProof, authTicketRequest, authTicket } = vectors.hmac;
+      const mac = (message: string) => crypto.createHmac("sha256", Buffer.from(token, "utf8")).update(message, "utf8").digest("hex");
+      assert.equal(mac(`opencode-cockpit/health-proof/v1\n${healthProof.challenge}`), healthProof.expected);
+      assert.equal(mac(`opencode-cockpit/auth-ticket-request/v1\n${authTicketRequest.challenge}`), authTicketRequest.expected);
+      assert.equal(mac(`opencode-cockpit/auth-ticket/v1\n${authTicket.nonce}`), authTicket.expected);
+      // Séparation des usages : le même aléa signé pour l'autre usage donne une autre valeur.
+      assert.notEqual(mac(`opencode-cockpit/auth-ticket/v1\n${healthProof.challenge}`), healthProof.expected);
+      assert.notEqual(healthProof.challenge, authTicket.nonce);
+      // La demande signe le même défi que la preuve : la preuve servie par le cockpit ne vaut jamais demande de ticket.
+      assert.equal(authTicketRequest.challenge, healthProof.challenge);
+      assert.notEqual(authTicketRequest.expected, healthProof.expected);
+    });
+
+    it("preuve du jeton, demande de ticket et signature du ticket du serveur égales aux vecteurs communs", () => {
+      const v = vectors.hmac;
+      assert.equal(serverHealthProof(v.token, v.healthProof.challenge), v.healthProof.expected);
+      assert.equal(authTicketRequestMac(v.token, v.authTicketRequest.challenge), v.authTicketRequest.expected);
+      assert.equal(authTicketMac(v.token, v.authTicket.nonce), v.authTicket.expected);
+      assert.notEqual(serverHealthProof(v.token, v.authTicket.nonce), authTicketMac(v.token, v.authTicket.nonce));
+      assert.notEqual(authTicketRequestMac(v.token, v.authTicket.nonce), authTicketMac(v.token, v.authTicket.nonce));
+      assert.notEqual(serverHealthProof("ab".repeat(32), v.healthProof.challenge), v.healthProof.expected);
+    });
+
+    it("la preuve n'est jamais un cookie de session du même jeton (préfixes distincts)", () => {
+      const v = vectors.hmac;
+      const proof = serverHealthProof(v.token, v.healthProof.challenge);
+      // Même jeton, secret de session = défi, mêmes octets signés hors préfixe : MAC différent.
+      for (const issuedAt of [0, 1_757_930_000]) {
+        const session = sessionValue(v.token, v.healthProof.challenge, issuedAt);
+        const sessionMac = Buffer.from(session.split(".")[1] ?? "", "base64url").toString("hex");
+        assert.notEqual(sessionMac, proof);
+        assert.equal(isValidSession(proof, v.token, v.healthProof.challenge, issuedAt * 1000), false);
+      }
+    });
+
+    it("jeton au format généré : 64 hexadécimaux minuscules exactement", () => {
+      assert.equal(isGeneratedToken(vectors.hmac.token), true);
+      assert.equal(isGeneratedToken(crypto.randomBytes(32).toString("hex")), true);
+      for (const token of ["t".repeat(48), "A".repeat(64), "a".repeat(63), "a".repeat(65), "g".repeat(64), ` ${"a".repeat(64)}`, `${"a".repeat(64)}\n`, ""]) {
+        assert.equal(isGeneratedToken(token), false, JSON.stringify(token));
+      }
+    });
   });
 
   it("verrou « fournisseurs » d'une configuration d'opencode : enabled_providers, IA par défaut et IA des agents", () => {
