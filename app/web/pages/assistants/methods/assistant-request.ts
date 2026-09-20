@@ -10,7 +10,7 @@
 // assistant à IA précise (`tier` null, `model` renseigné) repris en mode Simple partirait avec son IA précise, que la route
 // refuse hors du mode Avancé — l'ajout échouait alors en 422 « Contenu invalide. ».
 import { tierOfView, USE_CASE_INFO } from "../../../../server/shared/assistant-rules.ts";
-import { withMethod } from "../../../../server/shared/methods-view.ts";
+import { type ModelSubstitution, withMethod } from "../../../../server/shared/methods-view.ts";
 import type { AssistantSaveRequest, AssistantView, MethodView, TierView } from "../../../lib/types.ts";
 
 /** Ce que la page connaît du mode d'affichage et des niveaux d'IA au moment de l'ajout. */
@@ -19,6 +19,38 @@ export interface AssistantRequestContext {
   avance: boolean;
   /** Niveaux d'IA rendus par `GET /api/boot` : ils servent à retrouver le niveau d'une IA précise. */
   tiers: readonly TierView[];
+}
+
+/** Niveau d'IA réduit à ce que la conversion et l'annonce lisent : un `TierView` entier convient partout. */
+export type TierBrief = Pick<TierView, "id" | "label" | "model" | "modelName">;
+
+/** Aucun remplacement : une seule valeur, pour que l'appelant compare sans se demander d'où vient chaque champ. */
+const AUCUNE: ModelSubstitution = Object.freeze({ remplacee: false, actuelle: null, nouvelle: null, niveau: null });
+
+/**
+ * Ce que l'ajout d'une méthode ferait à l'IA de l'assistant. En mode Simple, un assistant à IA précise ne peut pas être
+ * renvoyé tel quel : `tierOfView` retombe sur un niveau, dont l'IA n'est pas forcément la sienne. Son IA change alors — donc
+ * son coût et sa façon de répondre — au cours d'une action qui ne devait toucher que ses méthodes. La page le DIT avant
+ * d'envoyer (MethodsLibrary).
+ *
+ * Rien n'est décidé ici : cette fonction ne sert qu'à annoncer, et `requestWithMethod` reste seul à construire le corps.
+ */
+export function modelSubstitution(
+  view: Pick<AssistantView, "tier" | "model" | "modelName">,
+  contexte: { avance: boolean; tiers: readonly TierBrief[] },
+): ModelSubstitution {
+  if (view.tier !== null || !view.model) return AUCUNE;
+  const tier = tierOfView(view, contexte.avance, contexte.tiers);
+  // null = IA précise conservée (mode Avancé) : le corps renvoie `model`, rien ne change.
+  if (tier === null) return AUCUNE;
+  const cible = contexte.tiers.find((niveau) => niveau.id === tier) ?? null;
+  if (cible === null || cible.model === view.model) return AUCUNE;
+  return {
+    remplacee: true,
+    actuelle: view.modelName ?? view.model,
+    nouvelle: cible.modelName ?? cible.model,
+    niveau: cible.label,
+  };
 }
 
 /** Brouillon COMPLET d'un assistant installé, plus la méthode : ce que `PUT /api/assistants/:name` attend. */

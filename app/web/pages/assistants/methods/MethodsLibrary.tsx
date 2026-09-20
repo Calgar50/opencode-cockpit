@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { RIGHTS_INFO } from "../../../../server/shared/assistant-rules.ts";
 import { TEXTES } from "../../../../server/shared/construction-texts.ts";
-import { methodMenuState, suggestionsByAssistant } from "../../../../server/shared/methods-view.ts";
+import { methodMenuState, suggestionsByAssistant, texteIaRemplacee } from "../../../../server/shared/methods-view.ts";
 import { useApp } from "../../../app/AppContext.tsx";
 import { Icon } from "../../../components/Icon.tsx";
 import { useToast } from "../../../components/Toast.tsx";
@@ -21,7 +21,7 @@ import { useReloadGuard } from "../../../components/reloadGuard.ts";
 import { Button, EmptyState, Spinner, useConfirm } from "../../../components/ui.tsx";
 import { api, errorText } from "../../../lib/api.ts";
 import type { AssistantView, MethodsResponse, MethodView } from "../../../lib/types.ts";
-import { requestWithMethod } from "./assistant-request.ts";
+import { modelSubstitution, requestWithMethod } from "./assistant-request.ts";
 import { MethodCard, SuggestionButton } from "./MethodCard.tsx";
 import "./methods.css";
 
@@ -52,10 +52,21 @@ export function MethodsLibrary({ catalogue, erreur, chargement, onReessayer, ass
 
   const ajouter = async (assistant: AssistantView, method: MethodView) => {
     if (busy) return;
+    // L'ajout réenregistre le brouillon COMPLET : il peut remplacer les droits « personnalisé » et, en mode Simple, l'IA
+    // précise de l'assistant. Chaque conséquence est annoncée avant l'envoi, dans un SEUL dialogue : deux dialogues de suite
+    // se liraient l'un après l'autre, et le second passerait pour une répétition du premier.
+    const avertissements: string[] = [];
     if (assistant.rights === "personnalise") {
+      avertissements.push(
+        `Droits actuels : ${RIGHTS_INFO.personnalise.label} (réglés dans le Studio). Enregistrer une méthode ici les remplace par « ${RIGHTS_INFO.lecture.label} ». Pour choisir vous-même le profil, passez par « Modifier ».`,
+      );
+    }
+    const substitution = texteIaRemplacee(modelSubstitution(assistant, { avance, tiers }));
+    if (substitution !== null) avertissements.push(substitution);
+    if (avertissements.length > 0) {
       const ok = await confirm({
         title: `Ajouter la méthode « ${method.titre} » à « ${assistant.title} » ?`,
-        message: `Droits actuels : ${RIGHTS_INFO.personnalise.label} (réglés dans le Studio). Enregistrer une méthode ici les remplace par « ${RIGHTS_INFO.lecture.label} ». Pour choisir vous-même le profil, passez par « Modifier ».`,
+        message: avertissements.join(" "),
         confirmLabel: M.carte.ajouter,
       });
       if (!ok) return;

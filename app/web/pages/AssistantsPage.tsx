@@ -189,6 +189,10 @@ function AssistantsList({ detail }: { detail: string | null }) {
           </div>
         ) : null}
 
+        {/* <c5:mes-assistants> */}
+        {/* Bloc de l'itération 1, repris par la construction pour trois expressions seulement : le nombre, l'état vide et la
+            grille lisent `mesAssistants` (assistants hors équipe) au lieu de tous les assistants. Le reste du bloc est celui de
+            l'itération 1, inchangé ; la section est là pour que la grande fusion retrouve ces trois lignes. */}
         <Section title="Mes assistants" count={res ? mesAssistants.length : undefined}>
           {!res ? (
             data.loading ? (
@@ -217,6 +221,7 @@ function AssistantsList({ detail }: { detail: string | null }) {
             </div>
           )}
         </Section>
+        {/* </c5:mes-assistants> */}
 
         {/* <c5:equipiers-groupe> */}
         {equipiers.length > 0 ? (
@@ -396,14 +401,17 @@ function AssistantsList({ detail }: { detail: string | null }) {
           )
         ) : detailView ? (
           <div className="stack">
+            {/* <c5:methodes-fiche> */}
+            {/* La fiche d'identité de l'itération 1 tenait sur une ligne ; la construction y ajoute les méthodes, ce qui
+                éclate l'élément sur plusieurs lignes. La section entoure donc tout l'élément, et pas la seule ligne
+                `methods:`, pour que la grande fusion retrouve chacune des lignes changées. */}
             <IdentityCard
               data={{
                 ...identityOfView(detailView, detailView.origin === "catalogue" ? MESSAGES.catalogueReview : null),
-                // <c5:methodes-fiche>
                 methods: libellesMethodes(detailView),
-                // </c5:methodes-fiche>
               }}
             />
+            {/* </c5:methodes-fiche> */}
             {advanced ? (
               <p className="tiny muted">
                 <Badge>{detailView.name}</Badge>

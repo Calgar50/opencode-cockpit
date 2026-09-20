@@ -195,6 +195,34 @@ export function texteFicheMethodes(titres: readonly string[]): string | null {
 }
 
 /**
+ * Ce qu'un enregistrement ferait à l'IA d'un assistant : rien, ou un remplacement. Calculé par `modelSubstitution`
+ * (web/pages/assistants/methods/assistant-request.ts), qui connaît la conversion du niveau. Les trois libellés sont déjà
+ * lisibles : rien n'est traduit ici.
+ */
+export interface ModelSubstitution {
+  /** true : l'IA précise de l'assistant serait remplacée par celle d'un niveau. */
+  remplacee: boolean;
+  /** IA d'aujourd'hui ; null quand rien n'est remplacé. */
+  actuelle: string | null;
+  /** IA qui la remplacerait ; null quand le niveau n'en résout aucune. */
+  nouvelle: string | null;
+  /** Libellé du niveau qui l'apporte (« Équilibré ») ; null quand rien n'est remplacé. */
+  niveau: string | null;
+}
+
+/**
+ * Phrase de la confirmation « Ajouter à un assistant » quand l'enregistrement remplacerait l'IA précise de l'assistant ; null
+ * quand rien ne change, pour qu'aucune confirmation ne soit demandée sans raison. L'IA qui arrive n'est nommée que si le niveau
+ * en résout une : jamais un nom inventé.
+ */
+export function texteIaRemplacee(substitution: ModelSubstitution): string | null {
+  if (!substitution.remplacee || substitution.actuelle === null || substitution.niveau === null) return null;
+  const valeurs = { ia: substitution.actuelle, niveau: substitution.niveau };
+  if (substitution.nouvelle === null) return remplir(M.iaPrecise.remplaceeSansNom, valeurs);
+  return remplir(M.iaPrecise.remplacee, { ...valeurs, nouvelle: substitution.nouvelle });
+}
+
+/**
  * Libellés des méthodes d'un assistant, dans l'ordre de son fichier : le titre du catalogue quand il est connu, sinon
  * l'identifiant tel qu'il est écrit dans le fichier — jamais un titre inventé, jamais une méthode passée sous silence.
  */

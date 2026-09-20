@@ -644,6 +644,11 @@ describe("assistants", () => {
     assert.ok(fichier.includes("cockpit:methode pre-mortem"), "le bloc de la méthode n'est pas dans le fichier d'agent");
     const miroir = h.db.prepare("SELECT methods FROM item_meta WHERE kind = 'agents' AND name = 'analyste'").get() as Json;
     assert.deepEqual(JSON.parse(String(miroir?.methods ?? "[]")), ["pre-mortem"]);
+    // L'IA de l'assistant A CHANGÉ : aucun niveau ne porte GPT-5.3 Codex, le repli « equilibre » apporte donc l'IA du niveau
+    // Équilibré. C'est une conséquence réelle de l'ajout, que la bibliothèque doit annoncer avant d'envoyer : voir la
+    // confirmation « IA précise remplacée » de MethodsLibrary.tsx (modelSubstitution), relue par methods-view.test.ts.
+    assert.equal(parseFrontmatter(fichier).data.model, SONNET, "l'IA précise est remplacée par celle du niveau Équilibré");
+    assert.equal(h.meta("agents", "analyste")?.tier, "equilibre");
 
     // 5. En mode Avancé, l'ajout d'une méthode ne change PAS l'IA précise de l'assistant.
     const enAvance = requestWithMethod({ ...vue, methods: [] }, { id: "pre-mortem" }, { avance: true, tiers: h.tiers.views() });
@@ -651,11 +656,54 @@ describe("assistants", () => {
     assert.equal(enAvance.model, CODEX);
   });
 
+  // Le niveau RETROUVÉ, distinct du repli : un assistant dont l'IA précise EST celle d'un niveau repart avec CE niveau, donc
+  // avec la même IA. C'est le cas courant, puisque l'assistant de création pré-remplit l'IA précise avec celle du niveau en
+  // cours (AssistantWizard.tsx, case « Choisir une IA précise »). Rien n'est alors remplacé, et rien n'est à annoncer.
+  it("ajout d'une méthode en mode Simple : une IA précise qui est celle d'un niveau garde ce niveau, donc cette IA", async () => {
+    const h = harness({ mode: "avance" });
+    const rapide = h.tiers.views().find((t) => t.id === "rapide");
+    assert.ok(rapide, "le niveau Rapide devrait exister");
+    assert.ok(rapide.model, "le niveau Rapide devrait résoudre une IA");
+    assert.notEqual(rapide.model, SONNET, "Rapide et Équilibré doivent résoudre deux IA différentes");
+
+    const cree = await h.call("PUT", "/api/assistants/analyste", {
+      ...DRAFT,
+      title: "Analyser un incident de production",
+      tier: null,
+      model: rapide.model,
+    });
+    assert.equal(cree.status, 200, JSON.stringify(cree.body));
+    assert.equal(h.meta("agents", "analyste")?.tier, null, "l'assistant devrait être enregistré sans niveau");
+
+    h.settings.update({ ui: { mode: "simple" } });
+    const vue = (await h.call("GET", "/api/assistants")).body.assistants.find((a: Json) => a.name === "analyste");
+    assert.ok(vue, "assistant absent de GET /api/assistants");
+    assert.equal(vue.tier, null);
+    assert.equal(vue.model, rapide.model);
+
+    const corps = requestWithMethod(vue, { id: "pre-mortem" }, { avance: false, tiers: h.tiers.views() });
+    assert.equal(corps.tier, "rapide", "le niveau qui porte cette IA est retrouvé, jamais le repli « equilibre »");
+    assert.equal(corps.model, undefined, "le niveau suffit : aucune IA précise n'est envoyée en mode Simple");
+    const ajout = await h.call("PUT", "/api/assistants/analyste", corps);
+    assert.equal(ajout.status, 200, JSON.stringify(ajout.body));
+    assert.equal(h.meta("agents", "analyste")?.tier, "rapide", "l'assistant reste sur le niveau Rapide");
+    const fichier = fs.readFileSync(path.join(h.config, "agents", "analyste.md"), "utf8");
+    assert.equal(parseFrontmatter(fichier).data.model, rapide.model, "l'IA de l'assistant n'a pas changé");
+  });
+
   it("tierOfView : une seule règle de conversion, la même que l'assistant de création", () => {
     const h = harness();
     const tiers = h.tiers.views();
     const equilibre = tiers.find((t) => t.id === "equilibre");
     assert.equal(equilibre?.model, SONNET, "le niveau Équilibré devrait résoudre Claude Sonnet 5");
+    // Le niveau RETROUVÉ se distingue du repli. Sans ce cas, les deux chemins de la dernière ligne de `tierOfView` rendraient
+    // tous les deux « equilibre » et supprimer la recherche entière passerait inaperçu.
+    const rapide = tiers.find((t) => t.id === "rapide");
+    assert.ok(rapide, "le niveau Rapide devrait exister");
+    assert.ok(rapide.model, "le niveau Rapide devrait résoudre une IA");
+    assert.notEqual(rapide.model, equilibre?.model, "Rapide et Équilibré doivent résoudre deux IA différentes");
+    assert.equal(tierOfView({ tier: null, model: rapide.model }, false, tiers), "rapide");
+    assert.equal(tierOfView({ tier: null, model: rapide.model }, true, tiers), null);
     // Un niveau déjà posé est gardé tel quel, dans les deux modes.
     assert.equal(tierOfView({ tier: "rapide", model: null }, false, tiers), "rapide");
     assert.equal(tierOfView({ tier: "rapide", model: null }, true, tiers), "rapide");

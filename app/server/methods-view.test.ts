@@ -21,11 +21,13 @@ import {
   texteAssistantsEquipe,
   texteAttention,
   texteFicheMethodes,
+  texteIaRemplacee,
   texteQuand,
   texteUtiliseePar,
   withMethod,
   wizardMethodState,
 } from "./shared/methods-view.ts";
+import { type TierBrief, modelSubstitution } from "../web/pages/assistants/methods/assistant-request.ts";
 
 const M = TEXTES.partout.methodes;
 const WEB = path.join(import.meta.dirname, "..", "web", "pages", "assistants");
@@ -207,6 +209,63 @@ describe("methods-view : phrases", () => {
   });
 });
 
+// --- IA précise remplacée par l'ajout d'une méthode (corrections de la relecture de 5a V2) ---------------------------------------
+//
+// « Ajouter à un assistant » réenregistre le brouillon COMPLET (D-5-07). En mode Simple, l'IA précise d'un assistant ne peut pas
+// être renvoyée telle quelle : `tierOfView` retombe sur un niveau, dont l'IA n'est pas forcément la sienne. L'IA de l'assistant
+// change alors, ce qui change son coût et sa façon de répondre : la page doit le DIRE avant d'envoyer, jamais après.
+describe("methods-view : IA précise remplacée par l'ajout d'une méthode", () => {
+  const MINI = "github-copilot/gpt-5.4-mini";
+  const SONNET = "github-copilot/claude-sonnet-5";
+  const CODEX = "github-copilot/gpt-5.3-codex";
+
+  /** Niveaux tels que `GET /api/boot` les rend, réduits à ce que l'annonce lit. */
+  const tiers: TierBrief[] = [
+    { id: "rapide", label: "Rapide", model: MINI, modelName: "GPT-5.4 mini" },
+    { id: "equilibre", label: "Équilibré", model: SONNET, modelName: "Claude Sonnet 5" },
+    { id: "expert", label: "Poussée", model: null, modelName: null },
+  ];
+
+  it("IA précise qu'aucun niveau ne porte, en mode Simple : remplacement annoncé, les deux IA nommées", () => {
+    const sub = modelSubstitution({ tier: null, model: CODEX, modelName: "GPT-5.3 Codex" }, { avance: false, tiers });
+    assert.deepEqual(sub, { remplacee: true, actuelle: "GPT-5.3 Codex", nouvelle: "Claude Sonnet 5", niveau: "Équilibré" });
+    const texte = texteIaRemplacee(sub);
+    assert.ok(texte, "une substitution sans phrase ne serait annoncée nulle part");
+    // Les deux IA et le niveau sont nommés : sans eux, la phrase ne dirait pas ce qui change.
+    for (const attendu of ["GPT-5.3 Codex", "Claude Sonnet 5", "Équilibré"]) assert.ok(texte.includes(attendu), `${attendu} absent de « ${texte} »`);
+    assert.equal(texte, M.iaPrecise.remplacee.replace("{ia}", "GPT-5.3 Codex").replace("{niveau}", "Équilibré").replace("{nouvelle}", "Claude Sonnet 5"));
+  });
+
+  it("IA précise qui EST celle d'un niveau : rien n'est remplacé, rien n'est annoncé", () => {
+    for (const model of [SONNET, MINI]) {
+      assert.deepEqual(modelSubstitution({ tier: null, model, modelName: null }, { avance: false, tiers }), {
+        remplacee: false,
+        actuelle: null,
+        nouvelle: null,
+        niveau: null,
+      });
+    }
+  });
+
+  it("mode Avancé, niveau déjà posé, aucune IA : rien n'est remplacé", () => {
+    assert.equal(modelSubstitution({ tier: null, model: CODEX, modelName: null }, { avance: true, tiers }).remplacee, false);
+    assert.equal(modelSubstitution({ tier: "rapide", model: MINI, modelName: null }, { avance: false, tiers }).remplacee, false);
+    assert.equal(modelSubstitution({ tier: null, model: null, modelName: null }, { avance: false, tiers }).remplacee, false);
+  });
+
+  it("niveau de repli sans IA disponible : le remplacement est annoncé, sans nommer une IA qu'on ne connaît pas", () => {
+    const sansIa: TierBrief[] = tiers.map((niveau) => (niveau.id === "equilibre" ? { ...niveau, model: null, modelName: null } : niveau));
+    const sub = modelSubstitution({ tier: null, model: CODEX, modelName: null }, { avance: false, tiers: sansIa });
+    // `actuelle` reprend la clé quand le nom lisible manque : jamais de trou, jamais un nom inventé.
+    assert.deepEqual(sub, { remplacee: true, actuelle: CODEX, nouvelle: null, niveau: "Équilibré" });
+    assert.equal(texteIaRemplacee(sub), M.iaPrecise.remplaceeSansNom.replace("{ia}", CODEX).replace("{niveau}", "Équilibré"));
+  });
+
+  it("aucune substitution : aucune phrase", () => {
+    assert.equal(texteIaRemplacee({ remplacee: false, actuelle: null, nouvelle: null, niveau: null }), null);
+  });
+});
+
 // --- Contrat statique de l'interface (les composants ne sont pas exécutés par npm test) -------------------------------------
 
 const lire = (...parts: string[]) => fs.readFileSync(path.join(WEB, ...parts), "utf8");
@@ -271,6 +330,21 @@ describe("methods-view : interface de la bibliothèque", () => {
     assert.ok(corps.includes("previousName: view.name"), "aucun renommage");
     assert.ok(corps.includes("tierOfView(view, contexte.avance, contexte.tiers)"), "la conversion du niveau n'est plus partagée avec l'assistant de création");
     assert.equal(/\btier:\s*view\.tier\b/.test(corps), false, "le niveau de l'assistant est recopié tel quel : le mode Simple refuserait une IA précise");
+  });
+
+  it("l'IA précise remplacée est annoncée AVANT l'envoi, dans le même dialogue que les droits", () => {
+    const source = code(bibliotheque);
+    assert.ok(source.includes("modelSubstitution(assistant, { avance, tiers })"), "la substitution est calculée par le module pur voisin");
+    assert.ok(source.includes("texteIaRemplacee("), "la phrase vient du module pur, jamais réécrite dans la page");
+    assert.equal(source.includes(M.iaPrecise.remplacee), false, "la phrase n'est pas recopiée dans la page");
+    // Rien n'est envoyé tant que la confirmation n'est pas donnée : elle est demandée avant `setBusy(true)`, donc avant l'appel.
+    const confirmation = source.indexOf("await confirm(");
+    const envoi = source.indexOf("setBusy(true)");
+    assert.ok(confirmation > 0 && envoi > confirmation, "la confirmation est demandée avant l'envoi");
+    // Un seul dialogue liste les deux conséquences (droits « personnalisé » et IA précise) : deux dialogues de suite les
+    // feraient lire l'une après l'autre, et le second passerait pour une répétition du premier.
+    assert.equal((source.match(/await confirm\(/g) ?? []).length, 1, "un seul dialogue, qui cumule les avertissements");
+    assert.ok(source.includes("avertissements"), "les avertissements sont assemblés avant d'ouvrir le dialogue");
   });
 
   it("feuille de style : mode contrasté, aucune animation, aucune boucle", () => {

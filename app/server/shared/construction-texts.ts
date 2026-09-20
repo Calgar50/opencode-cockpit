@@ -123,6 +123,18 @@ export const TEXTES = {
         liste: "Méthodes : {liste}",
         phrase: "Une méthode guide la façon de répondre ; elle ne garantit pas que la réponse est juste.",
       },
+      /**
+       * Confirmation d'« Ajouter à un assistant » quand l'enregistrement remplacerait l'IA précise de l'assistant (corrections
+       * de la relecture de 5a V2). Honnêteté (§6, P3) : l'ajout d'une méthode réenregistre le brouillon complet, et le mode
+       * Simple ne peut pas renvoyer une IA précise — l'IA change donc, avec son coût et sa façon de répondre. Cela se dit
+       * AVANT l'envoi. La seconde phrase sert quand le niveau de repli ne résout aucune IA : rien n'est alors inventé.
+       */
+      iaPrecise: {
+        remplacee:
+          "Cet assistant utilise une IA précise (« {ia} »). En mode Simple, enregistrer une méthode la remplace par l'IA du niveau {niveau} (« {nouvelle} »). Pour garder cette IA, passez en mode Avancé ou par « Modifier ».",
+        remplaceeSansNom:
+          "Cet assistant utilise une IA précise (« {ia} »). En mode Simple, enregistrer une méthode la remplace par l'IA du niveau {niveau}. Pour garder cette IA, passez en mode Avancé ou par « Modifier ».",
+      },
       puce: {
         ajouter: "+ Méthode",
         choisie: "Méthode : {titre}",
