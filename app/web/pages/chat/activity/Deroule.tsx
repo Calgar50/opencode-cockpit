@@ -39,6 +39,11 @@ import { formatDuration, formatTime, formatUsd, plural } from "../../../lib/form
 import type { ActivityResponse, ActorState, BrowserEvent, OcSession } from "../../../lib/types.ts";
 import type { DerouleProps } from "../slots.ts";
 import { builtinTitle, gapsText, type Planned, plannedOf } from "../turn.ts";
+// <c5:chronologie>
+// Itération 5 (L47b, D-5-09) : en mode Avancé, le Déroulé porte une bascule « Déroulé | Chronologie ». La chronologie est un
+// réglage du mode Avancé (« jeton » est interdit en Simple) : en Simple, la bascule est ABSENTE et rien n'est lu.
+import { BasculeChronologie, Chronologie, type VueDeroule } from "./Chronologie.tsx";
+// </c5:chronologie>
 import "./deroule.css";
 
 // --- État partagé d'une conversation -------------------------------------------------------------------------------------------
@@ -566,6 +571,12 @@ function DerouleBars({ rows, advanced, caption }: { rows: readonly RowView[]; ad
 export function DerouleContent({ activity, rootId, placement, advanced, journalNonce }: DerouleContentProps) {
   const [picked, setPicked] = useState<string | null>(null);
   const [table, setTable] = useState(false);
+  // <c5:chronologie>
+  // Vue choisie par la bascule (L47b) : « Déroulé » par défaut. En mode Simple, la bascule est absente et `chrono` reste faux,
+  // donc aucune ligne `usage` n'est lue et le mot « jeton » n'apparaît jamais.
+  const [vueChrono, setVueChrono] = useState<VueDeroule>("deroule");
+  const chrono = advanced && vueChrono === "chronologie";
+  // </c5:chronologie>
   const journalRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const journalId = useId();
@@ -603,11 +614,14 @@ export function DerouleContent({ activity, rootId, placement, advanced, journalN
       <div className={archives ? "card-header" : "deroule-head"}>
         <Heading id={titleId}>Déroulé</Heading>
         <span className="spacer" />
-        {state ? (
+        {/* <c5:chronologie> */}
+        {state && advanced ? <BasculeChronologie value={vueChrono} onChange={setVueChrono} label="Vue du déroulé" /> : null}
+        {state && !chrono ? (
           <Button variant="ghost" size="sm" icon="list" aria-pressed={table} onClick={() => setTable((v) => !v)}>
             Tableau
           </Button>
         ) : null}
+        {/* </c5:chronologie> */}
       </div>
 
       {activity.error ? <div className="callout critical small">Déroulé indisponible : {activity.error}</div> : null}
@@ -643,7 +657,15 @@ export function DerouleContent({ activity, rootId, placement, advanced, journalN
           ) : null}
           {delegated ? null : <p className="small muted">Une seule IA a travaillé sur {scope}.</p>}
 
-          {table ? <DerouleTable rows={rows} /> : <DerouleBars rows={rows} advanced={advanced} caption={captionOf(rows, sum)} />}
+          {/* <c5:chronologie> */}
+          {chrono ? (
+            <Chronologie rootId={rootId} state={state} partial={activity.partial} />
+          ) : table ? (
+            <DerouleTable rows={rows} />
+          ) : (
+            <DerouleBars rows={rows} advanced={advanced} caption={captionOf(rows, sum)} />
+          )}
+          {/* </c5:chronologie> */}
 
           {delegated ? <p className="tiny muted">{ecartsOf(rows)}</p> : null}
 
