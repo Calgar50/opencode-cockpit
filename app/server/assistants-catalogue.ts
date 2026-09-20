@@ -2,7 +2,9 @@
 // Versionné et relu dans le dépôt : toute modification des consignes d'une entrée augmente sa `version`.
 // Ce sont des exemples génériques : l'interface affiche « Exemple à relire avec votre équipe », et chaque fiche
 // livrée commence par ce même bandeau.
+// <c5:import>
 import type { AssistantRole } from "./shared/api-types.ts";
+// </c5:import>
 import { type AssistantIcon, MESSAGES, type RightsProfile, type TaskSize, type Tier, type UseCase } from "./shared/assistant-rules.ts";
 
 export interface CatalogueEntry {
@@ -16,11 +18,13 @@ export interface CatalogueEntry {
   web: boolean;
   tier: Tier;
   taskSize: TaskSize;
+  // <c5:role>
   /**
    * « equipier » : assistant d'équipe, prévu pour une étape d'équipe. Absent = « assistant ». Ce champ n'entre jamais dans un
    * brouillon (`AssistantDraft`) : l'installation le range seulement dans `item_meta.role`.
    */
   role?: AssistantRole;
+  // </c5:role>
   fiches: string[];
   examples: string[];
   instructions: string;
@@ -230,6 +234,7 @@ Tu ne donnes jamais d'avis favorable ou défavorable : tu listes les manques et 
 - Pour une mise à jour, garde la structure existante et résume les changements à la fin.
 - Ne lance pas les commandes du runbook pour les « tester » : propose-les à l'utilisateur.`,
   },
+  // <c5:equipiers>
   // Assistants d'équipe (1.1) : ils travaillent dans une étape d'équipe. Lecture seule, sans Internet, sans délégation.
   {
     id: "relecteur-critique",
@@ -381,6 +386,7 @@ Quatre sections, dans cet ordre :
 - Une action sans rôle responsable, sans échéance ou sans résultat mesurable n'est pas une action : complète-la ou retire-la.
 - À une relecture, réponds à chaque point reçu : soit tu corriges le texte, soit tu expliques pourquoi tu le gardes. Ne laisse aucun point sans réponse.`,
   },
+  // </c5:equipiers>
 ]);
 
 export const CATALOGUE_FICHES: readonly CatalogueFiche[] = Object.freeze([
@@ -496,6 +502,7 @@ Arrête l'analyse et préviens l'utilisateur en premier si les éléments fourni
 - [ ] Approbations requises obtenues ou demandées.
 `,
   },
+  // <c5:fiche-postmortem>
   {
     name: "postmortem-sans-reproche",
     description:
@@ -542,4 +549,5 @@ Une action porte trois éléments, sinon ce n'est pas une action :
 - Il ne conclut pas à la place du comité qui le relira.
 `,
   },
+  // </c5:fiche-postmortem>
 ]);

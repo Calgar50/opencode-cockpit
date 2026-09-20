@@ -20,7 +20,9 @@ import type { SettingsStore } from "./settings.ts";
 import type {
   AssistantOrigin,
   AssistantPreview,
+  // <c5:role>
   AssistantRole,
+  // </c5:role>
   AssistantState,
   AssistantsResponse,
   AssistantView,
@@ -404,6 +406,7 @@ export async function probeSessionsBusyStrict(deps: {
 
 // --- Service -----------------------------------------------------------------------------------
 
+// <c5:role>
 /** `role` : colonne `item_meta.role` (déjà migrée), absente d'`ItemMetaRow` ; sans valeur, la ligne reste « assistant ». */
 type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at"> & { role?: AssistantRole };
 
@@ -411,6 +414,7 @@ type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at"> & { role?: Assis
 function roleOf(row: Pick<ItemMetaRow, "name">): AssistantRole {
   return (row as { role?: unknown }).role === "equipier" ? "equipier" : "assistant";
 }
+// </c5:role>
 
 interface ViewContext {
   rows: ItemMetaRow[];
@@ -464,6 +468,9 @@ export class AssistantService {
   }
 
   #upsert(row: MetaInput, now = Date.now()): void {
+    // <c5:role-sql>
+    // La construction a ajouté la colonne `role` à trois endroits de cette requête, et nulle part ailleurs : la liste des
+    // colonnes, la liste des valeurs (`:role`) et la clause ON CONFLICT (`role = excluded.role`). Le reste est d'avant.
     this.#d.db
       .prepare(
         `INSERT INTO item_meta (kind, name, title, use_case, icon, tier, rights, task_size, examples, origin, catalog_id,
@@ -496,6 +503,7 @@ export class AssistantService {
           now,
         }),
       );
+    // </c5:role-sql>
   }
 
   // --- Lectures (fichiers, opencode) ----------------------------------------------------------
@@ -644,7 +652,9 @@ export class AssistantService {
       origin: row.origin,
       catalogId: row.catalog_id,
       catalogVersion: row.catalog_version,
+      // <c5:role>
       role: roleOf(row),
+      // </c5:role>
       tier: isTier(row.tier) ? row.tier : null,
       taskSize,
       rights: detected.rights,
@@ -792,7 +802,9 @@ export class AssistantService {
         web: entry.web,
         tier: entry.tier,
         taskSize: entry.taskSize,
+        // <c5:role>
         role: entry.role ?? "assistant",
+        // </c5:role>
         fiches: [...entry.fiches],
         examples: [...entry.examples],
         instructions: entry.instructions,
@@ -880,8 +892,10 @@ export class AssistantService {
       catalog_version: entry.version,
       applied_model: text(item.frontmatter.model),
       applied_variant: text(item.frontmatter.variant),
+      // <c5:role>
       // `role` ne passe pas par le brouillon : il ne vit que dans item_meta.
       role: entry.role ?? "assistant",
+      // </c5:role>
     });
     this.#d.lookup.invalidate();
     this.#d.hub.cockpit("studio.changed", { kind: "agents", name });
@@ -1036,8 +1050,10 @@ export class AssistantService {
         catalog_version: existing && existing.origin !== "studio" ? existing.catalog_version : null,
         applied_model: text(item.frontmatter.model),
         applied_variant: text(item.frontmatter.variant),
+        // <c5:role>
         // « Modifier » ne change pas le rôle : un assistant d'équipe installé le garde, comme son origine.
         role: existing && existing.origin !== "studio" ? roleOf(existing) : "assistant",
+        // </c5:role>
       });
     });
 
@@ -1404,7 +1420,9 @@ export class AssistantService {
         catalog_version: row?.catalog_version ?? null,
         applied_model: model,
         applied_variant: variant,
+        // <c5:role>
         role: row ? roleOf(row) : "assistant",
+        // </c5:role>
       });
     });
   };
