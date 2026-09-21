@@ -493,21 +493,22 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
 // --- 8. Salle absente ------------------------------------------------------------------------------------------------------------
 
 /**
- * Modules de la salle installés (fichiers neufs, aucun branchement) : seuls eux-mêmes et leurs tests les importent. Liste étendue à
- * chaque train (demande de contrat n° 1 de L17b, train de V1) : V0, puis V1 (service de contrôle du cockpit, validateurs de l'image,
- * filet). T3b (V2) branche omo-control.ts dans wiring-11.ts : c'est lui qui retirera ce nom, avec son test de salle coupée.
+ * Modules de la salle encore NON BRANCHÉS (fichiers neufs) : seuls eux-mêmes et leurs tests les importent. Liste étendue à chaque
+ * train (demande de contrat n° 1 de L17b, train de V1) : V0, puis V1 (service de contrôle du cockpit, validateurs de l'image,
+ * filet). T3b (V2) a branché le service de contrôle (`omo-control.ts`) dans le câblage, avec son test de salle coupée : ce nom est
+ * retiré, et avec lui les trois modules que ce service importe (`omo-contracts.ts`, `shared/omo-control-protocol.ts`,
+ * `shared/omo-types.ts`) plus le module de textes que la route de la salle lit pour sa phrase de refus (`shared/omo-room-texts.ts`)
+ * — sans quoi le service branché, désormais parcouru comme un fichier de production, serait pris en faute pour ses propres
+ * importations. Les modules de comportement de la salle (pré-contrôle, plafonds, détections, egress, audit, superviseur) restent
+ * interdits d'importation : ils arrivent en V3 et V4.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
-  "omo-control.ts",
   "validate.mjs",
   "validate-core.mjs",
   "cockpit-guard.js",
   // V0
-  "omo-types.ts",
   "omo-limits.ts",
-  "omo-contracts.ts",
-  "omo-room-texts.ts",
   "omo-cap.ts",
   "omo-detections.ts",
   "omo-precheck-rules.ts",
@@ -515,7 +516,6 @@ const MODULES_SALLE_V0 = new Set([
   "egress-allow.ts",
   "egress-proxy.ts",
   "egress-journal.ts",
-  "omo-control-protocol.ts",
   "omo-audit-4.19.4.ts",
   "omo-audit-texts.ts",
   "omo-roles.ts",
@@ -523,12 +523,16 @@ const MODULES_SALLE_V0 = new Set([
 ]);
 
 describe("croisements 2bis V0 : tous les modules installés, la salle reste absente", () => {
-  it("app-factory avec modules « tous » : aucune route /api/omo, bootstrap sans champ omo, opencode jamais relancé", async (t) => {
+  // T3b (V2) a câblé les modules de la salle : les routes /api/omo/* existent désormais, et refusent toutes 403 « salle-coupee »
+  // tant que SALLE_OUVERTE est faux (plan 2 bis §2.7). Aucune salle n'est ouverte pour autant, et le bootstrap reste sans champ omo.
+  it("app-factory avec modules « tous » : toute route /api/omo → 403 salle-coupee, bootstrap sans champ omo, opencode jamais relancé", async (t) => {
     const h = await startCockpit(t, { modules: "tous" });
     const ouverture = await h.call("POST", "/api/omo/rooms", { headers: h.headers.confirmed, body: { projet: "app" } });
-    assert.equal(ouverture.status, 404, ouverture.body);
+    assert.equal(ouverture.status, 403, ouverture.body);
+    assert.equal(ouverture.json<{ error: string }>().error, "salle-coupee");
     const statut = await h.call("GET", "/api/omo/status", { headers: h.headers.authed });
-    assert.equal(statut.status, 404, statut.body);
+    assert.equal(statut.status, 403, statut.body);
+    assert.equal(statut.json<{ error: string }>().error, "salle-coupee");
     const bootstrap = await h.call("GET", "/api/bootstrap", { headers: h.headers.authed });
     assert.equal(bootstrap.status, 200, bootstrap.body);
     assert.equal(Object.hasOwn(bootstrap.json<Record<string, unknown>>(), "omo"), false);
