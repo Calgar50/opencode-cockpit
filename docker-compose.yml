@@ -1,4 +1,14 @@
 # opencode-cockpit : ne modifiez pas ce fichier, personnalisez `.env` (généré par install.ps1).
+#
+# Salle Oh My OpenAgent (services `opencode-omo`, `egress` et `omo-init`) : tous sous le profil `omo`, donc absents tant que
+# `--profile omo` n'est pas donné. Trois règles mesurées (MX-OMO) valent pour qui touche à ce fichier :
+#   1. RÉPÉTER `--profile omo` pour `stop` et pour `down` (MO-3 point 2) : sans lui, la salle continue de tourner et le réseau du
+#      projet ne peut pas être supprimé (« Resource is still in use »). `cockpit.ps1` le fait ; à la main, ne l'oubliez pas.
+#   2. JAMAIS de variable EXIGÉE (forme deux-points point d'interrogation) dans un service à profil (MO-3 point 1) : elle casse
+#      `config`, `up`, `stop` et `down` du projet ENTIER, profil inactif compris — une installation sans la salle ne pourrait même
+#      plus arrêter son cockpit. D'où la valeur d'office `…:absente` de l'image de la salle : sans le profil tout marche, et avec
+#      le profil une image absente donne une erreur nette, grâce à `pull_policy: never`.
+#   3. Ne pas mélanger `COMPOSE_PROFILES` et `--profile` (MO-3 point 3) : donnés ensemble, `--profile` remplace la variable.
 name: opencode-cockpit
 
 x-network-env: &network-env
@@ -73,6 +83,8 @@ services:
         condition: service_started
     environment:
       <<: *network-env
+      # Les deux services de la salle rejoignent le trafic interne : le cockpit les appelle en direct, jamais par le proxy.
+      NO_PROXY: localhost,127.0.0.1,::1,opencode,cockpit,opencode-omo,egress${NO_PROXY:+,${NO_PROXY}}
       NODE_USE_ENV_PROXY: "1"
       COCKPIT_HOST: 0.0.0.0
       COCKPIT_PORT: "7777"
@@ -91,6 +103,18 @@ services:
       OPENCODE_URL: http://opencode:4096
       OPENCODE_SERVER_USERNAME: opencode
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+      # --- Salle Oh My OpenAgent (variables `cockpit` du contrat docker/opencode-omo/contrat-salle.json) ---
+      # « off » d'office : la salle reste coupée tant qu'install.ps1 -OmoArchive n'a pas été lancé ET que ce réglage n'a pas été
+      # mis à « on » à la main. Aucune de ces variables ne démarre quoi que ce soit : le service est derrière son profil.
+      COCKPIT_OMO: ${COCKPIT_OMO:-off}
+      COCKPIT_OMO_IMAGE: ${COCKPIT_OMO_IMAGE:-}
+      OPENCODE_OMO_URL: http://opencode-omo:4096
+      OPENCODE_OMO_PASSWORD: ${OPENCODE_OMO_PASSWORD:-}
+      COCKPIT_OMO_CONTROL_DIR: /control-omo
+      COCKPIT_OMO_STATE_DIR: /omo-state
+      COCKPIT_OMO_AUTH_DIR: /omo-auth
+      COCKPIT_OMO_PROJECTS_FILE: /control-omo/omo-projets.json
+      COCKPIT_EGRESS_JOURNAL: /egress-log
     volumes:
       - ${WORKSPACE_DIR}:/workspace
       - ${ARCHIVE_DIR:-./archives}:/archives
@@ -100,8 +124,145 @@ services:
       - oc-data:/oc-data:ro
       - control:/control
       - ./certs:/certs:ro
+      # Salle : le cockpit écrit le battement, le stop-request, les projets préparés et l'authentification réduite ; il ne fait
+      # que LIRE l'état publié par le superviseur et le journal des sorties refusées (contrat, `volumes[].ecrivain`).
+      - control-omo:/control-omo
+      - omo-auth:/omo-auth
+      - omo-state:/omo-state:ro
+      - egress-log:/egress-log:ro
     # Uniquement sur la boucle locale ; HTTPS par défaut, HTTP seulement après install.ps1 -Http
     ports: ["127.0.0.1:${COCKPIT_PORT:-7777}:7777"]
+    # `omo-internal` est fermé (internal: true) : le rejoindre n'ouvre rien vers l'extérieur, et c'est le seul chemin vers la salle.
+    networks: [default, omo-internal]
+
+  # --- Salle Oh My OpenAgent (profil `omo`) ---------------------------------------------------------------------------------
+  # Préparation des volumes de la salle, puis arrêt (MO-11). Sous Compose, le propriétaire d'un volume neuf est celui du point de
+  # montage dans l'image du service créé en DERNIER, pas du premier démarré : il ne se déduit pas de l'ordre. Ce service jetable le
+  # pose donc explicitement, avant `opencode-omo`, d'après `volumes[].proprietaire` du contrat. Le superviseur vérifie ensuite
+  # chaque propriétaire et REFUSE de démarrer en cas d'écart, sans rien corriger en silence.
+  omo-init:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-opencode-cockpit/app:local}
+    restart: "no"
+    logging: *logging
+    read_only: true
+    # Root le temps du chown, sans aucune autre capacité (CHOWN seule) et sans réseau du tout.
+    user: "0:0"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    pids_limit: 32
+    network_mode: none
+    # Commande fixe, sans aucune entrée : les six chemins sont ceux que app/Dockerfile crée pour ce service.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["set -eu; chown node:node /control-omo /omo-auth /egress-log /oc-omo-data; chown root:root /omo-state /omo-config"]
+    volumes:
+      - control-omo:/control-omo
+      - omo-auth:/omo-auth
+      - egress-log:/egress-log
+      - oc-omo-data:/oc-omo-data
+      - omo-state:/omo-state
+      - omo-config:/omo-config
+
+  # Proxy de sortie de la salle : seul `CONNECT <hôte de l'API Copilot>:443` passe, tout le reste reçoit 403 et entre au journal.
+  # Membre des DEUX réseaux (MO-10 point 5) : c'est la seule forme qui donne une sortie à un réseau `internal: true`.
+  egress:
+    profiles: ["omo"]
+    # Image du cockpit, autre commande, zéro dépendance npm : elle est déjà construite ou chargée par le service `cockpit`.
+    image: ${COCKPIT_APP_IMAGE:-opencode-cockpit/app:local}
+    command: ["node", "--disable-warning=ExperimentalWarning", "server/egress-proxy.ts"]
+    restart: unless-stopped
+    logging: *logging
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 128
+    # L'image porte le HEALTHCHECK du cockpit (server/healthcheck.ts) : sans cette surcharge, `egress` ne serait JAMAIS sain.
+    healthcheck:
+      test: ["CMD", "node", "--disable-warning=ExperimentalWarning", "server/egress-proxy.ts", "--sonde"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    environment:
+      # HTTPS_PROXY : proxy d'entreprise de l'hôte, auquel egress chaîne son CONNECT. Il est seul à le voir.
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,::1,opencode,cockpit,opencode-omo,egress${NO_PROXY:+,${NO_PROXY}}
+      COCKPIT_COPILOT_API_URL: ${COCKPIT_COPILOT_API_URL:-}
+      COCKPIT_GITHUB_ENTERPRISE_DOMAIN: ${COCKPIT_GITHUB_ENTERPRISE_DOMAIN:-}
+      COCKPIT_EGRESS_JOURNAL: /egress-log
+      TZ: ${TZ:-Europe/Paris}
+    volumes:
+      - egress-log:/egress-log
+    networks: [default, omo-internal]
+
+  # Seconde instance d'opencode, avec l'extension Oh My OpenAgent. Image apportée en archive (P13) : jamais construite, jamais tirée.
+  opencode-omo:
+    profiles: ["omo"]
+    image: ${COCKPIT_OMO_IMAGE:-opencode-cockpit/opencode-omo:absente}
+    pull_policy: never
+    restart: unless-stopped
+    logging: *logging
+    read_only: true
+    # Syntaxe COURTE imposée (MO-4 point 3) : la syntaxe longue (`type: tmpfs`) n'accepte ni `exec`, ni `uid`/`gid`, et le HOME y
+    # appartiendrait à root. `exec` est nécessaire : un tmpfs Docker est `noexec` d'office, et le lanceur de tests d'un projet ne
+    # partirait pas depuis /tmp (MO-4 points 1 et 2). Attention : `noexec` n'empêche de toute façon pas `sh /tmp/script.sh`.
+    # Le troisième tmpfs donne à opencode un dossier d'état inscriptible : sous le HOME, Docker crée les dossiers INTERMÉDIAIRES
+    # des montages (~/.local, ~/.local/share) en root 755, et `node` ne peut alors plus créer ~/.local/state (MO-3 point 8).
+    tmpfs:
+      - "/home/node:exec,mode=0755,uid=1000,gid=1000"
+      - "/tmp:exec,mode=1777"
+      - "/home/node/.local/state:exec,mode=0755,uid=1000,gid=1000"
+    # SETUID et SETGID : le superviseur démarre root (manifeste, validation, état) et bascule vers `node` par setpriv (D-2b-27).
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["SETUID", "SETGID"]
+    # Provisoires (D-2b-46), ajustés au train de la vague 3 d'après la mesure M22.
+    pids_limit: 512
+    cpus: 2
+    mem_limit: 4g
+    depends_on:
+      omo-init:
+        condition: service_completed_successfully
+    # Liste blanche `variables.salle` du contrat, et elle seule : ni l'ancre `network-env` (elle porte des réglages du cockpit),
+    # ni `env_file` (il verserait tout le .env dans la salle).
+    environment:
+      # Tout le trafic sortant passe par egress, qui n'ouvre que CONNECT vers l'API Copilot ; le proxy d'entreprise n'est atteignable
+      # que par lui. Le réseau étant fermé, une requête qui contournerait ces variables n'irait nulle part (MO-10 points 1 et 2).
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,::1,egress
+      OPENCODE_SERVER_USERNAME: opencode
+      # Mot de passe propre à la salle, jamais celui de l'instance principale ; install.ps1 l'écrit dans .env et le cockpit reçoit
+      # le même. Variable exigée impossible ici (MO-3 point 1) : c'est au démarrage de la salle de refuser une valeur vide.
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_OMO_PASSWORD:-}
+      # Jamais vide : validate.mjs refuse de démarrer sans adresse d'API bien formée (demande (C) de L15a).
+      COCKPIT_COPILOT_API_URL: ${COCKPIT_COPILOT_API_URL:-https://api.githubcopilot.com}
+      # Autorité d'entreprise facultative : chemin d'un fichier DANS le conteneur (par exemple /certs/entreprise.pem).
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+    volumes:
+      # Sessions de la salle, sans configuration. `oc-data` (instance principale) n'est JAMAIS monté ici (D-2b-26) : la salle ne
+      # reçoit que l'entrée `github-copilot` d'auth.json, recopiée par le cockpit dans `omo-auth`.
+      - oc-omo-data:/home/node/.local/share/opencode
+      - omo-auth:/auth-src:ro
+      - control-omo:/control:ro
+      - omo-state:/omo-state
+      # Configuration figée : un seul volume, monté en écriture hors du HOME (root y pose omo.jsonc et .gitignore à chaque
+      # démarrage) et en lecture seule sur les cinq dossiers que lisent l'extension et opencode (D-2b-33, révisée au train de V1).
+      - omo-config:/omo-config
+      - omo-config:/home/node/.config/opencode:ro
+      - omo-config:/home/node/.opencode:ro
+      - omo-config:/home/node/.omo:ro
+      - omo-config:/home/node/.claude:ro
+      - omo-config:/home/node/.agents:ro
+      - ${WORKSPACE_DIR}:/workspace
+      - ./certs:/certs:ro
+    # Aucun port publié : la salle n'est joignable que par le cockpit, sur le réseau fermé.
+    expose: ["4096"]
+    networks: [omo-internal]
 
 volumes:
   oc-config:
@@ -110,3 +271,17 @@ volumes:
   cockpit-data:
   cockpit-tls:
   control:
+  # Salle (contrat docker/opencode-omo/contrat-salle.json, `volumes`).
+  control-omo:
+  omo-auth:
+  omo-state:
+  egress-log:
+  oc-omo-data:
+  omo-config:
+
+networks:
+  default:
+  # Réseau fermé de la salle : aucune route par défaut, aucune résolution publique, aucune sortie (MO-10 points 1 et 2). Seuls
+  # `cockpit` et `egress` y ont un pied, et `egress` est le seul à toucher aussi le réseau ouvert. `opencode` n'y entre jamais (P11).
+  omo-internal:
+    internal: true
