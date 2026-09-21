@@ -607,6 +607,79 @@ export function formeGit(chemin) {
   return "lien";
 }
 
+/** Au-delà de ce nombre de casses possibles, l'énumération complète est remplacée par la paire minuscules/majuscules. */
+export const ALIAS_CASSE_MAX = 64;
+
+/**
+ * Autres noms sous lesquels le MÊME dossier peut être ouvert quand le partage de l'hôte est insensible à la casse (9p/drvfs de
+ * Docker Desktop : `WORKSPACE_DIR` est toujours un chemin Windows) : les variantes de casse, et les noms courts 8.3 que NTFS
+ * expose encore (`.git` s'ouvre aussi par `GIT~1`). Un bind `:ro` ne porte que sur le dentry exact : par tout autre nom, le
+ * dossier reste inscriptible. Liste bornée : énumération complète des casses tant qu'elle tient sous `ALIAS_CASSE_MAX`
+ * (« .git » : 8 formes), sinon la seule paire minuscules/majuscules, plus quatre formes courtes. Le nom lui-même n'y est pas.
+ */
+/** Toutes les casses d'un nom, ou la seule paire minuscules/majuscules quand l'énumération dépasserait `ALIAS_CASSE_MAX`. */
+function cassesDeNom(nom) {
+  const lettres = [];
+  for (let i = 0; i < nom.length; i++) if (nom[i].toLowerCase() !== nom[i].toUpperCase()) lettres.push(i);
+  if (lettres.length === 0 || 2 ** lettres.length > ALIAS_CASSE_MAX) return [nom.toLowerCase(), nom.toUpperCase()];
+  const formes = [];
+  for (let masque = 0; masque < 2 ** lettres.length; masque++) {
+    const car = [...nom];
+    for (let rang = 0; rang < lettres.length; rang++) {
+      const pos = lettres[rang];
+      car[pos] = (masque >> rang) & 1 ? car[pos].toUpperCase() : car[pos].toLowerCase();
+    }
+    formes.push(car.join(""));
+  }
+  return formes;
+}
+
+/** Noms courts 8.3 : points de tête retirés, six caractères du corps, « ~1 » à « ~4 », extension sur trois caractères. */
+function nomsCourtsDeNom(nom) {
+  const sansPoints = nom.replace(/^\.+/, "");
+  const dernier = sansPoints.lastIndexOf(".");
+  const propre = (texte, taille) => texte.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, taille);
+  const corps = propre(dernier > 0 ? sansPoints.slice(0, dernier) : sansPoints, 6);
+  if (corps.length === 0) return [];
+  const extension = propre(dernier > 0 ? sansPoints.slice(dernier + 1) : "", 3);
+  const suffixe = extension === "" ? "" : `.${extension}`;
+  return [1, 2, 3, 4].map((n) => `${corps}~${n}${suffixe}`);
+}
+
+export function aliasDeNom(nom) {
+  const alias = new Set([...cassesDeNom(nom), ...nomsCourtsDeNom(nom)]);
+  alias.delete(nom);
+  return [...alias];
+}
+
+/**
+ * SONDE de la protection d'un dépôt (relecture 2bis-vague-2, risque 11 / C2-5) : le bind `:ro` et le point de montage ne disent
+ * rien des ALIAS du même dossier. Sur un partage insensible à la casse, `/workspace/p/.GIT`, `/workspace/p/.Git` et
+ * `/workspace/p/GIT~1` désignent le dossier `.git` protégé, mais ne traversent pas le montage en lecture seule : un crochet
+ * `hooks/pre-commit` y est écrit ou créé, et s'exécute sur le poste au prochain `git commit`. Ni le bind, ni `readdir` (qui ne
+ * montre que « .git ») ne voient ce détour.
+ *
+ * Vrai dès qu'un alias EXISTE et est inscriptible : le dépôt entre alors dans `nonProteges` et la salle refuse de démarrer
+ * (« fermé en cas de doute »). Aucune écriture n'est tentée dans le dépôt de l'utilisateur : `access(W_OK)` est exactement la
+ * primitive qui juge déjà le `.git` lui-même, et une écriture réelle poserait un fichier dans un dépôt qu'on promet intact.
+ * Aucune dépendance nouvelle (P8) : `fs` seul.
+ */
+export function aliasInscriptible(chemin, acces = accesEcriture) {
+  const parent = path.dirname(chemin);
+  if (parent === chemin) return false;
+  for (const alias of aliasDeNom(path.basename(chemin))) {
+    const candidat = path.join(parent, alias);
+    try {
+      fs.lstatSync(candidat);
+    } catch {
+      // Absent : sur un système sensible à la casse, cet alias n'existe tout simplement pas.
+      continue;
+    }
+    if (acces(candidat)) return true;
+  }
+  return false;
+}
+
 /** Forme d'une entrée déjà lue par `readdir` (aucun accès disque de plus) ; tout ce qui n'est ni dossier ni fichier est un doute. */
 function formeDeLEntree(entree) {
   if (entree.isSymbolicLink()) return "lien";
@@ -676,6 +749,8 @@ function estDepotNu(entrants) {
  *   par la surcharge) : un `.git` que personne n'a monté n'est protégé que par ses droits, et un parent renommé suffit à le
  *   remplacer par un `.git` inscriptible (MO-3). Un `.git` FICHIER ne l'est en plus que si sa cible `gitdir:` l'est
  *   (`cibleGitdirProtegee`) ;
+ * - « non inscriptible » se juge AUSSI par les alias du même dossier (`aliasInscriptible`) : sur le partage insensible à la casse
+ *   de l'hôte Windows, `.GIT` ou `GIT~1` ouvrent le dépôt hors du bind `:ro`, et `readdir` ne montre pourtant que « .git » ;
  * - un dépôt nu (`HEAD`, `objects/`, `refs/`) est protégé aux mêmes conditions qu'un `.git` dossier ;
  * - un `.git` lien, inscriptible, ou hors montage, et un dépôt nu non protégé, sont listés dans `nonProteges` : un seul suffit à
  *   refuser l'activation ;
@@ -691,6 +766,8 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   const maintenant = options.maintenant ?? Date.now();
   const gitsMax = options.gitsMax ?? 200;
   const lireDossier = options.lireDossier ?? ((chemin) => fs.readdirSync(chemin, { withFileTypes: true }));
+  // Sonde des alias : un dépôt ouvert par un autre nom du même dossier est ouvert, quoi que dise le point de montage.
+  const sonde = (chemin) => aliasInscriptible(chemin, acces);
 
   const gits = [];
   const nonProteges = [];
@@ -727,7 +804,7 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
       break;
     }
     if (estDepotNu(entrants)) {
-      const inscriptible = acces(absolu);
+      const inscriptible = acces(absolu) || (relatif !== "" && sonde(absolu));
       const montage = estPointDeMontage(absolu, montages);
       if (!inscrire(relatif === "" ? "." : relatif, "dossier", inscriptible, montage, !inscriptible && montage)) limiteAtteinte = true;
       // Comme l'intérieur d'un `.git` : jamais parcouru.
@@ -744,7 +821,8 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
         const forme = formeDeLEntree(entree);
         // Un lien n'est pas protégeable par un bind : il vaut « inscriptible », sans même tenter l'accès (jamais suivi).
         const cheminGit = path.join(racine, cheminRelatif);
-        const inscriptible = forme === "lien" ? true : acces(cheminGit);
+        // Un alias du même dossier (`.GIT`, `GIT~1`…) qui reste inscriptible vaut « inscriptible » : le bind `:ro` ne le couvre pas.
+        const inscriptible = forme === "lien" ? true : acces(cheminGit) || sonde(cheminGit);
         const montage = estPointDeMontage(cheminGit, montages);
         const protege = !inscriptible && montage && (forme !== "fichier" || cibleGitdirProtegee(cheminGit, racine, montages, acces));
         // Plus de 20 `.git` ouverts : la liste ne dit plus tout.
@@ -771,8 +849,9 @@ export const resumeWorkspaceGit = (balayage) => ({
 });
 
 /**
- * État des `.git` des projets préparés, vu par `node` : `test -w` doit échouer sur chacun (M32), et chacun doit être un point de
- * montage (MO-3). Un `.git` devenu fichier ne l'est en plus que si sa cible `gitdir:` l'est (`cibleGitdirProtegee`).
+ * État des `.git` des projets préparés, vu par `node` : `test -w` doit échouer sur chacun (M32) — sur le `.git` lui-même ET sur ses
+ * alias (`aliasInscriptible` : `.GIT`, `GIT~1`… échappent au bind `:ro`) —, et chacun doit être un point de montage (MO-3). Un
+ * `.git` devenu fichier ne l'est en plus que si sa cible `gitdir:` l'est (`cibleGitdirProtegee`).
  */
 export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, acces = accesEcriture, montages = pointsDeMontage()) {
   const projets = [];
@@ -782,7 +861,9 @@ export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, a
     const forme = formeGit(cheminGit);
     const formeProtegee = forme === "dossier" || (forme === "fichier" && cibleGitdirProtegee(cheminGit, racine, montages, acces));
     const gitLectureSeule =
-      projet.git === "absent" ? forme === "absent" : formeProtegee && !acces(cheminGit) && estPointDeMontage(cheminGit, montages);
+      projet.git === "absent"
+        ? forme === "absent"
+        : formeProtegee && !acces(cheminGit) && !aliasInscriptible(cheminGit, acces) && estPointDeMontage(cheminGit, montages);
     projets.push({ chemin: projet.chemin, gitLectureSeule });
   }
   return projets;

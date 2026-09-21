@@ -45,6 +45,23 @@ function Get-SwitchClauseExtent($Ast, [string]$Label) {
 
 function Test-InExtent($Extent, [int]$Offset) { return ($null -ne $Extent -and $Extent.StartOffset -le $Offset -and $Offset -lt $Extent.EndOffset) }
 
+# Un appel porte-t-il "-RemoveEnv $CockpitComposeEnvNames" ? Le NOM Invoke-CockpitProcess ne garantit rien : sa signature
+# (CockpitTls.ps1) donne $RemoveEnv = @() par defaut, donc sans cet argument l'enfant herite des variables de compose du shell.
+# C'est l'argument, sur le CommandAst lui-meme, qui est exige : nom du parametre, puis la variable attendue derriere lui.
+function Test-CockpitRemoveEnv($Command) {
+    $elements = @($Command.CommandElements)
+    for ($i = 1; $i -lt $elements.Count; $i++) {
+        $element = $elements[$i]
+        if (-not ($element -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+        if ($element.ParameterName -ine 'RemoveEnv') { continue }
+        # Forme "-RemoveEnv:$x" : la valeur est portee par le parametre ; forme "-RemoveEnv $x" : c'est l'element suivant.
+        $value = $element.Argument
+        if ($null -eq $value -and $i + 1 -lt $elements.Count) { $value = $elements[$i + 1] }
+        return ($value -is [System.Management.Automation.Language.VariableExpressionAst] -and $value.VariablePath.UserPath -ceq 'CockpitComposeEnvNames')
+    }
+    return $false
+}
+
 function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
     $found = New-Object System.Collections.Generic.List[string]
     $bytes = [System.IO.File]::ReadAllBytes($File)
@@ -147,9 +164,12 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         if ($DockerFunctions -notcontains $function.Name) { continue }
         $names = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.CommandAst] } | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
         $variables = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] } | ForEach-Object { $_.VariablePath.UserPath })
-        # Invoke-CockpitProcess est admis : il lance docker par un chemin absolu, sorties separees, et retire lui-meme
-        # les variables de compose de l'environnement de l'enfant (-RemoveEnv) : les scripts de scripts\ passent par lui.
-        $isolated = ($names -contains 'Invoke-CockpitDocker') -or ($names -contains 'Invoke-CockpitProcess') -or
+        # Invoke-CockpitProcess n'est admis qu'avec l'ARGUMENT "-RemoveEnv $CockpitComposeEnvNames" : le nom seul laisserait
+        # passer un appel qui garde les variables de compose du shell de l'utilisateur (COCKPIT_TOKEN, WORKSPACE_DIR,
+        # COMPOSE_PROFILES...), c'est-a-dire la fuite meme que cette regle ferme. Le parametre est cherche sur l'appel.
+        $viaProcess = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.CommandAst] } |
+            Where-Object { $_.GetCommandName() -ieq 'Invoke-CockpitProcess' } | Where-Object { Test-CockpitRemoveEnv $_ }).Count -gt 0
+        $isolated = ($names -contains 'Invoke-CockpitDocker') -or $viaProcess -or
             (($names -contains 'ConvertTo-CockpitDockerArgs') -and (($names -contains 'Clear-CockpitComposeEnv') -or ($variables -contains 'CockpitComposeEnvNames')))
         if (-not $isolated) { $found.Add(('docker-isolation : {0} sans ConvertTo-CockpitDockerArgs et masquage des variables de compose' -f $function.Name)) }
     }
@@ -273,6 +293,9 @@ function Invoke-SelfTest([string]$ComposeFile) {
             @('cockpit.ps1', 'parametres', 'replace', '[switch]$Renew|[string]$Renew'),
             @('cockpit.ps1', 'sauvegarde', 'replace', ':ro" img;|:ro" -v "${Project}_cockpit-tls:/src/tls:ro" img;'),
             @('install.ps1', 'docker-isolation', 'replace', 'Invoke-CockpitProcess -FilePath $DockerPath|& docker'),
+            # Le seul retrait de l'argument suffit a rendre l'appel permeable : la regle doit le voir (relecture 2bis-vague-2).
+            @('install.ps1', 'docker-isolation', 'replace', ' -RemoveEnv $CockpitComposeEnvNames|'),
+            @('install.ps1', 'docker-isolation', 'replace', '-RemoveEnv $CockpitComposeEnvNames|-RemoveEnv @(''COCKPIT_PORT'')'),
             @('cockpit.ps1', 'desinstallation', 'replace', 'compose down --remove-orphans|compose down --volumes --rmi all'),
             @('cockpit.ps1', 'desinstallation', 'replace', 'compose down --remove-orphans|compose down --rmi local'),
             @('install.ps1', 'parametres', 'replace', '[string]$OmoArchive, |'),

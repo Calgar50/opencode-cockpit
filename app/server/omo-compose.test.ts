@@ -29,6 +29,9 @@ const DOCKERFILE_APP = path.join(RACINE, "app", "Dockerfile");
 
 const TEXTE_COMPOSE = fs.readFileSync(COMPOSE_FICHIER, "utf8");
 const TEXTE_DOCKERFILE = fs.readFileSync(DOCKERFILE_APP, "utf8");
+const TEXTE_INSTALL = fs.readFileSync(path.join(RACINE, "install.ps1"), "utf8");
+/** Surcharge générée par install.ps1 (L15c) : elle porte les binds `.git:ro` et la source de la liste des projets préparés. */
+const SURCHARGE_PROJETS = "docker-compose.omo-projets.yml";
 const CONTRAT = JSON.parse(fs.readFileSync(path.join(RACINE, OMO_SALLE_CONTRACT_FILE), "utf8")) as OmoSalleContract;
 
 /** Service jetable qui pose le propriétaire des volumes de la salle (MO-11) : hors contrat, décrit ici. */
@@ -462,11 +465,37 @@ describe("L16b §7 : le cockpit parle à la salle sans jamais en dépendre", () 
     assert.equal(parCible.get(String(env.COCKPIT_OMO_AUTH_DIR))?.source, "omo-auth");
     assert.equal(parCible.get(String(env.COCKPIT_OMO_STATE_DIR))?.source, "omo-state");
     assert.equal(parCible.get(String(env.COCKPIT_EGRESS_JOURNAL))?.source, "egress-log");
-    // Le fichier des projets préparés est déposé dans le volume de contrôle, seule entrée que la salle ne peut pas réécrire.
-    assert.equal(String(env.COCKPIT_OMO_PROJECTS_FILE), `${String(env.COCKPIT_OMO_CONTROL_DIR)}/${CONTRAT.fichiersControle.projets}`);
     assert.equal(env.OPENCODE_OMO_URL, `http://${SALLE}:4096`);
     // La salle reste coupée d'office : aucune variable ne l'ouvre toute seule.
     assert.match(String(env.COCKPIT_OMO), /^\$\{COCKPIT_OMO:-off\}$/);
+  });
+
+  it("liste des projets préparés : la variable désigne la SOURCE sur l'hôte, jamais la destination du volume de contrôle", () => {
+    const env = cockpit.environment ?? {};
+    const source = String(env.COCKPIT_OMO_PROJECTS_FILE);
+    const controle = String(env.COCKPIT_OMO_CONTROL_DIR);
+    // `publishProjects()` (omo-control.ts) LIT cette variable et ÉCRIT dans `controlDir/<fichier du contrat>`. Les deux égaux,
+    // il relirait ce qu'il vient d'écrire : « absent » sur une installation neuve, puis `retirer()` sur ce même chemin — la liste
+    // n'atteindrait jamais la salle et une liste mal formée serait détruite sans pouvoir être régénérée.
+    assert.notEqual(source, `${controle}/${CONTRAT.fichiersControle.projets}`);
+    assert.ok(!source.startsWith(`${controle}/`), `${source} est dans le volume de contrôle (${controle})`);
+    assert.ok(source.startsWith("/"), "chemin absolu du conteneur attendu");
+    // Aucun bind statique dans docker-compose.yml : le fichier est git-ignoré et absent avant install.ps1 ; docker créerait un
+    // DOSSIER vide à sa place, que `lireBorne` relirait « illisible » sur toute installation neuve.
+    assert.equal(
+      montages(COCKPIT).some((m) => m.cible === source),
+      false,
+      "la source est montée par la surcharge générée, pas par docker-compose.yml",
+    );
+    // La surcharge, elle, la monte en lecture seule sur le service `cockpit` : install.ps1 écrit ce montage mot pour mot.
+    assert.match(TEXTE_INSTALL, new RegExp(`\\$OmoCibleProjetsSource = '${source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'`));
+    assert.match(TEXTE_INSTALL, /\$lignes\.Add\('\s+' \+ \$OmoServiceCockpit \+ ':'\)/);
+    assert.match(TEXTE_INSTALL, /\$monteListe = \(\$sourceListe \+ ':' \+ \$OmoCibleProjetsSource \+ ':ro'\)/);
+    assert.match(TEXTE_INSTALL, new RegExp(`\\$OmoServiceCockpit = '${COCKPIT}'`));
+    assert.ok(TEXTE_INSTALL.includes(SURCHARGE_PROJETS) || fs.readFileSync(path.join(RACINE, "CockpitTls.ps1"), "utf8").includes(SURCHARGE_PROJETS));
+    // Le point de montage existe dans l'image : sans lui, un bind de fichier sur une racine en lecture seule n'a pas de place.
+    const mkdir = argumentsDe(RUN_DOCKERFILE.find((i) => i.includes("mkdir")) ?? "", "mkdir").flat();
+    assert.ok(mkdir.includes(path.posix.dirname(source)), `${path.posix.dirname(source)} : aucun mkdir dans app/Dockerfile`);
   });
 
   it("écrivains et lecteurs : le cockpit écrit ce que le contrat lui donne, et lit le reste", () => {

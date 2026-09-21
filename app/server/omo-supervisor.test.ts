@@ -745,6 +745,71 @@ describe("superviseur : balayage git du dossier de travail", () => {
 
   const nonProtegesDe = (balayage: salle.Balayage) => balayage.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")).sort();
 
+  // --- Alias d'un même dossier (relecture 2bis-vague-2, risque 11 / C2-5) ---------------------------------------------------------
+  // WORKSPACE_DIR est toujours un chemin Windows, partagé en 9p/drvfs : le partage est INSENSIBLE À LA CASSE et expose encore les
+  // noms courts 8.3. Le bind `<hôte>\projet\.git:/workspace/projet/.git:ro` ne porte que sur le dentry « .git » : mesuré, une
+  // écriture par `/workspace/projet/.GIT/hooks/pre-commit` ou par `GIT~1` réussit et le crochet s'exécute ensuite sur le poste.
+  // `readdir` ne montre pourtant que « .git » : ni le bind ni le balayage ne voyaient ce détour.
+
+  /** Pose les alias du `.git` d'un projet. Sur un système insensible à la casse ils existent déjà : `mkdir` ne fait alors rien. */
+  function poserAlias(dir: string, projet: string, ...alias: string[]): string[] {
+    for (const nom of alias) fs.mkdirSync(path.join(dir, projet, nom), { recursive: true });
+    return alias.map((nom) => `${dir.replaceAll("\\", "/")}/${projet}/${nom}`);
+  }
+
+  /** `access(W_OK)` d'un partage où le bind `:ro` ne couvre que le nom exact : les chemins donnés restent inscriptibles. */
+  const ouvertPar = (...chemins: string[]) => (chemin: string) => chemins.includes(chemin.replaceAll("\\", "/"));
+
+  it("aliasDeNom : les autres noms du même dossier, variantes de casse et formes courtes 8.3", () => {
+    const alias = salle.aliasDeNom(".git");
+    assert.equal(alias.includes(".git"), false, "le nom lui-même n'est pas un alias");
+    for (const attendu of [".GIT", ".Git", ".giT", ".gIT", "GIT~1", "GIT~4"]) assert.ok(alias.includes(attendu), attendu);
+    assert.equal(alias.length, 7 + 4, alias.join(", "));
+    // Nom long : l'énumération complète des casses dépasserait la borne, la paire minuscules/majuscules et les formes courtes restent.
+    const nu = salle.aliasDeNom("outil.git");
+    assert.ok(2 ** 8 > salle.ALIAS_CASSE_MAX);
+    assert.deepEqual(nu.sort(), ["OUTIL.GIT", "OUTIL~1.GIT", "OUTIL~2.GIT", "OUTIL~3.GIT", "OUTIL~4.GIT"]);
+  });
+
+  it("un .git ouvert par un alias de casse n'est PAS protégé, même monté en lecture seule (risque 11 / C2-5)", (t) => {
+    const dir = workspace(t);
+    const [casse] = poserAlias(dir, "protege", ".GIT");
+    // Le bind ne tient que « protege/.git » ; « protege/.GIT » désigne le même dossier et reste inscriptible.
+    const balayage = salle.balayerGit(dir, { accesEcriture: ouvertPar(casse ?? ""), montages: tousMontes(dir) });
+    assert.deepEqual(nonProtegesDe(balayage), ["protege/.git"]);
+    assert.equal(balayage.gits.find((git) => git.chemin.replace(/\\/g, "/") === "protege/.git")?.inscriptible, true);
+    // Fermé en cas de doute : le dossier de travail entier n'est plus « protégé », donc la salle refuse de démarrer.
+    assert.equal(verdictPublie(balayage), false);
+  });
+
+  it("un .git ouvert par un nom court 8.3 n'est pas protégé non plus, et un .git fichier pas davantage", (t) => {
+    const dir = workspace(t);
+    const [court] = poserAlias(dir, "protege", "GIT~1");
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(court ?? ""), montages: tousMontes(dir) })), ["protege/.git"]);
+    // Le `.git` FICHIER d'un sous-module s'ouvre aussi par « .Git » : le pointeur réécrit désigne alors n'importe quel gitdir.
+    const alias = `${dir.replaceAll("\\", "/")}/sous-module/.Git`;
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias), montages: tousMontes(dir) })), ["sous-module/.git"]);
+  });
+
+  it("un dépôt nu ouvert par un alias n'est pas protégé", (t) => {
+    const dir = workspace(t);
+    depotNu(dir, "remotes/outil.git");
+    const monte = [...tousMontes(dir), ...montagesDe(dir, "remotes/outil.git")];
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: monte })), []);
+    const alias = `${dir.replaceAll("\\", "/")}/remotes/OUTIL.GIT`;
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias), montages: monte })), ["remotes/outil.git"]);
+  });
+
+  it("un projet préparé dont le .git s'ouvre par un alias n'est pas « en lecture seule »", (t) => {
+    const dir = workspace(t);
+    const [casse] = poserAlias(dir, "protege", ".GIT");
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-21T10:00:00Z", projets: [{ chemin: "protege", git: "dossier" }], gitProteges: [{ chemin: "protege", forme: "dossier" }] }),
+    );
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, tousMontes(dir)), [{ chemin: "protege", gitLectureSeule: true }]);
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, ouvertPar(casse ?? ""), tousMontes(dir)), [{ chemin: "protege", gitLectureSeule: false }]);
+  });
+
   it("un sous-module dont le gitdir: est dans un .git monté en lecture seule reste protégé", (t) => {
     const dir = workspace(t);
     const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
@@ -967,8 +1032,10 @@ describe("superviseur : les .git sont balayés de nouveau juste avant le lanceme
     const dossiers = { etat, controle };
     fs.mkdirSync(path.join(ws, "alpha", ".git"), { recursive: true });
     const montages = [`${ws.replaceAll("\\", "/")}/alpha/.git`];
-    // Seul alpha/.git est monté en lecture seule par la surcharge ; tout le reste du dossier de travail est à node.
-    const acces = (chemin: string) => !chemin.replaceAll("\\", "/").endsWith("/alpha/.git");
+    // Seul alpha/.git est monté en lecture seule par la surcharge ; tout le reste du dossier de travail est à node. Le dépôt est
+    // fermé par tous ses noms : sans cela, la sonde d'alias (`.GIT`, `GIT~1`…) le dirait ouvert dès le premier balayage, et ce
+    // cas-ci ne parlerait plus du second. Les alias ont leurs propres cas, plus haut.
+    const acces = (chemin: string) => !/\/alpha\/(\.git|git~\d)$/i.test(chemin.replaceAll("\\", "/"));
     const prepares = salle.analyserProjetsPrepares(
       JSON.stringify({ version: 1, genereLe: "2026-09-19T10:00:00Z", projets: [{ chemin: "alpha", git: "dossier" }], gitProteges: [{ chemin: "alpha", forme: "dossier" }] }),
     );

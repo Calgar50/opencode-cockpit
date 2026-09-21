@@ -66,8 +66,10 @@ COPY --from=build --chown=node:node /src/dist ./dist
 # Salle Oh My OpenAgent : /control-omo, /omo-auth et /egress-log sont écrits par node (cockpit et egress) ; /omo-state est publié
 # par le superviseur de la salle et reste à root, le cockpit ne fait que le lire. /oc-omo-data et /omo-config ne servent qu'au
 # service jetable `omo-init` du compose : ce sont ses points de montage, qu'il donne ensuite à node ou à root (MO-11).
+# /omo-source reçoit le seul fichier que le cockpit lit depuis l'HÔTE : la liste des projets préparés, montée en lecture seule par
+# `docker-compose.omo-projets.yml`. Il reste à root : le cockpit n'y écrit jamais, il recopie normalisé dans /control-omo.
 RUN mkdir -p /data /archives /oc-config /oc-data /control /workspace /certs /tls \
-      /control-omo /omo-auth /egress-log /omo-state /oc-omo-data /omo-config \
+      /control-omo /omo-auth /egress-log /omo-state /oc-omo-data /omo-config /omo-source \
  && chown node:node /data /archives /oc-config /oc-data /control /tls /control-omo /omo-auth /egress-log \
  && chmod 0700 /tls
 USER node

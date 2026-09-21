@@ -118,8 +118,23 @@ function Get-ProtectedForm($Projects, [string]$Chemin) {
     if ($entry.Count -eq 0) { return '' }
     return [string]$entry[0].forme
 }
-function Get-OverlayLines([string]$Root) {
-    return @([System.IO.File]::ReadAllLines((Get-OverlayFile $Root)) | Where-Object { $_.StartsWith('      - ') } | ForEach-Object { $_.Substring(8) })
+# Montages d'UN service de la surcharge (defaut : la salle). La surcharge en porte deux depuis la relecture
+# 2bis-vague-2 : les binds .git:ro de la salle, et la source de la liste des projets prepares sur le cockpit.
+function Get-OverlayLines([string]$Root, [string]$Service = $NomSalle) {
+    $montages = New-Object System.Collections.Generic.List[string]
+    $dedans = $false
+    foreach ($ligne in @([System.IO.File]::ReadAllLines((Get-OverlayFile $Root)))) {
+        if ($ligne -cmatch '^  [A-Za-z0-9_.-]+:$') { $dedans = ($ligne -ceq ('  ' + $Service + ':')); continue }
+        if ($dedans -and $ligne.StartsWith('      - ')) { $montages.Add($ligne.Substring(8)) }
+    }
+    return @($montages)
+}
+# Valeur d'une variable d'environnement du service cockpit, lue dans docker-compose.yml du depot.
+function Get-ComposeCockpitEnv([string]$Name) {
+    $texte = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'docker-compose.yml'))
+    $trouve = [regex]::Match($texte, ('(?m)^\s+' + [regex]::Escape($Name) + ':\s*(\S+)\s*$'))
+    if (-not $trouve.Success) { return '' }
+    return $trouve.Groups[1].Value
 }
 
 try {
@@ -224,6 +239,18 @@ try {
     Assert-Test 'surcharge : source de l hote et cible sous /workspace' ($lines -ccontains $attendu) ($lines -join ' | ')
     $dollar = @($lines | Where-Object { $_.Contains('pro jet') })
     Assert-Test 'surcharge : un dollar du nom de dossier est double pour compose' ($dollar.Count -eq 0) ($dollar -join ' | ')
+
+    # Relecture 2bis-vague-2 : COCKPIT_OMO_PROJECTS_FILE est la SOURCE lue par le cockpit, jamais la destination qu'il
+    # ecrit dans le volume de controle. Cette source vit sur l'hote et n'atteint le conteneur que par la surcharge,
+    # en lecture seule ; sans ce montage, la salle ne recoit ni la liste des projets ni les gitProteges.
+    $cibleSource = Get-ComposeCockpitEnv 'COCKPIT_OMO_PROJECTS_FILE'
+    $cibleControle = Get-ComposeCockpitEnv 'COCKPIT_OMO_CONTROL_DIR'
+    Assert-Test 'surcharge : source de la liste hors du volume de controle' (
+        $cibleSource -and $cibleControle -and $cibleSource.StartsWith('/') -and -not $cibleSource.StartsWith($cibleControle + '/')
+    ) ($cibleSource + ' / ' + $cibleControle)
+    $lignesCockpit = Get-OverlayLines $Root 'cockpit'
+    $attenduListe = '"' + ((Get-ProjectsFile $Root) -replace '\\', '/') + ':' + $cibleSource + ':ro"'
+    Assert-Test 'surcharge : liste des projets prepares montee en lecture seule sur le cockpit' ($lignesCockpit -ccontains $attenduListe) (($lignesCockpit -join ' | ') + ' / attendu ' + $attenduListe)
 
     # Le dossier a dollar n'a pas de depot git : il n'apparait donc pas dans la surcharge. On eprouve l'echappement
     # sur un arbre dedie, ou ce dossier porte un .git.

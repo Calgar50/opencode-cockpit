@@ -113,7 +113,11 @@ services:
       COCKPIT_OMO_CONTROL_DIR: /control-omo
       COCKPIT_OMO_STATE_DIR: /omo-state
       COCKPIT_OMO_AUTH_DIR: /omo-auth
-      COCKPIT_OMO_PROJECTS_FILE: /control-omo/omo-projets.json
+      # SOURCE de la liste des projets préparés, jamais sa destination : le cockpit la relit ici, la normalise et la dépose dans
+      # `COCKPIT_OMO_CONTROL_DIR` sous le nom du contrat. Les deux chemins doivent rester DIFFÉRENTS : égaux, `publishProjects()`
+      # lirait le fichier qu'il vient d'écrire — absent sur une installation neuve — et retirerait la seule copie existante.
+      # Le fichier est écrit sur l'hôte par install.ps1 et monté ici, en lecture seule, par `docker-compose.omo-projets.yml`.
+      COCKPIT_OMO_PROJECTS_FILE: /omo-source/omo-projets.json
       COCKPIT_EGRESS_JOURNAL: /egress-log
     volumes:
       - ${WORKSPACE_DIR}:/workspace

@@ -292,8 +292,12 @@ function ConvertTo-CockpitVersionOrNull([string]$Text) {
 # Valeurs reprises du contrat machine docker\opencode-omo\contrat-salle.json (services.salle, fichiersControle.projets)
 # et des bornes du superviseur (supervisor-lib.mjs) : l'egalite est verifiee par tests\ps51\Test-OmoInstall.ps1.
 $OmoServiceSalle = 'opencode-omo'
+$OmoServiceCockpit = 'cockpit'
 $OmoFichierProjets = 'omo-projets.json'
 $OmoCibleWorkspace = '/workspace'
+# SOURCE de la liste des projets prepares, vue par le cockpit : elle vit sur l'hote et n'est JAMAIS le fichier que le
+# cockpit depose dans le volume de controle (COCKPIT_OMO_CONTROL_DIR). Egale a COCKPIT_OMO_PROJECTS_FILE du compose.
+$OmoCibleProjetsSource = '/omo-source/omo-projets.json'
 $OmoPlafondEntrees = 200000
 $OmoProfondeurMax = 256
 $OmoListeMax = 20
@@ -512,12 +516,21 @@ function ConvertTo-OmoProjectsJson($Scan) {
     return (($lignes -join "`n") + "`n")
 }
 
-# docker-compose.omo-projets.yml : un montage en lecture seule par depot git, sur le service de la salle.
-function ConvertTo-OmoProjectsYaml($Scan) {
+# docker-compose.omo-projets.yml : un montage en lecture seule par depot git, sur le service de la salle, et le montage
+# en lecture seule de la liste des projets prepares sur le service du cockpit. La liste est portee par cette surcharge,
+# jamais par docker-compose.yml : le fichier est git-ignore et absent tant qu'install.ps1 n'a pas tourne, et docker
+# creerait alors un DOSSIER vide a sa place, que le cockpit relirait "illisible".
+function ConvertTo-OmoProjectsYaml($Scan, [string]$ProjectsFile) {
     $lignes = New-Object System.Collections.Generic.List[string]
     $lignes.Add('# Genere par install.ps1 (D-2b-28) : un montage en lecture seule par depot git du dossier de travail.')
     $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute ou retire un projet.')
     $lignes.Add('services:')
+    # Source de la liste des projets prepares : le cockpit la LIT ici, puis la recopie normalisee dans /control-omo.
+    $lignes.Add('  ' + $OmoServiceCockpit + ':')
+    $lignes.Add('    volumes:')
+    $sourceListe = ($ProjectsFile -replace '\\', '/')
+    $monteListe = ($sourceListe + ':' + $OmoCibleProjetsSource + ':ro') -replace '\$', '$$$$'
+    $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monteListe))
     $lignes.Add('  ' + $OmoServiceSalle + ':')
     $lignes.Add('    volumes:')
     foreach ($item in $Scan.Proteges) {
@@ -561,7 +574,7 @@ function Write-OmoProjectFiles([string]$Workspace, [string]$Destination) {
     }
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($projectsFile, (ConvertTo-OmoProjectsJson $scan), $utf8)
-    [System.IO.File]::WriteAllText($overlay, (ConvertTo-OmoProjectsYaml $scan), $utf8)
+    [System.IO.File]::WriteAllText($overlay, (ConvertTo-OmoProjectsYaml $scan $projectsFile), $utf8)
     Write-Good ('Projets prepares pour la salle : {0} ; depots git montes en lecture seule : {1} ({2} entrees parcourues)' -f $scan.Projets.Count, $scan.Proteges.Count, $scan.Entrees)
     $notice = Get-OmoHooksPathNotice $Workspace
     if ($notice) { Write-Attention $notice }

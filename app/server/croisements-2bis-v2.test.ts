@@ -20,6 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { parse as parseYaml } from "yaml";
 import { createCockpitApp } from "./app-factory.ts";
 import type { OmoControlDirs } from "./contracts-11.ts";
 import {
@@ -34,6 +35,8 @@ import {
   parseOmo,
 } from "./env.ts";
 import { EventHub } from "./hub.ts";
+import { createOmoControl } from "./omo-control.ts";
+import { OMO_FICHIER_PROJETS } from "./shared/omo-control-protocol.ts";
 import type { OmoPreparedProjects } from "./shared/omo-types.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 
@@ -349,6 +352,46 @@ describe("croisement V2 : omo-projets.json (L15c) = format OmoPreparedProjects (
     // Le type est bien celui que lira la salle : une valeur littérale doit le satisfaire.
     const exemple: OmoPreparedProjects = { version: 1, genereLe: "2026-09-21T00:00:00.000Z", projets: [{ chemin: "demo", git: "dossier" }], gitProteges: [{ chemin: "demo/.git", forme: "dossier" }] };
     assert.equal(exemple.version, 1);
+  });
+
+  it("source == destination : la liste n'atteint JAMAIS la salle, et le cockpit efface sa propre copie", async (t: TestContext) => {
+    const racine = fs.mkdtempSync(path.join(os.tmpdir(), "croisement-2bis-v2-projets-"));
+    t.after(() => fs.rmSync(racine, { recursive: true, force: true }));
+    const controlDir = path.join(racine, "control-omo");
+    fs.mkdirSync(controlDir, { recursive: true });
+    const journal: string[] = [];
+    // `projectsFile` pointé SUR la destination, comme le ferait `COCKPIT_OMO_PROJECTS_FILE = COCKPIT_OMO_CONTROL_DIR + '/' + …`.
+    const depose = path.join(controlDir, OMO_FICHIER_PROJETS);
+    const ctl = createOmoControl({
+      controlDir,
+      stateDir: path.join(racine, "omo-state"),
+      authDir: path.join(racine, "omo-auth"),
+      opencodeDataDir: path.join(racine, "oc-data"),
+      cockpitDataDir: path.join(racine, "donnees"),
+      projectsFile: depose,
+      actif: () => true,
+      log: { info: () => undefined, warn: (message: string) => void journal.push(message) },
+    });
+    t.after(async () => {
+      ctl.stopHeartbeat();
+      await ctl.settled();
+    });
+    // Installation neuve : la source est le fichier que le cockpit n'a pas encore écrit.
+    assert.equal(await ctl.publishProjects(), "absent");
+    assert.equal(fs.existsSync(depose), false);
+    // Pire cas : une liste déjà déposée (ou mal formée) est SUPPRIMÉE au lieu d'être remplacée, sans pouvoir être régénérée.
+    fs.writeFileSync(depose, "{ mal formé");
+    assert.equal(await ctl.publishProjects(), "invalide");
+    assert.equal(fs.existsSync(depose), false);
+    assert.ok(journal.includes("salle : liste des projets préparés non déposée"));
+
+    // Donc le compose ne doit JAMAIS poser cette égalité : c'est cette ligne qui a laissé passer le défaut.
+    const env = (parseYaml(lire("docker-compose.yml")) as { services: Record<string, { environment?: Record<string, string> }> }).services.cockpit?.environment ?? {};
+    assert.notEqual(String(env.COCKPIT_OMO_PROJECTS_FILE), `${String(env.COCKPIT_OMO_CONTROL_DIR)}/${OMO_FICHIER_PROJETS}`);
+    assert.ok(!String(env.COCKPIT_OMO_PROJECTS_FILE).startsWith(`${String(env.COCKPIT_OMO_CONTROL_DIR)}/`));
+    // Et install.ps1 doit monter la source, sinon le conteneur ne la voit pas du tout.
+    assert.match(lire("install.ps1"), /\$OmoCibleProjetsSource = '([^']+)'/);
+    assert.equal(/\$OmoCibleProjetsSource = '([^']+)'/.exec(lire("install.ps1"))?.[1], String(env.COCKPIT_OMO_PROJECTS_FILE));
   });
 });
 

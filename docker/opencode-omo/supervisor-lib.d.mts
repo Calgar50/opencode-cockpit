@@ -244,6 +244,11 @@ export interface ConstatConfigHome {
 }
 export declare function preparerConfigHome(options?: { dossier?: string; reference?: string; montages?: string[]; uid?: number }): ConstatConfigHome;
 
+export declare const ALIAS_CASSE_MAX: number;
+/** Autres noms du même dossier sur un partage insensible à la casse : variantes de casse (bornées) et formes courtes 8.3. */
+export declare function aliasDeNom(nom: string): string[];
+/** Un alias du dossier existe-t-il et reste-t-il inscriptible ? Le bind `:ro` ne porte que sur le nom exact. */
+export declare function aliasInscriptible(chemin: string, acces?: (chemin: string) => boolean): boolean;
 export declare function formeGit(chemin: string): GitForme;
 export declare function lireGitdir(cheminGit: string): string | null;
 export declare function cibleGitdirProtegee(cheminGit: string, racine: string, montages: string[], acces: (chemin: string) => boolean): boolean;
