@@ -55,15 +55,20 @@
 .activity-region.demande > .neon-band > .neon-body > .neon-map-wrap {
   max-width: min(560px, 56vh, 100cqh * 560 / 220);
 }
-/* Défaut D2 du banc de la vague 4 de l'itération 4 (arbitrage A13), NON corrigé ici, avec sa raison écrite : à 1440 × 900,
-   pendant une demande en Avancé, la région ne reçoit plus que 203 px alors que la liste des acteurs dépliée (147 px) et la bande
-   avec sa carte au plancher (environ 115 px) en demandent 262. Aucune règle DANS la région ne peut contenter les deux : ce qu'on
-   donne à la carte, on le prend au titre de « Qui travaille ? », et la clôture de l'itération 1 a tranché en faveur de la liste,
-   qui reste la vérité (§5.1, §5.7.4). Trois essais mesurés au banc le 21/09 : plancher `min-content` sur la bande (la carte
-   revient, le titre de la liste passe sous la carte de la demande), carte de la demande qui cède huit fois plus vite (elle est
-   déjà à son plancher : rien ne change), boutons des assistants effacés sous 140 px de carte (le dessin reste coupé par le
-   défilement de la bande). La place manque en amont, dans la colonne du fil : c'est là qu'il faut la reprendre, et cela demande
-   une mesure au navigateur que ce train ne pouvait pas mener. Consigné dans execution/constats-V4.md. */
+/* --- équipes (it4) : début --- */
+/* Défaut D2 du banc de la vague 4 de l'itération 4 (arbitrage A13, constat C1) : à 1440 × 900, pendant une demande en Avancé,
+   « attente de votre accord » et la « préparation » n'étaient plus lisibles sur la carte des agents. RIEN N'EST CHANGÉ ICI, et
+   c'est le résultat d'une mesure, pas un report : aucune règle DANS la région ne peut contenter les deux, car ce qu'on donne à
+   la carte, on le prend au titre de « Qui travaille ? », que la clôture de l'itération 1 garde entier (§5.1, §5.7.4). Trois
+   essais mesurés au banc le 21/09 : plancher `min-content` sur la bande (la carte revient, le titre de la liste passe sous la
+   carte de la demande), carte de la demande qui cède huit fois plus vite (elle est déjà à son plancher : rien ne change),
+   boutons des assistants effacés sous 140 px de carte (le dessin reste coupé par le défilement de la bande).
+   La place manquait EN AMONT, dans la saisie : le lanceur d'équipe réduisait la ligne d'IA à 34 px de large, qui passait de
+   111 px à 246 px de haut (sonde de mise en page du 21/09, it1-ui-mise-en-page). La correction est donc chez le lanceur, dans
+   chat/team/team-launch.css, qui porte la mesure : la ligne d'IA prend sa rangée entière quand un lanceur est là, et la raison
+   du lanceur est bornée pour ne pas ajouter de rangée. La région retrouve sa hauteur (155 → 250 px à 1440 × 900, 208 → 232 px à
+   1280 × 800) sans qu'une seule de ses règles change. Relevés dans execution/constats-V4.md. */
+/* --- équipes (it4) : fin --- */
 @media (max-width: 899.98px) {
   /* Mini-carte de 3 lignes (neon.css) : hauteur naturelle du corps. */
   .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {

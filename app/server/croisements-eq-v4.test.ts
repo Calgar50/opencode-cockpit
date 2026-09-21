@@ -216,17 +216,28 @@ describe("croisements it4 V4 — D1 : le crochet des lancements d'équipe monté
 
 // --- D2 : la bande garde sa carte dans une fenêtre haute ------------------------------------------------------------------------
 
-describe("croisements it4 V4 — D2 reporté, et le mouvement réduit corrigé", () => {
-  it("D2 : les planchers de la clôture de l'itération 1 sont intacts, et la raison du report est écrite dans la feuille", () => {
+describe("croisements it4 V4 — D2 corrigé en amont, dans la saisie, et le mouvement réduit corrigé", () => {
+  it("D2 : la région d'activité ne bouge pas, et c'est le lanceur qui rend sa rangée à la ligne d'IA", () => {
     const chat = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/chat.css"), "utf8");
     assert.match(chat, /\.chat-center:has\(> \.activity-region\.demande\) > \.interactions \{\s*flex-shrink: 4;/);
     assert.match(chat, /\.interactions:has\(> \.interaction\) \{\s*min-height: min\(7rem, 40vh\);/);
     const activite = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/activity/activity.css"), "utf8");
     assert.match(activite, /\.activity-region\.demande \{\s*min-height: min\(2\.5rem, 6vh\);/);
     assert.match(activite, /\.activity-region\.demande > \.neon-band:has\(> \.neon-body\) \{\s*display: flex;[\s\S]*?min-height: 1\.75rem;/);
-    // Le report est écrit là où la prochaine main travaillera, avec les trois essais mesurés.
-    assert.match(activite, /Défaut D2 du banc de la vague 4 de l'itération 4 \(arbitrage A13\), NON corrigé ici/);
+    // La correction est CHEZ LE LANCEUR, dans la feuille de la branche : la barre de la saisie est une rangée qui passe à la
+    // ligne, et le lanceur y prenait 498 px à côté d'une ligne d'IA réduite à 34 px de large, donc à 246 px de haut. Le lanceur
+    // prend maintenant sa propre rangée ; la ligne d'IA retrouve sa largeur, et la région d'activité sa hauteur (258 px).
+    const lanceur = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/team/team-launch.css"), "utf8");
+    assert.match(lanceur, /\.composer-toolbar:has\(> \.team-launcher\) > \.composer-ia \{\s*flex: 1 0 100%;\s*\}/);
+    assert.match(lanceur, /\.team-launcher-raison \{[\s\S]*?max-width: 14rem;/, "raison bornée pour tenir sur la rangée des boutons");
+    // La raison n'est jamais tronquée : elle passe à la ligne, elle ne disparaît pas (§7.8).
+    assert.ok(!/\.team-launcher-raison \{[^}]*text-overflow/.test(lanceur), "la raison du lanceur n'est pas tronquée");
+    // Rien n'est écrit dans la feuille partagée de la saisie : la barre reste celle de l'itération 1.
+    assert.match(chat, /\.composer-toolbar \{\s*display: flex;\s*align-items: flex-end;\s*flex-wrap: wrap;/);
+    assert.ok(!/team-launcher|team-launch/.test(chat), "chat.css (fichier partagé, itération 1) reste sans règle d'équipe");
+    // Les relevés d'avant et d'après sont écrits là où la prochaine main travaillera.
     assert.match(activite, /execution\/constats-V4\.md/);
+    assert.match(activite, /La correction est donc chez le\s+lanceur/);
   });
 
   it("mouvement réduit : aucune animation ne tourne sans fin (nombre de répétitions ramené à 1)", () => {

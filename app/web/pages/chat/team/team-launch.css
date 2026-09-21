@@ -29,6 +29,35 @@
   line-height: 1.4;
   color: var(--text-2);
   overflow-wrap: anywhere;
+  /* Bornée pour que le lanceur tienne sur la rangée des boutons de la saisie : voir la mesure du défaut D2 ci-dessous. La
+     raison n'est jamais tronquée, elle passe à la ligne (deux lignes pour les trois raisons possibles, mesuré). */
+  max-width: 14rem;
+}
+
+/* Défaut D2 (banc de la vague 4, arbitrage A13 ; constat C1) : en Avancé, pendant qu'une demande attend votre accord,
+   « attente de votre accord » et la « préparation » n'étaient plus lisibles sur la carte des agents (1440 × 900 et 1280 × 800).
+   Mesuré au banc le 21/09 (it1-ui-mise-en-page, sonde de mise en page) : la barre de la saisie (`.composer-toolbar`, chat.css)
+   est une rangée qui passe à la ligne, et le lanceur y prenait 498 px à côté de la ligne d'IA (`.composer-ia`, `flex: 1`, donc
+   base 0 : c'est elle, et elle seule, qui cède la largeur). Réduite à 34 px de large, cette ligne d'IA passait de 111 px à
+   246 px de haut : la saisie gagnait 102 px, que la colonne du fil prenait à la région d'activité (155 px au lieu de 250), où la
+   bande des agents tombait à son plancher de 28 px — la carte était rendue, mais hors de la partie visible de la bande (relevé
+   « recouvert(par actor-name, y=192) »). La place manquait donc EN AMONT, dans la saisie, pas dans la région : aucune règle de
+   `activity.css` ne pouvait la rendre sans prendre au titre de « Qui travaille ? », que la clôture de l'itération 1 garde entier
+   (§5.1, §5.7.4).
+   Correction en deux règles, ici et non dans les feuilles partagées, et sans effet quand aucun lanceur n'est là (mode Simple,
+   équipes fermées : la barre reste celle de l'itération 1) :
+     1. la ligne d'IA prend sa rangée entière quand un lanceur est présent (`:has`) — elle ne cède donc plus sa largeur ;
+     2. la raison du lanceur est bornée à 14 rem (ci-dessus), pour que le lanceur tienne sur la rangée des boutons plutôt que
+        d'en ajouter une ; la raison n'est pas tronquée, elle passe à la ligne (deux lignes, 34 px).
+   Mesuré au banc, it1-ui-mise-en-page, les deux règles en place (relevés dans execution/constats-V4.md) :
+     1440 × 900 : région 155 → 250 px, bande 28 → 103 px, « attente de votre accord » et « préparation » VUES ;
+     1280 × 800 : région 208 → 232 px, bande 62 → 86 px, VUES également (elles ne l'étaient pas non plus avant).
+   Le coût du lanceur dans la saisie tombe ainsi de 102 px à 8 px, tout le reste inchangé. Le lanceur reste juste avant le
+   sélecteur d'autonomie (§7.8), sa raison écrite à côté de son bouton ; ni l'ordre du document ni l'ordre de tabulation ne
+   changent. Les bornes exactes, mesurées : 12 à 16 rem marchent aux deux tailles ; 18 rem et plus ajoutent une rangée (échec à
+   1280), 10 rem et moins font une troisième ligne de raison (échec aux deux). */
+.composer-toolbar:has(> .team-launcher) > .composer-ia {
+  flex: 1 0 100%;
 }
 
 .team-launcher-menu {
