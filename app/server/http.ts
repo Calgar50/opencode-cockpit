@@ -17,13 +17,14 @@ import type { InternalAgentsPort, PermissionGate } from "./contracts-11.ts";
 import type { ControlService, RestartResult } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
-import type { AppEnv } from "./env.ts";
+import { type AppEnv, omoOf } from "./env.ts";
 import { assertInside, PathError, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { applyEdits, modify, parse as parseJsonc, parseTree } from "jsonc-parser";
 import type { BrowserEvent, EventHub } from "./hub.ts";
+import { createInstanceRouter } from "./instance-router.ts";
 import { type Ledger, MONTH_RE, monthKey } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
-import { advancedOnly, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
+import { advancedOnly, MODE_AVANCE_ERROR, settingsPatchGuard, settingsResetGuard } from "./mode.ts";
 import {
   examining,
   forMethods,
@@ -36,7 +37,7 @@ import {
 } from "./reload-guard.ts";
 import type { CopilotConfigSync } from "./oc-copilot-config.ts";
 import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
-import { createOcProxy, isRecord, type ProxyHooks } from "./oc-proxy.ts";
+import { createOcProxy, isRecord, PROXY_RULES, PROXY_RULES_OMO, type ProxyHooks, refusMontageSalle } from "./oc-proxy.ts";
 import type { InstanceDeps } from "./omo-contracts.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import { createPermissionGate } from "./permission-gate.ts";
@@ -113,11 +114,13 @@ import {
 } from "./shared/assistant-rules.ts";
 import type { BootstrapAutonomy } from "./shared/autonomy-types.ts";
 import { ID, SESSION_ID_RE } from "./shared/ids.ts";
+import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
+import type { BootstrapOmo } from "./shared/omo-types.ts";
 import { isReservedTitle } from "./shared/session-purpose.ts";
 import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
-import { ACTIVATION_OUVERTE } from "./wiring-11.ts";
+import { ACTIVATION_OUVERTE, SALLE_OUVERTE } from "./wiring-11.ts";
 
 /** Niveaux d'IA utilisés par l'API (TierService les fournit). */
 export interface TierPort {
@@ -184,6 +187,13 @@ export interface AppDeps {
   tls: LocalTls | null;
   /** 1.0.5 : tickets de connexion à usage unique émis par /api/health (une instance propre si absente). */
   tickets?: AuthTickets;
+  /** 1.1 : suivi des sessions, lu pour savoir à quelle instance appartient une conversation (P11) ; absent : une instance propre. */
+  sessions?: SessionTracker;
+  /**
+   * 1.1, Salle OMO (L18a, app-factory) : dépendances de l'instance de la salle. null ou absente = salle coupée — /api/omo/oc/*
+   * refuse tout sans rien relayer, et aucune conversation n'est rattachée à la salle.
+   */
+  omo?: InstanceDeps | null;
 }
 
 /** Références @chemin résolues côté serveur par opencode (motif FILE_REGEX d'opencode 1.18.30). */
@@ -414,7 +424,8 @@ export function createApp(deps: AppDeps): Hono {
   const guardRestart = reloadGuard(reloadGuardDeps, RESTART_GUARD);
   // Portillon des accords : « once » vérifié, file commune aux réponses et aux arrêts, nettoyage après un arrêt, registre des
   // réponses émises. Partagé avec les modules 1.1 quand app-factory le fournit.
-  const gate = deps.gate ?? createPermissionGate({ client, db: deps.db, log, hub, sessions: new SessionTracker(deps.db, client) });
+  const sessions = deps.sessions ?? new SessionTracker(deps.db, client);
+  const gate = deps.gate ?? createPermissionGate({ client, db: deps.db, log, hub, sessions });
   const proxyHooks = deps.proxyHooks;
   const app = new Hono();
   // Secret de session gardé dans la base : un redémarrage garde les sessions, une déconnexion les révoque toutes.
@@ -625,6 +636,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/bootstrap", async (c) => {
     const s = settings.get();
+    const omoEnv = omoOf(env);
     const [health, projectList, copilotConnected, caFiles, supervisor, providerIssues] = await Promise.all([
       client.health(),
       projects.list(),
@@ -678,6 +690,11 @@ export function createApp(deps: AppDeps): Hono {
       copilot: copilotView(),
       // 1.1 (E3) : interrupteur COCKPIT_AUTONOMY et porte I1.
       autonomy: { interrupteur: env.autonomy, activationOuverte: ACTIVATION_OUVERTE } satisfies BootstrapAutonomy,
+      // 1.1, Salle OMO : trois drapeaux, faux par défaut (salle livrée coupée), et AUCUN secret. Champ absent quand
+      // l'environnement n'a pas été lu (AppEnv construit à la main) : l'interface lit alors exactement la 1.0.x.
+      ...(env.omo === undefined
+        ? {}
+        : { omo: { enabled: omoEnv.enabled, imageChargee: omoEnv.image !== "", salleOuverte: SALLE_OUVERTE } satisfies BootstrapOmo }),
     });
   });
 
@@ -703,6 +720,9 @@ export function createApp(deps: AppDeps): Hono {
         w?.();
       };
       const unsubscribe = hub.subscribe((event) => {
+        // Salle OMO (§3.16) : rien d'elle ne part vers le navigateur en mode Simple, où elle n'existe pas. Étiquette de
+        // l'enveloppe (BrowserEvent.instance, T3c) : un événement sans étiquette est celui de l'instance principale.
+        if (event.instance === "omo" && settings.get().ui.mode !== "avance") return;
         queue.push(event);
         if (queue.length > 10_000) queue.splice(0, queue.length - 10_000);
         notify();
@@ -761,6 +781,8 @@ export function createApp(deps: AppDeps): Hono {
     bodyVariant: string | undefined;
     lite: ReturnType<ModelCatalog["lite"]>;
     names: { agentTitle: (name: string) => string; modelName: (model: string) => string };
+    /** Agents et raccourcis de l'instance visée : une demande de la salle n'interroge JAMAIS l'opencode principal (P11). */
+    lookup: OcLookup;
   }
 
   /** Un seul appel sur l'IA du corps (Résumer, repli sans GET /agent, raccourci inconnu). */
@@ -778,7 +800,7 @@ export function createApp(deps: AppDeps): Hono {
       // (compaction.ts:358-361). Sans GET /agent, contrôle limité à l'IA de la demande (comme pour un message).
       let compaction: OcAgentInfo | undefined;
       try {
-        compaction = (await lookup.get(r.directory)).agents.find((a) => a.name === "compaction");
+        compaction = (await r.lookup.get(r.directory)).agents.find((a) => a.name === "compaction");
       } catch (err) {
         log.warn("agents d'opencode illisibles : contrôle limité à l'IA de la demande", { error: errorMessage(err) });
       }
@@ -791,7 +813,7 @@ export function createApp(deps: AppDeps): Hono {
     const requestedCommand = r.kind === "raccourci" && typeof r.record.command === "string" ? r.record.command : null;
     let snapshot: OcLookupSnapshot;
     try {
-      snapshot = await lookup.get(r.directory);
+      snapshot = await r.lookup.get(r.directory);
     } catch (err) {
       // Repli (comportement 0.1.x) : garde-fou sur l'IA du corps seulement, demande relayée telle quelle.
       log.warn("agents d'opencode illisibles : contrôle limité à l'IA de la demande", { error: errorMessage(err) });
@@ -848,9 +870,17 @@ export function createApp(deps: AppDeps): Hono {
   /**
    * Contrôle d'une demande facturée (prompt_async, command, summarize), après les filtres de contenu : IA obligatoire,
    * fournisseurs autorisés, IA de l'assistant, fiches, IA disponible, garde-fou sur chaque appel facturé, trace dans
-   * chat_turns. Renvoie la réponse de refus, ou le corps à relayer (réflexion fixée par le serveur).
+   * chat_turns. Renvoie la réponse de refus, ou le corps à relayer (réflexion fixée par le serveur). `inst` : instance visée —
+   * son catalogue et ses assistants, pour qu'une demande de la salle ne soit jamais résolue sur l'opencode principal (P11).
    */
-  const enforceTurn = async (c: Context, sub: string, directory: string | null, body: string, parsed: unknown): Promise<Response | string> => {
+  const enforceTurn = async (
+    inst: InstanceDeps,
+    c: Context,
+    sub: string,
+    directory: string | null,
+    body: string,
+    parsed: unknown,
+  ): Promise<Response | string> => {
     const [, , sessionId = "", action = ""] = sub.split("/");
     const kind: ChatTurnKind = action === "command" ? "raccourci" : action === "summarize" ? "resume" : "message";
     const record = isRecord(parsed) ? parsed : {};
@@ -863,10 +893,10 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!env.allowedProviders.includes(bodyModel.providerID)) return fail(c, 403, "fournisseur-refuse", MESSAGES.fournisseurRefuse);
 
-    const lite = catalog.lite();
+    const lite = inst.catalog.lite();
     const names = { agentTitle: (name: string) => assistants.agentTitle(name), modelName: (model: string) => modelName(model, lite) };
     const bodyVariant = typeof record.variant === "string" && record.variant.length > 0 ? record.variant : undefined;
-    const resolved = await resolveProxyTurn(c, { kind, directory, record, bodyModel, bodyVariant, lite, names });
+    const resolved = await resolveProxyTurn(c, { kind, directory, record, bodyModel, bodyVariant, lite, names, lookup: inst.lookup });
     if (resolved instanceof Response) return resolved;
     const { turn } = resolved;
 
@@ -917,7 +947,8 @@ export function createApp(deps: AppDeps): Hono {
   // --- Proxy vers opencode --------------------------------------------------------------
 
   // Instance principale servie par le proxy (L18b) : son compteur de demandes facturées reste celui de la file de
-  // configuration, que la garde de rechargement lit (une demande en vol vaut « réponse en cours »).
+  // configuration, que la garde de rechargement lit (une demande en vol vaut « réponse en cours »). Celui de la salle est
+  // propre à son instance (InstanceDeps, L18a) : un envoi de la salle en vol ne bloque ni le Studio ni le redémarrage.
   const instancePrincipale: InstanceDeps = {
     instance: "principale",
     client,
@@ -929,8 +960,51 @@ export function createApp(deps: AppDeps): Hono {
     beginBilled: () => configQueue.beginBilled(),
     isAllowedDirectory: (directory) => projects.isAllowedDirectory(directory),
   };
-  const proxyCommun = { env, log, projects, hooks: proxyHooks, enforceTurn, forbiddenProxyBody, forbiddenCommandArguments };
-  app.all("/api/oc/*", bodyLimit({ maxSize: 25 * 1024 * 1024 }), createOcProxy({ ...proxyCommun, instance: instancePrincipale }));
+  // Routeur d'instances des DEUX montages : il lit sessions.instance (T3c) pour la cloison P11. app-factory garde le sien pour
+  // les modules 1.1 ; celui-ci porte l'instance principale du proxy, avec son vrai compteur facturé.
+  const instances = createInstanceRouter({ principale: instancePrincipale, omo: deps.omo ?? null, sessions });
+  const proxyCommun = { env, log, projects, hooks: proxyHooks, instanceOf: (id: string) => instances.instanceOf(id), forbiddenProxyBody, forbiddenCommandArguments };
+  app.all(
+    "/api/oc/*",
+    bodyLimit({ maxSize: 25 * 1024 * 1024 }),
+    createOcProxy({
+      ...proxyCommun,
+      instance: instancePrincipale,
+      prefix: "/api/oc",
+      rules: PROXY_RULES,
+      enforceTurn: (c, sub, directory, body, parsed) => enforceTurn(instancePrincipale, c, sub, directory, body, parsed),
+    }),
+  );
+
+  // --- Proxy de la Salle OMO ---------------------------------------------------------------
+
+  // Second montage, réservé à la salle (§3.9 l.331) : mode Avancé, COCKPIT_OMO=on, SALLE_OUVERTE et instance présente, sinon
+  // 403 sans rien relayer — en mode Simple, aucun envoi ne part vers une conversation de la salle. Les phrases sont celles du
+  // contrat (omo-room-texts.ts), les mêmes que les routes /api/omo/* de L18c, montées après.
+  const instanceSalle = instances.omo;
+  const proxySalle =
+    instanceSalle === null
+      ? null
+      : createOcProxy({
+          ...proxyCommun,
+          instance: instanceSalle,
+          prefix: "/api/omo/oc",
+          rules: PROXY_RULES_OMO,
+          enforceTurn: (c, sub, directory, body, parsed) => enforceTurn(instanceSalle, c, sub, directory, body, parsed),
+        });
+  app.all("/api/omo/oc/*", bodyLimit({ maxSize: 25 * 1024 * 1024 }), async (c) => {
+    const refus = refusMontageSalle({
+      salleOuverte: SALLE_OUVERTE,
+      omoActif: omoOf(env).enabled,
+      instancePresente: proxySalle !== null,
+      mode: settings.get().ui.mode,
+    });
+    if (refus !== null || proxySalle === null) {
+      const code = refus ?? "salle-coupee";
+      return fail(c, 403, code === "mode-avance" ? MODE_AVANCE_ERROR : code, phraseRefusActivation(code));
+    }
+    return proxySalle(c);
+  });
 
   // --- Chat : IA réellement utilisée (même résolution que le proxy) ------------------------
 

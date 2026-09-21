@@ -4,6 +4,7 @@
 // fermeture vient de http.ts (1.0.x) sans changer de comportement : createApp monte /api/oc/* sur l'instance principale.
 // Tout ce qui dépend de l'instance (client, portillon, catalogue, compteur facturé, dossiers permis) arrive par InstanceDeps :
 // un second montage sert la Salle OMO sans que les deux se croisent.
+import { randomUUID } from "node:crypto";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
@@ -13,7 +14,8 @@ import type { AppEnv } from "./env.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import type { InstanceDeps } from "./omo-contracts.ts";
 import type { ProjectsService } from "./projects.ts";
-import { MESSAGES } from "./shared/assistant-rules.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
+import { MESSAGES, type UiMode } from "./shared/assistant-rules.ts";
 import { ID } from "./shared/ids.ts";
 import type { Cockpit11Wiring } from "./wiring-11.ts";
 
@@ -31,7 +33,7 @@ export function isRecord(v: unknown): v is Record<string, unknown> {
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
 
-interface ProxyRule {
+export interface ProxyRule {
   method: string;
   pattern: RegExp;
   /** Requête qui déclenche un appel de modèle : soumise au garde-fou budgétaire. */
@@ -73,6 +75,39 @@ export const PROXY_RULES: ProxyRule[] = [
   rule("POST", `/session/${ID}/abort`),
   rule("GET", "/permission"),
   rule("POST", `/permission/${ID}/reply`),
+  rule("GET", "/question"),
+  rule("POST", `/question/${ID}/reply`),
+  rule("POST", `/question/${ID}/reject`),
+  rule("GET", "/find/file"),
+];
+
+/**
+ * Liste blanche de la Salle OMO (D-2b-04, fiche L18b) : celle de l'instance principale, moins ce que la salle n'ouvre jamais au
+ * navigateur.
+ * - `POST /session` : une racine de la salle naît seulement par `POST /api/omo/rooms` (L18c), après son pré-contrôle ;
+ * - `GET /provider/auth`, les deux routes OAuth et `DELETE /auth/github-copilot` : la salle reçoit son authentification par le
+ *   volume `omo-auth` (L17b), jamais par le navigateur, et les routes de fournisseur rendent les options en clair (MO-6) ;
+ * - `POST /permission/:id/reply` : aucune réponse d'autorisation venue du navigateur n'entre dans la salle (D-2b-04) — c'est
+ *   le répondeur du cockpit qui répond (L22d). Le proxy la refuse en 403 avant même cette liste, dans les DEUX modes.
+ * Comparée à PROXY_RULES par oc-proxy-omo.test.ts : aucune route en plus, et exactement ces retraits.
+ */
+export const PROXY_RULES_OMO: ProxyRule[] = [
+  rule("GET", "/agent"),
+  rule("GET", "/command"),
+  rule("GET", "/session"),
+  rule("GET", "/session/status"),
+  rule("GET", `/session/${ID}`),
+  rule("PATCH", `/session/${ID}`),
+  rule("DELETE", `/session/${ID}`),
+  rule("GET", `/session/${ID}/children`),
+  rule("GET", `/session/${ID}/todo`),
+  rule("GET", `/session/${ID}/diff`),
+  rule("GET", `/session/${ID}/message`),
+  rule("POST", `/session/${ID}/prompt_async`, true),
+  rule("POST", `/session/${ID}/command`, true),
+  rule("POST", `/session/${ID}/summarize`, true),
+  rule("POST", `/session/${ID}/abort`),
+  rule("GET", "/permission"),
   rule("GET", "/question"),
   rule("POST", `/question/${ID}/reply`),
   rule("POST", `/question/${ID}/reject`),
@@ -137,6 +172,8 @@ const SESSION_ABORT_ROUTE = new RegExp(`^/session/(${ID})/abort$`);
 /** Conversation désignée par le chemin relayé (contexte des crochets 1.1). */
 const SESSION_ROUTE = new RegExp(`^/session/(${ID})(?:/|$)`);
 const COMMAND_ROUTE = new RegExp(`^/session/${ID}/command$`);
+/** Envoi d'un message : seule route où le cockpit pose son propre identifiant de message dans la salle (MO-1). */
+const PROMPT_ASYNC_ROUTE = new RegExp(`^/session/${ID}/prompt_async$`);
 
 export const PERMISSION_MESSAGES = Object.freeze({
   toujoursRefuse:
@@ -178,12 +215,62 @@ export function parsePermissionReply(
 /** Types de contenu relayés depuis opencode ; tout autre (text/html, JavaScript…) est servi en application/json. */
 const PROXY_CONTENT_TYPE = /^(?:application\/json|text\/event-stream)\s*(?:;|$)/i;
 
+/**
+ * Champs qu'un corps venu du navigateur ne porte jamais vers la salle (MO-1, MO-5), refusés en 400 quelle que soit la route :
+ * - `messageID` : opencode accepte tout identifiant qui commence par « msg » ; un doublon complète le message existant, et un
+ *   identifiant emprunté à une AUTRE session y écrit la partie, alors que l'événement annonce la session visée ;
+ * - `tools` : opencode remplace alors toute la liste `permission` de la session (la détection 4 de L23a l'y verrait) ;
+ * - `permission` : même raison, et le champ est de toute façon ignoré par `prompt_async`.
+ */
+const CHAMPS_REFUSES_SALLE = ["messageID", "tools", "permission"] as const;
+
+/** Phrases des refus propres au proxy de la salle. */
+export const OMO_PROXY_MESSAGES = Object.freeze({
+  reponseAutorisation:
+    "Les demandes d'autorisation de la Salle OMO ne se répondent pas depuis le navigateur : le cockpit y répond lui-même, selon ses interdits absolus.",
+  ouvertureConversation: "Une conversation de la Salle OMO s'ouvre depuis la page de la salle, sur un projet préparé : rien n'a été créé.",
+  champRefuse: "Champ non accepté pour la Salle OMO : {champ}. Le cockpit pose lui-même l'identifiant du message et les règles de la conversation.",
+  sessionInconnue: "Conversation inconnue du cockpit : rien n'est envoyé à la Salle OMO.",
+  conversationIntrouvable: "Conversation introuvable.",
+});
+
+/**
+ * Refus lisibles du proxy de la salle, avant la liste blanche : sans eux, la route serait simplement « non autorisée » (404) et
+ * l'interface ne saurait pas quoi dire. D-2b-04 : une racine naît par POST /api/omo/rooms, et le cockpit répond lui-même aux
+ * demandes d'autorisation de la salle (L22d).
+ */
+function refusRouteSalle(method: string, sub: string): { error: string; message: string } | null {
+  if (method !== "POST") return null;
+  if (sub === "/session") return { error: "ouverture-refusee", message: OMO_PROXY_MESSAGES.ouvertureConversation };
+  if (PERMISSION_REPLY_ROUTE.test(sub)) return { error: "reponse-autorisation-refusee", message: OMO_PROXY_MESSAGES.reponseAutorisation };
+  return null;
+}
+
+/**
+ * Porte du montage /api/omo/oc/* (§3.9 l.331, §5.9) : la salle est coupée tant que SALLE_OUVERTE est faux, que COCKPIT_OMO
+ * n'est pas « on » ou qu'aucune instance n'est construite ; elle est réservée au mode Avancé. Rendue ici pour que les quatre
+ * cas soient contrôlés sans toucher à la porte du dépôt (SALLE_OUVERTE reste faux).
+ */
+export function refusMontageSalle(etat: { salleOuverte: boolean; omoActif: boolean; instancePresente: boolean; mode: UiMode }): "salle-coupee" | "mode-avance" | null {
+  if (!etat.salleOuverte || !etat.omoActif || !etat.instancePresente) return "salle-coupee";
+  return etat.mode === "avance" ? null : "mode-avance";
+}
+
 // --- Proxy d'une instance -------------------------------------------------------------
 
 /** Dépendances du proxy d'une instance : l'instance elle-même, et ce que createApp garde (contrôles facturés, filtres). */
 export interface OcProxyDeps {
   /** Instance servie : client, portillon, catalogue, assistants, compteur des demandes facturées, dossiers permis. */
   instance: InstanceDeps;
+  /** Chemin sous lequel le proxy est monté, retiré du chemin reçu : « /api/oc » ou « /api/omo/oc ». */
+  prefix: string;
+  /** Liste blanche de ce montage : PROXY_RULES pour l'instance principale, PROXY_RULES_OMO pour la salle. */
+  rules: readonly ProxyRule[];
+  /**
+   * Instance d'une session suivie, null si le cockpit ne la connaît pas (routeur d'instances, P11). Une session de l'AUTRE
+   * instance reçoit 404 sur les deux montages ; sur la salle, une session inconnue reçoit 409.
+   */
+  instanceOf(sessionId: string): SessionInstance | null;
   env: AppEnv;
   log: Logger;
   projects: Pick<ProjectsService, "isAllowedDirectory" | "opencodeWorktree" | "opencodeRoot">;
@@ -199,11 +286,13 @@ export interface OcProxyDeps {
   forbiddenCommandArguments(body: unknown, isAllowed: (file: string) => boolean, worktree: string): string | undefined;
 }
 
-/** Gestionnaire de /api/oc/* pour une instance : la fermeture de la 1.0.x, ses dépendances rendues explicites. */
+/** Gestionnaire du proxy d'une instance : la fermeture de la 1.0.x, ses dépendances rendues explicites. */
 export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promise<Response> {
-  const { instance, env, log, projects, enforceTurn, forbiddenProxyBody, forbiddenCommandArguments } = instanceDeps;
+  const { instance, prefix, rules, instanceOf, env, log, projects, enforceTurn, forbiddenProxyBody, forbiddenCommandArguments } = instanceDeps;
   const { client, gate, lookup } = instance;
   const proxyHooks = instanceDeps.hooks;
+  /** Montage de la Salle OMO : liste blanche plus étroite, aucune réponse d'autorisation, corps du navigateur borné (D-2b-04). */
+  const salle = instance.instance === "omo";
 
   /** Noms des assistants vus par opencode dans ce dossier (cache court) ; null si la liste est illisible. */
   const agentNamesOf = (directory: string | null): Promise<ReadonlySet<string> | null> =>
@@ -216,10 +305,25 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
     );
 
   return async (c: Context): Promise<Response> => {
-    const sub = c.req.path.slice("/api/oc".length) || "/";
+    const sub = c.req.path.slice(prefix.length) || "/";
     const method = c.req.method.toUpperCase();
-    const matched = PROXY_RULES.find((r) => r.method === method && r.pattern.test(sub));
+    // Ouverture d'une conversation et réponse d'autorisation venues du navigateur : refusées par la salle dans les DEUX modes,
+    // avant la liste blanche, pour que le refus soit lisible (un 404 de route ferait croire à une erreur d'adresse). D-2b-04.
+    const refusRoute = salle ? refusRouteSalle(method, sub) : null;
+    if (refusRoute !== null) return fail(c, 403, refusRoute.error, refusRoute.message);
+    const matched = rules.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
+    // Cloison des instances (P11), avant tout envoi : une conversation de l'autre instance n'existe pas sur ce montage, dans
+    // les deux sens. Sur la salle, une conversation que le cockpit ne suit pas est refusée aussi (fermé en cas de doute) ;
+    // sur l'instance principale, une conversation inconnue reste relayée, exactement comme en 1.0.x.
+    const routedSession = SESSION_ROUTE.exec(sub)?.[1];
+    if (routedSession !== undefined) {
+      const proprietaire = instanceOf(routedSession);
+      if (proprietaire !== null && proprietaire !== instance.instance) {
+        return fail(c, 404, "not-found", OMO_PROXY_MESSAGES.conversationIntrouvable);
+      }
+      if (proprietaire === null && salle) return fail(c, 409, "instance-inconnue", OMO_PROXY_MESSAGES.sessionInconnue);
+    }
     // Configuration en cours d'application ou redémarrage : opencode couperait cette demande facturée. Adresse de l'API Copilot en
     // cours d'écriture ou à revérifier (« synchro due », flux coupé compris) : opencode peut tourner sur l'adresse d'office, que le
     // réseau bloque peut-être. Garde globale : le dossier d'une demande ne dit pas quelle adresse opencode y utilisera.
@@ -236,7 +340,7 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
       const target = client.url(sub);
       for (const [key, value] of incoming.searchParams) if (ALLOWED_QUERY.has(key)) target.searchParams.set(key, value);
       const directory = target.searchParams.get("directory");
-      if (directory !== null && !projects.isAllowedDirectory(directory)) {
+      if (directory !== null && !instance.isAllowedDirectory(directory)) {
         return fail(c, 403, "forbidden-directory", "Ce dossier est hors du workspace monté.");
       }
 
@@ -250,6 +354,9 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
         directory,
         body: bodyRecord,
         sessionId: SESSION_ROUTE.exec(sub)?.[1] ?? null,
+        // Instance visée : absente pour l'instance principale (contexte 1.0.x). runHooks n'appelle alors QUE les crochets de
+        // la salle, et l'arrêt d'une conversation de la salle ne passe jamais par stopTree de l'instance principale (D-2b-30).
+        ...(salle ? { instance: instance.instance } : {}),
       });
       /** Réponse du navigateur à inscrire au registre du portillon juste avant son relais (P9). */
       let browserReply: Omit<EmittedReply, "at"> | null = null;
@@ -262,6 +369,12 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
           return fail(c, 400, "invalid-json", "Corps JSON invalide.");
         }
         record = isRecord(parsed) ? parsed : {};
+        if (salle) {
+          // MO-1 et MO-5 : ces trois champs venus du navigateur détourneraient l'écriture du message ou les règles de la
+          // conversation. Refusés avant tout autre contrôle, sur toutes les routes de la salle.
+          const champ = CHAMPS_REFUSES_SALLE.find((nom) => Object.hasOwn(record, nom));
+          if (champ !== undefined) return fail(c, 400, "champ-refuse", OMO_PROXY_MESSAGES.champRefuse.replace("{champ}", champ));
+        }
         // Raccourci dont les arguments portent une référence @ : assistants d'opencode lus (cache court) pour refuser @assistant.
         const agentNames =
           method === "POST" && COMMAND_ROUTE.test(sub) && typeof record.arguments === "string" && record.arguments.includes("@")
@@ -306,7 +419,7 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
           browserReply = { requestId: replyTo, reply: reply.value.reply, by: "vous" };
         }
         if (matched.guarded) {
-          const isAllowed = (file: string) => projects.isAllowedDirectory(file);
+          const isAllowed = (file: string) => instance.isAllowedDirectory(file);
           const partType = forbiddenPartType(parsed);
           if (partType !== undefined) {
             return fail(c, 403, "forbidden-part", `Type de contenu refusé : ${partType} (texte et fichiers uniquement).`);
@@ -328,9 +441,17 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
           const enforced = await enforceTurn(c, sub, directory, body, parsed);
           if (enforced instanceof Response) return enforced;
           body = enforced;
+          if (salle && PROMPT_ASYNC_ROUTE.test(sub)) {
+            // MO-1 : le cockpit pose SON identifiant de message, imprévisible, après tous les contrôles et avant les crochets,
+            // qui le lisent dans le corps. C'est un corrélateur de l'envoi, JAMAIS une preuve d'origine (un tiers qui aurait
+            // accès à l'instance peut en forger un) et jamais journalisé. `prompt_async` répond 204 sans corps : il ne se lit
+            // qu'au flux d'événements.
+            const avant: unknown = body === "" ? {} : JSON.parse(body);
+            body = JSON.stringify({ ...(isRecord(avant) ? avant : {}), messageID: `msg_${randomUUID()}` });
+          }
           if (proxyHooks && proxyHooks.hooks.beforeBilledSend.length > 0) {
             // Après tous les contrôles 1.0 (IA, fournisseurs, garde-fou) : plancher, plan, activation, demande d'autonomie.
-            const sent: unknown = enforced === "" ? {} : JSON.parse(enforced);
+            const sent: unknown = body === "" ? {} : JSON.parse(body);
             const hooked = await proxyHooks.runHooks("beforeBilledSend", hookContext(isRecord(sent) ? sent : {}));
             if (hooked) return hooked;
           }
