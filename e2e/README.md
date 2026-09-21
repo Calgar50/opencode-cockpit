@@ -227,6 +227,36 @@ console muette :
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
 
+<!-- équipes (it4) : début -->
+## Scénarios de l'itération 4 — équipes et carte des assistants (chantier 1.1)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it4-*' --project-prefix eq11-e2e --image-tag eq11
+scripts/run-e2e.sh --reel-hors-ligne --scenarios it4-outils-etape --project-prefix eq11-e2e --image-tag eq11
+```
+
+Aucun appel facturé, aucun jeton Copilot : faux opencode, ou opencode 1.18.30 réel avec le faux fournisseur hors ligne.
+`it4-commun.mjs` porte les outils de la famille et vérifie ses préalables, comme les `*-commun.mjs` de l'itération 1.
+Trois formes réservées de `sessionID` pilotent le faux depuis un scénario (`e2e/fake-opencode-server.ts`) :
+`quand:<champ>=<valeur>` (scripter les sessions d'étape que le runner crée lui-même), `config:global` (configuration
+globale lue à l'estimation) et `agents:defaut` (agents servis par `GET /agent`, que le faux ne lit pas dans les fichiers
+du Studio).
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it4-commun.mjs` | préalables : mode Simple par défaut, équipes fermées en Simple dans le dépôt, exemples au catalogue, carte ouverte, pilotage du faux accepté (et un sélecteur inconnu refusé) |
+| `it4-avis.mjs` | « Revue SQL sur réplica » de bout en bout : trois avis démarrés à moins de 2 s d'écart, chacun sans voir les autres, synthèse qui les reçoit tous, résultat injecté `noReply` et carte « … recopié ici par le cockpit, sans appel d'IA. », une seule fois, sans marqueur |
+| `it4-pause.mjs` | « Chaîne de relecture de script » : pause du déroulé après l'étape 1, rien envoyé pendant la pause, [Continuer] avec une précision → précision présente dans le message de l'étape 2 (journal du faux) |
+| `it4-arret.mjs` | arrêt pendant l'étape 2 : équipe `arretee`, aucune session occupée, aucun envoi après l'arrêt ; arrêt au plafond : état `plafond`, plus aucun envoi, et le lancement reste relançable |
+| `it4-studio.mjs` | garde de rechargement composée pendant une étape : Studio, réalignement (confirmé depuis la page) et redémarrage d'opencode refusés en 409, installation d'un exemple aussi ; acceptés après l'équipe ; témoin P6 |
+| `it4-carte.mjs` | `GET /api/agent-map` : `build` → `general` et `explore` « demandée », appliquées par opencode ; carte en lecture seule ; vues Centrée et Liste au clavier seul ; une arête par étape, numérotées |
+| `it4-prelancement.mjs` | « Rien n'a été envoyé ni facturé » : chaque refus de `POST …/run` et de `POST …/relancer` laisse le faux sans la moindre requête, pour un code de chaque groupe ; `mcp` ajouté après l'estimation → 202 puis pause « À vérifier », sans envoi |
+| `it4-outils-etape.mjs` | outils offerts à l'IA d'une étape : ni `edit`, `write`, `apply_patch`, `bash`, `task`, `webfetch`, `websearch` ni `question` (journal du faux fournisseur en `--reel-hors-ligne`, oracle du faux en `--faux`) |
+| `it4-captures.mjs` | captures 1440, 1024 et 400 px dans les deux thèmes de chaque vue neuve ; contraste forcé émulé (`forced-colors: active`) et mouvement réduit pour la feuille, le Déroulé, l'éditeur, la carte et la carte d'exécution en pause ; feuille et éditeur au clavier seul ; console muette |
+| `it4-simple-ouvert.mjs` | ouverture des équipes en mode Simple (décision U1) : joué seulement quand `EQUIPES_SIMPLE_OUVERTES` est vraie, c'est-à-dire dans la copie jetable du banc ; sinon « non joué » |
+
+<!-- équipes (it4) : fin -->
+
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`
