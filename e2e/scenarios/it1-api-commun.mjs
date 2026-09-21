@@ -194,6 +194,65 @@ export async function auRepos(client, ids) {
   return (await occupees(client, ids)).length === 0;
 }
 
+// --- équipes (it4) : début ---
+
+/** Délai laissé aux sessions d'un scénario pour revenir au repos après le ménage ; dépassé, le ménage le DIT, il ne lève pas. */
+const MENAGE_MAX_MS = 15_000;
+
+/**
+ * Ménage de fin de scénario : à appeler dans un `finally`, jamais dans le seul chemin normal.
+ *
+ * Les 27 scénarios du banc partagent UNE pile et UN dossier (« /workspace »). Un scénario qui échoue PENDANT une demande
+ * d'autorisation la laisse sans réponse : opencode compte alors sa session occupée pour tout le reste de la passe, et chaque
+ * garde qui demande « une réponse est-elle en cours ? » refuse (409 « sessions occupées ») jusqu'à la fin du banc. C'est la
+ * fuite d'occupation relevée par la revue d'itération 4 (« Repli du banc : l'installation de l'exemple est refusée en 409 » dès
+ * le premier scénario it4) : elle rendait rouges des scénarios qui n'avaient rien fait.
+ *
+ * Le ménage ne touche QUE les racines que le scénario a créées et leurs enfants : il refuse leurs demandes restées en attente,
+ * arrête leur arbre, puis attend leur repos. Il ne lève jamais — un échec de ménage ne doit pas masquer l'échec qui l'a
+ * provoqué —, il relève ce qu'il a fait, et il est sans effet quand le scénario s'est terminé normalement (aucune demande en
+ * attente, plus rien qui travaille).
+ */
+export async function libererLesDemandes(ctx, racines) {
+  const ids = (Array.isArray(racines) ? racines : [racines]).filter((id) => typeof id === "string" && id !== "");
+  if (ids.length === 0) return "aucune racine à libérer";
+  const notes = [];
+  const client = oc(ctx);
+  const famille = new Set(ids);
+  try {
+    for (const racine of ids) {
+      for (const enfant of (await client.enfants(racine)) ?? []) if (typeof enfant?.id === "string") famille.add(enfant.id);
+    }
+    for (const demande of (await client.demandes()) ?? []) {
+      if (!famille.has(demande?.sessionID)) continue;
+      const reponse = await client.repondre(demande.id, "reject");
+      notes.push(`demande « ${demande.permission ?? "?"} » de ${demande.sessionID} refusée (${reponse.code})`);
+    }
+    for (const racine of ids) {
+      const stop = await arreter(ctx, racine);
+      if (stop.code !== 200) notes.push(`arrêt de ${racine} : code ${stop.code}`);
+    }
+    const limite = Date.now() + MENAGE_MAX_MS;
+    let restantes = await occupees(client, [...famille]);
+    while (restantes.length > 0 && Date.now() < limite) {
+      await attendre(200);
+      restantes = await occupees(client, [...famille]);
+    }
+    notes.push(
+      restantes.length === 0
+        ? `${famille.size} session(s) du scénario au repos`
+        : `${restantes.length} session(s) ENCORE occupée(s) après ${Math.round(MENAGE_MAX_MS / 1000)} s : ${resume(restantes)}`,
+    );
+  } catch (err) {
+    notes.push(`ménage incomplet : ${err?.message ?? err}`);
+  }
+  const dit = notes.join(" ; ");
+  releve(ctx, `ménage des demandes du scénario : ${dit}`);
+  return dit;
+}
+
+// --- équipes (it4) : fin ---
+
 /** Attend la fin du tour de `sessionId` : session au repos et dernier message d'assistant clos. Rend les messages. */
 export async function attendreFinDuTour(client, sessionId, { delaiMs = 30_000 } = {}) {
   return await attendreQue(
