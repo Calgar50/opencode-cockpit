@@ -4,9 +4,11 @@ import { AssistantService, knownDirectories, probeSessionsBusy } from "./assista
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
 import { canBill, ConfigWriteQueue } from "./config-queue.ts";
+import type { OmoControlDirs } from "./contracts-11.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
+import { omoOf } from "./env.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
@@ -168,6 +170,22 @@ resyncOnIdle(hub, copilotConfig);
 // Tickets de connexion à usage unique (/api/health puis /auth?k=) : en mémoire, invalidés par un redémarrage.
 const tickets = new AuthTickets();
 const routeDeps = { assistants, tiers, settings, hub, log };
+
+// Salle OMO : dossiers de contrôle reliés à `env.omo` (T3c) par l'intégrateur au train de V2, comme T3b le prévoit. Le module
+// `omoControl` (omo-control-module.ts) porte COCKPIT_OMO=on par la PRÉSENCE de ces dossiers, il ne lit aucune variable lui-même.
+// COCKPIT_OMO absent ou « off » : `null`, donc port NEUTRE, aucun fichier touché, jamais. COCKPIT_OMO=on : le service réel de
+// L17b est construit, et il reste inerte tant que SALLE_OUVERTE est fausse (plan 2 bis §2.7) — ni battement, ni precheck-ok, ni
+// guard-state.json ; seul le démarrage RETIRE la copie d'auth.json laissée par un cockpit précédent (demande n° 3 de L17b).
+const omoEnv = omoOf(env);
+const omoControlDirs: OmoControlDirs | null = omoEnv.enabled
+  ? {
+      controlDir: omoEnv.controlDir,
+      stateDir: omoEnv.stateDir,
+      authDir: omoEnv.authDir,
+      opencodeDataDir: env.opencodeDataDir,
+      projectsFile: omoEnv.projectsFile,
+    }
+  : null;
 // Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
 const cockpit = createCockpitApp({
   env,
@@ -197,9 +215,8 @@ const cockpit = createCockpitApp({
   // Salle OMO coupée (plan 2 bis §2.7) : le routeur d'instances est construit avec omo: null — aucun client, aucun processeur,
   // aucune inscription de la salle. Aucune lecture de COCKPIT_OMO ici : le branchement réel arrive au train de V3.
   omo: null,
-  // Dossiers de contrôle de la salle : relié à env.omo (T3c) par l'intégrateur au train de V2. Null : le service réel de L17b
-  // n'est pas construit, donc aucun fichier n'est écrit dans les volumes de la salle.
-  omoControlDirs: null,
+  // Dossiers de contrôle de la salle, calculés plus haut depuis env.omo (train de V2).
+  omoControlDirs,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 reloadBusy = () => cockpit.c11.reloadBusy();

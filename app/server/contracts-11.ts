@@ -14,7 +14,7 @@ import type { ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import type { AppDeps, TierPort } from "./http.ts";
-import type { EventHub } from "./hub.ts";
+import type { EventHub, HubOmoEventMap } from "./hub.ts";
 import type { Ledger } from "./ledger.ts";
 import type { Logger } from "./log.ts";
 import type { OcLookup } from "./oc-lookup.ts";
@@ -177,6 +177,12 @@ export interface UsageUpdatedData {
   rootId?: string;
   monthSpentUsd: number;
   percent: number;
+  /**
+   * Instance dont le relevé change (T3c, posé par l'intégrateur au train de V2 : la table vit ici, dans le fichier de T3b).
+   * ABSENTE = instance principale, exactement l'objet publié en 1.0.x. L'aiguillage des abonnés ne lit PAS ce champ : il lit
+   * l'étiquette de l'enveloppe (`BrowserEvent.instance`), seule source du filtre par instance dans app-factory.ts.
+   */
+  instance?: SessionInstance;
 }
 
 export interface OpencodeConnectionData {
@@ -184,10 +190,15 @@ export interface OpencodeConnectionData {
   error: string | null;
 }
 
-/** Événements existants du hub (hub.cockpit) auxquels un module 1.1 peut s'abonner. */
+/**
+ * Événements existants du hub (hub.cockpit) auxquels un module 1.1 peut s'abonner. « omo.connection » vient de la table
+ * `HubOmoEventMap` de hub.ts (T3c), qui reprend elle-même `OmoEventMap` du contrat de la salle (T3a) : la donnée n'est définie
+ * qu'à un seul endroit. Reprise ici par l'intégrateur au train de V2, T3c n'ayant pas le droit d'écrire dans ce fichier.
+ */
 export interface HubEventMap {
   "usage.updated": UsageUpdatedData;
   "opencode.connection": OpencodeConnectionData;
+  "omo.connection": HubOmoEventMap["omo.connection"];
 }
 
 export type HubEventType = keyof HubEventMap;

@@ -8,6 +8,7 @@ import type { Hono } from "hono";
 import { probeSessionsBusyStrict } from "./assistants.ts";
 import { billRefusal, type ConfigWriteQueue } from "./config-queue.ts";
 import type { Cockpit11, Cockpit11Deps, HubEventMap, InternalAgentsPort, OmoControlDirs, PermissionGate } from "./contracts-11.ts";
+import type { BrowserEvent } from "./hub.ts";
 import { type AppDeps, createApp } from "./http.ts";
 import { createInstanceRouter } from "./instance-router.ts";
 import { closeInternalAgents } from "./internal-agents.ts";
@@ -46,13 +47,13 @@ export interface CockpitAppOptions {
 }
 
 /**
- * Instance d'un événement du cockpit, lue par une garde de type LOCALE (plan 2 bis §4.2) : T3c posera `instance` sur les données
- * du hub, T3b ne l'importe donc pas encore. Champ absent, illisible ou d'une autre valeur = instance PRINCIPALE, comme en 1.0.x ;
- * l'intégrateur aligne cette garde sur le type de T3c au train de V2.
+ * Instance d'un événement du cockpit, ALIGNÉE PAR L'INTÉGRATEUR AU TRAIN DE V2 sur les types de T3c : l'étiquette vit sur
+ * l'ENVELOPPE (`BrowserEvent.instance`, `HubInstanceTag` de hub.ts), posée par `EventHub.cockpit(type, data, instance)`, et jamais
+ * dans la donnée — un lecteur qui ne connaît pas la salle lit exactement l'objet 1.0.x. Champ absent ou d'une autre valeur =
+ * instance PRINCIPALE, comme en 1.0.x.
  */
-function instanceDeLEvenement(data: unknown): SessionInstance {
-  if (typeof data !== "object" || data === null) return "principale";
-  return (data as { instance?: unknown }).instance === "omo" ? "omo" : "principale";
+function instanceDeLEvenement(event: BrowserEvent): SessionInstance {
+  return event.instance === "omo" ? "omo" : "principale";
 }
 
 export interface CockpitApp {
@@ -142,7 +143,7 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
     detach.push(
       hub.subscribe((event) => {
         if (event.kind !== "cockpit" || event.type !== subscription.type) return;
-        if (!servesInstance(subscription, instanceDeLEvenement(event.data))) return;
+        if (!servesInstance(subscription, instanceDeLEvenement(event))) return;
         fn(event.data as HubEventMap[typeof subscription.type]);
       }),
     );
