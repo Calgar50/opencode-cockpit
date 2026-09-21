@@ -302,6 +302,12 @@ export interface FakeCommand {
   source?: "command" | "mcp" | "skill";
 }
 
+/** Fiche de GET /skill (nom du dossier de la fiche et description de son en-tête), lue par AssistantService.fiches(). */
+export interface FakeSkill {
+  name: string;
+  description?: string;
+}
+
 /** IA d'un fournisseur de GET /config/providers (Provider.Model, provider/provider.ts:1078-1093). */
 export interface FakeModel {
   id: string;
@@ -687,6 +693,8 @@ export class FakeOpencode {
   readonly #agents = new Map<string, FakeAgent[]>();
   #defaultCommands: FakeCommand[] = [];
   readonly #commands = new Map<string, FakeCommand[]>();
+  #defaultSkills: FakeSkill[] = [];
+  readonly #skills = new Map<string, FakeSkill[]>();
   readonly #todos = new Map<string, FakeTodo[]>();
   /** Diffs par « session » ou « session/message ». */
   readonly #diffs = new Map<string, FakeFileDiff[]>();
@@ -823,6 +831,22 @@ export class FakeOpencode {
   setCommands(commands: FakeCommand[], directory?: string): void {
     if (directory === undefined) this.#defaultCommands = jsonClone(commands);
     else this.#commands.set(directory, jsonClone(commands));
+  }
+
+  /**
+   * Fiches de GET /skill dans ce dossier : liste propre au dossier, sinon liste par défaut (vide). Le vrai opencode sert cette
+   * route ; le faux répondait 404 « Route inconnue », et le Studio, qui vérifie l'écriture d'une fiche par cette route
+   * (studio.ts, VERIFY_ROUTE.skills), tombait — l'installation d'un assistant qui porte une fiche échouait au banc (défaut D5,
+   * arbitrage A13). Le faux ne lit pas les fichiers du Studio : la liste servie est celle qu'on lui déclare.
+   */
+  skills(directory: string = this.directory): FakeSkill[] {
+    return this.#skills.get(directory) ?? this.#defaultSkills;
+  }
+
+  /** Fiches servies dans `directory` ; sans dossier : dans tous les dossiers qui n'ont pas de liste propre. */
+  setSkills(skills: FakeSkill[], directory?: string): void {
+    if (directory === undefined) this.#defaultSkills = jsonClone(skills);
+    else this.#skills.set(directory, jsonClone(skills));
   }
 
   todos(sessionID: string): FakeTodo[] {
@@ -1065,6 +1089,9 @@ export class FakeOpencode {
     }
     if (is("GET", "agent")) return json(200, this.agents(directory));
     if (is("GET", "command")) return json(200, this.commands(directory));
+    // Le vrai opencode sert la liste des fiches ; c'est aussi la route que le Studio appelle pour vérifier l'écriture d'une
+    // fiche (VERIFY_ROUTE.skills). Défaut D5 du banc de la vague 4 (arbitrage A13).
+    if (is("GET", "skill")) return json(200, this.skills(directory));
     if (is("GET", "config")) return json(200, this.effectiveConfig(directory));
     // Chemins de l'instance, forme relevée par MX1 (utilisateur node de l'image) ; worktree « / » hors git.
     if (is("GET", "path")) {

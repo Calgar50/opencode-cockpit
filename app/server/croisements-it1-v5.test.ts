@@ -335,7 +335,9 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
     const cited = new Set<string>();
     for (const doc of DOCS) {
       const text = fs.readFileSync(path.join(REPO_DIR, doc), "utf8");
-      for (const m of text.matchAll(/(?<![\w-])(it\d-(?:api|ui)-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) {
+      // Les familles d'une itération ne sont plus seulement `itN-api-…` et `itN-ui-…` : les scénarios d'équipes s'appellent
+      // `it4-<nom>.mjs` (it4-avis, it4-carte, it4-commun…). Le motif prend donc tout nom `itN-…` (train de la vague 4).
+      for (const m of text.matchAll(/(?<![\w-])(it\d-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) {
         cited.add(m[1]?.endsWith(".mjs") ? m[1] : `${m[1]}.mjs`);
       }
     }

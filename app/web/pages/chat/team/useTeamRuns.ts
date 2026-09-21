@@ -6,7 +6,7 @@
 // au plus 4 relectures et 4 rendus par seconde. Plan it4 §6 fiche L38b, §4.1.1.
 // Le cache est une classe à dépendances injectées : il se teste sous Node, sans navigateur et sans React
 // (server/web-team-cards.test.ts). Le crochet n'est qu'une liaison useSyncExternalStore.
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { EquipeEventMap, EquipeEventType, TeamRunsResponse, TeamRunView } from "../../../../server/shared/team-types.ts";
 import { teamRunsApi } from "../../../lib/api-teams.ts";
 import { errorText } from "../../../lib/api.ts";
@@ -174,11 +174,17 @@ export const teamRunsCache = new TeamRunsCache({
   phraseErreur: (err) => errorText(err),
 });
 
-/** Lancements d'équipe de `rootId`, partagés : trois composants qui appellent ce crochet ne font qu'une seule requête. */
+/**
+ * Lancements d'équipe de `rootId`, partagés : trois composants qui appellent ce crochet ne font qu'une seule requête.
+ *
+ * Les DEUX fonctions passées à useSyncExternalStore sont mémorisées sur `rootId` (défaut D1 du banc de la vague 4, arbitrage A13).
+ * Recréées à chaque rendu, elles faisaient boucler la page : React se réabonne dès que `subscribe` change d'identité, le dernier
+ * désabonnement vide l'entrée du cache (`#liberer` à `auditeurs.size === 0`) et le réabonnement la recrée avec un NOUVEL objet
+ * d'état, donc un instantané différent, donc un nouveau rendu — sans fin (« Minified React error #185 », écran vide dans toute
+ * conversation et dans les deux modes). Toute évolution de ce crochet garde ces deux `useCallback`.
+ */
 export function useTeamRuns(rootId: string): TeamRunsState {
-  return useSyncExternalStore(
-    (auditeur) => teamRunsCache.subscribe(rootId, auditeur),
-    () => teamRunsCache.snapshot(rootId),
-    () => teamRunsCache.snapshot(rootId),
-  );
+  const abonner = useCallback((auditeur: () => void) => teamRunsCache.subscribe(rootId, auditeur), [rootId]);
+  const lire = useCallback(() => teamRunsCache.snapshot(rootId), [rootId]);
+  return useSyncExternalStore(abonner, lire, lire);
 }

@@ -14,6 +14,7 @@
 // la fin). Sa réponse (codes TeamGuardCode, message de la 1.1) est rendue TELLE QUELLE : T4t n'écrit aucune phrase pour eux.
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { AssistantServiceError } from "./assistants.ts";
 import type { EqContext } from "./contracts-eq.ts";
 import { forMethods, reloadGuard, type ReloadGuardDeps } from "./reload-guard.ts";
 import { TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
@@ -71,9 +72,19 @@ export function registerTeamRoutes(app: Hono, eq: EqContext, service: TeamServic
   });
 
   // Installation d'un exemple : la garde de rechargement ci-dessus a déjà répondu si opencode ne doit pas être rechargé.
+  // Le refus métier de l'installation des assistants (AssistantService.install : catalogue d'IA non chargé, IA refusée par le
+  // fournisseur, fiche refusée…) est rendu TEL QUEL, comme la route des assistants le rend (routes-assistants.ts) et comme la
+  // garde de rechargement rend le sien : c'est la réponse de la 1.1, avec son code et sa phrase. Sans cela, l'erreur remontait
+  // jusqu'au gestionnaire général et l'installation répondait 500 « Erreur interne du cockpit » au lieu du 409
+  // catalogue-indisponible (défaut D3 du banc de la vague 4, arbitrage A13 ; systématique tant que le catalogue n'est pas lu).
   app.post("/api/teams/examples/:id/install", bodyLimit({ maxSize: CORPS_MAX, onError: tropLong }), async (c) => {
-    const result = await service.installExample(c.req.param("id"));
-    return result.ok ? c.json(result.response) : refus(c, result);
+    try {
+      const result = await service.installExample(c.req.param("id"));
+      return result.ok ? c.json(result.response) : refus(c, result);
+    } catch (err) {
+      if (!(err instanceof AssistantServiceError)) throw err;
+      return c.json({ error: err.code, message: err.message, ...err.extra }, err.status);
+    }
   });
 
   app.post("/api/teams/:id/estimate", bodyLimit({ maxSize: CORPS_MAX, onError: tropLong }), async (c) => {

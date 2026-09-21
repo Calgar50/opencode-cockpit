@@ -93,15 +93,20 @@ export interface CarteLien {
 /** Lien d'une arête vue depuis `source` vers `cible`. Le genre de l'arête est TOUJOURS passé à phraseArete (train de V0). */
 function lienDe(edge: MapEdge, source: MapNode, cible: MapNode, autre: MapNode, avance: boolean): CarteLien {
   const trait = traitArete(edge);
+  const appliquePar = edge.appliquePar === "cockpit" ? P.appliquePar.cockpit : P.appliquePar.opencode;
+  const mot = trait === null ? null : motTrait(trait);
   return {
     id: autre.id,
     nom: nomDuNoeud(autre, avance),
     genre: genreDuNoeud(autre, avance),
     kind: edge.kind,
     phrase: phraseArete(edge.code, nomDuNoeud(source, avance), nomDuNoeud(cible, avance), edge.confirmation, edge.kind) ?? "",
-    appliquePar: edge.appliquePar === "cockpit" ? P.appliquePar.cockpit : P.appliquePar.opencode,
+    appliquePar,
     trait,
-    mot: trait === null ? null : motTrait(trait),
+    // Défaut D4 du banc de la vague 4 (arbitrage A13) : le mot de la légende « impose » et `appliquePar.cockpit` sont la MÊME
+    // phrase (agent-map-texts.ts) ; la vue Liste, vérité pour le lecteur d'écran (U11), l'écrivait deux fois de suite. Le mot
+    // n'est gardé que s'il dit autre chose que qui applique le lien ; la règle vaut pour toute paire de textes qui se rejoint.
+    mot: mot === appliquePar ? null : mot,
     refuseEnSimple: edge.refuseEnSimple,
     etape: edge.etape ?? null,
   };

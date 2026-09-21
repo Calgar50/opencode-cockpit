@@ -55,6 +55,19 @@
 .activity-region.demande > .neon-band > .neon-body > .neon-map-wrap {
   max-width: min(560px, 56vh, 100cqh * 560 / 220);
 }
+/* Fenêtre haute (à partir de 800 px) : la bande ne descend plus SOUS sa carte déjà réduite. L'itération 4 ajoute de la hauteur à
+   la colonne du fil (lanceur d'équipe de la saisie, avis de délégation enrichi) ; la région d'activité y perdait assez de place
+   pour que la bande, seule à céder (« Qui travaille ? » garde sa hauteur), tombe à 57 px alors que sa tête et sa carte au
+   plancher en demandent environ 115 : la carte était coupée en deux et « attente de votre accord » ne se lisait plus sans faire
+   défiler la bande (défaut D2 du banc de la vague 4, arbitrage A13). Avec le plancher `min-content`, la bande garde sa carte
+   entière et c'est la RÉGION qui défile, comme la clôture de l'itération 1 le prévoit ; le titre de « Qui travaille ? » reste en
+   vue, puisqu'il vient juste sous la bande. Sous 800 px de haut (1024 × 768 et 400 × 860 du banc), rien ne change : la bande cède
+   d'abord, comportement mesuré à la clôture de l'itération 1. */
+@media (min-height: 800px) {
+  .activity-region.demande > .neon-band:has(> .neon-body) {
+    min-height: min-content;
+  }
+}
 @media (max-width: 899.98px) {
   /* Mini-carte de 3 lignes (neon.css) : hauteur naturelle du corps. */
   .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
