@@ -10,7 +10,8 @@
 // qu'il joue ; en « --reel-hors-ligne », les requêtes reçues par le faux fournisseur (outils proposés à l'IA, sans texte).
 //
 // AUCUN appel facturé, AUCUN jeton Copilot : faux opencode, ou opencode 1.18.30 réel avec le faux fournisseur hors ligne.
-import { attendre, attendreQue, changerMode, corpsJson, DOSSIER, exiger, iaDuBanc, releve, resume } from "./it1-api-commun.mjs";
+import { attendre, attendreQue, changerMode, corpsJson, DOSSIER, exiger, releve, resume } from "./it1-api-commun.mjs";
+import { attendreIa } from "./it1-ui-commun.mjs";
 
 /** Dossier de travail des équipes du banc : la racine du workspace monté, d'où la confirmation « workspace » (P9). */
 export const DOSSIER_EQUIPE = DOSSIER;
@@ -375,7 +376,10 @@ export async function declarerAssistants(api, flow) {
   if (api.ctx.mode !== "faux") return await ecrireAssistantsParLeStudio(api, manquants);
   // L'IA de l'assistant est celle du banc (fournisseur autorisé de la pile) : sans `model`, l'étape n'a aucune IA
   // disponible et la grammaire refuse l'équipe (« niveau-indisponible »). Les agents natifs du faux n'en portent pas.
-  const ia = iaDuBanc(await api.ctx.api.get("/api/bootstrap"));
+  // Elle est ATTENDUE au catalogue, jamais lue d'un coup : sur une pile neuve, le premier scénario de la famille arrive
+  // avant le premier rafraîchissement du catalogue d'IA (catalog.ts) et lirait un bootstrap sans IA — vu le 20/09 avec
+  // it4-arret en tête de pile. C'est l'attente bornée que la famille it1 fait déjà (it1-ui-commun.mjs, essai du 19/09).
+  const ia = await attendreIa(api.ctx);
   const ajouts = manquants.map((name) => ({
     name,
     mode: "all",
@@ -414,7 +418,8 @@ async function attendreAssistantsVus(api, flow, manquants) {
  * le catalogue est impossible (catalogue d'IA hors ligne). Attend que `GET /agent` les serve.
  */
 async function ecrireAssistantsParLeStudio(api, manquants) {
-  const ia = iaDuBanc(await api.ctx.api.get("/api/bootstrap"));
+  // Même attente bornée qu'en mode « --faux » : l'IA du banc (fournisseur `banc`) vient des fournisseurs qu'opencode annonce.
+  const ia = await attendreIa(api.ctx);
   for (const nom of manquants) {
     const reponse = await api.ctx.api.brut("PUT", `/api/studio/agents/${encodeURIComponent(nom)}`, {
       frontmatter: {
