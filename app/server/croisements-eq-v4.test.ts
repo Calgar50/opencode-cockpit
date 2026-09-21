@@ -14,6 +14,10 @@
 //   5. D5 (BAS) : le faux opencode ne servait pas `GET /skill`, que le Studio appelle pour vérifier l'écriture d'une fiche.
 //   6. D6 (BAS) : la boîte de dialogue ne retenait pas la tabulation (une sur douze se posait dans la feuille de lancement).
 //
+// S'y ajoute, depuis la répétition générale du 21/09, la mesure du point « à surveiller » (constat C4) : à l'état « terminee »,
+// l'équipe a rendu son occupation propre, et le 409 « sessions-busy » qui pouvait suivre ne vient que de la sonde d'opencode,
+// qui revient au repos seule. Le produit n'est pas changé ; c'est `it4-studio.mjs` qui attend ce repos, et qui le mesure.
+//
 // S'y ajoutent les deux vérifications de la ligne V4 du §5.2 qui se tiennent sans Docker : `EQUIPES_SIMPLE_OUVERTES` toujours
 // fausse dans le dépôt (U1), et le banc e2e joignable par les options que la vague impose (`--faux`, `--reel-hors-ligne`,
 // `--project-prefix`, `--image-tag`). Le banc lui-même (27 scénarios en faux, outils d'étape en réel hors ligne) est joué hors de
@@ -24,12 +28,16 @@ import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { Hono } from "hono";
 import React from "react";
-import { AssistantService as AssistantServiceClass, AssistantServiceError } from "./assistants.ts";
+import { AssistantService as AssistantServiceClass, AssistantServiceError, probeSessionsBusy } from "./assistants.ts";
 import type { ConfigWriteQueue } from "./config-queue.ts";
+import type { EqModule } from "./contracts-eq.ts";
 import { registerAiRoutes, registerAssistantRoutes } from "./routes-assistants.ts";
 import type { AgentMapResult, MapEdge, MapNode } from "./shared/agent-map.ts";
 import { TEXTES as CARTE_TEXTES } from "./shared/agent-map-texts.ts";
+import type { Flow, TeamEstimateResponse, TeamInstallResponse, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
+import { createTeamRunnerModule } from "./team-runner.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
+import type { FakeAgent } from "./test-support/fake-opencode.ts";
 import type { StudioService } from "./studio.ts";
 import type { TierService } from "./tiers.ts";
 import { EQ_MODULES, EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
@@ -254,13 +262,13 @@ function studioEspion(): StudioService {
  * Cockpit complet, modules d'équipes réels ; `installAssistant` remplace le seul appel que `installExample` fait au service des
  * assistants (`eq.assistants.install`), pour rejouer un refus métier sans dépendre de l'état du catalogue d'IA.
  */
-async function bancInstallation(t: TestContext, installAssistant?: () => never): Promise<CockpitHarness> {
+async function bancInstallation(t: TestContext, installAssistant?: () => never, modulesEnPlus: readonly EqModule[] = []): Promise<CockpitHarness> {
   const studio = studioEspion();
   const ref: { h?: CockpitHarness } = {};
   const h = await startCockpit(t, {
     settings: { ui: { mode: "avance" } },
     modules: "tous",
-    equipes: [EQ_MODULES.agentMap, EQ_MODULES.teams, EQ_MODULES.teamPreflight, EQ_MODULES.teamGuards],
+    equipes: [EQ_MODULES.agentMap, EQ_MODULES.teams, EQ_MODULES.teamPreflight, ...modulesEnPlus, EQ_MODULES.teamGuards],
     deps: (base) => {
       const reel = new AssistantServiceClass({
         db: base.db,
@@ -401,6 +409,132 @@ describe("croisements it4 V4 — D6 : le focus reste dans la boîte de dialogue"
     // Échap et le retour du focus à l'élément d'avant restent ceux de l'itération 1.
     assert.match(code, /if \(e\.key === "Escape"\) \{\s*if \(dessus\(\)\) onClose\(\);/);
     assert.match(code, /previous\?\.focus\?\.\(\);/);
+  });
+});
+
+// --- « À surveiller » de la répétition générale : le repos qui suit l'état « terminee » -------------------------------------------
+
+/*
+ * Point « à surveiller » de la répétition générale du 21/09 (constat C4 de la vague 4) : `it4-studio` échouait dans le passage
+ * complet chargé sur un 409 « sessions-busy » rendu JUSTE APRÈS la fin d'une équipe, et passait seul. Le refus lui-même est le
+ * comportement que la spécification demande ; ce qui n'était borné par rien de visible, c'est le DÉLAI entre l'état « terminee »
+ * du lancement et le repos réel des sessions d'étape. La mesure est faite ici, dans la vraie pile et sans Docker :
+ *   1. à « terminee », le cockpit a DÉJÀ rendu son occupation propre — `c11.reloadBusy()` est faux (D-eq-06) et la file de
+ *      configuration ne porte plus de demande facturée : l'équipe ne retient plus la garde de rechargement ;
+ *   2. ce qui peut encore refuser est la seule sonde d'opencode (`probeSessionsBusy`, `GET /session/status`), et elle revient au
+ *      repos d'elle-même, en un temps borné.
+ * Le produit n'a donc rien à changer (aucune publication de « terminee » différée, ce qui mentirait sur l'état du lancement) :
+ * c'est au banc d'attendre ce repos, et `e2e/scenarios/it4-studio.mjs` le fait désormais, en le mesurant.
+ */
+
+/** Assistants et étapes d'un déroulé installé, pour les déclarer au faux et scripter leurs tours. */
+function etapesEtAssistants(flow: Flow): { etapes: string[]; assistants: string[] } {
+  const etapes = flow.blocs.flatMap((bloc) => (bloc.type === "etape" ? [bloc.etape] : bloc.type === "avis" ? [...bloc.avis, bloc.synthese] : []));
+  return { etapes: etapes.map((etape) => etape.id), assistants: [...new Set(etapes.map((etape) => etape.assistant))] };
+}
+
+/** Assistant du catalogue tel que le faux le rend à `GET /agent` (lecture seule : le pré-lancement réel en calcule le plancher). */
+const agentDuFaux = (name: string): FakeAgent => ({
+  name,
+  mode: "all",
+  description: `Assistant ${name}`,
+  model: { providerID: "github-copilot", modelID: "gpt-5-mini" },
+  options: {},
+  permission: [
+    { permission: "*", pattern: "*", action: "deny" },
+    { permission: "read", pattern: "*", action: "allow" },
+    { permission: "grep", pattern: "*", action: "allow" },
+    { permission: "glob", pattern: "*", action: "allow" },
+  ] as FakeAgent["permission"],
+  steps: 20,
+});
+
+/** Attend un état du lancement par la vraie route de lecture ; le message d'échec dit l'état et celui de chaque étape. */
+async function attendreEtat(h: CockpitHarness, runId: string, etat: TeamRunView["state"], timeoutMs = 10_000): Promise<TeamRunView> {
+  const limite = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await h.call("GET", `/api/team-runs/${runId}`, { headers: h.headers.authed });
+    assert.equal(res.status, 200, res.body);
+    const vue = res.json<TeamRunView>();
+    if (vue.state === etat) return vue;
+    assert.ok(
+      Date.now() < limite,
+      `lancement « ${etat} » attendu : état ${vue.state}, étapes ${vue.steps.map((step) => `${step.stepId}=${step.state}`).join(", ")}`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Installe « Revue SQL sur réplica », la lance sur le faux opencode et rend la vue du lancement terminé. */
+async function equipeTerminee(t: TestContext): Promise<{ h: CockpitHarness; vue: TeamRunView }> {
+  const h = await bancInstallation(t, undefined, [createTeamRunnerModule({ pollMs: 40, retryMs: 25, usageWaitMs: 300 })]);
+  fs.mkdirSync(path.join(h.deps.env.workspaceDir, "projet"), { recursive: true });
+  const directory = `${h.fake.directory}/projet`;
+
+  const installe = await h.call("POST", "/api/teams/examples/revue-sql/install", { headers: h.headers.mutating, body: {} });
+  assert.equal(installe.status, 200, installe.body);
+  const { assistants } = etapesEtAssistants(installe.json<TeamInstallResponse>().team.flow);
+  // Les assistants posés par l'installation sont déclarés au faux : le vrai pré-lancement les retrouve par `GET /agent`.
+  const connus = new Set(h.fake.agents().map((agent) => agent.name));
+  const manquants = assistants.filter((nom) => !connus.has(nom));
+  if (manquants.length > 0) h.fake.setAgents([...h.fake.agents(), ...manquants.map(agentDuFaux)]);
+  h.fake.scriptWhen(() => true, { text: "Avis rendu.", cost: 0.01, tokens: { input: 90, output: 20 }, stepMs: 5 });
+
+  const estimation = await h.call("POST", "/api/teams/revue-sql/estimate", { headers: h.headers.mutating, body: { directory, rootId: null } });
+  assert.equal(estimation.status, 200, estimation.body);
+  const started = await h.call("POST", "/api/teams/revue-sql/run", {
+    headers: h.headers.mutating,
+    body: {
+      directory,
+      rootId: null,
+      demande: "Relis la requête de facturation du mois dernier.",
+      fichiers: [],
+      agentConversation: "build",
+      estimateSha256: estimation.json<TeamEstimateResponse>().estimateSha256,
+      confirmations: {},
+    },
+  });
+  assert.equal(started.status, 202, started.body);
+  return { h, vue: await attendreEtat(h, started.json<TeamRunStarted>().runId, "terminee") };
+}
+
+describe("croisements it4 V4 — à « terminee », l'équipe ne retient plus la garde de rechargement", () => {
+  it("le cockpit a rendu son occupation propre, et la sonde d'opencode revient au repos d'elle-même", async (t) => {
+    const { h, vue } = await equipeTerminee(t);
+    assert.equal(vue.steps.length, 4, "les quatre étapes de « Revue SQL sur réplica » ont tourné");
+    for (const step of vue.steps) {
+      assert.equal(step.state, "terminee", `étape ${step.stepId}`);
+      assert.ok(step.sessionId, `étape ${step.stepId} sans session : rien n'aurait été envoyé à opencode`);
+    }
+
+    // 1. Occupation PROPRE du cockpit : rendue dès « terminee ». C'est la moitié dont le produit répond (D-eq-06).
+    assert.equal(h.cockpit.c11.reloadBusy(), false, "l'équipe terminée compte encore le cockpit occupé");
+    assert.equal(h.deps.configQueue?.billedInFlight ?? 0, 0, "une demande facturée est encore comptée en vol après la fin de l'équipe");
+
+    // 2. Reste la sonde d'opencode, que la garde lit à chaque appel : elle revient au repos seule, en un temps borné. C'est ce
+    //    délai — et lui seul — que le banc attend maintenant avant les écritures d'après l'équipe (it4-studio.mjs).
+    const sonde = () => probeSessionsBusy({ client: h.deps.client, projects: h.deps.projects, db: h.db });
+    const limite = Date.now() + 5_000;
+    let occupe = await sonde();
+    while (occupe && Date.now() < limite) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      occupe = await sonde();
+    }
+    assert.equal(occupe, false, "une session est encore comptée occupée par opencode 5 s après la fin de l'équipe");
+  });
+
+  it("`it4-studio` attend ce repos et le mesure, sans rien céder sur le refus pendant l'étape", () => {
+    const scenario = lire(path.join("e2e", "scenarios", "it4-studio.mjs"));
+    // Le refus pendant l'étape reste exigé : la correction du banc ne doit pas devenir une tolérance au 409.
+    assert.match(scenario, /pendant une étape : code \$\{reponse\.code\} au lieu de 409/);
+    // L'attente du repos est bornée, mesurée, et relevée.
+    assert.match(scenario, /const REPOS_MAX_MS = \d[\d_]*;/);
+    assert.match(scenario, /attendreQue\(\s*async \(\) => \{\s*occupees = await sessionsOccupees\(ctx\);/);
+    assert.match(scenario, /delaiMs: REPOS_MAX_MS/);
+    assert.match(scenario, /const reposMs = await attendreLeRepos\(ctx\);/);
+    assert.match(scenario, /repos des sessions d'étape : \$\{reposMs\} ms après l'état « terminee »/);
+    // Les écritures d'après l'équipe gardent leur code attendu : aucune n'est rendue facultative.
+    assert.match(scenario, /reponse\.code === ecriture\.apres/);
   });
 });
 

@@ -10,14 +10,69 @@
 //   2. l'étape n'a pas été coupée : l'équipe va jusqu'au bout, et le cockpit n'a ni libéré ni redémarré l'instance
 //      d'opencode pendant tout cela (témoin P6) ;
 //   3. APRÈS l'équipe : les deux mêmes écritures répondent 200. Elles rechargent opencode, comme elles le doivent : elles
-//      sont donc jouées HORS du témoin P6, qui verrait cette libération voulue.
+//      sont donc jouées HORS du témoin P6, qui verrait cette libération voulue. Le banc y attend d'abord le repos réel des
+//      sessions d'étape, et il le MESURE (voir REPOS_MAX_MS).
 // En « --reel-hors-ligne », les étapes ne sont pas scriptables : le scénario le dit et ne joue rien.
-import { avecTemoinP6, exiger, nonJoue, releve, resume } from "./it1-api-commun.mjs";
+import { attendreQue, avecTemoinP6, exiger, nonJoue, oc, releve, resume } from "./it1-api-commun.mjs";
 import { preparerPage } from "./it1-ui-commun.mjs";
-import { appelConfirme, attendreRun, enAvance, equipeDerivee, equipes, estimerEtLancer, etapesDuFlow, scripterEtape } from "./it4-commun.mjs";
+import {
+  appelConfirme,
+  attendreRun,
+  DOSSIER_EQUIPE,
+  enAvance,
+  equipeDerivee,
+  equipes,
+  estimerEtLancer,
+  etapesDuFlow,
+  scripterEtape,
+} from "./it4-commun.mjs";
 
 /** Pas d'une étape assez longue pour que les trois écritures tombent pendant qu'elle travaille. */
 const PAS_LONG_MS = 3_000;
+
+/**
+ * Délai laissé aux sessions d'étape pour revenir au repos APRÈS l'état « terminee » du lancement (constat C4 de la vague 4,
+ * point « à surveiller » de la répétition générale du 21/09).
+ *
+ * Le cockpit note la fin d'une étape quand le message de l'assistant est clos ; opencode, lui, peut compter la session de cette
+ * étape occupée un court moment encore. La garde de rechargement lit opencode (`probeSessionsBusy` : `GET /session/status` de
+ * chaque dossier connu) : son refus 409 « sessions-busy » juste après la fin d'une équipe est donc le comportement VOULU, pas
+ * un défaut — le produit n'est pas changé ici (la spécification demande ce refus tant qu'une réponse est en cours).
+ *
+ * Ce qui n'était borné par rien de visible, c'est le DÉLAI entre les deux. Le banc l'attend donc, et le relève : le scénario
+ * cesse de dépendre de la charge de la pile partagée (il tombait dans le passage complet et passait seul), et une session qui
+ * ne reviendrait jamais au repos le ferait tomber avec sa mesure, au lieu de le rendre capricieux.
+ */
+const REPOS_MAX_MS = 30_000;
+
+/** Sessions du dossier des équipes qu'opencode ne dit pas « idle » — même lecture que la garde (assistants.ts, `statusBusy`). */
+async function sessionsOccupees(ctx) {
+  const etats = await oc(ctx, DOSSIER_EQUIPE).etats();
+  if (etats === null || typeof etats !== "object") return [];
+  return Object.entries(etats)
+    .filter(([, etat]) => !(etat !== null && typeof etat === "object" && etat.type === "idle"))
+    .map(([sessionId]) => sessionId);
+}
+
+/** Attend le repos réel des sessions d'étape et rend le délai mesuré depuis l'état « terminee », en millisecondes. */
+async function attendreLeRepos(ctx) {
+  const debut = Date.now();
+  let occupees = [];
+  try {
+    await attendreQue(
+      async () => {
+        occupees = await sessionsOccupees(ctx);
+        return occupees.length === 0;
+      },
+      { delaiMs: REPOS_MAX_MS, pasMs: 200, libelle: "repos des sessions d'étape après la fin de l'équipe" },
+    );
+  } catch (err) {
+    throw new Error(
+      `repos des sessions d'étape : ${occupees.length} session(s) encore comptée(s) occupée(s) par opencode ${Math.round(REPOS_MAX_MS / 1000)} s après l'état « terminee » du lancement (${occupees.join(", ")}) — ${err?.message ?? err}`,
+    );
+  }
+  return Date.now() - debut;
+}
 
 /**
  * Écritures que la garde de rechargement doit refuser pendant une étape, et accepter après.
@@ -69,9 +124,15 @@ export async function run(ctx) {
     });
 
     // 3. Après l'équipe : les mêmes écritures passent. Hors du témoin P6 : elles rechargent opencode, c'est leur objet.
+    // Le repos réel des sessions d'étape suit de peu l'état « terminee » : le banc l'attend et le mesure (REPOS_MAX_MS).
+    const reposMs = await attendreLeRepos(ctx);
+    releve(ctx, `repos des sessions d'étape : ${reposMs} ms après l'état « terminee » du lancement (borne du banc : ${REPOS_MAX_MS} ms)`);
     for (const ecriture of ECRITURES.filter((candidate) => candidate.apres !== null)) {
       const reponse = await ecriture.appel(ctx);
-      exiger(reponse.code === ecriture.apres, `${ecriture.nom} après l'équipe : code ${reponse.code} au lieu de ${ecriture.apres} — ${resume(reponse.corps)}`);
+      exiger(
+        reponse.code === ecriture.apres,
+        `${ecriture.nom} après l'équipe, sessions d'étape au repos depuis la mesure (${reposMs} ms) : code ${reponse.code} au lieu de ${ecriture.apres} — ${resume(reponse.corps)}`,
+      );
     }
     releve(ctx, "après l'équipe : Studio et réalignement acceptés (200)");
   });
