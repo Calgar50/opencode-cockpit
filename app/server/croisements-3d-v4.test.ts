@@ -55,6 +55,11 @@
 //      tous les moments — mais il ne compare pas les deux nombres du compteur, et il ne parcourt aucun moment depuis les
 //      Archives. Le §10 ne peut donc annoncer ni « N sur N », ni des moments rejoués depuis les Archives : ce serait une
 //      sur-déclaration, l'exact symétrique du §10 périmé du constat 14.
+// Note du troisième tour de la revue : deux phrases du §10 ont encore été corrigées — le nombre de passages de `npm test`
+// (trois, et non deux) et la tête sur laquelle le banc a été joué (`28823b6`, celle d'avant les commits de documentation de
+// la clôture). Aucune garde n'est ajoutée pour elles : un test ne peut savoir ni combien de fois `npm test` a été lancé, ni
+// sur quel commit le banc a tourné ; une garde qui s'en donnerait l'air ne tomberait sur aucune des deux phrases fautives.
+// Ce qui EST gardé ici reste le verdict du banc et les comptes datés (constats 14 et 15).
 // Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
 // `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
 // ne les refait pas. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
@@ -111,7 +116,8 @@ const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB", "1 675,
 const TESTS_PERIMES = ["2 029", "2 033", "2 023", "2 069", "2 070"] as const;
 
 /**
- * Verdict du banc COMPLET rejoué sur cette version du code, après la correction du débit (journal du rejeu : « Banc e2e :
+ * Verdict du banc COMPLET rejoué sur la tête `28823b6`, celle d'avant les deux commits de documentation de la clôture et la
+ * dernière où le code de l'application ait changé, la correction du débit comprise (journal du rejeu : « Banc e2e :
  * 23 scénario(s), aucun échec », code de sortie 0), et débit M20 relevé tenu en 3D comme en repli 2D aux trois passages du
  * même jour (banc complet, puis `it3-debit` rejoué seul deux fois). Même règle que les tailles de `MESURES_TRAIN` : toute
  * ligne de la documentation qui donne ce verdict doit donner CELUI-CI ; sinon, on rejoue le banc et on met les deux à jour.
@@ -570,8 +576,8 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
       Number(verts[1]) <= reels,
       `le §10 donne ${verts[1]} scénarios verts pour ${reels} joués : un banc ne rend pas plus de verts que de scénarios`,
     );
-    // Le verdict du banc du train est épinglé, comme les tailles de `MESURES_TRAIN` : le banc complet rejoué sur cette version
-    // du code est vert, donc le §10 le dit, et les verts sont aussi nombreux que les scénarios joués.
+    // Le verdict du banc du train est épinglé, comme les tailles de `MESURES_TRAIN` : le banc complet rejoué sur la tête
+    // `28823b6` est vert, donc le §10 le dit, et les verts sont aussi nombreux que les scénarios joués.
     assert.ok(
       ligneBanc.includes(BANC_TRAIN.verdict),
       `§10 : le banc du train est vert (« ${BANC_TRAIN.verdict} ») ; s'il ne l'est plus, rejouer et mettre les deux à jour`,
