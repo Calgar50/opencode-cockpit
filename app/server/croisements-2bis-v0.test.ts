@@ -512,8 +512,10 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * retiré, et avec lui les trois modules que ce service importe (`omo-contracts.ts`, `shared/omo-control-protocol.ts`,
  * `shared/omo-types.ts`) plus le module de textes que la route de la salle lit pour sa phrase de refus (`shared/omo-room-texts.ts`)
  * — sans quoi le service branché, désormais parcouru comme un fichier de production, serait pris en faute pour ses propres
- * importations. Les modules de comportement de la salle (pré-contrôle, plafonds, détections, egress, audit, superviseur) restent
- * interdits d'importation : ils arrivent en V3 et V4.
+ * importations. Même chose en V3 pour L19b (`omo-precheck-service.ts`), qui remplit le port `omoPrecheck` : les deux modules du
+ * pré-contrôle qu'il appelle (`shared/omo-precheck-rules.ts` et `omo-precheck-reader.ts`) sortent de la liste. Les autres modules
+ * de comportement de la salle (plafonds, détections, egress, audit, superviseur) restent interdits d'importation : ils arrivent
+ * avec leurs paquets, en V3 et V4.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
@@ -524,8 +526,6 @@ const MODULES_SALLE_V0 = new Set([
   "omo-limits.ts",
   "omo-cap.ts",
   "omo-detections.ts",
-  "omo-precheck-rules.ts",
-  "omo-precheck-reader.ts",
   "egress-allow.ts",
   "egress-proxy.ts",
   "egress-journal.ts",
