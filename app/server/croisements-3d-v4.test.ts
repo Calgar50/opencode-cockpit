@@ -49,7 +49,12 @@
 //      attente exige, elle, le point du §11 qui la tient ouverte. Un document à moitié mis à jour tombe, dans les deux sens.
 //  15. DOC-3D × les passages du banc : les comptes qui changent d'un passage à l'autre (moments de « Revoir », images du
 //      premier zoom, curseur des moments, images de scène) sont DATÉS, et les quatre valeurs d'un seul passage que la revue a
-//      démenties ne peuvent pas revenir. Ce que le scénario vérifie est une règle (N sur N) ; le document doit la donner.
+//      démenties ne peuvent pas revenir. Le document doit donner la RÈGLE que le scénario vérifie, pas le chiffre.
+//  16. DOC-3D × `it3-revoir.mjs` : cette règle est relue DANS le scénario, jamais recopiée. Le scénario contrôle la FORME du
+//      compteur (« n / N ») aux deux endroits où il le lit, plus un minimum de moments, et promène le lecteur au clavier sur
+//      tous les moments — mais il ne compare pas les deux nombres du compteur, et il ne parcourt aucun moment depuis les
+//      Archives. Le §10 ne peut donc annoncer ni « N sur N », ni des moments rejoués depuis les Archives : ce serait une
+//      sur-déclaration, l'exact symétrique du §10 périmé du constat 14.
 // Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
 // `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
 // ne les refait pas. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
@@ -103,7 +108,7 @@ const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB", "1 675,
  * constat « le §10 cite un nombre de tests antérieur »). Un compte exact n'est pas tenable depuis `npm test` — le contrôle se
  * mordrait la queue — mais une valeur périmée, elle, se reconnaît : on remesure plutôt que de recopier.
  */
-const TESTS_PERIMES = ["2 029", "2 033", "2 023", "2 069"] as const;
+const TESTS_PERIMES = ["2 029", "2 033", "2 023", "2 069", "2 070"] as const;
 
 /**
  * Verdict du banc COMPLET rejoué sur cette version du code, après la correction du débit (journal du rejeu : « Banc e2e :
@@ -638,8 +643,9 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
     // Écart relevé par la revue d'itération 3 : « 9 moments sur 9 », « 36 images au premier zoom », « curseur de 8 à 7 » et
     // « 94 images dessinées en 3D » étaient des relevés d'UN passage, écrits comme des valeurs stables. Cinq passages du MÊME
     // code donnent cinq comptes (le regroupement des moments suit l'horodatage réel des faits ; le nombre d'images suit la
-    // fenêtre de mesure). Ce que le scénario vérifie, lui, est une règle (N sur N, contrôle non vide) : la documentation doit
-    // donner la règle, et dater le chiffre quand elle en donne un.
+    // fenêtre de mesure). Ce que le scénario vérifie, lui, est une règle (forme du relevé, contrôle non vide) : la
+    // documentation doit donner la règle, et dater le chiffre quand elle en donne un. Quelle règle exactement, c'est le
+    // test suivant qui le relit dans le scénario.
     const validations = sections3d(recap).find((bloc) => bloc.contenu.includes("(M24)"));
     assert.ok(validations, "section [3d] des validations de l'itération 3 introuvable");
     const lignes = validations.contenu.split(/\r?\n/);
@@ -660,6 +666,84 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
     for (const perime of ["9 moments sur 9", "36 images", "de 8 à 7", "94 images"]) {
       assert.ok(!validations.contenu.includes(perime), `§10 : compte d'un seul passage « ${perime} » de nouveau donné pour stable`);
     }
+  });
+
+  it("la règle que le §10 prête à « Revoir » est celle que `it3-revoir` vérifie vraiment, relue dans le scénario", () => {
+    // Constat des contre-vérificateurs de la revue d'itération 3, symétrique du constat 14 : en remplaçant un compte périmé
+    // par une règle, le §10 avait annoncé une règle PLUS FORTE que le contrôle — « le scénario exige N sur N », et des
+    // moments rejoués « depuis la bande comme depuis les Archives ». Le scénario ne contrôle que la FORME du compteur, aux
+    // deux endroits où il le lit ; il ne compare pas ses deux nombres ; et il ne promène le lecteur sur tous les moments que
+    // depuis la bande. Une régression qui ouvrirait « Revoir » au moment 3 sur 8 le laisserait donc VERT. La règle est
+    // relue ici DANS le scénario : si le scénario se renforce, cette garde tombe et le §10 est réécrit avec lui.
+    const scenario = lire(path.join(SCENARIOS_DIR, "it3-revoir.mjs"));
+    const FORME_COMPTEUR = "/^\\d+ \\/ \\d+$/.test(";
+    const corpsDe = (nom: string): string => {
+      const debut = scenario.indexOf(`async function ${nom}(`);
+      assert.notEqual(debut, -1, `it3-revoir : fonction \`${nom}\` introuvable`);
+      const fin = scenario.indexOf("\n}\n", debut);
+      assert.notEqual(fin, -1, `it3-revoir : fin de la fonction \`${nom}\` introuvable`);
+      return scenario.slice(debut, fin);
+    };
+
+    // 1. Tout contrôle du scénario qui porte sur le compteur des moments est un contrôle de FORME, et il y en a deux : celui
+    //    de la bande et celui des Archives. Une égalité `n === N` ajoutée ici ferait un troisième contrôle, et la garde le dit.
+    const surLeCompteur = scenario.split("\n").filter((ligne) => ligne.includes("exiger(") && /\b(?:rang|moments)\b/.test(ligne));
+    assert.equal(
+      surLeCompteur.length,
+      2,
+      `it3-revoir : ${surLeCompteur.length} contrôle(s) portent sur le compteur des moments, deux attendus (bande et Archives) — si le scénario en a gagné un, le §10 doit dire la règle nouvelle`,
+    );
+    for (const controle of surLeCompteur) {
+      assert.ok(
+        controle.includes(FORME_COMPTEUR),
+        `it3-revoir : un contrôle du compteur n'est pas un contrôle de forme : « ${controle.trim()} » — le §10 ne peut plus dire que seule la forme est vérifiée`,
+      );
+    }
+
+    // 2. Ce que le scénario vérifie en plus : au moins trois moments, et le lecteur promené AU CLAVIER sur tous les moments
+    //    de la boîte — depuis la bande seulement.
+    const lecteur = corpsDe("lecteur");
+    assert.ok(lecteur.includes("exiger(total >= 3,"), "it3-revoir : le minimum de moments (contrôle non vide du lecteur) a disparu");
+    assert.ok(
+      /for \(let pas = 0; pas < total; pas\+\+\) await page\.touche\("ArrowLeft"\);/.test(lecteur),
+      "it3-revoir : le lecteur n'est plus ramené au premier moment au clavier",
+    );
+    assert.ok(lecteur.includes('await page.touche("ArrowRight");'), "it3-revoir : le lecteur n'est plus avancé moment par moment au clavier");
+
+    // 3. Depuis les Archives : la boîte est ouverte, le bandeau et le compteur relevés, puis Échap. Aucun moment parcouru.
+    const archives = corpsDe("depuisLesArchives");
+    assert.ok(archives.includes(FORME_COMPTEUR), "it3-revoir : le compteur n'est plus relevé depuis les Archives");
+    assert.ok(archives.includes('page.touche("Escape")'), "it3-revoir : la boîte ouverte depuis les Archives n'est plus refermée");
+    assert.ok(
+      !/Arrow(?:Left|Right)/.test(archives),
+      "it3-revoir : des moments sont désormais parcourus depuis les Archives — le §10 le dit pour la seule bande, il doit suivre",
+    );
+
+    // 4. Le §10 dit cela, et rien de plus fort.
+    const validations = sections3d(recap).find((bloc) => bloc.contenu.includes("(M24)"));
+    assert.ok(validations, "section [3d] des validations de l'itération 3 introuvable");
+    assert.ok(
+      !/N sur N/.test(validations.contenu),
+      "§10 : « N sur N » donné pour la règle vérifiée par le scénario, qui ne contrôle que la forme du compteur — sur-déclaration",
+    );
+    const lignes = validations.contenu.split("\n");
+    const entete = lignes.find((ligne) => ligne.includes("jamais comme une valeur stable")) ?? "";
+    assert.notEqual(entete, "", "§10 : en-tête (règle des comptes datés) introuvable");
+    assert.ok(entete.includes("« n / N »"), "§10, en-tête : la règle réellement vérifiée (la forme « n / N ») n'est pas donnée");
+    assert.ok(/ne compare jamais/.test(entete), "§10, en-tête : l'absence d'égalité entre les deux nombres du compteur n'est pas dite");
+    const revoir = lignes.find((ligne) => ligne.includes("**« Revoir »**")) ?? "";
+    assert.notEqual(revoir, "", "§10 : ligne « Revoir » introuvable");
+    assert.ok(revoir.includes("« n / N »"), "§10, ligne « Revoir » : la forme du compteur, seule règle contrôlée, n'est pas donnée");
+    assert.ok(/au clavier/.test(revoir), "§10, ligne « Revoir » : le parcours des moments est au clavier, c'est ce que fait le scénario");
+    assert.ok(/\*\*tous\*\* les moments/.test(revoir), "§10, ligne « Revoir » : le parcours de tous les moments de la boîte n'est plus dit");
+    assert.ok(
+      /aucun moment n'y est parcouru/.test(revoir),
+      "§10, ligne « Revoir » : les Archives doivent être dites pour ce qu'elles sont — boîte ouverte, compteur relevé, aucun moment parcouru",
+    );
+    assert.ok(
+      !/moments rejoués, depuis la bande comme depuis les Archives/.test(revoir),
+      "§10, ligne « Revoir » : les moments sont de nouveau donnés pour rejoués depuis les Archives",
+    );
   });
 
   it("M25 et M20 sont donnés pour mesurés avec leur mode, jamais à vide", () => {
