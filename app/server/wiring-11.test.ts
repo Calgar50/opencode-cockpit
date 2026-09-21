@@ -548,8 +548,9 @@ describe("câblage 1.1 : ports neutres", () => {
     assert.equal(wiring.startup.length, 2);
     assert.equal(wiring.routes.length, 6);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
-    // conversation-autonomy.test.ts et fact-store.test.ts.
-    assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {
+    // conversation-autonomy.test.ts et fact-store.test.ts. Un choix inconnu reste invalide quelle que soit la salle ; la réponse
+    // à « omo » (409 « autonomie-indisponible », raison « racine-hors-salle ») est contrôlée par conversation-autonomy.test.ts (L22c).
+    assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "inconnu" } as never, { confirmed: true }), {
       ok: false,
       status: 400,
       error: "invalid",
@@ -655,7 +656,7 @@ describe("câblage 1.1 : routes et cadre", () => {
     assert.equal((await withoutModule.request("GET", "/api/diagnostic/activite", withoutModule.authed)).status, 404);
   });
 
-  it("salle coupée (D-10) : POST /api/omo/rooms avec cookie et en-têtes anti-CSRF → 404 ; compose sans opencode-omo", async () => {
+  it("salle coupée (D-10) : POST /api/omo/rooms avec cookie et en-têtes anti-CSRF → 404 ; si le service opencode-omo existe : profiles [omo] et pull_policy never", async () => {
     const s = setup();
     const { request, mutating } = mount(s, buildCockpit11(s.deps).routes);
     const body = JSON.stringify({ projet: "/workspace/app" });
@@ -670,8 +671,13 @@ describe("câblage 1.1 : routes et cadre", () => {
     const composeText = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "docker-compose.yml"), "utf8");
     const compose = parseYaml(composeText) as { services: Record<string, unknown> };
     assert.ok(Object.keys(compose.services).includes("cockpit"));
-    assert.equal(Object.keys(compose.services).includes("opencode-omo"), false);
-    assert.equal(composeText.includes("opencode-omo"), false);
+    // Indépendant de l'état de la salle (L16b l'ajoutera) : tant que le service n'existe pas, rien n'est exigé ; dès qu'il existe,
+    // il reste derrière son profil et ne tire jamais d'image (spécification P13, « pull_policy: never »).
+    const omo = compose.services["opencode-omo"] as { profiles?: unknown; pull_policy?: unknown } | undefined;
+    if (omo !== undefined) {
+      assert.deepEqual(omo.profiles, ["omo"]);
+      assert.equal(omo.pull_policy, "never");
+    }
   });
 
   it("shared/ids.ts : mêmes motifs que http.ts (tant que http.ts garde sa copie locale)", () => {
