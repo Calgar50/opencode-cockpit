@@ -176,8 +176,9 @@ export function libelleEtatActeur(row: ActorLabelInput, detail: string | null, a
       return row.activity === null ? etats.travaille : libelleActivite(row.activity, detail);
     case "nouvelle-tentative":
       return remplir(etats["nouvelle-tentative"], { n: row.attempt ?? 1 });
+    // Cause d'une autre instance (StatutCause élargie par la Salle OMO) : l'état générique plutôt qu'« undefined » (P3).
     case "arrete":
-      return row.cause === null ? etats.arrete : causes[row.cause];
+      return row.cause !== null && Object.hasOwn(causes, row.cause) ? causes[row.cause as keyof typeof causes] : etats.arrete;
     case "echec":
       return avance && row.erreur !== null ? remplir(TEXTES.avance.echecCode, { erreur: row.erreur }) : etats.echec;
     default:
@@ -232,7 +233,7 @@ export function phraseAnnonce(annonce: ActivityAnnouncement, formatDuree: (ms: n
     case "termine":
       return annonce.durationMs === null ? remplir(annonces.termine, { nom }) : remplir(annonces.termineEn, { nom, duree: formatDuree(annonce.durationMs) });
     case "arrete": {
-      const cause = annonce.cause !== null && Object.hasOwn(causes, annonce.cause) ? causes[annonce.cause as StatutCause] : null;
+      const cause = annonce.cause !== null && Object.hasOwn(causes, annonce.cause) ? causes[annonce.cause as keyof typeof causes] : null;
       return cause === null ? remplir(annonces.arrete, { nom }) : remplir(annonces.arreteCause, { nom, cause });
     }
     case "retour-demander":

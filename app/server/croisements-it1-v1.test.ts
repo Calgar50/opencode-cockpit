@@ -194,7 +194,7 @@ describe("croisements it1 V1 : base réelle v4 ouverte par le code fusionné", (
     // 2. Ouverture par le code fusionné : migration 5 appliquée, données de la 1.0.4 intactes, défaut de sessions.instance posé.
     const db = openDb(dir);
     ouvertes.push(db);
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
     const rows = (db.prepare("SELECT id, root_id, title, instance FROM sessions ORDER BY id").all() as Array<Record<string, unknown>>).map((row) => ({ ...row }));
     assert.deepEqual(rows, [
       { id: "ses_enfant", root_id: "ses_racine", title: "Enfant 1.0.4", instance: "principale" },
@@ -219,7 +219,7 @@ describe("croisements it1 V1 : base réelle v4 ouverte par le code fusionné", (
     db.close();
     const again = openDb(dir);
     ouvertes.push(again);
-    assert.equal((again.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((again.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
   });
 });
 

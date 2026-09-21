@@ -375,6 +375,21 @@ export const MIGRATIONS: readonly string[] = [
     fin TEXT
   );
   `,
+  // 1.1, migration 6 : NUMÉRO RÉSERVÉ À LA SALLE OMO (décision A2 du 19/09 ; 7 aux équipes, 8 à la salle de contrôle et
+  // « Revoir », 9 à la construction : jamais posés ici). Salles ouvertes (une par racine) et lien d'un démarrage de la salle
+  // avec la salle qu'il sert. Ajouts seulement, comme les migrations 4 et 5 : les versions 1.0.x rouvrent cette base sans rien
+  // migrer.
+  `
+  CREATE TABLE omo_rooms (
+    root_id TEXT PRIMARY KEY,
+    projet TEXT NOT NULL,                    -- chemin du projet ouvert, relatif à /workspace
+    created_at INTEGER NOT NULL
+  );
+
+  ALTER TABLE omo_room_starts ADD COLUMN start_id TEXT;
+
+  CREATE INDEX idx_omo_room_starts_start ON omo_room_starts(start_id);
+  `,
 ];
 
 /** Ligne de la table item_meta (migration 2). */

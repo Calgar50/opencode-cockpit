@@ -77,7 +77,12 @@ export class SessionTracker {
     return row.root_id !== row.id && this.get(row.root_id)?.purpose === "classifier";
   }
 
-  upsert(info: OcSession, forcedPurpose?: SessionPurpose): SessionRow {
+  /**
+   * Enregistre ou met à jour une session. `opts.instance` n'est écrite qu'à l'INSERTION : l'instance d'une session déjà connue
+   * n'est jamais changée par un second upsert, quel que soit l'appelant (une session ne change pas d'opencode). Sans option :
+   * « principale », exactement comme en 1.0.x (valeur d'office de la colonne, migration 5).
+   */
+  upsert(info: OcSession, forcedPurpose?: SessionPurpose, opts?: { instance?: SessionInstance }): SessionRow {
     const parent = info.parentID ? this.get(info.parentID) : undefined;
     const rootId = info.parentID ? (parent?.root_id ?? info.parentID) : info.id;
     const inherited = parent && STICKY_PURPOSES.includes(parent.purpose) ? parent.purpose : null;
@@ -87,8 +92,9 @@ export class SessionTracker {
     const purpose = forcedPurpose ?? inherited ?? purposeOf(info, info.parentID, previous === undefined);
     this.#db
       .prepare(
-        `INSERT INTO sessions (id, parent_id, root_id, directory, project_id, title, purpose, agent, created_at, updated_at)
-         VALUES (:id, :parent_id, :root_id, :directory, :project_id, :title, :purpose, :agent, :created_at, :updated_at)
+        // `instance` est absente du DO UPDATE SET : posée à l'insertion, jamais réécrite ensuite.
+        `INSERT INTO sessions (id, parent_id, root_id, directory, project_id, title, purpose, agent, instance, created_at, updated_at)
+         VALUES (:id, :parent_id, :root_id, :directory, :project_id, :title, :purpose, :agent, :instance, :created_at, :updated_at)
          ON CONFLICT(id) DO UPDATE SET
            parent_id = excluded.parent_id, root_id = excluded.root_id, directory = excluded.directory,
            project_id = excluded.project_id, title = excluded.title,
@@ -106,6 +112,7 @@ export class SessionTracker {
           title: info.title ?? "",
           purpose,
           agent: typeof info.agent === "string" && info.agent ? info.agent : null,
+          instance: opts?.instance ?? "principale",
           created_at: info.time?.created ?? Date.now(),
           updated_at: info.time?.updated ?? Date.now(),
         }),
@@ -180,8 +187,12 @@ export class SessionTracker {
     return Number(this.#db.prepare("UPDATE sessions SET plancher = ? WHERE id = ?").run(hash, id).changes) > 0;
   }
 
-  /** Garantit que la session (et sa lignée) est connue, quitte à interroger opencode. */
-  async ensure(id: string, directory?: string, depth = 0): Promise<SessionRow | undefined> {
+  /**
+   * Garantit que la session (et sa lignée) est connue, quitte à interroger opencode. `instance` sert à l'insertion des sessions
+   * découvertes ici et se transmet à la lignée ; sans elle, « principale », exactement comme en 1.0.x. `depth` garde sa place et
+   * son rôle (garde-fou de la remontée des parents).
+   */
+  async ensure(id: string, directory?: string, depth = 0, instance: SessionInstance = "principale"): Promise<SessionRow | undefined> {
     const known = this.get(id);
     if (known && (known.parent_id === null || this.get(known.parent_id))) return known;
     if (depth > 8) return known;
@@ -194,7 +205,7 @@ export class SessionTracker {
     } catch {
       return known;
     }
-    if (info.parentID && !this.get(info.parentID)) await this.ensure(info.parentID, info.directory, depth + 1);
-    return this.upsert(info);
+    if (info.parentID && !this.get(info.parentID)) await this.ensure(info.parentID, info.directory, depth + 1, instance);
+    return this.upsert(info, undefined, { instance });
   }
 }

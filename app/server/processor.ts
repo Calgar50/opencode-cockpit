@@ -15,6 +15,7 @@ import type {
   OpencodeClient,
 } from "./opencode.ts";
 import type { SessionTracker } from "./sessions.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
 import { isClassifierRoot } from "./shared/session-purpose.ts";
 
 const PROCESSED = new Set(["session.created", "session.updated", "session.deleted", "session.idle", "session.status", "message.updated", "message.part.updated"]);
@@ -40,6 +41,12 @@ export interface ProcessorDeps {
   classifier: Classifier;
   hub: EventHub;
   log: Logger;
+  /**
+   * Instance d'opencode dont ce processeur traite le flux (1.1). Absente : « principale », c'est-à-dire le seul processeur de la
+   * 1.0.x. La valeur n'étiquette encore rien : aucune écriture ni aucun événement ne la porte tant que le second processeur
+   * n'est pas branché.
+   */
+  instance?: SessionInstance;
 }
 
 export class EventProcessor {
@@ -67,6 +74,11 @@ export class EventProcessor {
     return () => {
       this.#derivations = this.#derivations.filter((d) => d !== derivation);
     };
+  }
+
+  /** Instance servie par ce processeur ; « principale » quand l'option est absente (seul processeur de la 1.0.x). */
+  get instance(): SessionInstance {
+    return this.#d.instance ?? "principale";
   }
 
   get status() {
