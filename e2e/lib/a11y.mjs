@@ -126,29 +126,74 @@ export async function captureAccessibilite(navigateur, onglet, prefixe, { avant 
 }
 
 /**
- * Nombre d'animations EN COURS dans la page (`document.getAnimations()`, état « running ») : en mouvement réduit, il
- * doit être nul. Les animations finies ou en pause ne comptent pas — seul ce qui bouge encore compte.
+ * Durée à partir de laquelle une animation est un MOUVEMENT que l'on voit. Sous `prefers-reduced-motion: reduce`, la règle
+ * globale de styles.css ramène toute animation et toute transition CSS à 0,01 ms : chaque changement de style crée alors
+ * une transition CSS instantanée (mesuré : une centaine dans la carte pendant un tour), qui n'est pas un mouvement et qui
+ * prouve au contraire que la règle s'applique. Ce qui reste au-dessus de ce seuil ne peut venir que d'une animation qui a
+ * échappé au réglage — la transition WAAPI de la carte (900 ms), si sa garde tombait.
  */
-export async function animationsActives(onglet) {
-  return await onglet.evaluer("document.getAnimations().filter((a) => a.playState === 'running').length");
+export const DUREE_PERCEPTIBLE_MS = 100;
+
+/**
+ * Nombre d'animations EN COURS (`document.getAnimations()`, état « running ») : dans toute la page ou, avec `dans` (un
+ * sélecteur), seulement celles dont la cible est dans cet élément ; avec `dureeMinMs`, seulement celles d'au moins cette
+ * durée. Les animations finies ou en pause ne comptent pas — seul ce qui bouge encore compte.
+ *
+ * `dans` et `dureeMinMs` servent au relevé DISCRIMINANT du mouvement réduit : la seule animation que le réglage commande
+ * est la transition WAAPI de la carte de la bande néon (`.neon-map`, NeonBand.tsx : `mouvementPermis()`, environ 900 ms,
+ * une par signe apparu ou changé). Les boucles CSS de la page (`.dot.pulse`, `.spinner`) ne sont pas un témoin : la règle
+ * globale de styles.css les raccourcit à 0,01 ms sous `prefers-reduced-motion: reduce` sans les arrêter, elles restent
+ * « running » ; et les transitions CSS de 0,01 ms que cette règle crée dans la carte ne sont pas un mouvement (voir
+ * `DUREE_PERCEPTIBLE_MS`).
+ */
+export async function animationsActives(onglet, { dans = null, dureeMinMs = 0 } = {}) {
+  const cibleDans =
+    dans === null
+      ? "true"
+      : `(a.effect && a.effect.target && typeof a.effect.target.closest === "function" && a.effect.target.closest(${JSON.stringify(dans)}) !== null)`;
+  const assezLongue =
+    dureeMinMs > 0 ? `(a.effect && typeof a.effect.getTiming().duration === "number" && a.effect.getTiming().duration >= ${dureeMinMs})` : "true";
+  return await onglet.evaluer(`document.getAnimations().filter((a) => a.playState === 'running' && ${cibleDans} && ${assezLongue}).length`);
+}
+
+/**
+ * Réglages système tels que la PAGE les voit (`matchMedia`) : à exiger avant un relevé qui dépend de l'émulation, pour
+ * qu'un relevé nul ne puisse pas venir d'un réglage qui n'est pas arrivé jusqu'à la page.
+ */
+export async function mediasDeLaPage(onglet) {
+  return await onglet.evaluer(`({
+    mouvementReduit: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    contrasteForce: matchMedia("(forced-colors: active)").matches,
+    sombre: matchMedia("(prefers-color-scheme: dark)").matches,
+  })`);
 }
 
 /**
  * Focus visible sur `selecteur` : l'élément prend le focus et son anneau est DESSINÉ. Une touche est frappée d'abord
  * (Tab), parce que Chromium ne rend `:focus-visible` qu'après une interaction au clavier ; le focus est ensuite posé
- * sur l'élément voulu. Rend le détail relevé, `visible` disant si l'anneau est là (`:focus-visible`, ou un contour
- * réellement dessiné — en contraste forcé, c'est le système qui le dessine).
+ * sur l'élément voulu. Rend le détail relevé.
+ *
+ * `visible` exige un contour réellement dessiné (`outline-style` ≠ none ET largeur > 0 ; le test porte sur le style, parce
+ * que Chromium rapporte une `outline-width` de 3 px même quand le style est `none` ; `auto` compte comme dessiné) ou, HORS
+ * contraste forcé, une ombre (`box-shadow`) non nulle. `:focus-visible` seul ne suffit pas : la pseudo-classe dit que le
+ * navigateur VOUDRAIT montrer le focus, pas qu'un style le dessine — un `outline: none` posé dessus la laisse vraie sans rien
+ * à l'écran, et c'est ce défaut que l'assertion doit attraper. En contraste forcé, le système remplace les couleurs et
+ * neutralise les ombres, mais il ne redessine pas un contour qu'un style a retiré : l'ombre n'y compte donc pas. `pseudo`
+ * reste dans le relevé, en information.
  */
 export async function focusVisible(onglet, selecteur) {
   await onglet.touche("Tab");
   return await onglet.evaluer(`(() => {
     const el = document.querySelector(${JSON.stringify(selecteur)});
-    if (!el) return { trouve: false, focus: false, pseudo: false, contour: "", largeur: 0, visible: false };
+    const contrasteForce = matchMedia("(forced-colors: active)").matches;
+    if (!el) return { trouve: false, focus: false, pseudo: false, contour: "", largeur: 0, ombre: "none", contrasteForce, visible: false };
     el.focus({ preventScroll: true });
     const style = getComputedStyle(el);
     const largeur = Number.parseFloat(style.outlineWidth) || 0;
     const pseudo = el.matches(":focus-visible");
     const contourDessine = style.outlineStyle !== "none" && largeur > 0;
+    const ombre = style.boxShadow || "none";
+    const ombreDessinee = !contrasteForce && ombre !== "none";
     return {
       trouve: true,
       focus: document.activeElement === el,
@@ -156,7 +201,9 @@ export async function focusVisible(onglet, selecteur) {
       contour: style.outlineStyle,
       largeur,
       couleur: style.outlineColor,
-      visible: document.activeElement === el && (pseudo || contourDessine),
+      ombre: ombre.slice(0, 80),
+      contrasteForce,
+      visible: document.activeElement === el && (contourDessine || ombreDessinee),
     };
   })()`);
 }

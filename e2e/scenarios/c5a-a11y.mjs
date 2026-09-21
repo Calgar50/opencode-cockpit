@@ -6,8 +6,10 @@
 // fiches » de l'assistant de création, le popover de la puce « + Méthode », la bulle d'un message qui portait une
 // méthode, la chronologie et les Coûts par équipe vides.
 // Trois vérifications accompagnent les captures :
-//   - en MOUVEMENT RÉDUIT, aucune animation ne tourne encore (`document.getAnimations()`), conformément au réglage
-//     système : personne ne doit subir un mouvement qu'il a désactivé ;
+//   - en MOUVEMENT RÉDUIT, la transition de la carte de la bande néon ne joue plus, et le relevé est DISCRIMINANT : la même
+//     action (un second tour envoyé pendant que la carte est affichée) anime la carte en mode normal et ne l'anime plus en
+//     mouvement réduit, relevé sans délai ; puis plus rien ne tourne au repos (`document.getAnimations()`). Personne ne doit
+//     subir un mouvement qu'il a désactivé ;
 //   - en CONTRASTE FORCÉ, le focus reste VISIBLE : c'est le seul repère de la personne qui navigue au clavier ;
 //   - la vue Chronologie est RELEVÉE juste avant chacune de ses 18 captures. Sans ce relevé, le banc ne compterait que les
 //     FICHIERS écrits : 18 images d'une conversation sans panneau tiendraient le point « captures présentes » en nombre, pas
@@ -19,18 +21,30 @@
 // scénario ouvre donc son propre navigateur, avec le MÊME épinglage et la même isolation (`e2e/lib/a11y.mjs`), plutôt
 // que de faire écrire `e2e/lib/cdp.mjs` par la construction (§2.8).
 import path from "node:path";
-import { animationsActives, captureAccessibilite, emuler, focusVisible, MODES_A11Y, ouvrirNavigateurEpingle } from "../lib/a11y.mjs";
+import {
+  animationsActives,
+  captureAccessibilite,
+  DUREE_PERCEPTIBLE_MS,
+  emuler,
+  focusVisible,
+  mediasDeLaPage,
+  MODES_A11Y,
+  ouvrirNavigateurEpingle,
+} from "../lib/a11y.mjs";
 import {
   attendre,
   attendreFinDuTour,
   attendreIa,
   attendreModeAffiche,
+  attendreQue,
   enModeAvance,
   exiger,
+  LARGE,
   nonJoue,
   oc,
   preparerPage,
   releve,
+  releves,
   resume,
 } from "./it1-ui-commun.mjs";
 
@@ -208,12 +222,70 @@ export async function run(ctx) {
       releve(ctx, `chronologie relevée avant chacune des ${chronoVues.length} captures`);
       exiger(chronoVues.length === MODES_A11Y.length * 6, `${chronoVues.length} relevés de chronologie pour 18 captures.`);
 
-      // Mouvement réduit : plus aucune animation ne tourne, même après un changement de vue.
+      // Mouvement réduit : relevé DISCRIMINANT. La seule animation que le réglage commande est la transition WAAPI d'un signe de
+      // la carte de la bande néon (NeonBand.tsx, `mouvementPermis()` ; environ 900 ms, une par signe apparu ou changé). La MÊME
+      // action — un tour de plus, envoyé par l'API pendant que la carte est affichée (mode Avancé, bande dépliée), qui fait
+      // passer l'assistant de « terminé » à « travaille » puis à « terminé » — est donc jouée deux fois, relevée de la même façon :
+      //   1. en mode normal, la carte doit animer : au moins une animation de la carte en cours, relevée sans délai ;
+      //   2. en mouvement réduit (le réglage vu par matchMedia dans la page, exigé d'abord), la même action n'anime rien : zéro.
+      // Un relevé au repos, longtemps après le dernier changement, ne dirait rien du réglage : plus rien ne tourne alors, réglage
+      // ou non. Les boucles CSS de la page (`.dot.pulse`, `.spinner`) ne sont pas un témoin non plus, ni les transitions CSS
+      // de 0,01 ms que la règle globale de styles.css crée dans la carte sous mouvement réduit (voir `DUREE_PERCEPTIBLE_MS`) :
+      // seules les animations d'une durée perceptible comptent. Enfin, au repos, plus rien ne tourne dans toute la page.
+      await onglet.taille(LARGE);
+      await onglet.attendreQue("document.querySelector('.neon-map')", { libelle: "carte de la bande néon" });
+      const perceptibles = async () => (await releves(onglet)).animations.filter((a) => a.duree >= DUREE_PERCEPTIBLE_MS).length;
+      const enCoursSurLaCarte = () => animationsActives(onglet, { dans: ".neon-map", dureeMinMs: DUREE_PERCEPTIBLE_MS });
+      const tourSurLaCarte = async (etiquette) => {
+        // Carte au repos d'abord : la file de la bande dessine le dernier état d'un tour un peu après que l'API l'a dit fini, et
+        // sa transition (900 ms) court encore un instant ; une transition lancée en mode normal ne s'arrête pas quand le réglage
+        // change, et elle compterait à tort dans le relevé du tour suivant.
+        await attendreQue(async () => (await enCoursSurLaCarte()) === 0, { delaiMs: 10_000, pasMs: 100, libelle: `carte au repos avant « ${etiquette} »` });
+        // Un tour en plusieurs temps (700 ms par pas), pour que la file de la bande (au plus 4 rendus par seconde) dessine bien
+        // « travaille » avant « terminé » : sinon un tour instantané pourrait tenir entre deux rendus.
+        await ctx.faux.scripter(racine.id, { ...REPONSE, stepMs: 700 });
+        const avant = await perceptibles();
+        const envoi = await client.envoyer(racine.id, `${DEMANDE} (${etiquette})`, ia);
+        exiger(envoi.code === 204, `envoi (${etiquette}) refusé (${envoi.code}) : ${resume(envoi.corps)}`);
+        // Relevé sans délai : la carte est échantillonnée toutes les 50 ms environ, du départ du tour jusqu'à une transition
+        // entière (900 ms) après sa fin. Une transition de 900 ms ne peut pas passer entre deux échantillons.
+        let enCours = 0;
+        const fin = attendreFinDuTour(client, racine.id).then(() => attendre(900));
+        for (let termine = false; !termine; ) {
+          enCours = Math.max(enCours, await enCoursSurLaCarte());
+          termine = await Promise.race([fin.then(() => true), attendre(50).then(() => false)]);
+        }
+        await onglet.attendreQue("document.querySelector('.neon-map .neon-noeud.is-termine')", { libelle: `assistant « terminé » sur la carte (${etiquette})` });
+        // Animations d'une durée perceptible créées dans la carte pendant le tour, vues par l'observateur de mutations
+        // d'`instrumenter` (it1-ui-commun) : un second témoin, qui ne dépend pas de l'échantillonnage.
+        const creees = (await perceptibles()) - avant;
+        return { enCours, creees };
+      };
+
+      await emuler(navigateur, onglet, { theme: "clair" });
+      const mediasNormal = await mediasDeLaPage(onglet);
+      exiger(mediasNormal.mouvementReduit === false, `la page voit un mouvement réduit alors que le mode normal est émulé : ${resume(mediasNormal)}`);
+      const normal = await tourSurLaCarte("tour 2, mode normal");
+      releve(ctx, `tour 2 en mode normal : au plus ${normal.enCours} animation(s) perceptible(s) de la carte en cours, ${normal.creees} créée(s)`);
+      exiger(
+        normal.enCours > 0 && normal.creees > 0,
+        `la carte n'a pas animé le tour en mode normal (${resume(normal)}) : le relevé en mouvement réduit ne discriminerait rien.`,
+      );
+
       await emuler(navigateur, onglet, { theme: "sombre", reducedMotion: true, grayscale: true });
-      await onglet.evaluer(`location.hash = ${JSON.stringify(`#/chat/${racine.id}`)}`);
+      const mediasReduit = await mediasDeLaPage(onglet);
+      exiger(mediasReduit.mouvementReduit === true, `la page ne voit pas le mouvement réduit émulé : ${resume(mediasReduit)}`);
+      const reduit = await tourSurLaCarte("tour 3, mouvement réduit");
+      releve(ctx, `tour 3 en mouvement réduit : au plus ${reduit.enCours} animation(s) perceptible(s) de la carte en cours, ${reduit.creees} créée(s)`);
+      exiger(
+        reduit.enCours === 0 && reduit.creees === 0,
+        `${reduit.enCours} animation(s) perceptible(s) de la carte en cours et ${reduit.creees} créée(s) alors que le mouvement réduit est demandé (§5.5).`,
+      );
+
+      // Au repos, plus rien ne tourne dans toute la page.
       await attendre(1_200);
       const enMouvementReduit = await animationsActives(onglet);
-      releve(ctx, `animations en cours en mouvement réduit : ${enMouvementReduit}`);
+      releve(ctx, `animations en cours dans toute la page, au repos, en mouvement réduit : ${enMouvementReduit}`);
       exiger(enMouvementReduit === 0, `${enMouvementReduit} animation(s) tournent encore alors que le mouvement réduit est demandé (§5.5).`);
     });
     await attendreModeAffiche(onglet, "simple");

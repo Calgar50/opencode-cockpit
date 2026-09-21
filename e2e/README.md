@@ -159,14 +159,18 @@ sortie est le nombre d'échecs.
 | `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, lecture de l'épinglage sur le volume et contre-épreuves, déroulé, et leurs propres vérifications (`--gardes`) |
 | `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux |
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
-<!-- c5:fichiers -->
-| `e2e/lib/a11y.mjs` | banc de captures d'accessibilité (itération 5) : réglages système émulés, 3 modes × 2 thèmes × 3 tailles, animations en cours, focus visible |
-<!-- /c5:fichiers -->
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
 | `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable |
 | `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
 | `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même ; `010-reprise-apres-coupure.mjs` vérifie que l'interface se rétablit seule après un rechargement de l'amorçage en échec (coupure réseau, retour de l'onglet, focus sur « Réessayer », onglet caché, redémarrage réel du conteneur, amorçage lent puis deux changements rapprochés, 401) |
+
+<!-- c5:fichiers -->
+`e2e/lib/a11y.mjs` (itération 5) est le banc de captures d'accessibilité : réglages système émulés, 3 modes × 2 thèmes ×
+3 tailles, animations en cours (toute la page, ou la seule carte de la bande néon), réglages vus par la page, focus visible.
+Il est décrit ici, sous le tableau et non dedans : un commentaire HTML posé entre deux lignes d'un tableau ouvre un bloc
+HTML et coupe le tableau au rendu (GitHub, VS Code). Détails à la section « Banc de captures d'accessibilité », plus bas.
+<!-- /c5:fichiers -->
 
 `e2e/fake-opencode-server.ts` n'ajoute rien au faux : il l'enveloppe. Le faux écoute sur la boucle locale (le bon
 choix dans les tests) ; un relais d'octets l'expose sur 4096 pour le cockpit, sans toucher aux en-têtes ni au flux
@@ -246,7 +250,7 @@ qui tourne en même temps sur une autre branche. Le nettoyage ne vise que `c511-
 | `c5a-methodes.mjs` | un assistant avec deux méthodes : « Utilisée par » au catalogue, troisième méthode refusée dans la bibliothèque (« 2 méthodes au maximum … »), ligne « Méthodes : … » sur sa fiche d'identité ; la puce « + Méthode » AU CLAVIER SEUL (APG : flèche bas ouvre, Entrée coche et décoche, Échap ferme et rend le focus au bouton), méthodes déjà dans l'assistant désactivées ; à l'envoi, le faux opencode reçoit le BLOC à la fin du texte écrit ; bulle repliée « Méthode demandée : … » sans le marqueur ; « Méthode appliquée » puis « Méthode non détectée dans la réponse » ; raccourci « /… » : puce désactivée avec sa raison |
 | `c5a-seconde-lecture.mjs` | Relecteur absent : la phrase et [Installer], aucun montant ; installation au clic par le catalogue ; bouton « Seconde lecture (≈ … $) » sans « au moins », infobulle qui nomme l'IA du Relecteur puis la base de l'estimation ; au clic, UN seul envoi, avec l'agent du Relecteur et la phrase exacte du §4.3 ; pied « Relecture par un autre assistant … » ; à la réouverture, le composeur a gardé l'assistant précédent |
 | `c5a-chronologie.mjs` | en Avancé : bascule « Déroulé \| Chronologie » (radiogroup, un seul bouton dans l'ordre de tabulation), lignes, colonne « Jetons (entrée / sortie / cache) », repères d'outil, curseur « maintenant » PENDANT le travail ; à 400 px la figure disparaît et le tableau reste seul ; en Simple : aucune bascule, aucune chronologie, et le mot « jeton » nulle part |
-| `c5a-a11y.mjs` | banc de captures d'accessibilité : six vues (bibliothèque, écran « Consignes et fiches », popover de la puce, bulle, chronologie, Coûts par équipe vides) × 3 modes × 2 thèmes × 3 tailles = 108 fichiers ; en mouvement réduit, zéro animation en cours ; en contraste forcé, focus visible |
+| `c5a-a11y.mjs` | banc de captures d'accessibilité : six vues (bibliothèque, écran « Consignes et fiches », popover de la puce, bulle, chronologie, Coûts par équipe vides) × 3 modes × 2 thèmes × 3 tailles = 108 fichiers ; mouvement réduit vérifié par un relevé DISCRIMINANT sur la transition de la carte de la bande néon (la seule animation que le réglage commande) : la même action, un second tour envoyé pendant que la carte est affichée, anime la carte en mode normal (au moins une animation en cours, relevée sans délai) et ne l'anime plus en mouvement réduit (zéro, le réglage vu par `matchMedia` dans la page), puis plus rien ne tourne au repos ; en contraste forcé, focus visible, c'est-à-dire un contour réellement dessiné (`:focus-visible` seul ne suffit pas) |
 
 ### Banc de captures d'accessibilité (`e2e/lib/a11y.mjs`)
 
