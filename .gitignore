@@ -19,6 +19,9 @@ app/.tls-dev/
 
 # --- Données locales de l'outil ---
 data/
+# Projets préparés et surcharge compose de la salle, générés par install.ps1 sur le poste (jamais versionnés).
+/omo-projets.json
+/docker-compose.omo-projets.yml
 workspace/
 # Installations d'essai créées à la racine du dépôt (bancs, répétition générale).
 testinstall/

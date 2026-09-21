@@ -65,6 +65,20 @@
     l'avertissement (par exemple quand l'exception est livree par le cloud et absente du registre).
     Jamais memorise dans .env.
 
+.PARAMETER OmoArchive
+    Archive de l'image de la Salle Oh My OpenAgent, construite sur le PC personnel et recopiee ici avec son
+    fichier .sha256 voisin. L'empreinte de l'archive est verifiee AVANT tout chargement, puis l'identifiant
+    de l'image chargee est compare a celui du .sha256. L'etiquette est inscrite dans .env ; la salle reste
+    coupee (COCKPIT_OMO=off) tant que vous ne l'activez pas vous-meme.
+
+.PARAMETER OmoProjetsSeulement
+    Genere seulement les deux fichiers des projets prepares (liste et surcharge compose) a partir du dossier
+    donne par -WorkspacePath, sans toucher a .env ni a Docker. Sert aux bancs et aux tests. Code de sortie 4
+    si un depot git du dossier ne peut pas etre protege.
+
+.PARAMETER WorkspacePath
+    Dossier de travail parcouru par -OmoProjetsSeulement (obligatoire avec lui, ignore sinon).
+
 .EXAMPLE
     .\install.ps1 -WorkspaceDir C:\dev
 
@@ -90,7 +104,10 @@ param(
     [switch]$Http,
     [switch]$Https,
     [switch]$TlsPreflight,
-    [switch]$AcceptBrowserBlock
+    [switch]$AcceptBrowserBlock,
+    [string]$OmoArchive,
+    [switch]$OmoProjetsSeulement,
+    [string]$WorkspacePath
 )
 
 Set-StrictMode -Version 2.0
@@ -271,13 +288,328 @@ function ConvertTo-CockpitVersionOrNull([string]$Text) {
     return $null
 }
 
+# --- Salle Oh My OpenAgent : archive, projets prepares et protection git (D-2b-28, MO-3) ---------------
+# Valeurs reprises du contrat machine docker\opencode-omo\contrat-salle.json (services.salle, fichiersControle.projets)
+# et des bornes du superviseur (supervisor-lib.mjs) : l'egalite est verifiee par tests\ps51\Test-OmoInstall.ps1.
+$OmoServiceSalle = 'opencode-omo'
+$OmoFichierProjets = 'omo-projets.json'
+$OmoCibleWorkspace = '/workspace'
+$OmoPlafondEntrees = 200000
+$OmoProfondeurMax = 256
+$OmoListeMax = 20
+
+function Get-FileSha256([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try { return ([BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()) } finally { $stream.Dispose() }
+    } finally { $sha.Dispose() }
+}
+
+# Fichier <archive>.sha256 ecrit a la construction de l'image : trois lignes separees par LF,
+#   <empreinte de l'archive, 64 hex>  <nom de l'archive>
+#   image-id sha256:<64 hex>
+#   image opencode-cockpit/opencode-omo:<etiquette>
+# Rien n'est rendu si une seule ligne est hors format : une archive dont on ne sait rien n'est jamais chargee.
+function Read-OmoChecksumFile([string]$Path, [string]$ArchiveName) {
+    $lines = @(([System.IO.File]::ReadAllText($Path) -split "`n") | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ -ne '' })
+    if ($lines.Count -ne 3) { throw ("Fichier {0} hors format : trois lignes attendues (empreinte, image-id, image)." -f (Split-Path -Leaf $Path)) }
+    if ($lines[0] -cnotmatch '^([0-9a-f]{64})  (\S.*)\z') { throw ("Fichier {0} hors format : la 1re ligne doit porter l empreinte de l archive et son nom." -f (Split-Path -Leaf $Path)) }
+    $sha = $Matches[1]
+    $nom = $Matches[2]
+    if ($lines[1] -cnotmatch '^image-id (sha256:[0-9a-f]{64})\z') { throw ("Fichier {0} hors format : la 2e ligne doit porter l identifiant, sous la forme image-id sha256:<64 caracteres hexadecimaux>." -f (Split-Path -Leaf $Path)) }
+    $imageId = $Matches[1]
+    if ($lines[2] -cnotmatch '^image (opencode-cockpit/opencode-omo:[0-9A-Za-z_][0-9A-Za-z_.-]{0,127})\z') { throw ("Fichier {0} hors format : la 3e ligne doit porter l etiquette, sous la forme image opencode-cockpit/opencode-omo:<etiquette>." -f (Split-Path -Leaf $Path)) }
+    $image = $Matches[1]
+    if ($nom -ine $ArchiveName) { throw ("Fichier {0} : il decrit l archive {1}, pas {2}. Recopiez l archive et son .sha256 ensemble." -f (Split-Path -Leaf $Path), $nom, $ArchiveName) }
+    return [pscustomobject]@{ Sha256 = $sha; ImageId = $imageId; Image = $image }
+}
+
+# Texte YAML entre guillemets doubles : contre-obliques, guillemets et caracteres de controle echappes.
+function ConvertTo-OmoYamlText([string]$Value) {
+    $builder = New-Object System.Text.StringBuilder '"'
+    foreach ($ch in $Value.ToCharArray()) {
+        $code = [int]$ch
+        if ($ch -eq '\') { [void]$builder.Append('\\') }
+        elseif ($ch -eq '"') { [void]$builder.Append('\"') }
+        elseif ($code -lt 32 -or $code -eq 127) { [void]$builder.Append(('\x{0:x2}' -f $code)) }
+        else { [void]$builder.Append($ch) }
+    }
+    return $builder.Append('"').ToString()
+}
+
+# Texte JSON d'une chaine : meme echappement que JSON.stringify, tout ce qui sort de l'ASCII imprimable passe en \uXXXX.
+function ConvertTo-OmoJsonText([string]$Value) {
+    $builder = New-Object System.Text.StringBuilder '"'
+    foreach ($ch in $Value.ToCharArray()) {
+        $code = [int]$ch
+        if ($ch -eq '\') { [void]$builder.Append('\\') }
+        elseif ($ch -eq '"') { [void]$builder.Append('\"') }
+        elseif ($code -lt 32 -or $code -gt 126) { [void]$builder.Append(('\u{0:x4}' -f $code)) }
+        else { [void]$builder.Append($ch) }
+    }
+    return $builder.Append('"').ToString()
+}
+
+# Vrai pour un lien symbolique ou une jonction Windows : jamais suivi, jamais protegeable par un bind.
+function Test-OmoReparsePoint($Info) {
+    return (([int]$Info.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+# Depot nu (git clone --bare, .bare d'un montage bare + worktrees, x.git servant de depot local) : un fichier HEAD,
+# un dossier objects et un dossier refs, comme git lui-meme le reconnait (meme regle que le superviseur).
+function Test-OmoBareRepo($Entries) {
+    $head = @($Entries | Where-Object { $_.Name -ceq 'HEAD' -and $_ -is [System.IO.FileInfo] })
+    $objects = @($Entries | Where-Object { $_.Name -ceq 'objects' -and $_ -is [System.IO.DirectoryInfo] })
+    $refs = @($Entries | Where-Object { $_.Name -ceq 'refs' -and $_ -is [System.IO.DirectoryInfo] })
+    return ($head.Count -gt 0 -and $objects.Count -gt 0 -and $refs.Count -gt 0)
+}
+
+# Cible "gitdir: <chemin>" d'un .git FICHIER (sous-module, worktree, --separate-git-dir), resolue cote hote.
+# Un fichier pointeur lie en :ro ne protege rien par lui-meme : git ecrit et execute ce qui est au bout.
+# Rend $null si la ligne est absente, si la cible n'existe pas, sort du dossier de travail, ou passe par un lien.
+function Resolve-OmoGitdirTarget([string]$GitFile, [string]$Workspace) {
+    $text = ''
+    try { $text = [System.IO.File]::ReadAllText($GitFile) } catch { return $null }
+    if ($text.Length -gt 4096) { return $null }
+    $first = (($text -split "`n")[0]).TrimEnd("`r")
+    if ($first -cnotmatch '^gitdir:[ \t]*(\S(?:.*\S)?)[ \t]*\z') { return $null }
+    $target = $Matches[1]
+    try {
+        if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path (Split-Path -Parent $GitFile) $target }
+        $target = [System.IO.Path]::GetFullPath($target).TrimEnd('\')
+    } catch { return $null }
+    if (-not (Test-Path -LiteralPath $target -PathType Container)) { return $null }
+    $base = (Get-NormalizedPath $Workspace)
+    if (-not $target.StartsWith($base + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+    # Aucun maillon de lien entre le dossier de travail et la cible : on ne juge pas un detour.
+    $current = $target
+    while ($current.Length -gt $base.Length) {
+        $info = $null
+        try { $info = Get-Item -LiteralPath $current -Force } catch { return $null }
+        if (Test-OmoReparsePoint $info) { return $null }
+        $current = (Split-Path -Parent $current).TrimEnd('\')
+        if (-not $current) { return $null }
+    }
+    return $target
+}
+
+# Parcours du dossier de travail (D-2b-28) : liens et jonctions jamais suivis, node_modules et interieurs de .git
+# exclus, nombre d'entrees et profondeur bornes. Rend les projets prepares, les depots a proteger et, le cas
+# echeant, la liste de ce qui ne peut pas l'etre (un seul element suffit a refuser la surcharge).
+function Get-OmoWorkspaceScan([string]$Workspace) {
+    $root = Get-NormalizedPath $Workspace
+    $projets = New-Object System.Collections.Generic.List[object]
+    $proteges = New-Object System.Collections.Generic.List[object]
+    $problemes = New-Object System.Collections.Generic.List[string]
+    $entrees = 0
+    $ajouter = {
+        param([string]$Texte)
+        if ($problemes.Count -lt $OmoListeMax) { $problemes.Add($Texte) }
+    }
+    $pile = New-Object System.Collections.Generic.Stack[object]
+    $pile.Push([pscustomobject]@{ Relatif = ''; Profondeur = 0 })
+    while ($pile.Count -gt 0) {
+        $noeud = $pile.Pop()
+        $relatif = [string]$noeud.Relatif
+        $absolu = $root
+        if ($relatif -cne '') { $absolu = Join-Path $root ($relatif -replace '/', '\') }
+        if ([int]$noeud.Profondeur -gt $OmoProfondeurMax) {
+            & $ajouter ('{0} : dossier trop profond (plus de {1} niveaux)' -f $relatif, $OmoProfondeurMax)
+            break
+        }
+        $entries = $null
+        try { $entries = @((New-Object System.IO.DirectoryInfo $absolu).GetFileSystemInfos()) } catch {
+            # Dossier illisible (droits refuses) : il peut cacher un depot. Balayage incomplet, verdict ferme.
+            & $ajouter ('{0} : dossier illisible, un depot git peut s y cacher' -f $(if ($relatif -ceq '') { '.' } else { $relatif }))
+            break
+        }
+        if ($relatif -cne '' -and (Test-OmoBareRepo $entries)) {
+            $proteges.Add([pscustomobject]@{ Chemin = $relatif; Forme = 'dossier'; Source = $absolu })
+            continue
+        }
+        if ($relatif -ceq '' -and (Test-OmoBareRepo $entries)) {
+            & $ajouter '. : le dossier de travail est lui-meme un depot nu ; choisissez un dossier qui contient vos projets'
+            break
+        }
+        $aGit = $false
+        $sousDossiers = New-Object System.Collections.Generic.List[object]
+        foreach ($entry in $entries) {
+            $entrees++
+            if ($entrees -gt $OmoPlafondEntrees) {
+                & $ajouter ('plafond de {0} entrees atteint : le dossier de travail est trop grand pour etre verifie' -f $OmoPlafondEntrees)
+                break
+            }
+            $nom = $entry.Name
+            $cheminRelatif = $nom
+            if ($relatif -cne '') { $cheminRelatif = $relatif + '/' + $nom }
+            if ($nom -ceq '.git') {
+                $aGit = $true
+                if (Test-OmoReparsePoint $entry) {
+                    & $ajouter ('{0} : lien ou jonction, impossible a proteger par un montage' -f $cheminRelatif)
+                    continue
+                }
+                if ($entry -is [System.IO.DirectoryInfo]) {
+                    $proteges.Add([pscustomobject]@{ Chemin = $cheminRelatif; Forme = 'dossier'; Source = $entry.FullName })
+                    if ($relatif -cne '') { $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'dossier' }) }
+                    continue
+                }
+                # .git fichier : protege par un bind de fichier :ro (MO-3 point 5), a condition que sa cible le soit aussi.
+                $cible = Resolve-OmoGitdirTarget $entry.FullName $root
+                if ($null -eq $cible) {
+                    & $ajouter ('{0} : fichier "gitdir:" dont la cible est introuvable, hors du dossier de travail ou atteinte par un lien' -f $cheminRelatif)
+                    continue
+                }
+                $proteges.Add([pscustomobject]@{ Chemin = $cheminRelatif; Forme = 'fichier'; Source = $entry.FullName })
+                $cibleRelative = $cible.Substring($root.Length).TrimStart('\') -replace '\\', '/'
+                if (@($proteges | Where-Object { $_.Chemin -ceq $cibleRelative }).Count -eq 0) {
+                    $proteges.Add([pscustomobject]@{ Chemin = $cibleRelative; Forme = 'dossier'; Source = $cible })
+                }
+                continue
+            }
+            if ($nom -ceq 'node_modules') { continue }
+            if (-not ($entry -is [System.IO.DirectoryInfo])) { continue }
+            if (Test-OmoReparsePoint $entry) {
+                & $ajouter ('{0} : lien ou jonction de dossier ; son contenu ne peut pas etre protege' -f $cheminRelatif)
+                continue
+            }
+            $sousDossiers.Add([pscustomobject]@{ Relatif = $cheminRelatif; Profondeur = [int]$noeud.Profondeur + 1 })
+        }
+        if ($entrees -gt $OmoPlafondEntrees) { break }
+        # Dossier de premier niveau sans aucun .git : projet prepare quand meme (spec. 3.15.2 "projet sans .git : accepte").
+        if ($relatif -cne '' -and -not $aGit -and ($relatif -cnotmatch '/')) { $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'absent' }) }
+        foreach ($sous in $sousDossiers) { $pile.Push($sous) }
+    }
+    # Un meme dossier peut etre vu deux fois (cible d'un .git fichier qui est aussi un depot nu) : un seul montage.
+    # .ToArray() avant tout tri ou filtre : PowerShell 5.1 se trompe de liaison sur @(<List[object]> | ...).
+    $uniques = New-Object System.Collections.Generic.List[object]
+    $vus = @{}
+    foreach ($item in ($proteges.ToArray() | Sort-Object -Property Chemin)) {
+        if (-not $vus.ContainsKey($item.Chemin)) { $vus[$item.Chemin] = $true; $uniques.Add($item) }
+    }
+    return [pscustomobject]@{ Racine = $root
+        Projets = @($projets.ToArray() | Sort-Object -Property Chemin)
+        Proteges = @($uniques.ToArray())
+        Problemes = @($problemes.ToArray())
+        Entrees = $entrees }
+}
+
+# omo-projets.json : format OmoPreparedProjects (T3a), chemins relatifs a /workspace, fins de ligne LF.
+function ConvertTo-OmoProjectsJson($Scan) {
+    $lignes = New-Object System.Collections.Generic.List[string]
+    $lignes.Add('{')
+    $lignes.Add('  "version": 1,')
+    $lignes.Add(('  "genereLe": {0},' -f (ConvertTo-OmoJsonText ([DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [System.Globalization.CultureInfo]::InvariantCulture)))))
+    $lignes.Add('  "projets": [')
+    $corps = @($Scan.Projets | ForEach-Object { '    { "chemin": ' + (ConvertTo-OmoJsonText $_.Chemin) + ', "git": ' + (ConvertTo-OmoJsonText $_.Git) + ' }' })
+    for ($i = 0; $i -lt $corps.Count; $i++) { $lignes.Add($corps[$i] + $(if ($i -lt $corps.Count - 1) { ',' } else { '' })) }
+    $lignes.Add('  ],')
+    $lignes.Add('  "gitProteges": [')
+    $corps = @($Scan.Proteges | ForEach-Object { '    { "chemin": ' + (ConvertTo-OmoJsonText $_.Chemin) + ', "forme": ' + (ConvertTo-OmoJsonText $_.Forme) + ' }' })
+    for ($i = 0; $i -lt $corps.Count; $i++) { $lignes.Add($corps[$i] + $(if ($i -lt $corps.Count - 1) { ',' } else { '' })) }
+    $lignes.Add('  ]')
+    $lignes.Add('}')
+    return (($lignes -join "`n") + "`n")
+}
+
+# docker-compose.omo-projets.yml : un montage en lecture seule par depot git, sur le service de la salle.
+function ConvertTo-OmoProjectsYaml($Scan) {
+    $lignes = New-Object System.Collections.Generic.List[string]
+    $lignes.Add('# Genere par install.ps1 (D-2b-28) : un montage en lecture seule par depot git du dossier de travail.')
+    $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute ou retire un projet.')
+    $lignes.Add('services:')
+    $lignes.Add('  ' + $OmoServiceSalle + ':')
+    $lignes.Add('    volumes:')
+    foreach ($item in $Scan.Proteges) {
+        $source = ($item.Source -replace '\\', '/')
+        $cible = $OmoCibleWorkspace + '/' + $item.Chemin
+        # Un dollar dans un nom de dossier serait interprete par compose : il se double ($$) pour rester litteral.
+        $monte = ($source + ':' + $cible + ':ro') -replace '\$', '$$$$'
+        $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monte))
+    }
+    return (($lignes -join "`n") + "`n")
+}
+
+# Un core.hooksPath global qui pointe DANS le dossier de travail fait executer, a chaque commande git du poste, des
+# scripts que la salle peut ecrire : elle ne voit pas ce reglage, qui vit dans la configuration git de l'utilisateur.
+function Get-OmoHooksPathNotice([string]$Workspace) {
+    $found = @(Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($found.Count -eq 0) { return '' }
+    $run = Invoke-CockpitProcess -FilePath $found[0].Source -Arguments @('config', '--global', '--get', 'core.hooksPath') -TimeoutSec 20
+    if ($run.ExitCode -ne 0) { return '' }
+    $value = ([string]$run.StdOut).Trim()
+    if (-not $value) { return '' }
+    if ($value.StartsWith('~')) { $value = Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\') }
+    try { $resolved = Get-NormalizedPath $value } catch { return '' }
+    if (-not (Test-PathOverlap $resolved $Workspace)) { return '' }
+    return ("core.hooksPath global de git pointe dans le dossier de travail ({0}) : un depot ouvert dans la salle pourrait y deposer un script execute par vos commandes git. Retirez ce reglage (git config --global --unset core.hooksPath) ou deplacez ce dossier hors du dossier des projets." -f $resolved)
+}
+
+# Ecrit les deux fichiers, ou n'ecrit rien et rend faux : la surcharge ne doit jamais decrire une protection partielle.
+function Write-OmoProjectFiles([string]$Workspace, [string]$Destination) {
+    $scan = Get-OmoWorkspaceScan $Workspace
+    $overlay = Join-Path $Destination $CockpitOmoOverlay
+    $projectsFile = Join-Path $Destination $OmoFichierProjets
+    if ($scan.Problemes.Count -gt 0) {
+        Write-Host ''
+        Write-Attention 'Depots git du dossier de travail qui ne peuvent pas etre proteges en lecture seule :'
+        foreach ($probleme in $scan.Problemes) { Write-Host ('    - ' + $probleme) -ForegroundColor Yellow }
+        Write-Attention 'La surcharge du profil de la salle n est PAS ecrite : sans elle, la salle refuse de s activer.'
+        # Une surcharge d'une execution precedente decrirait une protection qui n'a plus cours : elle est retiree.
+        foreach ($stale in @($overlay, $projectsFile)) { if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force } }
+        return $false
+    }
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($projectsFile, (ConvertTo-OmoProjectsJson $scan), $utf8)
+    [System.IO.File]::WriteAllText($overlay, (ConvertTo-OmoProjectsYaml $scan), $utf8)
+    Write-Good ('Projets prepares pour la salle : {0} ; depots git montes en lecture seule : {1} ({2} entrees parcourues)' -f $scan.Projets.Count, $scan.Proteges.Count, $scan.Entrees)
+    $notice = Get-OmoHooksPathNotice $Workspace
+    if ($notice) { Write-Attention $notice }
+    return $true
+}
+
 # --- 0. Incompatibilites de parametres (avant toute commande docker et toute ecriture) -----
 if ($Http -and $Https) { throw '-Http et -Https sont incompatibles : choisissez un seul mode d acces.' }
 if ($TlsPreflight -and ($Http -or $Https)) { throw '-TlsPreflight ne modifie rien : il ne se combine ni avec -Http ni avec -Https.' }
 if ($AcceptBrowserBlock -and $Http) { throw '-AcceptBrowserBlock ne concerne que l acces HTTPS : il est sans objet avec -Http.' }
+if ($OmoProjetsSeulement -and $OmoArchive) { throw '-OmoProjetsSeulement n installe rien : il ne se combine pas avec -OmoArchive.' }
+if ($OmoProjetsSeulement -and -not $WorkspacePath) { throw '-OmoProjetsSeulement demande -WorkspacePath <dossier> : le dossier de travail a parcourir.' }
+if ($WorkspacePath -and -not $OmoProjetsSeulement) { throw '-WorkspacePath ne sert qu avec -OmoProjetsSeulement ; le dossier des projets se choisit avec -WorkspaceDir.' }
 
 Write-Host ''
 Write-Host "opencode-cockpit $Version - installation" -ForegroundColor White
+
+# --- 0 ter. Projets prepares seuls : aucune ecriture dans .env, aucun appel a Docker (bancs et tests) ---
+if ($OmoProjetsSeulement) {
+    if (-not (Test-Path -LiteralPath $WorkspacePath -PathType Container)) { throw ("Dossier de travail introuvable : {0}" -f $WorkspacePath) }
+    $omoWorkspace = (Resolve-Path -LiteralPath $WorkspacePath).Path.TrimEnd('\')
+    if (Test-PathOverlap $Root $omoWorkspace) {
+        throw ("Le dossier du cockpit ({0}) et le dossier de travail ({1}) se chevauchent : la salle pourrait modifier les scripts du cockpit." -f $Root, $omoWorkspace)
+    }
+    Write-Step ('Projets prepares et protection git : ' + $omoWorkspace)
+    if (-not (Write-OmoProjectFiles $omoWorkspace $Root)) { exit 4 }
+    Write-Info ('Fichiers ecrits : {0} et {1}' -f $OmoFichierProjets, $CockpitOmoOverlay)
+    exit 0
+}
+
+# --- 0 quater. Archive de la salle : empreinte lue et verifiee AVANT tout appel a Docker -----------------
+$omoChecksum = $null
+if ($OmoArchive) {
+    $OmoArchive = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OmoArchive)
+    if (-not (Test-Path -LiteralPath $OmoArchive -PathType Leaf)) { throw ("Archive de la salle introuvable : {0}" -f $OmoArchive) }
+    $omoName = Split-Path -Leaf $OmoArchive
+    $omoChecksumFile = $OmoArchive + '.sha256'
+    if (-not (Test-Path -LiteralPath $omoChecksumFile -PathType Leaf)) {
+        throw ("Fichier d empreinte absent : {0}.sha256 doit se trouver a cote de l archive. Recopiez les deux fichiers ensemble depuis le PC ou l image a ete construite." -f $omoName)
+    }
+    $omoChecksum = Read-OmoChecksumFile $omoChecksumFile $omoName
+    Write-Step 'Verification de l archive de la salle (avant tout chargement)'
+    $omoActual = Get-FileSha256 $OmoArchive
+    if ($omoActual -cne $omoChecksum.Sha256) {
+        throw ("Archive refusee : son empreinte SHA-256 ne correspond pas a {0}.sha256. Aucune image n a ete chargee, aucun fichier modifie. Recopiez l archive depuis le PC ou elle a ete construite." -f $omoName)
+    }
+    Write-Good ('Empreinte de {0} verifiee' -f $omoName)
+}
 
 # --- 0 bis. Verification du poste (-TlsPreflight) : aucune ecriture, aucun appel a Docker ---
 if ($TlsPreflight) {
@@ -471,6 +803,17 @@ if ($resolvedWorkspace -match '^[A-Za-z]:$' -or $tooBroad) {
 $config['WORKSPACE_DIR'] = $resolvedWorkspace -replace '\\', '/'
 Write-Good "Projets : $resolvedWorkspace"
 
+# --- 2 ter. Salle : projets prepares et protection git (D-2b-28), avant toute ecriture ------------------
+# Seulement quand la salle est en jeu : une installation sans elle n'a rien a monter en lecture seule.
+$omoInstalled = $config.Contains('COCKPIT_OMO_IMAGE') -and [string]$config['COCKPIT_OMO_IMAGE']
+if ($OmoArchive -or $omoInstalled) {
+    Write-Step 'Salle : projets prepares et protection des depots git'
+    if (-not (Write-OmoProjectFiles $resolvedWorkspace $Root)) {
+        Write-Attention 'Installation arretee : corrigez les points ci-dessus puis relancez (.\install.ps1 -OmoProjetsSeulement -WorkspacePath <dossier> pour verifier sans rien installer).'
+        exit 4
+    }
+}
+
 if (-not $config.Contains('ARCHIVE_DIR')) { $config['ARCHIVE_DIR'] = './archives' }
 if ($Port -gt 0) { $config['COCKPIT_PORT'] = [string]$Port }
 elseif (-not $config.Contains('COCKPIT_PORT')) { $config['COCKPIT_PORT'] = '7777' }
@@ -598,6 +941,31 @@ try {
         }
     }
 
+    # --- 3 bis. Salle : chargement de l'archive verifiee et comparaison de l'identifiant d'image -------
+    if ($null -ne $omoChecksum) {
+        Write-Step ('Chargement de l image de la salle depuis ' + (Split-Path -Leaf $OmoArchive))
+        $omoLoaded = Get-DockerOutput load --input $OmoArchive
+        if ($omoLoaded.ExitCode -ne 0) { throw ("docker load a echoue : {0}" -f $omoLoaded.Output) }
+        $omoTags = @([regex]::Matches($omoLoaded.Output, 'Loaded image:\s*(\S+)') | ForEach-Object { $_.Groups[1].Value })
+        if ($omoTags -cnotcontains $omoChecksum.Image) {
+            throw ("Archive refusee : elle ne contient pas l image {0} annoncee par son .sha256 (chargees : {1}). COCKPIT_OMO_IMAGE n est pas ecrite." -f $omoChecksum.Image, (($omoTags | Select-Object -First 4) -join ', '))
+        }
+        $omoIdRead = Get-DockerOutput image inspect --format '{{.Id}}' $omoChecksum.Image
+        $omoId = ([string]$omoIdRead.Output).Trim()
+        if ($omoIdRead.ExitCode -ne 0 -or $omoId -cne $omoChecksum.ImageId) {
+            throw ("Archive refusee : l identifiant de l image chargee differe de celui du fichier .sha256. L image n est pas utilisee (COCKPIT_OMO_IMAGE n est pas ecrite) ; supprimez-la avec docker image rm {0}, puis recopiez l archive depuis le PC ou elle a ete construite." -f $omoChecksum.Image)
+        }
+        $config['COCKPIT_OMO_IMAGE'] = $omoChecksum.Image
+        # L'interrupteur n'est jamais mis sur "on" par l'installation : la salle s'active depuis l'interface.
+        if (-not $config.Contains('COCKPIT_OMO') -or -not [string]$config['COCKPIT_OMO']) { $config['COCKPIT_OMO'] = 'off' }
+        # Mot de passe du serveur de la salle : tire par le generateur cryptographique de Windows, jamais affiche.
+        if (-not $config.Contains('OPENCODE_OMO_PASSWORD') -or ([string]$config['OPENCODE_OMO_PASSWORD']).Length -lt 32) {
+            $config['OPENCODE_OMO_PASSWORD'] = New-Secret 32
+            Write-Good 'Mot de passe de la salle genere (jamais affiche, conserve dans .env)'
+        }
+        Write-Good ('Image de la salle : {0} (identifiant conforme au fichier .sha256)' -f $omoChecksum.Image)
+        Write-Info 'La salle reste coupee (COCKPIT_OMO=off) : activez-la depuis l interface, en mode Avance.'
+    }
     if (-not $modeInferred) { $config['COCKPIT_INSTALL_MODE'] = $Mode }
     # Version de production affichee dans l'interface pour les images construites sur le poste.
     $config['COCKPIT_VERSION'] = $Version

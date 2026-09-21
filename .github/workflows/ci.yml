@@ -36,6 +36,15 @@ jobs:
       - run: npm ci --ignore-scripts --no-fund
       - run: npm run typecheck
       - run: npm test
+      # Tests qui demandent un conteneur Linux jetable : hors de npm test, ils ne tournent qu'ici et en local.
+      # L'image de base est tiree ici : le test ne telecharge jamais rien lui-meme, il se saute si elle manque.
+      - name: Superviseur (conteneur)
+        if: ${{ !cancelled() }}
+        env:
+          OMO_TESTS_CONTENEUR: "1"
+        run: |
+          docker pull -q node:24-bookworm-slim
+          node --test server/omo-supervisor.test.ts
       - run: npm run build
       - run: npm audit --audit-level=high
 
@@ -90,3 +99,6 @@ jobs:
       - name: cockpit.ps1 (Test-Cockpit.ps1)
         if: ${{ !cancelled() }}
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/ps51/Test-Cockpit.ps1
+      - name: Installation de la salle (Test-OmoInstall.ps1)
+        if: ${{ !cancelled() }}
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/ps51/Test-OmoInstall.ps1
