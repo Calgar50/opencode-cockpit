@@ -28,7 +28,10 @@ $CockpitComposeEnvNames = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'COCKPIT_TL
     # Variables du cockpit du contrat de la salle (docker\opencode-omo\contrat-salle.json, variables.cockpit) :
     # egalite verifiee par tests\ps51\Test-CockpitTls.ps1.
     'COCKPIT_OMO', 'OPENCODE_OMO_URL', 'OPENCODE_OMO_PASSWORD', 'COCKPIT_OMO_IMAGE', 'COCKPIT_OMO_CONTROL_DIR',
-    'COCKPIT_OMO_STATE_DIR', 'COCKPIT_OMO_AUTH_DIR', 'COCKPIT_OMO_PROJECTS_FILE', 'COCKPIT_EGRESS_JOURNAL')
+    'COCKPIT_OMO_STATE_DIR', 'COCKPIT_OMO_AUTH_DIR', 'COCKPIT_OMO_PROJECTS_FILE', 'COCKPIT_EGRESS_JOURNAL',
+    # Variable de la salle (variables.salle du contrat) que docker-compose.yml lit aussi dans l'environnement : autorite
+    # d'entreprise facultative, chemin d'un fichier DANS le conteneur. Elle doit venir du .env, jamais du shell (K1-1).
+    'NODE_EXTRA_CA_CERTS')
 # Surcharge du profil de la salle, generee par install.ps1 (D-2b-28) : jamais ecrite a la main, jamais ramassee
 # toute seule par compose (son nom n'est pas un nom de surcharge automatique).
 $CockpitOmoOverlay = 'docker-compose.omo-projets.yml'
