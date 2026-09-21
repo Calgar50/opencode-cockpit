@@ -207,16 +207,27 @@ describe("croisements it4 V4 — D1 : le crochet des lancements d'équipe monté
 
 // --- D2 : la bande garde sa carte dans une fenêtre haute ------------------------------------------------------------------------
 
-describe("croisements it4 V4 — D2 : la carte néon garde sa place sous « Qui travaille ? »", () => {
-  it("la bande ne descend plus sous sa carte à partir de 800 px de haut ; sous cette hauteur, la clôture de l'itération 1 est intacte", () => {
-    const css = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/activity/activity.css"), "utf8");
-    const plancher = /@media \(min-height: 800px\) \{\s*\.activity-region\.demande > \.neon-band:has\(> \.neon-body\) \{\s*min-height: min-content;/;
-    assert.match(css, plancher);
-    // La règle de base (bande qui cède la première) et le cas des 400 px restent écrits : rien n'est retiré.
-    assert.match(css, /\.activity-region\.demande > \.neon-band:has\(> \.neon-body\) \{\s*display: flex;[\s\S]*?min-height: 1\.75rem;/);
-    assert.match(css, /@media \(max-width: 400px\)[\s\S]*?\.activity-region\.demande > \.neon-band:has\(> \.neon-body\) \{\s*flex: 0 1 auto;\s*min-height: 0;/);
-    // Le cas des 400 px est écrit APRÈS le plancher : à 400 × 860, les deux règles s'appliquent et c'est lui qui gagne.
-    assert.ok(css.indexOf("@media (min-height: 800px)") < css.indexOf("@media (max-width: 400px)"), "ordre des règles");
+describe("croisements it4 V4 — D2 reporté, et le mouvement réduit corrigé", () => {
+  it("D2 : les planchers de la clôture de l'itération 1 sont intacts, et la raison du report est écrite dans la feuille", () => {
+    const chat = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/chat.css"), "utf8");
+    assert.match(chat, /\.chat-center:has\(> \.activity-region\.demande\) > \.interactions \{\s*flex-shrink: 4;/);
+    assert.match(chat, /\.interactions:has\(> \.interaction\) \{\s*min-height: min\(7rem, 40vh\);/);
+    const activite = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/activity/activity.css"), "utf8");
+    assert.match(activite, /\.activity-region\.demande \{\s*min-height: min\(2\.5rem, 6vh\);/);
+    assert.match(activite, /\.activity-region\.demande > \.neon-band:has\(> \.neon-body\) \{\s*display: flex;[\s\S]*?min-height: 1\.75rem;/);
+    // Le report est écrit là où la prochaine main travaillera, avec les trois essais mesurés.
+    assert.match(activite, /Défaut D2 du banc de la vague 4 de l'itération 4 \(arbitrage A13\), NON corrigé ici/);
+    assert.match(activite, /execution\/constats-V4\.md/);
+  });
+
+  it("mouvement réduit : aucune animation ne tourne sans fin (nombre de répétitions ramené à 1)", () => {
+    const styles = fs.readFileSync(path.join(APP_DIR, "web/styles.css"), "utf8");
+    assert.match(
+      styles,
+      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation-duration: 0\.01ms !important;\s*animation-iteration-count: 1 !important;\s*transition-duration: 0\.01ms !important;/,
+    );
+    // La pastille d'une réponse en cours est bien une animation sans fin : c'est elle que la règle arrête.
+    assert.match(styles, /\.dot\.pulse \{\s*animation: pulse [\d.]+s ease-in-out infinite;/);
   });
 });
 

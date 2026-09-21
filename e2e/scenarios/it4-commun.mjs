@@ -206,27 +206,35 @@ export async function enAvance(ctx, fn) {
 }
 
 /**
- * DÉFAUT DU BANC, reproduit et remis à l'intégrateur (jamais corrigé ici) : le faux opencode ne sert pas `GET /skill`.
- * L'installation d'un exemple d'équipe installe l'assistant du catalogue, qui installe sa FICHE ; le Studio vérifie alors
- * l'écriture par `GET /skill` (studio.ts, VERIFY_ROUTE.skills) et le faux répond 404 « Route inconnue ». Sur un vrai
- * opencode (mode « --reel-hors-ligne »), la route existe et l'installation passe.
- * Propriétaire du faux : L37s, puis l'intégrateur (plan it4 §2.7) — ce paquet ne touche pas `app/server/**`.
+ * Le faux opencode ne servait pas `GET /skill` : l'installation d'un exemple d'équipe installe l'assistant du catalogue, qui
+ * installe sa FICHE ; le Studio vérifie l'écriture par `GET /skill` (studio.ts, VERIFY_ROUTE.skills) et le faux répondait 404
+ * « Route inconnue ». CORRIGÉ par le train de la vague 4 (défaut D5, arbitrage A13) : le faux sert la route. Le motif reste,
+ * pour qu'une pile bâtie sur une image plus ancienne se rabatte encore sur le dépôt de l'équipe au lieu de s'arrêter.
  */
 const DEFAUT_SKILL = /Route inconnue du faux opencode\s*:\s*GET \/skill/;
 
 /**
- * DÉFAUT PRODUIT, reproduit et remis à l'intégrateur : `POST /api/teams/examples/:id/install` rend **500 « Erreur interne du
- * cockpit »** quand le catalogue d'IA n'est pas chargé (banc sans Internet : « catalogue des modèles indisponible : fetch
- * failed »), au lieu du 409 `catalogue-indisponible` que `AssistantService.install` prévoit juste avant. Le journal du
- * cockpit porte « erreur interne … Liste des IA indisponible : impossible de vérifier cette IA. » Vu en mode
- * « --reel-hors-ligne », et au démarrage d'une pile « --faux » tant que le catalogue n'est pas encore lu.
+ * `POST /api/teams/examples/:id/install` rendait **500 « Erreur interne du cockpit »** quand le catalogue d'IA n'est pas chargé,
+ * au lieu du refus que `AssistantService.install` prévoit. CORRIGÉ par le train de la vague 4 (défaut D3, arbitrage A13) : le
+ * refus du service est rendu tel quel. Le motif du 500 reste par prudence (image plus ancienne).
  */
 const DEFAUT_CATALOGUE = /"error":"internal"/;
+
+/**
+ * Refus PROPRES de l'installation, que le banc doit savoir contourner sans s'arrêter : le catalogue d'IA n'est pas chargé
+ * (409 `catalogue-indisponible`, systématique en « --reel-hors-ligne », où le banc n'a pas Internet) ou aucune IA du niveau
+ * demandé n'est disponible sur le compte (422 `ia-indisponible`, le faux fournisseur hors ligne n'en offrant aucune). Ce ne
+ * sont pas des défauts : c'est le refus que la spécification demande. L'équipe est alors posée par `PUT /api/teams/:id` à
+ * partir du déroulé de l'exemple, et le reste du parcours est celui du produit.
+ */
+const REFUS_PROPRES = /"error":"(catalogue-indisponible|ia-indisponible)"/;
 
 /** Cause connue d'un refus d'installation d'exemple, ou null quand le banc ne la reconnaît pas (le scénario s'arrête alors). */
 function causeConnue(corps) {
   if (DEFAUT_SKILL.test(corps)) return "faux sans « GET /skill »";
   if (DEFAUT_CATALOGUE.test(corps)) return "catalogue d'IA indisponible (500)";
+  const propre = REFUS_PROPRES.exec(corps);
+  if (propre) return `refus propre de l'installation (${propre[1]})`;
   return null;
 }
 
@@ -275,7 +283,7 @@ export async function installerExemple(api, exemple) {
     if (connu !== null) INSTALLATION_CASSEE.add(exemple);
     releve(
       api.ctx,
-      `DÉFAUT remis à l'intégrateur : l'installation de l'exemple « ${exemple} » échoue en ${pose.code} (${connu ?? "sessions occupées"}) ; ` +
+      `Repli du banc : l'installation de l'exemple « ${exemple} » est refusée en ${pose.code} (${connu ?? "sessions occupées"}) ; ` +
         "l'équipe est posée par PUT à partir du déroulé de l'exemple, avec les mêmes étapes et les mêmes assistants.",
     );
   }
