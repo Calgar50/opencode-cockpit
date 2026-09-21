@@ -120,7 +120,7 @@ describe("T3c : hub et processeur, instance absente = 1.0.x", () => {
     assert.equal(Object.hasOwn(vus[0] as object, "instance"), false, "aucun champ instance quand elle n'est pas donnée");
   });
 
-  it("EventProcessor : instance « principale » sans option ; l'option la change sans rien étiqueter en V2", () => {
+  it("EventProcessor : instance « principale » sans option ; l'option la change et, depuis L18a (V3), étiquette la salle", () => {
     const { db, sessions } = tracker();
     const deps = {
       db,
@@ -135,10 +135,14 @@ describe("T3c : hub et processeur, instance absente = 1.0.x", () => {
     assert.equal(new EventProcessor(deps).instance, "principale");
     assert.equal(new EventProcessor({ ...deps, instance: "principale" }).instance, "principale");
     assert.equal(new EventProcessor({ ...deps, instance: "omo" }).instance, "omo");
-    // V2 : aucun étiquetage nouveau. Le processeur de la salle n'écrit rien de plus que celui de l'instance principale.
+    // V3 (L18a) : le processeur étiquette ses écritures et ses publications avec SON instance. La règle de T3c qui tient
+    // toujours est l'autre sens — sans option, rien n'est étiqueté : c'est ce que disent les trois égalités ci-dessus et les
+    // tests « 1.0.x » de instances-events.test.ts. La forme du code garde deux garde-fous : l'instance vient toujours du
+    // processeur (aucune valeur écrite en dur) et le rattrapage a une clé par instance.
     const source = fs.readFileSync(path.join(import.meta.dirname, "processor.ts"), "utf8");
-    assert.equal(/\bupsert\([^)]*instance/u.test(source), false, "processor.ts n'étiquette aucune session en V2");
-    assert.equal(/this\.instance|#d\.instance/u.test(source.replace(/return this\.#d\.instance \?\? "principale";/u, "")), false);
+    assert.equal(/upsert\(info, undefined, \{ instance \}\)/u.test(source), true, "le processeur étiquette la session avec SON instance");
+    assert.equal(/instance: "omo"|"sync\.lastAt:omo"/u.test(source), false, "aucune instance écrite en dur dans le processeur");
+    assert.equal(/syncKeyOf\(instance\)/u.test(source), true, "clé de rattrapage propre à l'instance");
   });
 });
 

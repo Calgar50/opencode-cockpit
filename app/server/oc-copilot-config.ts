@@ -105,10 +105,14 @@ export function resyncOnReconnect(hub: Pick<EventHub, "subscribe">, sync: Pick<C
  * fin de réponse. Des fins rapprochées se fondent dans sync() ; une autre conversation encore occupée rend « en-attente » sans
  * réarmer la soupape de l'épisode. Conversations du classement automatique (non relayées) : tentatives planifiées seulement.
  * Rend le désabonnement.
+ *
+ * 1.1, Salle OMO (L18a) : les événements de la salle sont ÉCARTÉS. L'adresse de l'API Copilot synchronisée ici est celle de
+ * l'instance principale ; une fin de réponse dans la salle n'a rien à y corriger, et la synchro écrirait la configuration de
+ * l'instance principale à cause d'une activité qui ne la concerne pas.
  */
 export function resyncOnIdle(hub: Pick<EventHub, "subscribe">, sync: Pick<CopilotConfigSync, "sync" | "deferredEpisode">): () => void {
   return hub.subscribe((event) => {
-    if (event.kind !== "opencode") return;
+    if (event.kind !== "opencode" || (event.instance ?? "principale") !== "principale") return;
     const { type, properties } = event.event;
     const idle = type === "session.idle" || (type === "session.status" && rec(rec(properties)?.status)?.type === "idle");
     if (!idle || !sync.deferredEpisode) return;

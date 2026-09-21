@@ -3,10 +3,13 @@
 // Copilot, solde, classement) : doublures inspirées d'integration.test.ts, remplaçables par `deps`. Modules 1.1 : seulement ceux
 // que le test déclare (`modules`), les autres gardent leur port neutre même quand leur code réel est fusionné (plan §2.2) ;
 // `ports` surcharge un port (espion ou faux).
-// Option `omo` (plan 2 bis §2.2, T3b) : SECOND faux opencode, dossiers temporaires de contrôle, d'état et d'authentification,
-// `instances.omo` minimal construit sur ce faux, et un AIGUILLAGE FACTICE (emitOmo, omo.hub, omo.runHooks) qui appelle les
-// inscriptions filtrées sur la salle. La salle reste coupée (SALLE_OUVERTE faux) : le second processeur réel est branché par
-// L18a (V3). La règle des modules déclarés ne change pas : « tous » reste réservé aux tests de croisement et aux e2e.
+// Option `omo` (plan 2 bis §2.2, T3b puis L18a) : SECOND faux opencode, dossiers temporaires de contrôle, d'état et
+// d'authentification, et l'instance RÉELLE de la salle, construite par `creerInstanceOmo` (instance-runtime.ts, L18a) : second
+// client, second portillon, SECOND PROCESSEUR branché sur le second faux. `h.omo.emit` passe donc par le vrai chemin (flux du
+// faux → processeur de la salle → dérivations inscrites pour la salle), et non plus par l'aiguillage factice de T3b ; il attend
+// que l'événement soit traité. `omo.hub` et `omo.runHooks` restent des aiguillages (il n'y a pas de proxy de la salle avant
+// L18b). La salle reste coupée (SALLE_OUVERTE faux) : rien n'est écrit dans ses dossiers.
+// La règle des modules déclarés ne change pas : « tous » reste réservé aux tests de croisement et aux e2e.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -25,15 +28,15 @@ import { ConfigWriteQueue } from "../config-queue.ts";
 import type { HookSignatures, HookStep, HubEventMap, HubEventType, PermissionGate, ProxyContext } from "../contracts-11.ts";
 import type { ControlService, RestartResult } from "../control.ts";
 import { openMemoryDb } from "../db.ts";
-import type { AppEnv } from "../env.ts";
+import { type AppEnv, omoOf } from "../env.ts";
 import type { AppDeps } from "../http.ts";
 import { EventHub } from "../hub.ts";
+import { creerInstanceOmo, type OmoRuntime } from "../instance-runtime.ts";
 import { Ledger } from "../ledger.ts";
 import { createLogger } from "../log.ts";
 import { OcLookup } from "../oc-lookup.ts";
 import type { InstanceDeps } from "../omo-contracts.ts";
 import { type OcGlobalEvent, OpencodeClient } from "../opencode.ts";
-import { createPermissionGate } from "../permission-gate.ts";
 import { EventProcessor } from "../processor.ts";
 import { ProjectsService } from "../projects.ts";
 import type { QuotaSync } from "../quota.ts";
@@ -72,16 +75,21 @@ export interface CockpitHarnessOptions {
   omo?: boolean;
 }
 
-/** Aiguillage factice de la salle (plan 2 bis §2.2) : le second processeur réel est branché par L18a (V3). */
+/** Instance réelle de la salle dans le harnais (plan 2 bis §2.2 ; second processeur branché par L18a, V3). */
 export interface CockpitHarnessOmo {
   /** Second faux opencode : celui de la salle. */
   fake: FakeOpencode;
-  /** `instances.omo` remis à app-factory : client, portillon, catalogue, relevés et processeur propres à la salle (non démarré). */
+  /** `instances.omo` remis à app-factory : client, portillon, catalogue et processeur propres à la salle (démarré). */
   deps: InstanceDeps;
+  /** Exécution de la salle (instance-runtime.ts) : compteur d'envois facturés propre, arrêt. */
+  runtime: OmoRuntime;
   /** Dossiers temporaires de la salle, remis au module `omoControl` (volumes control-omo, omo-state et omo-auth). */
   dirs: { control: string; state: string; auth: string };
-  /** Appelle les DÉRIVATIONS inscrites pour la salle, dans l'ordre du câblage, avec l'origine { instance: "omo" }. */
-  emit(event: OcGlobalEvent): void;
+  /**
+   * Émet l'événement sur le faux opencode de la salle et rend la main quand le PROCESSEUR RÉEL de la salle l'a traité (ses
+   * dérivations appelées, sa file vidée). Chemin complet : rien n'est simulé.
+   */
+  emit(event: OcGlobalEvent): Promise<void>;
   /** Appelle les ABONNÉS du hub inscrits pour la salle, dans l'ordre du câblage. */
   hub<K extends HubEventType>(type: K, data: HubEventMap[K]): void;
   /** Crochets du proxy de la salle : le contexte porte `instance: "omo"`, runHooks écarte donc ceux du cockpit. */
@@ -115,8 +123,8 @@ export interface CockpitHarness {
   headers: { authed: Record<string, string>; mutating: Record<string, string>; confirmed: Record<string, string> };
   /** Salle OMO (option `omo`) ; null sans l'option : le cockpit tourne alors avec `instances.omo` à null. */
   omo: CockpitHarnessOmo | null;
-  /** Raccourci de `omo.emit` : aiguillage factice des dérivations de la salle. Échoue si l'option `omo` est absente. */
-  emitOmo(event: OcGlobalEvent): void;
+  /** Raccourci de `omo.emit` (processeur réel de la salle). Échoue si l'option `omo` est absente. */
+  emitOmo(event: OcGlobalEvent): Promise<void>;
   /** Événements du cockpit publiés sur le hub depuis le démarrage, dans l'ordre. */
   cockpitEvents(): Array<{ type: string; data: unknown }>;
   /**
@@ -312,37 +320,42 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   const processor = makeProcessor(merged);
   const deps: AppDeps = { ...merged, processor };
 
-  // Salle OMO : second faux opencode et instance minimale bâtie dessus. Le processeur de la salle est construit mais JAMAIS
-  // démarré (L18a le branchera en V3) : ici, il ne sert qu'à donner une instance complète au routeur.
-  let omoParts: { fake: FakeOpencode; deps: InstanceDeps; dirs: { control: string; state: string; auth: string }; racine: string } | null = null;
+  // Salle OMO : second faux opencode et instance RÉELLE bâtie dessus par instance-runtime.ts (L18a). Son processeur est démarré
+  // plus bas, en même temps que celui de l'instance principale.
+  let omoParts: { fake: FakeOpencode; runtime: OmoRuntime; dirs: { control: string; state: string; auth: string }; racine: string } | null = null;
   if (options.omo) {
     const omoPassword = randomBytes(18).toString("base64url");
     const omoFake = new FakeOpencode({ password: omoPassword });
     cleanups.push(() => omoFake.close());
     await omoFake.start();
-    const omoEnv: AppEnv = { ...env, opencodeUrl: omoFake.url, opencodePassword: omoPassword, opencodeWorkspaceDir: omoFake.directory };
-    const omoClient = new OpencodeClient(omoEnv);
-    const omoLookup = new OcLookup({ client: omoClient, env: omoEnv, hub, log });
-    cleanups.push(() => omoLookup.close());
-    const omoCatalog = new ModelCatalog(omoClient);
-    cleanups.push(() => omoCatalog.stop());
-    omoParts = {
-      fake: omoFake,
-      racine: dir("omo"),
-      dirs: { control: dir("omo/control"), state: dir("omo/state"), auth: dir("omo/auth") },
-      deps: {
-        instance: "omo",
-        client: omoClient,
-        // Portillon propre à la salle : son registre des réponses émises est la base de la détection 1 (§4.14.5).
-        gate: createPermissionGate({ client: omoClient, db, log, hub, sessions }),
-        lookup: omoLookup,
-        catalog: omoCatalog,
-        processor: new EventProcessor({ db, client: omoClient, sessions, ledger, archive, classifier: deps.classifier, hub, log }),
-        billRefusal: () => null,
-        beginBilled: () => () => undefined,
-        isAllowedDirectory: (directory) => projects.isAllowedDirectory(directory),
+    const racine = dir("omo");
+    const dirs = { control: dir("omo/control"), state: dir("omo/state"), auth: dir("omo/auth") };
+    // `env.omo` du harnais : l'adresse et le mot de passe du SECOND faux, lus par creerInstanceOmo comme en production.
+    const envSalle: AppEnv = {
+      ...env,
+      omo: {
+        ...omoOf(env),
+        enabled: true,
+        url: omoFake.url,
+        password: omoPassword,
+        controlDir: dirs.control,
+        stateDir: dirs.state,
+        authDir: dirs.auth,
       },
     };
+    const runtime = creerInstanceOmo({
+      env: envSalle,
+      log,
+      db,
+      hub,
+      sessions,
+      ledger,
+      archive: deps.archive,
+      classifier: deps.classifier,
+      projects,
+    });
+    cleanups.push(() => runtime.close());
+    omoParts = { fake: omoFake, racine, dirs, runtime };
   }
 
   const cockpit = createCockpitApp(
@@ -351,7 +364,7 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
       configQueue: deps.configQueue ?? configQueue,
       sessions,
       ...(options.gate ? { gate: options.gate(deps) } : {}),
-      omo: omoParts?.deps ?? null,
+      omo: omoParts?.runtime.deps ?? null,
       // Salle coupée : le service réel de L17b est construit sur ces dossiers et n'y écrit rien (actif() faux).
       ...(omoParts === null
         ? {}
@@ -381,6 +394,12 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   processor.start();
   cleanups.push(() => processor.stop());
   await until(() => processor.status.connected && !processor.status.backfilling, 5_000);
+  // Second processeur RÉEL (L18a) : branché sur le second faux, rattrapage terminé au retour de startCockpit, comme le premier.
+  if (omoParts) {
+    omoParts.runtime.start();
+    const omoProcessor = omoParts.runtime.deps.processor;
+    await until(() => omoProcessor.status.connected && !omoProcessor.status.backfilling, 5_000);
+  }
 
   const cookie = `${SESSION_COOKIE_NAME}=${sessionValue(env.token, sessionSecret)}`;
   const headers = {
@@ -415,19 +434,45 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
       req.end(payload);
     });
 
-  // Aiguillage factice : il lit le câblage rendu et n'appelle QUE les inscriptions qui servent la salle.
+  /**
+   * Chemin RÉEL de la salle : l'événement part du second faux opencode, remonte le flux du processeur de la salle (qui appelle
+   * ses dérivations, puis traite l'événement dans sa file), et la main n'est rendue qu'une fois la file vidée. Une dérivation
+   * témoin, inscrite EN DERNIER, dit quand le processeur a vu cet événement précis.
+   */
+  let compteurEmitOmo = 0;
+  const emitOmoReel = async (event: OcGlobalEvent): Promise<void> => {
+    const parts = omoParts as NonNullable<typeof omoParts>;
+    const omoProcessor = parts.runtime.deps.processor;
+    const identifiant = event.payload.id ?? `evt-harnais-${++compteurEmitOmo}`;
+    const payload = { ...event.payload, id: identifiant };
+    let vu: (() => void) | undefined;
+    const attendu = new Promise<void>((resolve) => {
+      vu = resolve;
+    });
+    const detach = omoProcessor.addDerivation({
+      name: "harnais-emit-omo",
+      onEvent: (recu) => {
+        if (recu.payload?.id === identifiant) vu?.();
+      },
+    });
+    try {
+      parts.fake.emitRaw({ ...event, payload });
+      await Promise.race([attendu, new Promise<void>((_, reject) => setTimeout(() => reject(new Error("harnais : événement de la salle non reçu")), 5_000).unref())]);
+    } finally {
+      detach();
+    }
+    await omoProcessor.settled();
+  };
+
   const omo: CockpitHarnessOmo | null =
     omoParts === null
       ? null
       : {
           fake: omoParts.fake,
-          deps: omoParts.deps,
+          deps: omoParts.runtime.deps,
+          runtime: omoParts.runtime,
           dirs: omoParts.dirs,
-          emit: (event) => {
-            for (const derivation of cockpit.wiring.derivations) {
-              if (servesInstance(derivation, "omo")) derivation.onEvent(event, { instance: "omo" });
-            }
-          },
+          emit: emitOmoReel,
           hub: (type, data) => {
             for (const subscription of cockpit.wiring.subscriptions) {
               if (subscription.type !== type || !servesInstance(subscription, "omo")) continue;
@@ -448,6 +493,8 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
           },
         };
 
+  // P6 « ne redémarre jamais opencode » : la garde porte sur l'instance PRINCIPALE. La salle, elle, est relancée par son
+  // superviseur (§3.12.1) : un rechargement sur le faux de la salle ne fait pas tomber cette garde.
   const assertNoGlobalRestart = () => {
     const reloads = fake.requests.map((r) => `${r.method} ${r.pathname}`).filter((route) => RELOAD_ROUTES.has(route));
     const found = [...reloads, ...restarts.map((reason) => `redémarrage demandé (${reason})`)];
@@ -469,7 +516,7 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     omo,
     emitOmo: (event) => {
       assert.ok(omo, "harnais du cockpit : l'option « omo » est nécessaire pour emitOmo");
-      omo.emit(event);
+      return omo.emit(event);
     },
     cockpitEvents: () => events.map((event) => ({ ...event })),
     assertNoGlobalRestart,

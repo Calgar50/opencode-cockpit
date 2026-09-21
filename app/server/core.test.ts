@@ -786,7 +786,8 @@ describe("sécurité et utilitaires", () => {
           return conversation;
         },
       } as unknown as ArchiveService,
-      sessions: { upsert: () => ({}) } as unknown as SessionTracker,
+      // `instanceOf` : lu par le classement depuis L18a (D-2b-05, une racine de la salle n'est jamais envoyée à une IA).
+      sessions: { upsert: () => ({}), instanceOf: () => "principale" } as unknown as SessionTracker,
       ledger: { recordAssistant: () => undefined } as unknown as Ledger,
       hub: { cockpit: (type: string) => void events.push(type) } as unknown as EventHub,
       log: createLogger("error"),

@@ -4,6 +4,11 @@
 // Registre des réponses émises : chaque réponse (« once » ou « reject ») est inscrite AVANT son envoi à opencode.
 // L1b : relayOnce et rejectWhenAlone (réponses des services), refus retenus réévalués par la dérivation « gate », arbre d'une
 // conversation lu par sessions.descendants (un seul calcul, même borne que la 1.0).
+// 1.1, Salle OMO (L18a, D-2b-20) : UN PORTILLON PAR INSTANCE. Celui de la salle est un second objet, sur le client de la salle,
+// avec son propre registre des réponses émises (base de la détection 1 : une réponse d'autorisation qui n'est pas la nôtre) et
+// ses propres refus retenus. Sa dérivation est inscrite avec `instances: ["omo"]`, donc branchée au seul processeur de la salle.
+// Le câblage n'installe que le portillon de l'instance principale (c11.gate) : celui-ci installe ensuite celui de la salle, ce
+// qui évite d'éditer wiring-11.ts.
 import type {
   EmittedReply,
   EventDerivation,
@@ -15,6 +20,7 @@ import type {
 } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import { OpencodeError } from "./opencode.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
 import type { RelayOutcome, RepliedBy } from "./shared/autonomy-types.ts";
 import { ID_RE } from "./shared/ids.ts";
 
@@ -75,9 +81,15 @@ export function emittedRegistry(max = EMITTED_MAX): PermissionGate["emitted"] & 
   };
 }
 
+/** Dépendances du portillon, plus l'instance qu'il sert (1.1) ; absente : « principale », exactement comme en 1.0.x. */
+export interface PermissionGateInstanceDeps extends PermissionGateDeps {
+  instance?: SessionInstance;
+}
+
 /** Portillon des accords : proxy, puis autonomie et garde des délégations (P9). */
-export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
+export function createPermissionGate(deps: PermissionGateInstanceDeps): PermissionGate {
   const { client, log } = deps;
+  const instance: SessionInstance = deps.instance ?? "principale";
   const emitted = emittedRegistry();
 
   const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
@@ -546,7 +558,11 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
    */
   const derivation: EventDerivation = {
     name: "gate",
-    onEvent(event) {
+    // Champ ABSENT pour l'instance principale : l'inscription garde sa forme 1.0.x/it1.
+    ...(instance === "principale" ? {} : { instances: [instance] }),
+    onEvent(event, origin) {
+      // Origine du processeur : absente = instance principale. Le portillon d'une instance ne réveille que SES refus retenus.
+      if ((origin?.instance ?? "principale") !== instance) return;
       if (held.size === 0) return;
       const type = event.payload?.type;
       if (type === "server.instance.disposed" || type === "global.disposed") {
@@ -571,8 +587,11 @@ export function createPermissionGate(deps: PermissionGateDeps): PermissionGate {
     relayOnce,
     rejectWhenAlone,
     emitted: { record: (entry) => emitted.record(entry), has: (requestId) => emitted.has(requestId) },
-    install(reg) {
+    install(reg, c11) {
       reg.derivation(derivation);
+      // D-2b-20 : le câblage n'installe que le portillon de l'instance principale (module « gate » → c11.gate). Celui de la
+      // salle, construit par instance-runtime.ts, inscrit donc sa dérivation ici, juste après. Salle coupée : rien.
+      if (instance === "principale") c11.instances?.omo?.gate.install?.(reg, c11);
     },
   };
 }
