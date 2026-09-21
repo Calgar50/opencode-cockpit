@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { pathToFileURL } from "node:url";
 import { Hono } from "hono";
 import React from "react";
 import { AssistantService as AssistantServiceClass, AssistantServiceError, probeSessionsBusy } from "./assistants.ts";
@@ -523,16 +524,50 @@ describe("croisements it4 V4 — à « terminee », l'équipe ne retient plus la
     assert.equal(occupe, false, "une session est encore comptée occupée par opencode 5 s après la fin de l'équipe");
   });
 
-  it("`it4-studio` attend ce repos et le mesure, sans rien céder sur le refus pendant l'étape", () => {
+  it("`it4-studio` n'attend QUE les sessions d'étape de son lancement — la portée est éprouvée, pas relue", async () => {
+    // Le module du scénario est chargé tel quel (il n'est pas dans `tsconfig`, d'où l'import par URL) : ce sont ses deux
+    // fonctions de portée qui sont éprouvées, pas une copie ni son texte. C'est ce que la relecture de la première correction
+    // n'attrapait pas : elle relisait le scénario, et le scénario lisait tout le dossier partagé.
+    const studio = (await import(pathToFileURL(path.join(REPO_DIR, "e2e", "scenarios", "it4-studio.mjs")).href)) as {
+      sessionsDuLancement: (vue: unknown) => string[];
+      filtrerOccupees: (etats: unknown, sessions: readonly string[]) => string[];
+    };
+
+    // 1. Les sessions d'un lancement sont celles que la vue du lancement nomme, et elles seules ; une étape sans session
+    //    (jamais démarrée) n'en ajoute pas, et un doublon ne compte qu'une fois.
+    const vue = { steps: [{ sessionId: "ses_a" }, { sessionId: null }, { sessionId: "ses_b" }, { sessionId: "ses_a" }, {}] };
+    assert.deepEqual(studio.sessionsDuLancement(vue), ["ses_a", "ses_b"]);
+    assert.deepEqual(studio.sessionsDuLancement(null), []);
+
+    // 2. PORTÉE : le dossier des équipes est « /workspace », que les 27 scénarios du banc partagent. `GET /session/status` y
+    //    rend AUSSI les sessions des autres scénarios. Une session étrangère occupée ne doit jamais faire attendre celui-ci —
+    //    c'est le défaut que la revue d'itération a relevé (le scénario tombait en passage complet et passait seul).
+    const etats = {
+      ses_a: { type: "idle" },
+      ses_b: { type: "idle" },
+      ses_etrangere: { type: "busy" },
+      ses_autre_scenario: { type: "retry" },
+    };
+    assert.deepEqual(studio.filtrerOccupees(etats, ["ses_a", "ses_b"]), [], "une session occupée d'un AUTRE scénario ne compte pas");
+
+    // 3. …et une session d'étape de CE lancement qui reste occupée est bien vue, elle.
+    assert.deepEqual(studio.filtrerOccupees({ ...etats, ses_b: { type: "busy" } }, ["ses_a", "ses_b"]), ["ses_b"]);
+    assert.deepEqual(studio.filtrerOccupees({ ...etats, ses_a: { type: "retry" } }, ["ses_a", "ses_b"]), ["ses_a"]);
+    // Une session au repos peut ne pas figurer du tout dans la réponse : absente = au repos.
+    assert.deepEqual(studio.filtrerOccupees({ ses_etrangere: { type: "busy" } }, ["ses_a", "ses_b"]), []);
+    assert.deepEqual(studio.filtrerOccupees(null, ["ses_a"]), []);
+
     const scenario = lire(path.join("e2e", "scenarios", "it4-studio.mjs"));
     // Le refus pendant l'étape reste exigé : la correction du banc ne doit pas devenir une tolérance au 409.
     assert.match(scenario, /pendant une étape : code \$\{reponse\.code\} au lieu de 409/);
-    // L'attente du repos est bornée, mesurée, et relevée.
+    // L'attente du repos est bornée, mesurée, relevée, et portée sur les seules sessions du lancement.
     assert.match(scenario, /const REPOS_MAX_MS = \d[\d_]*;/);
-    assert.match(scenario, /attendreQue\(\s*async \(\) => \{\s*occupees = await sessionsOccupees\(ctx\);/);
     assert.match(scenario, /delaiMs: REPOS_MAX_MS/);
-    assert.match(scenario, /const reposMs = await attendreLeRepos\(ctx\);/);
-    assert.match(scenario, /repos des sessions d'étape : \$\{reposMs\} ms après l'état « terminee »/);
+    assert.match(scenario, /const miennes = sessionsDuLancement\(finie\);/);
+    assert.match(scenario, /const reposMs = await attendreLeRepos\(ctx, miennes\);/);
+    assert.match(scenario, /repos des \$\{miennes\.length\} session\(s\) d'étape de ce lancement/);
+    // Un lancement sans aucune session d'étape ferait « attendre » une liste vide, donc rien : le scénario le refuse.
+    assert.match(scenario, /exiger\(miennes\.length > 0,/);
     // Les écritures d'après l'équipe gardent leur code attendu : aucune n'est rendue facultative.
     assert.match(scenario, /reponse\.code === ecriture\.apres/);
   });

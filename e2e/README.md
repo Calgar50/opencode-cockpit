@@ -226,8 +226,8 @@ console muette :
 | `it1-ui-m25.mjs` | mesure M25 dans le schéma du banc (HTTPS épinglé par défaut) : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
 | `it1-ui-m1-noreply.mjs` | mesure M1 : recette facturée, jouée seulement en `--reel` avec `E2E_ACCORD_FACTURE` (en attente) ; ailleurs, une répétition sans IA réelle (deux envois `noReply` sans tour, puis une réponse) |
-
 <!-- équipes (it4) : début -->
+
 ## Scénarios de l'itération 4 — équipes et carte des assistants (chantier 1.1)
 
 ```sh
@@ -248,15 +248,15 @@ du Studio).
 | `it4-avis.mjs` | « Revue SQL sur réplica » de bout en bout : trois avis démarrés à moins de 2 s d'écart, chacun sans voir les autres, synthèse qui les reçoit tous, résultat injecté `noReply` et carte « … recopié ici par le cockpit, sans appel d'IA. », une seule fois, sans marqueur |
 | `it4-pause.mjs` | « Chaîne de relecture de script » : pause du déroulé après l'étape 1, rien envoyé pendant la pause, [Continuer] avec une précision → précision présente dans le message de l'étape 2 (journal du faux) |
 | `it4-arret.mjs` | arrêt pendant l'étape 2 : équipe `arretee`, aucune session occupée, aucun envoi après l'arrêt ; arrêt au plafond : état `plafond`, plus aucun envoi, et le lancement reste relançable |
-| `it4-studio.mjs` | garde de rechargement composée pendant une étape : Studio, réalignement (confirmé depuis la page) et redémarrage d'opencode refusés en 409, installation d'un exemple aussi ; acceptés après l'équipe, une fois le repos des sessions d'étape attendu et mesuré (le refus qui suit « terminee » est voulu : opencode compte encore la session occupée) ; témoin P6 |
+| `it4-studio.mjs` | garde de rechargement composée pendant une étape : Studio, réalignement (confirmé depuis la page) et redémarrage d'opencode refusés en 409, installation d'un exemple aussi ; acceptés après l'équipe, une fois le repos attendu et mesuré sur les sessions d'étape **de ce lancement**, et sur elles seules — jamais sur tout le dossier `/workspace`, que les 27 scénarios partagent (le refus qui suit « terminee » est voulu : opencode compte encore la session occupée) ; témoin P6 |
 | `it4-carte.mjs` | `GET /api/agent-map` : `build` → `general` et `explore` « demandée », appliquées par opencode ; carte en lecture seule ; vues Centrée et Liste au clavier seul ; une arête par étape, numérotées |
 | `it4-prelancement.mjs` | « Rien n'a été envoyé ni facturé » : chaque refus de `POST …/run` et de `POST …/relancer` laisse le faux sans la moindre requête, pour un code de chaque groupe ; `mcp` ajouté après l'estimation → 202 puis pause « À vérifier », sans envoi |
 | `it4-outils-etape.mjs` | outils offerts à l'IA d'une étape : ni `edit`, `write`, `apply_patch`, `bash`, `task`, `webfetch`, `websearch` ni `question` (journal du faux fournisseur en `--reel-hors-ligne`, oracle du faux en `--faux`) |
 | `it4-captures.mjs` | captures 1440, 1024 et 400 px dans les deux thèmes de chaque vue neuve ; contraste forcé émulé (`forced-colors: active`) et mouvement réduit pour la feuille, le Déroulé, l'éditeur, la carte et la carte d'exécution en pause ; feuille et éditeur au clavier seul ; console muette |
 | `it4-simple-ouvert.mjs` | ouverture des équipes en mode Simple (décision U1). Son corps ne s'exécute que si `EQUIPES_SIMPLE_OUVERTES` est vraie ; sinon il s'annonce « non joué » et **ne vérifie rien**, tout en comptant vert. Pour le jouer : passer `app/server/wiring-eq.ts` à `export const EQUIPES_SIMPLE_OUVERTES = true;` dans la copie jetable du banc, **avant de bâtir les images** (le banc prépare son contexte à partir du dossier de travail), jamais dans le dépôt (U1), puis `scripts/run-e2e.sh --faux --scenarios it4-simple-ouvert …`, et remettre la ligne à `false`. Joué ainsi le 21 septembre 2026 : **vert** (22 s) |
 
-<!-- équipes (it4) : fin -->
 
+<!-- équipes (it4) : fin -->
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`

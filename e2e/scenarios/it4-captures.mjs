@@ -101,13 +101,15 @@ const SONDE = (selecteur) => `(() => {
  * que la vue reste lisible : requête de média active, vue visible, icônes dessinées, focus avec un contour, aucune
  * animation en cours, aucune animation infinie. `traits` : la vue porte un schéma, donc des connecteurs.
  */
-async function capturerContrasteForce(ctx, nom, selecteur, { traits = false, icones = true } = {}) {
+async function capturerContrasteForce(ctx, nom, selecteur, { traits = false, icones = true, avant = null } = {}) {
   const page = ctx.navigateur;
   const releves = [];
   for (const theme of THEMES) {
     for (const taille of TAILLES) {
       await page.medias({ forcedColors: "active", reducedMotion: "reduce", theme });
       await page.taille(taille);
+      // Une vue qui vit dans le panneau « Contexte » disparaît au passage sous 1280 px : le crochet la remet en place.
+      if (avant) await avant({ theme, taille });
       await attendre(400);
       const sonde = await page.evaluer(SONDE(selecteur));
       const ou = `${nom}, ${taille.nom}, ${theme}`;
@@ -136,6 +138,21 @@ async function capturerContrasteForce(ctx, nom, selecteur, { traits = false, ico
   await page.taille(LARGE);
   await page.medias({});
   releve(ctx, `contraste forcé, ${nom} : ${resume(releves, 500)}`);
+}
+
+/**
+ * Ouvre le panneau « Contexte » s'il ne l'est pas, en cliquant son bouton, comme le ferait l'utilisateur.
+ *
+ * Le Déroulé de l'équipe (`.team-deroule`) n'est monté QUE dans ce panneau (Deroule.tsx). Or le panneau se ferme de lui-même à
+ * chaque passage sous 1280 px, où il se poserait sur la conversation, et il n'est « jamais rouvert d'office au large » (règle de
+ * la clôture de l'itération 1, ChatPage.tsx, documentée dans it1-ui-commun.mjs) : après une boucle de captures descendue à
+ * 400 px, il est donc fermé, même revenu à 1440. Le banc le rouvre lui-même, exactement comme `capturerConversation`.
+ */
+async function ouvrirLeContexte(page) {
+  const ouvert = `document.querySelector(".chat")?.classList.contains("aside-open") === true`;
+  if (await page.evaluer(ouvert)) return;
+  await page.evaluer(`document.querySelector('.chat-header button[aria-label="Afficher le contexte"]')?.click()`);
+  await page.attendreQue(ouvert, { libelle: "panneau « Contexte » rouvert" });
 }
 
 /** Tape un texte dans la saisie du chat, au clavier (jamais une affectation de valeur : React ne la verrait pas). */
@@ -244,7 +261,10 @@ export async function run(ctx) {
       await page.touche("Tab");
       if (await page.evaluer('Boolean(document.activeElement?.closest(".modal, .team-sheet"))')) dedans++;
     }
-    exiger(dedans > 0, "le focus ne se pose jamais dans la feuille de lancement au clavier.");
+    // Défaut D6 (arbitrage A13) : `aria-modal="true"` promet que le focus reste DANS la boîte. Avant sa correction, une seule
+    // tabulation sur douze s'y posait ; les onze autres partaient derrière. Les DOUZE sont donc exigées, plus aucune n'ayant de
+    // raison de sortir (piège à focus de components/modal-focus.ts).
+    exiger(dedans === 12, `le focus sort de la feuille de lancement au clavier : ${dedans}/12 tabulations dedans.`);
     await page.touche("Escape");
     await page.attendreQue('!document.querySelector(".team-sheet")', { libelle: "feuille fermée par Échap" });
     const rendu = await page.focus();
@@ -256,8 +276,12 @@ export async function run(ctx) {
     await ouvrirLaConversation(ctx, rootId);
     await page.attendreQue('document.querySelector(".team-run")', { delaiMs: 20_000, libelle: "carte d'exécution de l'équipe" });
     await capturer(ctx, "carte-execution");
+    // Les captures qui précèdent sont descendues à 400 px : le panneau « Contexte » s'y est fermé de lui-même et n'est jamais
+    // rouvert d'office au retour au large. Le Déroulé n'y vivant que dans ce panneau, le banc le rouvre — ici, puis à chaque
+    // taille du relevé d'accessibilité, qui repasse lui aussi sous 1280 px.
+    await ouvrirLeContexte(page);
     await page.attendreQue('document.querySelector(".team-deroule")', { delaiMs: 20_000, libelle: "Déroulé de l'équipe" });
-    await capturerContrasteForce(ctx, "deroule", ".team-deroule", { traits: true, icones: "au-large" });
+    await capturerContrasteForce(ctx, "deroule", ".team-deroule", { traits: true, icones: "au-large", avant: () => ouvrirLeContexte(page) });
 
     const finie = await attendreRun(api, runId, (vue) => vue.state === "terminee", "équipe des captures terminée");
     await page.attendreQue('document.querySelector(".team-result")', { delaiMs: 20_000, libelle: "carte de résultat" });
