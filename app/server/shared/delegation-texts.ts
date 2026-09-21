@@ -209,8 +209,8 @@ function remplir(gabarit: string, valeurs: Readonly<Record<string, string | numb
 export function avisSimple(): string {
   return TEXTES.simple.avis;
 }
-
 // --- équipes (it4) : début ---
+
 
 /** Avis du mode Simple sur la délégation, avec le bouton [Voir les équipes] quand il y a lieu (§3.14 l.437). */
 export interface AvisDelegation {
@@ -232,8 +232,8 @@ export function avisDelegationSimple(ouvertesEnSimple: boolean): AvisDelegation 
   return { texte: TEXTES.simple.avisEquipes, bouton: { libelle: TEXTES.simple.voirEquipes, href: EQUIPES_HREF } };
 }
 
-// --- équipes (it4) : fin ---
 
+// --- équipes (it4) : fin ---
 /** Avis du mode Simple quand aucun refus d'office n'a pu être lancé : la demande attend l'utilisateur. */
 export function avisSimpleEnAttente(): string {
   return TEXTES.simple.avisAttente;

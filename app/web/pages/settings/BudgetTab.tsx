@@ -176,7 +176,12 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
   const [teamsDirty, setTeamsDirty] = useState(false);
   // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : début ---
+  // Ligne REMPLACÉE (elle ne s'ajoute pas) : l'originale de l'itération 1 est
+  // `useEffect(() => onDirtyChange(dirty || quotaDirty), [dirty, quotaDirty, onDirtyChange]);`
+  // et le bloc des équipes s'ajoute aux sections qui salissent l'onglet.
   useEffect(() => onDirtyChange(dirty || quotaDirty || teamsDirty), [dirty, quotaDirty, teamsDirty, onDirtyChange]);
+  // --- équipes (it4) : fin ---
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const expensive = boot.models

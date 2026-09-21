@@ -26,8 +26,8 @@ import { Button } from "../../../components/ui.tsx";
 import { teamsApi } from "../../../lib/api-teams.ts";
 import { errorText } from "../../../lib/api.ts";
 import { goTo } from "../../../lib/router.ts";
-// --- équipes (it4) : fin ---
 
+// --- équipes (it4) : fin ---
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Attente d'une délégation refusée par le cockpit : refus Simple de la garde (L1d, work.markWait(…, « cockpit »)). */
@@ -60,8 +60,8 @@ function Notice({ rootId }: { rootId: string }) {
   const avis: AvisDelegation = ouvertesEnSimple ? avisDelegationSimple(true) : { texte: avisSimple(), bouton: null };
   const avisRef = useRef(avis.texte);
   avisRef.current = avis.texte;
-  // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : fin ---
   const show = useCallback(
     (announce: boolean) => {
       if (shownRef.current) return;
@@ -74,8 +74,8 @@ function Notice({ rootId }: { rootId: string }) {
     },
     [say],
   );
-
   // --- équipes (it4) : début ---
+
   // Une seule lecture par conversation, et seulement quand l'avis est affiché : rien n'est demandé tant qu'il n'y a pas de refus.
   useEffect(() => {
     if (!shown) return undefined;
@@ -88,8 +88,8 @@ function Notice({ rootId }: { rootId: string }) {
     );
     return () => controller.abort();
   }, [shown]);
-  // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : fin ---
   // Relecture (ouverture, reconnexion du flux) : un refus déjà fait montre l'avis, sans l'annoncer.
   useEffect(() => {
     const controller = new AbortController();

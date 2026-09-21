@@ -12,6 +12,9 @@ import {
 } from "react";
 import type { Category } from "../lib/types.ts";
 import { Icon, type IconName } from "./Icon.tsx";
+// --- équipes (it4) : début ---
+import { piegerLaTabulation } from "./modal-focus.ts";
+// --- équipes (it4) : fin ---
 
 type ButtonVariant = "default" | "primary" | "ghost" | "danger" | "danger-solid";
 
@@ -271,10 +274,6 @@ export function CategoryChip({ category, fallback }: { category: Category | unde
   );
 }
 
-/** Éléments qui peuvent recevoir le focus par tabulation dans une boîte de dialogue (ordre du document). */
-const FOCUSABLES =
-  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([disabled]), summary, audio[controls], video[controls]';
-
 export function Modal({
   open,
   title,
@@ -298,42 +297,20 @@ export function Modal({
     const previous = document.activeElement as HTMLElement | null;
     const focusable = panel.current?.querySelector<HTMLElement>("input, textarea, select, button:not([data-close])");
     (focusable ?? panel.current)?.focus();
-    const dessus = () => {
-      // Modales empilées : seule celle du dessus reçoit les touches.
-      const stack = document.querySelectorAll(".modal-backdrop");
-      return stack[stack.length - 1] === backdrop.current;
-    };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (dessus()) onClose();
+      // --- équipes (it4) : début ---
+      // Défaut D6 (arbitrage A13) : `aria-modal="true"` promet que le focus reste DANS la boîte ; il n'y restait pas — une
+      // tabulation sur douze seulement se posait dans la feuille de lancement d'une équipe, les onze autres partaient derrière
+      // la boîte. Le piège est dans ./modal-focus.ts, pour qu'un test le monte tel quel (aucun moteur JSX dans `npm test`).
+      if (e.key === "Tab") {
+        piegerLaTabulation(e, panel.current, backdrop.current);
         return;
       }
-      // Le focus reste DANS la boîte de dialogue (aria-modal="true") : la tabulation qui sort d'un bout revient par l'autre.
-      // Sans cela, la tabulation passait derrière la boîte : une seule tabulation sur douze se posait dans la feuille de
-      // lancement d'une équipe (défaut D6 du banc de la vague 4, arbitrage A13). L'ordre de tabulation À L'INTÉRIEUR ne change
-      // pas ; seules les deux extrémités bouclent. Échap rend toujours le focus à l'élément d'avant (nettoyage ci-dessous).
-      if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey || !dessus()) return;
-      const boite = panel.current;
-      if (!boite) return;
-      const cibles = [...boite.querySelectorAll<HTMLElement>(FOCUSABLES)].filter(
-        (el) => !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true" && (el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement),
-      );
-      if (cibles.length === 0) {
-        e.preventDefault();
-        boite.focus();
-        return;
-      }
-      const premier = cibles[0] as HTMLElement;
-      const dernier = cibles[cibles.length - 1] as HTMLElement;
-      const actif = document.activeElement;
-      const dehors = !(actif instanceof Node) || !boite.contains(actif);
-      if (e.shiftKey && (actif === premier || actif === boite || dehors)) {
-        e.preventDefault();
-        dernier.focus();
-      } else if (!e.shiftKey && (actif === dernier || dehors)) {
-        e.preventDefault();
-        premier.focus();
-      }
+      // --- équipes (it4) : fin ---
+      if (e.key !== "Escape") return;
+      // Modales empilées : seule celle du dessus se ferme.
+      const stack = document.querySelectorAll(".modal-backdrop");
+      if (stack[stack.length - 1] === backdrop.current) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => {

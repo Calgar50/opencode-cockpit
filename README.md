@@ -388,8 +388,8 @@ Créer, installer, modifier ou supprimer un assistant, enregistrer dans le Studi
 - Les réglages d'opencode (profils et fichier brut, en mode Avancé) et **Mettre à jour** des niveaux d'IA attendent toujours la fin des réponses, sans confirmation possible.
 
 Le cockpit installe aussi ses propres outils dans opencode (classement des archives, et l'IA de contrôle de la future « Autonome avec contrôle », qui n'est encore appelée par rien). Il ne le fait qu'en l'absence de réponse en cours ; sinon il réessaie 30 s plus tard, puis à intervalle doublé jusqu'à 5 minutes. **Diagnostic › Travail délégué et autonomie** donne leur état, par exemple « installation en attente d'un moment sans réponse en cours ; nouvel essai vers 10:42 ».
-
 <!-- équipes (it4) : début -->
+
 ## Équipes et carte des assistants
 
 > **Version 1.1 en préparation, non publiée.** Cette section décrit ce que le code du chantier contient déjà : faire travailler plusieurs assistants sur une même demande (**une équipe**), et voir sur une **carte** qui peut faire travailler qui. Les équipes s'utilisent aujourd'hui en **mode Avancé** ; en mode Simple, elles ne sont pas encore proposées : voir « Équipes en mode Simple » plus bas. La carte des assistants, elle, est ouverte dans les deux modes.
@@ -492,7 +492,6 @@ L'ouverture tient en **une ligne** du code (`app/server/wiring-eq.ts`), posée a
 - **L'estimation est faite par profils de taille**, pas sur votre demande réelle, jusqu'à ce que le cockpit ait assez de lancements pour prendre votre moyenne. Seul le plafond d'arrêt est une borne.
 - **Une étape ne relit pas une sortie trop longue : demandez-lui de chercher plus précisément.** Mesuré hors ligne sur opencode 1.18.30 : une recherche s'arrête d'elle-même à 100 correspondances, un fichier se lit par morceaux d'environ 50 Ko, et les sorties complètes qu'opencode enregistre pour les conversations sont **refusées** à une étape. Des recherches précises donnent de meilleurs avis que des recherches larges.
 - Le comportement sur GitHub Copilot réel (messages ajoutés sans réponse, limites de débit, facturation d'un appel interrompu) reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
-
 <!-- équipes (it4) : fin -->
 
 ## Suivi des coûts

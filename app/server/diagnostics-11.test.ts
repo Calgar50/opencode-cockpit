@@ -705,7 +705,12 @@ describe("Interface du portillon : garde-fous lus dans les sources", () => {
     for (const field of ["view.cible.nom", "view.cible.titre", "view.cible.mode", "view.ia.model"]) assert.ok(details.includes(`bounded(${field},`), field);
   });
 
+  // --- équipes (it4) : début ---
+  // Intitulé REMPLACÉ (il ne s'ajoute pas) : l'original de l'itération 1 est
+  // « avis du mode Simple : ni [Voir les équipes] ni équipe (Q5, option b) ; rien en mode Avancé ».
+  // La décision U1 du 19/09 remplace Q5 (b) : le texte court tient tant que les équipes sont fermées en Simple.
   it("avis du mode Simple : texte court et pas de [Voir les équipes] tant que les équipes sont fermées (U1) ; rien en mode Avancé", () => {
+    // --- équipes (it4) : fin ---
     const source = read("web/pages/chat/delegation/DelegationNotice.tsx").replace(/\/\/.*$/gm, "");
     // --- équipes (it4) : début ---
     // La décision U1 du 19/09 remplace Q5 (b) « jusqu'à L38 » : l'avis garde le TEXTE COURT tant que `ouvertesEnSimple`

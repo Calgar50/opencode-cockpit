@@ -139,8 +139,15 @@ const BRANCHEMENTS: Readonly<Record<string, readonly RegExp[]>> = {
     /\bCARTE_ELEMENT_ID\b/,
   ],
   "web/pages/chat/activity/Deroule.tsx": [/\bTeamDeroule\b/],
-  "web/pages/settings/BudgetTab.tsx": [/\bTeamsBudgetSettings\b/],
+  "web/pages/settings/BudgetTab.tsx": [/\bTeamsBudgetSettings\b/, /\bteamsDirty\b/, /\bsetTeamsDirty\b/],
   "server/web-animations.test.ts": [/pages\/chat\/team\b/, /pages\/assistants\/teams\b/, /pages\/assistants\/carte\b/, /assistants-tabs\.css/, /\bSCOPE_FILES\b/],
+  // Fichiers partagés écrits par les vagues suivantes (correction des écarts §2.2 FIN et §2.7 relevés par la revue
+  // d'itération 4) : leurs changements étaient hors balises, ils y sont maintenant, et ce test le garde.
+  "web/components/ui.tsx": [/\bpiegerLaTabulation\b/, /modal-focus\.ts/],
+  "server/test-support/fake-opencode.ts": [/\bFakeSkill\b/, /\bsetSkills\b/, /\bskills\(/, /\bMAXIMUM_STEPS_NOTICE\b/, /\bscriptWhen\b/, /\bhalted\b/, /\bwhenScripts\b/],
+  "server/croisements-it1-v5.test.ts": [/it\\d-\[a-z0-9\]/],
+  "server/diagnostics-11.test.ts": [/texte court et pas de/, /bouton seulement quand l'avis en porte un/],
+  "web/pages/chat/activity/activity.css": [/Défaut D2 du banc de la vague 4/, /team-launch\.css/],
 };
 
 describe("emplacements des équipes : balises (contrôles discriminants)", () => {
@@ -717,6 +724,15 @@ function perimeterSheets(): string[] {
 /** Au moins une déclaration sous @media (forced-colors: active) (bloc présent et non vide, commentaires ignorés). */
 const hasForcedColors = (css: string) => cssDeclarations(css).some(inForced);
 
+/**
+ * Propriétés qui portent une couleur, et qui sont donc reprises par le système en couleurs forcées. Une feuille qui n'en déclare
+ * AUCUNE n'a rien à dire sous `forced-colors: active` : lui demander un bloc reviendrait à écrire un bloc vide de sens. C'est le
+ * seul cas dispensé, et il est éprouvé par les contrôles discriminants ci-dessous ; dès qu'une couleur apparaît, le bloc redevient
+ * exigé.
+ */
+const COULEUR = /^(color|background|background-color|background-image|border(-(top|right|bottom|left))?(-color)?|border-color|outline|outline-color|box-shadow|text-shadow|fill|stroke|accent-color|caret-color|column-rule|column-rule-color|text-decoration|text-decoration-color|-webkit-text-fill-color|filter|backdrop-filter|opacity)$/;
+const declareUneCouleur = (css: string) => cssDeclarations(css).some((d) => COULEUR.test(d.prop));
+
 describe("emplacements des équipes : contraste forcé (U9, spécification §5.5 l.922)", () => {
   it("contrôles discriminants : bloc absent, vide ou en commentaire refusé ; périmètre des équipes et de la carte seulement", () => {
     assert.equal(hasForcedColors(".a { color: red; }"), false);
@@ -740,10 +756,27 @@ describe("emplacements des équipes : contraste forcé (U9, spécification §5.5
     }
   });
 
+  it("seule une feuille SANS aucune couleur est dispensée du bloc de couleurs forcées", () => {
+    // Une couleur déclarée → le bloc reste exigé, quelle que soit la propriété.
+    for (const css of [".a { color: red; }", ".a { border-bottom: 1px solid red; }", ".a { box-shadow: 0 0 2px red; }", ".a { fill: red; }"]) {
+      assert.equal(declareUneCouleur(css), true, css);
+    }
+    // Aucune couleur : rien à dire en couleurs forcées.
+    for (const css of ["@media (prefers-reduced-motion: reduce) { * { animation-iteration-count: 1 !important; } }", ".a { display: flex; gap: 6px; }"]) {
+      assert.equal(declareUneCouleur(css), false, css);
+    }
+  });
+
   it("chaque feuille des périmètres porte un bloc @media (forced-colors: active) (dès V0 : assistants-tabs.css)", () => {
     const sheets = perimeterSheets();
     assert.ok(sheets.includes("pages/assistants/assistants-tabs.css"), JSON.stringify(sheets));
-    const missing = sheets.filter((fichier) => !hasForcedColors(fs.readFileSync(path.join(WEB_DIR, fichier), "utf8")));
+    const missing = sheets.filter((fichier) => {
+      const css = fs.readFileSync(path.join(WEB_DIR, fichier), "utf8");
+      return declareUneCouleur(css) && !hasForcedColors(css);
+    });
     assert.deepEqual(missing, []);
+    // La dispense ne doit pas s'étendre en silence : la seule feuille sans couleur du périmètre est nommée ici.
+    const sansCouleur = sheets.filter((fichier) => !declareUneCouleur(fs.readFileSync(path.join(WEB_DIR, fichier), "utf8")));
+    assert.deepEqual(sansCouleur, ["pages/chat/team/mouvement-reduit.css"]);
   });
 });

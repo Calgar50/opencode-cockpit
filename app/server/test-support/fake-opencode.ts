@@ -302,11 +302,13 @@ export interface FakeCommand {
   source?: "command" | "mcp" | "skill";
 }
 
+// --- équipes (it4) : début ---
 /** Fiche de GET /skill (nom du dossier de la fiche et description de son en-tête), lue par AssistantService.fiches(). */
 export interface FakeSkill {
   name: string;
   description?: string;
 }
+// --- équipes (it4) : fin ---
 
 /** IA d'un fournisseur de GET /config/providers (Provider.Model, provider/provider.ts:1078-1093). */
 export interface FakeModel {
@@ -693,8 +695,10 @@ export class FakeOpencode {
   readonly #agents = new Map<string, FakeAgent[]>();
   #defaultCommands: FakeCommand[] = [];
   readonly #commands = new Map<string, FakeCommand[]>();
+  // --- équipes (it4) : début ---
   #defaultSkills: FakeSkill[] = [];
   readonly #skills = new Map<string, FakeSkill[]>();
+  // --- équipes (it4) : fin ---
   readonly #todos = new Map<string, FakeTodo[]>();
   /** Diffs par « session » ou « session/message ». */
   readonly #diffs = new Map<string, FakeFileDiff[]>();
@@ -833,6 +837,7 @@ export class FakeOpencode {
     else this.#commands.set(directory, jsonClone(commands));
   }
 
+  // --- équipes (it4) : début ---
   /**
    * Fiches de GET /skill dans ce dossier : liste propre au dossier, sinon liste par défaut (vide). Le vrai opencode sert cette
    * route ; le faux répondait 404 « Route inconnue », et le Studio, qui vérifie l'écriture d'une fiche par cette route
@@ -848,6 +853,7 @@ export class FakeOpencode {
     if (directory === undefined) this.#defaultSkills = jsonClone(skills);
     else this.#skills.set(directory, jsonClone(skills));
   }
+  // --- équipes (it4) : fin ---
 
   todos(sessionID: string): FakeTodo[] {
     return this.#todos.get(sessionID) ?? [];
@@ -1089,9 +1095,11 @@ export class FakeOpencode {
     }
     if (is("GET", "agent")) return json(200, this.agents(directory));
     if (is("GET", "command")) return json(200, this.commands(directory));
+    // --- équipes (it4) : début ---
     // Le vrai opencode sert la liste des fiches ; c'est aussi la route que le Studio appelle pour vérifier l'écriture d'une
     // fiche (VERIFY_ROUTE.skills). Défaut D5 du banc de la vague 4 (arbitrage A13).
     if (is("GET", "skill")) return json(200, this.skills(directory));
+    // --- équipes (it4) : fin ---
     if (is("GET", "config")) return json(200, this.effectiveConfig(directory));
     // Chemins de l'instance, forme relevée par MX1 (utilisateur node de l'image) ; worktree « / » hors git.
     if (is("GET", "path")) {

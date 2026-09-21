@@ -43,6 +43,7 @@ import type { StudioService } from "./studio.ts";
 import type { TierService } from "./tiers.ts";
 import { EQ_MODULES, EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
 import { sectionsDeLaListe } from "../web/pages/assistants/carte/carte-model.ts";
+import { piegerLaTabulation } from "../web/components/modal-focus.ts";
 import { TeamRunsCache, type TeamRunsDeps, useTeamRuns } from "../web/pages/chat/team/useTeamRuns.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
@@ -240,14 +241,18 @@ describe("croisements it4 V4 — D2 corrigé en amont, dans la saisie, et le mou
     assert.match(activite, /La correction est donc chez le\s+lanceur/);
   });
 
-  it("mouvement réduit : aucune animation ne tourne sans fin (nombre de répétitions ramené à 1)", () => {
+  it("mouvement réduit : aucune animation ne tourne sans fin (nombre de répétitions ramené à 1), et la règle est chez la branche", () => {
     const styles = fs.readFileSync(path.join(APP_DIR, "web/styles.css"), "utf8");
-    assert.match(
-      styles,
-      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation-duration: 0\.01ms !important;\s*animation-iteration-count: 1 !important;\s*transition-duration: 0\.01ms !important;/,
-    );
+    // La remise à zéro de l'itération 1 est INTACTE : `styles.css` est « jamais écrit par cette branche » (§2.7).
+    assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*\*,\s*\*::before,\s*\*::after \{\s*animation-duration: 0\.01ms !important;\s*transition-duration: 0\.01ms !important;\s*\}\s*\}/);
+    assert.ok(!/animation-iteration-count/.test(styles), "la règle des équipes n'est pas écrite dans le fichier partagé");
     // La pastille d'une réponse en cours est bien une animation sans fin : c'est elle que la règle arrête.
     assert.match(styles, /\.dot\.pulse \{\s*animation: pulse [\d.]+s ease-in-out infinite;/);
+    // La règle vit dans une feuille de la branche, chargée par une vue d'équipe du fil, donc toujours dans le paquet.
+    const feuille = fs.readFileSync(path.join(APP_DIR, "web/pages/chat/team/mouvement-reduit.css"), "utf8");
+    assert.match(feuille, /@media \(prefers-reduced-motion: reduce\) \{\s*\*,\s*\*::before,\s*\*::after \{\s*animation-iteration-count: 1 !important;\s*\}\s*\}/);
+    assert.match(feuille, /execution\/constats-V4\.md/, "l'écart est consigné là où la prochaine main le relira");
+    assert.match(fs.readFileSync(path.join(APP_DIR, "web/pages/chat/team/TeamRunCards.tsx"), "utf8"), /import "\.\/mouvement-reduit\.css";/);
   });
 });
 
@@ -411,16 +416,162 @@ describe("croisements it4 V4 — D5 : le faux opencode sert GET /skill, que le S
 
 // --- D6 : la boîte de dialogue retient la tabulation ---------------------------------------------------------------------------
 
-describe("croisements it4 V4 — D6 : le focus reste dans la boîte de dialogue", () => {
-  it("la tabulation boucle aux deux extrémités, Échap rend le focus et le piège ne vise que la boîte du dessus", () => {
+/**
+ * Nœud minimal du DOM : exactement ce que le piège demande, et rien de plus (aucune dépendance de test n'est ajoutée, P8).
+ * `Node` global est posé sur cette classe pendant l'essai, pour l'`instanceof` du piège à focus.
+ */
+class NoeudEssai {
+  focus_recu = 0;
+  readonly enfants: NoeudEssai[] = [];
+  readonly nom: string;
+  readonly focalisable: boolean;
+  private readonly attributs: Record<string, string>;
+  private readonly visible: boolean;
+  constructor(nom: string, focalisable = false, attributs: Record<string, string> = {}, visible = true) {
+    this.nom = nom;
+    this.focalisable = focalisable;
+    this.attributs = attributs;
+    this.visible = visible;
+  }
+  hasAttribute(nom: string): boolean {
+    return Object.hasOwn(this.attributs, nom);
+  }
+  getAttribute(nom: string): string | null {
+    return this.attributs[nom] ?? null;
+  }
+  get offsetWidth(): number {
+    return this.visible ? 10 : 0;
+  }
+  get offsetHeight(): number {
+    return this.visible ? 10 : 0;
+  }
+  focus(): void {
+    this.focus_recu += 1;
+  }
+  contains(autre: unknown): boolean {
+    return autre === this || this.enfants.includes(autre as NoeudEssai);
+  }
+  querySelectorAll(_selecteur: string): NoeudEssai[] {
+    return this.enfants.filter((enfant) => enfant.focalisable);
+  }
+  querySelector(_selecteur: string): NoeudEssai | null {
+    return this.enfants.find((enfant) => enfant.focalisable) ?? null;
+  }
+}
+
+interface DomEssai {
+  /** `document.activeElement` : l'élément qui a le focus au moment de la touche. */
+  actif: NoeudEssai | null;
+  /** Les fonds de boîte empilés, dans l'ordre du document (`document.querySelectorAll(".modal-backdrop")`). */
+  pile: NoeudEssai[];
+  /** Le document servi au piège pendant l'essai. */
+  document: Document;
+}
+
+/** Pose `Node` (pour l'`instanceof`) le temps de `corps`, et le remet exactement comme il était. */
+function avecDomMinimal<T>(corps: (dom: DomEssai) => T): T {
+  const global = globalThis as Record<string, unknown>;
+  const avantNode = global.Node;
+  const nodePresent = "Node" in global;
+  global.Node = NoeudEssai;
+  const dom = {
+    actif: null as NoeudEssai | null,
+    pile: [] as NoeudEssai[],
+  } as DomEssai;
+  dom.document = {
+    get activeElement() {
+      return dom.actif;
+    },
+    querySelectorAll: (selecteur: string) => (selecteur === ".modal-backdrop" ? dom.pile : []),
+  } as unknown as Document;
+  try {
+    return corps(dom);
+  } finally {
+    if (nodePresent) global.Node = avantNode;
+    else delete global.Node;
+  }
+}
+
+const toucheEssai = (key: string, options: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {}) => {
+  const e = { key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...options, empeche: 0, preventDefault: () => void (e.empeche += 1) };
+  return e;
+};
+
+/** Le piège, appelé comme `Modal` l'appelle : `piegerLaTabulation(e, panel.current, backdrop.current)`. */
+const frapper = (dom: DomEssai, boite: NoeudEssai, fond: NoeudEssai, touche: ReturnType<typeof toucheEssai>) => {
+  piegerLaTabulation(touche, boite as unknown as HTMLElement, fond as unknown as Element, dom.document);
+  return touche;
+};
+
+describe("croisements it4 V4 — D6 : le piège à focus des boîtes de dialogue, monté", () => {
+  it("la tabulation boucle aux deux extrémités, ne touche à rien au milieu, et ne vise que la boîte du dessus", () => {
+    avecDomMinimal((dom) => {
+      const lanceur = new NoeudEssai("lanceur", true);
+      const premier = new NoeudEssai("premier", true);
+      const milieu = new NoeudEssai("milieu", true);
+      const dernier = new NoeudEssai("dernier", true);
+      const boite = new NoeudEssai("boite");
+      boite.enfants.push(premier, milieu, dernier);
+      const fond = new NoeudEssai("fond");
+      dom.pile = [fond];
+
+      // 1. Tabulation depuis le DERNIER : elle revient au premier au lieu de sortir derrière la boîte (c'est le défaut D6).
+      dom.actif = dernier;
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Tab")).empeche, 1, "la tabulation qui sortirait de la boîte est retenue");
+      assert.equal(premier.focus_recu, 1, "le focus revient au premier élément");
+
+      // 2. Maj+Tabulation depuis le PREMIER : elle va au dernier.
+      dom.actif = premier;
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Tab", { shiftKey: true })).empeche, 1);
+      assert.equal(dernier.focus_recu, 1, "Maj+Tab depuis le premier va au dernier");
+
+      // 3. Au MILIEU, le piège ne fait rien : l'ordre de tabulation à l'intérieur de la boîte ne change pas.
+      dom.actif = milieu;
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Tab")).empeche, 0, "la tabulation entre deux éléments de la boîte n'est pas touchée");
+      assert.equal(premier.focus_recu, 1);
+
+      // 4. Focus égaré HORS de la boîte (c'est ce que faisait la tabulation avant D6) : il y est ramené.
+      dom.actif = lanceur;
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Tab")).empeche, 1);
+      assert.equal(premier.focus_recu, 2, "un focus parti derrière la boîte y est ramené");
+
+      // 5. Raccourcis du navigateur (Ctrl, Alt, Cmd) et autres touches : jamais touchés.
+      dom.actif = dernier;
+      for (const options of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+        assert.equal(frapper(dom, boite, fond, toucheEssai("Tab", options)).empeche, 0, `Tab + ${JSON.stringify(options)} laissé au navigateur`);
+      }
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Escape")).empeche, 0, "le piège ne connaît qu'une touche : Tab");
+
+      // 6. Une boîte EMPILÉE au-dessus : celle du dessous ne retient plus rien (même règle qu'Échap).
+      dom.pile = [fond, new NoeudEssai("fond-2")];
+      dom.actif = dernier;
+      assert.equal(frapper(dom, boite, fond, toucheEssai("Tab")).empeche, 0, "seule la boîte du dessus retient la tabulation");
+
+      // 7. Boîte sans rien à focaliser : le focus se pose sur elle, jamais derrière.
+      dom.pile = [fond];
+      const vide = new NoeudEssai("boite-vide");
+      dom.actif = lanceur;
+      assert.equal(frapper(dom, vide, fond, toucheEssai("Tab")).empeche, 1);
+      assert.equal(vide.focus_recu, 1);
+    });
+  });
+
+  it("Modal n'envoie à ce piège que la tabulation, et Échap rend le focus au lanceur comme à l'itération 1", () => {
     const code = fs.readFileSync(path.join(APP_DIR, "web/components/ui.tsx"), "utf8");
-    assert.match(code, /const FOCUSABLES =/);
-    assert.match(code, /if \(e\.key !== "Tab" \|\| e\.altKey \|\| e\.ctrlKey \|\| e\.metaKey \|\| !dessus\(\)\) return;/);
-    assert.match(code, /if \(e\.shiftKey && \(actif === premier \|\| actif === boite \|\| dehors\)\) \{\s*e\.preventDefault\(\);\s*dernier\.focus\(\);/);
-    assert.match(code, /\} else if \(!e\.shiftKey && \(actif === dernier \|\| dehors\)\) \{\s*e\.preventDefault\(\);\s*premier\.focus\(\);/);
-    // Échap et le retour du focus à l'élément d'avant restent ceux de l'itération 1.
-    assert.match(code, /if \(e\.key === "Escape"\) \{\s*if \(dessus\(\)\) onClose\(\);/);
+    // Le changement de D6 touche TOUTES les boîtes de dialogue : dans ce fichier partagé, il tient en un branchement balisé.
+    assert.match(
+      code,
+      /\/\/ --- équipes \(it4\) : début ---[\s\S]*?if \(e\.key === "Tab"\) \{\s*piegerLaTabulation\(e, panel\.current, backdrop\.current\);\s*return;\s*\}\s*\/\/ --- équipes \(it4\) : fin ---/,
+    );
+    assert.match(code, /\/\/ --- équipes \(it4\) : début ---\s*import \{ piegerLaTabulation \} from "\.\/modal-focus\.ts";\s*\/\/ --- équipes \(it4\) : fin ---/);
+    // Échap et le retour du focus à l'élément d'avant restent ceux de l'itération 1, hors balises, inchangés.
+    assert.match(code, /if \(e\.key !== "Escape"\) return;\s*\/\/ Modales empilées : seule celle du dessus se ferme\.\s*const stack = document\.querySelectorAll\("\.modal-backdrop"\);/);
     assert.match(code, /previous\?\.focus\?\.\(\);/);
+    // Éprouvé de bout en bout dans un vrai navigateur par `it4-captures` : les DOUZE tabulations restent dans la feuille de
+    // lancement, Échap la ferme et rend le focus au lanceur. L'assertion du banc exigeait « au moins une » ; elle exige les 12.
+    const scenario = lire(path.join("e2e", "scenarios", "it4-captures.mjs"));
+    assert.match(scenario, /exiger\(dedans === 12, `le focus sort de la feuille de lancement au clavier : \$\{dedans\}\/12 tabulations dedans\.`\)/);
+    assert.match(scenario, /exiger\(rendu === lanceur, `le focus n'est pas rendu au lanceur après la fermeture/);
   });
 });
 

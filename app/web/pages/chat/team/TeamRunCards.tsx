@@ -20,6 +20,9 @@ import { TeamRunCard } from "./TeamRunCard.tsx";
 import { buildTeamRunCard, etapeResultat, verrouDe } from "./team-view-model.ts";
 import { teamRunsCache, useTeamRuns } from "./useTeamRuns.ts";
 import "./team-cards.css";
+// Remise à zéro du mouvement réduit dont les vues d'équipe ont besoin, et qui est globale : voir l'en-tête de la feuille (elle
+// est à reloger dans web/styles.css par une demande de contrat au train, ce fichier étant hors de cette branche).
+import "./mouvement-reduit.css";
 
 // `directory` n'est pas lu ici : les lancements portent déjà leur dossier, et aucun chemin n'est écrit dans le document.
 export function TeamRunCards({ rootId, advanced, onOpenSession, onLockChange }: TeamRunCardsProps) {

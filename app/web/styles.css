@@ -1598,16 +1598,11 @@ kbd,
   border-radius: 0 4px 4px 0;
 }
 
-/* Mouvement réduit : la durée seule ne suffit pas. Une animation « infinite » (la pastille .dot.pulse d'une réponse en cours)
-   continue de tourner, sans fin, même à 0,01 ms : elle reste comptée comme un mouvement en cours et ne s'arrête jamais. Le
-   nombre de répétitions est donc ramené à 1, comme le veut la remise à zéro habituelle du mouvement réduit. Relevé par le banc
-   de la vague 4 de l'itération 4 (it4-captures : « 2 animations en cours malgré le mouvement réduit »). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
