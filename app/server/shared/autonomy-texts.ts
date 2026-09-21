@@ -447,7 +447,7 @@ export function phraseRetour(cause: ChoiceCause): string | null {
 }
 
 /** Fins d'une demande de la Salle OMO (itération 2 ter) : sans phrase ici. */
-export type OmoRequestEnd = "hors-controle" | "homme-mort" | "recreation" | "plafond-tentatives" | "plafond-sessions";
+export type OmoRequestEnd = "hors-controle" | "homme-mort" | "recreation" | "plafond-tentatives" | "plafond-sessions" | "seuil-mensuel";
 
 /** Phrase de fin d'une demande autonome de l'instance principale ; plafonds : phrase du plafond, avec ses chiffres. */
 export function phraseFin(fin: Exclude<RequestEnd, OmoRequestEnd>, demande: Pick<AutonomyRequestView, "spent" | "plafonds">): string {

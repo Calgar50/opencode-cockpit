@@ -36,8 +36,12 @@ export interface ActivityFact {
   at: number;
 }
 
-/** `data.cause` d'un fait « statut » écrit par un arrêt, un plafond, « Passé sans contrôle » ou un redémarrage d'opencode. */
-export type StatutCause = "arret" | "plafond" | "non-controle" | "interrompue";
+/**
+ * `data.cause` d'un fait « statut » écrit par un arrêt, un plafond, « Passé sans contrôle » ou un redémarrage d'opencode.
+ * « hors-controle » (D-2b-41) : arrêt de la Salle OMO après une détection ; les lecteurs de l'instance principale ne la
+ * connaissent pas et restent muets plutôt que d'inventer une phrase (P3).
+ */
+export type StatutCause = "arret" | "plafond" | "non-controle" | "interrompue" | "hors-controle";
 
 /**
  * Forme de `data` d'un fait « statut » posé par un arrêt ou un plafond. stopTree (L1c) y ajoute `motif` (la StopCause de l'arrêt :

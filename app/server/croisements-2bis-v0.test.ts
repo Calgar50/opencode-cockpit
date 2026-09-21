@@ -547,7 +547,11 @@ describe("croisements 2bis V0 : tous les modules installés, la salle reste abse
         const rel = entree.replaceAll("\\", "/");
         const nom = path.posix.basename(rel);
         if (!/\.tsx?$/u.test(nom) || /\.test\.tsx?$/u.test(nom) || rel.startsWith("test-support/") || MODULES_SALLE_V0.has(nom)) continue;
-        const source = fs.readFileSync(path.join(appDir, top, entree), "utf8");
+        const brut = fs.readFileSync(path.join(appDir, top, entree), "utf8");
+        // « import type … ; » est effacé à la compilation : il ne fait entrer AUCUN code de la salle dans le produit, et un
+        // contrat de types partagé (omo-types.ts) peut donc être cité par une signature de l'instance principale (T3c, D-2b-41).
+        // Tout autre import reste interdit hors de la vague.
+        const source = brut.replace(/\bimport\s+type\s[^;]*?;/gu, "");
         // « from "x" », « import "x" » (effet de bord seul) et « import("x") ».
         for (const trouve of source.matchAll(/\bfrom\s*["']([^"']+)["']|\bimport\s*\(?\s*["']([^"']+)["']/gu)) {
           const cible = path.posix.basename(trouve[1] ?? trouve[2] ?? "");
