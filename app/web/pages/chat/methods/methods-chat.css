@@ -169,6 +169,18 @@
   font-size: 0.85rem;
 }
 
+/* La puce prend environ 100 px dans la barre du composeur, pris aux réglages d'IA, qui partagent la même ligne. Mesuré à
+   1440 × 900, une demande en attente en mode Avancé : le sélecteur de niveau passait de 82 à 122 px de haut et la ligne de
+   l'IA de 94 à 119, soit une barre de 196 à 260 px ; la colonne prend ces 64 px à la région « Qui travaille ? » (250 → 187),
+   dont la bande tombe de 104 à 40 px — l'attente de votre accord passait alors SOUS le bandeau, contre la clôture de
+   l'itération 1 (spéc. §5.7.1 ; scénarios it1-ui-mise-en-page et it1-ui-delegation).
+   Quand la puce est là, les réglages d'IA prennent donc toute la largeur de la barre, qui enroule déjà ses éléments
+   (`flex-wrap: wrap`, chat.css), et les boutons passent dessous : à pleine largeur ils enroulent moins, et la barre est plus
+   basse qu'avant la puce. Rien n'est retiré, rien n'est réduit. */
+.composer-toolbar:has(> .methodes-puce) > .composer-ia {
+  flex-basis: 100%;
+}
+
 /* Sous 480 px, la puce est trop près du bord droit pour porter le popover : ancré sur elle, il commencerait à 1 px du bord
    gauche. Il se pose donc sur le COMPOSEUR (`position: relative` déjà posé dans chat.css), comme `.composer .popover`, et
    reste à 16 px de ses deux bords. `.methodes-puce` redevient statique : le composeur devient le bloc conteneur. */

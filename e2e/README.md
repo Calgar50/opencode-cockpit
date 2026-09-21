@@ -240,6 +240,8 @@ console muette :
 ```sh
 scripts/run-e2e.sh --faux --scenarios c5a- --project-prefix c511-e2e --image-tag c511
 scripts/run-e2e.sh --reel-hors-ligne --dry-run --scenarios c5a- --project-prefix c511-e2e --image-tag c511
+# Répétition générale, MC5-1 sur le code réel (projets c511-rg-*, E2E_MESURES_DIR = dossier des mesures) :
+scripts/run-e2e.sh --reel-hors-ligne --scenarios c5a-mc5-reel --project-prefix c511-rg --image-tag c511
 ```
 
 **Le préfixe `c511-e2e` est obligatoire** : le préfixe par défaut `cockpit-e2e` est celui du banc de l'itération 1-2,
@@ -251,6 +253,7 @@ qui tourne en même temps sur une autre branche. Le nettoyage ne vise que `c511-
 | `c5a-seconde-lecture.mjs` | Relecteur absent : la phrase et [Installer], aucun montant ; installation au clic par le catalogue ; bouton « Seconde lecture (≈ … $) » sans « au moins », infobulle qui nomme l'IA du Relecteur puis la base de l'estimation ; au clic, UN seul envoi, avec l'agent du Relecteur et la phrase exacte du §4.3 ; pied « Relecture par un autre assistant … » ; à la réouverture, le composeur a gardé l'assistant précédent |
 | `c5a-chronologie.mjs` | en Avancé : bascule « Déroulé \| Chronologie » (radiogroup, un seul bouton dans l'ordre de tabulation), lignes, colonne « Jetons (entrée / sortie / cache) », repères d'outil, curseur « maintenant » PENDANT le travail ; à 400 px la figure disparaît et le tableau reste seul ; en Simple : aucune bascule, aucune chronologie, et le mot « jeton » nulle part |
 | `c5a-a11y.mjs` | banc de captures d'accessibilité : six vues (bibliothèque, écran « Consignes et fiches », popover de la puce, bulle, chronologie, Coûts par équipe vides) × 3 modes × 2 thèmes × 3 tailles = 108 fichiers ; mouvement réduit vérifié par un relevé DISCRIMINANT sur la transition de la carte de la bande néon (la seule animation que le réglage commande) : la même action, un second tour envoyé pendant que la carte est affichée, anime la carte en mode normal (au moins une animation en cours, relevée sans délai) et ne l'anime plus en mouvement réduit (zéro, le réglage vu par `matchMedia` dans la page), puis plus rien ne tourne au repos ; en contraste forcé, focus visible, c'est-à-dire un contour réellement dessiné (`:focus-visible` seul ne suffit pas) |
+| `c5a-mc5-reel.mjs` | **répétition générale, `--reel-hors-ligne` seulement** (non joué en `--faux`) : MC5-1 rejouée sur le CODE RÉEL avec un vrai opencode 1.18.30 et le faux fournisseur hors ligne. Dans une seule conversation : envoi à « Analyser un incident » (204 sans corps), puis au « Relecteur critique » — invite système différente et tout l'historique transmis —, puis de nouveau au premier assistant, qui retrouve SON invite système (le Relecteur ne colle pas à la session) ; `agent` sur chaque message de `GET /session/:id/message`, messages `user` compris ; `GET /api/chat/choices/:id` rend l'assistant précédent (ligne `chat_turns` requalifiée, D-5-06). Les parties d'outil de MC5-1 ne sont pas rejouées ici : le faux fournisseur ne répond que du texte — ce point reste tenu par la mesure MC5 elle-même. |
 
 ### Banc de captures d'accessibilité (`e2e/lib/a11y.mjs`)
 

@@ -166,6 +166,33 @@ const TAILLES_POPOVER = [
 const MARGE_POPOVER = 16;
 
 /**
+ * Attend que la page soit REMISE EN PAGE après `page.taille()`. `Emulation.setDeviceMetricsOverride` rend la main dès que
+ * le navigateur a pris la nouvelle taille : `window.innerWidth` et les requêtes de média disent déjà la nouvelle valeur,
+ * alors que la grille de la coquille (`.app`) porte encore les colonnes de la taille précédente. Mesuré à 400 px : la
+ * grille valait « 208px 192px » (le rail de 1024 px) pendant que `--rail` valait déjà 60 px ; la colonne de la
+ * conversation ne faisait que 192 px au lieu de 340 et la ligne de l'IA, qui ne peut pas rétrécir autant, la faisait
+ * déborder de 112 px. Le scénario accusait alors le popover d'un débordement qui n'était pas le sien.
+ *
+ * La condition est celle de la coquille elle-même, sans recopier aucune valeur de `styles.css` : la première colonne de
+ * `.app` vaut `--rail` (le rail de la taille COURANTE), et les deux colonnes remplissent la fenêtre. Une taille stale
+ * échoue à l'une ou à l'autre : 208 ≠ 60 en descendant à 400 px, 208 + 1232 ≠ 1024 en descendant de 1440 à 1024.
+ */
+async function attendreLaRemiseEnPage(page, taille) {
+  await page.attendreQue(
+    `(() => {
+      const app = document.querySelector(".app");
+      if (!app) return false;
+      const style = getComputedStyle(app);
+      const colonnes = style.gridTemplateColumns.split(" ").map((v) => Math.round(parseFloat(v)));
+      if (colonnes.length !== 2 || colonnes.some((v) => !Number.isFinite(v))) return false;
+      const rail = Math.round(parseFloat(style.getPropertyValue("--rail")));
+      return colonnes[0] === rail && colonnes[0] + colonnes[1] === ${taille.largeur} && window.innerWidth === ${taille.largeur};
+    })()`,
+    { libelle: `coquille remise en page à ${taille.largeur} px` },
+  );
+}
+
+/**
  * Géométrie du popover ouvert : ses bords, la largeur de la fenêtre et le défilement horizontal de la colonne de la
  * conversation. Un menu qui déborde à droite n'a aucun attribut pour le dire — il faut le mesurer.
  */
@@ -175,11 +202,24 @@ async function geometrieDuPopover(page) {
     if (!menu) return null;
     const bords = menu.getBoundingClientRect();
     const colonne = document.querySelector(".chat-center");
+    // Ce qui déborde, nommé : un défilement horizontal n'est pas forcément dû au popover (mesuré : la ligne de l'IA
+    // débordait d'une colonne encore à la taille précédente). Sans ces noms, le scénario accuse le mauvais élément.
+    const debords = [];
+    if (colonne) {
+      const cadre = colonne.getBoundingClientRect();
+      for (const e of colonne.querySelectorAll("*")) {
+        const r = e.getBoundingClientRect();
+        if (r.width > 0 && (r.right > cadre.left + colonne.clientWidth + 1 || r.left < cadre.left - 1)) {
+          debords.push(\`\${e.tagName}.\${e.className || "—"} \${Math.round(r.left)}→\${Math.round(r.right)}\`);
+        }
+      }
+    }
     return {
       gauche: Math.round(bords.left),
       droite: Math.round(bords.right),
       fenetre: window.innerWidth,
       defilement: colonne ? Math.round(colonne.scrollWidth - colonne.clientWidth) : 0,
+      debords: debords.slice(0, 6),
     };
   })()`);
 }
@@ -368,6 +408,7 @@ export async function run(ctx) {
   //    ENTIÈREMENT, sans faire défiler la colonne de la conversation. Les attributs ARIA n'en disent rien.
   for (const taille of TAILLES_POPOVER) {
     await page.taille(taille);
+    await attendreLaRemiseEnPage(page, taille);
     await ouvrirPopoverAuClavier(page);
     const geo = await geometrieDuPopover(page);
     releve(ctx, `popover à ${taille.largeur} px : ${JSON.stringify(geo)}`);
@@ -377,7 +418,10 @@ export async function run(ctx) {
       geo.droite <= geo.fenetre - MARGE_POPOVER,
       `popover hors de la fenêtre à ${taille.largeur} px : bord droit à ${geo.droite} px pour une fenêtre de ${geo.fenetre} px.`,
     );
-    exiger(geo.defilement === 0, `la conversation défile de ${geo.defilement} px horizontalement, popover ouvert à ${taille.largeur} px.`);
+    exiger(
+      geo.defilement === 0,
+      `la conversation défile de ${geo.defilement} px horizontalement, popover ouvert à ${taille.largeur} px (déborde : ${resume(geo.debords)}).`,
+    );
     await page.touche("Escape");
     await page.attendreQue("!document.querySelector('.methodes-menu')", { libelle: `popover fermé à ${taille.largeur} px` });
   }
