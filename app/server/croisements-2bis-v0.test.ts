@@ -514,6 +514,12 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * — sans quoi le service branché, désormais parcouru comme un fichier de production, serait pris en faute pour ses propres
  * importations. Les modules de comportement de la salle (pré-contrôle, plafonds, détections, egress, audit, superviseur) restent
  * interdits d'importation : ils arrivent en V3 et V4.
+ *
+ * L18c (V3) a branché les salles (`omo-room.ts`, `routes-omo.ts`) : `GET /api/omo/status` lit le journal des sorties refusées
+ * (`egress-journal.ts`, fiche L18c), l'hôte autorisé d'`egress` (`egress-allow.ts`, que le journal importe lui-même) et la
+ * version auditée de l'extension (`omo-audit-4.19.4.ts`, et donc `shared/omo-roles.ts` qu'elle importe). Ces quatre noms sortent
+ * de la liste, comme `omo-control.ts` et ses modules en sont sortis au train de V2 : ils sont désormais parcourus comme des
+ * fichiers de production. `egress-proxy.ts` y reste : rien ne l'importe hors de son propre lancement.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
@@ -526,12 +532,8 @@ const MODULES_SALLE_V0 = new Set([
   "omo-detections.ts",
   "omo-precheck-rules.ts",
   "omo-precheck-reader.ts",
-  "egress-allow.ts",
   "egress-proxy.ts",
-  "egress-journal.ts",
-  "omo-audit-4.19.4.ts",
   "omo-audit-texts.ts",
-  "omo-roles.ts",
   "supervisor-lib.mjs",
 ]);
 
