@@ -59,6 +59,11 @@
 // (trois, et non deux) et la tête sur laquelle le banc a été joué (`28823b6`, celle d'avant les commits de documentation de
 // la clôture). Aucune garde n'est ajoutée pour elles : un test ne peut savoir ni combien de fois `npm test` a été lancé, ni
 // sur quel commit le banc a tourné ; une garde qui s'en donnerait l'air ne tomberait sur aucune des deux phrases fautives.
+// Note du quatrième tour : ces deux phrases se périmaient EN S'ÉCRIVANT (« les deux commits de documentation » en comptait
+// trois dès le commit suivant ; « joués trois fois » cessait d'être vrai au passage d'après). Le §10 ne compte donc plus ni
+// les commits de documentation ni les passages de `npm test` : il nomme la tête `28823b6`, « la dernière où le code de
+// l'application ait changé », et dit « le même compte à chaque passage complet ». Il consigne aussi qu'un fichier de test
+// peut tomber en bloc au démarrage quand la machine est chargée, sans sous-test rouge : fragilité du poste, pas du code.
 // Ce qui EST gardé ici reste le verdict du banc et les comptes datés (constats 14 et 15).
 // Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
 // `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
@@ -116,7 +121,7 @@ const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB", "1 675,
 const TESTS_PERIMES = ["2 029", "2 033", "2 023", "2 069", "2 070"] as const;
 
 /**
- * Verdict du banc COMPLET rejoué sur la tête `28823b6`, celle d'avant les deux commits de documentation de la clôture et la
+ * Verdict du banc COMPLET rejoué sur la tête `28823b6`, la
  * dernière où le code de l'application ait changé, la correction du débit comprise (journal du rejeu : « Banc e2e :
  * 23 scénario(s), aucun échec », code de sortie 0), et débit M20 relevé tenu en 3D comme en repli 2D aux trois passages du
  * même jour (banc complet, puis `it3-debit` rejoué seul deux fois). Même règle que les tailles de `MESURES_TRAIN` : toute
@@ -617,7 +622,7 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
     }
 
     // Constat de la revue d'itération 3, l'autre moitié : la l.1176 (M20, « run-e2e.sh sortie 0 ») était donnée « en attente »
-    // alors que le banc, rejoué sur CETTE version du code, l'avait mesurée verte. Même idiome que `MESURES_TRAIN` pour les
+    // alors que le banc, rejoué sur la tête `28823b6`, l'avait mesurée verte. Même idiome que `MESURES_TRAIN` pour les
     // tailles : le verdict du banc du train est épinglé ici, et le §10 comme le §11 doivent le dire.
     const limites = sections3d(recap).find((bloc) => bloc.contenu.includes("Recettes en attente"));
     assert.ok(limites, "§11 : section [3d] des limites de l'itération 3 introuvable");
