@@ -1,6 +1,10 @@
 // Suivi local des sessions opencode : parenté (sous-agents) et session racine.
+// 1.1, Salle OMO (L18a) : une session appartient à UNE instance (colonne `instance`, migration 5). L'instance est posée à
+// l'insertion et jamais réécrite ; un identifiant déjà suivi par l'autre instance est REFUSÉ, journalisé et annoncé
+// (onInstanceConflict, lu par les détections de la salle). Chaque instance interroge opencode avec SON client (useClient).
 import type { DatabaseSync } from "node:sqlite";
 import { params } from "./db.ts";
+import { errorMessage, type Logger } from "./log.ts";
 import type { OcSession, OpencodeClient } from "./opencode.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
 import { CLASSIFIER_TITLE } from "./shared/session-purpose.ts";
@@ -42,6 +46,23 @@ export interface SessionRow {
 const STICKY_PURPOSES: readonly SessionPurpose[] = ["classifier", "equipe", "controle"];
 
 /**
+ * Conflit d'identifiant entre instances (1.1, P11) : une session déjà suivie par une instance a été présentée par l'autre.
+ * Rien n'est écrit ; le conflit est annoncé aux abonnés (détections de la Salle OMO, §4.14.5).
+ */
+export interface SessionInstanceConflict {
+  sessionId: string;
+  /** Instance enregistrée à l'insertion, gardée. */
+  enregistree: SessionInstance;
+  /** Instance dont l'écriture est refusée. */
+  refusee: SessionInstance;
+}
+
+export interface SessionTrackerOptions {
+  /** Journal du refus d'un conflit d'instance ; absent : rien n'est journalisé (tests d'unité). */
+  log?: Pick<Logger, "warn">;
+}
+
+/**
  * Usage propre d'une session (sans l'héritage du parent). Le titre ne vaut que s'il est exactement CLASSIFIER_TITLE, pour une
  * racine, et quand `byTitle` est vrai (session encore inconnue, voir upsert) : les sessions de classement sont des racines créées
  * par le serveur (classifier.ts), alors que le titre d'une conversation est écrit par l'IA de titre d'opencode d'après le premier
@@ -58,15 +79,60 @@ export function purposeOf(info: Pick<OcSession, "title" | "metadata">, parentId:
 
 export class SessionTracker {
   readonly #db: DatabaseSync;
-  readonly #client: OpencodeClient;
+  /** Client par instance ; celui du constructeur sert toute instance dont aucun client propre n'a été posé (1.0.x). */
+  readonly #clients = new Map<SessionInstance, OpencodeClient>();
+  readonly #log: Pick<Logger, "warn"> | undefined;
+  readonly #conflicts = new Set<(conflit: SessionInstanceConflict) => void>();
 
-  constructor(db: DatabaseSync, client: OpencodeClient) {
+  constructor(db: DatabaseSync, client: OpencodeClient, options: SessionTrackerOptions = {}) {
     this.#db = db;
-    this.#client = client;
+    this.#clients.set("principale", client);
+    this.#log = options.log;
+  }
+
+  /**
+   * Pose le client d'une instance. `instance-runtime.ts` (L18a) pose celui de la Salle OMO au moment où l'instance est
+   * construite : une session de la salle n'est alors JAMAIS demandée à l'instance principale, et inversement.
+   */
+  useClient(instance: SessionInstance, client: OpencodeClient): void {
+    this.#clients.set(instance, client);
+  }
+
+  /** Client d'une instance ; repli sur celui de l'instance principale tant qu'aucun client propre n'a été posé. */
+  #clientOf(instance: SessionInstance): OpencodeClient {
+    return this.#clients.get(instance) ?? (this.#clients.get("principale") as OpencodeClient);
+  }
+
+  /**
+   * S'abonne aux conflits d'identifiant entre instances (L23c). Rend le désabonnement. Un abonné qui lève n'empêche pas les
+   * autres d'être appelés.
+   */
+  onInstanceConflict(listener: (conflit: SessionInstanceConflict) => void): () => void {
+    this.#conflicts.add(listener);
+    return () => {
+      this.#conflicts.delete(listener);
+    };
+  }
+
+  #refuseConflit(conflit: SessionInstanceConflict): void {
+    this.#log?.warn("session refusée : identifiant déjà suivi par l'autre instance", { ...conflit });
+    for (const listener of this.#conflicts) {
+      try {
+        listener({ ...conflit });
+      } catch (err) {
+        this.#log?.warn("conflit d'instance : abonné en échec", { sessionId: conflit.sessionId, error: errorMessage(err) });
+      }
+    }
   }
 
   get(id: string): SessionRow | undefined {
     return this.#db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
+  }
+
+  /** Instance d'une session suivie ; null si le cockpit ne la suit pas (routage par instance, P11). */
+  instanceOf(id: string): SessionInstance | null {
+    const row = this.#db.prepare("SELECT instance FROM sessions WHERE id = ?").get(id) as { instance: SessionInstance } | undefined;
+    return row?.instance ?? null;
   }
 
   isHidden(id: string | undefined): boolean {
@@ -81,12 +147,21 @@ export class SessionTracker {
    * Enregistre ou met à jour une session. `opts.instance` n'est écrite qu'à l'INSERTION : l'instance d'une session déjà connue
    * n'est jamais changée par un second upsert, quel que soit l'appelant (une session ne change pas d'opencode). Sans option :
    * « principale », exactement comme en 1.0.x (valeur d'office de la colonne, migration 5).
+   *
+   * 1.1 (L18a) : quand `opts.instance` est donnée et qu'elle n'est pas celle de la session déjà suivie, RIEN n'est écrit — pas
+   * même le titre ou la parenté — le refus est journalisé et annoncé (onInstanceConflict) ; la ligne enregistrée est rendue
+   * telle quelle. Un événement de la salle ne touche donc jamais une racine de l'instance principale, même à identifiant égal.
    */
   upsert(info: OcSession, forcedPurpose?: SessionPurpose, opts?: { instance?: SessionInstance }): SessionRow {
     const parent = info.parentID ? this.get(info.parentID) : undefined;
     const rootId = info.parentID ? (parent?.root_id ?? info.parentID) : info.id;
     const inherited = parent && STICKY_PURPOSES.includes(parent.purpose) ? parent.purpose : null;
     const previous = this.get(info.id);
+    const demandee = opts?.instance;
+    if (previous && demandee !== undefined && previous.instance !== demandee) {
+      this.#refuseConflit({ sessionId: info.id, enregistree: previous.instance, refusee: demandee });
+      return previous;
+    }
     // Session déjà suivie : jamais reclassée par son titre, que l'IA de titre d'opencode peut réécrire (P12). Seuls l'usage forcé
     // par le serveur (classifier.ts, control-ai.ts), metadata.cockpit et l'héritage la font changer d'usage.
     const purpose = forcedPurpose ?? inherited ?? purposeOf(info, info.parentID, previous === undefined);
@@ -191,14 +266,19 @@ export class SessionTracker {
    * Garantit que la session (et sa lignée) est connue, quitte à interroger opencode. `instance` sert à l'insertion des sessions
    * découvertes ici et se transmet à la lignée ; sans elle, « principale », exactement comme en 1.0.x. `depth` garde sa place et
    * son rôle (garde-fou de la remontée des parents).
+   *
+   * 1.1 (L18a) : la recherche passe par le client de `instance` (useClient) — l'usage d'une session de la salle est donc relevé
+   * sur le serveur de la salle. Une session déjà suivie par l'AUTRE instance est rendue telle quelle, sans aucune requête :
+   * aucune lecture ni écriture croisée.
    */
   async ensure(id: string, directory?: string, depth = 0, instance: SessionInstance = "principale"): Promise<SessionRow | undefined> {
     const known = this.get(id);
+    if (known && known.instance !== instance) return known;
     if (known && (known.parent_id === null || this.get(known.parent_id))) return known;
     if (depth > 8) return known;
     let info: OcSession;
     try {
-      info = await this.#client.request<OcSession>("GET", `/session/${encodeURIComponent(id)}`, {
+      info = await this.#clientOf(instance).request<OcSession>("GET", `/session/${encodeURIComponent(id)}`, {
         ...(directory ? { directory } : {}),
         timeoutMs: 10_000,
       });

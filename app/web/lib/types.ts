@@ -94,6 +94,8 @@ export type {
 } from "../../server/shared/api-types.ts";
 
 // 1.1 : autonomie, activité, arrêt et événements du cockpit (types définis une seule fois dans server/shared).
+import type { SessionInstance } from "../../server/shared/activity-types.ts";
+
 export type * from "../../server/shared/activity-types.ts";
 export type * from "../../server/shared/autonomy-types.ts";
 export type * from "../../server/shared/cockpit-event-types.ts";
@@ -730,9 +732,13 @@ export interface OcEvent {
   properties: Record<string, unknown>;
 }
 
+/**
+ * Instance d'opencode d'où vient l'événement (1.1, Salle OMO). Champ ABSENT : instance principale, comme en 1.0.x — un lecteur
+ * qui ne connaît pas la salle lit exactement ce qu'il lisait. En mode Simple, le flux ne porte aucun événement de la salle.
+ */
 export type BrowserEvent =
-  | { kind: "opencode"; directory?: string; event: OcEvent }
-  | { kind: "cockpit"; type: string; data: unknown };
+  | { kind: "opencode"; directory?: string; event: OcEvent; instance?: SessionInstance }
+  | { kind: "cockpit"; type: string; data: unknown; instance?: SessionInstance };
 
 export interface BudgetAlert {
   month: string;

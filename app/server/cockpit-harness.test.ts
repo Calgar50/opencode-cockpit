@@ -94,19 +94,24 @@ describe("harnais du cockpit : option « omo » (Salle OMO, plan 2 bis §2.2)", 
   it("sans l'option : aucune salle (h.omo null), emitOmo refuse, et les routes /api/omo/* répondent 403 salle-coupee", async (t) => {
     const h = await startCockpit(t, { modules: ["omoRoom"] });
     assert.equal(h.omo, null);
-    assert.throws(() => h.emitOmo({ payload: { type: "session.created", properties: {} } } as OcGlobalEvent), /option « omo »/);
+    assert.throws(() => void h.emitOmo({ payload: { type: "session.created", properties: {} } } as OcGlobalEvent), /option « omo »/);
     const ouverture = await h.call("POST", "/api/omo/rooms", { headers: h.headers.confirmed, body: { projet: "app" } });
     assert.equal(ouverture.status, 403, ouverture.body);
     assert.equal(ouverture.json<{ error: string }>().error, "salle-coupee");
     h.assertNoGlobalRestart();
   });
 
-  it("avec l'option : second faux opencode, instances.omo posé, dossiers de la salle créés et laissés VIDES par le démarrage", async (t) => {
+  it("avec l'option : second faux opencode, second processeur RÉEL, instances.omo posé, dossiers laissés VIDES par le démarrage", async (t) => {
     const h = await startCockpit(t, { omo: true, modules: ["omoControl", "omoRoom"] });
     assert.ok(h.omo, "option omo");
     // Second faux, distinct du premier : la salle a son propre opencode.
     assert.notEqual(h.omo.fake.url, h.fake.url);
     assert.equal(h.omo.deps.instance, "omo");
+    // Second processeur réel (L18a) : connecté au faux de la salle, rattrapage fait, et distinct de celui du cockpit.
+    assert.notEqual(h.omo.deps.processor, h.processor);
+    assert.equal(h.omo.deps.processor.instance, "omo");
+    assert.equal(h.omo.deps.processor.status.connected, true);
+    assert.ok(h.omo.fake.requests.some((r) => r.method === "GET" && r.pathname === "/experimental/session"), "rattrapage du processeur de la salle");
     assert.equal(h.cockpit.c11.instances?.omo, h.omo.deps);
     assert.equal(h.cockpit.c11.instances?.of("omo"), h.omo.deps);
     // Salle coupée : le service réel de L17b est branché sur ces dossiers, et le démarrage 1.1 n'y écrit rien.
@@ -126,7 +131,7 @@ describe("harnais du cockpit : option « omo » (Salle OMO, plan 2 bis §2.2)", 
     h.assertNoGlobalRestart();
   });
 
-  it("aiguillage factice : une inscription sans « instances » ne reçoit jamais la salle ; avec [\"omo\"], elle ne reçoit qu'elle", async (t) => {
+  it("filtre d'instance : une inscription sans « instances » ne reçoit jamais la salle ; avec [\"omo\"], elle ne reçoit qu'elle", async (t) => {
     const vus: string[] = [];
     // Deux modules factices aux noms réels (rangés par STEP_ORDER) : l'un déclare la salle, l'autre non.
     const salle: Cockpit11Module = {
@@ -145,8 +150,9 @@ describe("harnais du cockpit : option « omo » (Salle OMO, plan 2 bis §2.2)", 
     const h = await startCockpit(t, { omo: true, modules: [salle, cockpit] });
     assert.ok(h.omo);
     vus.length = 0;
-    // Aiguillage de la salle : seule l'inscription qui la déclare est appelée, avec l'origine « omo ».
-    h.emitOmo({ payload: { type: "session.created", properties: {} } } as OcGlobalEvent);
+    // Chemin réel de la salle : l'événement part du second faux, et seule l'inscription qui déclare la salle est appelée,
+    // avec l'origine « omo ». La dérivation du cockpit, elle, ne voit rien.
+    await h.emitOmo({ payload: { type: "session.created", properties: {} } } as OcGlobalEvent);
     h.omo.hub("usage.updated", { monthSpentUsd: 1, percent: 10 });
     assert.deepEqual(vus, ["salle:omo", "salle:hub"]);
     // Événement réel de l'instance principale : seule l'inscription sans « instances » le voit.
