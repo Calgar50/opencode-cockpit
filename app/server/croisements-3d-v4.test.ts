@@ -72,21 +72,22 @@ const RECAP = path.join(DEPOT, "docs", "RECAPITULATIF.md");
 const lire = (fichier: string): string => fs.readFileSync(fichier, "utf8");
 
 /**
- * Mesures du build de la branche d'intégration, au train de V4 (`npm run build` dans la copie, journal recopié dans le rapport
- * du train) : morceau de three inchangé depuis le train de V3, CSS augmenté des blocs d'accessibilité de L33. Toute ligne de la
- * documentation qui donne une de ces tailles doit donner CELLE-CI ; sinon, on remesure et on met les deux à jour.
+ * Mesures du build de la branche d'intégration, à la correction de la répétition générale (`npm run build` dans la copie,
+ * journal recopié dans le rapport) : morceau de three inchangé depuis le train de V3, CSS inchangé depuis V4, morceau principal
+ * augmenté du créneau unique de publication de la cadence. Toute ligne de la documentation qui donne une de ces tailles doit
+ * donner CELLE-CI ; sinon, on remesure et on met les deux à jour.
  */
 const MESURES_TRAIN = {
   threeBruts: "567 336",
   threeGzip: "142 027",
-  principal: "1 675,28 kB",
-  principalGzip: "539,09 kB",
+  principal: "1 675,50 kB",
+  principalGzip: "539,20 kB",
   css: "95,92 kB",
   cssGzip: "17,82 kB",
 } as const;
 
-/** Tailles d'un build antérieur, refusées nommément dans la ligne M24 (vague 3 et copie de DOC-3D). */
-const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB"] as const;
+/** Tailles d'un build antérieur, refusées nommément dans la ligne M24 (vague 3, copie de DOC-3D, train de V4). */
+const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB", "1 675,28 kB", "539,09 kB"] as const;
 
 /**
  * Comptes de tests d'un passage antérieur à la vague 4, refusés nommément dans la ligne des tests du §10 (relecture 3-vague-4,

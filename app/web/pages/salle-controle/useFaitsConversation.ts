@@ -5,13 +5,14 @@
 // textes du panneau, la cible de « Suivre l'action » et le dossier d'un projet.
 //
 // Cadence (§5.7.4, D-3d-17) : la file de server/shared/neon-band.ts (fileNeuve, recevoir, avancer), donc AU PLUS 4 recalculs par
-// seconde, exactement comme la bande 2D. Différence assumée avec la bande : la salle de contrôle n'écrit JAMAIS
+// seconde, exactement comme la bande 2D — le plafond porte sur TOUTES les publications de la vue, ouvertures comprises
+// (spéc. §7.7 l.1176). Différence assumée avec la bande : la salle de contrôle n'écrit JAMAIS
 // « Affichage rattrapé » et n'enregistre aucun fait `affichage` (fiche L31c) — elle ne fait que ralentir son propre dessin, elle
 // ne raconte rien de plus à l'utilisateur. `rattrape` de la file est donc lu et ignoré ; aucune requête n'en sort.
 // Aucune animation, aucune boucle d'images : un seul minuteur ponctuel à la fois, replacé par le pas suivant (D-3d-22).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityFact } from "../../../server/shared/activity-types.ts";
-import { avancer, cheminDeLOutil, couper, fileNeuve, type NeonFile, recevoir } from "../../../server/shared/neon-band.ts";
+import { avancer, cheminDeLOutil, couper, fileNeuve, NEON_RENDU_MS, type NeonFile, recevoir } from "../../../server/shared/neon-band.ts";
 import type { NeonDetail, NeonFolder, NeonMode, NeonSceneOptions, NeonTile } from "../../../server/shared/neon-scene.ts";
 import { TEXTES as NEON } from "../../../server/shared/neon-texts.ts";
 import type { Plan3d, Plan3dZoom, Point3 } from "../../../server/shared/salle3d-types.ts";
@@ -50,7 +51,7 @@ export interface Cadence {
   affiches(): number;
   /** Liste rallongée (fait reçu en direct) ou remplacée (relecture) : la file décide quand la vue la suit. */
   recevoir(total: number): void;
-  /** Liste lue d'un coup (ouverture, autre conversation) : affichée telle quelle, sans attente. */
+  /** Liste lue d'un coup (ouverture, autre conversation) : adoptée telle quelle, sans passer par la file des 2 s. */
   ouvrir(total: number): void;
   /** Minuteur en cours annulé (démontage). */
   arreter(): void;
@@ -67,10 +68,21 @@ const DEPENDANCES_NAVIGATEUR: DependancesCadence = {
 /**
  * Cadence d'affichage des faits : au plus 4 recalculs par seconde (NEON_RENDU_MS de neon-band.ts). `surChangement` est appelé
  * seulement quand le nombre de faits montrés change — c'est-à-dire à chaque recalcul de la scène et du plan.
+ *
+ * TOUTE publication passe par le même créneau de 250 ms, celles de la file comme celles d'une ouverture ou d'une liste
+ * remplacée : le plafond de la spécification (l.1176) se compte sur la VUE, pas sur la seule file. Correction de la répétition
+ * générale de l'itération 3 : `ouvrir` publiait hors file, et le crochet ouvre DEUX fois à l'affichage (liste vidée au montage,
+ * puis réponse de `/facts`) ; en repli 2D, la seconde ouverture arrivait pendant une rafale et s'ajoutait à ses quatre
+ * recalculs — cinq dans la même seconde glissante. Deux règles suffisent : une ouverture qui ne change rien ne publie pas, et
+ * une publication trop rapprochée attend son créneau (au plus 250 ms), sans jamais passer par la file des 2 s.
  */
 export function creerCadence(surChangement: (affiches: number) => void, deps: DependancesCadence = DEPENDANCES_NAVIGATEUR): Cadence {
   let file: NeonFile = fileNeuve(0);
   let minuteur: number | null = null;
+  // Heure de la dernière publication, null avant la première : c'est elle qui borne le débit, file ou non.
+  let derniere: number | null = null;
+  // Une publication hors file est due (ouverture, liste remplacée) ; le nombre à publier est toujours `file.affiches`.
+  let du = false;
 
   const arreter = () => {
     if (minuteur === null) return;
@@ -78,15 +90,37 @@ export function creerCadence(surChangement: (affiches: number) => void, deps: De
     minuteur = null;
   };
 
-  // Un pas de la file ; replanifié seulement si un changement attend encore (aucune boucle d'images, D-3d-22).
+  /** Millisecondes à attendre avant la prochaine publication ; 0 quand le créneau est libre (horloge qui recule comprise). */
+  const attente = (maintenant: number): number =>
+    derniere === null || maintenant < derniere ? 0 : Math.max(0, derniere + NEON_RENDU_MS - maintenant);
+
+  /** Seul chemin de publication : il retient l'heure, pour la file comme pour les ouvertures. */
+  const publier = (affiches: number, maintenant: number) => {
+    derniere = maintenant;
+    // La file compte ce rendu elle aussi : son prochain pas garde les 250 ms.
+    file = { ...file, dernierRendu: maintenant };
+    surChangement(affiches);
+  };
+
+  // Un pas : la publication due d'abord, puis la file ; replanifié seulement si quelque chose attend encore (aucune boucle
+  // d'images, D-3d-22).
   const pas = () => {
     minuteur = null;
     const maintenant = deps.maintenant();
+    if (du) {
+      const reste = attente(maintenant);
+      if (reste > 0) {
+        minuteur = deps.minuteur(pas, reste);
+        return;
+      }
+      du = false;
+      publier(file.affiches, maintenant);
+    }
     const avant = file;
     // `rattrape` est volontairement ignoré : la salle de contrôle n'écrit jamais « Affichage rattrapé » (fiche L31c).
     const { file: apres, prochain } = avancer(avant, maintenant);
     file = apres;
-    if (apres.affiches !== avant.affiches) surChangement(apres.affiches);
+    if (apres.affiches !== avant.affiches) publier(apres.affiches, maintenant);
     if (prochain !== null && apres.attente.length > 0) minuteur = deps.minuteur(pas, Math.max(0, prochain - maintenant));
   };
 
@@ -96,16 +130,21 @@ export function creerCadence(surChangement: (affiches: number) => void, deps: De
       const avant = file;
       const apres = recevoir(avant, total, deps.maintenant());
       file = apres;
-      // Liste raccourcie ou remplacée à longueur égale, sans rien en attente : montrée telle quelle.
+      // Liste raccourcie ou remplacée à longueur égale, sans rien en attente : adoptée telle quelle, publiée au créneau.
       const remplacee = apres === avant && !apres.fige && apres.attente.length === 0;
-      if (apres.affiches !== avant.affiches || remplacee) surChangement(apres.affiches);
+      if (apres.affiches !== avant.affiches || remplacee) du = true;
       arreter();
       pas();
     },
     ouvrir: (total) => {
       arreter();
-      file = fileNeuve(total);
-      surChangement(file.affiches);
+      const avant = file;
+      file = { ...fileNeuve(total), dernierRendu: derniere };
+      // Une ouverture qui montre exactement ce qui est déjà montré ne recalcule rien : le crochet ouvre à vide au montage,
+      // puis avec la réponse de `/facts`, et la première des deux n'a rien à dire à la vue.
+      if (file.affiches === avant.affiches && !du) return;
+      du = true;
+      pas();
     },
     arreter,
   };

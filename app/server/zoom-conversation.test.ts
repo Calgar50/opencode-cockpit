@@ -1,7 +1,9 @@
 // Tests L31c, zooms 2 et 3 de la salle de contrôle (spécification §5.8 l.992-1009, §5.7.4, §5.6 l.928 ; plan d'exécution it3,
 // fiche L31c, D-3d-11, D-3d-12, D-3d-17, D-3d-18, M20, U2, D-3d-14). Parties PURES seulement, jouées sous Node, sans navigateur :
 //  1. cadence — une rafale de 50 faits en 1 s donne au plus 4 recalculs, et deux recalculs sont toujours séparés d'au moins
-//     250 ms ; tous les faits finissent affichés ; la salle de contrôle n'écrit JAMAIS « Affichage rattrapé » (contrôle de source :
+//     250 ms ; AUCUNE séquence d'ouvertures et de faits reçus ne dépasse 4 publications dans une fenêtre glissante d'une
+//     seconde, ouvertures comprises (spéc. §7.7 l.1176 ; correction de la répétition générale de l'itération 3) ; tous les faits
+//     finissent affichés ; la salle de contrôle n'écrit JAMAIS « Affichage rattrapé » (contrôle de source :
 //     ni le fait `affichage`, ni le texte du rattrapage n'apparaissent dans les fichiers de L31c) ;
 //  2. racine principale en mode Simple → un seul assistant dessiné (le mode de l'utilisateur est celui de la scène) ; une racine
 //     de la Salle OMO est calculée en « avance » (décision n° 7, D-3d-12) ;
@@ -85,6 +87,51 @@ function horlogeFactice(): Horloge {
   };
 }
 
+// --- Débit de la cadence (spéc. §7.7 l.1176) --------------------------------------------------------------------------------------
+
+/** Plus grand nombre de publications dans une fenêtre GLISSANTE d'une seconde : le même calcul que `debitParSeconde` du banc. */
+function maxParSeconde(instants: readonly number[]): number {
+  const tries = [...instants].sort((a, b) => a - b);
+  let max = 0;
+  for (let i = 0; i < tries.length; i++) {
+    let j = i;
+    while (j < tries.length && (tries[j] ?? 0) - (tries[i] ?? 0) < 1_000) j++;
+    max = Math.max(max, j - i);
+  }
+  return max;
+}
+
+/** Faits que la réponse de `/facts` apporte d'un coup, à l'ouverture d'une conversation déjà remplie. */
+const FAITS_LUS_DUN_COUP = 7;
+
+/**
+ * Rejoue l'affichage du crochet : `ouvrir(0)` au montage, un fait reçu toutes les 10 ms, et — quand `retard` n'est pas nul — la
+ * réponse de `/facts` (`ouvrir`) à cet instant, au milieu de la rafale. Rend les publications et le nombre de faits que
+ * l'ouverture doit montrer.
+ */
+function ouvertureEtRafale(retard: number | null, duree: number): { publications: Array<{ at: number; affiches: number }>; ouvertureFaits: number } {
+  const horloge = horlogeFactice();
+  const publications: Array<{ at: number; affiches: number }> = [];
+  const cadence = creerCadence((affiches) => publications.push({ at: horloge.maintenantMs, affiches }), horloge);
+  cadence.ouvrir(0);
+  let total = 0;
+  let ouvertureFaits = -1;
+  for (let t = 0; t <= duree; t += 10) {
+    horloge.avancerA(t);
+    if (retard !== null && ouvertureFaits < 0 && t >= retard) {
+      total += FAITS_LUS_DUN_COUP;
+      ouvertureFaits = total;
+      cadence.ouvrir(total);
+    }
+    total += 1;
+    cadence.recevoir(total);
+  }
+  // Écoulement : la file finit de montrer ce qui attend, toujours au même créneau.
+  horloge.avancerA(duree + 5_000);
+  cadence.arreter();
+  return { publications, ouvertureFaits };
+}
+
 // --- Faits d'essai ----------------------------------------------------------------------------------------------------------------
 
 const fait = (kind: string, sessionId: string, at: number, data: Record<string, unknown> = {}, ref: string | null = null): ActivityFact =>
@@ -135,16 +182,47 @@ describe("L31c : cadence d'affichage des faits (au plus 4 recalculs par seconde)
     cadence.arreter();
   });
 
-  it("une liste raccourcie (relecture) est montrée telle quelle, sans attente", () => {
+  it("une liste raccourcie (relecture) est adoptée telle quelle, publiée au créneau suivant", () => {
     const horloge = horlogeFactice();
     const recalculs: number[] = [];
     const cadence = creerCadence((affiches) => recalculs.push(affiches), horloge);
     cadence.ouvrir(30);
     horloge.avancerA(100);
     cadence.recevoir(4);
+    // La liste remplacée est adoptée TOUT DE SUITE : elle ne passe jamais par la file des 2 s.
     assert.equal(cadence.affiches(), 4);
+    // Sa publication, elle, compte dans le plafond de 4 par seconde (spéc. l.1176) : elle attend le créneau, au plus 250 ms
+    // après le recalcul précédent. Sans cette règle, une ouverture ou une relecture faisait un recalcul de plus dans la même
+    // seconde que la rafale (constat de la répétition générale de l'itération 3).
+    horloge.avancerA(100 + NEON_RENDU_MS);
     assert.equal(recalculs.at(-1), 4);
+    assert.deepEqual(recalculs, [30, 4], "une liste remplacée ne doit donner qu'un seul recalcul de plus");
     cadence.arreter();
+  });
+
+  it("aucune séquence d'ouvertures et de faits reçus ne publie plus de 4 fois dans une fenêtre d'une seconde", () => {
+    // Le plafond de la spécification (§7.7 l.1176) porte sur la VUE : il compte les publications d'une OUVERTURE comme celles
+    // de la file. Le crochet ouvre DEUX fois (`ouvrir(0)` au montage, puis `ouvrir(n)` quand `/facts` répond) ; la répétition
+    // générale de l'itération 3 a relevé 5 recalculs dans la première seconde glissante du repli 2D, la seconde ouverture
+    // tombant au milieu d'une rafale. Ici, la même ouverture en deux temps est jouée à TOUS les décalages d'une seconde.
+    const RAFALE_MS = 2_000;
+    const PLAFOND = 4;
+
+    // Témoin : la rafale SEULE sature déjà le plafond (exactement 4 par seconde glissante). Il n'y a donc aucune marge — une
+    // publication d'ouverture de plus, hors créneau, le dépasserait, et ce contrôle le verrait.
+    const seule = ouvertureEtRafale(null, RAFALE_MS);
+    assert.equal(maxParSeconde(seule.publications.map((p) => p.at)), PLAFOND, "la rafale seule doit saturer le plafond : sinon ce contrôle ne discrimine rien");
+
+    for (let retard = 0; retard <= 1_000; retard += 10) {
+      const { publications, ouvertureFaits } = ouvertureEtRafale(retard, RAFALE_MS);
+      const instants = publications.map((p) => p.at);
+      const debit = maxParSeconde(instants);
+      assert.ok(debit <= PLAFOND, `ouverture à ${retard} ms : ${debit} recalculs dans une même seconde (${instants.join(", ")})`);
+      // L'ouverture reste montrée tout de suite : au plus un créneau (250 ms) après son appel, et avec SON nombre de faits.
+      const ouverture = publications.find((p) => p.at >= retard && p.affiches === ouvertureFaits);
+      assert.ok(ouverture, `ouverture à ${retard} ms : les ${ouvertureFaits} faits lus d'un coup n'ont jamais été montrés`);
+      assert.ok(ouverture.at - retard <= NEON_RENDU_MS, `ouverture à ${retard} ms : montrée ${ouverture.at - retard} ms plus tard`);
+    }
   });
 
   it("le minuteur est annulé à l'arrêt : plus aucun recalcul ensuite", () => {
