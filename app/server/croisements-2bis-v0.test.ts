@@ -512,14 +512,19 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * retiré, et avec lui les trois modules que ce service importe (`omo-contracts.ts`, `shared/omo-control-protocol.ts`,
  * `shared/omo-types.ts`) plus le module de textes que la route de la salle lit pour sa phrase de refus (`shared/omo-room-texts.ts`)
  * — sans quoi le service branché, désormais parcouru comme un fichier de production, serait pris en faute pour ses propres
- * importations. Les modules de comportement de la salle (pré-contrôle, plafonds, détections, egress, audit, superviseur) restent
- * interdits d'importation : ils arrivent en V3 et V4.
+ * importations.
  *
- * L18c (V3) a branché les salles (`omo-room.ts`, `routes-omo.ts`) : `GET /api/omo/status` lit le journal des sorties refusées
- * (`egress-journal.ts`, fiche L18c), l'hôte autorisé d'`egress` (`egress-allow.ts`, que le journal importe lui-même) et la
- * version auditée de l'extension (`omo-audit-4.19.4.ts`, et donc `shared/omo-roles.ts` qu'elle importe). Ces quatre noms sortent
- * de la liste, comme `omo-control.ts` et ses modules en sont sortis au train de V2 : ils sont désormais parcourus comme des
- * fichiers de production. `egress-proxy.ts` y reste : rien ne l'importe hors de son propre lancement.
+ * V3 retire six noms de plus, pour la même raison, et les deux paquets qui les branchent le disent ici (train de V3, conflit
+ * résolu en gardant les deux retraits) :
+ * — L18c a branché les salles (`omo-room.ts`, `routes-omo.ts`) : `GET /api/omo/status` lit le journal des sorties refusées
+ *   (`egress-journal.ts`, fiche L18c), l'hôte autorisé d'`egress` (`egress-allow.ts`, que le journal importe lui-même) et la
+ *   version auditée de l'extension (`omo-audit-4.19.4.ts`, et donc `shared/omo-roles.ts` qu'elle importe) ;
+ * — L19b a rempli le port `omoPrecheck` (`omo-precheck-service.ts`) : il appelle les deux modules du pré-contrôle
+ *   (`shared/omo-precheck-rules.ts` et `omo-precheck-reader.ts`).
+ * Ces six noms sont désormais parcourus comme des fichiers de production, exactement comme `omo-control.ts` et ses modules
+ * depuis le train de V2. `egress-proxy.ts` reste dans la liste : rien ne l'importe hors de son propre lancement. Les autres
+ * modules de comportement de la salle (plafonds, détections, audit de l'extension au-delà de la version branchée, superviseur)
+ * restent interdits d'importation : ils arrivent avec leurs paquets, en V4.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
@@ -530,8 +535,6 @@ const MODULES_SALLE_V0 = new Set([
   "omo-limits.ts",
   "omo-cap.ts",
   "omo-detections.ts",
-  "omo-precheck-rules.ts",
-  "omo-precheck-reader.ts",
   "egress-proxy.ts",
   "omo-audit-texts.ts",
   "supervisor-lib.mjs",
