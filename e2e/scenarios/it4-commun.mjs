@@ -134,12 +134,78 @@ export const MCP = { mcp: { local: { type: "local", command: ["outil"], enabled:
 /** Repère dans le journal du faux : longueur courante de la liste des requêtes reçues. */
 export const repere = async (ctx) => (await ctx.opencodeRequests()).length;
 
-/** Requêtes reçues par le faux depuis `debut`, hors requêtes de fond ; méthode, chemin et paramètres seulement. */
+/**
+ * Requêtes de `journal` qui ne sont pas de fond, réduites à { method, pathname }. Fonction PURE, éprouvée telle quelle par les
+ * tests de croisement de la vague 4 : c'est elle qui dit ce qu'un refus a le droit de laisser passer, et rien d'autre.
+ */
+export const sansLeFond = (journal) =>
+  (journal ?? []).filter((requete) => !estDeFond(requete)).map((requete) => ({ method: requete.method, pathname: requete.pathname }));
+
+/** Requêtes reçues par le faux depuis `debut`, hors requêtes de fond ; méthode et chemin seulement. */
 export async function requetesDepuis(ctx, debut) {
-  return (await ctx.opencodeRequests())
-    .slice(debut)
-    .filter((requete) => !estDeFond(requete))
-    .map((requete) => ({ method: requete.method, pathname: requete.pathname }));
+  return sansLeFond((await ctx.opencodeRequests()).slice(debut));
+}
+
+/**
+ * Attend que le faux opencode ne reçoive plus AUCUNE requête UTILE pendant `calmeMs` — utile = hors requêtes de fond (FOND),
+ * c'est-à-dire exactement ce que `sansRequete` compte ensuite. Rend le nombre de requêtes utiles reçues depuis le début.
+ *
+ * Pourquoi le calme se mesure hors fond (correction de la clôture de l'itération 4). Le sondage des sessions et le
+ * rafraîchissement du catalogue d'IA tournent SANS ARRÊT dès que la pile est debout : sur le journal complet, il n'existe
+ * aucun silence de plus d'une seconde, et demander une fenêtre plus large ne pouvait qu'échouer. Or c'est justement d'une
+ * fenêtre LARGE qu'on a besoin : le cockpit rafraîchit l'archive d'une conversation 4 s après qu'elle est passée au repos
+ * (classifier.ts, `onIdle`), par deux lectures (`GET /session/:id`, `GET /session/:id/message`) qu'aucune route d'équipe ne
+ * déclenche et qui tombaient dans la fenêtre de mesure d'un refus — d'où le relevé « 7 requête(s) émise(s) pendant un refus »
+ * de la passe complète. Mesurer le calme sur les seules requêtes utiles permet d'attendre que ces minuteries aient tiré.
+ */
+export async function attendreCalme(ctx, { calmeMs = 800, delaiMs = 30_000 } = {}) {
+  const limite = Date.now() + delaiMs;
+  const utiles = async () => (await requetesDepuis(ctx, 0)).length;
+  let longueur = await utiles();
+  let depuis = Date.now();
+  while (Date.now() < limite) {
+    await attendre(150);
+    const n = await utiles();
+    if (n !== longueur) {
+      longueur = n;
+      depuis = Date.now();
+    } else if (Date.now() - depuis >= calmeMs) return n;
+  }
+  throw new Error(
+    `le faux opencode reçoit encore des requêtes après ${Math.round(delaiMs / 1000)} s : aucun moment calme de ${calmeMs} ms pour mesurer un refus.`,
+  );
+}
+
+/**
+ * Même attente, mais qui ne lève jamais : elle sert à se placer AVANT une série de refus, quand la pile partagée peut encore
+ * porter le travail de fond d'un scénario précédent. Un calme qui ne vient pas n'est pas un échec du produit — l'assertion,
+ * elle, reste entière —, c'est une fenêtre moins confortable, et le scénario le DIT au lieu de tomber pour la mauvaise raison.
+ */
+export async function calmeSiPossible(ctx, { calmeMs, delaiMs = 45_000, libelle = "la pile partagée" } = {}) {
+  try {
+    await attendreCalme(ctx, { calmeMs, delaiMs });
+    return true;
+  } catch (err) {
+    releve(ctx, `calme de ${calmeMs} ms non obtenu sur ${libelle} : ${err?.message ?? err}`);
+    return false;
+  }
+}
+
+/**
+ * Classement automatique des conversations (réglage `classifier.mode`) : mis de côté le temps d'un scénario, rendu comme trouvé.
+ *
+ * Pourquoi un scénario y touche. Deux minutes après qu'une conversation est passée au repos, le cockpit classe cette
+ * conversation PAR UNE IA (classifier.ts, `#classifyWithModel`) : `POST /session`, `POST /session/:id/message`, puis
+ * `DELETE /session/:id`. C'est un travail de fond légitime, qu'aucune route d'équipe ne déclenche, mais qui tombe où il veut —
+ * y compris pendant la mesure « aucune requête » d'un refus, deux scénarios plus loin. Le banc ne doit de toute façon faire
+ * AUCUN appel d'IA qu'il n'a pas demandé. Rend le mode trouvé, à remettre dans un `finally`.
+ */
+export async function classementAutomatique(ctx, mode) {
+  const avant = (await ctx.api.get("/api/settings"))?.classifier?.mode ?? null;
+  if (avant === mode) return avant;
+  const apres = await ctx.api.put("/api/settings", { classifier: { mode } });
+  exiger(apres?.classifier?.mode === mode, `classement automatique « ${mode} » refusé par le cockpit : ${resume(apres?.classifier)}`);
+  return avant;
 }
 
 /**
@@ -147,26 +213,6 @@ export async function requetesDepuis(ctx, debut) {
  * chemins (spécification §7.8 l.1189 : « aucun refus de pré-lancement n'émet de requête »). Rend la réponse brute.
  * Les requêtes de fond du cockpit sont écartées (FOND) ; les trois lectures de l'estimation ne le sont jamais.
  */
-/**
- * Attend que le faux opencode ne reçoive plus rien pendant `calmeMs` : le cockpit et la page lisent d'eux-mêmes
- * (`GET /api/bootstrap` relit `GET /global/config` après un changement de réglage, le sondage des sessions tourne…).
- * Mesurer un refus dans un moment calme évite de compter une lecture qu'aucune route d'équipe n'a déclenchée.
- */
-export async function attendreCalme(ctx, { calmeMs = 800, delaiMs = 20_000 } = {}) {
-  const limite = Date.now() + delaiMs;
-  let longueur = await repere(ctx);
-  let depuis = Date.now();
-  while (Date.now() < limite) {
-    await attendre(150);
-    const n = await repere(ctx);
-    if (n !== longueur) {
-      longueur = n;
-      depuis = Date.now();
-    } else if (Date.now() - depuis >= calmeMs) return n;
-  }
-  throw new Error(`le faux opencode reçoit encore des requêtes après ${Math.round(delaiMs / 1000)} s : aucun moment calme pour mesurer un refus.`);
-}
-
 export async function sansRequete(ctx, libelle, appel) {
   await attendreCalme(ctx);
   const debut = await repere(ctx);

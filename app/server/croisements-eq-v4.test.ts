@@ -735,6 +735,197 @@ describe("croisements it4 V4 — à « terminee », l'équipe ne retient plus la
   });
 });
 
+// --- Clôture de l'itération 4 : `it4-prelancement` ne suppose plus le travail d'un autre scénario -------------------------------
+
+/** Charge un module de scénario du banc tel quel (il n'est pas dans `tsconfig`, d'où l'import par URL). */
+const chargerScenario = (nom: string) => import(pathToFileURL(path.join(REPO_DIR, "e2e", "scenarios", nom)).href);
+
+interface OutilsCommuns {
+  sansLeFond: (journal: unknown) => { method: string; pathname: string }[];
+  attendreCalme: (ctx: unknown, options?: { calmeMs?: number; delaiMs?: number }) => Promise<number>;
+  sansRequete: (ctx: unknown, libelle: string, appel: () => Promise<unknown>) => Promise<unknown>;
+}
+
+/**
+ * Pile de banc simulée : à CHAQUE lecture du journal, le cockpit a reçu une requête de FOND de plus (sondage des sessions),
+ * exactement comme la vraie pile, qui ne se tait jamais complètement. `ajouter` permet d'y glisser une requête utile.
+ */
+function faussePile() {
+  const journal: { method: string; pathname: string }[] = [];
+  return {
+    journal,
+    ajouter(method: string, pathname: string) {
+      journal.push({ method, pathname });
+    },
+    ctx: {
+      opencodeRequests: async () => {
+        journal.push({ method: "GET", pathname: "/session/status" });
+        return [...journal];
+      },
+    },
+  };
+}
+
+/** Déroulé dérivé, comme `equipeDerivee` du banc : mêmes blocs, identifiants suffixés (donc empreinte différente). */
+function deriverFlow(flow: Flow, suffixe: string): Flow {
+  const renomme = (etape: { id: string }) => ({ ...etape, id: `${etape.id}-${suffixe}` });
+  return {
+    version: flow.version,
+    blocs: flow.blocs.map((bloc) => {
+      const id = `${bloc.id}-${suffixe}`;
+      if (bloc.type === "etape") return { type: "etape", id, etape: renomme(bloc.etape) };
+      if (bloc.type === "avis") return { type: "avis", id, avis: bloc.avis.map(renomme), synthese: renomme(bloc.synthese) };
+      return { type: "pause", id, message: bloc.message };
+    }),
+  } as Flow;
+}
+
+describe("croisements it4 V4 — clôture : `it4-prelancement` ne suppose plus le travail d'un autre scénario", () => {
+  it("deux équipes dérivées du MÊME exemple ont des empreintes différentes, et l'une refuse l'empreinte de l'autre (409)", async (t) => {
+    const h = await bancInstallation(t, undefined, [createTeamRunnerModule({ pollMs: 40, retryMs: 25, usageWaitMs: 300 })]);
+    fs.mkdirSync(path.join(h.deps.env.workspaceDir, "projet"), { recursive: true });
+    const directory = `${h.fake.directory}/projet`;
+
+    const installe = await h.call("POST", "/api/teams/examples/revue-sql/install", { headers: h.headers.mutating, body: {} });
+    assert.equal(installe.status, 200, installe.body);
+    const modele = installe.json<TeamInstallResponse>().team;
+
+    // Les deux équipes du scénario, posées comme le banc les pose : `PUT /api/teams/:id` à partir du déroulé de l'exemple.
+    const poser = async (suffixe: string) => {
+      const flow = deriverFlow(modele.flow, suffixe);
+      const { assistants } = etapesEtAssistants(flow);
+      const connus = new Set(h.fake.agents().map((agent) => agent.name));
+      const manquants = assistants.filter((nom) => !connus.has(nom));
+      if (manquants.length > 0) h.fake.setAgents([...h.fake.agents(), ...manquants.map(agentDuFaux)]);
+      // L'installation vient de remplir l'instantané des agents du cockpit (oc-lookup.ts, 15 s) : sans cela, le déroulé serait
+      // refusé « assistant-absent » alors que le faux les sert déjà. Le banc, lui, attend cette expiration (attendreAssistantsVus).
+      h.deps.lookup.invalidate();
+      const id = `revue-sql-${suffixe}`;
+      const pose = await h.call("PUT", `/api/teams/${id}`, {
+        headers: h.headers.mutating,
+        body: { titre: `${modele.titre} (${suffixe})`.slice(0, 80), description: modele.description ?? "", flow },
+      });
+      assert.equal(pose.status, 200, pose.body);
+      return id;
+    };
+    const equipe = await poser("p");
+    const autre = await poser("pb");
+
+    const estimer = async (id: string) => {
+      const res = await h.call("POST", `/api/teams/${id}/estimate`, { headers: h.headers.mutating, body: { directory, rootId: null } });
+      assert.equal(res.status, 200, res.body);
+      return res.json<TeamEstimateResponse>().estimateSha256;
+    };
+    const empreinte = await estimer(equipe);
+    const empreinteAutre = await estimer(autre);
+    // C'est ce que le scénario exige avant de s'en servir : sans cela, le refus ne prouverait rien.
+    assert.notEqual(empreinte, empreinteAutre, "deux équipes dérivées du même exemple rendent la même empreinte");
+
+    const lancer = (id: string, sha: string) =>
+      h.call("POST", `/api/teams/${id}/run`, {
+        headers: h.headers.mutating,
+        body: {
+          directory,
+          rootId: null,
+          demande: "Relis la requête de facturation du mois dernier.",
+          fichiers: [],
+          agentConversation: "build",
+          estimateSha256: sha,
+          confirmations: {},
+        },
+      });
+    const refuse = await lancer(equipe, empreinteAutre);
+    assert.equal(refuse.status, 409, refuse.body);
+    assert.equal(refuse.json<{ error: string }>().error, "estimation-perimee");
+
+    // …et l'exemple que l'ancien scénario nommait en dur SANS l'installer : le 404 était la BONNE réponse du cockpit, pas un défaut.
+    const absente = await h.call("POST", "/api/teams/relecture-script/estimate", { headers: h.headers.mutating, body: { directory, rootId: null } });
+    assert.equal(absente.status, 404, absente.body);
+    assert.equal(absente.json<{ error: string }>().error, "not-found");
+  });
+
+  it("le scénario ne nomme AUCUN exemple qu'il n'installe pas : ses deux équipes viennent du même exemple, qu'il dérive", async () => {
+    const source = lire(path.join("e2e", "scenarios", "it4-prelancement.mjs"));
+    const prelancement = (await chargerScenario("it4-prelancement.mjs")) as { lecturesManquantes: (lues: unknown) => string[] };
+
+    // 1. Aucune chaîne écrite en dur ne part vers une route d'équipe : tout passe par une équipe que le scénario a posée.
+    const enDur = [...source.matchAll(/\b(?:estimer|installerExemple|lancer)\(\s*(?:api,\s*)?"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(enDur, [], `exemple(s) nommé(s) en dur dans it4-prelancement : ${enDur.join(", ")}`);
+    // 2. Les deux équipes du scénario sont dérivées du MÊME exemple, avec deux suffixes différents.
+    assert.match(source, /const EXEMPLE = "revue-sql";/);
+    assert.match(source, /equipeDerivee\(api, EXEMPLE, SUFFIXE\)/);
+    assert.match(source, /equipeDerivee\(api, EXEMPLE, SUFFIXE_AUTRE\)/);
+    assert.match(source, /exiger\(\s*autre\.estimateSha256 !== estimation\.estimateSha256,/);
+    // 3. Le classement automatique est mis de côté, et REMIS dans un `finally`.
+    assert.match(source, /const classementAvant = await classementAutomatique\(ctx, "off"\);/);
+    assert.match(source, /} finally \{\n\s*\/\/ Le classement automatique est remis comme trouvé[\s\S]*?classementAutomatique\(ctx, classementAvant\);/);
+    // 4. Le refus n'est mesuré qu'après une fenêtre calme large, posée avant chaque série.
+    assert.equal(source.match(/await calmeSiPossible\(ctx, \{ calmeMs: CALME_LONG_MS/g)?.length, 2);
+
+    // 5. …et la seule fonction de décision du scénario est éprouvée, pas relue.
+    assert.deepEqual(prelancement.lecturesManquantes([{ method: "GET", pathname: "/agent" }]), ["/command", "/global/config"]);
+    assert.deepEqual(prelancement.lecturesManquantes([]), ["/agent", "/command", "/global/config"]);
+    assert.deepEqual(prelancement.lecturesManquantes(null), ["/agent", "/command", "/global/config"]);
+    assert.deepEqual(
+      prelancement.lecturesManquantes([
+        { method: "GET", pathname: "/agent" },
+        { method: "GET", pathname: "/command" },
+        { method: "GET", pathname: "/global/config" },
+      ]),
+      [],
+    );
+    // Une lecture faite par une AUTRE méthode ne compte pas : c'est bien `GET /agent` que l'estimation doit faire.
+    assert.deepEqual(prelancement.lecturesManquantes([{ method: "POST", pathname: "/agent" }]), ["/agent", "/command", "/global/config"]);
+  });
+
+  it("le calme se mesure sur les requêtes UTILES : une pile qui sonde sans arrêt laisse quand même une fenêtre de mesure", async () => {
+    const commun = (await chargerScenario("it4-commun.mjs")) as OutilsCommuns;
+
+    // 1. Ce qui est de fond, et ce qui ne l'est jamais.
+    assert.deepEqual(commun.sansLeFond([{ method: "GET", pathname: "/session/status" }, { method: "GET", pathname: "/config/providers" }]), []);
+    assert.deepEqual(
+      commun.sansLeFond([
+        { method: "GET", pathname: "/agent" },
+        { method: "POST", pathname: "/session" },
+        { method: "GET", pathname: "/session/ses_1/message" },
+      ]),
+      [
+        { method: "GET", pathname: "/agent" },
+        { method: "POST", pathname: "/session" },
+        { method: "GET", pathname: "/session/ses_1/message" },
+      ],
+    );
+    assert.deepEqual(commun.sansLeFond(null), []);
+
+    // 2. Sur une pile qui reçoit une requête de FOND à chaque lecture du journal — la vraie pile ne se tait jamais —, le calme
+    //    vient quand même. Mesuré sur le journal complet, comme avant la clôture, il ne serait JAMAIS venu.
+    const pile = faussePile();
+    const avant = Date.now();
+    await commun.attendreCalme(pile.ctx, { calmeMs: 400, delaiMs: 5_000 });
+    assert.ok(Date.now() - avant < 4_000, "le calme n'est pas venu alors que la pile ne reçoit que des requêtes de fond");
+  });
+
+  it("aucune assertion n'est relâchée : une requête utile pendant l'appel fait toujours tomber le refus", async () => {
+    const commun = (await chargerScenario("it4-commun.mjs")) as OutilsCommuns;
+
+    // 1. Refus propre : rien d'utile pendant l'appel, malgré le sondage de fond qui continue.
+    const calme = faussePile();
+    const rendu = await commun.sansRequete(calme.ctx, "refus mesuré", async () => "réponse");
+    assert.equal(rendu, "réponse");
+
+    // 2. Une seule requête utile pendant l'appel suffit à faire tomber la mesure, avec son chemin dans le message.
+    const bruyante = faussePile();
+    await assert.rejects(
+      () =>
+        commun.sansRequete(bruyante.ctx, "refus qui parle à opencode", async () => {
+          bruyante.ajouter("POST", "/session");
+          return "réponse";
+        }),
+      /refus qui parle à opencode : 1 requête\(s\) émise\(s\) pendant un refus — POST \/session/,
+    );
+  });
+});
+
 // --- Ligne V4 du §5.2 : constante d'ouverture et options du banc ----------------------------------------------------------------
 
 describe("croisements it4 V4 — ce que la vague doit garder vrai", () => {
