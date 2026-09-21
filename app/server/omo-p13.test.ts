@@ -296,12 +296,51 @@ describe("P8 et D-2b-23 : package.json de l'image", () => {
   });
 });
 
-describe("D-2b-32 : amorce du manifeste", () => {
-  it("amorce présente, d'une seule ligne, reconnue et refusée par le superviseur", () => {
-    const texte = fs.readFileSync(path.join(DOCKER_OMO, "omo-manifest.sha256"), "utf8");
-    assert.equal(texte, "# amorce\n");
-    assert.equal(salle.estAmorce(texte), true);
+describe("D-2b-32 : référence réelle du manifeste", () => {
+  // L21 a remplacé l'amorce de L15a par la référence RÉELLE, écrite par deux constructions successives dont le manifeste était
+  // identique (`build-omo-image.ps1 -AcceptManifest`). Le superviseur refuse désormais de démarrer sur une amorce, et cette
+  // référence est ce qu'il compare au manifeste calculé dans l'image à chaque démarrage.
+  const texte = fs.readFileSync(path.join(DOCKER_OMO, "omo-manifest.sha256"), "utf8");
+  const lignes = texte.split("\n").filter((l) => l !== "" && !l.startsWith("#"));
+
+  it("ce n'est plus l'amorce, et le superviseur l'accepte comme référence", () => {
+    assert.equal(salle.estAmorce(texte), false, "l'amorce de L15a doit avoir été remplacée par L21");
+    assert.ok(lignes.length > 100, `référence trop courte : ${lignes.length} ligne(s)`);
+    // Une référence se compare à elle-même : c'est ce que fait le superviseur quand l'image n'a pas bougé.
+    assert.equal(salle.comparerManifeste(`${lignes.join("\n")}\n`, texte).manifesteReference, "ok");
+    // Une ligne de plus, et c'est un écart : la comparaison n'est pas un simple « ça ressemble ».
+    assert.equal(salle.comparerManifeste(`${lignes.join("\n")}\n${"a".repeat(64)}  /opt/omo/x\n`, texte).manifesteReference, "ecart");
+  });
+
+  it("chaque ligne est au format de manifest.sh, dans le périmètre du contrat, à root et sans droit d'écriture", () => {
+    const perimetre = (JSON.parse(fs.readFileSync(path.join(DOCKER_OMO, "contrat-salle.json"), "utf8")) as Json).perimetreManifeste as string[];
+    const dansLePerimetre = (chemin: string) => perimetre.some((p) => chemin === p || chemin.startsWith(`${p}/`));
+    const vus = new Set<string>();
+    for (const ligne of lignes) {
+      const fichier = /^([0-9a-f]{64}) {2}(\/\S.*)$/.exec(ligne);
+      const meta = /^meta ([a-z]) ([0-7]{3,4}) (\d+):(\d+) (\/\S[^\n]*?)(?: -> .*)?$/.exec(ligne);
+      assert.ok(fichier ?? meta, `ligne hors format : ${ligne.slice(0, 120)}`);
+      const chemin = (fichier ? fichier[2] : (meta as RegExpExecArray)[5]) ?? "";
+      assert.ok(dansLePerimetre(chemin), `hors du périmètre du contrat : ${chemin.slice(0, 120)}`);
+      if (meta) {
+        vus.add(meta[1] ?? "");
+        assert.equal(`${meta[3]}:${meta[4]}`, "0:0", `entrée qui n'appartient pas à root : ${ligne.slice(0, 120)}`);
+        // Droits : ni écriture pour le groupe ou les autres, ni setuid, ni setgid (un lien n'a pas de droits utiles).
+        if (meta[1] !== "l") {
+          const droits = Number.parseInt(meta[2] ?? "0", 8);
+          assert.equal(droits & 0o022, 0, `écriture ouverte au groupe ou aux autres : ${ligne.slice(0, 120)}`);
+          assert.equal(droits & 0o6000, 0, `setuid ou setgid : ${ligne.slice(0, 120)}`);
+        }
+      }
+    }
+    assert.ok(vus.has("f") && vus.has("d"), "le manifeste doit décrire des fichiers et des dossiers");
+    // Les cinq chemins du périmètre sont tous décrits : un périmètre amputé passerait sinon inaperçu.
+    for (const p of perimetre) assert.ok(lignes.some((l) => l.endsWith(` ${p}`) || l.includes(` ${p}/`)), `périmètre absent du manifeste : ${p}`);
+  });
+
+  it("l'amorce reste reconnue par le superviseur (le mécanisme n'a pas disparu avec elle)", () => {
+    assert.equal(salle.estAmorce("# amorce\n"), true);
     const calcule = `${"a".repeat(64)}  /opt/omo/x\nmeta f 444 0:0 /opt/omo/x\n`;
-    assert.equal(salle.comparerManifeste(calcule, texte).manifesteReference, "amorce");
+    assert.equal(salle.comparerManifeste(calcule, "# amorce\n").manifesteReference, "amorce");
   });
 });
