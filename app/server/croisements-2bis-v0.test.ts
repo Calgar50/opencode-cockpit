@@ -310,15 +310,28 @@ describe("croisements 2bis V0 : supervisor-lib.mjs et le cockpit = contrat-salle
     assert.ok(CONTRAT.variables.cockpit.includes("COCKPIT_EGRESS_JOURNAL"));
   });
 
-  it("conteneur de L17a (OMO_TESTS_CONTENEUR=1) : les options de sécurité jouées sont celles du contrat, dans l'ordre", () => {
+  // Train de V2 : le conteneur de L17a joue désormais les options RÉELLES du service `opencode-omo` de docker-compose.yml
+  // (L16b), et non plus celles du seul contrat. La seule différence entre les deux est le tmpfs d'état du HOME (MO-3 point 8),
+  // que le compose ajoute et que `omo-compose.test.ts` nomme explicitement ; le reste doit rester identique au contrat.
+  it("conteneur de L17a (OMO_TESTS_CONTENEUR=1) : les options de sécurité jouées sont celles du compose, dans l'ordre", () => {
     const joue = tableauDuSource(path.join(import.meta.dirname, "omo-supervisor.test.ts"), "SECURITE");
     const s = CONTRAT.securite;
+    const composeSource = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "docker-compose.yml"), "utf8");
+    const lignes = composeSource.split("\n");
+    const debut = lignes.indexOf("  opencode-omo:");
+    assert.ok(debut > 0, "service opencode-omo introuvable dans docker-compose.yml");
+    const suite = lignes.findIndex((l, i) => i > debut && /^ {0,2}\S/.test(l));
+    const bloc = lignes.slice(debut, suite === -1 ? lignes.length : suite).join("\n");
+    const tmpfsCompose = [...bloc.matchAll(/^ {6}- "([^"]+)"$/gm)].map((m) => m[1] as string).filter((v) => v.startsWith("/"));
+    // Le compose part du contrat et n'ajoute que le tmpfs d'état.
+    assert.deepEqual(tmpfsCompose.slice(0, s.tmpfs.length), s.tmpfs);
+    assert.deepEqual(tmpfsCompose.slice(s.tmpfs.length), ["/home/node/.local/state:exec,mode=0755,uid=1000,gid=1000"]);
     const attendu = [
       ...s.cap_drop.flatMap((c) => ["--cap-drop", c]),
       ...s.cap_add.flatMap((c) => ["--cap-add", c]),
       ...s.security_opt.flatMap((o) => ["--security-opt", o]),
       ...(s.read_only ? ["--read-only"] : []),
-      ...s.tmpfs.flatMap((t) => ["--tmpfs", t]),
+      ...tmpfsCompose.flatMap((t) => ["--tmpfs", t]),
     ];
     assert.deepEqual(joue, attendu);
   });

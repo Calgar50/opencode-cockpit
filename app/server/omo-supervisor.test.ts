@@ -7,9 +7,10 @@
 //    purge (MO-2), copie d'`auth.json`, balayage git. Aucun conteneur, aucune pause fixe, aucun port.
 // 2. CONTENEUR, SAUTÉS sans `OMO_TESTS_CONTENEUR=1` (D-2b-44) : un conteneur Debian jetable, JAMAIS l'image `opencode-omo`, jamais
 //    l'extension, jamais un vrai opencode — un faux opencode d'une douzaine de lignes suffit à prouver l'homme mort. Les options de
-//    sécurité sont celles du contrat (`cap_drop: ALL` + SETUID/SETGID, `no-new-privileges`, `read_only`, tmpfs). Les volumes sont
-//    des volumes nommés `omo11-l17a-*` : sur un bind de l'hôte, ni les droits 0600 ni le propriétaire ne voudraient dire quoi que
-//    ce soit. Nettoyage même en échec.
+//    sécurité sont celles du service `opencode-omo` de `docker-compose.yml` (L16b, train de V2) : `cap_drop: ALL` + SETUID/SETGID,
+//    `no-new-privileges`, `read_only` et les TROIS tmpfs. Les volumes sont des volumes nommés préfixés (`OMO_TESTS_PREFIXE`,
+//    défaut `omo11-l17a`) : sur un bind de l'hôte, ni les droits 0600 ni le propriétaire ne voudraient dire quoi que ce soit.
+//    Nettoyage même en échec.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -1291,9 +1292,27 @@ describe("superviseur : chemins du contrat", () => {
 // --- Tests conteneur (D-2b-44) ---------------------------------------------------------------------------------------------------
 
 const CONTENEUR_DEMANDE = process.env.OMO_TESTS_CONTENEUR === "1";
-const IMAGE_BASE = "omo11-l17a-base:omo11";
 const IMAGE_SOURCE = "node:24-bookworm-slim";
-const PREFIXE = "omo11-l17a";
+
+/**
+ * Préfixe des ressources Docker jetables de ce fichier, posé par l'intégrateur au train de V2. Variable DE TEST seulement
+ * (jamais lue en production) : chaque exécution du chantier a le sien, et l'exécution voisine ne doit ni réutiliser ni toucher
+ * les ressources d'une autre. Défaut INCHANGÉ (`omo11-l17a`, l'exécution d'origine de L17a) ; toute autre valeur est bornée aux
+ * préfixes des exécutions de la salle, pour qu'un préfixe de frappe ne puisse jamais viser la pile de l'utilisateur.
+ */
+const PREFIXE_DEFAUT = "omo11-l17a";
+const PREFIXE = prefixeDeTest();
+/** Étiquette d'image : la première partie du préfixe (`omo11-l17a` → `omo11`, `sal11-l17a` → `sal11`). */
+const IMAGE_BASE = `${PREFIXE}-base:${PREFIXE.split("-")[0]}`;
+
+function prefixeDeTest(): string {
+  const demande = process.env.OMO_TESTS_PREFIXE?.trim();
+  if (!demande) return PREFIXE_DEFAUT;
+  if (!/^sal11-|^omo11-/.test(demande)) {
+    throw new Error(`OMO_TESTS_PREFIXE refusé : « ${demande} ». Préfixes acceptés : sal11-… ou omo11-… (garde de nom, plan 2 bis §2.1).`);
+  }
+  return demande;
+}
 
 interface Sortie {
   code: number;
@@ -1507,7 +1526,11 @@ function preparer(cas: Cas, options: OptionsCas): void {
   assert.equal(res.code, 0, `préparation de ${cas.nom} : ${res.stderr}`);
 }
 
-/** Options de sécurité du contrat (`contrat-salle.json`, `securite`). */
+/**
+ * Options de sécurité RÉELLES du service `opencode-omo` de `docker-compose.yml` (L16b), et non plus celles du seul contrat :
+ * le train de V2 exige que le conteneur de L17a tourne avec ce que la salle recevra vraiment. Le troisième tmpfs (MO-3 point 8)
+ * en fait partie. Le test « options de sécurité du conteneur = compose » ci-dessous échoue si le compose s'en écarte.
+ */
 const SECURITE = [
   "--cap-drop",
   "ALL",
@@ -1522,7 +1545,31 @@ const SECURITE = [
   "/home/node:exec,mode=0755,uid=1000,gid=1000",
   "--tmpfs",
   "/tmp:exec,mode=1777",
+  "--tmpfs",
+  "/home/node/.local/state:exec,mode=0755,uid=1000,gid=1000",
 ];
+
+describe("options de sécurité du conteneur de L17a = service opencode-omo du compose (train de V2)", () => {
+  it("cap_drop, cap_add, security_opt, read_only et les trois tmpfs sont ceux de docker-compose.yml", () => {
+    const compose = fs.readFileSync(path.join(RACINE, "docker-compose.yml"), "utf8");
+    const lignes = compose.split("\n");
+    const debut = lignes.indexOf("  opencode-omo:");
+    assert.ok(debut > 0, "service opencode-omo introuvable");
+    const suite = lignes.findIndex((l, i) => i > debut && /^ {0,2}\S/.test(l));
+    const bloc = lignes.slice(debut, suite === -1 ? lignes.length : suite).join("\n");
+
+    assert.match(bloc, /^ {4}read_only: true$/m);
+    assert.ok(SECURITE.includes("--read-only"));
+    assert.match(bloc, /^ {4}security_opt: \["no-new-privileges:true"\]$/m);
+    assert.match(bloc, /^ {4}cap_drop: \["ALL"\]$/m);
+    assert.match(bloc, /^ {4}cap_add: \["SETUID", "SETGID"\]$/m);
+
+    const tmpfsCompose = [...bloc.matchAll(/^ {6}- "([^"]+)"$/gm)].map((m) => m[1] as string).filter((v) => v.startsWith("/"));
+    const tmpfsConteneur = SECURITE.filter((_, i) => SECURITE[i - 1] === "--tmpfs");
+    assert.deepEqual([...tmpfsConteneur].sort(), [...tmpfsCompose].sort(), "les tmpfs du conteneur de L17a doivent être ceux du compose");
+    assert.equal(tmpfsConteneur.length, 3, "MO-3 point 8 : le tmpfs d'état du HOME fait partie des trois");
+  });
+});
 
 /** Lance le superviseur en arrière-plan et rend le nom du conteneur. */
 function lancerSuperviseur(cas: Cas, options: OptionsCas): string {

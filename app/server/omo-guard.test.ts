@@ -7,9 +7,10 @@
 //    fichiers, listes comparées à celles du cockpit, forme du plugin attendue par opencode 1.18.30, textes (T-L24-c). Aucun
 //    conteneur, aucune pause, aucun port.
 // 2. RÉELS, SAUTÉS sans `OMO_TESTS_CONTENEUR=1` (D-2b-44 ; question Q1 (b), accord du 17/09) : opencode 1.18.30 réel SANS
-//    l'extension (image `omo11/opencode:omo11`, déjà construite), faux fournisseur de la salle (L21a) en mode `--http`, projet
-//    Compose `omo11-l24`, réseau interne, aucun port publié, dossiers de configuration et plugin en lecture seule : T-L24-a (lecture
-//    d'`id_ed25519` par un appel d'outil scripté → erreur d'outil) et T-L24-b (`task` bloqué, absent, invalide), puis une
+//    l'extension (images `<espace>/opencode:<espace>`, déjà construites), faux fournisseur de la salle (L21a) en mode `--http`, projet
+//    Compose et espace de noms donnés par `OMO_TESTS_PREFIXE` (défaut `omo11-l24`), réseau interne, aucun port publié, dossiers
+//    de configuration et plugin en lecture seule : T-L24-a (lecture d'`id_ed25519` par un appel d'outil scripté → erreur
+//    d'outil) et T-L24-b (`task` bloqué, absent, invalide), puis une
 //    contre-épreuve SANS le filet (la même configuration laisse tout passer : c'est bien le filet qui refuse). Aucun appel facturé,
 //    aucun jeton Copilot ; nettoyage même en échec. L'extension n'est ni installée ni exécutée.
 import assert from "node:assert/strict";
@@ -694,8 +695,26 @@ describe("textes du filet (T-L24-c)", () => {
 // --- Tests réels : opencode 1.18.30 sans extension (D-2b-44, Q1 (b)) -------------------------------------------------------------
 
 const CONTENEUR_DEMANDE = process.env.OMO_TESTS_CONTENEUR === "1";
-const PROJET_COMPOSE = "omo11-l24";
-const IMAGES = ["omo11/opencode:omo11", "omo11/app:omo11"] as const;
+
+/**
+ * Préfixe du projet Compose et des images de ce banc, posé par l'intégrateur au train de V2. Variable DE TEST seulement (jamais
+ * lue en production) : chaque exécution du chantier a le sien et ne touche jamais les ressources d'une autre. Défaut INCHANGÉ
+ * (`omo11-l24`, l'exécution d'origine de L24) ; toute autre valeur est bornée aux préfixes des exécutions de la salle.
+ */
+const PROJET_DEFAUT = "omo11-l24";
+const PROJET_COMPOSE = projetDeTest();
+/** Espace de noms des images : la première partie du préfixe (`omo11-l24` → `omo11`, `sal11-l24` → `sal11`). */
+const IMAGE_ESPACE = PROJET_COMPOSE.split("-")[0] as string;
+const IMAGES = [`${IMAGE_ESPACE}/opencode:${IMAGE_ESPACE}`, `${IMAGE_ESPACE}/app:${IMAGE_ESPACE}`] as const;
+
+function projetDeTest(): string {
+  const demande = process.env.OMO_TESTS_PREFIXE?.trim();
+  if (!demande) return PROJET_DEFAUT;
+  if (!/^sal11-|^omo11-/.test(demande)) {
+    throw new Error(`OMO_TESTS_PREFIXE refusé : « ${demande} ». Préfixes acceptés : sal11-… ou omo11-… (garde de nom, plan 2 bis §2.1).`);
+  }
+  return demande;
+}
 
 interface Sortie {
   code: number;
@@ -750,13 +769,15 @@ interface Banc {
   journalOpencode: string;
 }
 
-/** Garde de nom : toute commande « down » vise un projet omo11-*, jamais la pile de l'utilisateur. */
+/** Garde de nom : toute commande « down » vise un projet sal11-* ou omo11-*, jamais la pile de l'utilisateur. */
 function compose(dossier: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = 180_000): Sortie {
-  assert.match(PROJET_COMPOSE, /^omo11-/);
-  return docker(["compose", "-p", PROJET_COMPOSE, "-f", path.join(dossier, "compose.yml"), ...args], env, timeoutMs);
+  assert.match(PROJET_COMPOSE, /^sal11-|^omo11-/);
+  // Le fichier du banc lit le projet et l'espace de noms des images dans ces deux variables (défauts inchangés).
+  const avecPrefixe = { OMO_BANC_PROJET: PROJET_COMPOSE, OMO_BANC_ESPACE: IMAGE_ESPACE, ...env };
+  return docker(["compose", "-p", PROJET_COMPOSE, "-f", path.join(dossier, "compose.yml"), ...args], avecPrefixe, timeoutMs);
 }
 
-/** Restes du projet omo11-l24 (conteneurs, volumes, réseaux), cherchés par nom. */
+/** Restes du projet du banc (conteneurs, volumes, réseaux), cherchés par nom. */
 function restes(): string[] {
   const lister = (args: string[]) => docker(args, {}, 30_000).stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   return [
@@ -847,7 +868,7 @@ describe("filet sur opencode 1.18.30 réel, sans l'extension (T-L24-a, T-L24-b)"
   });
 
   after(() => {
-    assert.deepEqual(restes(), [], "projet omo11-l24 : ressources restantes");
+    assert.deepEqual(restes(), [], `projet ${PROJET_COMPOSE} : ressources restantes`);
   });
 
   it("opencode 1.18.30 réel, un seul plugin (le filet), aucune installation npm, aucun EROFS", () => {

@@ -3,14 +3,16 @@
 # Copilot, aucun secret : le mot de passe d'opencode est tiré par le test à chaque exécution et passé par l'environnement.
 #
 # Lancé par app/server/omo-guard.test.ts (OMO_TESTS_CONTENEUR=1) depuis une copie de ce fichier dans un dossier temporaire, à côté
-# de config/, vide/, guard/ et banc/ : les chemins relatifs ci-dessous désignent cette copie, jamais le dépôt. Projet omo11-l24,
-# images :omo11 déjà construites (aucune construction, aucun tirage), réseau interne, aucun port publié.
+# de config/, vide/, guard/ et banc/ : les chemins relatifs ci-dessous désignent cette copie, jamais le dépôt. Projet et espace de
+# noms des images donnés par le test (variable DE TEST `OMO_TESTS_PREFIXE`, défaut `omo11-l24` et images `omo11/*:omo11`) : chaque
+# exécution du chantier a les siens et ne touche jamais ceux d'une autre. Images déjà construites (aucune construction, aucun
+# tirage), réseau interne, aucun port publié.
 #
 # Dossiers de configuration en LECTURE SEULE (F-aa, spéc. l.183) : un dossier de configuration inscriptible ferait installer
 # @opencode-ai/plugin par opencode avant de charger le moindre plugin. Le plugin est monté en lecture seule, au chemin du contrat.
 # Chacun de ces dossiers porte un `.gitignore` (posé par le test) : sans lui, opencode 1.18.30 tente de l'écrire, reçoit EROFS et
 # refuse d'ouvrir le moindre projet (HTTP 500 à chaque requête) — mesuré sur ce banc le 19/09 (L24.md).
-name: omo11-l24
+name: ${OMO_BANC_PROJET:-omo11-l24}
 
 networks:
   interne:
@@ -24,7 +26,7 @@ volumes:
 
 services:
   opencode:
-    image: omo11/opencode:omo11
+    image: ${OMO_BANC_ESPACE:-omo11}/opencode:${OMO_BANC_ESPACE:-omo11}
     pull_policy: never
     # Ni superviseur du cockpit (il écrit dans /control et dans la configuration), ni entrée de l'image : opencode seul, sous tini.
     entrypoint: ["tini", "--", "opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096", "--print-logs", "--log-level", "INFO"]
@@ -59,7 +61,7 @@ services:
 
   # Pilote : faux fournisseur (API sur banc:8080, pilotage en boucle locale) et scénarios ; rapport JSON sur la sortie standard.
   banc:
-    image: omo11/app:omo11
+    image: ${OMO_BANC_ESPACE:-omo11}/app:${OMO_BANC_ESPACE:-omo11}
     pull_policy: never
     entrypoint: ["node", "/banc/run-guard.mjs"]
     read_only: true
