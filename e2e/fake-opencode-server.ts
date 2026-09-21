@@ -6,15 +6,22 @@
 //
 // L'interface de pilotage exige un jeton (comparaison sans fuite de durée). Elle n'est publiée que sur 127.0.0.1 par
 // docker-compose.e2e.yml, et le jeton est fabriqué à chaque exécution : rien n'est écrit dans le dépôt.
+// --- équipes (it4) : début ---
 //
 // Équipes (it4, L41) : POST /banc/script accepte trois `sessionID` RÉSERVÉS — « quand:<champ>=<valeur> » (scriptWhen, pour les
 // sessions d'étape que le runner crée lui-même), « config:global » (configuration globale du faux, lue à l'estimation par le
 // pré-lancement) et « agents:defaut » (agents de GET /agent, que le faux ne lit pas dans les fichiers du Studio). Mêmes jeton et
 // mêmes bornes que le reste du pilotage ; détails dans `pilotageEquipes`.
+// --- équipes (it4) : fin ---
 import { createHash, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
+// --- équipes (it4) : début ---
+// Ligne REMPLACÉE (elle ne s'ajoute pas) : l'originale de l'itération 1 est
+// `import { FakeOpencode, type FakeTurnScript } from "../app/server/test-support/fake-opencode.ts";` ;
+// `FakeSession` s'y ajoute pour les prédicats de `scriptWhen` (L41).
 import { FakeOpencode, type FakeSession, type FakeTurnScript } from "../app/server/test-support/fake-opencode.ts";
+// --- équipes (it4) : fin ---
 
 const PORT_API = Number(process.env.E2E_PORT_API ?? 4096);
 const PORT_BANC = Number(process.env.E2E_PORT_BANC ?? 4097);
@@ -143,8 +150,8 @@ function pilotageEquipes(sessionID: string, tours: unknown[]): { code: number; c
   }
   return null;
 }
-// --- équipes (it4) : fin ---
 
+// --- équipes (it4) : fin ---
 const banc = http.createServer((req, res) => {
   void (async () => {
     try {

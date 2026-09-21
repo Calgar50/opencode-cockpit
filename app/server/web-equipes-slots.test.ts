@@ -3,8 +3,10 @@
 // - chat/team/slots.ts : types seulement, en types primitifs, sans aucun import (jamais team-types), propriétés figées ;
 // - squelettes : « Propriétaire : Lxx » en première ligne, composant et type de propriétés gardés ; tant que le fichier se dit
 //   « Squelette T4w », il rend null ;
-// - branchements des fichiers partagés (ChatPage, Composer, AssistantsPage, router, Deroule, BudgetTab, web-animations.test.ts)
-//   entre les balises « équipes (it4) », appariées, et à leur place ;
+// - branchements des fichiers partagés (ChatPage, Composer, AssistantsPage, router, Deroule, BudgetTab, web-animations.test.ts,
+//   puis ui.tsx, fake-opencode.ts, croisements-it1-v5, diagnostics-11, activity.css) entre les balises « équipes (it4) »,
+//   appariées, et à leur place. Un motif peut décrire la FORME d'un branchement posé sur une ligne PARTAGéE, et non un nom
+//   ajouté : sans cela une ligne d'origine réécrite hors balises échappe au test (route GET /session/:id/message) ;
 // - routes de la page Assistants (assistantsViewOf, assistantsHref) : cas valides, identifiant invalide ou trop long → vue par
 //   défaut ; élément de la carte = identifiant de nœud (C §9.8 element=<id>, mapNodeId de L39a ; correction du train de V0) ;
 //   onglets ;
@@ -144,7 +146,20 @@ const BRANCHEMENTS: Readonly<Record<string, readonly RegExp[]>> = {
   // Fichiers partagés écrits par les vagues suivantes (correction des écarts §2.2 FIN et §2.7 relevés par la revue
   // d'itération 4) : leurs changements étaient hors balises, ils y sont maintenant, et ce test le garde.
   "web/components/ui.tsx": [/\bpiegerLaTabulation\b/, /modal-focus\.ts/],
-  "server/test-support/fake-opencode.ts": [/\bFakeSkill\b/, /\bsetSkills\b/, /\bskills\(/, /\bMAXIMUM_STEPS_NOTICE\b/, /\bscriptWhen\b/, /\bhalted\b/, /\bwhenScripts\b/],
+  // Les deux derniers motifs gardent la FORME d'un branchement sur une ligne PARTAGÉE : le test ne voyait que des noms
+  // AJOUTÉS, si bien qu'une ligne d'origine réécrite hors balises lui échappait (route GET /session/:id/message, relevé à la
+  // clôture de l'itération 4). L'originale de H1' est recopiée dans le bloc, comme dans BudgetTab.tsx.
+  "server/test-support/fake-opencode.ts": [
+    /\bFakeSkill\b/,
+    /\bsetSkills\b/,
+    /\bskills\(/,
+    /\bMAXIMUM_STEPS_NOTICE\b/,
+    /\bscriptWhen\b/,
+    /\bhalted\b/,
+    /\bwhenScripts\b/,
+    /is\("GET", "session", "\*", "message"\)/,
+    /return json\(200, this\.messages\(id\)\);/,
+  ],
   "server/croisements-it1-v5.test.ts": [/it\\d-\[a-z0-9\]/],
   "server/diagnostics-11.test.ts": [/texte court et pas de/, /bouton seulement quand l'avis en porte un/],
   "web/pages/chat/activity/activity.css": [/Défaut D2 du banc de la vague 4/, /team-launch\.css/],

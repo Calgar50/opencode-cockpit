@@ -369,8 +369,8 @@ async function creerOnglet(client, sessionId, targetId) {
       await envoyer("Emulation.setEmulatedMedia", { features });
       return features.map((feature) => `${feature.name}: ${feature.value}`);
     },
-    // --- équipes (it4) : fin ---
 
+    // --- équipes (it4) : fin ---
     /**
      * Coupe (true) ou rétablit (false) le réseau de l'onglet, comme un Wi-Fi perdu : toute requête nouvelle échoue
      * (ERR_INTERNET_DISCONNECTED), `navigator.onLine` suit et la page reçoit « offline » puis « online ». Un flux

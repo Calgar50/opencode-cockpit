@@ -252,7 +252,6 @@ export async function libererLesDemandes(ctx, racines) {
 }
 
 // --- équipes (it4) : fin ---
-
 /** Attend la fin du tour de `sessionId` : session au repos et dernier message d'assistant clos. Rend les messages. */
 export async function attendreFinDuTour(client, sessionId, { delaiMs = 30_000 } = {}) {
   return await attendreQue(

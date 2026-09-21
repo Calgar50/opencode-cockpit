@@ -308,8 +308,8 @@ export interface FakeSkill {
   name: string;
   description?: string;
 }
-// --- équipes (it4) : fin ---
 
+// --- équipes (it4) : fin ---
 /** IA d'un fournisseur de GET /config/providers (Provider.Model, provider/provider.ts:1078-1093). */
 export interface FakeModel {
   id: string;
@@ -774,8 +774,8 @@ export class FakeOpencode {
     if (typeof steps !== "number" || steps <= 0) return null;
     return this.messages(sessionID).filter((message) => message.info.role === "assistant").length + 1 >= steps ? MAXIMUM_STEPS_NOTICE : null;
   }
-  // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : fin ---
   session(id: string): FakeSession | undefined {
     return this.#sessions.get(id);
   }
@@ -853,8 +853,8 @@ export class FakeOpencode {
     if (directory === undefined) this.#defaultSkills = jsonClone(skills);
     else this.#skills.set(directory, jsonClone(skills));
   }
-  // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : fin ---
   todos(sessionID: string): FakeTodo[] {
     return this.#todos.get(sessionID) ?? [];
   }
@@ -1188,17 +1188,19 @@ export class FakeOpencode {
     }
     if (is("POST", "session", "*", "command")) return this.#command(res, session, input);
     if (is("POST", "session", "*", "summarize")) return this.#summarize(res, session, input);
+    // --- équipes (it4) : début ---
+    // Ligne REMPLACÉE (elle ne s'ajoute pas) : l'originale de l'itération 1 est
+    // `if (is("GET", "session", "*", "message")) return json(200, this.messages(id));`
+    // ME-7 : « limit » rend les N DERNIERS messages, dans l'ordre chronologique (le faux l'ignorait). Une valeur qui n'est pas
+    // un entier positif est refusée, comme le schéma de la route.
     if (is("GET", "session", "*", "message")) {
-      // --- équipes (it4) : début ---
-      // ME-7 : « limit » rend les N DERNIERS messages, dans l'ordre chronologique (le faux l'ignorait). Une valeur qui n'est pas
-      // un entier positif est refusée, comme le schéma de la route.
       const raw = url.searchParams.get("limit");
       const limit = raw === null ? null : Number(raw);
       if (limit !== null && (raw?.trim() === "" || !Number.isSafeInteger(limit) || limit < 0)) return bad();
       const all = this.messages(id);
       return json(200, limit === null ? all : all.slice(Math.max(0, all.length - limit)));
-      // --- équipes (it4) : fin ---
     }
+    // --- équipes (it4) : fin ---
     if (is("GET", "session", "*", "message", "*")) {
       const message = this.messages(id).find((m) => m.info.id === seg[3]);
       return message ? json(200, message) : notFound(`Message not found: ${seg[3]}`);
@@ -1707,8 +1709,8 @@ export class FakeOpencode {
     run.last = message;
     this.#settle(run);
   }
-  // --- équipes (it4) : fin ---
 
+  // --- équipes (it4) : fin ---
   async #tool(run: Run, session: FakeSession, message: OcMessageWithParts, tool: FakeToolScript, stepMs: number): Promise<"ok" | "blocked" | "continue"> {
     const callID = tool.callID ?? `call_${randomBytes(12).toString("hex")}`;
     let part = this.#putPart(message, { type: "tool", tool: tool.tool, callID, state: { status: "pending", input: {}, raw: "" } });
