@@ -1,5 +1,5 @@
 ﻿# CockpitTls.ps1 - bibliotheque commune d'install.ps1 et cockpit.ps1 (opencode-cockpit 1.0.5).
-# Chargee par dot-sourcing apres Assert-CockpitFullLanguage. ASCII + BOM, CRLF, 660 lignes au plus. Aucun etat global .NET modifie.
+# Chargee par dot-sourcing apres Assert-CockpitFullLanguage. ASCII + BOM, CRLF, 700 lignes au plus. Aucun etat global .NET modifie.
 # curl et git : Invoke-CockpitProcess. docker : Invoke-CockpitDocker (variables de compose masquees, -f explicite).
 #
 # Contrat stable ($Mode = 'https' | 'http', ou objet rendu par Get-CockpitLocalMode) :
@@ -24,7 +24,14 @@ $CockpitComposeEnvNames = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'COCKPIT_TL
     'COCKPIT_GITHUB_ENTERPRISE_DOMAIN', 'TZ', 'COCKPIT_OPENCODE_IMAGE', 'COCKPIT_APP_IMAGE', 'COCKPIT_VERSION',
     'OPENCODE_SERVER_PASSWORD', 'WORKSPACE_DIR', 'ARCHIVE_DIR', 'COCKPIT_TOKEN', 'COCKPIT_ALLOWED_HOSTS',
     'COCKPIT_ALLOWED_PROVIDERS', 'COCKPIT_COPILOT_API_URL', 'COCKPIT_PORT', 'COCKPIT_LOCAL_SCHEME',
-    'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_AUTONOMY', 'COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'COMPOSE_PROFILES')
+    'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_AUTONOMY', 'COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'COMPOSE_PROFILES',
+    # Variables du cockpit du contrat de la salle (docker\opencode-omo\contrat-salle.json, variables.cockpit) :
+    # egalite verifiee par tests\ps51\Test-CockpitTls.ps1.
+    'COCKPIT_OMO', 'OPENCODE_OMO_URL', 'OPENCODE_OMO_PASSWORD', 'COCKPIT_OMO_IMAGE', 'COCKPIT_OMO_CONTROL_DIR',
+    'COCKPIT_OMO_STATE_DIR', 'COCKPIT_OMO_AUTH_DIR', 'COCKPIT_OMO_PROJECTS_FILE', 'COCKPIT_EGRESS_JOURNAL')
+# Surcharge du profil de la salle, generee par install.ps1 (D-2b-28) : jamais ecrite a la main, jamais ramassee
+# toute seule par compose (son nom n'est pas un nom de surcharge automatique).
+$CockpitOmoOverlay = 'docker-compose.omo-projets.yml'
 # Etat propre a ce processus PowerShell : A8 une seule fois, echec d'Add-Type memorise.
 $CockpitTlsSession = @{ A8Shown = $false; AddTypeError = $null }
 $CockpitA19 = 'Installation arretee avant toute modification (voir les messages ci-dessus).'
@@ -92,12 +99,31 @@ function Clear-CockpitComposeEnv {
 
 function Restore-CockpitComposeEnv($Saved) { foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') } }
 
+# Interrupteur de la salle : vrai seulement si .env porte exactement COCKPIT_OMO=on (toute autre valeur, fichier absent
+# ou illisible = salle coupee). COCKPIT_OMO_IMAGE ne correspond pas : le nom est suivi d'un souligne, pas d'un egal.
+function Test-CockpitOmoEnabled([string]$Root) {
+    if (-not $Root) { return $false }
+    $file = Join-Path $Root '.env'
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
+    try { $lines = [System.IO.File]::ReadAllLines($file) } catch { return $false }
+    foreach ($line in $lines) { if ($line -cmatch '^\s*COCKPIT_OMO\s*=\s*on\s*\z') { return $true } }
+    return $false
+}
+
 # Fonction simple, sans [Parameter()] : des options docker comme -v ou -d ne sont jamais prises pour -Verbose ou -Debug.
 function ConvertTo-CockpitDockerArgs([string]$Root, [object[]]$DockerArgs) {
     $list = @($DockerArgs | ForEach-Object { [string]$_ })
     if ($list.Count -eq 0 -or $list[0] -cne 'compose' -or ($list.Count -gt 1 -and $list[1] -ceq 'version')) { return , $list }
     if (-not $Root) { throw 'Dossier du cockpit requis pour une commande docker compose.' }
-    return , (@('compose', '-f', (Join-Path $Root 'docker-compose.yml')) + @($list | Select-Object -Skip 1))
+    $prefix = @('compose', '-f', (Join-Path $Root 'docker-compose.yml'))
+    # Surcharge des projets prepares : ses binds .git:ro s'ajoutent a ceux du fichier de base (D-2b-28).
+    $overlay = Join-Path $Root $CockpitOmoOverlay
+    if (Test-Path -LiteralPath $overlay -PathType Leaf) { $prefix += @('-f', $overlay) }
+    # Profil de la salle sur TOUTES les commandes, stop et down compris : sans lui, le service du profil reste en vie
+    # et le reseau du projet ne peut pas etre supprime (MO-3 point 2). COMPOSE_PROFILES n'est jamais melangee a
+    # --profile (MO-3 point 3) : elle est retiree de l'environnement de l'enfant par $CockpitComposeEnvNames.
+    if (Test-CockpitOmoEnabled $Root) { $prefix += @('--profile', 'omo') }
+    return , ($prefix + @($list | Select-Object -Skip 1))
 }
 
 function Invoke-CockpitDocker([string]$Root, [object[]]$DockerArgs, [int]$TimeoutSec = 60) {
@@ -119,6 +145,8 @@ function Get-CockpitComposeProjectName([string]$Root) {
 }
 
 # Causes possibles d'un schema servi different de .env : noms des variables (jamais les valeurs) et fichiers voisins.
+# $CockpitOmoOverlay n'est pas un fichier voisin inattendu : il est genere par install.ps1 et passe explicitement
+# par ConvertTo-CockpitDockerArgs, donc il ne figure jamais dans la liste.
 function Get-CockpitComposeDivergence([string]$Root, [string[]]$Scopes = @('Process', 'User', 'Machine')) {
     $variables = @(foreach ($scope in $Scopes) {
         $present = @([Environment]::GetEnvironmentVariables($scope).Keys)
