@@ -3,6 +3,10 @@
 // Copilot, solde, classement) : doublures inspirées d'integration.test.ts, remplaçables par `deps`. Modules 1.1 : seulement ceux
 // que le test déclare (`modules`), les autres gardent leur port neutre même quand leur code réel est fusionné (plan §2.2) ;
 // `ports` surcharge un port (espion ou faux).
+// Option `omo` (plan 2 bis §2.2, T3b) : SECOND faux opencode, dossiers temporaires de contrôle, d'état et d'authentification,
+// `instances.omo` minimal construit sur ce faux, et un AIGUILLAGE FACTICE (emitOmo, omo.hub, omo.runHooks) qui appelle les
+// inscriptions filtrées sur la salle. La salle reste coupée (SALLE_OUVERTE faux) : le second processeur réel est branché par
+// L18a (V3). La règle des modules déclarés ne change pas : « tous » reste réservé aux tests de croisement et aux e2e.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -18,7 +22,7 @@ import { AssistantService } from "../assistants.ts";
 import { ModelCatalog } from "../catalog.ts";
 import type { Classifier } from "../classifier.ts";
 import { ConfigWriteQueue } from "../config-queue.ts";
-import type { PermissionGate } from "../contracts-11.ts";
+import type { HookSignatures, HookStep, HubEventMap, HubEventType, PermissionGate, ProxyContext } from "../contracts-11.ts";
 import type { ControlService, RestartResult } from "../control.ts";
 import { openMemoryDb } from "../db.ts";
 import type { AppEnv } from "../env.ts";
@@ -27,7 +31,9 @@ import { EventHub } from "../hub.ts";
 import { Ledger } from "../ledger.ts";
 import { createLogger } from "../log.ts";
 import { OcLookup } from "../oc-lookup.ts";
-import { OpencodeClient } from "../opencode.ts";
+import type { InstanceDeps } from "../omo-contracts.ts";
+import { type OcGlobalEvent, OpencodeClient } from "../opencode.ts";
+import { createPermissionGate } from "../permission-gate.ts";
 import { EventProcessor } from "../processor.ts";
 import { ProjectsService } from "../projects.ts";
 import type { QuotaSync } from "../quota.ts";
@@ -36,7 +42,7 @@ import { SessionTracker } from "../sessions.ts";
 import { SettingsStore } from "../settings.ts";
 import type { StudioService } from "../studio.ts";
 import { TierService } from "../tiers.ts";
-import type { BuildCockpit11Options } from "../wiring-11.ts";
+import { type BuildCockpit11Options, servesInstance } from "../wiring-11.ts";
 import { FakeOpencode } from "./fake-opencode.ts";
 import { listenFetchable, until } from "./helpers.ts";
 
@@ -59,6 +65,29 @@ export interface CockpitHarnessOptions {
   ports?: BuildCockpit11Options["ports"];
   /** Portillon remplacé (espion), construit sur les dépendances finales ; absent : createPermissionGate. */
   gate?: (deps: AppDeps) => PermissionGate;
+  /**
+   * Salle OMO : second faux opencode, dossiers temporaires de la salle et `instances.omo` minimal. La salle reste COUPÉE
+   * (SALLE_OUVERTE faux) : rien ne doit être écrit dans ces dossiers (h.omo.fichiers()).
+   */
+  omo?: boolean;
+}
+
+/** Aiguillage factice de la salle (plan 2 bis §2.2) : le second processeur réel est branché par L18a (V3). */
+export interface CockpitHarnessOmo {
+  /** Second faux opencode : celui de la salle. */
+  fake: FakeOpencode;
+  /** `instances.omo` remis à app-factory : client, portillon, catalogue, relevés et processeur propres à la salle (non démarré). */
+  deps: InstanceDeps;
+  /** Dossiers temporaires de la salle, remis au module `omoControl` (volumes control-omo, omo-state et omo-auth). */
+  dirs: { control: string; state: string; auth: string };
+  /** Appelle les DÉRIVATIONS inscrites pour la salle, dans l'ordre du câblage, avec l'origine { instance: "omo" }. */
+  emit(event: OcGlobalEvent): void;
+  /** Appelle les ABONNÉS du hub inscrits pour la salle, dans l'ordre du câblage. */
+  hub<K extends HubEventType>(type: K, data: HubEventMap[K]): void;
+  /** Crochets du proxy de la salle : le contexte porte `instance: "omo"`, runHooks écarte donc ceux du cockpit. */
+  runHooks<S extends HookStep>(step: S, ...args: Parameters<HookSignatures[S]>): Promise<Response | null>;
+  /** Chemins relatifs des fichiers trouvés dans les trois dossiers de la salle, triés : doit rester vide, salle coupée. */
+  fichiers(): string[];
 }
 
 export interface CallResult {
@@ -84,6 +113,10 @@ export interface CockpitHarness {
   call(method: string, pathname: string, init?: { headers?: Record<string, string>; body?: unknown }): Promise<CallResult>;
   /** authed : cookie de session ; mutating : + en-tête anti-CSRF ; confirmed : + x-cockpit-confirm. */
   headers: { authed: Record<string, string>; mutating: Record<string, string>; confirmed: Record<string, string> };
+  /** Salle OMO (option `omo`) ; null sans l'option : le cockpit tourne alors avec `instances.omo` à null. */
+  omo: CockpitHarnessOmo | null;
+  /** Raccourci de `omo.emit` : aiguillage factice des dérivations de la salle. Échoue si l'option `omo` est absente. */
+  emitOmo(event: OcGlobalEvent): void;
   /** Événements du cockpit publiés sur le hub depuis le démarrage, dans l'ordre. */
   cockpitEvents(): Array<{ type: string; data: unknown }>;
   /**
@@ -279,8 +312,58 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   const processor = makeProcessor(merged);
   const deps: AppDeps = { ...merged, processor };
 
+  // Salle OMO : second faux opencode et instance minimale bâtie dessus. Le processeur de la salle est construit mais JAMAIS
+  // démarré (L18a le branchera en V3) : ici, il ne sert qu'à donner une instance complète au routeur.
+  let omoParts: { fake: FakeOpencode; deps: InstanceDeps; dirs: { control: string; state: string; auth: string }; racine: string } | null = null;
+  if (options.omo) {
+    const omoPassword = randomBytes(18).toString("base64url");
+    const omoFake = new FakeOpencode({ password: omoPassword });
+    cleanups.push(() => omoFake.close());
+    await omoFake.start();
+    const omoEnv: AppEnv = { ...env, opencodeUrl: omoFake.url, opencodePassword: omoPassword, opencodeWorkspaceDir: omoFake.directory };
+    const omoClient = new OpencodeClient(omoEnv);
+    const omoLookup = new OcLookup({ client: omoClient, env: omoEnv, hub, log });
+    cleanups.push(() => omoLookup.close());
+    const omoCatalog = new ModelCatalog(omoClient);
+    cleanups.push(() => omoCatalog.stop());
+    omoParts = {
+      fake: omoFake,
+      racine: dir("omo"),
+      dirs: { control: dir("omo/control"), state: dir("omo/state"), auth: dir("omo/auth") },
+      deps: {
+        instance: "omo",
+        client: omoClient,
+        // Portillon propre à la salle : son registre des réponses émises est la base de la détection 1 (§4.14.5).
+        gate: createPermissionGate({ client: omoClient, db, log, hub, sessions }),
+        lookup: omoLookup,
+        catalog: omoCatalog,
+        processor: new EventProcessor({ db, client: omoClient, sessions, ledger, archive, classifier: deps.classifier, hub, log }),
+        billRefusal: () => null,
+        beginBilled: () => () => undefined,
+        isAllowedDirectory: (directory) => projects.isAllowedDirectory(directory),
+      },
+    };
+  }
+
   const cockpit = createCockpitApp(
-    { ...deps, configQueue: deps.configQueue ?? configQueue, sessions, ...(options.gate ? { gate: options.gate(deps) } : {}) },
+    {
+      ...deps,
+      configQueue: deps.configQueue ?? configQueue,
+      sessions,
+      ...(options.gate ? { gate: options.gate(deps) } : {}),
+      omo: omoParts?.deps ?? null,
+      // Salle coupée : le service réel de L17b est construit sur ces dossiers et n'y écrit rien (actif() faux).
+      ...(omoParts === null
+        ? {}
+        : {
+            omoControlDirs: {
+              controlDir: omoParts.dirs.control,
+              stateDir: omoParts.dirs.state,
+              authDir: omoParts.dirs.auth,
+              opencodeDataDir: env.opencodeDataDir,
+            },
+          }),
+    },
     { modules: options.modules === "tous" ? undefined : (options.modules ?? []), ports: options.ports },
   );
   cockpitRef = cockpit;
@@ -332,6 +415,39 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
       req.end(payload);
     });
 
+  // Aiguillage factice : il lit le câblage rendu et n'appelle QUE les inscriptions qui servent la salle.
+  const omo: CockpitHarnessOmo | null =
+    omoParts === null
+      ? null
+      : {
+          fake: omoParts.fake,
+          deps: omoParts.deps,
+          dirs: omoParts.dirs,
+          emit: (event) => {
+            for (const derivation of cockpit.wiring.derivations) {
+              if (servesInstance(derivation, "omo")) derivation.onEvent(event, { instance: "omo" });
+            }
+          },
+          hub: (type, data) => {
+            for (const subscription of cockpit.wiring.subscriptions) {
+              if (subscription.type !== type || !servesInstance(subscription, "omo")) continue;
+              (subscription.fn as (d: unknown) => void)(data);
+            }
+          },
+          runHooks: (step, ...args) => {
+            const [first, ...reste] = args as [ProxyContext, ...unknown[]];
+            return cockpit.wiring.runHooks(step, ...([{ ...first, instance: "omo" }, ...reste] as Parameters<HookSignatures[typeof step]>));
+          },
+          fichiers: () => {
+            const racine = omoParts.racine;
+            return fs
+              .readdirSync(racine, { recursive: true, encoding: "utf8" })
+              .map((entree) => entree.replaceAll("\\", "/"))
+              .filter((entree) => fs.statSync(path.join(racine, entree)).isFile())
+              .sort();
+          },
+        };
+
   const assertNoGlobalRestart = () => {
     const reloads = fake.requests.map((r) => `${r.method} ${r.pathname}`).filter((route) => RELOAD_ROUTES.has(route));
     const found = [...reloads, ...restarts.map((reason) => `redémarrage demandé (${reason})`)];
@@ -350,6 +466,11 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     cockpit,
     call,
     headers,
+    omo,
+    emitOmo: (event) => {
+      assert.ok(omo, "harnais du cockpit : l'option « omo » est nécessaire pour emitOmo");
+      omo.emit(event);
+    },
     cockpitEvents: () => events.map((event) => ({ ...event })),
     assertNoGlobalRestart,
     close,

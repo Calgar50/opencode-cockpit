@@ -1,9 +1,14 @@
 // Tests de cadre du câblage 1.1 (plan d'exécution §2.2, §2.6, §4.4, §4.7 ; T0) : ordre figé vérifié avec des modules factices,
 // ports neutres (= 1.0.4), porte I1, route du Diagnostic, salle coupée (D-10), motifs d'identifiants, propriétaires des squelettes.
 // Le harnais T1 n'existe pas encore : createApp est monté avec des dépendances minimales, sans réseau (app.request).
+// Salle OMO (plan 2 bis §2.7, §4.1.2, §4.2 ; D-2b-40, T3b) : porte SALLE_OUVERTE, ports neutres de la salle, ordre du §4.1.2
+// vérifié avec des modules factices, filtre par instance, et test « production » PAR PROPRIÉTÉ — liste exacte pour les modules
+// de l'itération 1 et de l'itération 2, propriété (instances et couple de STEP_ORDER) pour ceux de la salle : remplacer un
+// squelette de la salle ne touche plus ce fichier, qui est le DERNIER que T3b écrit (aucun paquet ne le modifie après).
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import type { Hono } from "hono";
@@ -24,11 +29,31 @@ import type { AppEnv } from "./env.ts";
 import { createApp } from "./http.ts";
 import { type BrowserEvent, EventHub } from "./hub.ts";
 import { createLogger, type Logger } from "./log.ts";
+import { OMO_MODULE_NAMES, OMO_ORDRE_PROPOSE, type OmoModuleName } from "./omo-contracts.ts";
 import { SESSION_COOKIE_NAME, sessionValue } from "./security.ts";
 import { SettingsStore } from "./settings.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
 import { ID, ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
+import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
 import type { StudioService } from "./studio.ts";
-import { ACTIVATION_OUVERTE, buildCockpit11, type Cockpit11Wiring, MODULE_ORDER, MODULES, NEUTRAL_PORTS, STEP_ORDER } from "./wiring-11.ts";
+import {
+  ACTIVATION_OUVERTE,
+  buildCockpit11,
+  type Cockpit11Wiring,
+  MODULE_ORDER,
+  MODULES,
+  NEUTRAL_PORTS,
+  type Registration,
+  SALLE_OUVERTE,
+  servesInstance,
+  STEP_ORDER,
+} from "./wiring-11.ts";
+
+/** Modules de la salle (T3a) : le test « production » leur applique une propriété, jamais une liste exacte (D-2b-40). */
+const EST_MODULE_SALLE = (name: string): name is OmoModuleName => (OMO_MODULE_NAMES as readonly string[]).includes(name);
+
+/** Modules du cockpit (itérations 1 et 2), dans l'ordre d'installation. */
+const MODULES_COCKPIT = MODULE_ORDER.filter((name) => !EST_MODULE_SALLE(name));
 
 /** Jeton de test généré à chaque exécution, jamais imprimé. */
 const TOKEN = crypto.randomBytes(36).toString("base64url");
@@ -239,6 +264,81 @@ async function assertNeutralPorts(wiring: Cockpit11Wiring, s: ReturnType<typeof 
   assert.equal(wiring.c11.reloadBusy(), false);
   // Porte I1 basculée au train de la vague 3 (it2) : le cadre porte désormais true, y compris sans aucun module.
   assert.equal(wiring.c11.activationOuverte, true);
+  // Porte de la salle : fausse dans le dépôt, sans aucun module comme avec tous.
+  assert.equal(wiring.c11.salleOuverte, false);
+  await assertOmoPortsNeutres(wiring, autonomy);
+}
+
+/** Ports de la salle (T3b) : salle coupée, aucun comportement, aucune écriture, aucune racine dans la salle. */
+async function assertOmoPortsNeutres(wiring: Cockpit11Wiring, autonomy = true) {
+  const p = wiring.c11.ports;
+  assert.deepEqual(await p.omoRoom.open({ projet: "app" }, { mode: "avance", confirmed: true }), {
+    ok: false,
+    status: 403,
+    code: "salle-coupee",
+    precheck: null,
+  });
+  const statut = await p.omoRoom.status();
+  assert.deepEqual(statut.interrupteurs, { omo: false, autonomie: autonomy, salleOuverte: false });
+  assert.equal(statut.etatSalle, "coupee");
+  assert.deepEqual(
+    [statut.image.chargee, statut.dernierDemarrage, statut.workspaceGit, statut.authSalle.presente, statut.battement.actif, statut.battement.ageMs],
+    [false, null, null, false, false, null],
+  );
+  assert.deepEqual([statut.listeBlanche, statut.projetsPrepares, statut.sortiesRefusees24h], [[], [], []]);
+  assert.deepEqual(p.omoRoom.openProjects(), []);
+  assert.equal(p.omoRoom.isRoomRoot(ROOT), false);
+  assert.deepEqual(await p.omoPrecheck.check("app"), { ok: false, code: "salle-coupee" });
+  assert.deepEqual(await p.omoPrecheck.beforeStart("dem_1"), { ok: false, startId: "dem_1", code: "salle-coupee", resultats: [] });
+  assert.equal(await p.omoActivation.view(ROOT), null);
+  assert.deepEqual(await p.omoActivation.put(ROOT, { choix: "omo", plafondUsd: "1.00" }, { mode: "avance", confirmed: true }), {
+    ok: false,
+    status: 409,
+    code: "salle-coupee",
+  });
+  assert.deepEqual(await p.omoActivation.consume(ROOT), { ok: false, code: "salle-coupee" });
+  assert.equal(p.omoActivation.activeRequest(), null);
+  assert.equal(p.omoActivation.endRequest(ROOT, "interrompue"), undefined);
+  await assert.rejects(p.omoStop.run(ROOT, "vous"), PortUnavailableError);
+  assert.equal(await p.omoStop.relaunchAfterRequest(ROOT), undefined);
+  assert.deepEqual([p.omoDetections, p.omoResponder, p.omoCaps], [{}, {}, {}]);
+  // omoControl neutre (dossiers de la salle absents) : rien n'est lu, rien n'est écrit, l'état reste inconnu.
+  assert.equal(await p.omoControl.readState(), null);
+  assert.equal(p.omoControl.suspended(), false);
+  assert.equal(await p.omoControl.publishAuth(), undefined);
+  assert.equal(await p.omoControl.writeGuardState({ version: 1, at: 1, bloquer: ["task"] }), undefined);
+}
+
+/** Le couple (nature, clé, module) d'une inscription figure-t-il dans STEP_ORDER ? */
+function coupleDansStepOrder(r: Registration): boolean {
+  switch (r.kind) {
+    case "hook":
+      return ((STEP_ORDER.hooks as Record<string, readonly string[]>)[r.key] ?? []).includes(r.module);
+    case "derivation":
+      return (STEP_ORDER.derivations as readonly string[]).includes(r.module);
+    case "hub":
+      return STEP_ORDER.hub.some(([module, type]) => module === r.module && type === r.key);
+    case "startup":
+      return (STEP_ORDER.startup as readonly string[]).includes(r.module);
+    case "routes":
+      return STEP_ORDER.routes.some(([group, module]) => group === r.key && module === r.module);
+  }
+}
+
+/**
+ * Test « production » PAR PROPRIÉTÉ des modules de la salle (D-2b-40), vrai quel que soit le paquet qui aura rempli un port :
+ * chaque inscription d'un module `omo*` porte `instances: ["omo"]` et son couple figure dans STEP_ORDER. SEULE EXCEPTION,
+ * documentée dans omo-control-module.ts : l'inscription de démarrage d'omoControl tourne côté cockpit (retrait de l'auth.json
+ * d'un processus précédent, puis lecture d'état), donc `["principale"]`. Un paquet qui inscrirait une dérivation de salle sans
+ * le dire — elle irait alors au processeur du cockpit — fait tomber ce test.
+ */
+function assertInscriptionsSalle(wiring: Cockpit11Wiring) {
+  for (const inscription of wiring.registrations.filter((r) => EST_MODULE_SALLE(r.module))) {
+    const repere = `${inscription.kind} ${inscription.key} / ${inscription.module}`;
+    const exception = inscription.module === "omoControl" && inscription.kind === "startup";
+    assert.deepEqual(inscription.instances, exception ? ["principale"] : ["omo"], `${repere} : instances`);
+    assert.ok(coupleDansStepOrder(inscription), `${repere} : couple absent de STEP_ORDER`);
+  }
 }
 
 function assertNoRegistration(wiring: Cockpit11Wiring) {
@@ -268,7 +368,7 @@ describe("câblage 1.1 : ordre figé", () => {
     }
   });
 
-  it("MODULE_ORDER et STEP_ORDER : ordre du plan §4.4", () => {
+  it("MODULE_ORDER et STEP_ORDER : ordre du plan §4.4 pour le cockpit, du §4.1.2 pour la salle", () => {
     assert.deepEqual(MODULE_ORDER, [
       "gate",
       "floors",
@@ -286,22 +386,25 @@ describe("câblage 1.1 : ordre figé", () => {
       "capWatch",
       "internalAgents",
       "diagnostics",
+      ...OMO_MODULE_NAMES,
     ]);
     assert.deepEqual(STEP_ORDER, {
       hooks: {
         createSession: ["floors"],
         sessionCreated: ["floors"],
-        beforeBilledSend: ["floors", "plans", "activation", "requests"],
+        beforeBilledSend: ["floors", "plans", "activation", "requests", "omoActivation", "omoCaps"],
         beforeOnceRelay: ["taskGuard"],
-        abort: ["stopTree"],
+        abort: ["stopTree", "omoStop"],
       },
-      derivations: ["gate", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch"],
+      derivations: ["gate", "omoDetections", "omoResponder", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch", "omoCaps"],
       hub: [
         ["delegationWatch", "usage.updated"],
         ["autonomy", "opencode.connection"],
         ["capWatch", "usage.updated"],
+        ["omoCaps", "usage.updated"],
+        ["omoDetections", "usage.updated"],
       ],
-      startup: ["conversationAutonomy", "internalAgents", "capWatch"],
+      startup: ["conversationAutonomy", "internalAgents", "capWatch", "omoControl", "omoStop", "omoRoom", "omoPrecheck"],
       routes: [
         ["conversations", "stopTree"],
         ["delegations", "taskGuard"],
@@ -309,8 +412,37 @@ describe("câblage 1.1 : ordre figé", () => {
         ["autonomy", "conversationAutonomy"],
         ["plans", "plans"],
         ["diagnostic-11", "diagnostics"],
+        ["omo", "omoRoom"],
       ],
     });
+  });
+
+  // Une seule table pour les deux instances : chaque ordre doit y rester une SOUS-SUITE, sinon un module verrait ses voisins
+  // dans le désordre à l'exécution. L'ordre de la salle est celui que T3a a proposé (OMO_ORDRE_PROPOSE, plan §4.1.2).
+  it("STEP_ORDER : l'ordre de la salle (§4.1.2) et celui du cockpit (§4.4) y sont des sous-suites", () => {
+    const sousSuite = (attendu: readonly string[], table: readonly string[], quoi: string) => {
+      let index = -1;
+      for (const nom of attendu) {
+        const trouve = table.indexOf(nom, index + 1);
+        assert.ok(trouve > index, `${quoi} : « ${nom} » absent ou hors de l'ordre dans STEP_ORDER`);
+        index = trouve;
+      }
+    };
+    for (const step of Object.keys(STEP_ORDER.hooks) as HookStep[]) {
+      sousSuite(OMO_ORDRE_PROPOSE.hooks[step], STEP_ORDER.hooks[step], `salle ${step}`);
+      sousSuite(
+        STEP_ORDER.hooks[step].filter((name) => !EST_MODULE_SALLE(name)),
+        STEP_ORDER.hooks[step],
+        `cockpit ${step}`,
+      );
+    }
+    sousSuite(OMO_ORDRE_PROPOSE.derivations, STEP_ORDER.derivations, "salle dérivations");
+    sousSuite(OMO_ORDRE_PROPOSE.startup, STEP_ORDER.startup, "salle démarrage");
+    const couple = (entries: ReadonlyArray<readonly [string, string]>) => entries.map(([a, b]) => `${a}/${b}`);
+    sousSuite(couple(OMO_ORDRE_PROPOSE.hub), couple(STEP_ORDER.hub), "salle hub");
+    sousSuite(couple(OMO_ORDRE_PROPOSE.routes), couple(STEP_ORDER.routes), "salle routes");
+    // Le groupe de routes de la salle est monté en dernier (spécification §7.1 : les routes existantes d'abord).
+    assert.deepEqual(STEP_ORDER.routes.at(-1), ["omo", "omoRoom"]);
   });
 
   it("MODULES et NEUTRAL_PORTS : un module réel par nom, un port neutre par module sauf gate", () => {
@@ -403,7 +535,8 @@ describe("câblage 1.1 : ordre figé", () => {
       { name: "diagnostics", install: (reg) => reg.routes("diagnostic-11", () => void trace.push("diagnostic-11")) },
     ];
     const wiring = buildCockpit11(s.deps, { modules: [...factices].reverse() });
-    assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
+    // Modules du cockpit seuls : ceux de la salle ont leur propre test d'ordre (§4.1.2), plus bas.
+    assert.deepEqual(wiring.modules, MODULES_COCKPIT);
 
     const run = async (fn: () => Promise<unknown> | unknown) => {
       trace.length = 0;
@@ -481,6 +614,113 @@ describe("câblage 1.1 : ordre figé", () => {
     });
     assert.throws(() => (kept as Registrar | null)?.startup(async () => undefined), /hors de l'installation/);
   });
+
+  // Ordre du §4.1.2 avec des modules factices qui inscrivent TOUS les couples proposés par T3a : les inscriptions qui servent la
+  // salle doivent rendre exactement OMO_ORDRE_PROPOSE, dans son ordre, alors que la table STEP_ORDER est commune aux deux
+  // instances. Les paquets L18c à L23c n'auront donc pas à toucher ce fichier pour être rangés.
+  it("ordre du §4.1.2 : les inscriptions de la salle suivent OMO_ORDRE_PROPOSE", () => {
+    const s = setup();
+    const salle = { instances: ["omo"] } as const;
+    const inscriptions = new Map<ModuleName, Array<(reg: Registrar) => void>>();
+    const ajoute = (name: ModuleName, fn: (reg: Registrar) => void) => inscriptions.set(name, [...(inscriptions.get(name) ?? []), fn]);
+    for (const step of Object.keys(OMO_ORDRE_PROPOSE.hooks) as HookStep[]) {
+      for (const name of OMO_ORDRE_PROPOSE.hooks[step]) ajoute(name, (reg) => reg.hook(step, async () => null, salle));
+    }
+    for (const name of OMO_ORDRE_PROPOSE.derivations) ajoute(name, (reg) => reg.derivation({ name, instances: ["omo"], onEvent: () => undefined }));
+    for (const [name, type] of OMO_ORDRE_PROPOSE.hub) ajoute(name, (reg) => reg.hub(type, () => undefined, salle));
+    for (const name of OMO_ORDRE_PROPOSE.startup) ajoute(name, (reg) => reg.startup(async () => undefined, salle));
+    for (const [group, name] of OMO_ORDRE_PROPOSE.routes) ajoute(name, (reg) => reg.routes(group, () => undefined, salle));
+
+    const wiring = buildCockpit11(s.deps, {
+      modules: [...inscriptions].map(([name, liste]) => ({
+        name,
+        install: (reg: Registrar) => {
+          for (const fn of liste) fn(reg);
+        },
+      })),
+    });
+    const salleInscriptions = wiring.registrations.filter((r) => servesInstance(r, "omo"));
+    const modulesDe = (kind: Registration["kind"], key?: string) =>
+      salleInscriptions.filter((r) => r.kind === kind && (key === undefined || r.key === key)).map((r) => r.module);
+    for (const step of Object.keys(OMO_ORDRE_PROPOSE.hooks) as HookStep[]) {
+      assert.deepEqual(modulesDe("hook", step), [...OMO_ORDRE_PROPOSE.hooks[step]], step);
+    }
+    assert.deepEqual(modulesDe("derivation"), [...OMO_ORDRE_PROPOSE.derivations]);
+    assert.deepEqual(modulesDe("startup"), [...OMO_ORDRE_PROPOSE.startup]);
+    assert.deepEqual(
+      salleInscriptions.filter((r) => r.kind === "hub").map((r) => [r.module, r.key]),
+      OMO_ORDRE_PROPOSE.hub.map(([name, type]) => [name, type]),
+    );
+    assert.deepEqual(
+      salleInscriptions.filter((r) => r.kind === "routes").map((r) => [r.key, r.module]),
+      OMO_ORDRE_PROPOSE.routes.map(([group, name]) => [group, name]),
+    );
+    // Aucune de ces inscriptions ne touche l'instance principale.
+    assert.deepEqual(
+      wiring.registrations.filter((r) => servesInstance(r, "principale")),
+      [],
+    );
+  });
+
+  it("couple de la salle absent de STEP_ORDER : le câblage échoue", () => {
+    const s = setup();
+    const salle = { instances: ["omo"] } as const;
+    const refuses: Cockpit11Module[] = [
+      { name: "omoRoom", install: (reg) => reg.hook("abort", async () => null, salle) },
+      { name: "omoStop", install: (reg) => reg.routes("omo", () => undefined, salle) },
+      { name: "omoDetections", install: (reg) => reg.hub("opencode.connection", () => undefined, salle) },
+      { name: "omoCaps", install: (reg) => reg.startup(async () => undefined, salle) },
+      { name: "omoActivation", install: (reg) => reg.derivation({ name: "omoActivation", instances: ["omo"], onEvent: () => undefined }) },
+    ];
+    for (const module of refuses) {
+      assert.throws(() => buildCockpit11(s.deps, { modules: [module] }), /couple non prévu dans STEP_ORDER/, module.name);
+    }
+  });
+
+  // Filtre par défaut (plan 2 bis §4.2) : une inscription qui ne déclare rien ne sert que l'instance principale, et garde sa
+  // forme exacte (champ `instances` ABSENT) ; les listes exhaustives des tests de croisement restent donc comparables.
+  it("filtre par instance : sans « instances », un crochet ne sert que le cockpit ; avec [\"omo\"], il ne sert que la salle", async () => {
+    const s = setup();
+    const trace: string[] = [];
+    const wiring = buildCockpit11(s.deps, {
+      modules: [
+        {
+          name: "plans",
+          install: (reg) =>
+            reg.hook("beforeBilledSend", async () => {
+              trace.push("plans");
+              return null;
+            }),
+        },
+        {
+          name: "omoCaps",
+          install: (reg) =>
+            reg.hook(
+              "beforeBilledSend",
+              async () => {
+                trace.push("omoCaps");
+                return null;
+              },
+              { instances: ["omo"] },
+            ),
+        },
+      ],
+    });
+    assert.deepEqual(wiring.registrations, [
+      { kind: "hook", key: "beforeBilledSend", module: "plans" },
+      { kind: "hook", key: "beforeBilledSend", module: "omoCaps", instances: ["omo"] },
+    ]);
+    assert.equal(wiring.hooks.beforeBilledSend.length, 2, "les deux crochets sont câblés ; c'est runHooks qui trie");
+    const appels = async (instance?: SessionInstance) => {
+      trace.length = 0;
+      await wiring.runHooks("beforeBilledSend", (instance === undefined ? {} : { instance }) as ProxyContext);
+      return [...trace];
+    };
+    // Contexte sans instance : proxy 1.0.x de http.ts, donc instance principale.
+    assert.deepEqual(await appels(), ["plans"]);
+    assert.deepEqual(await appels("principale"), ["plans"]);
+    assert.deepEqual(await appels("omo"), ["omoCaps"]);
+  });
 });
 
 describe("câblage 1.1 : ports neutres", () => {
@@ -501,7 +741,11 @@ describe("câblage 1.1 : ports neutres", () => {
     const s = setup();
     const wiring = buildCockpit11(s.deps);
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
-    assert.deepEqual(wiring.registrations, [
+    // Liste EXACTE pour les modules de l'itération 1 et de l'itération 2 (aucune inscription en trop, aucune en moins) ; les
+    // modules de la salle sont contrôlés juste après, par propriété (D-2b-40).
+    assert.deepEqual(
+      wiring.registrations.filter((r) => !EST_MODULE_SALLE(r.module)),
+      [
       { kind: "hook", key: "createSession", module: "floors" },
       { kind: "hook", key: "sessionCreated", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
@@ -531,7 +775,19 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
-    ]);
+      ],
+    );
+    // PROPRIÉTÉ des inscriptions de la salle (D-2b-40) : chacune sert l'instance « omo » et son couple figure dans STEP_ORDER.
+    // Seule exception, documentée dans omo-control-module.ts : le démarrage d'omoControl tourne côté cockpit (retrait d'un
+    // auth.json laissé par un processus précédent, puis lecture d'état), donc `["principale"]`. Aucun paquet n'a donc à
+    // modifier ce fichier pour remplacer un squelette de la salle.
+    assertInscriptionsSalle(wiring);
+    // Dans le dépôt, la salle n'inscrit QUE son groupe de routes (403 salle-coupee) : les dossiers de contrôle sont absents, donc
+    // omoControl reste neutre et n'inscrit rien ; les autres modules sont des squelettes.
+    assert.deepEqual(
+      wiring.registrations.filter((r) => EST_MODULE_SALLE(r.module)),
+      [{ kind: "routes", key: "omo", module: "omoRoom", instances: ["omo"] }],
+    );
     assert.deepEqual(
       [
         wiring.hooks.createSession.length,
@@ -546,7 +802,8 @@ describe("câblage 1.1 : ports neutres", () => {
     assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
     assert.equal(wiring.derivations.length, 5);
     assert.equal(wiring.startup.length, 2);
-    assert.equal(wiring.routes.length, 6);
+    // 7 groupes : les six du cockpit, puis « omo ».
+    assert.equal(wiring.routes.length, 7);
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts. Un choix inconnu reste invalide quelle que soit la salle ; la réponse
     // à « omo » (409 « autonomie-indisponible », raison « racine-hors-salle ») est contrôlée par conversation-autonomy.test.ts (L22c).
@@ -656,17 +913,29 @@ describe("câblage 1.1 : routes et cadre", () => {
     assert.equal((await withoutModule.request("GET", "/api/diagnostic/activite", withoutModule.authed)).status, 404);
   });
 
-  it("salle coupée (D-10) : POST /api/omo/rooms avec cookie et en-têtes anti-CSRF → 404 ; si le service opencode-omo existe : profiles [omo] et pull_policy never", async () => {
+  it("salle coupée (D-10, §2.7) : toute route /api/omo/* → 403 salle-coupee ; si le service opencode-omo existe : profiles [omo] et pull_policy never", async () => {
     const s = setup();
-    const { request, mutating } = mount(s, buildCockpit11(s.deps).routes);
+    const { request, authed, mutating } = mount(s, buildCockpit11(s.deps).routes);
     const body = JSON.stringify({ projet: "/workspace/app" });
-    // 404 tant que la salle n'existe pas ; 403 attendu en L18 (spécification §7.1).
-    const res = await request("POST", "/api/omo/rooms", { ...mutating, "x-cockpit-confirm": "1" }, body);
-    assert.equal(res.status, 404);
-    assert.equal(((await res.json()) as { error: string }).error, "not-found");
-    // Les en-têtes passent bien la garde anti-CSRF : sans eux, refus avant la route.
+    const attendRefus = async (res: Response, quoi: string) => {
+      assert.equal(res.status, 403, quoi);
+      assert.deepEqual(await res.json(), { error: "salle-coupee", message: phraseRefusActivation("salle-coupee") }, quoi);
+    };
+    // Ouverture d'une salle, avec cookie, en-tête anti-CSRF ET confirmation : rien n'ouvre la salle, pas même une demande complète.
+    await attendRefus(await request("POST", "/api/omo/rooms", { ...mutating, "x-cockpit-confirm": "1" }, body), "POST /api/omo/rooms");
+    await attendRefus(await request("POST", `/api/omo/rooms/${ROOT}/stop`, { ...mutating, "x-cockpit-confirm": "1" }), "arrêt d'une salle");
+    await attendRefus(await request("GET", "/api/omo/status", authed), "GET /api/omo/status");
+    // Même une route inconnue de la salle : la garde couvre tout /api/omo/*, avant tout port.
+    await attendRefus(await request("GET", "/api/omo/inconnue", authed), "route inconnue de la salle");
+    // Les en-têtes passent bien la garde anti-CSRF : sans eux, refus avant la route (403 « csrf », pas « salle-coupee »).
     const { "x-cockpit-csrf": _csrf, ...withoutCsrf } = mutating;
-    assert.equal((await request("POST", "/api/omo/rooms", withoutCsrf, body)).status, 403);
+    const sansCsrf = await request("POST", "/api/omo/rooms", withoutCsrf, body);
+    assert.equal(sansCsrf.status, 403);
+    assert.notEqual(((await sansCsrf.json()) as { error: string }).error, "salle-coupee");
+    // Sans le module de la salle, aucune route /api/omo/* n'est montée : le 404 de /api/* reprend la main.
+    const bare = setup();
+    const sansSalle = mount(bare, buildCockpit11(bare.deps, { modules: [] }).routes);
+    assert.equal((await sansSalle.request("GET", "/api/omo/status", sansSalle.authed)).status, 404);
 
     const composeText = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "docker-compose.yml"), "utf8");
     const compose = parseYaml(composeText) as { services: Record<string, unknown> };
@@ -678,6 +947,61 @@ describe("câblage 1.1 : routes et cadre", () => {
       assert.deepEqual(omo.profiles, ["omo"]);
       assert.equal(omo.pull_policy, "never");
     }
+  });
+
+  // Porte de la salle (plan 2 bis §2.7, risque n° 16) : basculée par erreur, elle ouvrirait tout. Deux gardes : la valeur lue
+  // par le cadre, et le TEXTE du dépôt — un banc qui bascule la constante dans sa copie jetable fait tomber ce test, c'est
+  // exactement ce qu'on veut : la bascule ne doit jamais être commitée.
+  it("SALLE_OUVERTE : fausse, et le dépôt porte bien « export const SALLE_OUVERTE = false; »", () => {
+    assert.equal(SALLE_OUVERTE, false);
+    const source = fs.readFileSync(path.join(import.meta.dirname, "wiring-11.ts"), "utf8");
+    assert.match(source, /^export const SALLE_OUVERTE = false;$/m);
+    assert.doesNotMatch(source, /^export const SALLE_OUVERTE = true;$/m);
+    // Aucune variable d'environnement n'ouvre la salle (§2.7) : la constante est la seule porte, et ni le câblage ni le module
+    // de contrôle ne lisent process.env.
+    for (const fichier of ["wiring-11.ts", "omo-control-module.ts", "routes-omo.ts", "omo-room.ts"]) {
+      assert.doesNotMatch(fs.readFileSync(path.join(import.meta.dirname, fichier), "utf8"), /process\.env/, fichier);
+    }
+  });
+
+  // Service réel de L17b branché (omo-control-module.ts) mais INERTE : avec les dossiers de la salle, aucun fichier n'est créé.
+  it("salle coupée : le service de contrôle réel n'écrit rien dans les volumes de la salle, et son démarrage retire l'auth.json d'avant", async () => {
+    const racine = fs.mkdtempSync(path.join(os.tmpdir(), "wiring-omo-"));
+    const dossier = (nom: string) => {
+      const chemin = path.join(racine, nom);
+      fs.mkdirSync(chemin, { recursive: true });
+      return chemin;
+    };
+    const dirs = { controlDir: dossier("control"), stateDir: dossier("state"), authDir: dossier("auth"), opencodeDataDir: dossier("oc-data") };
+    const s = setup();
+    // Le dossier de données du cockpit sert à la suspension (D-2b-29), hors des volumes de la salle.
+    const deps: Cockpit11Deps = { ...s.deps, env: { ...s.deps.env, dataDir: dossier("data") }, omoControlDirs: dirs };
+    // Copie laissée par un cockpit précédent : le démarrage doit la RETIRER (demande n° 3 de L17b), sans rien écrire ailleurs.
+    fs.writeFileSync(path.join(dirs.authDir, "auth.json"), "{}");
+    const wiring = buildCockpit11(deps);
+    assertInscriptionsSalle(wiring);
+    assert.deepEqual(
+      wiring.registrations.filter((r) => EST_MODULE_SALLE(r.module)),
+      [
+        { kind: "startup", key: "startup", module: "omoControl", instances: ["principale"] },
+        { kind: "routes", key: "omo", module: "omoRoom", instances: ["omo"] },
+      ],
+    );
+    for (const start of wiring.startup) await start();
+    assert.deepEqual(fs.readdirSync(dirs.authDir), [], "auth.json du processus précédent retiré");
+    assert.deepEqual([fs.readdirSync(dirs.controlDir), fs.readdirSync(dirs.stateDir)], [[], []], "aucun battement, aucun precheck-ok");
+    assert.deepEqual(fs.readdirSync(dossier("data")), [], "aucune suspension");
+    // Écritures demandées une à une, salle coupée : un arrêt n'est jamais refusé (sans battement, l'homme mort suffit) mais
+    // n'écrit rien ; precheck-ok et guard-state.json sont refusés, code « salle-coupee », jamais avalés.
+    const ctrl = wiring.c11.ports.omoControl;
+    await ctrl.requestStop("vous");
+    for (const ecriture of [() => ctrl.writePrecheckOk("dem_1", []), () => ctrl.writeGuardState({ version: 1, at: 1, bloquer: ["task"] })]) {
+      await assert.rejects(ecriture(), (err: unknown) => (err as { code?: string }).code === "salle-coupee");
+    }
+    ctrl.startHeartbeat();
+    assert.deepEqual(fs.readdirSync(dirs.controlDir), []);
+    ctrl.stopHeartbeat();
+    fs.rmSync(racine, { recursive: true, force: true });
   });
 
   it("shared/ids.ts : mêmes motifs que http.ts (tant que http.ts garde sa copie locale)", () => {
@@ -721,6 +1045,19 @@ describe("câblage 1.1 : routes et cadre", () => {
       "control-ai.ts": "L11b",
       "internal-agents.ts": "L1g (classifieur) puis L11b (cockpit-controle)",
       "diagnostics-11.ts": "L1f",
+      // Salle OMO : squelettes posés par T3b (plan 2 bis §4.2), plus le branchement du service réel de L17b.
+      "omo-control-module.ts": "T3b",
+      "instance-runtime.ts": "L18a",
+      "instance-router.ts": "L18b",
+      "oc-proxy.ts": "L18b",
+      "omo-room.ts": "L18c",
+      "routes-omo.ts": "L18c",
+      "omo-precheck-service.ts": "L19b",
+      "omo-activation.ts": "L22c",
+      "omo-responder.ts": "L22d",
+      "omo-caps.ts": "L22d",
+      "omo-stop.ts": "L23b",
+      "omo-detections-service.ts": "L23c",
     };
     for (const [file, owner] of Object.entries(owners)) {
       const firstLine = fs.readFileSync(path.join(import.meta.dirname, file), "utf8").split("\n")[0] ?? "";

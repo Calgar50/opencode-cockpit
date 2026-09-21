@@ -194,6 +194,12 @@ const cockpit = createCockpitApp({
   sessions,
   tls,
   tickets,
+  // Salle OMO coupée (plan 2 bis §2.7) : le routeur d'instances est construit avec omo: null — aucun client, aucun processeur,
+  // aucune inscription de la salle. Aucune lecture de COCKPIT_OMO ici : le branchement réel arrive au train de V3.
+  omo: null,
+  // Dossiers de contrôle de la salle : relié à env.omo (T3c) par l'intégrateur au train de V2. Null : le service réel de L17b
+  // n'est pas construit, donc aucun fichier n'est écrit dans les volumes de la salle.
+  omoControlDirs: null,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 reloadBusy = () => cockpit.c11.reloadBusy();
