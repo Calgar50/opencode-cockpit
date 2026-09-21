@@ -53,6 +53,17 @@ describe("salle : liste blanche et porte du montage", () => {
     );
   });
 
+  it("aucune liste blanche ne porte un chemin du processeur : les écarter ne masque aucune requête relayée", () => {
+    for (const chemin of CHEMINS_PROCESSEUR) {
+      for (const [nom, regles] of [
+        ["PROXY_RULES", PROXY_RULES],
+        ["PROXY_RULES_OMO", PROXY_RULES_OMO],
+      ] as const) {
+        for (const regle of regles) assert.doesNotMatch(chemin, regle.pattern, `${nom} : ${regle.method} ${regle.pattern.source}`);
+      }
+    }
+  });
+
   it("PROXY_RULES_OMO : aucune route d'authentification, de fournisseur ni de configuration (MO-6)", () => {
     for (const regle of PROXY_RULES_OMO) {
       assert.doesNotMatch(regle.pattern.source, /auth|provider|config/, `${regle.method} ${regle.pattern.source}`);
@@ -201,8 +212,22 @@ const corpsPrompt = (texte = "Bonjour") => ({
   model: { providerID: "github-copilot", modelID: "gpt-5-mini" },
 });
 
-/** Requêtes vues par un faux opencode, sous la forme « MÉTHODE /chemin ». */
-const routes = (fake: CockpitHarness["fake"]) => fake.requests.map((r) => `${r.method} ${r.pathname}`);
+/**
+ * Chemins que le PROCESSEUR d'une instance appelle de lui-même, sans qu'aucune requête du navigateur ne le demande : le flux
+ * d'événements (`/global/event`) et le rattrapage des conversations (`/experimental/session`). Depuis que L18a a branché le
+ * second processeur RÉEL de la salle dans le harnais (train de V3), le faux de la salle les voit dès le démarrage, comme le faux
+ * de l'instance principale les voyait déjà. Les gardes de cloison de ce fichier mesurent le PROXY : elles les écartent, sinon
+ * elles mesureraient le processeur. Aucune liste blanche ne porte ces deux chemins — le test « aucune liste blanche ne porte un
+ * chemin du processeur » le prouve —, donc ce retrait ne peut masquer aucune requête relayée.
+ */
+const CHEMINS_PROCESSEUR = new Set(["/global/event", "/experimental/session"]);
+
+/** Requêtes vues par un faux opencode, sous la forme « MÉTHODE /chemin », hors trafic propre de son processeur. */
+const routes = (fake: CockpitHarness["fake"]) =>
+  fake.requests.filter((r) => !CHEMINS_PROCESSEUR.has(r.pathname)).map((r) => `${r.method} ${r.pathname}`);
+
+/** Chemins vus par le faux de la salle, hors trafic propre de son processeur (harnais sans montage de test). */
+const cheminsSalle = (h: CockpitHarness) => (h.omo?.fake.requests ?? []).filter((r) => !CHEMINS_PROCESSEUR.has(r.pathname)).map((r) => r.pathname);
 
 describe("salle : cloison entre les deux instances (P11)", () => {
   it("T-L18-a : une conversation de l'autre instance est introuvable, dans les deux sens, sans rien envoyer", async (t) => {
@@ -391,7 +416,7 @@ describe("salle : montage /api/omo/oc/* du cockpit", () => {
     assert.equal(res.status, 403, res.body);
     assert.equal(res.json<{ error: string }>().error, "salle-coupee");
     assert.equal(h.fake.requests.length, avantPrincipal);
-    assert.deepEqual(h.omo?.fake.requests.map((r) => r.pathname) ?? [], []);
+    assert.deepEqual(cheminsSalle(h), []);
   });
 
   it("T-L18-b : en mode Simple, aucun envoi vers la salle — et la route neuve exige l'en-tête anti-CSRF", async (t) => {
@@ -404,7 +429,7 @@ describe("salle : montage /api/omo/oc/* du cockpit", () => {
       body: { parts: [] },
     });
     assert.equal(avecCsrf.status, 403, avecCsrf.body);
-    assert.deepEqual(h.omo?.fake.requests.map((r) => r.pathname) ?? [], [], "rien n'est parti vers la salle");
+    assert.deepEqual(cheminsSalle(h), [], "rien n'est parti vers la salle");
   });
 
   it("§3.16 : en mode Simple, le flux /api/events ne porte aucun événement de la salle ; en Avancé, il les porte", async (t) => {
