@@ -2,8 +2,9 @@
 // Page « Salle de contrôle » (spécification §5.8 l.992-1009, §5.5 l.917-924, §5.6 l.926-928, §7.7 l.1172 ; plan d'exécution it3,
 // fiche L31b ; D-3d-15, D-3d-17, D-3d-25, D-3d-28, D-3d-29 ; mesures EXEC/mesures/MX-3D.md §9.1 et §9.3) :
 // #/salle-controle (zoom 1, projets), #/salle-controle/<racine> (zoom 2), #/salle-controle/<racine>/<session> (zoom 3), lues par
-// useRoute ; fil d'Ariane, fluidité et repli 2D. Aucune entrée de navigation : l'accès passe par la bande, les Archives et
-// l'adresse. Scene3d (L29d) et ZoomConversation (L31c) sont consommés par leurs seuls contrats (./slots-3d.ts).
+// useRoute ; fil d'Ariane, fluidité et repli 2D. Aucune entrée de navigation : l'accès passe par la bande du travail en direct et
+// par l'adresse (les Archives, elles, ne montent que « Revoir »). Scene3d (L29d) et ZoomConversation (L31c) sont consommés par
+// leurs seuls contrats (./slots-3d.ts).
 // - P7 (§5.8 l.1009) : la liste en grille de boutons est TOUJOURS là, en 3D comme en 2D ; c'est elle la vérité, la scène n'est
 //   qu'une image (canevas et mini-carte `aria-hidden`).
 // - MX-3D §9.3 : aucune scène 3D — donc aucun WebGLRenderer — tant que `capacites()` n'a pas rendu un verdict 3D.

@@ -397,7 +397,7 @@ Le cockpit installe aussi ses propres outils dans opencode (classement des archi
 
 ### La salle de contrôle
 
-**Ouvrir la salle de contrôle**, à côté de la carte du travail en direct, montre en grand le travail en cours dans vos projets. Il n'y a pas d'entrée de menu : on y arrive par cette commande, par les Archives, ou par l'adresse. Trois niveaux :
+**Ouvrir la salle de contrôle**, à côté de la carte du travail en direct, montre en grand le travail en cours dans vos projets. Il n'y a pas d'entrée de menu : on y arrive par cette commande de la bande du travail en direct, ou par l'adresse. Trois niveaux :
 
 | Niveau | Adresse | Ce qu'on y voit |
 |---|---|---|

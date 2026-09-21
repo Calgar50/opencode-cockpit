@@ -157,6 +157,7 @@ sortie est le nombre d'échecs.
 |---|---|
 | `scripts/run-e2e.sh` | point d'entrée, aide, vérifications de base (Node 24, Docker), `MSYS_NO_PATHCONV` |
 | `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, lecture de l'épinglage sur le volume et contre-épreuves, déroulé, et leurs propres vérifications (`--gardes`) |
+| `e2e/lib/docker-e2e.d.mts` | déclaration de types minimale de `docker-e2e.mjs` (`correspond`, `listerScenarios`) pour les tests de croisement de `app/server`, qui appliquent la règle de `--scenarios` telle quelle au lieu de la recopier |
 | `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux |
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |

@@ -16,7 +16,9 @@
 //   1. mode 3D du banc relu ici ; contexte matériel → 3D réelle, `webgl2` logiciel seul → « moteur simulé » (D-3d-18),
 //      aucun `webgl2` → captures 3D consignées EN ATTENTE, jamais déclarées faites ;
 //   2. contrôle NON VIDE de la 3D : morceau paresseux de three chargé ET au moins une image rendue par le moteur ;
-//   3. à 400 px, la vue disparaît et la LISTE reste la vérité (P7, §5.6 l.928) ;
+//   3. à 400 px, la vue disparaît et la LISTE reste la vérité (P7, §5.6 l.928) — la vue de CHAQUE zoom est nommée par la vue
+//      elle-même (`.salle3d-vue` au zoom 1, `.zoom-conv-vue` aux zooms 2 et 3) : un sélecteur écrit en dur rendrait le
+//      contrôle du zoom 1 toujours vrai ;
 //   4. le panneau de la consigne montre un texte long qui DÉFILE à 400 px, avec la mention de troncature ;
 //   5. sous couleurs forcées et sous mouvement réduit : aucun canevas, et la phrase « Affichage 2D : vos réglages
 //      d'accessibilité le demandent » ;
@@ -213,7 +215,7 @@ function construireVues(rootId, sessionId) {
         await page.attendreQue("document.querySelector('.salle3d-zoom1')", { libelle: "zoom 1 de la salle" });
         await etatSalle(page, options);
       },
-      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".salle3d-grille"),
+      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".salle3d-grille", ".salle3d-vue"),
       fermer: fermerSalle,
     },
     {
@@ -223,7 +225,7 @@ function construireVues(rootId, sessionId) {
         await page.attendreQue("document.querySelector('.page.salle3d .zoom-conv')", { libelle: "zoom 2 de la salle" });
         await etatSalle(page, options);
       },
-      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".zoom-conv-liste"),
+      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".zoom-conv-liste", ".zoom-conv-vue"),
       fermer: fermerSalle,
     },
     {
@@ -233,7 +235,7 @@ function construireVues(rootId, sessionId) {
         await page.attendreQue("document.querySelector('.page.salle3d .zoom-conv-panneau')", { libelle: "panneau du zoom 3" });
         await etatSalle(page, options);
       },
-      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".zoom-conv-panneau"),
+      avant: async (ctx, page, taille) => await exigerVeriteAuPetitEcran(page, taille, ".zoom-conv-panneau", ".zoom-conv-vue"),
       fermer: fermerSalle,
     },
     {
@@ -278,13 +280,19 @@ async function etatSalle(page, { attendue3d = true, phrase2d = false } = {}) {
   exiger(!(await page.evaluer("Boolean(document.querySelector('.salle3d-canevas'))")), "un canevas 3D est monté alors que le poste demande le contraire (L30).");
 }
 
-/** 3 : à 400 px, la vue disparaît et ce qui porte la vérité reste montré (P7, §5.6 l.928). */
-async function exigerVeriteAuPetitEcran(page, taille, selecteurVerite) {
+/**
+ * 3 : à 400 px, la vue disparaît et ce qui porte la vérité reste montré (P7, §5.6 l.928).
+ * Les DEUX sélecteurs sont donnés par la vue : le zoom 1 a sa propre vue (`.salle3d-vue`, DÉMONTÉE par la garde `etroit` de
+ * `SalleControlePage.tsx` — seuil ETROIT à 400 px —, et non cachée par une règle CSS : c'est cette garde que le contrôle
+ * protège), les zooms 2 et 3 la leur (`.zoom-conv-vue`, cachée par `zoom-conversation.css`). Écrire « .zoom-conv-vue » en dur
+ * rendrait le contrôle du zoom 1 toujours vrai, puisque ce nœud n'existe pas dans cette vue.
+ */
+async function exigerVeriteAuPetitEcran(page, taille, selecteurVerite, selecteurVue) {
   await page.attendreQue(`document.querySelector(${JSON.stringify(selecteurVerite)})`, { libelle: `vérité de la vue (${selecteurVerite})` });
   if (taille.nom !== "400") return;
   const visible = (selecteur) => `(() => { const e = document.querySelector(${JSON.stringify(selecteur)}); return Boolean(e) && e.getClientRects().length > 0; })()`;
   exiger(await page.evaluer(visible(selecteurVerite)), `à 400 px, ${selecteurVerite} n'est plus visible : la vérité de la vue a disparu.`);
-  exiger((await page.evaluer(visible(".zoom-conv-vue"))) === false, "à 400 px, la carte de la conversation est encore montrée (§5.6 l.928 : liste seule).");
+  exiger((await page.evaluer(visible(selecteurVue))) === false, `à 400 px, ${selecteurVue} est encore montré (§5.6 l.928 : liste seule).`);
 }
 
 /** 4 : le texte long de la consigne défile dans sa carte à 400 px, et la mention de troncature est là. */

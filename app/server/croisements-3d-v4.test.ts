@@ -21,6 +21,26 @@
 //      nommément : une ligne de sortie ne se déclare pas tenue sur une mesure périmée.
 //   7. DOC-3D × la grille de la vague : les six recettes en attente sont listées, aucune n'est déclarée tenue, et tout ce que
 //      DOC-3D a écrit tient dans des sections balisées `[3d]` équilibrées et séparées par une ligne vide (D-3d-24).
+// Ajouts de la relecture de la vague 4 (constats de justesse et de sécurité : la documentation, le scénario de captures et ce
+// fichier même) :
+//   8. DOC-3D × le code : les ENTRÉES citées pour la salle de contrôle sont celles du code. Tout `app/web` est lu ; seuls la
+//      commande de la bande du travail en direct et la salle elle-même ouvrent la salle, et les Archives n'ont que « Revoir ».
+//      La phrase des documents ne doit donc pas citer les Archives comme entrée de la salle, et la ligne « Revoir », elle,
+//      doit les garder.
+//   9. DOC-3D × le code : la règle d'accès de « Revoir » telle que le §8 Sécurité l'écrit. Les trois verdicts de `revoirAcces`
+//      sont CALCULÉS ici : l'instance principale et le mode Avancé sont ouverts même pendant une demande, et seule une racine
+//      de la Salle OMO en mode Simple est fermée. Une phrase non qualifiée ferait lire un portillon général à un relecteur de
+//      sécurité, qui ne verrait plus le vrai point de décision (Q6, P11, D-3d-09).
+//  10. DOC-3D × le train : le §10 annonce un banc COMPLET ; le nombre de scénarios qu'il cite est comparé au nombre réel de
+//      fichiers de `e2e/scenarios/` (la règle du banc, `listerScenarios`, appelée telle quelle), et la ligne des tests ne doit
+//      plus citer un compte d'un passage antérieur à la vague 4.
+//  11. L33 × L31b × L31c : le contrôle « à 400 px, la vue disparaît » du scénario de captures nomme la vue de CHAQUE zoom
+//      (`.salle3d-vue` au zoom 1, démontée par la garde `etroit` de `SalleControlePage.tsx` ; `.zoom-conv-vue` aux zooms 2
+//      et 3, cachée par `zoom-conversation.css`). Un sélecteur écrit en dur rendait le contrôle du zoom 1 toujours vrai.
+//  12. DOC-3D × L33 : la ligne de sortie l.1174 du §7.7 (script couleurs, captures) a SA ligne de mesure au §10, et la ligne
+//      « Lignes de sortie » nomme les HUIT lignes l.1169 à l.1176, aucune n'étant déclarée tenue sans mesure.
+//  13. L33 × le banc : `--scenarios it3-` et `--scenarios it3-captures` prennent le scénario selon la VRAIE règle du banc
+//      (`correspond` et `listerScenarios` de `e2e/lib/docker-e2e.mjs`), pas selon une sous-chaîne recopiée ici.
 // Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
 // `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
 // ne les refait pas. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
@@ -30,10 +50,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+// Sans effet de bord : le bloc principal de docker-e2e.mjs n'exécute rien tant que Node ne lance pas ce fichier lui-même.
+import { correspond, listerScenarios } from "../../e2e/lib/docker-e2e.mjs";
 import { CONSIGNES } from "./shared/consignes.ts";
 import { FLUIDITE, PREFERENCE_CLE } from "./shared/fluidity.ts";
 import { PLAN3D } from "./shared/neon-plan3d.ts";
 import { RACCOURCI, VITESSES } from "./shared/revoir.ts";
+import { revoirAcces } from "./shared/revoir-access.ts";
 import { messageFluidite, TEXTES as SALLE } from "./shared/salle3d-texts.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
@@ -65,6 +88,13 @@ const MESURES_TRAIN = {
 /** Tailles d'un build antérieur, refusées nommément dans la ligne M24 (vague 3 et copie de DOC-3D). */
 const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB"] as const;
 
+/**
+ * Comptes de tests d'un passage antérieur à la vague 4, refusés nommément dans la ligne des tests du §10 (relecture 3-vague-4,
+ * constat « le §10 cite un nombre de tests antérieur »). Un compte exact n'est pas tenable depuis `npm test` — le contrôle se
+ * mordrait la queue — mais une valeur périmée, elle, se reconnaît : on remesure plutôt que de recopier.
+ */
+const TESTS_PERIMES = ["2 029", "2 033", "2 023"] as const;
+
 /** Les six recettes en attente du plan it3 §3.3, reconnues par une sous-chaîne propre à chacune. */
 const RECETTES = [
   "Seuils de fluidité sur un poste de travail",
@@ -74,6 +104,26 @@ const RECETTES = [
   "Captures sur le poste de travail",
   "Débit sur Copilot réel",
 ] as const;
+
+/** Tous les fichiers `.ts` et `.tsx` sous un dossier, chemins absolus. */
+function fichiersSources(dossier: string): string[] {
+  const trouves: string[] = [];
+  for (const entree of fs.readdirSync(dossier, { withFileTypes: true })) {
+    const chemin = path.join(dossier, entree.name);
+    if (entree.isDirectory()) trouves.push(...fichiersSources(chemin));
+    else if (/\.tsx?$/.test(entree.name)) trouves.push(chemin);
+  }
+  return trouves;
+}
+
+/** Une phrase d'un document : de `debut` au premier point qui la ferme, sur la ligne qui la porte. */
+function phraseDe(texte: string, debut: string): string {
+  const ligne = texte.split(/\r?\n/).find((candidate) => candidate.includes(debut)) ?? "";
+  if (ligne === "") return "";
+  const depart = ligne.indexOf(debut);
+  const fin = ligne.indexOf(".", depart);
+  return ligne.slice(depart, fin === -1 ? undefined : fin + 1);
+}
 
 /** Symboles exportés par un module `.mjs` (déclarations `export function|const|async function|class`, et `export { … }`). */
 function exportesDe(fichier: string): Set<string> {
@@ -182,18 +232,61 @@ describe("croisements it3 V4 : captures et aides du banc (L33 × L35)", () => {
     assert.deepEqual([...exportesDe(CAPTURES)], ["run"]);
   });
 
-  it("le scénario est pris par le filtre du banc et cité dans `e2e/README.md`", () => {
-    const scenarios = fs.readdirSync(SCENARIOS_DIR).filter((nom) => nom.endsWith(".mjs"));
-    assert.ok(scenarios.includes("it3-captures.mjs"), scenarios.join(", "));
-    // `--scenarios it3-` et `--scenarios it3-captures` passent par une sous-chaîne du nom du fichier (scripts/run-e2e.sh).
-    for (const motif of ["it3-", "it3-captures"]) {
-      assert.deepEqual(
-        scenarios.filter((nom) => nom.includes(motif) && nom === "it3-captures.mjs"),
-        ["it3-captures.mjs"],
-        `le filtre « ${motif} » ne prend pas le scénario`,
+  it("le scénario est pris par la règle de filtrage du banc (`correspond`, `listerScenarios`) et cité dans `e2e/README.md`", () => {
+    assert.ok(fs.existsSync(CAPTURES), "it3-captures.mjs absent de e2e/scenarios");
+    // La règle est celle du banc lui-même (e2e/lib/docker-e2e.mjs), pas une sous-chaîne recopiée ici : si `--scenarios` passait à
+    // une correspondance exacte ou par préfixe d'identifiant, ces assertions tomberaient avec le banc, et non après lui.
+    for (const motif of ["it3-", "it3-captures", "it3-*"]) {
+      assert.ok(correspond("it3-captures.mjs", motif), `« --scenarios ${motif} » ne prend pas le scénario`);
+      assert.ok(
+        listerScenarios(motif, SCENARIOS_DIR).some((scenario) => scenario.nom === "it3-captures.mjs"),
+        `« --scenarios ${motif} » n'énumère pas le scénario dans e2e/scenarios`,
       );
     }
+    // La commande citée en tête de ce fichier ne joue que lui ; sans motif, le banc complet le joue.
+    assert.deepEqual(listerScenarios("it3-captures", SCENARIOS_DIR).map((scenario) => scenario.nom), ["it3-captures.mjs"]);
+    assert.ok(listerScenarios(null, SCENARIOS_DIR).some((scenario) => scenario.nom === "it3-captures.mjs"), "le banc complet ne joue pas le scénario");
     assert.ok(lire(path.join(E2E_DIR, "README.md")).includes("`it3-captures.mjs`"), "scénario absent de e2e/README.md");
+  });
+
+  it("le contrôle « à 400 px, la vue disparaît » nomme la vue de chaque zoom : `.salle3d-vue` au zoom 1, `.zoom-conv-vue` aux zooms 2 et 3", () => {
+    const source = lire(CAPTURES);
+    // (a) La fonction reçoit les DEUX sélecteurs de la vue appelante : la vérité, qui doit rester, et la vue, qui doit disparaître.
+    const declaration = /async function exigerVeriteAuPetitEcran\(([^)]*)\)/.exec(source);
+    assert.ok(declaration, "exigerVeriteAuPetitEcran introuvable dans it3-captures.mjs");
+    assert.deepEqual(
+      (declaration[1] ?? "").split(",").map((parametre) => parametre.trim()),
+      ["page", "taille", "selecteurVerite", "selecteurVue"],
+      "la fonction doit recevoir le sélecteur de la vue de chaque zoom, jamais l'écrire en dur",
+    );
+    // (e) Le corps ne nomme plus aucune vue en dur : c'est le sélecteur reçu qui est interrogé.
+    const depart = declaration.index ?? 0;
+    const finDuCorps = source.indexOf("\n}\n", depart);
+    const corps = source.slice(depart, finDuCorps === -1 ? undefined : finDuCorps);
+    assert.ok(!corps.includes('visible(".zoom-conv-vue")'), "« .zoom-conv-vue » écrit en dur : le contrôle du zoom 1 serait toujours vrai (ce nœud n'existe pas dans cette vue)");
+    assert.ok(corps.includes("visible(selecteurVue)"), "le contrôle doit interroger le sélecteur de la vue reçu");
+    // (b) Chaque appel passe deux sélecteurs ; (c) le zoom 1 nomme sa vue, (d) les zooms 2 et 3 la leur.
+    const appels = [...source.matchAll(/(?<!function )exigerVeriteAuPetitEcran\(([^)]*)\)/g)].map((m) => (m[1] ?? "").split(",").map((argument) => argument.trim()));
+    assert.equal(appels.length, 3, "les trois zooms de la salle doivent faire ce contrôle");
+    for (const arguments_ of appels) {
+      assert.equal(arguments_.length, 4, `appel à ${arguments_.length} arguments : les deux sélecteurs sont exigés (${arguments_.join(", ")})`);
+    }
+    const vueParVerite = new Map(appels.map((arguments_) => [arguments_[2], arguments_[3]]));
+    assert.equal(vueParVerite.get('".salle3d-grille"'), '".salle3d-vue"', "zoom 1 : la vue à voir disparaître est .salle3d-vue");
+    assert.equal(vueParVerite.get('".zoom-conv-liste"'), '".zoom-conv-vue"', "zoom 2 : la vue à voir disparaître est .zoom-conv-vue");
+    assert.equal(vueParVerite.get('".zoom-conv-panneau"'), '".zoom-conv-vue"', "zoom 3 : la vue à voir disparaître est .zoom-conv-vue");
+    // (c) et (d) Ces noms existent dans les composants : un renommage rendrait le contrôle vide à nouveau.
+    const page = lire(path.join(SALLE_DIR, "SalleControlePage.tsx"));
+    assert.ok(page.includes('className="salle3d-vue"'), "SalleControlePage.tsx ne monte plus .salle3d-vue");
+    // Le zoom 1 DÉMONTE sa vue sous la garde `etroit` (seuil ETROIT à 400 px) : c'est cette garde, et non une règle CSS, que le
+    // contrôle du zoom 1 protège.
+    assert.match(page, /etroit \? null : \(\s*<div className="salle3d-vue">/, "la vue du zoom 1 doit être démontée par la garde etroit, pas seulement cachée");
+    assert.ok(page.includes('abonnementMedia("(max-width:400px)")'), "seuil ETROIT à 400 px attendu dans SalleControlePage.tsx");
+    const zoom = lire(path.join(SALLE_DIR, "ZoomConversation.tsx"));
+    assert.match(zoom, /className="zoom-conv-vue(?: [^"]*)?"/, "ZoomConversation.tsx ne monte plus .zoom-conv-vue");
+    // Aux zooms 2 et 3, c'est la feuille qui cache la vue à 400 px (§5.6 l.928).
+    const css = lire(path.join(SALLE_DIR, "zoom-conversation.css"));
+    assert.match(css, /@media \(width <= 400px\) \{\s*\.zoom-conv-vue,[^}]*display: none;/, "zoom-conversation.css ne cache plus .zoom-conv-vue à 400 px");
   });
 
   it("toutes les captures sont écrites dans le dossier du banc, et aucune image n'est versionnée", () => {
@@ -306,6 +399,81 @@ describe("croisements it3 V4 : documentation (DOC-3D × le code)", () => {
     }
   });
 
+  it("les entrées citées pour la salle de contrôle sont celles du code : la commande de la bande et l'adresse, jamais les Archives", () => {
+    const WEB = path.join(APP_DIR, "web");
+    // 1. Le code. Tout `app/web` est lu : un `navigate(SECTION_SALLE…)` ou `navigate("salle-controle"…)` fait entrer dans la
+    //    salle. Deux fichiers seulement en portent : la commande de la bande du travail en direct (la seule VRAIE entrée) et
+    //    la salle elle-même (fil d'Ariane et zooms, qui déplacent quelqu'un déjà entré). Un troisième — les Archives, par
+    //    exemple — rendrait la phrase des documents à revoir, dans un sens ou dans l'autre.
+    const ouvrent = fichiersSources(WEB)
+      .filter((fichier) => /navigate\(\s*(?:SECTION_SALLE|["']salle-controle["'])/.test(lire(fichier)))
+      .map((fichier) => path.relative(WEB, fichier).split(path.sep).join("/"))
+      .sort();
+    assert.deepEqual(
+      ouvrent,
+      ["pages/salle-controle/SalleControlePage.tsx", "pages/salle-controle/revoir/BandCommands3d.tsx"],
+      "la liste des composants qui ouvrent la salle a changé : reprendre la phrase des entrées dans les deux documents",
+    );
+    // Les Archives, elles, ne montent que l'entrée « Revoir » (L28b) : c'est ce que dit la ligne « Revoir » des documents.
+    const archives = lire(path.join(WEB, "pages", "archives", "ArchiveDetail.tsx"));
+    assert.ok(archives.includes("<RevoirEntree"), "les Archives doivent garder leur entrée « Revoir » (L28b)");
+
+    // 2. Les documents. La phrase des entrées de la salle ne cite que la commande de la bande et l'adresse.
+    for (const [doc, texte, debut] of [
+      ["README.md", readme, "Il n'y a pas d'entrée de menu"],
+      ["docs/RECAPITULATIF.md", recap, "Aucune entrée de menu"],
+    ] as const) {
+      const phrase = phraseDe(texte, debut);
+      assert.notEqual(phrase, "", `${doc} : la phrase des entrées de la salle est introuvable`);
+      assert.ok(!phrase.includes("Archives"), `${doc} : les Archives sont données pour une entrée de la salle, qu'aucun de leurs composants n'ouvre : « ${phrase} »`);
+      assert.ok(phrase.includes("bande"), `${doc} : la commande de la bande doit être nommée : « ${phrase} »`);
+      assert.ok(phrase.includes("adresse"), `${doc} : l'adresse doit rester citée : « ${phrase} »`);
+    }
+    // La ligne « Revoir », elle, cite les Archives à bon droit : `RevoirEntree` y est monté.
+    for (const [doc, phrase] of [
+      ["README.md", phraseDe(readme, "**Revoir cette demande** s'ouvre depuis")],
+      ["docs/RECAPITULATIF.md", phraseDe(recap, "[Revoir cette demande] : ")],
+    ] as const) {
+      assert.ok(phrase.includes("Archives"), `${doc} : la ligne « Revoir » doit garder les Archives, qui sont une de ses entrées : « ${phrase} »`);
+    }
+  });
+
+  it("le §8 dit la règle d'accès que `revoirAcces` applique : fermée pour la Salle OMO en mode Simple, ouverte ailleurs", () => {
+    // Les trois verdicts sont CALCULÉS ici, jamais recopiés : une demande en cours, vue sous trois angles (Q6, D-3d-09).
+    const enCours = { existe: true as const, sessionsOccupees: 2, derniereDemande: { finie: false } };
+    assert.deepEqual(revoirAcces({ ...enCours, instance: "principale", mode: "simple" }), { ok: true }, "une conversation de l'instance principale se revoit en mode Simple, même pendant sa demande");
+    assert.deepEqual(revoirAcces({ ...enCours, instance: "omo", mode: "avance" }), { ok: true }, "la Salle OMO se revoit en mode Avancé, même pendant sa demande");
+    assert.deepEqual(
+      revoirAcces({ ...enCours, instance: "omo", mode: "simple" }),
+      { ok: false, status: 403, code: "salle-demande-en-cours" },
+      "la Salle OMO en mode Simple est le SEUL cas fermé pendant une demande",
+    );
+    // La règle écrite au §8 doit donc nommer SES DEUX CONDITIONS, sur sa propre ligne : la section entière nomme la Salle OMO
+    // ailleurs (« La Salle OMO reste fermée »), et s'en contenter laisserait passer une phrase non qualifiée.
+    const lignes = recap.split(/\r?\n/);
+    const ligneRegle = lignes.find((ligne) => ligne.includes("**« Revoir » est une lecture.**")) ?? "";
+    assert.notEqual(ligneRegle, "", "§8 : la règle d'accès de « Revoir » est introuvable");
+    for (const attendu of ["Salle OMO", "mode Simple"]) {
+      assert.ok(ligneRegle.includes(attendu), `§8 : la règle d'accès de « Revoir » ne nomme pas « ${attendu} » : elle se lit alors comme un portillon général, et le vrai point de décision n'est plus relu`);
+    }
+    assert.ok(
+      !/Une demande \*\*en cours\*\* ne se revoit pas/.test(ligneRegle),
+      "§8 : « une demande en cours ne se revoit pas » est faux pour l'instance principale et pour le mode Avancé",
+    );
+    // La copie des consignes renvoie à cette règle, au lieu de la redire à moitié.
+    const ligneCopie = lignes.find((ligne) => ligne.includes("**lecture** : même règle d'accès que « Revoir »")) ?? "";
+    assert.notEqual(ligneCopie, "", "§8 : la règle de lecture de la copie des consignes est introuvable");
+    assert.ok(!ligneCopie.includes("conversation terminée"), "§8 : la copie des consignes redit une règle d'accès qui n'est pas celle du code");
+    // Le tableau des routes dit la même chose : s'il parle de demande terminée, il dit pour QUI.
+    const ligneRoute = lignes.find((ligne) => ligne.includes("`GET /api/revoir/:conversation`")) ?? "";
+    assert.notEqual(ligneRoute, "", "tableau des routes : la route de « Revoir » est introuvable");
+    if (ligneRoute.includes("terminée")) {
+      for (const attendu of ["Salle OMO", "mode Simple"]) {
+        assert.ok(ligneRoute.includes(attendu), `tableau des routes : « demande terminée » sans « ${attendu} » se lit comme une condition générale`);
+      }
+    }
+  });
+
   it("la version de three citée est celle de package.json, épinglée et exacte", () => {
     const paquet = JSON.parse(lire(path.join(APP_DIR, "package.json"))) as { devDependencies?: Record<string, string> };
     const version = paquet.devDependencies?.three ?? "";
@@ -330,6 +498,53 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
     }
     for (const perimee of MESURES_PERIMEES) {
       assert.ok(!ligneM24.includes(perimee), `taille périmée « ${perimee} » encore citée : remesurer plutôt que recopier`);
+    }
+  });
+
+  it("le §10 cite autant de scénarios que le dossier en contient, et aucun compte de tests périmé", () => {
+    const validations = sections3d(recap).find((bloc) => bloc.contenu.includes("(M24)"));
+    assert.ok(validations, "section [3d] des validations de l'itération 3 introuvable");
+    const lignes = validations.contenu.split(/\r?\n/);
+
+    const ligneBanc = lignes.find((ligne) => ligne.includes("run-e2e.sh --faux") && ligne.includes("scénarios")) ?? "";
+    assert.notEqual(ligneBanc, "", "ligne du banc de bout en bout absente du §10");
+    const cite = /\*\*(\d+) scénarios/.exec(ligneBanc);
+    assert.ok(cite, `nombre de scénarios illisible dans la ligne du banc : « ${ligneBanc} »`);
+    // La règle d'énumération du banc lui-même (`listerScenarios`, e2e/lib/docker-e2e.mjs) : tous les `.mjs` du dossier des
+    // scénarios, les `*-commun.mjs` compris, que le banc joue aussi.
+    const reels = listerScenarios(null, SCENARIOS_DIR).length;
+    assert.equal(
+      Number(cite[1]),
+      reels,
+      `le §10 donne le banc COMPLET pour ${cite[1]} scénarios, le dossier en contient ${reels} : rejouer le banc entier, ou dire lesquels ont été joués à part`,
+    );
+
+    const ligneTests = lignes.find((ligne) => ligne.includes("`npm test`")) ?? "";
+    assert.notEqual(ligneTests, "", "ligne des tests automatisés absente du §10");
+    for (const perime of TESTS_PERIMES) {
+      assert.ok(!ligneTests.includes(perime), `compte de tests périmé « ${perime} » encore cité au §10 : remesurer plutôt que recopier`);
+    }
+  });
+
+  it("la ligne de sortie l.1174 (L33 : script couleurs, captures) a sa mesure au §10, et les huit lignes du §7.7 sont nommées", () => {
+    const validations = sections3d(recap).find((bloc) => bloc.contenu.includes("(M24)"));
+    assert.ok(validations, "section [3d] des validations de l'itération 3 introuvable");
+    const lignes = validations.contenu.split(/\r?\n/);
+
+    // Une ligne de sortie ne se déclare pas tenue sans mesure : L33 a la sienne, avec ses chiffres (L33 §1 et §3, train de V4).
+    const l33 = lignes.find((ligne) => ligne.includes("(L33)")) ?? "";
+    assert.notEqual(l33, "", "§10 : aucune ligne pour L33 (script couleurs, captures) : la l.1174 du §7.7 serait tenue sans mesure");
+    for (const attendu of ["4,5:1", "3:1", "90 captures", "0 violation"]) {
+      assert.ok(l33.includes(attendu), `§10, ligne L33 : « ${attendu} » attendu (seuils du script couleurs, nombre de captures, CSP)`);
+    }
+
+    // Le §7.7 a HUIT lignes, l.1169 à l.1176 ; chacune est nommée par son numéro, et « sept » n'a plus cours.
+    const sorties = lignes.find((ligne) => ligne.includes("Lignes de sortie")) ?? "";
+    assert.notEqual(sorties, "", "§10 : ligne « Lignes de sortie de la spécification » introuvable");
+    assert.ok(sorties.includes("huit"), "§10 : le §7.7 compte huit lignes de sortie (l.1169 à l.1176)");
+    assert.ok(!/(?<![\p{L}])sept(?![\p{L}])/u.test(sorties), "§10 : « sept » lignes de sortie, une manque (la l.1174, L33)");
+    for (const numero of [1169, 1170, 1171, 1172, 1173, 1174, 1175, 1176]) {
+      assert.ok(sorties.includes(`l.${numero}`), `§10 : la ligne l.${numero} du §7.7 n'est pas nommée`);
     }
   });
 
