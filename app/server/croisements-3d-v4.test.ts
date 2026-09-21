@@ -41,6 +41,15 @@
 //      « Lignes de sortie » nomme les HUIT lignes l.1169 à l.1176, aucune n'étant déclarée tenue sans mesure.
 //  13. L33 × le banc : `--scenarios it3-` et `--scenarios it3-captures` prennent le scénario selon la VRAIE règle du banc
 //      (`correspond` et `listerScenarios` de `e2e/lib/docker-e2e.mjs`), pas selon une sous-chaîne recopiée ici.
+// Ajouts de la revue d'itération (3), qui a trouvé le §10 périmé DANS LE SENS PRUDENT — banc rejoué vert et débit tenu, mais
+// documentation restée sur le passage d'avant la correction :
+//  14. DOC-3D × DOC-3D : le §10 et le §11 disent la même chose du banc et de la ligne l.1176. Le compte de scénarios VERTS est
+//      lu et croisé avec le verdict (« aucun échec » ⇔ verts = joués) ; une ligne de sortie donnée tenue exige un banc vert,
+//      un plafond tenu dans les deux rendus et aucun point « à remesurer » resté ouvert au §11 ; une ligne de sortie donnée en
+//      attente exige, elle, le point du §11 qui la tient ouverte. Un document à moitié mis à jour tombe, dans les deux sens.
+//  15. DOC-3D × les passages du banc : les comptes qui changent d'un passage à l'autre (moments de « Revoir », images du
+//      premier zoom, curseur des moments, images de scène) sont DATÉS, et les quatre valeurs d'un seul passage que la revue a
+//      démenties ne peuvent pas revenir. Ce que le scénario vérifie est une règle (N sur N) ; le document doit la donner.
 // Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
 // `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
 // ne les refait pas. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
@@ -94,7 +103,33 @@ const MESURES_PERIMEES = ["142 026", "93,05 kB", "92,96 kB", "17,41 kB", "1 675,
  * constat « le §10 cite un nombre de tests antérieur »). Un compte exact n'est pas tenable depuis `npm test` — le contrôle se
  * mordrait la queue — mais une valeur périmée, elle, se reconnaît : on remesure plutôt que de recopier.
  */
-const TESTS_PERIMES = ["2 029", "2 033", "2 023"] as const;
+const TESTS_PERIMES = ["2 029", "2 033", "2 023", "2 069"] as const;
+
+/**
+ * Verdict du banc COMPLET rejoué sur cette version du code, après la correction du débit (journal du rejeu : « Banc e2e :
+ * 23 scénario(s), aucun échec », code de sortie 0), et débit M20 relevé tenu en 3D comme en repli 2D aux trois passages du
+ * même jour (banc complet, puis `it3-debit` rejoué seul deux fois). Même règle que les tailles de `MESURES_TRAIN` : toute
+ * ligne de la documentation qui donne ce verdict doit donner CELUI-CI ; sinon, on rejoue le banc et on met les deux à jour.
+ */
+const BANC_TRAIN = {
+  verdict: "aucun échec",
+  debit: "tenu en 3D comme en repli 2D",
+  sorties: "tenues et mesurées",
+} as const;
+
+/**
+ * Verdicts d'un passage ANTÉRIEUR à la correction du débit, refusés nommément dans les sections [3d] du §10 et du §11
+ * (revue d'itération 3 : le document racontait encore le banc d'avant la correction et se donnait pour moins bon qu'il
+ * n'est). Une déclaration périmée se reconnaît, comme une taille périmée : on rejoue plutôt que de recopier.
+ */
+const BANC_PERIME = [
+  "19 verts",
+  "cinq des six",
+  "banc à rejouer",
+  "mesure au banc reste à refaire",
+  "à remesurer au banc",
+  "reste **en attente**",
+] as const;
 
 /** Les six recettes en attente du plan it3 §3.3, reconnues par une sous-chaîne propre à chacune. */
 const RECETTES = [
@@ -520,6 +555,28 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
       `le §10 donne le banc COMPLET pour ${cite[1]} scénarios, le dossier en contient ${reels} : rejouer le banc entier, ou dire lesquels ont été joués à part`,
     );
 
+    // Constat de la revue d'itération 3 : le §10 annonçait « 19 verts » et « cinq des six » de l'itération 3 alors que le banc
+    // avait été rejoué EN ENTIER, vert, sur cette tête. Le compte de verts est donc lu lui aussi, et croisé avec le verdict :
+    // « aucun échec » et un compte de verts inférieur au nombre de scénarios joués ne peuvent pas coexister, dans un sens
+    // comme dans l'autre — un document qui sous-déclare son banc est aussi faux qu'un document qui le surdéclare.
+    const verts = /\*\*(\d+) verts\*\*/.exec(ligneBanc);
+    assert.ok(verts, `nombre de scénarios verts illisible dans la ligne du banc : « ${ligneBanc} »`);
+    assert.ok(
+      Number(verts[1]) <= reels,
+      `le §10 donne ${verts[1]} scénarios verts pour ${reels} joués : un banc ne rend pas plus de verts que de scénarios`,
+    );
+    // Le verdict du banc du train est épinglé, comme les tailles de `MESURES_TRAIN` : le banc complet rejoué sur cette version
+    // du code est vert, donc le §10 le dit, et les verts sont aussi nombreux que les scénarios joués.
+    assert.ok(
+      ligneBanc.includes(BANC_TRAIN.verdict),
+      `§10 : le banc du train est vert (« ${BANC_TRAIN.verdict} ») ; s'il ne l'est plus, rejouer et mettre les deux à jour`,
+    );
+    assert.equal(
+      Number(verts[1]),
+      reels,
+      `le §10 dit « ${BANC_TRAIN.verdict} » et ne compte que ${verts[1]} scénarios verts sur ${reels} joués`,
+    );
+
     const ligneTests = lignes.find((ligne) => ligne.includes("`npm test`")) ?? "";
     assert.notEqual(ligneTests, "", "ligne des tests automatisés absente du §10");
     for (const perime of TESTS_PERIMES) {
@@ -546,6 +603,62 @@ describe("croisements it3 V4 : documentation (DOC-3D × le train)", () => {
     assert.ok(!/(?<![\p{L}])sept(?![\p{L}])/u.test(sorties), "§10 : « sept » lignes de sortie, une manque (la l.1174, L33)");
     for (const numero of [1169, 1170, 1171, 1172, 1173, 1174, 1175, 1176]) {
       assert.ok(sorties.includes(`l.${numero}`), `§10 : la ligne l.${numero} du §7.7 n'est pas nommée`);
+    }
+
+    // Constat de la revue d'itération 3, l'autre moitié : la l.1176 (M20, « run-e2e.sh sortie 0 ») était donnée « en attente »
+    // alors que le banc, rejoué sur CETTE version du code, l'avait mesurée verte. Même idiome que `MESURES_TRAIN` pour les
+    // tailles : le verdict du banc du train est épinglé ici, et le §10 comme le §11 doivent le dire.
+    const limites = sections3d(recap).find((bloc) => bloc.contenu.includes("Recettes en attente"));
+    assert.ok(limites, "§11 : section [3d] des limites de l'itération 3 introuvable");
+    const m20 = lignes.find((ligne) => ligne.includes("(M20)")) ?? "";
+    assert.notEqual(m20, "", "§10 : ligne du débit (M20) introuvable");
+    assert.ok(
+      sorties.includes(BANC_TRAIN.sorties),
+      `§10 : les huit lignes de sortie doivent être données « ${BANC_TRAIN.sorties} » — le banc du train les a toutes mesurées`,
+    );
+    assert.ok(
+      !/en attente/i.test(sorties) || /[Aa]ucune n'est en attente/.test(sorties),
+      "§10 : une ligne de sortie est donnée « en attente » alors que le banc du train les a toutes mesurées (l.1176 comprise)",
+    );
+    assert.ok(
+      m20.includes(BANC_TRAIN.debit),
+      `§10, ligne M20 : plafond « ${BANC_TRAIN.debit} » attendu (mesure du train, trois passages)`,
+    );
+    for (const perime of BANC_PERIME) {
+      for (const [ou, bloc] of [["§10", validations.contenu], ["§11", limites.contenu]] as const) {
+        assert.ok(
+          !bloc.includes(perime),
+          `${ou} : verdict périmé « ${perime} », d'un passage d'avant la correction du débit : rejouer le banc plutôt que recopier`,
+        );
+      }
+    }
+  });
+
+  it("les comptes qui varient d'un passage à l'autre sont datés, jamais donnés pour des mesures stables", () => {
+    // Écart relevé par la revue d'itération 3 : « 9 moments sur 9 », « 36 images au premier zoom », « curseur de 8 à 7 » et
+    // « 94 images dessinées en 3D » étaient des relevés d'UN passage, écrits comme des valeurs stables. Cinq passages du MÊME
+    // code donnent cinq comptes (le regroupement des moments suit l'horodatage réel des faits ; le nombre d'images suit la
+    // fenêtre de mesure). Ce que le scénario vérifie, lui, est une règle (N sur N, contrôle non vide) : la documentation doit
+    // donner la règle, et dater le chiffre quand elle en donne un.
+    const validations = sections3d(recap).find((bloc) => bloc.contenu.includes("(M24)"));
+    assert.ok(validations, "section [3d] des validations de l'itération 3 introuvable");
+    const lignes = validations.contenu.split(/\r?\n/);
+    const date = /au passage du \d{1,2} \p{L}+ \d{4}/u;
+
+    for (const [repere, quoi] of [
+      ["**« Revoir »**", "moments rejoués"],
+      ["La 3D a réellement dessiné", "images du premier zoom"],
+      ["**Clavier seul**", "curseur des moments"],
+      ["(M20)", "images de scène dessinées en 3D"],
+    ] as const) {
+      const ligne = lignes.find((l) => l.includes(repere)) ?? "";
+      assert.notEqual(ligne, "", `§10 : ligne « ${repere} » introuvable`);
+      assert.ok(date.test(ligne), `§10, ligne « ${repere} » : le compte de ${quoi} varie d'un passage à l'autre, il doit être daté (« au passage du … »)`);
+    }
+
+    // Et les comptes d'un seul passage, déjà démentis par les rejeux, ne reviennent pas.
+    for (const perime of ["9 moments sur 9", "36 images", "de 8 à 7", "94 images"]) {
+      assert.ok(!validations.contenu.includes(perime), `§10 : compte d'un seul passage « ${perime} » de nouveau donné pour stable`);
     }
   });
 
