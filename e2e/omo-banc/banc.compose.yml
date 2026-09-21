@@ -1,0 +1,204 @@
+# Surcharge du banc hors ligne de la salle (L21). Elle s'empile SUR le compose du produit et sur la surcharge des projets
+# écrite par `install.ps1 -OmoProjetsSeulement` :
+#
+#   docker compose -p sal11-omo-banc-<id> --env-file <banc.env> \
+#     -f docker-compose.yml -f docker-compose.omo-projets.yml -f e2e/omo-banc/banc.compose.yml --profile omo up -d
+#
+# Elle ne modifie NI `docker-compose.yml`, NI l'image, NI le superviseur : tout ce qui est éprouvé ici est le produit tel quel.
+# Ce qu'elle ajoute, et pourquoi :
+#
+# 1. `banc-copilot` : le faux fournisseur scripté (L21a) en mode TLS, sur le port 443 du réseau fermé, avec l'alias réseau
+#    `api.githubcopilot.com` ET une adresse fixe. La salle croit parler à Copilot ; rien ne sort (MO-9).
+# 2. `banc-amorce`, `banc-auth` : ce que le cockpit déposerait avant un démarrage — la liste des projets préparés et un
+#    `auth.json` FACTICE. `opencode-omo` les attend (`service_completed_successfully`) : le superviseur ne voit jamais un
+#    volume à moitié rempli.
+# 3. `banc-battement`, `banc-precheck` : les deux seuls gestes vivants du cockpit. Arrêter `banc-battement`, c'est la porte G9.
+# 4. `banc-espion` : le seul service du banc sur les deux réseaux avec `egress` ; sans lui, `opencode-omo` (aucun port publié,
+#    réseau `internal: true`) serait injoignable depuis l'hôte. Il relaie et il note, il ne transforme rien.
+#
+# Aucun port du cockpit de l'utilisateur, aucun nom réservé : les deux publications sortent de variables `BANC_PORT_*`, sur la
+# boucle locale seulement. Le mot de passe vient du fichier d'environnement, jamais d'ici.
+
+services:
+  # --- Ce que le banc ajoute au service de la salle, sans rien lui retirer ---------------------------------------------------
+  opencode-omo:
+    # Le volume `/certs` du produit (dossier `certs/` du dépôt) est remplacé par celui du banc : l'autorité jetable y est seule,
+    # et `NODE_EXTRA_CA_CERTS` (variable de la liste blanche du contrat) la désigne.
+    volumes:
+      - ${BANC_CERTS}:/certs:ro
+    # Le nom d'hôte de Copilot est détourné par /etc/hosts vers l'adresse fixe du faux : aucune résolution, aucune surprise.
+    extra_hosts:
+      - "api.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.business.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.enterprise.githubcopilot.com:${BANC_IP_COPILOT}"
+    depends_on:
+      banc-amorce:
+        condition: service_completed_successfully
+      banc-auth:
+        condition: service_completed_successfully
+
+  # --- Proxy de sortie : le même détournement, pour qu'un CONNECT autorisé n'aille jamais au vrai Copilot -------------------
+  egress:
+    extra_hosts:
+      - "api.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.business.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.enterprise.githubcopilot.com:${BANC_IP_COPILOT}"
+
+  # --- Faux fournisseur Copilot (L21a), TLS sur 443 --------------------------------------------------------------------------
+  banc-copilot:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    # Root pour le SEUL port 443 (MO-9) : aucune autre capacité, aucun gain de privilège.
+    user: "0:0"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    pids_limit: 128
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      # Le pilotage écoute sur toutes les interfaces (il est publié sur la boucle locale de l'hôte) : le faux fournisseur
+      # exige alors un jeton, tiré au hasard par le banc et jamais affiché.
+      FAUX_COPILOT_JETON_PILOTE: ${BANC_JETON_PILOTE}
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command:
+      - /banc-lib/faux-copilot.mjs
+      - --tls
+      - --cert
+      - /banc-certs/serveur.pem
+      - --key
+      - /banc-certs/serveur.key
+      - --host
+      - 0.0.0.0
+      - --port
+      - "443"
+      - --pilot-host
+      - 0.0.0.0
+      - --pilot-port
+      - "9443"
+    # Le pilotage est publié sur la boucle locale seulement, sur un port choisi par le banc (jamais 7777).
+    ports: ["127.0.0.1:${BANC_PORT_PILOTE}:9443"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_CERTS_PRIVE}:/banc-certs:ro
+    networks:
+      default: {}
+      omo-internal:
+        # Alias ET adresse fixe : l'alias sert la résolution Docker, l'adresse sert les `extra_hosts`.
+        aliases: ["api.githubcopilot.com", "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com"]
+        ipv4_address: ${BANC_IP_COPILOT}
+
+  # --- Amorçage : la liste des projets préparés entre dans le volume de contrôle ---------------------------------------------
+  banc-amorce:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      omo-init:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-precheck.mjs", "--amorcer"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_SOURCE}:/banc-source:ro
+      - ${BANC_OUT}:/banc-out
+      - control-omo:/control
+
+  # --- auth.json FACTICE, entrée github-copilot seule ------------------------------------------------------------------------
+  banc-auth:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      omo-init:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-auth.mjs"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+      - omo-auth:/omo-auth
+
+  # --- Battement : le seul fil qui tient la salle en vie (G9) ----------------------------------------------------------------
+  banc-battement:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      banc-amorce:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-battement.mjs"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+      - control-omo:/control
+
+  # --- Pré-contrôle : un `precheck-ok` par démarrage (et donc par relance à neuf, MB-1) ---------------------------------------
+  banc-precheck:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      banc-amorce:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-precheck.mjs"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+      - control-omo:/control
+      - omo-state:/omo-state:ro
+
+  # --- Espion : le seul chemin de l'hôte vers la salle, et le relevé de chaque échange ---------------------------------------
+  banc-espion:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/espion.mjs", "--port", "4097", "--amont", "opencode-omo", "--port-amont", "4096"]
+    ports: ["127.0.0.1:${BANC_PORT_ESPION}:4097"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+    networks: [default, omo-internal]
+
+networks:
+  # Le réseau fermé du produit reçoit un plan d'adressage : `extra_hosts` a besoin d'une adresse, pas d'un nom. `internal: true`
+  # vient du compose du produit et n'est pas touché ici.
+  omo-internal:
+    ipam:
+      config:
+        - subnet: ${BANC_SUBNET}
