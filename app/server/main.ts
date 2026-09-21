@@ -10,6 +10,7 @@ import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
 import { omoOf } from "./env.ts";
 import { EventHub } from "./hub.ts";
+import { creerInstanceOmo, type OmoRuntime } from "./instance-runtime.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
 import { CopilotConfigSync, resyncOnIdle, resyncOnReconnect } from "./oc-copilot-config.ts";
@@ -27,6 +28,7 @@ import { StudioService } from "./studio.ts";
 import { TierService } from "./tiers.ts";
 import { TLS_RENEW_BEFORE_DAYS } from "./tls.ts";
 import { trustCorporateCertificates } from "./tls-trust.ts";
+import { SALLE_OUVERTE } from "./wiring-11.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const DAY_MS = 86_400_000;
@@ -186,6 +188,15 @@ const omoControlDirs: OmoControlDirs | null = omoEnv.enabled
       projectsFile: omoEnv.projectsFile,
     }
   : null;
+// Instance de la Salle OMO (train de V3, fiche L18a « Sortie ») : construite SEULEMENT si la porte du code est ouverte ET si
+// COCKPIT_OMO=on a donné des dossiers de contrôle. Dans le dépôt, SALLE_OUVERTE est fausse (wiring-11.ts, §2.7) : `omoRuntime`
+// vaut null, `instances.omo` reste null, et il n'y a donc ni second client, ni second processeur, ni inscription de la salle —
+// exactement l'état du train de V2. Aucune variable d'environnement n'ouvre la salle : COCKPIT_OMO=on seul ne suffit pas.
+const omoRuntime: OmoRuntime | null =
+  SALLE_OUVERTE && omoControlDirs !== null
+    ? creerInstanceOmo({ env, log, db, hub, sessions, ledger, archive, classifier, projects, copilot })
+    : null;
+
 // Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
 const cockpit = createCockpitApp({
   env,
@@ -212,9 +223,9 @@ const cockpit = createCockpitApp({
   sessions,
   tls,
   tickets,
-  // Salle OMO coupée (plan 2 bis §2.7) : le routeur d'instances est construit avec omo: null — aucun client, aucun processeur,
-  // aucune inscription de la salle. Aucune lecture de COCKPIT_OMO ici : le branchement réel arrive au train de V3.
-  omo: null,
+  // Salle OMO : les dépendances de la seconde instance quand la porte du code est ouverte, null sinon (le dépôt). Avec null, le
+  // routeur d'instances ne connaît qu'une instance et AUCUNE inscription de la salle n'est branchée (app-factory.ts).
+  omo: omoRuntime?.deps ?? null,
   // Dossiers de contrôle de la salle, calculés plus haut depuis env.omo (train de V2).
   omoControlDirs,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
@@ -286,6 +297,9 @@ void (async () => {
   // Démarrage 1.1 : retour des choix, agents internes (ports.internalAgents.ensureAll), reprises.
   await cockpit.startup();
   processor.start();
+  // Flux d'événements de la salle, comme celui de l'instance principale : sans instance, rien à démarrer. Le serveur de la salle
+  // peut être injoignable — cela se voit sur « omo.connection », le démarrage du cockpit n'en dépend pas.
+  omoRuntime?.start();
 })();
 
 let stopping = false;
@@ -294,6 +308,7 @@ const shutdown = (signal: string) => {
   stopping = true;
   log.info("arrêt du cockpit", { signal });
   processor.stop();
+  omoRuntime?.close();
   cockpit.close();
   catalog.stop();
   copilotConfig.stop();
