@@ -253,7 +253,7 @@ du Studio).
 | `it4-prelancement.mjs` | « Rien n'a été envoyé ni facturé » : chaque refus de `POST …/run` et de `POST …/relancer` laisse le faux sans la moindre requête, pour un code de chaque groupe ; `mcp` ajouté après l'estimation → 202 puis pause « À vérifier », sans envoi |
 | `it4-outils-etape.mjs` | outils offerts à l'IA d'une étape : ni `edit`, `write`, `apply_patch`, `bash`, `task`, `webfetch`, `websearch` ni `question` (journal du faux fournisseur en `--reel-hors-ligne`, oracle du faux en `--faux`) |
 | `it4-captures.mjs` | captures 1440, 1024 et 400 px dans les deux thèmes de chaque vue neuve ; contraste forcé émulé (`forced-colors: active`) et mouvement réduit pour la feuille, le Déroulé, l'éditeur, la carte et la carte d'exécution en pause ; feuille et éditeur au clavier seul ; console muette |
-| `it4-simple-ouvert.mjs` | ouverture des équipes en mode Simple (décision U1) : joué seulement quand `EQUIPES_SIMPLE_OUVERTES` est vraie, c'est-à-dire dans la copie jetable du banc ; sinon « non joué » |
+| `it4-simple-ouvert.mjs` | ouverture des équipes en mode Simple (décision U1). Son corps ne s'exécute que si `EQUIPES_SIMPLE_OUVERTES` est vraie ; sinon il s'annonce « non joué » et **ne vérifie rien**, tout en comptant vert. Pour le jouer : passer `app/server/wiring-eq.ts` à `export const EQUIPES_SIMPLE_OUVERTES = true;` dans la copie jetable du banc, **avant de bâtir les images** (le banc prépare son contexte à partir du dossier de travail), jamais dans le dépôt (U1), puis `scripts/run-e2e.sh --faux --scenarios it4-simple-ouvert …`, et remettre la ligne à `false`. Joué ainsi le 21 septembre 2026 : **vert** (22 s) |
 
 <!-- équipes (it4) : fin -->
 

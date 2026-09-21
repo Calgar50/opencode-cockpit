@@ -407,7 +407,7 @@ describe("croisements it4 V4 — D6 : le focus reste dans la boîte de dialogue"
 // --- Ligne V4 du §5.2 : constante d'ouverture et options du banc ----------------------------------------------------------------
 
 describe("croisements it4 V4 — ce que la vague doit garder vrai", () => {
-  it("EQUIPES_SIMPLE_OUVERTES reste fausse dans le dépôt (U1), et le banc ne l'ouvre que dans sa copie", () => {
+  it("EQUIPES_SIMPLE_OUVERTES reste fausse dans le dépôt (U1) — ce test ne dit rien du banc, qui la bascule dans sa seule copie jetable", () => {
     assert.equal(EQUIPES_SIMPLE_OUVERTES, false);
     assert.match(fs.readFileSync(path.join(APP_DIR, "server/wiring-eq.ts"), "utf8"), /export const EQUIPES_SIMPLE_OUVERTES = false;/);
   });
@@ -434,6 +434,90 @@ describe("croisements it4 V4 — ce que la vague doit garder vrai", () => {
     const fichiers = fs.readdirSync(path.join(REPO_DIR, "e2e", "lib"));
     for (const nom of fichiers) {
       assert.doesNotMatch(fs.readFileSync(path.join(REPO_DIR, "e2e", "lib", nom), "utf8"), /D-05/, `${nom} porte encore l'écart D-05`);
+    }
+  });
+});
+
+// --- Relecture de la vague 4 : le relevé publié ne doit pas vieillir en silence ---------------------------------------------------
+
+/** Dernière vague de tests de croisement des équipes présente dans le dépôt (`croisements-eq-vN.test.ts`). */
+function derniereVagueDeCroisements(): number {
+  const vagues = fs
+    .readdirSync(path.join(APP_DIR, "server"))
+    .map((nom) => /^croisements-eq-v(\d+)\.test\.ts$/.exec(nom))
+    .filter((trouve): trouve is RegExpExecArray => trouve !== null)
+    .map((trouve) => Number(trouve[1]));
+  assert.ok(vagues.length > 0, "aucun fichier croisements-eq-vN.test.ts trouvé");
+  return Math.max(...vagues);
+}
+
+/** Texte d'un bloc balisé `<!-- équipes (it4) : début -->` … `: fin -->` de docs/RECAPITULATIF.md, réunis. */
+function blocsEquipesDuRecapitulatif(): string {
+  const texte = lire(path.join("docs", "RECAPITULATIF.md"));
+  const blocs = [...texte.matchAll(/<!-- équipes \(it4\) : début -->([\s\S]*?)<!-- équipes \(it4\) : fin -->/g)].map((trouve) => trouve[1] ?? "");
+  assert.ok(blocs.length >= 2, `blocs balisés « équipes (it4) » attendus, ${blocs.length} trouvé(s)`);
+  return blocs.join("\n");
+}
+
+describe("croisements it4 V4 — le relevé de l'itération reste à jour", () => {
+  it("le RECAPITULATIF nomme la DERNIÈRE vague de tests de croisement présente dans le dépôt, jamais une plus ancienne", () => {
+    const derniere = derniereVagueDeCroisements();
+    const bloc = blocsEquipesDuRecapitulatif();
+    assert.ok(
+      bloc.includes(`\`croisements-eq-v0\` à \`v${derniere}\``),
+      `le relevé ne cite pas « \`croisements-eq-v0\` à \`v${derniere}\` » alors que croisements-eq-v${derniere}.test.ts est dans le dépôt`,
+    );
+    assert.ok(bloc.includes(`vagues 0 à ${derniere}`), `le relevé ne dit pas « tests de croisement des vagues 0 à ${derniere} »`);
+    // Aucune mention d'une vague plus ancienne comme si elle était la dernière : c'est ainsi que le relevé s'est périmé.
+    for (let vague = 0; vague < derniere; vague += 1) {
+      assert.ok(!bloc.includes(`\`croisements-eq-v0\` à \`v${vague}\``), `le relevé s'arrête encore à « v${vague} »`);
+      assert.ok(!bloc.includes(`vagues 0 à ${vague}`), `le relevé s'arrête encore aux « vagues 0 à ${vague} »`);
+    }
+  });
+
+  it("la ligne des tests automatisés et celle du contrôle de mutation parlent de la même vague", () => {
+    const bloc = blocsEquipesDuRecapitulatif();
+    const mutations = [...bloc.matchAll(/à la vague (\d+)/g)].map((trouve) => Number(trouve[1]));
+    assert.ok(mutations.length > 0, "la ligne « Contrôle de mutation » ne cite aucune vague");
+    const vagueDuControle = Math.max(...mutations);
+    assert.ok(
+      bloc.includes(`vagues 0 à ${vagueDuControle}`),
+      `le contrôle de mutation va jusqu'à la vague ${vagueDuControle}, mais la ligne des tests automatisés s'arrête plus tôt`,
+    );
+  });
+
+  it("`it4-simple-ouvert` n'est pas compté sans sa condition : le relevé et e2e/README.md disent comment le jouer", () => {
+    const readme = lire(path.join("e2e", "README.md"));
+    const ligne = readme.split("\n").find((l) => l.includes("`it4-simple-ouvert.mjs`") && l.startsWith("|"));
+    assert.ok(ligne, "aucune ligne de tableau pour `it4-simple-ouvert.mjs` dans e2e/README.md");
+    assert.match(ligne, /avant de bâtir les images/, "e2e/README.md ne dit pas QUAND basculer la constante dans la copie jetable");
+    assert.match(ligne, /jamais dans le dépôt/, "e2e/README.md ne rappelle pas que le dépôt n'est jamais touché (U1)");
+    // Le §10 doit nommer ce scénario : sans cela, il est compté « vert » alors qu'il ne joue rien dans une passe ordinaire.
+    assert.match(blocsEquipesDuRecapitulatif(), /it4-simple-ouvert/, "le §10 compte les scénarios verts sans dire le cas de `it4-simple-ouvert`");
+  });
+
+  it("les sélecteurs qu'interroge `it4-simple-ouvert` existent dans l'interface (filet qui manquait, le scénario ne tournant pas)", () => {
+    const scenario = fs.readFileSync(path.join(REPO_DIR, "e2e", "scenarios", "it4-simple-ouvert.mjs"), "utf8");
+    const bruts = [
+      ...[...scenario.matchAll(/querySelector\('([^']+)'\)/g)].map((trouve) => trouve[1] ?? ""),
+      ...[...scenario.matchAll(/page\.texte\("([^"]+)"\)/g)].map((trouve) => trouve[1] ?? ""),
+    ];
+    const classes = [...new Set(bruts.flatMap((sel) => sel.split(/\s+/)).filter((mot) => mot.startsWith(".")))].map((mot) => mot.slice(1));
+    assert.ok(classes.length >= 6, `sélecteurs de classe extraits du scénario : ${classes.join(", ")}`);
+    const sources: string[] = [];
+    const parcourir = (dossier: string) => {
+      for (const entree of fs.readdirSync(dossier, { withFileTypes: true })) {
+        const chemin = path.join(dossier, entree.name);
+        if (entree.isDirectory()) parcourir(chemin);
+        else if (/\.(?:tsx?|css)$/.test(entree.name)) sources.push(fs.readFileSync(chemin, "utf8"));
+      }
+    };
+    parcourir(path.join(APP_DIR, "web"));
+    for (const classe of classes) {
+      assert.ok(
+        sources.some((source) => source.includes(classe)),
+        `la classe « ${classe} », interrogée par it4-simple-ouvert.mjs, n'existe plus dans app/web`,
+      );
     }
   });
 });

@@ -1,7 +1,10 @@
 // Scénario e2e des équipes (itération 4, L41) : l'ouverture des équipes en mode Simple tient en UNE ligne (décision U1).
 //
 // `EQUIPES_SIMPLE_OUVERTES` reste FAUSSE dans le dépôt : les équipes sont complètes en mode Avancé, et fermées en Simple
-// jusqu'aux recettes du §7.11 n° 4. Le banc ne bascule la constante que dans sa COPIE JETABLE, pour cette exécution-là.
+// jusqu'aux recettes du §7.11 n° 4. Le banc n'a AUCUNE option pour la basculer, et il ne doit pas en avoir : le levier « une
+// seule ligne » de la décision U1 est celui du code, pas celui du banc. Pour jouer ce scénario, on passe la ligne à `true` à la
+// main dans la COPIE JETABLE, avant de bâtir les images, puis on la remet à `false` (procédure et dernier passage :
+// e2e/README.md). Sans cette bascule, ce scénario ne vérifie RIEN, tout en comptant vert : ne le lisez pas autrement.
 // Ce scénario s'adapte : si `GET /api/teams` annonce `ouvertesEnSimple: false` (l'exécution ordinaire), il le dit et ne
 // joue rien ; s'il l'annonce vrai (l'exécution de la copie basculée), il éprouve l'ouverture entière :
 //   1. les SIX routes fermées en Simple ne répondent plus 403 « equipes-simple-fermees » ;
