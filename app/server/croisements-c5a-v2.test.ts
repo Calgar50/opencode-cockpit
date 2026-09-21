@@ -229,6 +229,45 @@ describe("croisement 5a V2 : les vues de la vague tiennent sur les types de T5a"
     assert.match(bouton, /if \(!garde\.envoyer\)/, "la garde d'envoi n'arrête plus le clic");
   });
 
+  it("la puce ne mange pas la place de « Qui travaille ? » : avec elle, les réglages d'IA prennent toute la barre du composeur", () => {
+    // Défaut trouvé par la répétition générale de la 5a, corrigé dans `methods-chat.css` : la puce « + Méthode » prend environ
+    // 100 px dans la barre du composeur, pris aux réglages d'IA, qui partagent la même ligne. À 1440 × 900, une demande de
+    // délégation en attente en mode Avancé, la barre passait de 196 à 260 px et le composeur de 286 à 350 ; la colonne prenait
+    // ces 64 px à la région « Qui travaille ? » (250 → 187), dont la bande tombait de 104 à 40 px, et le marqueur « attente de
+    // votre accord » de la carte passait SOUS le bandeau — contre la clôture de l'itération 1 (spéc. §5.7.1), que
+    // `croisements-it1-v4.test.ts` garde du côté d'`activity.css`. Les e2e it1-ui-mise-en-page et it1-ui-delegation le voient
+    // dans le navigateur ; ce cas-ci garde la règle dans la suite PAR DÉFAUT, où ces e2e ne tournent pas.
+    const aplati = (relatif: string) =>
+      fs
+        .readFileSync(path.join(WEB_DIR, relatif), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\s+/g, " ");
+    const bloc = (plat: string, selecteur: string) => {
+      const at = plat.indexOf(`${selecteur} {`);
+      assert.ok(at >= 0, `règle ${selecteur} absente`);
+      return plat.slice(at, plat.indexOf("}", at));
+    };
+    // La correction s'appuie sur l'enroulement que la barre pose déjà : sans lui, la pleine largeur ne ferait pas passer les
+    // boutons dessous, elle les sortirait de la ligne.
+    assert.ok(bloc(aplati("pages/chat/chat.css"), ".composer-toolbar").includes("flex-wrap: wrap;"), ".composer-toolbar : l'enroulement sur lequel la correction s'appuie a disparu");
+    assert.ok(
+      bloc(aplati("pages/chat/methods/methods-chat.css"), ".composer-toolbar:has(> .methodes-puce) > .composer-ia").includes("flex-basis: 100%;"),
+      "avec la puce, les réglages d'IA ne prennent plus toute la barre : la barre regagne une ligne, prise à « Qui travaille ? »",
+    );
+    // Le sélecteur ne vaut que si le balisage tient : les réglages d'IA et la puce sont deux enfants DIRECTS de la barre.
+    const composeur = lireVue("pages/chat/Composer.tsx");
+    const OUVERTURE = '<div className="composer-toolbar">';
+    const debut = composeur.indexOf(OUVERTURE);
+    assert.ok(debut >= 0, "Composer.tsx : la barre du composeur a changé de nom");
+    const barre = composeur.slice(debut, composeur.indexOf("\n        </div>", debut));
+    assert.match(barre, /^<div className="composer-toolbar">\s*<div className="spacer composer-ia">/, "les réglages d'IA ne sont plus l'enfant direct de la barre");
+    assert.match(barre, /<MethodChip /, "la puce n'est plus posée dans la barre du composeur");
+    // Et la puce ne s'affiche que s'il y a des méthodes : sans elle, `:has()` ne s'applique pas et la barre ne change pas.
+    const puce = lireVue("pages/chat/methods/MethodChip.tsx");
+    assert.match(puce, /className="methodes-puce"/, "la racine de la puce ne porte plus la classe que le sélecteur vise");
+    assert.match(puce, /if \(state\.items\.length === 0\) return null;/, "la puce s'affiche sans méthode : la barre changerait de hauteur pour rien");
+  });
+
   it("GET /api/methods : la réponse réelle traverse les quatre modules purs des vues de la vague", async (t) => {
     const h = await croisement(t);
     const reponse = await catalogue(h);
