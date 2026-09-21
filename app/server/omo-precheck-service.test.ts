@@ -287,6 +287,8 @@ async function demarrer(a: Atelier, startId = DEMARRAGE, etat?: OmoSupervisorSta
 
 describe("pré-contrôle en service : portée", () => {
   it("le dépôt garde la portée « prepares » tant que M31 n'est pas confirmée (D-2b-35)", () => {
+    // Train de V3 : le banc de L21 a relevé M31 en mode dégradé (« --sans-git »), faute de pouvoir démarrer la salle avec un
+    // projet préparé portant un dépôt. Ce n'est pas la confirmation attendue : la portée du dépôt ne bouge pas.
     assert.equal(PRECHECK_PORTEE, "prepares");
   });
 

@@ -224,10 +224,12 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     cap_add: ["SETUID", "SETGID"]
-    # Provisoires (D-2b-46), ajustés au train de la vague 3 d'après la mesure M22.
-    pids_limit: 512
+    # Ajustés au train de la vague 3 d'après la mesure M22 du banc hors ligne (L21, extension 4.19.4 chargée) : 347,8 Mio de
+    # mémoire au maximum, 11 processus, 4,37 % de CPU. Les plafonds provisoires de D-2b-46 (512 / 2 / 4g) étaient larges d'un
+    # facteur ≈ 10. La marge reste volontairement grande — une tâche réelle charge plus qu'un faux fournisseur.
+    pids_limit: 128
     cpus: 2
-    mem_limit: 4g
+    mem_limit: 1g
     depends_on:
       omo-init:
         condition: service_completed_successfully

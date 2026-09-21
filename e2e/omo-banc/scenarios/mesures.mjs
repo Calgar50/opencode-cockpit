@@ -8,6 +8,28 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * Plafonds de ressources posés sur `opencode-omo` dans le compose du PRODUIT, lus au moment du relevé (train de V3, M22).
+ * Le banc monte ce compose : la mesure doit dire les plafonds réellement en vigueur, jamais une copie qui vieillit. Un fichier
+ * ou un champ illisible rend null plutôt qu'une valeur inventée (P3).
+ */
+function plafondsDuCompose(racineDepot) {
+  try {
+    const texte = fs.readFileSync(path.join(racineDepot, "docker-compose.yml"), "utf8");
+    // Bloc du service `opencode-omo` : de son en-tête jusqu'au service suivant, au même retrait.
+    const debut = texte.search(/^ {2}opencode-omo:$/m);
+    if (debut < 0) return null;
+    const reste = texte.slice(debut + 1);
+    const fin = reste.search(/^ {2}\S[^\n]*:$/m);
+    const bloc = fin < 0 ? reste : reste.slice(0, fin);
+    const lire = (cle) => bloc.match(new RegExp(`^\\s*${cle}:\\s*(\\S+)`, "m"))?.[1] ?? null;
+    const nombreSiPossible = (v) => (v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : v);
+    return { mem_limit: lire("mem_limit"), pids_limit: nombreSiPossible(lire("pids_limit")), cpus: nombreSiPossible(lire("cpus")) };
+  } catch {
+    return null;
+  }
+}
+
 /** Marqueurs de la liste fermée (D-2b-31) : les seules suites de caractères de l'extension qu'une fixture garde telles quelles. */
 const MARQUEURS = ["<!-- OMO_INTERNAL_NOREPLY -->", "<!-- OMO_INTERNAL_INITIATOR -->", "[SYSTEM DIRECTIVE: OH-MY-OPENCODE -"];
 
@@ -253,7 +275,9 @@ export default {
       memoireMioMoyenne: memoires.length ? Number((memoires.reduce((a, b) => a + b, 0) / memoires.length).toFixed(1)) : null,
       pidsMax: pids.length ? Math.max(...pids) : null,
       cpuPourcentMax: cpus.length ? Math.max(...cpus) : null,
-      plafondsActuels: { mem_limit: "4g", pids_limit: 512, cpus: 2 },
+      // Plafonds RELUS dans le compose du produit à chaque passage : ils ont été abaissés au train de V3 d'après cette mesure
+      // même (D-2b-46 : 512 / 2 / 4g provisoires → 128 / 2 / 1g). Une copie en dur ici mentirait dès l'ajustement suivant.
+      plafondsActuels: plafondsDuCompose(ctx.racine),
     };
     ctx.ecrireSortie("mes-stats.json", `${JSON.stringify({ releves, resume: mesures.M22 }, null, 2)}\n`);
     ajouter("M22 : mémoire, processus et CPU relevés", releves.length >= 3, `mémoire max ${mesures.M22.memoireMioMax} Mio, ${mesures.M22.pidsMax} processus, CPU max ${mesures.M22.cpuPourcentMax} %`);

@@ -9,8 +9,8 @@
 //   c'est ce que L18c rend en 409.
 // - `beforeStart(startId)` : déclenché par un NOUVEAU `startId` lu dans `state.json` (surveillance par l'horloge injectée, jamais
 //   par un délai lu dans l'environnement). Contrôle chaque projet ouvert (`omoRoom.openProjects`) ET tous les projets préparés
-//   tant que `PRECHECK_PORTEE` vaut « prepares » (D-2b-35 : la bascule vers « ouverts » n'arrive qu'après M31, confirmé par L21,
-//   et se fait au train, jamais ici). Portée « prepares » : UN SEUL projet non conforme → aucun `precheck-ok`, donc aucun
+//   tant que `PRECHECK_PORTEE` vaut « prepares » (D-2b-35 : la bascule vers « ouverts » n'arrive qu'après M31 confirmée sur un
+//   banc COMPLET, ce que le banc de L21 n'a pas pu faire — voir la constante —, et se fait au train, jamais ici). Portée « prepares » : UN SEUL projet non conforme → aucun `precheck-ok`, donc aucun
 //   démarrage, et la liste masquée est rendue à l'appelant. Portée « ouverts » : un projet non conforme est écarté sans bloquer
 //   les autres (§3.15.2).
 // - Aucun `precheck-ok` non plus si `state.json` montre un dossier de configuration non conforme, un `.git` non protégé
@@ -59,7 +59,13 @@ import type {
  * - « prepares » : tous les projets préparés, ouverts ou non, plus les projets ouverts. Un seul non conforme refuse le démarrage.
  * - « ouverts » : les projets ouverts seulement ; un projet non conforme est écarté sans bloquer les autres.
  * La valeur du dépôt reste « prepares » tant que M31 (l'extension ne touche que le dossier ouvert et ses parents) n'est pas
- * confirmée par le banc de L21 ; la bascule est faite au train de la vague 3, jamais par ce module.
+ * confirmée par le banc de L21 ; la bascule est faite au train, jamais par ce module.
+ *
+ * TRAIN DE V3, décision consignée : M31 a été RELEVÉE par le banc de L21 (projet témoin intact, seul le projet ouvert gagne
+ * `.omo`), mais sur un banc DÉGRADÉ — l'option « --sans-git », prise parce qu'un projet préparé portant un dépôt empêche la
+ * salle de démarrer sur cet hôte (défaut n° 1 du rapport de L21). Une mesure faite sans aucun dépôt ne dit rien de ce que
+ * l'extension ferait des dépôts voisins, qui est précisément ce que D-2b-35 veut savoir. La portée RESTE donc « prepares », et
+ * la bascule attend une M31 rejouée sur un banc complet, après le correctif du défaut n° 1.
  */
 export const PRECHECK_PORTEE: OmoPrecheckPortee = "prepares";
 
