@@ -209,20 +209,46 @@ export async function classementAutomatique(ctx, mode) {
 }
 
 /**
+ * Forme d'une RELECTURE D'ARCHIVE du cockpit : `GET /session/:id` et `GET /session/:id/message`, les deux lectures que
+ * `archive.refresh` fait 4 s après qu'une conversation est passée au repos (classifier.ts, `onIdle`). Un refus de
+ * pré-lancement, lui, ne lit jamais de session : il est jugé sur l'instantané de l'estimation (A4, D-eq-17), et les corps
+ * mesurés ici portent tous `rootId: null`. Cette forme sert UNIQUEMENT à reconnaître un bruit de fond à reprendre,
+ * jamais à l'excuser : voir `sansRequete`.
+ */
+const RELECTURE_ARCHIVE = /^\/session\/[^/]+(?:\/message)?$/;
+const estRelectureArchive = (requete) => requete.method === "GET" && RELECTURE_ARCHIVE.test(requete.pathname);
+
+/** Fenêtre de calme demandée avant de REPRENDRE une mesure salie par une relecture d'archive (plus large que ses 4 s). */
+const CALME_REPRISE_MS = 6_000;
+
+/**
  * Exécute `appel` et exige que le faux opencode n'ait reçu AUCUNE requête pendant — journal complet, toutes méthodes, tous
  * chemins (spécification §7.8 l.1189 : « aucun refus de pré-lancement n'émet de requête »). Rend la réponse brute.
  * Les requêtes de fond du cockpit sont écartées (FOND) ; les trois lectures de l'estimation ne le sont jamais.
+ *
+ * MESURE REPRISE, jamais assouplie. Le cockpit relit l'archive d'une conversation 4 s après qu'elle est passée au repos, sur
+ * une minuterie que rien n'annonce : cette lecture tombait parfois dans la fenêtre d'un refus, et faisait tomber le scénario
+ * pour une raison étrangère à ce qu'il mesure (« 2 requête(s) émise(s) pendant un refus — GET /session/…, GET /session/…/message »).
+ * Quand les requêtes vues ont TOUTES cette forme-là, la mesure est REPRISE après une fenêtre calme plus large, au plus
+ * `reprises` fois — un refus qui lirait vraiment une session le referait à chaque fois et tomberait quand même. Toute autre
+ * requête (création de session, envoi, suppression, lecture d'un agent, d'un raccourci ou de la configuration) fait tomber la
+ * mesure IMMÉDIATEMENT, sans reprise : c'est exactement ce que la sortie du §7.8 interdit.
  */
-export async function sansRequete(ctx, libelle, appel) {
-  await attendreCalme(ctx);
-  const debut = await repere(ctx);
-  const reponse = await appel();
-  // Le faux enregistre une requête à sa réception : une requête partie juste avant la réponse est déjà dans le journal, et un
-  // court délai laisse arriver celles qu'un gestionnaire aurait lancées sans les attendre.
-  await attendre(150);
-  const emises = await requetesDepuis(ctx, debut);
-  exiger(emises.length === 0, `${libelle} : ${emises.length} requête(s) émise(s) pendant un refus — ${emises.map((r) => `${r.method} ${r.pathname}`).join(", ")}`);
-  return reponse;
+export async function sansRequete(ctx, libelle, appel, { reprises = 2, calmeRepriseMs = CALME_REPRISE_MS } = {}) {
+  let emises = [];
+  for (let essai = 0; essai <= reprises; essai++) {
+    await attendreCalme(ctx, essai === 0 ? undefined : { calmeMs: calmeRepriseMs });
+    const debut = await repere(ctx);
+    const reponse = await appel();
+    // Le faux enregistre une requête à sa réception : une requête partie juste avant la réponse est déjà dans le journal, et un
+    // court délai laisse arriver celles qu'un gestionnaire aurait lancées sans les attendre.
+    await attendre(150);
+    emises = await requetesDepuis(ctx, debut);
+    if (emises.length === 0) return reponse;
+    if (essai === reprises || !emises.every(estRelectureArchive)) break;
+    releve(ctx, `${libelle} : mesure reprise, une relecture d'archive du cockpit est tombée dans la fenêtre (${emises.map((r) => r.pathname).join(", ")})`);
+  }
+  exiger(false, `${libelle} : ${emises.length} requête(s) émise(s) pendant un refus — ${emises.map((r) => `${r.method} ${r.pathname}`).join(", ")}`);
 }
 
 /** Exige un refus : code HTTP et code d'erreur du corps, sans aucune requête pendant l'appel. Rend le corps lu. */

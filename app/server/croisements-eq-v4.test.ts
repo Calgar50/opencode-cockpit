@@ -743,7 +743,12 @@ const chargerScenario = (nom: string) => import(pathToFileURL(path.join(REPO_DIR
 interface OutilsCommuns {
   sansLeFond: (journal: unknown) => { method: string; pathname: string }[];
   attendreCalme: (ctx: unknown, options?: { calmeMs?: number; delaiMs?: number }) => Promise<number>;
-  sansRequete: (ctx: unknown, libelle: string, appel: () => Promise<unknown>) => Promise<unknown>;
+  sansRequete: (
+    ctx: unknown,
+    libelle: string,
+    appel: () => Promise<unknown>,
+    options?: { reprises?: number; calmeRepriseMs?: number },
+  ) => Promise<unknown>;
 }
 
 /**
@@ -758,6 +763,7 @@ function faussePile() {
       journal.push({ method, pathname });
     },
     ctx: {
+      mode: "faux",
       opencodeRequests: async () => {
         journal.push({ method: "GET", pathname: "/session/status" });
         return [...journal];
@@ -913,16 +919,62 @@ describe("croisements it4 V4 — clôture : `it4-prelancement` ne suppose plus l
     const rendu = await commun.sansRequete(calme.ctx, "refus mesuré", async () => "réponse");
     assert.equal(rendu, "réponse");
 
-    // 2. Une seule requête utile pendant l'appel suffit à faire tomber la mesure, avec son chemin dans le message.
+    // 2. Une seule requête utile pendant l'appel suffit à faire tomber la mesure, avec son chemin dans le message — et SANS
+    //    reprise : une création de session pendant un refus n'est jamais un bruit de fond.
     const bruyante = faussePile();
+    let appels = 0;
     await assert.rejects(
       () =>
         commun.sansRequete(bruyante.ctx, "refus qui parle à opencode", async () => {
+          appels += 1;
           bruyante.ajouter("POST", "/session");
           return "réponse";
         }),
       /refus qui parle à opencode : 1 requête\(s\) émise\(s\) pendant un refus — POST \/session/,
     );
+    assert.equal(appels, 1, "une requête qui n'est pas un bruit de fond ne donne droit à aucune reprise");
+  });
+
+  it("la relecture d'archive du cockpit fait REPRENDRE la mesure, et un refus qui lirait vraiment une session tombe quand même", async () => {
+    const commun = (await chargerScenario("it4-commun.mjs")) as OutilsCommuns;
+
+    // 1. Bruit de fond passager : la mesure est reprise, et le refus passe à l'essai suivant.
+    const passagere = faussePile();
+    let tours = 0;
+    const rendu = await commun.sansRequete(
+      passagere.ctx,
+      "refus sali une fois",
+      async () => {
+        tours += 1;
+        if (tours === 1) {
+          passagere.ajouter("GET", "/session/ses_etrangere");
+          passagere.ajouter("GET", "/session/ses_etrangere/message");
+        }
+        return "réponse";
+      },
+      { reprises: 2, calmeRepriseMs: 300 },
+    );
+    assert.equal(rendu, "réponse");
+    assert.equal(tours, 2, "la mesure salie par une relecture d'archive doit être reprise une fois");
+
+    // 2. …mais une lecture de session qui se REPRODUIT à chaque essai fait tomber la mesure : l'assertion tient entière.
+    const tetue = faussePile();
+    let essais = 0;
+    await assert.rejects(
+      () =>
+        commun.sansRequete(
+          tetue.ctx,
+          "refus qui lit une session",
+          async () => {
+            essais += 1;
+            tetue.ajouter("GET", "/session/ses_lue/message");
+            return "réponse";
+          },
+          { reprises: 1, calmeRepriseMs: 300 },
+        ),
+      /refus qui lit une session : 1 requête\(s\) émise\(s\) pendant un refus — GET \/session\/ses_lue\/message/,
+    );
+    assert.equal(essais, 2, "les reprises sont bornées : la mesure finit par tomber");
   });
 });
 
