@@ -220,10 +220,18 @@ const genreDuBloc = (lignes: readonly StepRunView[]): "relecture" | "aiguillage"
  * Spécialistes d'un aiguillage : les lignes du bloc, moins l'aiguilleur (la première du plan) et moins la synthèse (la
  * dernière, que le plan n'ajoute qu'à partir de deux spécialistes possibles, C §6.2). « Prévu » est leur nombre, « réel » celui
  * des spécialistes que votre choix a retenus.
+ * `declares` : le nombre de spécialistes DÉCLARÉS, lu dans les bornes du déroulé lancé (`TeamRunView.blocs`). Il seul dit où
+ * s'arrêtent les spécialistes : la synthèse n'existe qu'à partir de deux spécialistes possibles, et un aiguillage neuf n'en a
+ * pas (`choixMax: 1`, `synthese: null`) — la dernière ligne était alors un VRAI spécialiste, pris à tort pour une synthèse, et
+ * le réel tombait à 0 quand c'était lui que vous aviez retenu.
+ * Sans borne déclarée (vue d'un module qui ne les porte pas), l'ancienne déduction sur la position est gardée telle quelle.
  */
-export function specialistesDuBloc(lignes: readonly StepRunView[]): { prevu: number; reel: number } {
+export function specialistesDuBloc(lignes: readonly StepRunView[], declares?: number): { prevu: number; reel: number } {
   const candidats = lignes.slice(1);
-  const specialistes = candidats.length >= 2 ? candidats.slice(0, -1) : candidats;
+  const connus = typeof declares === "number" && Number.isFinite(declares) && declares >= 0;
+  // Repli sans borne déclarée : la dernière ligne est tenue pour la synthèse à partir de deux candidats (déduction d'origine).
+  const sansBorne = candidats.length >= 2 ? candidats.slice(0, -1) : candidats;
+  const specialistes = connus ? candidats.slice(0, Math.trunc(declares as number)) : sansBorne;
   return { prevu: specialistes.length, reel: specialistes.filter((step) => step.state !== "non-choisi").length };
 }
 
@@ -252,7 +260,7 @@ export function ecartsDe(run: TeamRunView): { ecarts: string[]; notes: string[] 
       const tours = [...parEtape.values()];
       if (tours.length >= 2 && Math.max(...tours) > Math.min(...tours)) notes.push(C5.relecture.nonRelue);
     } else if (genre === "aiguillage") {
-      const { prevu, reel } = specialistesDuBloc(lignes);
+      const { prevu, reel } = specialistesDuBloc(lignes, borne?.specialistes);
       // « Prévu » = les spécialistes que l'aiguillage pouvait consulter AU PLUS (`choixMax`), le nombre même que l'estimation
       // haute a facturé ; à défaut de borne déclarée, le nombre de spécialistes de la liste.
       ecarts.push(ecartSpecialistes(borne?.choixMax ?? prevu, reel));

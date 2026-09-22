@@ -394,8 +394,11 @@ export interface TeamRunView {
    * pas dire « Prévu : jusqu'à 2 tours · Réel : 1 tour » (spéc. §5.1 l.881, conception A §7.3) : les lignes `team_run_steps`
    * ne portent que les tours RÉELLEMENT faits et les spécialistes déclarés, jamais le maximum que l'estimation a annoncé.
    * Absent pour un lancement sans bloc répétable, et pour une vue construite par un module qui ne les connaît pas.
+   * `specialistes` (corrections de la relecture de la vague 2) : nombre de spécialistes DÉCLARÉS d'un aiguillage. Sans lui, le
+   * Déroulé devinait la synthèse à sa place (la dernière ligne du bloc) et prenait un vrai spécialiste pour elle dès qu'un
+   * aiguillage n'en portait aucune — forme par défaut de l'éditeur (`choixMax: 1`, `synthese: null`).
    */
-  blocs?: Array<{ index: number; type: "relecture" | "aiguillage"; toursMax?: number; choixMax?: number }>;
+  blocs?: Array<{ index: number; type: "relecture" | "aiguillage"; toursMax?: number; choixMax?: number; specialistes?: number }>;
   // </c5:blocs-prevus>
   pause: TeamPauseView | null;
   relancable: boolean;

@@ -85,6 +85,9 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   "app/web/pages/AssistantsPage.tsx",
   "app/web/lib/router.ts",
   "app/web/pages/chat/Composer.tsx",
+  // Ajouté aux corrections de la relecture de la vague 2 de 5b : [Envoyer à cet assistant] (chemin « aucun », L42c) publiait la
+  // demande et l'assistant de repli sans que personne ne les écoute. La page du chat les reçoit dans une section `c5:`.
+  "app/web/pages/ChatPage.tsx",
   "app/web/pages/chat/MessageView.tsx",
   "app/web/pages/chat/activity/Deroule.tsx",
   "app/web/pages/CostsPage.tsx",

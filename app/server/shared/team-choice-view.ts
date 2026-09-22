@@ -63,10 +63,13 @@ export interface TeamChoiceView {
 }
 
 /**
- * Chemin « aucun » (D-5-13), LU SUR LE LIVRABLE : c'est le seul endroit où l'assistant de repli arrive jusqu'à l'interface.
- * Ni `TeamPauseView` ni `StepRunView` ne le portent (types de L42a) ; `deliverable()` de ./flow.ts est le seul producteur, et
- * il écrit les deux phrases de `execution.aucun`. Les phrases elles-mêmes restent dans le livrable, rendu tel quel : la carte
- * n'ajoute que le bouton.
+ * Chemin « aucun » (D-5-13), LU SUR LE LIVRABLE : c'est le seul endroit où le NOM de l'assistant de repli arrive jusqu'à
+ * l'interface. Ni `TeamPauseView` ni `StepRunView` ne portent ce nom (types de L42a) ; `deliverable()` de ./flow.ts est le seul
+ * producteur, et il écrit les deux phrases de `execution.aucun`. Les phrases elles-mêmes restent dans le livrable, rendu tel
+ * quel : la carte n'ajoute que le bouton.
+ * L'ÉTAT « aucun », lui, est bien enregistré (`StepRunView.choix === "aucun"`, écrit par votre seule réponse) : l'appelant le
+ * vérifie AVANT d'appeler ce module (team-view-model.ts, `modeleResultat`). Sans cette porte, un résultat d'IA qui recopie les
+ * deux phrases ferait apparaître un bouton vers un assistant nommé par l'IA.
  */
 export interface TeamAucunView {
   /** Assistant de repli nommé par le livrable ; null quand l'aiguillage n'en propose aucun. */

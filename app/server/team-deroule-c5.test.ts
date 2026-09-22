@@ -12,11 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { ecartSpecialistes, ecartTours, TEXTES as CONSTRUCTION } from "./shared/construction-texts.ts";
-import { DELIVERABLE_TEXTS } from "./shared/flow.ts";
+import { DELIVERABLE_TEXTS, injectionText } from "./shared/flow.ts";
 import { aucunDuLivrable } from "./shared/team-choice-view.ts";
 import { TEXTES } from "./shared/team-texts.ts";
 import type { StepRunView, TeamRunView } from "./shared/team-types.ts";
 import { buildTeamDeroule, ecartsDe, specialistesDuBloc } from "../web/pages/chat/team/deroule-model.ts";
+import { demandeRecopiee } from "../web/pages/chat/team/team-transcript.ts";
 import { buildTeamRunCard, etapesParTour, modelePause, modeleResultat, teamPauseElementId, toursParBloc, toursPrevusParBloc, verdictLigne } from "../web/pages/chat/team/team-view-model.ts";
 
 const P = TEXTES.partout;
@@ -127,6 +128,24 @@ function aiguillage(choix: string[] | "aucun"): StepRunView[] {
   return lignes;
 }
 
+/** Bornes DÉCLARÉES d'un aiguillage, telles que `view()` les pose (team-runner.ts, section `c5:blocs-prevus`). */
+const bornesAiguillage = (choixMax: number, specialistes: number): NonNullable<TeamRunView["blocs"]> => [
+  { index: 0, type: "aiguillage", choixMax, specialistes },
+];
+
+/**
+ * Aiguillage SANS synthèse : la forme par défaut de l'éditeur (`choixMax: 1`, `synthese: null`, flow-edit.ts `blocNeufC5`).
+ * La dernière ligne du bloc est alors un VRAI spécialiste, jamais une synthèse.
+ */
+function aiguillageSansSynthese(specialistes: readonly string[], retenu: string): StepRunView[] {
+  rang = 0;
+  const lignes = [faite({ stepId: "aiguilleur", titre: "Aiguiller", choix: [retenu] })];
+  for (const stepId of specialistes) {
+    lignes.push(stepId === retenu ? faite({ stepId, titre: stepId }) : ligne({ stepId, titre: stepId, state: "non-choisi", cost: 0 }));
+  }
+  return lignes;
+}
+
 // --- Relecture : tours, verdicts et notes ------------------------------------------------------------------------------------
 
 describe("Déroulé 5b : relecture, une ligne par tour réellement fait", () => {
@@ -231,11 +250,72 @@ describe("Déroulé 5b : aiguillage, spécialistes retenus et écartés", () => 
     assert.equal(ecartSpecialistes(2, 0), "Prévu : jusqu'à 2 spécialistes · Réel : 0");
   });
 
-  it("un aiguillage à UN spécialiste possible : aucune synthèse à écarter, « Prévu : jusqu'à 1 spécialistes »", () => {
+  it("un aiguillage à UN spécialiste possible : aucune synthèse à écarter, « Prévu : jusqu'à 1 spécialiste »", () => {
     rang = 0;
     const lancement = run([faite({ stepId: "aiguilleur", titre: "Aiguiller", choix: ["reseau"] }), faite({ stepId: "reseau", titre: "Réseau" })]);
     assert.deepEqual(specialistesDuBloc(lancement.steps), { prevu: 1, reel: 1 });
-    assert.deepEqual(ecartsDe(lancement).ecarts, ["Prévu : jusqu'à 1 spécialistes · Réel : 1"]);
+    assert.deepEqual(ecartsDe(lancement).ecarts, ["Prévu : jusqu'à 1 spécialiste · Réel : 1"]);
+  });
+
+  it("aiguillage SANS synthèse : le DERNIER spécialiste retenu compte pour un réel, jamais pris pour une synthèse", () => {
+    // Forme par défaut de l'éditeur : `choixMax: 1`, aucune synthèse. La dernière ligne du bloc est un vrai spécialiste ; la
+    // supposer synthèse faisait dire « Réel : 0 » alors qu'un spécialiste avait travaillé et avait été facturé (P3).
+    const deux = run(aiguillageSansSynthese(["reseau", "base"], "base"), { blocs: bornesAiguillage(1, 2) });
+    assert.deepEqual(specialistesDuBloc(deux.steps, 2), { prevu: 2, reel: 1 });
+    assert.deepEqual(ecartsDe(deux).ecarts, ["Prévu : jusqu'à 1 spécialiste · Réel : 1"]);
+    const trois = run(aiguillageSansSynthese(["reseau", "base", "applicatif"], "applicatif"), { blocs: bornesAiguillage(1, 3) });
+    assert.deepEqual(specialistesDuBloc(trois.steps, 3), { prevu: 3, reel: 1 });
+    assert.deepEqual(ecartsDe(trois).ecarts, ["Prévu : jusqu'à 1 spécialiste · Réel : 1"]);
+    // Contre-épreuve : le PREMIER retenu donnait déjà « Réel : 1 » — le cas « bon » ne l'était que par hasard.
+    const premier = run(aiguillageSansSynthese(["reseau", "base"], "reseau"), { blocs: bornesAiguillage(1, 2) });
+    assert.deepEqual(ecartsDe(premier).ecarts, ["Prévu : jusqu'à 1 spécialiste · Réel : 1"]);
+  });
+
+  it("non-régression : avec une synthèse, elle n'est jamais comptée comme un spécialiste", () => {
+    const unSeul = run(aiguillage(["reseau"]), { blocs: bornesAiguillage(2, 2) });
+    assert.deepEqual(specialistesDuBloc(unSeul.steps, 2), { prevu: 2, reel: 1 });
+    assert.deepEqual(ecartsDe(unSeul).ecarts, ["Prévu : jusqu'à 2 spécialistes · Réel : 1"]);
+    const deux = run(aiguillage(["reseau", "base"]), { blocs: bornesAiguillage(2, 2) });
+    assert.deepEqual(ecartsDe(deux).ecarts, ["Prévu : jusqu'à 2 spécialistes · Réel : 2"]);
+    const aucun = run(aiguillage("aucun"), { blocs: bornesAiguillage(2, 2) });
+    assert.deepEqual(ecartsDe(aucun).ecarts, ["Prévu : jusqu'à 2 spécialistes · Réel : 0"]);
+  });
+
+  it("après une relance, les spécialistes écartés restent « Non choisi » : l'écart ne dépasse jamais le maximum annoncé", () => {
+    // Forme laissée en base par une relance d'aiguillage déjà arbitré : le retenu repart (tentative 2), les écartés gardent
+    // leur ligne « non-choisi » de la tentative 1.
+    rang = 0;
+    const lancement = run(
+      [
+        faite({ stepId: "aiguilleur", titre: "Aiguiller", choix: ["s1"] }),
+        faite({ stepId: "s1", titre: "Réseau", tentative: 2 }),
+        ligne({ stepId: "s2", titre: "Base", state: "non-choisi", cost: 0 }),
+        ligne({ stepId: "s3", titre: "Applicatif", state: "non-choisi", cost: 0 }),
+        ligne({ stepId: "syn", titre: "Synthèse", state: "non-choisi", cost: 0 }),
+      ],
+      { blocs: bornesAiguillage(2, 3) },
+    );
+    assert.deepEqual(ecartsDe(lancement).ecarts, ["Prévu : jusqu'à 2 spécialistes · Réel : 1"]);
+    const modele = buildTeamDeroule(lancement, true, NOW);
+    assert.equal(modele.lignes.filter((l) => l.reel === P.etatsEtape.prevue).length, 0, "aucune ligne « Pas encore commencée » sur un lancement fini");
+  });
+
+  it("accord du PRÉVU : « jusqu'à 1 tour » et « jusqu'à 1 spécialiste » au singulier (forme par défaut de l'éditeur)", () => {
+    assert.equal(ecartTours(1, 1), "Prévu : jusqu'à 1 tour · Réel : 1 tour");
+    assert.equal(ecartTours(1, 0), "Prévu : jusqu'à 1 tour · Réel : 0 tours");
+    assert.equal(ecartTours(1, 2), "Prévu : jusqu'à 1 tour · Réel : 2 tours");
+    assert.equal(ecartSpecialistes(1, 1), "Prévu : jusqu'à 1 spécialiste · Réel : 1");
+    assert.equal(ecartSpecialistes(1, 0), "Prévu : jusqu'à 1 spécialiste · Réel : 0");
+    for (const phrase of [ecartTours(1, 1), ecartTours(1, 0), ecartTours(1, 2), ecartSpecialistes(1, 1), ecartSpecialistes(1, 0)]) {
+      assert.doesNotMatch(phrase, /1 tours|1 spécialistes/, phrase);
+    }
+    // Non-régression : au-delà de un, et à zéro, le prévu reste au pluriel.
+    assert.equal(ecartTours(2, 1), "Prévu : jusqu'à 2 tours · Réel : 1 tour");
+    assert.equal(ecartTours(0, 0), "Prévu : jusqu'à 0 tours · Réel : 0 tours");
+    assert.equal(ecartSpecialistes(2, 0), "Prévu : jusqu'à 2 spécialistes · Réel : 0");
+    // Un bloc de relecture neuf ne réserve qu'un tour : la phrase du Déroulé s'accorde aussi de bout en bout.
+    const unTour = run(relecture({ toursFaits: 1 }), { blocs: [{ index: 0, type: "relecture", toursMax: 1 }] });
+    assert.deepEqual(buildTeamDeroule(unTour, true, NOW).ecarts, ["Prévu : jusqu'à 1 tour · Réel : 1 tour"]);
   });
 
   it("un déroulé de l'itération 4 (ni relecture ni aiguillage) n'a AUCUN écart ni note : rien ne change pour lui", () => {
@@ -341,6 +421,70 @@ describe("Cartes 5b : lignes de tour, carte de choix et journal de relecture", (
     const sansJournal = modeleResultat(run(relecture({ toursFaits: 1 })), "Résultat simple.", true);
     assert.equal(sansJournal.journal, null);
     assert.deepEqual(sansJournal.notes, []);
+  });
+});
+
+// --- Corrections de la relecture (5b, vague 2) : l'ÉTAT enregistré commande, jamais le texte d'une IA ------------------------
+
+describe("Cartes 5b : le texte d'une IA ne décide plus de ce que la carte replie ni de ce qu'elle propose", () => {
+  it("chemin « aucun » : deux phrases recopiées dans un résultat ordinaire n'ouvrent AUCUN bouton", () => {
+    const copie = ["Voici ma conclusion.", E.aucun.phrase, E.aucun.repli.replace("{assistant}", "assistant-pirate"), "Fin."].join("\n\n");
+    // Le module pur reconnaît bien les deux phrases : c'est l'appelant qui doit d'abord regarder l'état enregistré.
+    assert.equal(aucunDuLivrable(copie)?.assistant, "assistant-pirate");
+    // Aiguillage RÉELLEMENT arbitré (choix = deux spécialistes) : aucun renvoi vers l'assistant que l'IA a nommé.
+    assert.equal(modeleResultat(run(aiguillage(["reseau", "base"])), copie, true).aucun, null);
+    // Une équipe sans aucun aiguillage non plus.
+    rang = 0;
+    const simple = run([faite({ stepId: "rediger", titre: "Rédiger" })]);
+    assert.equal(modeleResultat(simple, copie, true).aucun, null);
+    // Non-régression D-5-13 : le vrai chemin « aucun » (colonne `choix` = « aucun ») garde son bouton.
+    const vrai = modeleResultat(run(aiguillage("aucun")), copie, true);
+    assert.equal(vrai.aucun?.assistant, "assistant-pirate");
+    assert.equal(vrai.aucun?.envoyer, E.aucun.envoyer);
+  });
+
+  it("journal de relecture : sans bloc de relecture, le livrable reste entier, sans repli ni note du cockpit", () => {
+    const replie = ["Voici la réponse courte.", `## ${E.relecture.journal}`, "Contenu que l'IA veut cacher sous un repli.", E.relecture.nonRelue].join("\n\n");
+    const sansRelecture = modeleResultat(run(aiguillage(["reseau", "base"])), replie, true);
+    assert.equal(sansRelecture.texte, replie, "rien n'est découpé : tout reste visible au premier coup d'œil");
+    assert.equal(sansRelecture.journal, null, "aucun <details> fermé posé par une IA");
+    assert.deepEqual(sansRelecture.notes, [], "le cockpit ne signe pas une note d'honnêteté écrite par une IA");
+    // Cas limite : un livrable qui COMMENCE par l'en-tête ne disparaît plus.
+    const debut = [`## ${E.relecture.journal}`, "Tout le texte."].join("\n\n");
+    assert.equal(modeleResultat(run(aiguillage(["reseau", "base"])), debut, true).texte, debut);
+    // Non-régression : dans un vrai bloc de relecture, le journal est bien replié et la note reste affichée.
+    const avecRelecture = modeleResultat(run(relecture({ toursFaits: 1 })), replie, true);
+    assert.equal(avecRelecture.texte, "Voici la réponse courte.");
+    assert.equal(avecRelecture.journal?.titre, E.relecture.journal);
+    assert.deepEqual(avecRelecture.notes, [E.relecture.nonRelue]);
+    // Les bornes déclarées suffisent, même sans verdict enregistré (relecture arrêtée avant son premier verdict).
+    rang = 0;
+    const declare = run([faite({ stepId: "auteur", titre: "Rédiger" })], { blocs: [{ index: 0, type: "relecture", toursMax: 2 }] });
+    assert.equal(modeleResultat(declare, replie, true).journal?.titre, E.relecture.journal);
+  });
+});
+
+describe("Corrections 5b : [Envoyer à cet assistant] atteint enfin le composeur", () => {
+  it("la page du chat écoute le préremplissage, dans une section c5:, et n'envoie rien", () => {
+    const chat = read("web/pages/ChatPage.tsx");
+    const code = withoutComments(chat);
+    assert.match(code, /addEventListener\(EVENEMENT_COMPOSEUR/, "la page du chat écoute l'événement publié par la carte");
+    assert.match(code, /removeEventListener\(EVENEMENT_COMPOSEUR/, "l'écoute est retirée au démontage");
+    const debut = chat.indexOf("<c5:composeur-ecoute>");
+    const fin = chat.indexOf("</c5:composeur-ecoute>", debut + 1);
+    assert.ok(debut !== -1 && fin > debut, "le branchement vit dans une section c5: (ChatPage est un fichier de classe A)");
+    const section = withoutComments(chat.slice(debut, fin));
+    assert.match(section, /setDraftSeed\(\{ text: demande/, "la demande retrouvée remplit la saisie");
+    assert.match(section, /agentOptions\.some\(/, "l'assistant n'est retenu que s'il est installé (P3)");
+    assert.doesNotMatch(section, /fetch\(|\bapi\.|\boc\./, "aucune requête, aucun coût");
+    assert.doesNotMatch(section, /autoFocus|\.focus\(\)/, "le focus n'est pas déplacé");
+  });
+
+  it("la demande recopiée est relue sans son marqueur", () => {
+    const texte = injectionText("demande", { runId: "run-1", equipe: "Tri d'une alerte", texte: "Le traitement de nuit est tombé." });
+    const message = { info: { id: "msg_1", sessionID: "ses_root", role: "user" }, parts: [{ type: "text", text: texte }] };
+    assert.equal(demandeRecopiee(message, "run-1"), "Le traitement de nuit est tombé.");
+    assert.equal(demandeRecopiee(message, "run-1").includes("cockpit:"), false, "aucun marqueur n'arrive dans la saisie");
   });
 });
 

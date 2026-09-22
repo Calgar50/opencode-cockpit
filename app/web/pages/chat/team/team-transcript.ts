@@ -119,6 +119,16 @@ function genreResultat(contenu: string): TeamInjectionKind {
 }
 
 /**
+ * Demande recopiée par le cockpit, lue sur le message injecté d'un lancement dont l'appelant connaît déjà l'identifiant
+ * (`TeamRunView.requestMessageId`). Le marqueur `<!-- cockpit:… -->` est retiré et le texte borné, comme pour la transcription.
+ * Sert au préremplissage du composeur par [Envoyer à cet assistant] (chemin « aucun », D-5-13) : aucune requête, la
+ * transcription déjà chargée suffit.
+ */
+export function demandeRecopiee(message: TranscriptMessageLike, runId: string): string {
+  return borne(sansMarqueur(messageText(message), "equipe-demande", runId), FLOW_LIMITS.relaisCaracteres);
+}
+
+/**
  * Message injecté par une équipe de cette conversation, ou null. `runs` : les lancements de la racine (useTeamRuns, L38b) ; tant
  * qu'ils ne sont pas chargés, la liste est vide et le message reste une bulle ordinaire.
  */
@@ -127,7 +137,7 @@ export function teamInjectionOf(message: TranscriptMessageLike, runs: readonly T
   if (id === null) return null;
   const demande = runs.find((run) => run.requestMessageId === id);
   if (demande !== undefined) {
-    return { kind: "demande", run: demande, texte: borne(sansMarqueur(messageText(message), "equipe-demande", demande.id), FLOW_LIMITS.relaisCaracteres) };
+    return { kind: "demande", run: demande, texte: demandeRecopiee(message, demande.id) };
   }
   const resultat = runs.find((run) => run.resultMessageId === id);
   if (resultat === undefined) return null;

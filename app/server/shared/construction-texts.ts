@@ -434,6 +434,14 @@ export const TEXTES = {
         ecartTourUn: "Prévu : jusqu'à {n} tours · Réel : {m} tour",
         ecartToursPlusieurs: "Prévu : jusqu'à {n} tours · Réel : {m} tours",
         ecartSpecialistes: "Prévu : jusqu'à {n} spécialistes · Réel : {m}",
+        // <c5:ecarts-accord>
+        // Corrections de la relecture de la vague 2 : le PRÉVU s'accorde comme le réel, et séparément de lui. Un bloc neuf de
+        // l'éditeur réserve UN tour (`toursMax: 1`) et UN spécialiste (`choixMax: 1`) : sans ces gabarits, la phrase affichée
+        // EN GRAS sous le bilan du Déroulé disait « Prévu : jusqu'à 1 tours » et « jusqu'à 1 spécialistes ».
+        ecartTourUnTourUn: "Prévu : jusqu'à {n} tour · Réel : {m} tour",
+        ecartTourUnToursPlusieurs: "Prévu : jusqu'à {n} tour · Réel : {m} tours",
+        ecartSpecialisteUn: "Prévu : jusqu'à {n} spécialiste · Réel : {m}",
+        // </c5:ecarts-accord>
       },
     },
     /** Liens entre étapes et méthodes des étapes (5b, L42a ; en-tête du message d'étape, C §6.3). */
@@ -500,21 +508,27 @@ function compte(valeur: number): number {
 
 /**
  * Écart « Prévu / Réel » des tours d'une relecture (L42c ; conception A §7.3 : « Prévu : jusqu'à 2 tours · Réel : 1 tour »).
- * Le singulier du réel suit le nombre de tours RÉELLEMENT faits ; le prévu garde « jusqu'à », car c'est un plafond, jamais une
- * promesse.
+ * Le prévu garde « jusqu'à », car c'est un plafond, jamais une promesse. Les deux nombres s'accordent SÉPARÉMENT : un bloc de
+ * relecture neuf ne réserve qu'un tour, et « jusqu'à 1 tours » se lisait alors en gras sous le bilan du Déroulé. `compte(-1)`
+ * vaut 0, donc « jusqu'à 0 tours » reste au pluriel.
  */
 export function ecartTours(prevu: number, reel: number): string {
   const deroule = TEXTES.partout.execution.deroule;
+  const n = compte(prevu);
   const m = compte(reel);
-  return remplir(m === 1 ? deroule.ecartTourUn : deroule.ecartToursPlusieurs, { n: compte(prevu), m });
+  if (n === 1) return remplir(m === 1 ? deroule.ecartTourUnTourUn : deroule.ecartTourUnToursPlusieurs, { n, m });
+  return remplir(m === 1 ? deroule.ecartTourUn : deroule.ecartToursPlusieurs, { n, m });
 }
 
 /**
  * Écart « Prévu / Réel » des spécialistes d'un aiguillage (L42c) : « Prévu : jusqu'à {n} spécialistes · Réel : {m} ». Le réel
- * est un nombre nu — il vaut 0 quand aucun spécialiste de la liste ne convenait, et rien n'a alors été appelé.
+ * est un nombre nu — il vaut 0 quand aucun spécialiste de la liste ne convenait, et rien n'a alors été appelé. Le prévu
+ * s'accorde : un aiguillage neuf ne retient qu'un spécialiste (`choixMax: 1`).
  */
 export function ecartSpecialistes(prevu: number, reel: number): string {
-  return remplir(TEXTES.partout.execution.deroule.ecartSpecialistes, { n: compte(prevu), m: compte(reel) });
+  const deroule = TEXTES.partout.execution.deroule;
+  const n = compte(prevu);
+  return remplir(n === 1 ? deroule.ecartSpecialisteUn : deroule.ecartSpecialistes, { n, m: compte(reel) });
 }
 
 /** Répétition d'un bloc dans le Déroulé (L42c) : « ×{n} », écrit sur le bloc qui a travaillé plusieurs tours. */

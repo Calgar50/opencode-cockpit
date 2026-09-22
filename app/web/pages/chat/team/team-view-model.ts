@@ -490,6 +490,24 @@ export function etapeResultat(run: TeamRunView): StepRunView | null {
   return etapesVisibles(run).findLast((s) => s.state === "terminee" && s.extrait !== null) ?? null;
 }
 
+/**
+ * Le lancement porte-t-il une RELECTURE ? Lu sur l'état ENREGISTRÉ : les bornes déclarées du déroulé (`run.blocs`) et, à défaut,
+ * les lignes elles-mêmes — un verdict enregistré ou un tour au-delà du premier ne viennent que d'un bloc « relecture ».
+ * Jamais sur le texte du livrable : sans cette porte, une IA qui écrit « ## Journal de relecture » replierait tout ce qui suit
+ * dans un `<details>` fermé et signerait une note d'honnêteté à la place du cockpit (P3, §13.2).
+ */
+function aRelecture(run: TeamRunView): boolean {
+  if ((run.blocs ?? []).some((bloc) => bloc.type === "relecture")) return true;
+  return run.steps.some((step) => step.tour > 1 || step.verdict !== undefined);
+}
+
+/**
+ * Le lancement a-t-il réellement pris le chemin « aucun ne convient » ? Seule VOTRE réponse l'écrit, dans la colonne `choix` de
+ * l'aiguilleur (`repondreAuChoix`, D-5-13). Sans cette porte, deux phrases recopiées dans un résultat d'IA suffisaient à poser
+ * [Envoyer à cet assistant] vers un assistant que l'IA aurait nommé (P3).
+ */
+const estAucun = (run: TeamRunView): boolean => run.steps.some((step) => step.choix === "aucun");
+
 /** Carte de résultat (C §9.6) ; `texte` est passé par l'appelant (TeamRunCards ou la transcription, L38c). */
 export function modeleResultat(run: TeamRunView, texteResultat: string, advanced: boolean): TeamResultModel {
   const source = etapeResultat(run);
@@ -497,8 +515,10 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
   const duree = run.endedAt === null || run.startedAt === null ? 0 : Math.max(0, run.endedAt - run.startedAt);
   const nomIa = source === null ? "" : texte(source.ia.label ?? source.ia.model ?? "", TITRE_MAX);
   // 5b : le livrable d'une relecture porte son journal et ses notes ; ils sont DÉCOUPÉS, jamais réécrits, pour que le journal
-  // soit replié sous le résultat (C §9.6).
-  const journal = journalRelecture(texte(texteResultat, FLOW_LIMITS.relaisCaracteres));
+  // soit replié sous le résultat (C §9.6). Le découpage n'a lieu QUE si le lancement porte une relecture : ailleurs, le
+  // livrable est rendu entier, sans repli ni note du cockpit.
+  const livrable = texte(texteResultat, FLOW_LIMITS.relaisCaracteres);
+  const journal = aRelecture(run) ? journalRelecture(livrable) : { resultat: livrable, titre: null, texte: "", notes: [] };
   return {
     titre: remplir(P.resultat.titre, { equipe: texte(run.titre, TITRE_MAX) }),
     redige: remplir(P.resultat.redige, {
@@ -513,7 +533,7 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
     texte: journal.resultat,
     journal: journal.titre === null ? null : { titre: journal.titre, texte: journal.texte },
     notes: journal.notes,
-    aucun: aucunDuLivrable(journal.resultat),
+    aucun: estAucun(run) ? aucunDuLivrable(journal.resultat) : null,
   };
 }
 

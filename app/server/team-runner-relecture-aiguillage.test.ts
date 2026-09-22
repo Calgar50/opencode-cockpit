@@ -660,6 +660,91 @@ describe("exécution 5b : relecture en deux tours (D-5-14, MC5-2)", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("coût d'une LIGNE = coût du tour : la somme des lignes fait le coût du lancement, jamais le double", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow() });
+    const { h } = ctx;
+    h.fake.scriptWhen(
+      (session) => (session.metadata as { etape?: string } | undefined)?.etape === "redac",
+      { text: "Version 1.", cost: 0.03, stepMs: 5 },
+      { text: "Version 2.", cost: 0.04, stepMs: 5 },
+    );
+    h.fake.scriptWhen(
+      (session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec",
+      { text: "À revoir.\nVERDICT: À REPRENDRE", cost: 0.05, stepMs: 5 },
+      { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.06, stepMs: 5 },
+    );
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "relecture terminée");
+    assert.equal(fini.state, "terminee");
+
+    const lignes = h.db.prepare("SELECT step_id, tour, cost FROM team_run_steps WHERE run_id = ? ORDER BY ordre, tour").all(runId) as Array<{
+      step_id: string;
+      tour: number;
+      cost: number;
+    }>;
+    assert.equal(lignes.length, 4, "une ligne par (étape, tour)");
+    const cout = (stepId: string, tour: number) => lignes.find((l) => l.step_id === stepId && l.tour === tour)?.cost ?? -1;
+    // La session du tour 2 porte déjà le tour 1 (D-5-14) : la ligne ne doit compter QUE son tour.
+    assert.ok(Math.abs(cout("redac", 1) - 0.03) < 1e-9, `redac t1 = ${cout("redac", 1)}`);
+    assert.ok(Math.abs(cout("redac", 2) - 0.04) < 1e-9, `redac t2 = ${cout("redac", 2)}`);
+    assert.ok(Math.abs(cout("relec", 1) - 0.05) < 1e-9, `relec t1 = ${cout("relec", 1)}`);
+    assert.ok(Math.abs(cout("relec", 2) - 0.06) < 1e-9, `relec t2 = ${cout("relec", 2)}`);
+    const somme = lignes.reduce((total, ligne) => total + ligne.cost, 0);
+    assert.ok(Math.abs(somme - fini.cost) < 1e-9, `somme des lignes ${somme} ≠ bilan du lancement ${fini.cost}`);
+    h.assertNoGlobalRestart();
+  });
+
+  it("relance après un échec au tour 2 : tout le bloc repart au TOUR 1, tentative 2, avec de nouvelles sessions", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow() });
+    const { h } = ctx;
+    // Les scripts du faux sont posés à la CRÉATION d'une session : une session neuve repart du premier tour scripté. Le
+    // drapeau distingue donc le premier lancement de la relance, et prouve du même coup que les sessions sont bien neuves.
+    let relance = false;
+    const pourEtape = (session: FakeSession, etape: string) => (session.metadata as { etape?: string } | undefined)?.etape === etape;
+    h.fake.scriptWhen(
+      (session) => !relance && pourEtape(session, "redac"),
+      { text: "Version 1.", cost: 0.01, stepMs: 5 },
+      // Tour 2 muet : la révision échoue, le lancement tombe en « echec ».
+      { text: "", cost: 0.01, stepMs: 5 },
+    );
+    h.fake.scriptWhen((session) => !relance && pourEtape(session, "relec"), { text: "À revoir.\nVERDICT: À REPRENDRE", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => relance && pourEtape(session, "redac"), { text: "Version 1 bis.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => relance && pourEtape(session, "relec"), { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const tombe = await ctx.waitRun(runId, (v) => v.state === "echec" || v.state === "terminee", "échec du tour 2");
+    assert.equal(tombe.state, "echec");
+    const avantEnvois = envois(h).length;
+
+    // [Relancer la suite] : le bloc entier repart au tour 1, tentative 2 (fiche L42b). Sans cela, le rédacteur repartait seul
+    // et le verdict périmé du relecteur faisait redemander un tour 2 dont la session n'existait plus.
+    relance = true;
+    const relancee = await ctx.runner.relaunch(runId, ctx.plan);
+    assert.equal("ok" in relancee && relancee.ok === false, false, `relance refusée : ${JSON.stringify(relancee)}`);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "relance aboutie");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.ok(envois(h).length > avantEnvois, "au moins un envoi est parti après la relance");
+
+    const lignes = h.db.prepare("SELECT step_id, tour, tentative, state FROM team_run_steps WHERE run_id = ? ORDER BY ordre, tentative, tour").all(runId) as Array<{
+      step_id: string;
+      tour: number;
+      tentative: number;
+      state: string;
+    }>;
+    for (const stepId of ["redac", "relec"]) {
+      assert.ok(
+        lignes.some((l) => l.step_id === stepId && l.tour === 1 && l.tentative === 2),
+        `${stepId} a une ligne neuve au tour 1, tentative 2 : ${JSON.stringify(lignes)}`,
+      );
+    }
+    assert.equal(lignes.filter((l) => l.state === "echec" && l.tentative === 2).length, 0, "aucun échec dans la tentative relancée");
+    // Nouvelles sessions des DEUX côtés : deux au premier passage, deux de plus après la relance.
+    assert.equal(creationsDEtape(h).length, 4, "une session neuve par étape du bloc relancé");
+    assertNoLooseRules(ctx);
+    h.assertNoGlobalRestart();
+  });
+
   it("plafond atteint au tour 2 : le lancement passe « plafond », le tour ne part jamais", async (t) => {
     const ctx = await openTeam(t, { flow: relectureFlow(), guardsReels: true });
     const { h } = ctx;
@@ -803,6 +888,53 @@ describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", (
     const texte = livraison(h, rootId);
     assert.ok(texte.includes(DELIVERABLE_TEXTS.aucun));
     assert.ok(texte.includes(DELIVERABLE_TEXTS.aucunRepli.replace("{assistant}", "expliquer-alerte")));
+    h.assertNoGlobalRestart();
+  });
+
+  it("relance d'un aiguillage déjà arbitré : les écartés restent « Non choisi », jamais remis « Pas encore commencée »", async (t) => {
+    const ctx = await openTeam(t, { flow: aiguillageFlow() });
+    const { h } = ctx;
+    // Même drapeau que la relance d'une relecture : une session neuve repart du premier tour scripté.
+    let relance = false;
+    const pourEtape = (session: FakeSession, etape: string) => (session.metadata as { etape?: string } | undefined)?.etape === etape;
+    h.fake.scriptWhen((session) => pourEtape(session, "tri"), { text: "Le réseau d'abord.\nCHOIX: Réseau", cost: 0.01, stepMs: 5 });
+    // Premier passage muet : le seul spécialiste retenu échoue, le lancement s'arrête.
+    h.fake.scriptWhen((session) => !relance && pourEtape(session, "s1"), { text: "", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => relance && pourEtape(session, "s1"), { text: "Réseau : pertes de paquets la nuit.", cost: 0.01, stepMs: 5 });
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    await ctx.waitRun(runId, (v) => v.state === "attente-choix", "pause de choix");
+    const reponse = await ctx.continuer(runId, { choix: ["s1"] });
+    assert.equal(reponse.status, 200, reponse.body);
+    const tombe = await ctx.waitRun(runId, (v) => v.state === "echec" || v.state === "terminee", "échec du spécialiste retenu");
+    assert.equal(tombe.state, "echec");
+    for (const stepId of ["s2", "s3", "syn"]) {
+      assert.equal(tombe.steps.find((step) => step.stepId === stepId)?.state, "non-choisi", `${stepId} écarté avant la relance`);
+    }
+
+    relance = true;
+    const relancee = await ctx.runner.relaunch(runId, ctx.plan);
+    assert.equal("ok" in relancee && relancee.ok === false, false, `relance refusée : ${JSON.stringify(relancee)}`);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "relance aboutie");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    // « Non choisi » est un état FINAL : votre choix tient toujours en base, donc rien ne repasse « prevue ».
+    for (const stepId of ["s2", "s3", "syn"]) {
+      assert.equal(fini.steps.find((step) => step.stepId === stepId)?.state, "non-choisi", `${stepId} après la relance`);
+    }
+    const restes = h.db.prepare("SELECT step_id, tour, tentative FROM team_run_steps WHERE run_id = ? AND state = 'prevue'").all(runId) as Array<{ step_id: string }>;
+    assert.deepEqual(restes, [], "aucune ligne « Pas encore commencée » ne subsiste sur un lancement fini");
+    assert.equal(envois(h).length, 3, "l'aiguilleur, le spécialiste muet, puis le spécialiste relancé — et personne d'autre");
+    h.assertNoGlobalRestart();
+  });
+
+  it("les bornes déclarées du bloc portent le nombre de spécialistes : le Déroulé n'a plus à deviner la synthèse", async (t) => {
+    const ctx = await openTeam(t, { flow: aiguillageFlow() });
+    const { h } = ctx;
+    scripterAiguillage(h);
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const enChoix = await ctx.waitRun(runId, (v) => v.state === "attente-choix", "pause de choix");
+    assert.deepEqual(enChoix.blocs, [{ index: 0, type: "aiguillage", choixMax: 2, specialistes: 3 }]);
     h.assertNoGlobalRestart();
   });
 
