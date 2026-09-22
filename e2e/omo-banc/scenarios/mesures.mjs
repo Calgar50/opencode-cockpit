@@ -234,7 +234,25 @@ export function typeDEvenement(evt) {
 }
 
 /**
- * Écrit une capture réduite en JSONL, au format des fixtures du cockpit (`{recv, event}`).
+ * Où va une capture réduite.
+ *
+ * PAR DÉFAUT, le dossier de SORTIE du banc, hors du dépôt. Un banc ne doit pas salir la copie de travail : les trois fixtures
+ * `omo-banc-{m20,m21,r16}.jsonl` sont suivies par git, et chaque exécution les réécrivait (identifiants de session et
+ * horodatages neufs, ≈ 260 lignes changées), sans rien en dire dans le journal du banc — du bruit prêt à partir dans un commit
+ * d'intégration (constat BAS de la revue d'itération 2 bis).
+ *
+ * Les fixtures du dépôt ne sont remplacées que sur `--ecrire-fixtures`, c'est-à-dire par une décision explicite de celui qui
+ * lance le banc, qui sait alors qu'il aura un `git diff` à relire.
+ */
+export function cheminDeFixture(ctx, nom) {
+  return ctx.ecrireFixtures === true
+    ? { chemin: path.join(ctx.racine, "app", "server", "test-support", "fixtures", nom), dansLeDepot: true }
+    : { chemin: path.join(ctx.chemins.sortie, nom), dansLeDepot: false };
+}
+
+/**
+ * Écrit une capture réduite en JSONL, au format des fixtures du cockpit (`{recv, event}`), à l'endroit que `cheminDeFixture`
+ * désigne — et le DIT, pour qu'on ne découvre pas après coup que le dépôt a changé.
  *
  * `recv` est compté depuis le PREMIER événement gardé, pas depuis l'ouverture du flux : le rattrapage que l'instance diffuse
  * à la connexion arrive avant elle, et donnerait des heures négatives. Une capture doit commencer à zéro et croître, sinon
@@ -246,9 +264,10 @@ function ecrireFixture(ctx, nom, capture) {
   const lignes = gardes
     .sort((a, b) => a.recu - b.recu)
     .map((e) => JSON.stringify({ recv: e.recu - origine, event: reduire(e.evt) }));
-  const chemin = path.join(ctx.racine, "app", "server", "test-support", "fixtures", nom);
+  const { chemin, dansLeDepot } = cheminDeFixture(ctx, nom);
   fs.writeFileSync(chemin, `${lignes.join("\n")}\n`);
-  return { fichier: nom, evenements: lignes.length, octets: lignes.join("\n").length };
+  ctx.dire(`  capture ${nom} → ${dansLeDepot ? "FIXTURE DU DÉPÔT remplacée (--ecrire-fixtures)" : "sortie du banc"} : ${chemin}`);
+  return { fichier: nom, chemin, dansLeDepot, evenements: lignes.length, octets: lignes.join("\n").length };
 }
 
 export default {

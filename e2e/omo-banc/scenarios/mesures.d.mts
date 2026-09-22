@@ -4,6 +4,15 @@
 /** Type d'un événement du flux d'opencode, quelle que soit son enveloppe ; `null` quand il n'y en a pas. */
 export declare function typeDEvenement(evt: unknown): string | null;
 
+/**
+ * Où va une capture réduite du scénario `mes`. Par défaut la sortie du banc, hors du dépôt ; les fixtures commitées ne sont
+ * remplacées que si le contexte porte `ecrireFixtures: true` (option `--ecrire-fixtures` de `run-banc.mjs`).
+ */
+export declare function cheminDeFixture(
+  ctx: { racine: string; chemins: { sortie: string }; ecrireFixtures?: boolean },
+  nom: string,
+): { chemin: string; dansLeDepot: boolean };
+
 declare const porte: {
   id: string;
   titre: string;

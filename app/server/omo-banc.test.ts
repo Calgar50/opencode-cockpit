@@ -18,7 +18,7 @@ import { describe, it } from "node:test";
 
 import type { ContexteDePorte } from "../../e2e/omo-banc/scenarios/git-protection.mjs";
 import porteGit from "../../e2e/omo-banc/scenarios/git-protection.mjs";
-import { typeDEvenement } from "../../e2e/omo-banc/scenarios/mesures.mjs";
+import { cheminDeFixture, typeDEvenement } from "../../e2e/omo-banc/scenarios/mesures.mjs";
 import {
   BancRefus,
   ETIQUETTE_BANC,
@@ -382,5 +382,48 @@ describe("L21, type d'un événement du flux : l'enveloppe ne doit pas faire com
     // commune, elle, est justement ce qui rattrape les enveloppes, et reste dans sa fonction.
     assert.doesNotMatch(mesures, /e\.evt\?\.type/, "plus aucune lecture naïve de l'enveloppe");
     assert.ok(mesures.split("typeDEvenement(").length - 1 >= 4, "la lecture commune sert partout où un type est compté");
+  });
+});
+
+describe("L21, captures du scénario « mes » : un banc ne salit jamais la copie de travail", () => {
+  // Constat BAS de la revue d'itération 2 bis : `mesures.mjs` réécrivait à chaque exécution trois fixtures SUIVIES PAR GIT
+  // (omo-banc-m20/m21/r16.jsonl, ≈ 260 lignes changées : identifiants de session et horodatages neufs), sans rien en dire. Un
+  // banc lancé depuis un worktree laissait donc du bruit prêt à partir dans un commit d'intégration.
+  const SORTIE_DU_BANC = path.join(os.tmpdir(), "sal11-sortie-du-banc");
+  const contexte = (ecrireFixtures?: boolean) => ({ racine: RACINE, chemins: { sortie: SORTIE_DU_BANC }, ...(ecrireFixtures === undefined ? {} : { ecrireFixtures }) });
+  const FIXTURES = ["omo-banc-m20.jsonl", "omo-banc-m21.jsonl", "omo-banc-r16.jsonl"] as const;
+  const dansLeDepot = (nom: string) => path.join(RACINE, "app", "server", "test-support", "fixtures", nom);
+
+  it("par défaut : les captures vont dans la sortie du banc, et AUCUNE fixture du dépôt n'est visée", () => {
+    for (const nom of FIXTURES) {
+      const cible = cheminDeFixture(contexte(), nom);
+      assert.equal(cible.dansLeDepot, false, nom);
+      assert.equal(cible.chemin, path.join(SORTIE_DU_BANC, nom), nom);
+      assert.notEqual(path.resolve(cible.chemin), path.resolve(dansLeDepot(nom)), `${nom} ne doit pas viser la fixture du dépôt`);
+      assert.ok(!path.resolve(cible.chemin).startsWith(path.resolve(RACINE)), `${nom} doit sortir du dépôt`);
+    }
+    // Et le défaut est bien le défaut : `ecrireFixtures` absent du contexte se comporte comme faux.
+    assert.equal(cheminDeFixture(contexte(false), FIXTURES[0]).dansLeDepot, false);
+  });
+
+  it("avec --ecrire-fixtures, et seulement là : les fixtures du dépôt sont visées, à leur chemin exact", () => {
+    for (const nom of FIXTURES) {
+      const cible = cheminDeFixture(contexte(true), nom);
+      assert.equal(cible.dansLeDepot, true, nom);
+      assert.equal(path.resolve(cible.chemin), path.resolve(dansLeDepot(nom)), nom);
+      assert.ok(fs.existsSync(cible.chemin), `${nom} : la fixture commitée doit exister, elle reste la référence`);
+    }
+  });
+
+  it("l'option existe dans run-banc.mjs, elle est dite dans l'aide, et l'écriture est annoncée", () => {
+    const banc = lire("run-banc.mjs");
+    assert.match(banc, /"ecrire-fixtures": \{ type: "boolean" \}/, "option déclarée");
+    assert.match(banc, /ecrireFixtures: Boolean\(values\["ecrire-fixtures"\]\)/, "option portée par le contexte");
+    assert.match(banc, /--ecrire-fixtures/, "option dite dans --aide");
+    const mesures = lire("scenarios/mesures.mjs");
+    // Plus aucun chemin de fixture construit en dur ailleurs que dans cheminDeFixture.
+    assert.equal(mesures.split("\"test-support\"").length - 1, 1, "un seul endroit connaît le chemin des fixtures du dépôt");
+    assert.match(mesures, /ctx\.dire\(`  capture \$\{nom\} → /, "le banc dit où il a écrit");
+    assert.match(lire("README.md"), /--ecrire-fixtures/, "le README du banc le dit aussi");
   });
 });

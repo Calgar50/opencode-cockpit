@@ -73,6 +73,14 @@ node e2e/omo-banc/run-banc.mjs --id l21 --scenarios g2,g9 --duree-g1-min 1
 | `--sans-git` | projets préparés **sans dépôt** : banc DÉGRADÉ, seul moyen de mesurer le reste sur un hôte Windows (§5) |
 | `--garder` | ne nettoie pas à la fin (diagnostic) ; le verrou est rendu, le projet reste à retirer à la main |
 | `--base <dossier>` | dossier de travail du banc, hors du dépôt |
+| `--ecrire-fixtures` | **remplace les fixtures du dépôt** par les captures du scénario `mes` ; sans cette option le dépôt n'est jamais touché |
+
+**Le banc ne salit jamais la copie de travail.** Le scénario `mes` capture trois flux réduits
+(`omo-banc-m20.jsonl`, `omo-banc-m21.jsonl`, `omo-banc-r16.jsonl`). Par défaut ils vont dans `<dossier>/sortie/`, à côté des
+autres relevés, et `git status` reste vide après un banc. Les fichiers de même nom sous
+`app/server/test-support/fixtures/` sont les fixtures **commitées** : elles ne sont remplacées que sur `--ecrire-fixtures`,
+et le banc dit alors, ligne par ligne, quel fichier du dépôt il a réécrit. Après un tel banc, relire le `git diff` avant de
+commiter : chaque exécution change les identifiants de session et tous les horodatages, soit ≈ 260 lignes de bruit.
 
 Le banc rend `0` si toutes les portes jouées sont vertes, `1` sinon. Une porte qui n'avait rien à observer dans cette
 configuration est dite **SANS OBJET** : elle ne compte ni pour ni contre, pour qu'un banc dégradé ne passe jamais pour un banc
