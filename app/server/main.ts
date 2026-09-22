@@ -61,7 +61,10 @@ const copilot = new CopilotApi({
   version: env.version,
 });
 const catalog = new ModelCatalog(client, { copilot });
-const sessions = new SessionTracker(db, client);
+// { log } : un conflit d'identifiant de session entre les deux instances (P11) est refusé sans rien écrire ET JOURNALISÉ
+// (fiche L18a). Sans cette option, le refus reste muet et l'exploitant n'a aucune trace qu'une frontière d'instance a été
+// forcée ; le rappel onInstanceConflict, lui, arrive avec L23c.
+const sessions = new SessionTracker(db, client, { log });
 const ledger = new Ledger({ db, settings, catalog });
 const hub = new EventHub();
 const projects = new ProjectsService(env);

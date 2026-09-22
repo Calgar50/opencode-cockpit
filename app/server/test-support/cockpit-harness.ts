@@ -33,7 +33,7 @@ import type { AppDeps } from "../http.ts";
 import { EventHub } from "../hub.ts";
 import { creerInstanceOmo, type OmoRuntime } from "../instance-runtime.ts";
 import { Ledger } from "../ledger.ts";
-import { createLogger } from "../log.ts";
+import { createLogger, type Logger } from "../log.ts";
 import { OcLookup } from "../oc-lookup.ts";
 import type { InstanceDeps } from "../omo-contracts.ts";
 import { type OcGlobalEvent, OpencodeClient } from "../opencode.ts";
@@ -73,6 +73,11 @@ export interface CockpitHarnessOptions {
    * (SALLE_OUVERTE faux) : rien ne doit être écrit dans ces dossiers (h.omo.fichiers()).
    */
   omo?: boolean;
+  /**
+   * Journal du cockpit remplacé (createLogger avec une autre sortie), pour lire ce que le cockpit RÉEL écrit — par exemple le
+   * refus d'un conflit d'identifiant entre instances (L18a, P11). Absent : createLogger("error"), donc rien d'écrit.
+   */
+  log?: Logger;
 }
 
 /** Instance réelle de la salle dans le harnais (plan 2 bis §2.2 ; second processeur branché par L18a, V3). */
@@ -212,12 +217,13 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   const settings = new SettingsStore(db);
   if (options.settings) settings.update(options.settings);
 
-  const log = createLogger("error");
+  const log = options.log ?? createLogger("error");
   const client = new OpencodeClient(env);
   const catalog = new ModelCatalog(client);
   cleanups.push(() => catalog.stop());
   await catalog.refresh();
-  const sessions = new SessionTracker(db, client);
+  // { log } comme dans main.ts : le harnais est le cockpit, un conflit d'identifiant entre instances y est donc journalisé.
+  const sessions = new SessionTracker(db, client, { log });
   const ledger = new Ledger({ db, settings, catalog });
   const hub = new EventHub();
   const events: Array<{ type: string; data: unknown }> = [];

@@ -397,6 +397,38 @@ describe("L18a : harnais à deux instances", () => {
   });
 });
 
+// Le test « conflit journalisé » ci-dessus ne prouve que la MÉCANIQUE du tracker : il construit lui-même le SessionTracker
+// avec { log }. Ce qui suit prouve le CÂBLAGE — que le cockpit tel qu'il est livré passe bien ce journal, et qu'un
+// franchissement de frontière laisse donc une trace chez l'exploitant (fiche L18a : « refusé, JOURNALISÉ, rappel
+// onInstanceConflict » ; P11).
+describe("L18a : le cockpit RÉEL journalise un conflit d'identifiant entre instances (câblage, P11)", () => {
+  it("main.ts construit SessionTracker AVEC son journal", () => {
+    const source = fs.readFileSync(path.join(import.meta.dirname, "main.ts"), "utf8");
+    const ligne = source.split("\n").find((l) => l.includes("new SessionTracker(")) ?? "(aucune construction de SessionTracker dans main.ts)";
+    assert.match(ligne.trim(), /^const sessions = new SessionTracker\(db, client, \{ log \}\);$/, `sans { log }, un conflit d'instance est refusé mais reste invisible — vu : ${ligne.trim()}`);
+  });
+
+  it("session.updated de la salle sur une racine de l'instance principale : une ligne de journal sort du cockpit", async (t) => {
+    const lignes: string[] = [];
+    // Journal du cockpit détourné vers un tableau : c'est le MÊME objet que main.ts remet à SessionTracker.
+    const h = await startCockpit(t, { omo: true, log: createLogger("warn", (ligne) => void lignes.push(ligne)) });
+    assert.ok(h.omo);
+    h.sessions.upsert(session("ses_meme", { title: "Conversation du cockpit" }));
+    const avant = lignes.length;
+
+    await h.emitOmo(evenement("session.updated", { info: session("ses_meme", { title: "Titre imposé par la salle" }) }));
+
+    const refus = lignes.slice(avant).filter((l) => l.includes("session refusée : identifiant déjà suivi par l'autre instance"));
+    assert.equal(refus.length, 1, `une ligne de journal attendue, vu : ${JSON.stringify(lignes.slice(avant))}`);
+    const ligne = JSON.parse(refus[0] as string) as { level: string; sessionId: string; enregistree: string; refusee: string };
+    assert.equal(ligne.level, "warn");
+    assert.deepEqual({ sessionId: ligne.sessionId, enregistree: ligne.enregistree, refusee: ligne.refusee }, { sessionId: "ses_meme", enregistree: "principale", refusee: "omo" });
+    // Et rien n'a été écrit : le refus reste un refus.
+    assert.equal(h.sessions.get("ses_meme")?.title, "Conversation du cockpit");
+    assert.equal(h.sessions.get("ses_meme")?.instance, "principale");
+  });
+});
+
 describe("L18a : bornes du réducteur de faits (T-L18-l)", () => {
   it("rafale de la salle : au plus PENDING_SESSIONS_MAX recherches à la fois, toutes sur le client de la salle", async (t) => {
     const h = await startCockpit(t, { omo: true, modules: ["facts"] });
