@@ -3,8 +3,10 @@
 // balises, sauf les exceptions d'une seule ligne du §2.6 (commentaire « // c5 » en fin de ligne), qui ne sont pas des balises.
 // Syntaxes : « // <NOM> … // </NOM> » (TS, TSX), « {/* <NOM> */} … {/* </NOM> */} » (JSX), « /* <NOM> */ … » (CSS),
 // « <!-- NOM --> … <!-- /NOM --> » (Markdown), NOM étant le préfixe de la construction suivi du nom de la section.
-// Contrôles : chaque fichier de FICHIERS_PARTAGES_C5 existe (un fichier listé absent fait échouer) ; dans ce fichier et dans tout
-// fichier d'app/, e2e/, docs/ et README.md où une balise est trouvée, chaque balise ouverte est fermée, nommée et non imbriquée.
+// Contrôles : chaque fichier de FICHIERS_PARTAGES_C5 existe (un fichier listé absent fait échouer) ; chaque croisement
+// `croisements-c5*.test.ts` du dépôt est dans la liste (§2.6, la tenue de la liste devient elle-même contrôlée) ; dans ce fichier
+// et dans tout fichier d'app/, e2e/, docs/ et README.md où une balise est trouvée, chaque balise ouverte est fermée, nommée et
+// non imbriquée.
 // Ce test s'exclut lui-même : il cite les balises pour les reconnaître, sans en ouvrir aucune.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -40,6 +42,11 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   "app/server/croisements-c5a-v0.test.ts",
   "app/server/croisements-c5a-v1.test.ts",
   "app/server/construction-contracts.test.ts",
+  // Régularisé au train de V0 de 5b : croisement du train de V2 de la 5a, oublié à son train.
+  "app/server/croisements-c5a-v2.test.ts",
+  // Ajouté au train de V0 de 5b par FE4 : le croisement d'entrée de l'itération 4 est un fichier partagé de classe A
+  // (§2.7, ligne `croisements-c5*.test.ts`, propriété de l'intégrateur).
+  "app/server/croisements-c5-entree.test.ts",
   // Ajoutés au train de V1 : les trois paquets de la vague inscrivent leurs routes et leur crochet, ce qui touche deux listes
   // d'inscriptions écrites par l'itération 1 et partagées avec les autres branches (classe A). Les lignes de la construction y
   // sont balisées pour que la grande fusion les retrouve.
@@ -141,6 +148,29 @@ function verifierBalises(fichier: string, source: string): Violation[] {
 /** Fichiers d'une liste qui ne sont pas dans le dépôt : un fichier listé absent fait échouer le test (§4.5). */
 const absents = (liste: readonly string[]) => liste.filter((fichier) => !fs.existsSync(path.join(ROOT, fichier)));
 
+/**
+ * Croisements de la construction, donnés au §2.7 par le motif `croisements-c5*.test.ts` (classe A, propriété de l'intégrateur).
+ * Ils sont découverts sur le disque pour que l'oubli d'un croisement dans `FICHIERS_PARTAGES_C5` se voie : sans cela, un
+ * croisement perdu (renommage, résolution de conflit à la grande fusion) ne serait plus gardé par l'existence, puisque ces
+ * fichiers ne portent pas de balise `c5:` littérale.
+ */
+const MOTIF_CROISEMENTS_C5 = /^croisements-c5[\w.-]*\.test\.ts$/;
+
+/** Croisements `c5` présents dans `app/server`, chemins relatifs au dépôt. */
+function croisementsC5SurDisque(): string[] {
+  return fs
+    .readdirSync(path.join(ROOT, "app", "server"), { withFileTypes: true })
+    .filter((entree) => (entree.isFile() || entree.isSymbolicLink()) && MOTIF_CROISEMENTS_C5.test(entree.name))
+    .map((entree) => `app/server/${entree.name}`)
+    .sort();
+}
+
+/** Fichiers présents dans le dépôt qu'une liste oublie (§2.6 : « un paquet qui ajoute un fichier partagé l'ajoute à la liste »). */
+const horsListe = (surDisque: readonly string[], liste: readonly string[]) => {
+  const connus = new Set(liste);
+  return surDisque.filter((fichier) => !connus.has(fichier));
+};
+
 /** Fichiers texte des racines de la recherche, chemins relatifs au dépôt, séparateur « / ». */
 function fichiersScannes(): string[] {
   const out: string[] = [];
@@ -203,12 +233,31 @@ describe("balises c5 : contrôles discriminants", () => {
   it("échoue : fichier listé absent du dépôt", () => {
     assert.deepEqual(absents(["app/server/db.ts", "app/server/jamais-livre-c5.ts"]), ["app/server/jamais-livre-c5.ts"]);
   });
+
+  it("échoue : croisement du dépôt oublié dans la liste", () => {
+    const surDisque = ["app/server/croisements-c5a-v0.test.ts", "app/server/croisements-c5-oublie.test.ts"];
+    assert.deepEqual(horsListe(surDisque, ["app/server/croisements-c5a-v0.test.ts"]), ["app/server/croisements-c5-oublie.test.ts"]);
+  });
+
+  it("le motif des croisements reconnaît ceux de la construction et eux seuls", () => {
+    // « c5b » est reconnu d'avance : le §2.4 nomme déjà `croisements-c5b-v<n>.test.ts` pour les trains de 5b.
+    const reconnus = ["croisements-c5a-v0.test.ts", "croisements-c5a-v2.test.ts", "croisements-c5-entree.test.ts", "croisements-c5b-v0.test.ts"];
+    const ecartes = ["croisements-it1-v0.test.ts", "croisements-eq-v0.test.ts", "construction-balises.test.ts", "croisements-c5a-v0.ts"];
+    for (const nom of reconnus) assert.ok(MOTIF_CROISEMENTS_C5.test(nom), nom);
+    for (const nom of ecartes) assert.ok(!MOTIF_CROISEMENTS_C5.test(nom), nom);
+  });
 });
 
 describe("balises c5 : dépôt", () => {
   it("chaque fichier partagé de classe A du §2.7 existe", () => {
     assert.deepEqual(absents(FICHIERS_PARTAGES_C5), []);
     assert.equal(new Set(FICHIERS_PARTAGES_C5).size, FICHIERS_PARTAGES_C5.length, "aucun doublon dans la liste");
+  });
+
+  it("chaque croisement c5 du dépôt est dans la liste (§2.6 : le fichier partagé ajouté entre dans la liste)", () => {
+    const surDisque = croisementsC5SurDisque();
+    assert.ok(surDisque.length > 0, "aucun croisement c5 trouvé dans app/server : le motif ou l'emplacement a changé");
+    assert.deepEqual(horsListe(surDisque, FICHIERS_PARTAGES_C5), []);
   });
 
   it("balises équilibrées, nommées et non imbriquées dans les fichiers partagés et partout où il en existe", () => {
