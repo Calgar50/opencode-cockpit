@@ -9,7 +9,23 @@
 // PAS proposée quand les équipes sont fermées dans le mode courant (U1, §2.6 : le serveur y répond 403).
 // Aucun bouton que le serveur refuserait : l'arrêt n'est composé que pour les états d'ETATS_VERROU (ailleurs, POST …/stop rend
 // 409 `etat-incompatible`), et une équipe `terminee` a son genre à elle, la carte de résultat prenant la suite.
-// Testé par server/web-team-cards.test.ts ; aucun composant (.tsx) importé, aucun appel réseau.
+// 5b (L42c) : relecture et aiguillage. Une ligne par TOUR réellement fait (« tour {n} », « ×{n} » sur le bloc), le verdict d'une
+// relecture en MOT et icône, l'état « Non choisi » des spécialistes écartés, la carte de choix d'un aiguillage (proposition avec
+// la raison masquée, cases, « {n} au maximum. », trois boutons) et le journal de relecture replié sous le résultat. Les phrases
+// viennent de server/shared/construction-texts.ts (T5a) par server/shared/team-choice-view.ts (pur).
+// Testé par server/web-team-cards.test.ts et server/team-deroule-c5.test.ts ; aucun composant (.tsx) importé, aucun appel réseau.
+import {
+  aucunDuLivrable,
+  CHOIX_RAISON_MAX,
+  type ChoixPropose,
+  journalRelecture,
+  optionsDe,
+  selectionInitiale,
+  type TeamAucunView,
+  type TeamChoiceView,
+  vueChoix,
+} from "../../../../server/shared/team-choice-view.ts";
+import { TEXTES as CONSTRUCTION } from "../../../../server/shared/construction-texts.ts";
 import { FLOW_LIMITS } from "../../../../server/shared/team-limits.ts";
 import { pauseChangement, phraseBlocage, phraseErreur, remplir, resumeResultat, TEXTES } from "../../../../server/shared/team-texts.ts";
 import type { StepRunView, TeamEstimateResponse, TeamPauseView, TeamRunState, TeamRunView, TeamStepState } from "../../../../server/shared/team-types.ts";
@@ -17,6 +33,8 @@ import { formatDuration } from "../../../lib/format.ts";
 import { boundedAiText } from "../turn.ts";
 
 const P = TEXTES.partout;
+/** Phrases de la construction (5b) : relecture, aiguillage, « Non choisi », « ×{n} » et les écarts Prévu / Réel. */
+const C5 = CONSTRUCTION.partout.execution;
 
 /** Icônes d'Icon.tsx utilisées par les cartes ; l'état est TOUJOURS dit par le mot à côté (§2.3, jamais la couleur seule). */
 export type TeamIconName = "alert" | "check" | "circle" | "coins" | "gauge" | "hourglass" | "lock" | "minus" | "pause" | "plug" | "pulse" | "stop" | "x";
@@ -34,8 +52,8 @@ export const STEP_ICONS: Readonly<Record<TeamStepState, TeamIconName>> = {
   plafond: "gauge",
   "non-lancee": "minus",
   // <c5:icone-non-choisi>
-  // Branche minimale (L42a) : « Non choisi » prend l'icône de « Non lancée » — aucune étape écartée n'a rien envoyé. Le rendu
-  // propre de l'aiguillage (lignes grisées, « Non choisi » sur les spécialistes écartés) vient de L42c.
+  // 5b (L42c) : « Non choisi » porte l'icône `minus` demandée par la fiche — un spécialiste écarté n'a rien envoyé, donc ni
+  // barre ni coût dans le Déroulé (deroule-model.ts). Le MOT « Non choisi » est toujours écrit à côté (§2.3).
   "non-choisi": "minus",
   // </c5:icone-non-choisi>
 };
@@ -48,7 +66,8 @@ export const RUN_ICONS: Readonly<Record<TeamRunState, TeamIconName>> = {
   "attente-budget": "coins",
   "attente-modification": "alert",
   // <c5:icone-attente-choix>
-  // Branche minimale (L42a) : l'attente d'un choix prend l'icône des autres pauses. La carte de choix vient de L42c.
+  // 5b (L42c) : l'attente de votre choix porte l'icône des autres pauses — c'est bien une pause, et la carte de choix
+  // (proposition, raison masquée, cases, trois boutons) est rendue dessous par TeamPauseCard.
   "attente-choix": "pause",
   // </c5:icone-attente-choix>
   terminee: "check",
@@ -66,8 +85,8 @@ export const ETATS_VERROU: ReadonlySet<TeamRunState> = new Set<TeamRunState>([
   "attente-budget",
   "attente-modification",
   // <c5:verrou-attente-choix>
-  // Branche minimale (L42a) : une équipe qui attend votre choix travaille encore, donc elle verrouille et peut être arrêtée,
-  // comme les autres attentes. La carte de choix elle-même (proposition, raison, boutons) vient de L42c.
+  // 5b (L42c) : une équipe qui attend votre choix travaille encore — elle verrouille la saisie et peut être arrêtée, comme les
+  // autres attentes, et [Arrêter l'équipe] est justement le troisième bouton de la carte de choix.
   "attente-choix",
   // </c5:verrou-attente-choix>
 ]);
@@ -75,8 +94,17 @@ export const ETATS_VERROU: ReadonlySet<TeamRunState> = new Set<TeamRunState>([
 /** Cartes finales (D-eq-22 : [Ajouter les résultats obtenus à la conversation] y est proposé). */
 export const ETATS_FINAUX: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["arretee", "plafond", "echec", "interrompue"]);
 
-/** Attentes : la carte montre alors la pause, jamais l'en-tête d'exécution. */
-export const ETATS_ATTENTE: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["attente-verification", "attente-budget", "attente-modification"]);
+/**
+ * Attentes : la carte montre alors la pause, jamais l'en-tête d'exécution.
+ * 5b (L42c) : « attente-choix » en fait partie — sans elle, la carte de choix d'un aiguillage ne serait jamais rendue et
+ * l'équipe resterait arrêtée sur un écran d'exécution ordinaire.
+ */
+export const ETATS_ATTENTE: ReadonlySet<TeamRunState> = new Set<TeamRunState>([
+  "attente-verification",
+  "attente-budget",
+  "attente-modification",
+  "attente-choix",
+]);
 
 /** États dont POST …/fermer fait une équipe `arretee` (plan §4.1.5) ; `arretee` n'a plus rien à fermer. */
 const ETATS_FERMABLES: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["interrompue", "plafond", "echec"]);
@@ -85,6 +113,8 @@ const ETATS_FERMABLES: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["inter
 const TITRE_MAX = 120;
 const MESSAGE_MAX = 600;
 
+// 5b : la carte de choix et [Envoyer à cet assistant] ne passent PAS par TeamButton (leurs libellés suivent les cases cochées
+// et le livrable) : cette union reste celle de l'itération 4, sans membre qui ne servirait à rien.
 export type TeamAction = "arreter" | "continuer" | "relancer" | "ajouter-resultats" | "fermer" | "ajouter";
 
 export interface TeamButton {
@@ -113,10 +143,28 @@ export interface TeamStepLine {
   voirTravail: string | null;
   /** « tentative {n} » à partir de la deuxième. */
   tentative: string | null;
+  /** 5b : « tour {n} » à partir du deuxième tour d'une relecture ; null ailleurs. */
+  tour: string | null;
+  /** 5b : verdict d'une relecture, en MOT et icône (jamais la couleur seule) ; null hors d'une étape de relecture. */
+  verdict: { mot: string; icone: TeamIconName } | null;
+  /** 5b : « ×{n} » quand le bloc a travaillé plusieurs tours ; null sinon. */
+  repetition: string | null;
   /** « Réponse peut-être incomplète… » quand l'étape a atteint sa limite d'actions. */
   tronquee: string | null;
   /** Phrase de la cause d'un échec ou d'un arrêt ; null sans cause. */
   cause: string | null;
+}
+
+/**
+ * Verdict d'une étape de relecture (5b) : le MOT et son icône. `undefined` (champ absent) = l'étape n'est pas une relecture ;
+ * `null` = c'est une relecture, mais le verdict n'était pas lisible — le cockpit le dit et le traite comme « à reprendre »,
+ * jamais comme une relecture réussie.
+ */
+export function verdictLigne(verdict: StepRunView["verdict"]): { mot: string; icone: TeamIconName } | null {
+  if (verdict === undefined) return null;
+  if (verdict === "rien-a-reprendre") return { mot: C5.relecture.rienAReprendre, icone: "check" };
+  if (verdict === "a-reprendre") return { mot: C5.relecture.aReprendre, icone: "alert" };
+  return { mot: C5.relecture.verdictIllisible, icone: "alert" };
 }
 
 export interface TeamPauseModel {
@@ -131,6 +179,20 @@ export interface TeamPauseModel {
   /** Une pause de budget confirme le garde-fou (x-cockpit-confirm: 1). */
   confirme: boolean;
   boutons: TeamButton[];
+  /**
+   * 5b : entrée BORNÉE de la carte de choix d'un aiguillage ; null hors d'une pause « choix ». La carte, elle, est recalculée à
+   * chaque case cochée par `modeleChoix(entree, selection)` : c'est la seule chose que le composant fait lui-même.
+   */
+  choix: TeamChoixEntree | null;
+}
+
+/** Entrée bornée de la carte de choix : ce que la pause porte, textes d'IA déjà coupés (CHOIX_RAISON_MAX). */
+export interface TeamChoixEntree {
+  options: ChoixPropose[];
+  raison: string;
+  choixMax: number;
+  /** Coût de la SUITE du chemin, porté par le bouton [Continuer avec {n} spécialiste(s) (≈ {x} $)]. */
+  suiteUsd: number;
 }
 
 export interface TeamResultModel {
@@ -144,6 +206,19 @@ export interface TeamResultModel {
   ajouter: string;
   /** Texte du résultat, rendu par le composant Markdown existant (échappé) ; vide : rien à montrer. */
   texte: string;
+  /**
+   * 5b : journal de relecture, REPLIÉ sous le résultat (C §9.6). Le livrable n'est pas réécrit : il est seulement découpé, le
+   * journal d'un côté, le résultat de l'autre. null quand le livrable n'en porte aucun.
+   */
+  journal: { titre: string; texte: string } | null;
+  /** 5b : notes de relecture (« Non relue après la dernière correction. », « Relecture non conclue après {n} tours … »). */
+  notes: string[];
+  /**
+   * 5b : chemin « aucun ne convient » d'un aiguillage (D-5-13), reconnu SUR LE LIVRABLE — seul endroit où l'assistant de repli
+   * parvient à l'interface. Les deux phrases restent dans `texte` (le livrable est rendu tel quel) ; ce champ n'ajoute que le
+   * bouton [Envoyer à cet assistant]. null : ce résultat n'est pas celui d'un « aucun ».
+   */
+  aucun: TeamAucunView | null;
 }
 
 export interface TeamRunCardModel {
@@ -181,20 +256,88 @@ export function etapesVisibles(run: TeamRunView): StepRunView[] {
   return [...par.values()].sort((a, b) => a.ordre - b.ordre);
 }
 
+/**
+ * Une étape a-t-elle commencé ? Son ÉTAT seul le dit : « prevue » et « non-lancee » (itération 4) n'ont rien envoyé, et
+ * « non-choisi » (5b) non plus — un spécialiste écarté n'a jamais travaillé.
+ */
+const aCommence = (step: StepRunView): boolean => step.state !== "prevue" && step.state !== "non-lancee" && step.state !== "non-choisi";
+
+/**
+ * 5b (L42c) : une ligne par TOUR réellement fait, dans l'ordre du plan. Pour les formes de l'itération 4, chaque étape n'a qu'un
+ * tour et le résultat est exactement celui d'`etapesVisibles` (non-régression). Pour une relecture, les tours déjà faits ont
+ * chacun leur ligne ; les tours que le plan réserve mais qui n'ont pas eu lieu n'en ont AUCUNE — le cockpit ne montre pas comme
+ * fait ce qui ne l'est pas. Une étape qui n'a jamais commencé garde une seule ligne (« Pas encore commencée », « Non lancée »
+ * ou « Non choisi »).
+ */
+export function etapesParTour(run: TeamRunView): StepRunView[] {
+  const parEtape = new Map<string, Map<number, StepRunView>>();
+  for (const step of run.steps) {
+    const tours = parEtape.get(step.stepId) ?? new Map<number, StepRunView>();
+    const vu = tours.get(step.tour);
+    if (!vu || step.tentative >= vu.tentative) tours.set(step.tour, step);
+    parEtape.set(step.stepId, tours);
+  }
+  const out: StepRunView[] = [];
+  for (const tours of parEtape.values()) {
+    const lignes = [...tours.values()].sort((a, b) => a.tour - b.tour);
+    const faits = lignes.filter(aCommence);
+    const dernier = faits.length === 0 ? 0 : Math.max(...faits.map((step) => step.tour));
+    out.push(...(dernier === 0 ? lignes.slice(0, 1) : lignes.filter((step) => step.tour <= dernier)));
+  }
+  return out.sort((a, b) => a.ordre - b.ordre || a.tour - b.tour);
+}
+
+/**
+ * 5b : tours comptés bloc par bloc, sur les lignes que `retenir` accepte. Un bloc compte le PLUS PETIT nombre de tours parmi
+ * ses étapes : dans une relecture, l'auteur écrit un jet de plus que le relecteur ne rend de verdicts (`relectureOrder` de
+ * team-limits.ts ajoute la révision finale), et un tour n'est un tour que lorsque la relecture a eu lieu (C §6.2). Un bloc dont
+ * aucune ligne n'est retenue n'a pas d'entrée : l'appelant décide quoi en dire, rien n'est supposé à sa place.
+ */
+function toursDesBlocs(run: TeamRunView, retenir: (step: StepRunView) => boolean): Map<number, number> {
+  const parBloc = new Map<number, Map<string, Set<number>>>();
+  for (const step of run.steps) {
+    if (!retenir(step)) continue;
+    const etapes = parBloc.get(step.blocIndex) ?? new Map<string, Set<number>>();
+    const tours = etapes.get(step.stepId) ?? new Set<number>();
+    tours.add(step.tour);
+    etapes.set(step.stepId, tours);
+    parBloc.set(step.blocIndex, etapes);
+  }
+  const out = new Map<number, number>();
+  for (const [blocIndex, etapes] of parBloc) out.set(blocIndex, Math.min(...[...etapes.values()].map((tours) => tours.size)));
+  return out;
+}
+
+/** 5b : tours réellement FAITS dans chaque bloc — seules les lignes qui ont commencé comptent. Les blocs de l'it4 rendent 1. */
+export function toursParBloc(run: TeamRunView): Map<number, number> {
+  return toursDesBlocs(run, aCommence);
+}
+
+/**
+ * 5b : tours que le PLAN réserve dans chaque bloc, sur toutes les lignes créées au lancement (une par entrée de `planSteps`,
+ * chemin maximal). C'est le « Prévu » de l'écart du Déroulé : il est LU, jamais déduit.
+ */
+export function toursPrevusParBloc(run: TeamRunView): Map<number, number> {
+  return toursDesBlocs(run, () => true);
+}
+
 /** « étape {n} sur {total} » : n = rang de la dernière étape commencée (1 au moins). */
 export function progression(run: TeamRunView): { n: number; total: number; terminees: number } {
   const etapes = etapesVisibles(run);
-  const commencee = (s: StepRunView) => s.state !== "prevue" && s.state !== "non-lancee";
+  // 5b : un spécialiste écarté (« non-choisi ») n'a jamais commencé — il ne fait pas avancer le rang de l'étape courante.
   let n = 0;
-  for (const [index, step] of etapes.entries()) if (commencee(step)) n = index + 1;
+  for (const [index, step] of etapes.entries()) if (aCommence(step)) n = index + 1;
   return { n: Math.max(1, n), total: Math.max(1, etapes.length), terminees: etapes.filter((s) => s.state === "terminee").length };
 }
 
 /** Plafond d'arrêt retenu au lancement ; à défaut, l'estimation haute. */
 const plafondDe = (run: TeamRunView) => run.plafond ?? run.estimate?.maximum ?? 0;
 
-/** Ligne d'une étape : icône + mot, détail « {titre} · {assistant} · {ia} », tentative, troncature et cause. */
-export function ligneEtape(step: StepRunView, advanced: boolean): TeamStepLine {
+/**
+ * Ligne d'une étape : icône + mot, détail « {titre} · {assistant} · {ia} », tentative, troncature et cause.
+ * 5b : `tours` = tours réellement faits dans le bloc (toursParBloc) ; il donne « tour {n} » à partir du deuxième et « ×{n} ».
+ */
+export function ligneEtape(step: StepRunView, advanced: boolean, tours = 1): TeamStepLine {
   const titre = texte(step.titre, TITRE_MAX);
   const nomIa = texte(step.ia.label ?? step.ia.model ?? "", TITRE_MAX);
   // §3.13 l.413 : en Avancé, l'IA choisie par l'équipe est nommée comme telle ; en Simple, celle de l'assistant (décision n° 3).
@@ -213,6 +356,9 @@ export function ligneEtape(step: StepRunView, advanced: boolean): TeamStepLine {
     sessionId: step.sessionId,
     voirTravail: step.sessionId === null ? null : P.boutons.voirTravail,
     tentative: step.tentative > 1 ? remplir(P.execution.tentative, { n: step.tentative }) : null,
+    tour: step.tour > 1 ? remplir(C5.relecture.tour, { n: step.tour }) : null,
+    verdict: verdictLigne(step.verdict),
+    repetition: tours > 1 ? remplir(C5.deroule.repetition, { n: tours }) : null,
     tronquee: step.tronquee ? P.execution.tronquee : null,
     cause: step.cause === null ? null : phraseErreur(step.cause),
   };
@@ -240,16 +386,36 @@ function boutonArreter(): TeamButton {
   return { action: "arreter", libelle: P.boutons.arreter, allure: "danger", desactive: false, raison: null };
 }
 
+/**
+ * 5b (L42c) : entrée bornée de la carte de choix d'un aiguillage, lue sur la pause. La raison est un texte d'IA : elle est
+ * coupée à CHOIX_RAISON_MAX et rendue en texte par React, donc échappée — jamais du HTML.
+ */
+export function entreeChoix(pause: TeamPauseView): TeamChoixEntree {
+  const options = optionsDe(pause.choix).map((option) => ({ ...option, titre: texte(option.titre, TITRE_MAX) }));
+  return { options, raison: texte(pause.raison, CHOIX_RAISON_MAX), choixMax: Number(pause.choixMax ?? 1), suiteUsd: pause.suite.typique };
+}
+
+/** 5b : carte de choix pour la sélection courante ; `null` = la sélection de départ (les spécialistes proposés cochés). */
+export function modeleChoix(entree: TeamChoixEntree, selection: readonly string[] | null): TeamChoiceView {
+  return vueChoix({ ...entree, selection: selection ?? selectionInitiale(entree.options, entree.choixMax) });
+}
+
 /** Pause : textes, zones modifiables et deux boutons. Le bouton [Continuer] porte les DEUX montants, sauf pour une fraîcheur. */
 export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseModel {
   const prochaine = etapesVisibles(run).find((s) => s.state === "prevue" || s.state === "en-file") ?? null;
   const verification = pause.kind === "verification";
+  // 5b : une pause de choix a ses propres boutons, dont le libellé suit le nombre de spécialistes cochés (modeleChoix).
+  const choix = pause.kind === "choix" ? entreeChoix(pause) : null;
+  // « Rien n'est facturé pendant la pause. » : la vérification et le choix d'un aiguillage le disent, les autres l'ont déjà
+  // dans leur message.
+  const gratuite = P.pauses[pause.kind === "choix" ? "choix" : "verification"].gratuite;
   const libelleContinuer =
     pause.kind === "changement"
       ? P.boutons.continuer
       : remplir(P.boutons.continuerMontants, { suite: pause.suite.typique, auPlus: pause.suite.maximum });
   return {
     kind: pause.kind,
+    choix,
     titre: P.pauses[pause.kind].titre,
     message: messagePause(pause, prochaine === null ? null : texte(prochaine.titre, TITRE_MAX)),
     resume:
@@ -262,9 +428,10 @@ export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseMo
           }
         : null,
     precision: verification ? { libelle: P.pauses.verification.precision, aide: P.pauses.verification.precisionAide, max: FLOW_LIMITS.precision } : null,
-    gratuite: pause.kind === "verification" ? P.pauses.verification.gratuite : null,
+    gratuite: verification || pause.kind === "choix" ? gratuite : null,
     confirme: pause.kind === "budget",
-    boutons: [{ action: "continuer", libelle: libelleContinuer, allure: "primary", desactive: false, raison: null }, boutonArreter()],
+    // 5b : la carte de choix compose ses trois boutons elle-même (le libellé de [Continuer] suit les cases cochées).
+    boutons: choix !== null ? [] : [{ action: "continuer", libelle: libelleContinuer, allure: "primary", desactive: false, raison: null }, boutonArreter()],
   };
 }
 
@@ -329,6 +496,9 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
   const { total, terminees } = progression(run);
   const duree = run.endedAt === null || run.startedAt === null ? 0 : Math.max(0, run.endedAt - run.startedAt);
   const nomIa = source === null ? "" : texte(source.ia.label ?? source.ia.model ?? "", TITRE_MAX);
+  // 5b : le livrable d'une relecture porte son journal et ses notes ; ils sont DÉCOUPÉS, jamais réécrits, pour que le journal
+  // soit replié sous le résultat (C §9.6).
+  const journal = journalRelecture(texte(texteResultat, FLOW_LIMITS.relaisCaracteres));
   return {
     titre: remplir(P.resultat.titre, { equipe: texte(run.titre, TITRE_MAX) }),
     redige: remplir(P.resultat.redige, {
@@ -340,7 +510,10 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
     resume: resumeResultat(terminees > 0 ? terminees : total, formatDuration(duree), run.cost, run.estimate?.typique ?? 0),
     aVerifier: P.resultat.aVerifier,
     ajouter: P.boutons.ajouter,
-    texte: texte(texteResultat, FLOW_LIMITS.relaisCaracteres),
+    texte: journal.resultat,
+    journal: journal.titre === null ? null : { titre: journal.titre, texte: journal.texte },
+    notes: journal.notes,
+    aucun: aucunDuLivrable(journal.resultat),
   };
 }
 
@@ -364,15 +537,16 @@ function boutonsCarte(run: TeamRunView, etat: { enPause: boolean; finale: boolea
  * vient de `ouvertesEnSimple` de GET /api/teams). Fermées, la carte ne propose aucune action que le serveur refuserait.
  */
 export function buildTeamRunCard(run: TeamRunView, advanced: boolean, equipesOuvertes: boolean = advanced): TeamRunCardModel {
-  const etapes = etapesVisibles(run);
   const { n, total, terminees } = progression(run);
   const enPause = run.pause !== null && ETATS_ATTENTE.has(run.state);
   const finale = ETATS_FINAUX.has(run.state);
   // L'arrêt n'est proposé que là où il a un sens : POST …/stop répond 409 `etat-incompatible` pour une équipe terminée ou finie.
   const arretable = ETATS_VERROU.has(run.state);
-  const lignes = etapes.map((step) => ligneEtape(step, advanced));
+  // 5b : une ligne par TOUR réellement fait, et « ×{n} » sur le bloc qui en a fait plusieurs.
+  const tours = toursParBloc(run);
+  const lignes = etapesParTour(run).map((step) => ligneEtape(step, advanced, tours.get(step.blocIndex) ?? 1));
   if (run.pause?.kind === "verification") {
-    lignes.push({ cle: `pause-${run.id}`, kind: "pause", titre: P.execution.pause, detail: "", icone: "pause", mot: P.execution.pause, sessionId: null, voirTravail: null, tentative: null, tronquee: null, cause: null });
+    lignes.push({ cle: `pause-${run.id}`, kind: "pause", titre: P.execution.pause, detail: "", icone: "pause", mot: P.execution.pause, sessionId: null, voirTravail: null, tentative: null, tour: null, verdict: null, repetition: null, tronquee: null, cause: null });
   }
   // Une seule carte de résultat (risque 19 : reconnaissance par IDENTIFIANT) : rendue ici seulement quand rien n'a été injecté.
   const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced) : null;
@@ -440,6 +614,33 @@ export function relanceApresEstimation(reponse: TeamEstimateResponse): RelanceEt
 export function relanceApresConfirmation(confirmation: RelanceConfirmation | null, accepte: boolean): RelanceLancement | null {
   if (!accepte || confirmation === null || confirmation.empreinte === "") return null;
   return { genre: "relancer", empreinte: confirmation.empreinte, confirme: true };
+}
+
+/**
+ * Identifiant du bloc de pause d'un lancement : cible que « [Répondre] » du bandeau peut atteindre, comme
+ * `permissionElementId` pour une demande d'autorisation. LE FOCUS N'EST JAMAIS PRIS par la carte elle-même : seul un clic de
+ * l'utilisateur l'y amène.
+ */
+export function teamPauseElementId(runId: string): string {
+  return `equipe-pause-${runId}`;
+}
+
+/**
+ * Préremplissage du composeur par [Envoyer à cet assistant] (chemin « aucun », D-5-13). La carte PUBLIE la demande à
+ * recopier et l'assistant de repli, et n'envoie RIEN : aucune requête, aucun coût. Le consommateur est la page du chat, qui
+ * remplit la saisie (`Composer.seed`) et choisit l'assistant ; elle est hors du périmètre de ce paquet — `TeamRunCardsProps`
+ * est FIGÉ par T4w et `ChatPage.tsx` est de classe A —, d'où la demande de contrat consignée pour l'intégrateur. Tant que
+ * personne n'écoute, rien ne se produit au clic : c'est le seul point de ce paquet qui dépende d'un câblage à venir.
+ */
+export const EVENEMENT_COMPOSEUR = "cockpit:composeur-prerempli";
+
+/** Charge utile de EVENEMENT_COMPOSEUR : la demande à recopier (message injecté au lancement) et l'assistant de repli. */
+export interface ComposeurPrerempli {
+  assistant: string;
+  rootId: string;
+  runId: string;
+  /** Message de la demande recopiée par le lancement (`TeamRunView.requestMessageId`) ; null s'il n'a pas été injecté. */
+  demandeMessageId: string | null;
 }
 
 /** Boîte « Arrêter l'équipe ? » (C §9.5). */

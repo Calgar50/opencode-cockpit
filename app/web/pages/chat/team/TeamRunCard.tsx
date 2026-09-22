@@ -9,6 +9,10 @@
 // refus prévisible (`blocage`) désactive le bouton avec sa raison, sans rien envoyer.
 // Annonces : région de la page (L5b, useAnnouncer, réglage ui.activityAnnouncements), polies, jamais une nouvelle région
 // aria-live. Modèle et textes : team-view-model.ts (T4t) ; aucune animation, aucun raccourci clavier.
+// 5b (L42c) : chaque ligne porte son TOUR (« tour {n} »), le VERDICT d'une relecture en mot et icône, et « ×{n} » quand le bloc
+// a travaillé plusieurs tours. Le chemin « aucun ne convient » d'un aiguillage est rendu par la carte de RÉSULTAT, seul endroit
+// où l'assistant de repli parvient à l'interface (il est écrit dans le livrable). LE FOCUS N'EST JAMAIS VOLÉ : la carte ne bouge
+// aucun focus, et son bloc de pause porte `teamPauseElementId(run.id)` pour qu'un renvoi y mène.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TeamRunView } from "../../../../server/shared/team-types.ts";
 import { useApp } from "../../../app/AppContext.tsx";
@@ -26,8 +30,10 @@ import {
   relanceDebut,
   type TeamButton,
   type TeamRunCardModel,
+  teamPauseElementId,
 } from "./team-view-model.ts";
 import "./team-cards.css";
+import "./team-choice.css";
 
 export interface TeamRunCardProps {
   run: TeamRunView;
@@ -153,7 +159,7 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
   );
 
   const continuer = useCallback(
-    (corps: { precision?: string; correction?: string }, confirme: boolean) => {
+    (corps: { precision?: string; correction?: string; choix?: string[]; aucun?: true }, confirme: boolean) => {
       void lancer(() => teamRunsApi.continue(run.id, corps, confirme ? { confirm: true } : {}));
     },
     [lancer, run.id],
@@ -179,6 +185,14 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
               <span className="team-step-main">
                 <span className="team-step-detail">{ligne.detail === "" ? ligne.titre : ligne.detail}</span>
                 <span className="team-step-state">{ligne.mot}</span>
+                {ligne.tour === null ? null : <span className="team-step-note">{ligne.tour}</span>}
+                {ligne.repetition === null ? null : <span className="team-step-note tabular">{ligne.repetition}</span>}
+                {ligne.verdict === null ? null : (
+                  <span className="team-step-verdict">
+                    <Icon name={ligne.verdict.icone} className="team-icon" />
+                    {ligne.verdict.mot}
+                  </span>
+                )}
                 {ligne.tentative === null ? null : <span className="team-step-note">{ligne.tentative}</span>}
                 {ligne.tronquee === null ? null : <span className="team-step-note">{ligne.tronquee}</span>}
                 {ligne.cause === null ? null : <span className="team-step-note">{ligne.cause}</span>}
@@ -192,7 +206,9 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
           ))}
         </ul>
       )}
-      {modele.pause === null ? null : <TeamPauseCard pause={modele.pause} occupe={occupe} onContinue={continuer} onStop={arreter} />}
+      {modele.pause === null ? null : (
+        <TeamPauseCard pause={modele.pause} blocId={teamPauseElementId(modele.runId)} occupe={occupe} onContinue={continuer} onStop={arreter} />
+      )}
       {modele.boutons.length === 0 ? null : (
         <div className="team-card-actions">
           {modele.boutons.map((bouton) => {
