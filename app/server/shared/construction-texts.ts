@@ -242,6 +242,16 @@ export const TEXTES = {
         relecture: "Une rédaction et relecture",
         aiguillage: "Un aiguillage",
       },
+      // <c5:editeur-l42d>
+      // Trois libellés posés par L42d, que le §4.3 ne fixe pas à l'octet : le choix « Le résultat d'étapes choisies » du champ
+      // « Ce que l'étape reçoit » (mode Avancé seulement, `recoit: {etapes}` de L42a ; il ne peut pas rejoindre
+      // `editeur.champs.recoitChoix` de team-texts.ts, dont le croisement de V0 de l'it4 exige les trois noms de STEP_INPUTS et
+      // rien d'autre), et les deux commandes de la liste des spécialistes, écrites comme celles des avis (T4t : « Ajouter un
+      // avis », « Retirer cet avis ») pour que leur nom accessible dise de quoi il s'agit.
+      recoitEtapes: "Le résultat d'étapes choisies",
+      ajouterSpecialiste: "Ajouter un spécialiste",
+      retirerSpecialiste: "Retirer ce spécialiste",
+      // </c5:editeur-l42d>
     },
     /** Problèmes du déroulé (5b, L42a) : une phrase par code. `meme-famille` est un avertissement, pas un refus. */
     problemes: {
