@@ -86,13 +86,22 @@ RUN set -eu; \
     done
 
 # Variables de l'image (spéc. l.485).
+#
+# CLAUDE_CONFIG_DIR : sans elle, l'extension calcule ses dossiers de travail par `getClaudeConfigDir()`, qui rend `~/.claude` —
+# l'un des CINQ dossiers de configuration montés en lecture seule (D-2b-33). Elle y crée `transcripts` et `todos` MÊME avec
+# `claude_code.hooks: false`, et la salle meurt au premier envoi sur `EROFS: read-only file system, mkdir
+# '/home/node/.claude/transcripts'` (défaut n° 2 mesuré par le banc hors ligne, L21 §3, porte G2). La valeur pointe donc hors
+# des cinq dossiers, sous le tmpfs `/home/node/.local/state` que le compose donne à `node` (MO-3 point 8) ; posée ici, elle ne
+# dépend d'aucune variable d'hôte. Hors du périmètre du manifeste (`perimetreManifeste` : contenus de fichiers) : la référence
+# `omo-manifest.sha256` ne bouge pas.
 ENV OMO_DISABLE_POSTHOG=1 \
     OMO_SEND_ANONYMOUS_TELEMETRY=0 \
     OPENCODE_DISABLE_CLAUDE_CODE=1 \
     OPENCODE_DISABLE_PROJECT_CONFIG=1 \
     GIT_EDITOR=: \
     GIT_PAGER=cat \
-    OPENCODE_CONFIG_DIR=/etc/opencode-omo
+    OPENCODE_CONFIG_DIR=/etc/opencode-omo \
+    CLAUDE_CONFIG_DIR=/home/node/.local/state/claude
 
 # Validation de la configuration figée (G14) : un nom faux, une clé inconnue ou une valeur épinglée retirée font échouer la
 # construction. Rien de l'extension n'est exécuté : son package.json et son dist sont lus comme du texte.

@@ -231,6 +231,9 @@ describe("image opencode-omo : Dockerfile (lu, jamais construit)", () => {
         ["GIT_EDITOR", ":"],
         ["GIT_PAGER", "cat"],
         ["OPENCODE_CONFIG_DIR", IMG.configuration],
+        // Correctif du défaut n° 2 du banc hors ligne (L21 §3) : sans elle, l'extension écrit `transcripts` et `todos` dans
+        // `~/.claude`, monté `:ro`, et la salle meurt au premier envoi. Croisement de V3 : la valeur reste hors des cinq dossiers.
+        ["CLAUDE_CONFIG_DIR", "/home/node/.local/state/claude"],
       ]),
     );
   });

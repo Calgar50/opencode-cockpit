@@ -38,12 +38,21 @@ export interface ProxyRule {
   pattern: RegExp;
   /** Requête qui déclenche un appel de modèle : soumise au garde-fou budgétaire. */
   guarded?: boolean;
+  /**
+   * Le segment qui suit `/session/` est un IDENTIFIANT de conversation (règle bâtie sur `${ID}`), et non un sous-chemin
+   * littéral comme `/session/status`. Seules ces règles font jouer la cloison des instances et posent le `sessionId` des
+   * crochets : sans cela, « status » serait pris pour une conversation, cherché en vain, et la salle refuserait en 409.
+   */
+  sessionAt?: boolean;
 }
 
 const rule = (method: string, route: string, guarded = false): ProxyRule => ({
   method,
   pattern: new RegExp(`^${route}$`),
   guarded,
+  // Déduit de la route, jamais posé à la main : toute règle `/session/${ID}…` ajoutée plus tard l'a d'office, et tout
+  // sous-chemin littéral `/session/<mot>` en est exclu d'office.
+  sessionAt: route.startsWith(`/session/${ID}`),
 });
 
 /**
@@ -315,8 +324,9 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
     // Cloison des instances (P11), avant tout envoi : une conversation de l'autre instance n'existe pas sur ce montage, dans
     // les deux sens. Sur la salle, une conversation que le cockpit ne suit pas est refusée aussi (fermé en cas de doute) ;
-    // sur l'instance principale, une conversation inconnue reste relayée, exactement comme en 1.0.x.
-    const routedSession = SESSION_ROUTE.exec(sub)?.[1];
+    // sur l'instance principale, une conversation inconnue reste relayée, exactement comme en 1.0.x. Elle ne joue que sur les
+    // routes dont le segment est vraiment un identifiant (`matched.sessionAt`) : `/session/status` n'en désigne aucune.
+    const routedSession = matched.sessionAt === true ? SESSION_ROUTE.exec(sub)?.[1] : undefined;
     if (routedSession !== undefined) {
       const proprietaire = instanceOf(routedSession);
       if (proprietaire !== null && proprietaire !== instance.instance) {
@@ -353,7 +363,7 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
         sub,
         directory,
         body: bodyRecord,
-        sessionId: SESSION_ROUTE.exec(sub)?.[1] ?? null,
+        sessionId: routedSession ?? null,
         // Instance visée : absente pour l'instance principale (contexte 1.0.x). runHooks n'appelle alors QUE les crochets de
         // la salle, et l'arrêt d'une conversation de la salle ne passe jamais par stopTree de l'instance principale (D-2b-30).
         ...(salle ? { instance: instance.instance } : {}),

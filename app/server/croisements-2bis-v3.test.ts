@@ -15,7 +15,9 @@
 //   6. un événement de la salle traité par le PROCESSEUR RÉEL de L18a n'écrit jamais sur une racine de l'instance principale,
 //      même à identifiant égal, et la coupure du flux de la salle ne met jamais l'instance principale en « synchro due » ;
 //   7. le manifeste RÉEL commité par L21 est celui que le compose et le contrat attendent, et les plafonds relevés par le banc
-//      (M22) sont ceux que le compose porte après le train.
+//      (M22) sont ceux que le compose porte après le train ;
+//   8. le défaut n° 2 mesuré par le banc (L21 §3) est corrigé DANS LE PRODUIT : l'image pose `CLAUDE_CONFIG_DIR` hors des cinq
+//      dossiers de configuration montés `:ro`, et le contournement du banc ne fait plus que prouver la non-régression.
 // Aucun conteneur, aucun réseau, aucune pause fixe : deux faux opencode en mémoire et des lectures de fichiers.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -23,19 +25,20 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { Hono } from "hono";
+import { parse as parseYaml } from "yaml";
 import type { Cockpit11, Cockpit11Module, HookSignatures, ProxyContext } from "./contracts-11.ts";
 import { forbiddenCommandArguments, forbiddenProxyBody } from "./http.ts";
 import { createInstanceRouter } from "./instance-router.ts";
 import { createOcProxy, PROXY_RULES, PROXY_RULES_OMO } from "./oc-proxy.ts";
 import { createOmoControl } from "./omo-control.ts";
-import type { InstanceDeps, OmoStopPort } from "./omo-contracts.ts";
+import { type InstanceDeps, OMO_SALLE_CONTRACT_FILE, type OmoStopPort } from "./omo-contracts.ts";
 import { createOmoPrecheckService } from "./omo-precheck-service.ts";
 import { createOmoRoom } from "./omo-room.ts";
 import type { OcGlobalEvent, OcSession } from "./opencode.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { StopResult } from "./shared/cockpit-event-types.ts";
 import { analyserPrecheckOk, ecrireEtat } from "./shared/omo-control-protocol.ts";
-import type { OmoPreparedProjects, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
+import type { OmoPreparedProjects, OmoSalleContract, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { createId } from "./test-support/fake-opencode.ts";
 import { SALLE_OUVERTE } from "./wiring-11.ts";
@@ -530,5 +533,57 @@ describe("croisement V3 : le banc de L21 et le compose du produit disent la mêm
     const mesures = lire("e2e", "omo-banc", "scenarios", "mesures.mjs");
     assert.match(mesures, /plafondsActuels: plafondsDuCompose\(/, "le relevé lit le compose");
     assert.doesNotMatch(mesures, /plafondsActuels: \{/, "aucune copie en dur des plafonds");
+  });
+});
+
+// --- 8. Défaut n° 2 du banc (L21 §3) : le produit pose CLAUDE_CONFIG_DIR hors des cinq dossiers en lecture seule --------------------
+
+/**
+ * Le banc hors ligne a mesuré que la salle MEURT au premier envoi sans cette variable : l'extension calcule ses dossiers de
+ * travail par `getClaudeConfigDir()`, qui rend `~/.claude` — l'un des cinq dossiers de configuration montés `:ro` (D-2b-33) — et
+ * y crée `transcripts` et `todos` même avec `claude_code.hooks: false`. Le rapport L21 §3 demande ce croisement au train de V3 :
+ * il tombe si la variable disparaît, ou si sa valeur retombe sous l'un des cinq dossiers. Les cinq chemins sont LUS du contrat.
+ */
+describe("croisement V3 : la salle peut écrire ses transcriptions (CLAUDE_CONFIG_DIR, défaut n° 2 de L21)", () => {
+  const CONTRAT_SALLE = JSON.parse(lire(...OMO_SALLE_CONTRACT_FILE.split("/"))) as OmoSalleContract;
+  /** Variables posées par les instructions ENV du Dockerfile de la salle, continuations `\` comprises. */
+  const variablesDeLImage = (): Map<string, string> => {
+    const texte = lire("docker", "opencode-omo", "Dockerfile").replaceAll(/\\\r?\n/g, " ");
+    const map = new Map<string, string>();
+    for (const ligne of texte.split("\n")) {
+      const env = /^\s*ENV\s+(.*)$/.exec(ligne);
+      if (!env) continue;
+      for (const paire of (env[1] as string).trim().split(/\s+/)) {
+        const k = paire.indexOf("=");
+        if (k > 0) map.set(paire.slice(0, k), paire.slice(k + 1));
+      }
+    }
+    return map;
+  };
+
+  it("le Dockerfile pose CLAUDE_CONFIG_DIR, en chemin absolu, hors des cinq dossiers de configuration montés `:ro`", () => {
+    const valeur = variablesDeLImage().get("CLAUDE_CONFIG_DIR");
+    assert.ok(valeur !== undefined, "CLAUDE_CONFIG_DIR a disparu du Dockerfile : la salle mourra au premier envoi (L21 §3)");
+    assert.ok(valeur.startsWith("/"), `chemin absolu attendu : ${valeur}`);
+    assert.equal(CONTRAT_SALLE.dossiersConfigHome.length, 5, "cinq dossiers de configuration attendus (D-2b-33)");
+    for (const dossier of CONTRAT_SALLE.dossiersConfigHome) {
+      assert.ok(valeur !== dossier && !valeur.startsWith(`${dossier}/`), `CLAUDE_CONFIG_DIR retombe sous ${dossier}, monté en lecture seule`);
+    }
+    // Et sous un dossier que `node` peut écrire : un tmpfs du service de la salle, à l'uid de `node`.
+    const compose = parseYaml(lire("docker-compose.yml")) as { services: Record<string, { tmpfs?: string[] }> };
+    const inscriptibles = (compose.services["opencode-omo"]?.tmpfs ?? [])
+      .filter((entree) => entree.includes("uid=1000"))
+      .map((entree) => entree.split(":")[0] as string);
+    assert.ok(
+      inscriptibles.some((point) => valeur.startsWith(`${point}/`)),
+      `CLAUDE_CONFIG_DIR (${valeur}) n'est sous aucun tmpfs donné à node : ${inscriptibles.join(", ")}`,
+    );
+  });
+
+  it("le contournement du banc ne fait plus que prouver la non-régression : il pose la MÊME valeur que le produit", () => {
+    const valeur = variablesDeLImage().get("CLAUDE_CONFIG_DIR");
+    const contournement = lire("e2e", "omo-banc", "banc-contournement.compose.yml");
+    const posee = /^\s*CLAUDE_CONFIG_DIR:\s*(\S+)\s*$/m.exec(contournement)?.[1];
+    assert.equal(posee, valeur, "le banc et le produit doivent poser le même chemin, sinon le banc ne mesure plus le produit");
   });
 });

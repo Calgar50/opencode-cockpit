@@ -299,8 +299,12 @@ describe("T3a : phrases réécrites (D-2b-38) et reprises de la spécification",
     assert.equal(TEXTE("avance.refus.battement-absent"), "La salle ne répond pas : le cockpit ne peut pas vérifier qu'elle s'arrêtera.");
     assert.equal(TEXTE("avance.refus.demande-active"), "Une demande est déjà en cours dans la salle : attendez sa fin ou arrêtez-la.");
     assert.equal(TEXTE("avance.refus.plafond-vide"), "Saisissez le montant d'arrêt automatique.");
-    assert.equal(TEXTE("avance.refus.git-inscriptible"), "L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste}");
-    assert.equal(TEXTE("avance.refus.workspace-non-verifie"), TEXTE("avance.refus.git-inscriptible"));
+    // Deux causes, deux phrases (mesure L21 §2) : le balayage de la salle voit aussi des alias de casse inscriptibles, que
+    // relancer l'installation ne peut PAS fermer ; le balayage du cockpit, lui, ne voit que des dépôts ajoutés après coup.
+    assert.equal(TEXTE("avance.refus.git-inscriptible"), "L'historique git de ces dossiers n'est pas protégé : la salle ne démarre pas. {liste}");
+    assert.doesNotMatch(TEXTE("avance.refus.git-inscriptible"), /install\.ps1/u, "aucun geste promis là où il n'aboutit pas (P3)");
+    assert.equal(TEXTE("avance.refus.workspace-non-verifie"), "L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste}");
+    assert.notEqual(TEXTE("avance.refus.workspace-non-verifie"), TEXTE("avance.refus.git-inscriptible"));
     assert.equal(TEXTE("avance.arrets.redemarrage-cockpit"), "Le cockpit a redémarré : la demande en cours a été arrêtée et la salle relancée à neuf.");
     assert.equal(TEXTE("avance.detections.activite-hors-demande"), "L'extension a agi alors qu'aucune demande n'était en cours : la salle a été arrêtée.");
     assert.equal(

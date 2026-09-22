@@ -223,6 +223,17 @@ describe("L16b §1 : les services de la salle sont derrière le profil, sans con
 
 describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7, D-2b-46)", () => {
   const salle = service(SALLE);
+  /** Maximums relevés par la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée : une remesure ne change qu'ici. */
+  const MEM_MAX_MIO = 347.8;
+  const PIDS_MAX = 11;
+
+  /** `mem_limit` du compose en mébioctets : suffixe k/m/g, ou des octets sans suffixe. */
+  const memLimitMio = (valeur: unknown): number => {
+    const lu = /^(\d+)([kmg]?)$/i.exec(String(valeur));
+    assert.ok(lu, `mem_limit illisible : ${String(valeur)}`);
+    const facteurs: Record<string, number> = { "": 1 / (1024 * 1024), k: 1 / 1024, m: 1, g: 1024 };
+    return Number(lu[1]) * (facteurs[(lu[2] ?? "").toLowerCase()] as number);
+  };
 
   it("racine en lecture seule, capacités et no-new-privileges exactement ceux du contrat", () => {
     assert.equal(salle.read_only, CONTRAT.securite.read_only);
@@ -243,17 +254,17 @@ describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7
   });
 
   it("limites ajustées par la mesure M22 (D-2b-46, train de V3) : pids_limit, cpus et mem_limit", () => {
-    // Mesure M22 du banc hors ligne (L21) : 347,8 Mio, 11 processus, 4,37 % de CPU, extension chargée. Les plafonds descendent
-    // des valeurs provisoires (512 / 2 / 4g) aux valeurs mesurées, marge comprise. Les trois restent posés : un plafond absent
-    // laisserait la salle prendre toute la machine.
+    // Mesure M22 du banc hors ligne (L21), chiffres en tête du describe. Les plafonds descendent des valeurs provisoires
+    // (512 / 2 / 4g) aux valeurs mesurées, marge comprise. Les trois restent posés : un plafond absent laisserait la salle
+    // prendre toute la machine.
     assert.equal(salle.pids_limit, 128);
     assert.equal(salle.cpus, 2);
     assert.equal(salle.mem_limit, "1g");
     assert.match(String(salle.mem_limit), /^\d+[kmg]?$/i);
     assert.equal(salle.restart, "unless-stopped");
-    // Toujours au-dessus du maximum mesuré : 1 Gio > 347,8 Mio (×3), 128 > 11 processus (×10).
-    assert.ok(1024 > 347.8 * 2, "la mémoire permise garde au moins deux fois le maximum mesuré");
-    assert.ok(salle.pids_limit >= 11 * 5, "les processus permis gardent au moins cinq fois le maximum mesuré");
+    // Marges LUES dans le compose, jamais recopiées : un resserrement sous le maximum mesuré fait tomber le test.
+    assert.ok(memLimitMio(salle.mem_limit) >= MEM_MAX_MIO * 2, `la mémoire permise garde au moins deux fois le maximum mesuré (${String(salle.mem_limit)})`);
+    assert.ok(salle.pids_limit >= PIDS_MAX * 5, `les processus permis gardent au moins cinq fois le maximum mesuré (${String(salle.pids_limit)})`);
   });
 
   it("aucun port publié : la salle n'est joignable que par le réseau fermé", () => {

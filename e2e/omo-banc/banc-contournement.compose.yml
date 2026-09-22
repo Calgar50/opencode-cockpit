@@ -1,29 +1,33 @@
-# Contournement du banc — À NE PAS PRENDRE POUR LE PRODUIT (option `--contournement` de run-banc.mjs).
+# Contournement du banc (option `--contournement` de run-banc.mjs) — DÉSORMAIS UNE PREUVE DE NON-RÉGRESSION.
 #
-# LE DÉFAUT REPRODUIT (porte G2, premier démarrage réel de la salle). La salle démarre, sert `GET /config` et `GET /agent`,
-# puis meurt au PREMIER envoi :
+# Depuis le train de V3, le produit pose lui-même la variable : `ENV CLAUDE_CONFIG_DIR=/home/node/.local/state/claude` dans
+# `docker/opencode-omo/Dockerfile`. Ce fichier pose EXACTEMENT la même valeur — le croisement de V3 le vérifie — et ne sert plus
+# qu'à deux choses : rejouer les mesures sur une archive d'image plus ancienne, qui porte encore le défaut, et montrer que
+# l'ajouter ne change plus rien. La porte G2 se joue TOUJOURS sans lui.
+#
+# LE DÉFAUT QU'IL REPRODUISAIT (porte G2, premier démarrage réel de la salle). La salle démarrait, servait `GET /config` et
+# `GET /agent`, puis mourait au PREMIER envoi :
 #
 #   ERROR message="prompt_async failed" cause="Die(Error: EROFS: read-only file system, mkdir '/home/node/.claude/transcripts')"
 #
 # L'extension calcule ce chemin par `getClaudeConfigDir()` (`dist/index.js`) : la variable `CLAUDE_CONFIG_DIR` si elle est
 # posée, sinon `homedir()/.claude` — l'un des CINQ dossiers montés en lecture seule par D-2b-33. Elle y écrit `transcripts`
 # et `todos`, MÊME avec `claude_code.hooks: false` : la clé coupe les crochets, pas la création des dossiers.
-# Aucune demande ne peut donc aboutir dans la salle telle qu'elle est aujourd'hui.
+# Aucune demande ne pouvait donc aboutir dans une salle dont l'image ne pose pas la variable.
 #
 # CE QUI NE MARCHE PAS, et qui est mesuré : poser un tmpfs sur `/home/node/.claude/transcripts` fait échouer la CRÉATION du
 # conteneur (`create mountpoint … read-only file system`) — on ne monte rien sous un montage en lecture seule. Rendre
 # `/home/node/.claude` inscriptible ferait, lui, refuser le démarrage à l'étape 3 du superviseur (dossier de configuration
 # inscriptible par node). Le défaut ne se contourne donc PAS depuis le compose du banc.
 #
-# CE QUI MARCHE, et que ce fichier emploie : `CLAUDE_CONFIG_DIR` vers un chemin déjà inscriptible de la salle
-# (`/home/node/.local/state`, tmpfs à `node` posé par le compose du produit pour MO-3 point 8). Le correctif appartient au
-# produit — liste blanche `variables.salle` du contrat plus `docker-compose.yml` (L16b), ou `ENV` de l'image (L15a) — et L21
-# ne touche ni l'un ni l'autre.
+# CE QUI MARCHE, et que le produit emploie depuis le train de V3 : `CLAUDE_CONFIG_DIR` vers un chemin déjà inscriptible de la
+# salle (`/home/node/.local/state`, tmpfs à `node` posé par le compose du produit pour MO-3 point 8). La voie retenue est l'`ENV`
+# de l'image : elle ne dépend d'aucune variable d'hôte et laisse la liste blanche `variables.salle` du contrat inchangée.
 #
 # À quoi sert ce fichier, et à rien d'autre :
-# 1. prouver le diagnostic : sans lui la salle ne sert pas, avec lui elle sert ;
-# 2. laisser les mesures du plan (M20, M21, M22, M28, M31, R16, MB-1) se faire malgré le défaut.
-# La porte G2 est jouée SANS lui, et reste rouge tant que le produit n'est pas corrigé.
+# 1. prouver le diagnostic sur une archive d'image antérieure au correctif : sans lui la salle ne sert pas, avec lui elle sert ;
+# 2. laisser les mesures du plan (M20, M21, M22, M28, M31, R16, MB-1) se faire sur une telle image.
+# La porte G2 est jouée SANS lui.
 
 services:
   opencode-omo:

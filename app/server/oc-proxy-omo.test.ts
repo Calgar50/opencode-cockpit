@@ -260,6 +260,24 @@ describe("salle : cloison entre les deux instances (P11)", () => {
     assert.ok(routes(m.h.fake).includes("GET /session/ses_jamais_vue"), "la demande est bien partie vers opencode");
   });
 
+  it("GET /session/status n'est PAS une conversation : la cloison la laisse passer et la requête arrive à la salle", async (t) => {
+    const m = await montage(t);
+    // `status` satisfait le motif d'un identifiant : sans la marque `sessionAt` de la règle retenue, la cloison le cherchait
+    // parmi les conversations, ne le trouvait pas, et refusait en 409 une route pourtant inscrite à la liste blanche.
+    const etat = await appel(m, "GET", "/api/omo/oc/session/status");
+    assert.equal(etat.status, 200, await etat.text());
+    assert.ok(routes(m.h.omo!.fake).includes("GET /session/status"), "la demande est bien arrivée à l'opencode de la salle");
+    // Les deux refus de la cloison, eux, ne bougent pas.
+    const racinePrincipale = await m.ouvrirPrincipale();
+    const avantSalle = routes(m.h.omo!.fake).length;
+    const croisee = await appel(m, "GET", `/api/omo/oc/session/${racinePrincipale}`);
+    assert.equal(croisee.status, 404);
+    const inconnue = await appel(m, "GET", "/api/omo/oc/session/ses_jamais_vue");
+    assert.equal(inconnue.status, 409);
+    assert.equal(((await inconnue.json()) as { error: string }).error, "instance-inconnue");
+    assert.equal(routes(m.h.omo!.fake).length, avantSalle, "aucune des deux n'a rien envoyé");
+  });
+
   it("le dossier d'une requête est vérifié sur l'instance visée, et la liste des assistants vient de SON opencode", async (t) => {
     const m = await montage(t);
     const racine = await m.ouvrirSalle();

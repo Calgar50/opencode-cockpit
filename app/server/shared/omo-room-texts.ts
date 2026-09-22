@@ -95,7 +95,12 @@ export const TEXTES = {
       "plafond-hors-bornes": "Montant supérieur au maximum permis par le cockpit ({plafondMaxUsd} $) : saisissez un montant plus bas.",
       "budget-mensuel": "Le budget mensuel ne permet pas de lancer cette demande.",
       "precheck-refuse": "Le pré-contrôle de {projet} n'est pas conforme : rien n'a été lancé.",
-      "git-inscriptible": "L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste}",
+      /**
+       * Balayage de la salle (state.json). Aucun geste n'est promis : la mesure du banc (L21 §2) montre qu'un `.git` monté en
+       * lecture seule reste inscriptible par ses alias de casse (`.GIT`, `GIT~1`) sur le partage de Docker Desktop, sur tous les
+       * postes Windows visés ; relancer `install.ps1` reposerait les mêmes montages et ne changerait rien (P3, honnêteté).
+       */
+      "git-inscriptible": "L'historique git de ces dossiers n'est pas protégé : la salle ne démarre pas. {liste}",
       manifeste: "L'image de la salle ne correspond pas à son manifeste : la salle ne démarre pas.",
       "image-inattendue": "L'image de la salle chargée n'est pas celle de l'installation : relancez `install.ps1` avec son archive.",
       "battement-absent": "La salle ne répond pas : le cockpit ne peut pas vérifier qu'elle s'arrêtera.",
@@ -106,6 +111,10 @@ export const TEXTES = {
       "jeton-consomme": "Cette confirmation a déjà servi pour une demande : confirmez à nouveau.",
       "salle-suspendue": "Salle suspendue : l'extension a agi sans demande à deux reprises. Rouvrez une salle pour la relancer.",
       "salle-en-relance": "La salle redémarre à neuf. Réessayez dans quelques secondes.",
+      /**
+       * Balayage du cockpit : ces dépôts sont hors de `gitProteges`, donc ajoutés après l'installation. Ici le geste aboutit
+       * vraiment — `install.ps1` leur posera leur montage — et la phrase le dit.
+       */
       "workspace-non-verifie": "L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste}",
     } satisfies Record<Exclude<OmoActivationRefusalCode, "mode-avance">, string>,
     /** Arrêt de la salle (stopTreeOmo), par cause. */

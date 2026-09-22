@@ -31,6 +31,7 @@ import {
 } from "./omo-precheck-service.ts";
 import { analyserPrecheckOk, ecrireEtat, OmoControlTropGrosError } from "./shared/omo-control-protocol.ts";
 import { PRECHECK_BORNES } from "./shared/omo-precheck-rules.ts";
+import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
 import type { OmoPreparedProjects, OmoSupervisorState } from "./shared/omo-types.ts";
 import { leaks } from "./test-support/helpers.ts";
 
@@ -528,6 +529,22 @@ describe("pré-contrôle en service : aucun precheck-ok", () => {
     const issue = await demarrer(a, DEMARRAGE, etatDe(DEMARRAGE, { workspaceGit: { verifieLe: T0, limiteAtteinte: true, nonProteges: [] } }));
     assert.deepEqual([issue.ok, issue.ok ? null : issue.code], [false, "git-inscriptible"]);
     assert.equal(a.precheckOk(), null);
+  });
+
+  it("les deux balayages ne disent PAS la même chose : « relancez install.ps1 » seulement là où le geste aboutit (P3)", async (t) => {
+    // Balayage de la salle : la mesure L21 §2 montre qu'un `.git` monté `:ro` reste inscriptible par ses alias de casse
+    // (`.GIT`, `GIT~1`) sur le partage de Docker Desktop. Relancer l'installation reposerait les mêmes montages : rien à promettre.
+    const a = monter(t, { ouverts: ["sain"] });
+    const salle = await demarrer(a, DEMARRAGE, etatDe(DEMARRAGE, { workspaceGit: { verifieLe: T0, limiteAtteinte: false, nonProteges: ["autre/.git"] } }));
+    assert.deepEqual([salle.ok, salle.ok ? null : salle.code], [false, "git-inscriptible"]);
+    assert.doesNotMatch(phraseRefusActivation("git-inscriptible"), /install\.ps1/u);
+    // Balayage du cockpit : un dépôt hors de `gitProteges` a été ajouté après l'installation ; la relancer lui pose son montage.
+    const b = monter(t, { ouverts: ["sain"] });
+    ecrire(b.d.workspace, "clone-recent/.git/HEAD", "ref: refs/heads/principale\n");
+    const cockpit = await demarrer(b);
+    assert.deepEqual([cockpit.ok, cockpit.ok ? null : cockpit.code], [false, "workspace-non-verifie"]);
+    assert.match(phraseRefusActivation("workspace-non-verifie"), /install\.ps1/u);
+    assert.notEqual(phraseRefusActivation("git-inscriptible"), phraseRefusActivation("workspace-non-verifie"));
   });
 
   it("dépôt git cloné depuis le démarrage de la salle, hors gitProteges : vu par le balayage du cockpit", async (t) => {

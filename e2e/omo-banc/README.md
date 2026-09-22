@@ -139,9 +139,16 @@ La porte `git` mesure les deux faits : les alias inscriptibles (rouge, c'est le 
 c'est le comportement attendu). `--sans-git` retire les dépôts pour que tout le reste soit mesurable ; M23 est alors déclarée
 non mesurable au lieu d'être déclarée fausse.
 
-### 5.2 `CLAUDE_CONFIG_DIR` : la salle meurt au premier envoi
+### 5.2 `CLAUDE_CONFIG_DIR` : la salle mourait au premier envoi — **corrigé dans le produit**
 
-Au **premier démarrage réel**, la salle démarre, sert `GET /config` et `GET /agent`… et meurt au premier envoi :
+> **Depuis le train de V3, le produit pose lui-même `CLAUDE_CONFIG_DIR=/home/node/.local/state/claude`**, par `ENV` dans
+> `docker/opencode-omo/Dockerfile`. Le croisement `croisements-2bis-v3.test.ts` tombe si la variable disparaît ou si sa valeur
+> retombe sous l'un des cinq dossiers montés `:ro`. **L'image doit être reconstruite** (`build-omo-image.ps1`) pour que le
+> correctif entre en vigueur : une archive plus ancienne porte encore le défaut. `--contournement` ne sert plus qu'à prouver la
+> non-régression (il pose la MÊME valeur) ; **G2 se joue toujours sans lui**.
+
+Ce que le banc avait mesuré, et qui reste la raison d'être de la variable : au **premier démarrage réel**, la salle démarrait,
+servait `GET /config` et `GET /agent`… et mourait au premier envoi :
 
 ```
 ERROR message="prompt_async failed"
@@ -154,11 +161,11 @@ avec `claude_code.hooks: false`**.
 
 Ce défaut **ne se contourne pas depuis le compose** : un tmpfs sur `/home/node/.claude/transcripts` fait échouer la création du
 conteneur (on ne monte rien sous un montage en lecture seule), et rendre `/home/node/.claude` inscriptible ferait refuser le
-démarrage à l'étape 3 du superviseur. Le seul levier est `CLAUDE_CONFIG_DIR`, qui appartient au produit (liste blanche
-`variables.salle` du contrat et `docker-compose.yml`, ou `ENV` de l'image).
+démarrage à l'étape 3 du superviseur. Le seul levier est `CLAUDE_CONFIG_DIR`, qui appartient au produit — c'est la voie
+retenue : `ENV` de l'image, donc sans dépendre d'aucune variable d'hôte.
 
-`banc-contournement.compose.yml` (option `--contournement`) pose cette variable pour le banc **seulement**, afin que les
-mesures puissent se faire. La porte **G2 se joue sans lui** et reste rouge tant que le produit n'est pas corrigé.
+`banc-contournement.compose.yml` (option `--contournement`) posait cette variable pour le banc **seulement**, afin que les
+mesures puissent se faire malgré le défaut. Il est gardé comme preuve de non-régression, avec la même valeur que le produit.
 
 ---
 
