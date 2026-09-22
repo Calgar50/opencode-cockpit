@@ -465,9 +465,27 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     const ordre = new Map(planSteps(flow).map((planned) => [planned.stepId, planned]));
     const etapes: PlannedStep[] = [];
     const methodes = new Map<string, ReadonlySet<string>>();
-    for (const stepId of chemin) {
+    // <c5:specialistes-hors-chemin>
+    // Le chemin d'ESTIMATION ne compte que `choixMax` spécialistes d'un aiguillage (5b, L42a) : l'estimation ne paie que ce qui
+    // partira. Mais VOUS pouvez retenir n'importe lesquels de la liste, et l'exécuteur exige pour chacun l'instantané P11 de son
+    // assistant (règles, plancher ETAPE, empreinte du fichier). Sans ces entrées, un spécialiste placé après le `choixMax`
+    // échouerait au lancement (« étape inconnue de l'instantané du lancement ») : les voici, DERRIÈRE le chemin, avec leur place
+    // déclarée. Elles ne comptent ni dans l'estimation, ni dans le garde-fou budgétaire (groupe B4, filtré sur le chemin).
+    const surLeChemin = new Set(chemin);
+    const horsChemin = new Map<string, { blocIndex: number; ordre: number }>();
+    let rang = Math.max(0, ...[...ordre.values()].map((planned) => planned.ordre));
+    flow.blocs.forEach((bloc, blocIndex) => {
+      if (bloc.type !== "aiguillage") return;
+      for (const step of Array.isArray(bloc.specialistes) ? bloc.specialistes : []) {
+        if (surLeChemin.has(step.id) || horsChemin.has(step.id)) continue;
+        rang += 1;
+        horsChemin.set(step.id, { blocIndex, ordre: rang });
+      }
+    });
+    // </c5:specialistes-hors-chemin>
+    for (const stepId of [...chemin, ...horsChemin.keys()]) {
       const step = steps.get(stepId);
-      const planned = ordre.get(stepId);
+      const planned = ordre.get(stepId) ?? horsChemin.get(stepId);
       const assistant = step ? source.assistants.get(step.assistant) : undefined;
       const ia = step ? iaDeLEtape(step, source.assistants, mode, source.variantes) : null;
       if (!step || !planned || !assistant || ia === null) continue;
@@ -688,8 +706,21 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       const b4 = (): Refus | null => {
         if (entree.estimateSha256 !== null && entree.estimateSha256 !== empreinte) return refus(409, "estimation-perimee");
         const lite = c11.catalog.lite();
-        const runs: Run[] = etapes.map((etape) => ({ role: "etape", model: etape.model, variant: etape.variant, source: "equipe", agent: etape.assistant }));
-        const tailles = etapes.map((etape) => etape.taille);
+        // <c5:specialistes-hors-chemin>
+        // Le garde-fou budgétaire (P6) ne compte QUE les passages du chemin estimé : les instantanés des spécialistes qu'un
+        // aiguillage pourrait lancer au-delà de `choixMax` sont dans l'instantané pour que l'exécuteur les retrouve, jamais
+        // pour gonfler le coût annoncé. Un passage par élément du chemin, dans l'ordre : une relecture y revient à chaque tour.
+        const restants = new Map<string, number>();
+        for (const stepId of entree.chemin) restants.set(stepId, (restants.get(stepId) ?? 0) + 1);
+        const etapesDuCout = etapes.filter((etape) => {
+          const reste = restants.get(etape.stepId) ?? 0;
+          if (reste <= 0) return false;
+          restants.set(etape.stepId, reste - 1);
+          return true;
+        });
+        // </c5:specialistes-hors-chemin>
+        const runs: Run[] = etapesDuCout.map((etape) => ({ role: "etape", model: etape.model, variant: etape.variant, source: "equipe", agent: etape.assistant }));
+        const tailles = etapesDuCout.map((etape) => etape.taille);
         const taille: TaskSize = tailles.includes("L") ? "L" : tailles.includes("M") ? "M" : "S";
         const garde = c11.ledger.guardRuns(runs, entree.confirmed, {
           command: null,

@@ -300,6 +300,10 @@ const TEAM_ERROR_CODES = [
   "plancher-etape",
   "etape-consultable",
   "etat-incompatible",
+  // <c5:choix-invalide> Code ajouté par le train de la vague 2 de la 5b (demande de contrat de L42b) : un choix d'aiguillage
+  // qui ne correspond plus à la liste proposée est refusé en clair, jamais sous « invalid ».
+  "choix-invalide",
+  // </c5:choix-invalide>
   "pas-relancable",
   "deja-ajoute",
   "confirmation-requise",

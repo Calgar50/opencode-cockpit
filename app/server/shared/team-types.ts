@@ -388,6 +388,15 @@ export interface TeamRunView {
   plafond: number | null;
   cost: number;
   steps: StepRunView[];
+  // <c5:blocs-prevus>
+  /**
+   * 5b (train de la vague 2) : bornes DÉCLARÉES des blocs répétables du déroulé lancé. Sans elles, le Déroulé d'équipe ne peut
+   * pas dire « Prévu : jusqu'à 2 tours · Réel : 1 tour » (spéc. §5.1 l.881, conception A §7.3) : les lignes `team_run_steps`
+   * ne portent que les tours RÉELLEMENT faits et les spécialistes déclarés, jamais le maximum que l'estimation a annoncé.
+   * Absent pour un lancement sans bloc répétable, et pour une vue construite par un module qui ne les connaît pas.
+   */
+  blocs?: Array<{ index: number; type: "relecture" | "aiguillage"; toursMax?: number; choixMax?: number }>;
+  // </c5:blocs-prevus>
   pause: TeamPauseView | null;
   relancable: boolean;
   /** Coût du chemin restant (suiteEstimate, calcul local sans lecture d'opencode) : libellé [Relancer la suite (≈ x $)]. */
@@ -551,6 +560,10 @@ export type TeamErrorCode =
   | "plancher-etape"
   | "etape-consultable"
   | "etat-incompatible"
+  // <c5:choix-invalide> Demande de contrat de L42b, traitée au train de la vague 2 (plan it5 §2.4) : le refus d'un choix
+  // d'aiguillage qui ne tient pas sort en clair, au lieu d'un « invalid » avec `details.raison`.
+  | "choix-invalide"
+  // </c5:choix-invalide>
   | "pas-relancable"
   | "deja-ajoute"
   | "confirmation-requise"

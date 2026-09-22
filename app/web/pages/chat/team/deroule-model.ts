@@ -209,6 +209,14 @@ const estRelecture = (lignes: readonly StepRunView[]) => lignes.some((step) => s
 const estAiguillage = (lignes: readonly StepRunView[]) => lignes.some((step) => step.choix !== undefined && step.choix !== null) || lignes.some((step) => step.state === "non-choisi");
 
 /**
+ * Genre d'un bloc DEVINÉ sur ses lignes : repli pour une vue qui ne porte pas les bornes déclarées (`TeamRunView.blocs`). Il ne
+ * reconnaît une relecture qu'à partir de son deuxième tour, ce qui est exactement sa limite : le train de la vague 2 a ajouté
+ * les bornes pour que le Déroulé n'ait plus à deviner.
+ */
+const genreDuBloc = (lignes: readonly StepRunView[]): "relecture" | "aiguillage" | null =>
+  estRelecture(lignes) ? "relecture" : estAiguillage(lignes) ? "aiguillage" : null;
+
+/**
  * Spécialistes d'un aiguillage : les lignes du bloc, moins l'aiguilleur (la première du plan) et moins la synthèse (la
  * dernière, que le plan n'ajoute qu'à partir de deux spécialistes possibles, C §6.2). « Prévu » est leur nombre, « réel » celui
  * des spécialistes que votre choix a retenus.
@@ -226,20 +234,28 @@ export function specialistesDuBloc(lignes: readonly StepRunView[]): { prevu: num
 export function ecartsDe(run: TeamRunView): { ecarts: string[]; notes: string[] } {
   const faits = toursParBloc(run);
   const prevus = toursPrevusParBloc(run);
+  // Bornes DÉCLARÉES du déroulé lancé (train de la vague 2) : elles seules disent le « jusqu'à » que l'estimation a annoncé.
+  // Les lignes enregistrées ne comptent que ce qui a eu lieu : sans ces bornes, « Prévu » et « Réel » seraient toujours égaux,
+  // et « Prévu : jusqu'à 2 tours · Réel : 1 tour » (spéc. §5.1 l.881) ne pourrait jamais s'afficher. Absentes : ancien repli.
+  const bornes = new Map((run.blocs ?? []).map((bloc) => [bloc.index, bloc]));
   const ecarts: string[] = [];
   const notes: string[] = [];
   for (const blocIndex of [...new Set(run.steps.map((step) => step.blocIndex))].sort((a, b) => a - b)) {
     const lignes = lignesDuBloc(run, blocIndex);
-    if (estRelecture(lignes)) {
-      ecarts.push(ecartTours(prevus.get(blocIndex) ?? 1, faits.get(blocIndex) ?? 0));
+    const borne = bornes.get(blocIndex);
+    const genre = borne?.type ?? genreDuBloc(lignes);
+    if (genre === "relecture") {
+      ecarts.push(ecartTours(borne?.toursMax ?? prevus.get(blocIndex) ?? 1, faits.get(blocIndex) ?? 0));
       // Dernière correction jamais relue : l'auteur a écrit un tour de plus que le relecteur n'en a relu (C §6.2).
       const parEtape = new Map<string, number>();
       for (const step of lignes) if (aCommenceLigne(step)) parEtape.set(step.stepId, Math.max(parEtape.get(step.stepId) ?? 0, step.tour));
       const tours = [...parEtape.values()];
       if (tours.length >= 2 && Math.max(...tours) > Math.min(...tours)) notes.push(C5.relecture.nonRelue);
-    } else if (estAiguillage(lignes)) {
+    } else if (genre === "aiguillage") {
       const { prevu, reel } = specialistesDuBloc(lignes);
-      ecarts.push(ecartSpecialistes(prevu, reel));
+      // « Prévu » = les spécialistes que l'aiguillage pouvait consulter AU PLUS (`choixMax`), le nombre même que l'estimation
+      // haute a facturé ; à défaut de borne déclarée, le nombre de spécialistes de la liste.
+      ecarts.push(ecartSpecialistes(borne?.choixMax ?? prevu, reel));
     }
   }
   return { ecarts, notes };

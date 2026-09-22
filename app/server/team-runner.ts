@@ -87,7 +87,7 @@ import {
 import { ID_RE } from "./shared/ids.ts";
 import { methodIdsIn } from "./shared/methods.ts";
 import { buildFloor, canonicalRules, floorHolds, floorMark } from "./shared/session-floors.ts";
-import { choixMaxDe, FLOW_LIMITS, planSteps } from "./shared/team-limits.ts";
+import { choixMaxDe, FLOW_LIMITS, planSteps, toursDe } from "./shared/team-limits.ts";
 import { pauseChangement, remplir, TEXTES } from "./shared/team-texts.ts";
 import type {
   Flow,
@@ -833,8 +833,18 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     // 5b : `verdict` et `choix` sont des colonnes que la vue du magasin ne rend pas (team-store.ts appartient à L37s) ; elles
     // sont ajoutées ici, ligne par ligne, sur la clé complète (étape, tour, tentative).
     const brut = new Map(store.steps.ofRun(runId).map((line) => [`${line.step_id}\u0000${line.tour}\u0000${line.tentative}`, line]));
+    // <c5:blocs-prevus>
+    // Bornes DÉCLARÉES des blocs répétables : le Déroulé d'équipe en a besoin pour dire « Prévu : jusqu'à {n} », que les lignes
+    // enregistrées ne portent pas (elles ne comptent que ce qui a eu lieu). Lues dans le déroulé du lancement, jamais ailleurs.
+    const blocs: NonNullable<TeamRunView["blocs"]> = [];
+    run.flow.blocs.forEach((bloc, index) => {
+      if (bloc.type === "relecture") blocs.push({ index, type: "relecture", toursMax: toursDe(bloc) });
+      else if (bloc.type === "aiguillage") blocs.push({ index, type: "aiguillage", choixMax: choixMaxDe(bloc) });
+    });
+    // </c5:blocs-prevus>
     return {
       ...base,
+      ...(blocs.length === 0 ? {} : { blocs }),
       steps: base.steps.map((step) => {
         const line = brut.get(`${step.stepId}\u0000${step.tour}\u0000${step.tentative}`);
         const verdict = line?.verdict === "a-reprendre" || line?.verdict === "rien-a-reprendre" ? line.verdict : null;
@@ -1805,8 +1815,8 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
    * Votre réponse à une pause de choix (5b, spéc. l.772). Rien ne part avant elle, et rien ne part non plus quand elle ne tient
    * pas : les identifiants doivent être ceux de la liste, sans doublon, `choixMax` au plus. Un refus est rendu AVANT toute
    * écriture et toute requête — « Rien n'a été envoyé ni facturé ».
-   * ⚠ `TeamErrorCode` (L42a, `shared/team-types.ts`, hors de ce paquet) ne porte pas de code « choix-invalide » : le refus sort
-   * en 409 `invalid`, avec `details.raison = "choix-invalide"`. Demande de contrat consignée pour la vague suivante.
+   * Le refus sort en 409 `choix-invalide` : le code a été ajouté à `TeamErrorCode` et à `team-texts.ts` par l'intégrateur du
+   * train de la vague 2, sur la demande de contrat de ce paquet (plan it5 §2.4).
    */
   const repondreAuChoix = (run: RunMemory, body: TeamContinueBody): RunnerRefusal | null => {
     const bloc = blocEnChoix(run);
@@ -1830,7 +1840,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       demandes.length > choixMaxDe(bloc) ||
       demandes.some((id) => !connus.has(id))
     ) {
-      return refusal(409, "invalid", { raison: "choix-invalide" });
+      return refusal(409, "choix-invalide");
     }
     // Ordre du déroulé, jamais celui du corps reçu : la liste rendue est celle que la carte et le Déroulé affichent.
     const retenus = specialistes.filter((step) => demandes.includes(step.id)).map((step) => step.id);

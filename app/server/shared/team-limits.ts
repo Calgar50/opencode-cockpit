@@ -207,6 +207,9 @@ export const TEAM_ERROR_CODES = membersOf<TeamErrorCode>({
   "plancher-etape": true,
   "etape-consultable": true,
   "etat-incompatible": true,
+  // <c5:choix-invalide>
+  "choix-invalide": true,
+  // </c5:choix-invalide>
   "pas-relancable": true,
   "deja-ajoute": true,
   "confirmation-requise": true,

@@ -134,6 +134,9 @@ describe("équipes : listes des unions fermées", () => {
         "plancher-etape",
         "etape-consultable",
         "etat-incompatible",
+        // <c5:choix-invalide> Ajouté par le train de la vague 2 de la 5b (demande de contrat de L42b).
+        "choix-invalide",
+        // </c5:choix-invalide>
         "pas-relancable",
         "deja-ajoute",
         "confirmation-requise",

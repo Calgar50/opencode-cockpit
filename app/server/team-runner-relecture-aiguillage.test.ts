@@ -748,7 +748,8 @@ describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", (
     const avant = h.fake.requests.length;
     const refus = await ctx.continuer(runId, { choix: ["s9"] });
     assert.equal(refus.status, 409, refus.body);
-    assert.equal(refus.json<{ error: string; details?: { raison?: string } }>().details?.raison, "choix-invalide");
+    // Le code sort EN CLAIR depuis le train de la vague 2 (demande de contrat de ce paquet, plan it5 §2.4).
+    assert.equal(refus.json<{ error: string }>().error, "choix-invalide");
     assert.equal(h.fake.requests.length, avant, "rien n'a été envoyé ni facturé");
     assert.equal(ctx.view(runId).state, "attente-choix", "la pause tient");
 

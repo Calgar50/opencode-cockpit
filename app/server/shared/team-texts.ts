@@ -308,6 +308,9 @@ export const TEXTES = {
       "plancher-etape": "Règles de sécurité de l'étape non appliquées : rien n'a été envoyé à l'IA pour cette étape.",
       "etape-consultable": CONSULTABLE,
       "etat-incompatible": "Cette action n'est plus possible dans l'état actuel de l'équipe.",
+      // <c5:choix-invalide>
+      "choix-invalide": "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau.",
+      // </c5:choix-invalide>
       "pas-relancable": "La suite de cette équipe ne peut pas être relancée : relancez l'équipe depuis la saisie.",
       "deja-ajoute": "Les résultats de cette équipe sont déjà dans la conversation.",
       "confirmation-requise": "Confirmez d'abord la relance de la suite.",
