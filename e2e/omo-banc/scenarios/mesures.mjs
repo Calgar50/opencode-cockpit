@@ -1,4 +1,5 @@
-// Mesures du banc (plan §3.2) : M17, M20, M21, M22, M23, M27, M28, M31, M32, R16, MB-1.
+// Mesures du banc (plan §3.2) : M17, M20, M21, M22 (au repos ; la mesure de référence, sous charge, est prise par G1), M23,
+// M27, M28, M31, M32, R16, MB-1.
 //
 // Toutes se font sur la salle réelle, hors ligne, devant le faux fournisseur : aucun appel facturé, aucun jeton.
 //
@@ -13,7 +14,7 @@ import path from "node:path";
  * Le banc monte ce compose : la mesure doit dire les plafonds réellement en vigueur, jamais une copie qui vieillit. Un fichier
  * ou un champ illisible rend null plutôt qu'une valeur inventée (P3).
  */
-function plafondsDuCompose(racineDepot) {
+export function plafondsDuCompose(racineDepot) {
   try {
     const texte = fs.readFileSync(path.join(racineDepot, "docker-compose.yml"), "utf8");
     // Bloc du service `opencode-omo` : de son en-tête jusqu'au service suivant, au même retrait.
@@ -28,6 +29,46 @@ function plafondsDuCompose(racineDepot) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Un relevé `docker stats --no-stream --format {{json .}}` du conteneur de la salle, ou rien quand la ligne est illisible.
+ * Sortie brute de Docker : les nombres sont des textes avec leur unité (« 516.7MiB / 1GiB », « 29 », « 4.37% »).
+ */
+export async function releverStats(ctx, conteneur) {
+  const releves = [];
+  const r = await ctx.docker(["stats", "--no-stream", "--format", "{{json .}}", conteneur], { delaiMs: 60_000 });
+  for (const ligne of String(r.sortie).split(/\r?\n/).filter((l) => l.trim())) {
+    try {
+      releves.push(JSON.parse(ligne));
+    } catch {
+      /* relevé illisible : ignoré, les autres passages en donneront d'autres */
+    }
+  }
+  return releves;
+}
+
+/**
+ * Résumé d'une suite de relevés `docker stats` (M22) : maximum et moyenne de mémoire, maximum de processus et de CPU. Une suite
+ * vide rend `null` partout plutôt qu'un zéro qui passerait pour une mesure (P3).
+ */
+export function resumerStats(releves) {
+  const nombre = (t) => Number(String(t ?? "").replace(/[^\d.]/g, "")) || 0;
+  const enMio = (t) => {
+    const v = nombre(t);
+    const u = String(t ?? "").toUpperCase();
+    return u.includes("GIB") ? v * 1024 : u.includes("KIB") ? v / 1024 : v;
+  };
+  const memoires = releves.map((r) => enMio(String(r.MemUsage ?? "").split("/")[0]));
+  const pids = releves.map((r) => nombre(r.PIDs));
+  const cpus = releves.map((r) => nombre(r.CPUPerc));
+  return {
+    releves: releves.length,
+    memoireMioMax: memoires.length ? Number(Math.max(...memoires).toFixed(1)) : null,
+    memoireMioMoyenne: memoires.length ? Number((memoires.reduce((a, b) => a + b, 0) / memoires.length).toFixed(1)) : null,
+    pidsMax: pids.length ? Math.max(...pids) : null,
+    cpuPourcentMax: cpus.length ? Math.max(...cpus) : null,
+  };
 }
 
 /** Marqueurs de la liste fermée (D-2b-31) : les seules suites de caractères de l'extension qu'une fixture garde telles quelles. */
@@ -212,7 +253,7 @@ function ecrireFixture(ctx, nom, capture) {
 
 export default {
   id: "mes",
-  titre: "Mesures du banc : M17, M20, M21, M22, M23, M27, M28, M31, M32, R16, MB-1",
+  titre: "Mesures du banc : M17, M20, M21, M22 au repos, M23, M27, M28, M31, M32, R16, MB-1",
   async executer(ctx) {
     const points = [];
     const mesures = {};
@@ -247,40 +288,29 @@ export default {
     const zero = (v) => typeof v === "string" && /^0+$/.test(v);
     ajouter("M32 : CapEff, CapPrm, CapInh et CapAmb à 0 pour opencode", Boolean(cap?.trouve) && ["CapEff", "CapPrm", "CapInh", "CapAmb"].every((c) => zero(cap[c])), cap?.trouve ? `uid ${cap.uid}, CapEff ${cap.CapEff}, CapBnd ${cap.CapBnd}, NoNewPrivs ${cap.NoNewPrivs}` : "processus opencode non trouvé");
 
-    // --- M22 : mémoire, processus, CPU ------------------------------------------------------------------------------------
+    // --- M22 au repos : mémoire, processus, CPU ---------------------------------------------------------------------------
+    // ATTENTION : ce relevé-ci est pris sur une salle QUI NE TRAVAILLE PAS. Il donne un plancher, jamais le maximum sur lequel
+    // dimensionner les plafonds — la répétition générale de la 2 bis l'a établi : 347,8 Mio et 11 processus au repos, contre
+    // 516,7 Mio et 29 processus sous la charge de G1. La mesure M22 de référence est donc prise PENDANT les 30 minutes de
+    // scénarios scriptés de G1 (`g1-reseau.mjs`), et publiée sous la clé `M22` ; celle-ci reste sous `M22Repos`, pour l'écart.
     const releves = [];
     for (let i = 0; i < 6; i += 1) {
-      const r = await ctx.docker(["stats", "--no-stream", "--format", "{{json .}}", `${ctx.projet}-opencode-omo-1`], { delaiMs: 60_000 });
-      for (const ligne of String(r.sortie).split(/\r?\n/).filter((l) => l.trim())) {
-        try {
-          releves.push(JSON.parse(ligne));
-        } catch {
-          /* relevé illisible : ignoré, il y en a cinq autres */
-        }
-      }
+      releves.push(...(await releverStats(ctx, `${ctx.projet}-opencode-omo-1`)));
       await ctx.attendre(2000);
     }
-    const nombre = (t) => Number(String(t ?? "").replace(/[^\d.]/g, "")) || 0;
-    const enMio = (t) => {
-      const v = nombre(t);
-      const u = String(t ?? "").toUpperCase();
-      return u.includes("GIB") ? v * 1024 : u.includes("KIB") ? v / 1024 : v;
-    };
-    const memoires = releves.map((r) => enMio(String(r.MemUsage ?? "").split("/")[0]));
-    const pids = releves.map((r) => nombre(r.PIDs));
-    const cpus = releves.map((r) => nombre(r.CPUPerc));
-    mesures.M22 = {
-      releves: releves.length,
-      memoireMioMax: memoires.length ? Math.max(...memoires) : null,
-      memoireMioMoyenne: memoires.length ? Number((memoires.reduce((a, b) => a + b, 0) / memoires.length).toFixed(1)) : null,
-      pidsMax: pids.length ? Math.max(...pids) : null,
-      cpuPourcentMax: cpus.length ? Math.max(...cpus) : null,
-      // Plafonds RELUS dans le compose du produit à chaque passage : ils ont été abaissés au train de V3 d'après cette mesure
-      // même (D-2b-46 : 512 / 2 / 4g provisoires → 128 / 2 / 1g). Une copie en dur ici mentirait dès l'ajustement suivant.
+    mesures.M22Repos = {
+      ...resumerStats(releves),
+      // Plafonds RELUS dans le compose du produit à chaque passage : ils suivent la mesure sous charge (D-2b-46 : 512 / 2 / 4g
+      // provisoires, puis 128 / 2 / 1g d'après le repos, enfin 256 / 2 / 2g d'après la charge). Une copie en dur ici mentirait
+      // dès l'ajustement suivant.
       plafondsActuels: plafondsDuCompose(ctx.racine),
     };
-    ctx.ecrireSortie("mes-stats.json", `${JSON.stringify({ releves, resume: mesures.M22 }, null, 2)}\n`);
-    ajouter("M22 : mémoire, processus et CPU relevés", releves.length >= 3, `mémoire max ${mesures.M22.memoireMioMax} Mio, ${mesures.M22.pidsMax} processus, CPU max ${mesures.M22.cpuPourcentMax} %`);
+    ctx.ecrireSortie("mes-stats.json", `${JSON.stringify({ releves, resume: mesures.M22Repos }, null, 2)}\n`);
+    ajouter(
+      "M22 au repos : mémoire, processus et CPU relevés (plancher ; la référence est prise sous charge par G1)",
+      releves.length >= 3,
+      `mémoire max ${mesures.M22Repos.memoireMioMax} Mio, ${mesures.M22Repos.pidsMax} processus, CPU max ${mesures.M22Repos.cpuPourcentMax} %`,
+    );
 
     // --- M23 : git status et git diff avec .git:ro ------------------------------------------------------------------------
     // Le banc dégradé (`--sans-git`) n'a AUCUN dépôt : la mesure n'a pas d'objet, et la dire rouge tromperait autant que la

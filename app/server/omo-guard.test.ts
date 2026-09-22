@@ -25,6 +25,7 @@ import * as garde from "../../docker/opencode-omo/guard/cockpit-guard.js";
 import type { CategorieRefus, ContexteGarde, LectureEtatGarde } from "../../docker/opencode-omo/guard/cockpit-guard.js";
 import { OMO_SALLE_CONTRACT_FILE, OMO_SALLE_CONTRACT_SCHEMA } from "./omo-contracts.ts";
 import { KEY_FILE_READ_RULES } from "./shared/assistant-rules.ts";
+import { OUTILS_A_COUPER } from "./shared/omo-audit-4.19.4.ts";
 import { OMO_FICHIERS_CONTROLE, OMO_GUARD_TOOLS, analyserGuardState, ecrireGuardState } from "./shared/omo-control-protocol.ts";
 import { EXTENSIONS_CLE_P03, estFichierCle } from "./shared/omo-precheck-rules.ts";
 
@@ -97,8 +98,11 @@ describe("filet : fichiers de clés et .env refusés, .env.example permis", () =
       assert.equal(categorie("apply_patch", { patchText: `*** Begin Patch\n${entete}\n+x\n*** End Patch` }), "cle", entete);
     }
     assert.equal(categorie("apply_patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n+x\n*** End Patch" }), null);
-    // Outil d'une extension : reconnu par le nom de l'argument (file_path, paths), pas par le nom de l'outil.
-    assert.equal(categorie("look_at", { file_path: ".env" }), "cle");
+    // Outil d'une extension : reconnu par le nom de l'argument (file_path, paths), pas par le nom de l'outil. `look_at`, qui
+    // servait d'exemple, est maintenant refusé plus tôt (coupure de `disabled_tools` portée par le filet) : l'exemple prend un
+    // nom neutre, et le témoin garde la trace du changement de catégorie.
+    assert.equal(categorie("outil_extension", { file_path: ".env" }), "cle");
+    assert.equal(categorie("look_at", { file_path: ".env" }), "coupe");
     assert.equal(categorie("outil_inconnu", { paths: ["src/a.ts", "id_ecdsa"] }), "cle");
     assert.equal(categorie("edit", { edits: [{ filePath: "src/a.ts" }, { filePath: ".env" }] }), "cle");
     assert.equal(categorie("lsp", { operation: "hover", filePath: "server.keystore", line: 1, character: 1 }), "cle");
@@ -242,6 +246,49 @@ describe("filet : réseau refusé dans la salle (décision M3)", () => {
       assert.equal(categorie(outil, undefined), "reseau", outil);
     }
     assert.equal(categorie("webfetcher_local", {}), null);
+  });
+});
+
+// --- Outils coupés par l'audit, que la couche utilisateur d'omo.jsonc n'a jamais coupés -------------------------------------------
+
+/**
+ * Correction de la répétition générale de la 2 bis : la couche utilisateur d'`omo.jsonc` n'est PAS appliquée par la 4.19.4 dans
+ * la salle (porte G2, mesurée deux fois : rapport L21 §4.2, puis la remesure avec `CLAUDE_CONFIG_DIR` posé, qui infirme
+ * l'hypothèse du §4.3 point 3). `disabled_tools` est donc sans effet, et c'est le filet qui porte la coupure.
+ */
+describe("filet : outils coupés par l'audit (disabled_tools sans effet, couche utilisateur inerte)", () => {
+  it("la liste du filet est celle de l'audit, aux deux écarts voulus : grep (déjà refusé) et glob (borné par la configuration d'instance)", () => {
+    assert.deepEqual([...garde.OUTILS_COUPES, ...garde.OUTILS_RECHERCHE, "glob"].sort(), [...OUTILS_A_COUPER].sort());
+    // Aucun joker, aucun doublon, et rien qui empiète sur les autres catégories du filet.
+    for (const nom of garde.OUTILS_COUPES) assert.equal(nom.includes("*"), false, nom);
+    assert.equal(new Set(garde.OUTILS_COUPES).size, garde.OUTILS_COUPES.length);
+    for (const nom of [...garde.OUTILS_DELEGATION, ...garde.OUTILS_RESEAU, ...garde.OUTILS_RECHERCHE, "glob", "edit", "read", "write", "bash", "skill"]) {
+      assert.equal(garde.OUTILS_COUPES.includes(nom), false, nom);
+    }
+  });
+
+  it("chacun est refusé « coupe », quels que soient les arguments, et les outils des MCP codegraph et lsp avec eux", () => {
+    for (const outil of [...garde.OUTILS_COUPES, "codegraph_search", "lsp_hover"]) {
+      assert.equal(categorie(outil, { filePath: `${PROJET}/src/code.ts` }), "coupe", outil);
+      assert.equal(categorie(outil, undefined), "coupe", outil);
+    }
+    assert.equal(garde.decider("create_goal", {}, contexte())?.message, message("coupe", "create_goal"));
+    // Les quatre MCP coupés qui sortent sur le réseau gardent leur catégorie « reseau » : la coupure ne la remplace pas.
+    assert.equal(categorie("websearch_web_search_exa", {}), "reseau");
+  });
+
+  it("le goal est bien coupé (décision 8 du 19/09) : create_goal, update_goal et get_goal refusés", () => {
+    for (const outil of ["create_goal", "update_goal", "get_goal"]) assert.equal(categorie(outil, { objectif: "x" }), "coupe", outil);
+  });
+
+  it("les outils gardés par l'audit passent : task, call_omo_agent, skill, glob, background_output et background_cancel", () => {
+    for (const outil of ["skill", "background_output", "background_cancel"]) assert.equal(categorie(outil, {}), null, outil);
+    assert.equal(categorie("task", { description: "d", prompt: "p" }), null);
+    assert.equal(categorie("call_omo_agent", { description: "d" }), null);
+    assert.equal(categorie("glob", { pattern: "src/**/*.ts" }), null);
+    // Un nom qui commence comme un outil coupé sans en être un : le filet ne devine pas.
+    assert.equal(categorie("task_runner_local", {}), null);
+    assert.equal(categorie("teamwork", {}), null);
   });
 });
 
@@ -666,7 +713,7 @@ const PROMESSES = /bloqu\p{L}*\s+(?:tout\s+)?toujours|toujours\s+bloqu|bloqu\p{L
 describe("textes du filet (T-L24-c)", () => {
   it("chaque message se présente comme un filet, ne porte que le gabarit {outil}, et aucun mot interdit", () => {
     const messages = Object.entries(garde.MESSAGES_FILET);
-    assert.deepEqual(messages.map(([cle]) => cle).sort(), ["cle", "delegation", "doute", "etat-illisible", "hors-projet", "recherche", "reseau"]);
+    assert.deepEqual(messages.map(([cle]) => cle).sort(), ["cle", "coupe", "delegation", "doute", "etat-illisible", "hors-projet", "recherche", "reseau"]);
     for (const [cle, texte] of messages) {
       assert.match(texte, /^Filet du cockpit : /, cle);
       assert.deepEqual([...texte.matchAll(/\{[^}]*\}/g)].map((m) => m[0]), ["{outil}"], cle);

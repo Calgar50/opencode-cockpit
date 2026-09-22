@@ -111,7 +111,9 @@ export default {
 
     const attendus = [...table.agents, ...table.agentsOpencode].filter((a) => a.attendu).map((a) => cleAgent(a.nom));
     const manquants = attendus.filter((n) => !noms.includes(n));
-    // Un agent que la table dit « couper » est coupé par `disabled_agents` d'omo.jsonc : son absence est attendue, pas un manque.
+    // Un agent que la table dit « couper » peut manquer sans que ce soit un défaut. Deux raisons, et aucune des deux n'est un
+    // verdict : `disabled_agents` ne retire PAS un agent de `GET /agent` (il en refuse l'usage au moment de déléguer, L21 §4.1),
+    // et cette couche-là n'est de toute façon pas appliquée par la 4.19.4 dans la salle. Leur présence ne prouve donc rien.
     const coupes = new Set(table.agents.filter((a) => a.decision === "couper").map((a) => cleAgent(a.nom)));
     const manquantsVrais = manquants.filter((n) => !coupes.has(n));
     ajouter(

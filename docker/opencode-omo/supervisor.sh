@@ -7,7 +7,9 @@
 #   1. manifeste compare a /etc/omo-reference/omo-manifest.sha256 (ecart ou amorce -> refus, D-2b-32) ;
 #   1 bis. configuration du HOME : root remplit le volume omo-config sur /omo-config avec le omo.jsonc de reference (couvert par le
 #      manifeste) et un .gitignore, rien d'autre ; les cinq dossiers le voient en lecture seule (D-2b-33 revisee au train de V1) ;
-#   2. node /opt/omo-check/validate.mjs (echec -> refus, G14) : il relit ~/.omo/omo.jsonc, seul fichier que l'extension lit ;
+#   2. node /opt/omo-check/validate.mjs (echec -> refus, G14) : il relit ~/.omo/omo.jsonc, seul endroit ou la 4.19.4 CHERCHE une
+#      configuration utilisateur -- mesure du banc (porte G2, deux passages) : elle ne l'APPLIQUE pas ; la validation prouve que
+#      le fichier pose est le bon, pas qu'il serve. Les coupures qui comptent sont portees par opencode.jsonc et par le filet ;
 #   3. cinq dossiers de configuration du HOME : a root, points de montage, contenu de l'etape 1 bis, node ne peut pas y ecrire
 #      (D-2b-33, MO-3) ; volumes
 #      de la salle au proprietaire du contrat (MO-11), /control, /auth-src et /omo-state fermes a node (G9, M32) ; bascule vers
@@ -131,7 +133,8 @@ executer node "$LIB" manifeste "$MANIFESTE_ACTUEL"
 log "manifeste conforme a la reference de l'image"
 
 # --- Etape 1 bis : configuration du HOME (D-2b-33 revisee au train de V1) ---------------------------------------------------------
-# La 4.19.4 ne lit sa configuration utilisateur qu'a ~/.omo/omo.jsonc, et opencode ecrit un .gitignore dans chaque dossier de
+# La 4.19.4 ne cherche sa configuration utilisateur qu'a ~/.omo/omo.jsonc (et, mesure du banc, ne l'applique pas : voir l'etape 2
+# et l'en-tete d'omo.jsonc ; le fichier est pose quand meme, c'est la reference auditee). opencode ecrit un .gitignore dans chaque dossier de
 # configuration (EROFS sur un montage en lecture seule : instance inutilisable, mesure L24). Root pose les deux fichiers dans le
 # volume omo-config, par son seul montage en ecriture (hors du HOME), avant toute bascule vers node ; la validation relit ensuite
 # ~/.omo/omo.jsonc par le montage en lecture seule. Volume absent, pas a root ou pas un point de montage : refus.

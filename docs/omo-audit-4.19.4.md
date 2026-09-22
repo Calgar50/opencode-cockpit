@@ -14,6 +14,16 @@ ni dans les fixtures du dépôt : le paquet est publié sous licence SUL-1.0 et 
 vers `docker/opencode-omo/enums-4.19.4.json`. Le test `app/server/omo-audit.test.ts` vérifie que ce document, la table et ce
 fichier JSON portent les mêmes noms et les mêmes décisions.
 
+**Ce que cet audit décrit, et ce qui est appliqué, ne sont pas la même chose.** Le banc hors ligne a mesuré deux fois (porte G2 :
+`GET /command` rend encore `goal` et `stop-continuation`, que `disabled_commands` déclare coupées ; une fois au rapport L21, une
+fois à la répétition générale de la 2 bis avec `CLAUDE_CONFIG_DIR` posé) que la 4.19.4 **n'applique pas** sa couche utilisateur
+`~/.omo/omo.jsonc` dans la salle. Les décisions « couper » écrites dans ce document restent donc la référence auditée, mais tout ce
+qui n'est coupé **que** dans `omo.jsonc` est aujourd'hui sans effet. Ce qui tient réellement : la configuration d'instance
+(`docker/opencode-omo/opencode.jsonc`, seule couche appliquée), les variables de l'image, le filet du cockpit
+(`docker/opencode-omo/guard/cockpit-guard.js`, qui refuse nom par nom les outils de `disabled_tools`), le réseau fermé, les
+montages en lecture seule, et côté cockpit les plafonds, les détections et l'arrêt de la salle. Une seule exception assumée dans le
+filet : `glob` reste permis, borné motif par motif par la configuration d'instance.
+
 ## 1. Règle de décision
 
 - **couper** : la fonction est mise hors service par une valeur épinglée, ou la clé reste absente parce que l'écrire l'ouvrirait.
@@ -325,6 +335,12 @@ Motifs :
 
 Le rôle est lu sur la **clé de configuration** (`agents.<clé>`), jamais sur le `displayName`, que l'extension et l'utilisateur
 peuvent réécrire. Une clé inconnue tombe dans « autres » (`app/server/shared/omo-roles.ts`).
+
+**`disabled_agents` n'ôte pas l'agent de la liste.** La seule consommation de cette clé est au moment de **déléguer**, où
+l'extension rend une erreur nommant `disabled_agents`. Un agent « couper » reste donc affiché par `GET /agent` : son absence
+prouverait quelque chose, sa présence ne prouve rien. Voir `librarian` et `multimodal-looker` dans la liste n'est pas un défaut.
+S'y ajoute le fait mesuré rappelé en tête de document : cette couche-là n'est pas appliquée dans la salle. Ce qui coupe vraiment
+`multimodal-looker`, c'est le refus de son outil `look_at` par le filet du cockpit ; `librarian`, c'est le réseau fermé.
 
 **Permissions attendues (porte G12).** opencode applique la **dernière** règle qui correspond, et chaque agent commence par une
 règle qui autorise tout ; viennent ensuite la configuration d'instance, puis la section de l'agent. La porte (`compareAgentsToAudit`)

@@ -17,7 +17,10 @@
 //   7. le manifeste RÉEL commité par L21 est celui que le compose et le contrat attendent, et les plafonds relevés par le banc
 //      (M22) sont ceux que le compose porte après le train ;
 //   8. le défaut n° 2 mesuré par le banc (L21 §3) est corrigé DANS LE PRODUIT : l'image pose `CLAUDE_CONFIG_DIR` hors des cinq
-//      dossiers de configuration montés `:ro`, et le contournement du banc ne fait plus que prouver la non-régression.
+//      dossiers de configuration montés `:ro`, et le contournement du banc ne fait plus que prouver la non-régression ;
+//   9. le défaut n° 3 (L21 §4), lui, N'EST PAS corrigeable dans le produit : la 4.19.4 n'applique pas `~/.omo/omo.jsonc`
+//      (mesuré deux fois). Les coupures d'outils sont donc portées par le filet du cockpit, et plus aucun document de la
+//      salle ne présente cette couche comme appliquée.
 // Aucun conteneur, aucun réseau, aucune pause fixe : deux faux opencode en mémoire et des lectures de fichiers.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -26,6 +29,8 @@ import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
+import * as gardeSalle from "../../docker/opencode-omo/guard/cockpit-guard.js";
+import { lireJsonc } from "../../docker/opencode-omo/validate-core.mjs";
 import type { Cockpit11, Cockpit11Module, HookSignatures, ProxyContext } from "./contracts-11.ts";
 import { forbiddenCommandArguments, forbiddenProxyBody } from "./http.ts";
 import { createInstanceRouter } from "./instance-router.ts";
@@ -37,6 +42,7 @@ import { createOmoRoom } from "./omo-room.ts";
 import type { OcGlobalEvent, OcSession } from "./opencode.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { StopResult } from "./shared/cockpit-event-types.ts";
+import { OUTILS_A_COUPER } from "./shared/omo-audit-4.19.4.ts";
 import { analyserPrecheckOk, ecrireEtat } from "./shared/omo-control-protocol.ts";
 import type { OmoPreparedProjects, OmoSalleContract, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
@@ -523,16 +529,23 @@ describe("croisement V3 : le banc de L21 et le compose du produit disent la mêm
     );
   });
 
-  it("les plafonds du compose sont ceux que la mesure M22 a conclus, et le relevé du banc les relit au lieu d'en garder une copie", () => {
+  it("les plafonds du compose sont ceux que la mesure M22 SOUS CHARGE a conclus, et le relevé du banc les relit au lieu d'en garder une copie", () => {
     const compose = lire("docker-compose.yml");
     const bloc = compose.slice(compose.search(/^ {2}opencode-omo:$/m));
-    assert.match(bloc, /^\s*pids_limit: 128$/m, "pids_limit ajusté par M22");
+    // Corrigés par la répétition générale de la 2 bis : le premier ajustement (128 / 1g) s'appuyait sur un relevé au repos et
+    // ne tenait pas les marges annoncées par `omo-compose.test.ts` (deux fois la mémoire, cinq fois les processus).
+    assert.match(bloc, /^\s*pids_limit: 256$/m, "pids_limit ajusté par M22 sous charge");
     assert.match(bloc, /^\s*cpus: 2$/m, "cpus inchangé");
-    assert.match(bloc, /^\s*mem_limit: 1g$/m, "mem_limit ajusté par M22");
+    assert.match(bloc, /^\s*mem_limit: 2g$/m, "mem_limit ajusté par M22 sous charge");
     // Le relevé du banc ne porte plus les plafonds en dur : il les lit dans le compose, sinon il mentirait au passage suivant.
-    const mesures = lire("e2e", "omo-banc", "scenarios", "mesures.mjs");
-    assert.match(mesures, /plafondsActuels: plafondsDuCompose\(/, "le relevé lit le compose");
-    assert.doesNotMatch(mesures, /plafondsActuels: \{/, "aucune copie en dur des plafonds");
+    for (const scenario of ["mesures.mjs", "g1-reseau.mjs"]) {
+      const texte = lire("e2e", "omo-banc", "scenarios", scenario);
+      assert.match(texte, /plafondsActuels: plafondsDuCompose\(/, `${scenario} : le relevé lit le compose`);
+      assert.doesNotMatch(texte, /plafondsActuels: \{/, `${scenario} : aucune copie en dur des plafonds`);
+    }
+    // Et la mesure se prend là où la salle travaille : pendant les passes de G1, jamais au repos.
+    assert.match(lire("e2e", "omo-banc", "scenarios", "g1-reseau.mjs"), /mesures\.M22 = /, "G1 publie M22");
+    assert.match(lire("e2e", "omo-banc", "scenarios", "mesures.mjs"), /mesures\.M22Repos = \{/, "le relevé au repos est nommé comme tel");
   });
 });
 
@@ -585,5 +598,53 @@ describe("croisement V3 : la salle peut écrire ses transcriptions (CLAUDE_CONFI
     const contournement = lire("e2e", "omo-banc", "banc-contournement.compose.yml");
     const posee = /^\s*CLAUDE_CONFIG_DIR:\s*(\S+)\s*$/m.exec(contournement)?.[1];
     assert.equal(posee, valeur, "le banc et le produit doivent poser le même chemin, sinon le banc ne mesure plus le produit");
+  });
+});
+
+// --- 9. Défaut n° 3 du banc (L21 §4, remesuré) : la couche utilisateur d'omo.jsonc n'est pas appliquée ------------------------------
+
+/**
+ * Correction de la répétition générale de la 2 bis. Le banc a mesuré DEUX fois (porte G2 : `GET /command` rend encore `goal` et
+ * `stop-continuation`) que la 4.19.4 n'applique pas `~/.omo/omo.jsonc` dans la salle, la seconde fois avec `CLAUDE_CONFIG_DIR`
+ * posé — ce qui infirme l'hypothèse de L21 §4.3 point 3. Deux conséquences croisées, et c'est ce croisement qui est tenu ici :
+ *   a. les coupures d'outils qui comptent sont portées par le filet du cockpit, la seule barrière de ce niveau qui soit
+ *      appliquée avec la configuration d'instance ;
+ *   b. plus aucun document du produit ne présente cette couche comme appliquée.
+ */
+describe("croisement V3 : la couche utilisateur d'omo.jsonc est inerte, et le produit ne s'appuie plus dessus", () => {
+  const GARDE = lire("docker", "opencode-omo", "guard", "cockpit-guard.js");
+
+  it("le filet refuse nom par nom les outils de `disabled_tools`, aux deux écarts dits (grep déjà refusé, glob borné par l'instance)", () => {
+    const coupes = [...gardeSalle.OUTILS_COUPES, ...gardeSalle.OUTILS_RECHERCHE, "glob"].sort();
+    assert.deepEqual(coupes, [...OUTILS_A_COUPER].sort());
+    // La liste écrite dans `omo.jsonc` reste la même : le filet la DOUBLE, il ne la remplace pas.
+    const omo = lireJsonc(lire("docker", "opencode-omo", "omo.jsonc")) as { disabled_tools: string[] };
+    assert.deepEqual([...omo.disabled_tools].sort(), [...OUTILS_A_COUPER].sort());
+    // Et le greffon qui porte ce filet est bien déclaré par la couche qui, elle, est appliquée.
+    const instance = lireJsonc(lire("docker", "opencode-omo", "opencode.jsonc")) as { plugin: string[] };
+    assert.ok(instance.plugin.some((p) => p.includes("cockpit-guard.js")), instance.plugin.join(" ; "));
+  });
+
+  it("les documents de la salle disent que cette couche n'est pas appliquée, et aucun ne la présente comme épinglée", () => {
+    const attendus: [string, string][] = [
+      ["omo.jsonc", lire("docker", "opencode-omo", "omo.jsonc")],
+      ["opencode.jsonc", lire("docker", "opencode-omo", "opencode.jsonc")],
+      ["Dockerfile", lire("docker", "opencode-omo", "Dockerfile")],
+      ["cockpit-guard.js", GARDE],
+      ["omo-audit-4.19.4.md", lire("docs", "omo-audit-4.19.4.md")],
+      ["g2-chargement.mjs", lire("e2e", "omo-banc", "scenarios", "g2-chargement.mjs")],
+    ];
+    for (const [nom, texte] of attendus) {
+      assert.match(
+        texte,
+        /pas appliqu|n'applique pas|ne se sert pas|ne s'en sert pas|sans effet|ne s'y fie plus|ne s'appuie plus/,
+        `${nom} : la mesure doit y être dite`,
+      );
+    }
+    // Le verdict de la porte G2 ne juge plus la couche utilisateur : il juge la configuration d'instance, qui est appliquée.
+    const g2 = lire("e2e", "omo-banc", "scenarios", "g2-chargement.mjs");
+    assert.doesNotMatch(g2, /la configuration figée est APPLIQUÉE/, "l'ancien verdict de G2 doit avoir disparu");
+    assert.match(g2, /"la configuration d'INSTANCE est appliquée/, "G2 juge la couche appliquée");
+    assert.match(g2, /coucheUtilisateurAppliquee/, "G2 garde la couche utilisateur comme MESURE");
   });
 });

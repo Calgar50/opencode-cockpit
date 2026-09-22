@@ -1,10 +1,30 @@
-// Configuration figée d'Oh My OpenAgent 4.19.4 dans la Salle OMO (spéc. §3.15.1 point 6 ; plan D-2b-10, D-2b-47).
+// Configuration d'Oh My OpenAgent 4.19.4 voulue pour la Salle OMO (spéc. §3.15.1 point 6 ; plan D-2b-10, D-2b-47).
 // Copiée dans l'image en lecture seule : /etc/opencode-omo/omo/omo.jsonc (root, dans le périmètre du manifeste).
+//
+// ATTENTION — CE FICHIER N'EST PAS APPLIQUÉ PAR LA 4.19.4 DANS LA SALLE. Mesuré deux fois par le banc hors ligne, porte G2 :
+// `GET /command` rend encore `goal` et `stop-continuation`, que `disabled_commands` déclare coupées (rapport L21 §4.2, puis
+// remesure à la répétition générale de la 2 bis, CLAUDE_CONFIG_DIR posé — qui n'y change rien, et qui infirme l'hypothèse du
+// §4.3 point 3). Le fichier est bien posé à ~/.omo/omo.jsonc, lisible, et c'est bien là que l'extension le cherche ; elle ne
+// s'en sert pas. Tant que ce n'est pas corrigé, TOUT ce qui n'est coupé QUE dans ce fichier est sans effet : les 23
+// disabled_hooks (dont « goal »), disabled_commands, disabled_tools, disabled_mcps, disabled_agents, disabled_skills,
+// goal.enabled, claude_code.hooks, team_mode, monitor, codegraph, hashline_edit, les IA épinglées des agents et des catégories.
+// Ce fichier reste la RÉFÉRENCE auditée — il est validé, couvert par le manifeste, et redeviendra la coupure réelle le jour où
+// l'extension le lira — mais aucune barrière ne doit s'appuyer sur lui.
+//
+// Ce qui porte réellement les coupures, aujourd'hui (décision 7 du 19/09) :
+// - la configuration d'INSTANCE, /etc/opencode-omo/opencode.jsonc, seule couche appliquée : fournisseur et IA déclarées
+//   (enabled_providers github-copilot seul), permissions par outil et par motif, webfetch / websearch / external_directory en
+//   deny explicite, grep en deny ;
+// - les variables de l'image : OPENCODE_DISABLE_CLAUDE_CODE, OMO_DISABLE_POSTHOG, OMO_SEND_ANONYMOUS_TELEMETRY,
+//   OPENCODE_DISABLE_PROJECT_CONFIG, CLAUDE_CONFIG_DIR ;
+// - le filet du cockpit (guard/cockpit-guard.js), qui refuse nom par nom les outils de `disabled_tools` (OUTILS_COUPES) ;
+// - le réseau fermé, les montages en lecture seule, et côté cockpit les plafonds, les détections et l'arrêt de la salle.
 //
 // Chaque nom et chaque valeur viennent de l'audit de L20 (docs/omo-audit-4.19.4.md, docker/opencode-omo/enums-4.19.4.json) ;
 // validate.mjs exige ce fichier à l'identique à la construction et à chaque démarrage (G14) : un nom hors énumération, une
-// coupure retirée, une valeur épinglée changée, une clé en plus ou une IA hors github-copilot/* font tout refuser.
-// Les listes disabled_* sont additives : une couche de projet ne peut pas les vider (F-z), d'où le pré-contrôle (§3.15.2).
+// coupure retirée, une valeur épinglée changée, une clé en plus ou une IA hors github-copilot/* font tout refuser. Cette
+// validation prouve que le fichier POSÉ est le bon ; elle ne prouve pas qu'il soit lu.
+// Les listes disabled_* sont additives : une couche de projet ne pourrait pas les vider (F-z), d'où le pré-contrôle (§3.15.2).
 {
   // Système de tâches natif d'opencode seulement : les outils task_* restent hors du jeu.
   "new_task_system_enabled": false,

@@ -1,5 +1,8 @@
 # Image « opencode-omo » de la Salle OMO (spéc. §3.15.1 ; plan, fiche L15a) : l'image opencode du cockpit, plus Oh My OpenAgent
-# 4.19.4 installé sans aucun script, une configuration figée en lecture seule et le superviseur (homme mort, manifeste, validation).
+# 4.19.4 installé sans aucun script, ses deux fichiers de configuration en lecture seule et le superviseur (homme mort,
+# manifeste, validation). Des deux fichiers, un seul est APPLIQUÉ par la 4.19.4 : opencode.jsonc, la configuration d'instance.
+# omo.jsonc, la couche utilisateur, est posée, validée et couverte par le manifeste, mais l'extension ne s'en sert pas (mesuré
+# deux fois par le banc, porte G2) : voir l'en-tête d'omo.jsonc et celui du filet guard/cockpit-guard.js, qui porte les coupures.
 #
 # JAMAIS construite ni publiée par la CI (P13) : construite sur le PC personnel par scripts/build-omo-image.ps1, contexte de
 # construction = ce dossier (docker/opencode-omo), puis apportée au travail en archive (install.ps1 -OmoArchive, mode Load).
@@ -46,7 +49,7 @@ RUN set -eu; \
     chown -R root:root /opt/omo /usr/share/doc/oh-my-openagent; \
     chmod -R a+rX,a-w /opt/omo /usr/share/doc/oh-my-openagent
 
-# Configurations figées, root, en lecture seule (OPENCODE_CONFIG_DIR). Le .gitignore est posé d'avance : opencode l'écrit
+# Les deux configurations, root, en lecture seule (OPENCODE_CONFIG_DIR). Le .gitignore est posé d'avance : opencode l'écrit
 # sinon dans chaque dossier de configuration, et une écriture refusée par un système en lecture seule (EROFS) n'est pas un
 # refus de droits qu'il sait ignorer (config.ts, ensureGitignore).
 COPY opencode.jsonc /etc/opencode-omo/opencode.jsonc

@@ -223,9 +223,15 @@ describe("L16b §1 : les services de la salle sont derrière le profil, sans con
 
 describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7, D-2b-46)", () => {
   const salle = service(SALLE);
-  /** Maximums relevés par la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée : une remesure ne change qu'ici. */
-  const MEM_MAX_MIO = 347.8;
-  const PIDS_MAX = 11;
+  /**
+   * Maximums relevés par la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée, PENDANT la charge de la porte G1
+   * (30 min, 180 passes, 180 envois ; 40 relevés `docker stats` : 516,7 Mio au maximum, 504,6 en moyenne, 29 processus).
+   * Les valeurs d'avant (347,8 Mio et 11 processus) venaient d'un relevé pris au repos, et sous-mesuraient : les marges que ce
+   * describe annonce n'étaient pas tenues (1 g = 1,98 × la mémoire réelle, 128 = 4,4 × les processus réels). Une remesure ne
+   * change que ces deux lignes — et, s'il le faut, les plafonds du compose, jamais les facteurs de marge.
+   */
+  const MEM_MAX_MIO = 516.7;
+  const PIDS_MAX = 29;
 
   /** `mem_limit` du compose en mébioctets : suffixe k/m/g, ou des octets sans suffixe. */
   const memLimitMio = (valeur: unknown): number => {
@@ -253,18 +259,38 @@ describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7
     assert.match(TMPFS_ETAT, /^\/home\/node\/\.local\/state:.*uid=1000,gid=1000$/);
   });
 
-  it("limites ajustées par la mesure M22 (D-2b-46, train de V3) : pids_limit, cpus et mem_limit", () => {
-    // Mesure M22 du banc hors ligne (L21), chiffres en tête du describe. Les plafonds descendent des valeurs provisoires
-    // (512 / 2 / 4g) aux valeurs mesurées, marge comprise. Les trois restent posés : un plafond absent laisserait la salle
-    // prendre toute la machine.
-    assert.equal(salle.pids_limit, 128);
+  it("limites ajustées par la mesure M22 sous charge (D-2b-46) : pids_limit, cpus et mem_limit", () => {
+    // Mesure M22 du banc hors ligne (L21), chiffres en tête du describe. Les plafonds sont descendus des valeurs provisoires
+    // (512 / 2 / 4g) aux valeurs mesurées au repos (128 / 2 / 1g), puis remontés à ce que la charge réelle exige. Les trois
+    // restent posés : un plafond absent laisserait la salle prendre toute la machine.
+    assert.equal(salle.pids_limit, 256);
     assert.equal(salle.cpus, 2);
-    assert.equal(salle.mem_limit, "1g");
+    assert.equal(salle.mem_limit, "2g");
     assert.match(String(salle.mem_limit), /^\d+[kmg]?$/i);
     assert.equal(salle.restart, "unless-stopped");
     // Marges LUES dans le compose, jamais recopiées : un resserrement sous le maximum mesuré fait tomber le test.
     assert.ok(memLimitMio(salle.mem_limit) >= MEM_MAX_MIO * 2, `la mémoire permise garde au moins deux fois le maximum mesuré (${String(salle.mem_limit)})`);
     assert.ok(salle.pids_limit >= PIDS_MAX * 5, `les processus permis gardent au moins cinq fois le maximum mesuré (${String(salle.pids_limit)})`);
+  });
+
+  it("la mesure M22 est prise sous charge, jamais au repos : c'est la porte G1 qui la relève", () => {
+    // La correction de la répétition générale : un relevé au repos sous-mesure d'un tiers la mémoire et de deux tiers les
+    // processus. Le scénario `mesures` ne publie donc plus `M22` (son relevé devient `M22Repos`), et `g1-reseau` la publie
+    // pendant ses 30 minutes de passes.
+    const mesures = fs.readFileSync(path.join(RACINE, "e2e", "omo-banc", "scenarios", "mesures.mjs"), "utf8");
+    const g1 = fs.readFileSync(path.join(RACINE, "e2e", "omo-banc", "scenarios", "g1-reseau.mjs"), "utf8");
+    assert.match(mesures, /mesures\.M22Repos = \{/, "le relevé au repos se nomme M22Repos");
+    assert.doesNotMatch(mesures, /mesures\.M22 = /, "le scénario des mesures ne publie plus M22");
+    assert.match(g1, /mesures\.M22 = /, "g1-reseau publie M22");
+    assert.match(g1, /releverStats\(ctx, `\$\{ctx\.projet\}-opencode-omo-1`\)/, "g1-reseau relève docker stats pendant ses passes");
+    // Les deux lisent les plafonds dans le compose : aucune copie en dur, qui mentirait dès l'ajustement suivant.
+    for (const [nom, texte] of [
+      ["mesures.mjs", mesures],
+      ["g1-reseau.mjs", g1],
+    ] as const) {
+      assert.match(texte, /plafondsActuels: plafondsDuCompose\(/, nom);
+      assert.doesNotMatch(texte, /plafondsActuels: \{/, nom);
+    }
   });
 
   it("aucun port publié : la salle n'est joignable que par le réseau fermé", () => {

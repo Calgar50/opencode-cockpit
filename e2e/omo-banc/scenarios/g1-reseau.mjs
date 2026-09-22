@@ -4,12 +4,15 @@
 // 1. la salle DÉMARRE hors ligne : elle n'a qu'un réseau, il est fermé, et elle est prête quand même ;
 // 2. depuis `opencode-omo` : aucun nom public ne se résout, l'instance principale est injoignable, seul `egress:3128` répond ;
 // 3. 30 minutes de scénarios scriptés (sessions, envois, flux) ne font apparaître au journal de sortie AUCUN tunnel vers un
-//    autre hôte que celui qui est autorisé ; tout le reste est refusé et journalisé ;
+//    autre hôte que celui qui est autorisé ; tout le reste est refusé et journalisé. C'est aussi la seule charge réelle du
+//    banc : la mesure M22 (mémoire, processus, CPU), qui dimensionne les plafonds du compose, est relevée PENDANT ces passes ;
+//    le scénario `mesures` n'en garde qu'un relevé au repos (`M22Repos`), qui est un plancher ;
 // 4. `NO_PROXY` n'est PAS lu par le proxy de sortie (constat bas de V0, à confirmer ici) : la confirmation se fait dans un
 //    conteneur jetable, avec un proxy d'entreprise déclaré et l'hôte autorisé dans `NO_PROXY`.
 //
 // La partie « puis recette » de G1 (Copilot réel) n'est PAS jouée ici : elle reste en attente (plan §3.3).
 import { NOMS_COPILOT } from "../lib/certs.mjs";
+import { plafondsDuCompose, releverStats, resumerStats } from "./mesures.mjs";
 
 /** Petit programme node exécuté DANS un conteneur : rend un JSON sur la sortie standard. Aucun texte de commande construit. */
 const SONDE_RESEAU = `
@@ -165,16 +168,24 @@ export default {
       ajouter("sonde CONNECT lisible", false, String(connect.erreur).slice(0, 200));
     }
 
-    // --- 4. Scénarios scriptés --------------------------------------------------------------------------------------------
+    // --- 4. Scénarios scriptés, et M22 PENDANT la charge ---------------------------------------------------------------------
+    // M22 était relevée par le scénario `mesures`, sur une salle au repos : 347,8 Mio et 11 processus. Sous cette charge-ci, la
+    // répétition générale de la 2 bis a relevé 516,7 Mio et 29 processus — les plafonds dimensionnés sur le repos ne tenaient
+    // donc plus leurs marges. La mesure de référence est prise ici, là où la salle travaille vraiment ; `mesures` garde son
+    // relevé au repos sous `M22Repos`, pour l'écart.
     await ctx.faux.reinitialiser();
     const dureeMs = Math.max(1, ctx.dureeG1Min) * 60_000;
     const fin = Date.now() + dureeMs;
     const debut = Date.now();
     const passes = [];
+    const stats = [];
     let n = 0;
     while (Date.now() < fin) {
       n += 1;
       passes.push(await passeScriptee(ctx, n));
+      // Un relevé à la première passe, puis toutes les trois (≈ 30 s) : assez pour voir le maximum sans que `docker stats`
+      // prenne lui-même le temps de la charge.
+      if (n === 1 || n % 3 === 0) stats.push(...(await releverStats(ctx, `${ctx.projet}-opencode-omo-1`)));
       // Une passe toutes les 10 s : assez pour exercer la salle sans la saturer, et pour tenir les 30 minutes demandées.
       const reste = fin - Date.now();
       if (reste > 0) await ctx.attendre(Math.min(10_000, reste));
@@ -184,6 +195,22 @@ export default {
     ctx.ecrireSortie("g1-passes.json", `${JSON.stringify({ dureeMinutes: (Date.now() - debut) / 60_000, passes }, null, 2)}\n`);
     ajouter(`${Math.round((Date.now() - debut) / 60_000)} min de scénarios scriptés`, passes.length > 0 && bonnes > 0, `${passes.length} passes, ${bonnes} envois acceptés`);
     mesures.g1Passes = { passes: passes.length, envoisAcceptes: bonnes, dureeMinutes: Number(((Date.now() - debut) / 60_000).toFixed(2)) };
+
+    // M22 : le maximum sous charge, et les plafonds RELUS dans le compose du produit (jamais une copie en dur, qui vieillirait).
+    // Trois relevés au moins, sinon la mesure n'est pas faite — et elle est dite non mesurable plutôt que publiée maigre (P3).
+    // Un banc écourté (`--duree-g1-min` court) tombe dans ce cas sans que ce soit un défaut de la salle.
+    const assez = stats.length >= 3;
+    mesures.M22 = assez
+      ? { ...resumerStats(stats), sous: "charge de G1", passes: passes.length, envoisAcceptes: bonnes, plafondsActuels: plafondsDuCompose(ctx.racine) }
+      : { nonMesurable: `banc écourté : ${stats.length} relevé(s) sur les ${passes.length} passes, trois au moins sont demandés`, plafondsActuels: plafondsDuCompose(ctx.racine) };
+    ctx.ecrireSortie("g1-stats.json", `${JSON.stringify({ releves: stats, resume: mesures.M22 }, null, 2)}\n`);
+    ajouter(
+      "M22 sous charge : mémoire, processus et CPU relevés pendant les passes",
+      assez || passes.length < 9,
+      assez
+        ? `${stats.length} relevés ; mémoire max ${mesures.M22.memoireMioMax} Mio (moyenne ${mesures.M22.memoireMioMoyenne}), ${mesures.M22.pidsMax} processus, CPU max ${mesures.M22.cpuPourcentMax} %`
+        : `non mesurable : ${stats.length} relevé(s) sur ${passes.length} passes (banc écourté)`,
+    );
 
     // --- 5. Journal de sortie ---------------------------------------------------------------------------------------------
     const refus = (await ctx.lireVolume("egress-log", "refus.jsonl")) ?? "";

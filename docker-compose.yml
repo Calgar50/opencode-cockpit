@@ -224,12 +224,14 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     cap_add: ["SETUID", "SETGID"]
-    # Ajustés au train de la vague 3 d'après la mesure M22 du banc hors ligne (L21, extension 4.19.4 chargée) : 347,8 Mio de
-    # mémoire au maximum, 11 processus, 4,37 % de CPU. Les plafonds provisoires de D-2b-46 (512 / 2 / 4g) étaient larges d'un
-    # facteur ≈ 10. La marge reste volontairement grande — une tâche réelle charge plus qu'un faux fournisseur.
-    pids_limit: 128
+    # Ajustés d'après la mesure M22 du banc hors ligne, extension 4.19.4 chargée, prise PENDANT la charge de la porte G1 (30 min,
+    # 180 passes, 180 envois ; 40 relevés `docker stats`) : 516,7 Mio de mémoire au maximum, 504,6 Mio en moyenne, 29 processus.
+    # Le premier ajustement (train de la vague 3 : 128 / 2 / 1g) s'appuyait sur un relevé pris au REPOS — 347,8 Mio et 11
+    # processus — et ne tenait donc pas les marges qu'il annonçait : 1g ne valait que 1,98 fois le maximum réel, et 128 que 4,4
+    # fois. Marges voulues, et tenues ici : deux fois la mémoire mesurée, cinq fois les processus mesurés.
+    pids_limit: 256
     cpus: 2
-    mem_limit: 1g
+    mem_limit: 2g
     depends_on:
       omo-init:
         condition: service_completed_successfully

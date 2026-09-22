@@ -15,7 +15,18 @@
 // - `grep`, en toutes circonstances : opencode 1.18.30 n'applique ses règles qu'à l'expression cherchée, jamais aux fichiers lus,
 //   et ripgrep lit tout fichier que git n'ignore pas (`.env` et clés compris) ; refusé aussi par `opencode.jsonc` ;
 // - `webfetch`, `websearch` et les outils des MCP réseau de la 4.19.4 (décision M3 : l'extension les remet à `allow`) ;
+// - les outils que l'audit L20 range en « couper » (`OUTILS_COUPES`, plus les MCP `codegraph` et `lsp`) : `omo.jsonc` les
+//   énumère dans `disabled_tools`, mais cette couche-là n'est PAS appliquée par la 4.19.4 dans la salle (mesuré deux fois,
+//   voir plus bas) ; le filet porte donc la coupure lui-même ;
 // - `task` et `call_omo_agent` quand l'état de garde les bloque (plafond de délégations tenu par le cockpit).
+//
+// Couche utilisateur d'`omo.jsonc` : INERTE. Mesuré par le banc hors ligne (porte G2 : `GET /command` rend encore `goal` et
+// `stop-continuation`, que `disabled_commands` déclare coupées), une première fois au rapport L21 §4.2, puis une seconde fois à
+// la répétition générale de la 2 bis, `CLAUDE_CONFIG_DIR` posé — ce correctif-là n'y change rien. Tout ce que la salle ne coupe
+// que dans `omo.jsonc` est donc sans effet : `disabled_hooks`, `disabled_commands`, `disabled_tools`, `goal.enabled: false`,
+// `claude_code.hooks: false`. Ce qui tient vraiment : la configuration d'instance (`/etc/opencode-omo/opencode.jsonc`, la seule
+// couche appliquée), les variables de l'image, le réseau fermé, les montages en lecture seule, ce filet, et côté cockpit les
+// plafonds de coût, de durée et de sessions, les détections et l'arrêt de la salle (décision 7 du 19/09).
 //
 // État de garde (question Q2, variante (a), décision du 17/09) : `/control/guard-state.json`, écrit par le cockpit seul dans le
 // volume `control-omo`, monté en lecture seule dans la salle. Aucun secret, aucun appel au cockpit. Lu borné à 4 Kio, sans suivre
@@ -57,6 +68,56 @@ export const PREFIXES_RESEAU = Object.freeze(["websearch_", "context7_", "grep_a
  * n'ignore pas : un `.env` commité, ou tout `.env` d'un projet sans `.git`, partirait dans la conversation.
  */
 export const OUTILS_RECHERCHE = Object.freeze(["grep"]);
+
+/**
+ * Outils coupés par l'audit L20 : `omo.jsonc` les énumère dans `disabled_tools`, sans effet (couche utilisateur inerte, en-tête).
+ * Le filet les refuse donc lui-même, nom par nom, sans joker (R1). Égalité avec `OUTILS_A_COUPER`
+ * (app/server/shared/omo-audit-4.19.4.ts) vérifiée par un test, aux deux écarts dits et voulus :
+ * - `grep` est déjà refusé plus haut, dans sa propre catégorie ;
+ * - `glob` reste permis : la configuration d'instance, elle, est appliquée, et elle le borne motif par motif ; le refuser
+ *   ici retirerait à l'IA tout moyen de retrouver un fichier, et son installation automatique de ripgrep ne peut de toute
+ *   façon pas aboutir (réseau fermé, `/opt` en lecture seule, aucun npm à l'exécution, relevé par la porte G2).
+ * Un outil de cette liste peut n'être même pas enregistré par l'extension (il dépend d'un réglage) : le refuser n'a alors
+ * aucun effet, et c'est bien ainsi — le filet ne suppose pas de quel côté le réglage est tombé.
+ */
+export const OUTILS_COUPES = Object.freeze([
+  "session_list",
+  "session_read",
+  "session_search",
+  "session_info",
+  "look_at",
+  "skill_mcp",
+  "create_goal",
+  "update_goal",
+  "get_goal",
+  "interactive_bash",
+  "team_create",
+  "team_delete",
+  "team_shutdown_request",
+  "team_approve_shutdown",
+  "team_reject_shutdown",
+  "team_send_message",
+  "team_task_create",
+  "team_task_list",
+  "team_task_update",
+  "team_task_get",
+  "team_status",
+  "team_list",
+  "monitor_start",
+  "monitor_stop",
+  "monitor_list",
+  "monitor_output",
+  "task_create",
+  "task_get",
+  "task_list",
+  "task_update",
+]);
+
+/**
+ * Outils des deux MCP intégrés qui ne sortent pas sur le réseau mais que `disabled_mcps` coupe aussi sans effet : `codegraph`
+ * (indexation, provisionnement, service permanent) et `lsp`. Nommés « <serveur>_<outil> » par opencode, comme les MCP réseau.
+ */
+export const PREFIXES_COUPES = Object.freeze(["codegraph_", "lsp_"]);
 
 /** Outils qui écrivent : seuls les autres peuvent lire les sorties longues rangées par opencode hors du projet. */
 export const OUTILS_ECRITURE = Object.freeze(["write", "edit", "apply_patch", "patch", "multiedit", "hashline_edit"]);
@@ -422,6 +483,7 @@ export const MESSAGES_FILET = Object.freeze({
   delegation: "Filet du cockpit : délégations suspendues par le cockpit pour cette demande ({outil}). Continuez sans déléguer.",
   "etat-illisible": "Filet du cockpit : état de garde illisible, délégation refusée par prudence ({outil}). Continuez sans déléguer.",
   doute: "Filet du cockpit : arguments impossibles à vérifier, outil refusé par prudence ({outil}).",
+  coupe: "Filet du cockpit : cet outil est coupé dans la salle ({outil}). Faites autrement, avec les outils qui restent.",
   recherche:
     "Filet du cockpit : recherche dans le contenu des fichiers refusée dans la salle ({outil}), car elle lirait aussi les fichiers de clés et les .env. Lisez les fichiers utiles un par un.",
 });
@@ -524,6 +586,7 @@ export function decider(outil, args, contexte) {
   const nom = typeof outil === "string" ? outil : "";
   if (OUTILS_RESEAU.includes(nom) || PREFIXES_RESEAU.some((prefixe) => nom.startsWith(prefixe))) return refus("reseau", nom);
   if (OUTILS_RECHERCHE.includes(nom)) return refus("recherche", nom);
+  if (OUTILS_COUPES.includes(nom) || PREFIXES_COUPES.some((prefixe) => nom.startsWith(prefixe))) return refus("coupe", nom);
   if (OUTILS_DELEGATION.includes(nom)) {
     const categorie = examinerDelegation(nom, contexte.lireEtat());
     if (categorie !== null) return refus(categorie, nom);

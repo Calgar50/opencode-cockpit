@@ -1,12 +1,19 @@
 // Porte G2 — chargement de l'extension (spéc. §7.10 l.1223 ; plan fiche L21 ; constats-salle-V1 §2.1 et §5 ; MO-3 point 8).
 //
 // C'est la porte du « premier démarrage réel » : l'étape 1 bis du superviseur a posé la configuration du HOME dans le volume
-// `omo-config`, et il faut prouver que l'extension 4.19.4 la LIT et que rien dans ce montage en lecture seule ne l'arrête.
+// `omo-config`, et il faut prouver que la configuration d'INSTANCE est appliquée et que rien dans ces montages en lecture seule
+// n'arrête l'extension.
+//
+// La couche UTILISATEUR (`~/.omo/omo.jsonc`), elle, n'est pas appliquée par la 4.19.4 : mesuré ici même deux fois (rapport L21
+// §4.2, puis la remesure de la répétition générale de la 2 bis, `CLAUDE_CONFIG_DIR` posé, qui infirme l'hypothèse du §4.3
+// point 3). Le produit ne s'appuie plus dessus — les coupures qui comptent sont dans la configuration d'instance et dans le
+// filet du cockpit — et cette porte le RELÈVE désormais comme mesure, sans en faire un verdict : elle ne juge que ce dont le
+// produit dépend.
 //
 // Ce qui est vérifié :
 // 1. les CINQ dossiers du HOME ne sont pas inscriptibles par `node`, et chacun porte `omo.jsonc` et `.gitignore` ;
-// 2. l'extension lit bien la référence : `GET /config` rend la configuration d'instance, et `GET /agent` rend les agents de
-//    l'extension (ils n'existeraient pas si le plugin ne s'était pas chargé) ;
+// 2. la configuration d'instance est appliquée : `GET /config` rend ses greffons, son fournisseur et son IA, et `GET /agent`
+//    rend les agents de l'extension (ils n'existeraient pas si le greffon ne s'était pas chargé) ;
 // 3. aucune écriture refusée ne l'arrête : ni `~/.omo` (journal et sauvegardes de migration, `_migrations`), ni
 //    `~/.config/opencode` (`tui.json`) ; les traces EROFS/EACCES sont relevées et la salle sert quand même ;
 // 4. `ps` toutes les 500 ms pendant le démarrage : ni `npm`, ni `arborist`, ni `bun install` ;
@@ -49,7 +56,7 @@ process.stdout.write(JSON.stringify(out));
 
 export default {
   id: "g2",
-  titre: "Chargement de l'extension : configuration figée lue, rien d'installé, rien qui bloque",
+  titre: "Chargement de l'extension : configuration d'instance appliquée, rien d'installé, rien qui bloque",
   async executer(ctx) {
     const points = [];
     const mesures = {};
@@ -93,27 +100,46 @@ export default {
     );
     ajouter("GET /config répond", config.code === 200, `code ${config.code}`);
     ajouter("GET /agent rend des agents", agents.code === 200 && nomsAgents.length > 0, `${nomsAgents.length} agents : ${nomsAgents.slice(0, 16).join(", ")}`);
-    // Les agents propres à l'extension (aucun opencode nu ne les a) : la preuve que le plugin a chargé ET lu ~/.omo/omo.jsonc.
+    // Les agents propres à l'extension (aucun opencode nu ne les a) : la preuve que le greffon déclaré par la configuration
+    // d'instance s'est bien chargé. Ils ne prouvent RIEN sur ~/.omo/omo.jsonc : l'extension les crée sans cette couche.
     const propres = ["sisyphus", "hephaestus", "prometheus", "metis", "momus", "oracle", "atlas"].filter((n) => nomsAgents.includes(n));
-    ajouter("les agents de l'extension sont là (référence lue)", propres.length >= 5, `${propres.length}/7 : ${propres.join(", ")}`);
+    ajouter("les agents de l'extension sont là (greffon chargé)", propres.length >= 5, `${propres.length}/7 : ${propres.join(", ")}`);
     // `disabled_agents` NE FILTRE PAS `GET /agent` en 4.19.4 : le dist ne s'en sert qu'au moment de DÉLÉGUER, où il rend
     // « Agent "…" is disabled via disabled_agents configuration ». Un agent coupé reste donc affiché, et son absence de la liste
     // ne prouverait rien. Relevé comme mesure, pas comme verdict.
     const coupes = ["librarian", "multimodal-looker"].filter((n) => nomsAgents.includes(n));
     mesures.g2Agents = { total: nomsAgents.length, noms: nomsAgents.sort(), propres, coupesEncoreAffiches: coupes };
 
+    // Ce que la configuration d'INSTANCE pose, et qui est le seul niveau dont le produit dépend : les deux greffons, le
+    // fournisseur unique, l'adresse substituée et l'IA par défaut. C'est mesuré, c'est donc jugé.
+    const instance = {
+      greffons: Array.isArray(config.json?.plugin) ? config.json.plugin.length : 0,
+      fournisseurs: Object.keys(config.json?.provider ?? {}),
+      modele: config.json?.model ?? null,
+      instantane: config.json?.snapshot ?? null,
+    };
+    ajouter(
+      "la configuration d'INSTANCE est appliquée (fournisseur, IA, instantané git coupé)",
+      config.code === 200 && instance.fournisseurs.length === 1 && instance.fournisseurs[0] === "github-copilot" && String(instance.modele).startsWith("github-copilot/") && instance.instantane === false,
+      `fournisseur(s) ${instance.fournisseurs.join(", ") || "(aucun)"}, IA ${instance.modele}, snapshot ${instance.instantane}`,
+    );
+    mesures.g2Instance = instance;
+
     // `disabled_commands`, lui, retire vraiment les commandes de la table (`loadBuiltinCommands` du dist) : c'est le signal
-    // OBSERVABLE que la couche utilisateur d'`omo.jsonc` est appliquée, et non seulement posée.
+    // OBSERVABLE que la couche utilisateur d'`omo.jsonc` serait appliquée, et non seulement posée. Mesuré deux fois, il dit
+    // qu'elle ne l'est PAS (L21 §4.2, puis la remesure avec `CLAUDE_CONFIG_DIR` posé). Le produit ne s'y fie donc plus — les
+    // coupures d'outils sont portées par le filet du cockpit — et ce relevé reste ici comme MESURE, pas comme verdict : le
+    // jour où les deux commandes disparaîtront, c'est que l'extension aura commencé à lire cette couche.
     const commandes = await ctx.client.get(`/command?directory=${encodeURIComponent(dossier)}`);
     const nomsCommandes = Array.isArray(commandes.json) ? commandes.json.map((c) => c.name ?? c.id).filter(Boolean) : Object.keys(commandes.json ?? {});
     ctx.ecrireSortie("g2-commandes.json", `${JSON.stringify({ code: commandes.code, noms: [...nomsCommandes].sort() }, null, 2)}\n`);
     const commandesCoupees = ["goal", "stop-continuation"].filter((n) => nomsCommandes.includes(n));
     ajouter(
-      "la configuration figée est APPLIQUÉE : les commandes coupées ont disparu",
-      commandes.code === 200 && nomsCommandes.length > 0 && commandesCoupees.length === 0,
-      `code ${commandes.code}, ${nomsCommandes.length} commandes ; encore là : ${commandesCoupees.join(", ") || "aucune"}`,
+      "GET /command répond (relevé de la couche utilisateur, sans verdict)",
+      commandes.code === 200 && nomsCommandes.length > 0,
+      `code ${commandes.code}, ${nomsCommandes.length} commandes ; coupées par omo.jsonc et encore là : ${commandesCoupees.join(", ") || "aucune"}`,
     );
-    mesures.g2Commandes = { code: commandes.code, total: nomsCommandes.length, coupesEncorePresentes: commandesCoupees };
+    mesures.g2Commandes = { code: commandes.code, total: nomsCommandes.length, coupesEncorePresentes: commandesCoupees, coucheUtilisateurAppliquee: commandesCoupees.length === 0 };
 
     // --- 3. F-aa : le greffon déclaré ---------------------------------------------------------------------------------------
     const plugins = Array.isArray(config.json?.plugin) ? config.json.plugin : [];

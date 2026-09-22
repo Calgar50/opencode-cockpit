@@ -2,6 +2,12 @@
 // Copiée dans l'image en lecture seule : /etc/opencode-omo/opencode.jsonc, lue par OPENCODE_CONFIG_DIR=/etc/opencode-omo.
 // validate.mjs l'exige à l'identique à la construction et à chaque démarrage (G14).
 //
+// C'est la SEULE couche de configuration appliquée dans la salle : le banc hors ligne a mesuré deux fois (porte G2, rapport
+// L21 §4.2 puis la remesure de la répétition générale de la 2 bis) que la 4.19.4 ne se sert pas de sa couche utilisateur
+// (~/.omo/omo.jsonc). Ce qui est écrit ici tient — greffons, fournisseur, adresse, IA déclarées, permissions, mesuré — et
+// ce qui n'est écrit que dans omo.jsonc ne tient pas. Les coupures d'outils qui comptent sont donc portées par le filet du
+// cockpit (/opt/omo-guard/cockpit-guard.js), déclaré ci-dessous comme second greffon.
+//
 // Une seule substitution de variable dans ce fichier, l'adresse de l'API Copilot : opencode remplace les substitutions dans
 // tout le texte, commentaires compris, et GET /config rend le résultat. Aucune autre variable, aucun fichier n'y est lu.
 {
