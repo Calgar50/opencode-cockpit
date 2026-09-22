@@ -12,6 +12,8 @@
 // - confirmations workspace, secret, plafond et budget (P7) : dans le CORPS du lancement, et seulement après un clic de
 //   l'utilisateur ; le garde-fou budgétaire P6 passe, lui, par l'en-tête x-cockpit-confirm: 1 et n'entre jamais dans le corps ;
 // - mode Simple : le lanceur est absent tant que `ouvertesEnSimple` est faux (U1) et la feuille ne montre aucune IA par étape.
+import { TEXTES as TEXTES_C5 } from "../../../../server/shared/construction-texts.ts";
+import { sqlWriteKeywords } from "../../../../server/shared/sql-keywords.ts";
 import {
   arretAutomatique,
   confidentialite,
@@ -27,6 +29,12 @@ import type { FlowRow, TeamConfirmation, TeamEstimateResponse, TeamRunBody, Team
 
 const P = TEXTES.partout;
 const F = P.feuille;
+// <c5:controle-sql>
+const E5 = TEXTES_C5.partout.exemplesEquipes;
+
+/** Exemple dont la feuille annonce le contrôle SQL local (conception C §12.1, L45b). */
+export const EXEMPLE_REVUE_SQL = "revue-sql";
+// </c5:controle-sql>
 
 // --- Lanceur [Lancer une équipe ▾] ----------------------------------------------------------------------------------------------
 
@@ -131,6 +139,13 @@ export interface EtatFeuille {
   occupee: boolean;
   envoiEnCours: boolean;
   detailOuvert: boolean;
+  // <c5:controle-sql-etat>
+  /**
+   * Demande écrite dans la saisie, lue une fois à l'ouverture de la feuille. Elle ne sert qu'au contrôle SQL LOCAL de
+   * l'exemple « Revue SQL sur réplica » : aucun appel d'IA, aucune requête. Absente : aucun contrôle, aucune ligne.
+   */
+  demande?: string;
+  // </c5:controle-sql-etat>
 }
 
 // --- Feuille de lancement : sortie ------------------------------------------------------------------------------------------------
@@ -161,6 +176,10 @@ export interface VueFeuille {
   /** Estimation en cours : le corps est remplacé par l'attente, aucun bouton de lancement actif. */
   chargement: boolean;
   intro: string[];
+  // <c5:controle-sql-vue>
+  /** Contrôle SQL LOCAL de « Revue SQL sur réplica » : ligne affichée seulement quand un mot d'écriture a été repéré. */
+  sql: string | null;
+  // </c5:controle-sql-vue>
   blocs: string[];
   cout: string | null;
   arret: string | null;
@@ -312,6 +331,20 @@ function alerteFeuille(etat: EtatFeuille): VueFeuille["alerte"] {
   return { ton: "refus", texte: refusLancement(refus.code) };
 }
 
+// <c5:controle-sql-ligne>
+/**
+ * Contrôle SQL LOCAL de l'exemple « Revue SQL sur réplica » (conception C §12.1, D-5-25 : toujours livré). PUR et sans aucun
+ * appel d'IA : les mots d'écriture sont repérés dans la demande écrite par `sqlWriteKeywords`, et la ligne dit ce qui a été
+ * repéré — jamais que la requête écrit, ce que le cockpit ne sait pas (P3).
+ * Rendue seulement pour l'équipe installée DEPUIS cet exemple (`exempleId`), et seulement si un mot a été repéré.
+ */
+export function ligneControleSql(equipe: TeamView, demande: string | undefined): string | null {
+  if (equipe.exempleId !== EXEMPLE_REVUE_SQL || typeof demande !== "string") return null;
+  const mots = sqlWriteKeywords(demande);
+  return mots.length === 0 ? null : remplir(E5.sqlRepere, { mots: mots.join(", ") });
+}
+// </c5:controle-sql-ligne>
+
 /** Premier problème bloquant de l'estimation (l'équipe doit être modifiée avant tout lancement) ; null sinon. */
 function problemeBloquant(etat: EtatFeuille): string | null {
   const probleme = etat.estimation?.problems.find((p) => p.bloquant);
@@ -344,6 +377,10 @@ export function vueFeuille(etat: EtatFeuille): VueFeuille {
     // Attente seulement pendant une estimation : une estimation impossible (502) laisse la feuille visible avec sa phrase.
     chargement: estimationEnCours,
     intro: estimation === null ? [] : introFeuille(estimation, equipe.layout),
+    // <c5:controle-sql-sortie>
+    // Contrôle local : il ne dépend d'aucune estimation, donc il s'affiche même quand l'estimation n'a pas abouti.
+    sql: ligneControleSql(equipe, etat.demande),
+    // </c5:controle-sql-sortie>
     blocs: estimation === null ? [] : blocsFeuille(equipe.layout),
     cout: estimation === null ? null : coutLancement(estimation.estimate.typique, estimation.estimate.maximum, estimation.estimate.etapesFacturees),
     arret: estimation === null ? null : arretAutomatique(estimation.plafond, estimation.estimate.depassementUnAppel),

@@ -44,6 +44,10 @@ import type {
 import { configuredExtensions, subagentDepth } from "./diagnostics-11.ts";
 import { isInside } from "./fsutil.ts";
 import { errorMessage } from "./log.ts";
+// <c5:methodes-import>
+import { METHODS } from "./methods-catalogue.ts";
+import { methodIdsIn } from "./shared/methods.ts";
+// </c5:methodes-import>
 import type { OcAgentInfo } from "./oc-lookup.ts";
 import { roundUsd } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
@@ -71,7 +75,7 @@ import {
   type StepIa,
   suiteEstimate,
 } from "./shared/flow-estimate.ts";
-import { validateFlow } from "./shared/flow.ts";
+import { type FlowMethodsContext, validateFlow } from "./shared/flow.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
 import { FLOW_LIMITS, planSteps, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
 import type {
@@ -100,6 +104,28 @@ const OBSERVED_WINDOW_MS = 30 * 86_400_000;
 const CODES_AVANCE: readonly string[] = ["niveau-avance", "personnalise"];
 
 const sha256 = (texte: string): string => createHash("sha256").update(texte, "utf8").digest("hex");
+
+// <c5:methodes-contexte>
+/** Méthodes du catalogue attachables à une étape (genre « consigne », L44a) : une méthode « relecture » n'en est pas une. */
+const METHODES_CONSIGNE: ReadonlySet<string> = new Set(METHODS.filter((methode) => methode.kind === "consigne").map((methode) => methode.id));
+const AUCUNE_METHODE: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Méthodes déjà posées dans les fichiers d'agent, RATTACHÉES À L'INSTANTANÉ de l'estimation (A4, réponse (b) à la Q5 du plan
+ * it4). Elles sortent des fichiers que `planifier` a DÉJÀ lus et empreintés pour l'estimation : le pré-lancement n'ajoute ni
+ * lecture ni requête, et un refus `methodes` n'émet rien. Une table à part plutôt qu'un champ d'`EstimateSnapshot` : ce
+ * contrat appartient à l'itération 4 et n'est pas touché ici ; la table faible se vide avec l'instantané qu'elle suit.
+ * Un fichier CHANGÉ depuis l'estimation relève de la reprise de fraîcheur de l'exécuteur (pause « À vérifier », L42b), jamais
+ * d'une requête ajoutée au pré-lancement.
+ */
+const methodesDInstantane = new WeakMap<EstimateSnapshot, ReadonlyMap<string, ReadonlySet<string>>>();
+
+/** Contexte `methods` de `validateFlow` (C §5.2) bâti sur ces lectures ; un assistant hors du chemin estimé n'y figure pas. */
+const contexteMethodes = (parAssistant: ReadonlyMap<string, ReadonlySet<string>>): FlowMethodsContext => ({
+  consigne: METHODES_CONSIGNE,
+  parAssistant: (nom) => parAssistant.get(nom) ?? AUCUNE_METHODE,
+});
+// </c5:methodes-contexte>
 
 /**
  * Forme canonique des règles d'un assistant, base des empreintes P11 (report MX-EQ) : chaque SUITE de règles consécutives de
@@ -179,6 +205,14 @@ function stepsById(flow: Flow): Map<string, FlowStep> {
   for (const bloc of flow.blocs) {
     if (bloc.type === "etape") out.set(bloc.etape.id, bloc.etape);
     else if (bloc.type === "avis") for (const step of [...bloc.avis, bloc.synthese]) out.set(step.id, step);
+    // <c5:formes-5b>
+    // Formes de la 5b (L42a) : sans ces deux branches, les étapes d'une relecture ou d'un aiguillage seraient inconnues de
+    // `planifier`, donc absentes du plan — aucune règle effective, aucune empreinte, aucun droit pour elles.
+    else if (bloc.type === "relecture") for (const step of [bloc.auteur, bloc.relecteur]) out.set(step.id, step);
+    else if (bloc.type === "aiguillage") {
+      for (const step of [bloc.aiguilleur, ...bloc.specialistes, ...(bloc.synthese ? [bloc.synthese] : [])]) out.set(step.id, step);
+    }
+    // </c5:formes-5b>
   }
   return out;
 }
@@ -397,28 +431,40 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     }
   };
 
-  /** Empreinte du fichier d'agent (lecture LOCALE par le Studio) ; assistant natif, sans fichier ou illisible → null. */
-  const lireFichierAgent = async (assistant: StepAssistant): Promise<string | null> => {
-    if (assistant.origin === "natif" || assistant.origin === "interne") return null;
+  /**
+   * Empreinte du fichier d'agent (lecture LOCALE par le Studio) ; assistant natif, sans fichier ou illisible → null.
+   * 5b (L45b) : la MÊME lecture rend aussi les méthodes posées dans le corps du fichier (`methodIdsIn`, vérité D-5-07). Aucune
+   * lecture n'est ajoutée : c'est le fichier déjà lu et déjà empreinté pour l'estimation qui sert au contexte `methods` (A4).
+   */
+  const lireFichierAgent = async (assistant: StepAssistant): Promise<{ sha: string | null; methodes: readonly string[] }> => {
+    if (assistant.origin === "natif" || assistant.origin === "interne") return { sha: null, methodes: [] };
     try {
       const item = await c11.studio.get("agents", assistant.name, { type: "global" });
-      if (item === null) return null;
-      return sha256(canonicalJson({ frontmatter: item.frontmatter, body: item.body }));
+      if (item === null) return { sha: null, methodes: [] };
+      return {
+        sha: sha256(canonicalJson({ frontmatter: item.frontmatter, body: item.body })),
+        methodes: methodIdsIn(item.body).map((methode) => methode.id),
+      };
     } catch {
-      return null;
+      return { sha: null, methodes: [] };
     }
   };
 
-  /** Instantané P11 d'une étape : règles effectives et leur empreinte, fichier d'agent, plancher ETAPE, droits, IA. */
+  /**
+   * Instantané P11 d'une étape : règles effectives et leur empreinte, fichier d'agent, plancher ETAPE, droits, IA.
+   * 5b (L45b) : la même passe recueille les méthodes de chaque fichier d'agent lu, pour le contexte `methods` — un assistant
+   * dont aucune étape n'est sur le chemin estimé n'y figure pas, puisque son fichier n'est pas lu (A4 : aucune lecture ajoutée).
+   */
   const planifier = async (
     flow: Flow,
     chemin: readonly string[],
     source: { assistants: ReadonlyMap<string, StepAssistant>; variantes: ReadonlyMap<string, string | null> },
     mode: UiMode,
-  ): Promise<PlannedStep[]> => {
+  ): Promise<{ etapes: PlannedStep[]; methodes: Map<string, ReadonlySet<string>> }> => {
     const steps = stepsById(flow);
     const ordre = new Map(planSteps(flow).map((planned) => [planned.stepId, planned]));
     const etapes: PlannedStep[] = [];
+    const methodes = new Map<string, ReadonlySet<string>>();
     for (const stepId of chemin) {
       const step = steps.get(stepId);
       const planned = ordre.get(stepId);
@@ -427,6 +473,9 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       if (!step || !planned || !assistant || ia === null) continue;
       const agentRules = assistant.rules;
       const floor = buildFloor("ETAPE", { agentRules });
+      // Même lecture qu'avant (une par passage, l'ordre des lectures ne change pas) ; elle rend en plus les méthodes du corps.
+      const fichier = await lireFichierAgent(assistant);
+      methodes.set(assistant.name, new Set(fichier.methodes));
       etapes.push({
         stepId,
         blocIndex: planned.blocIndex,
@@ -435,7 +484,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         assistant: assistant.name,
         agentRules,
         rulesSha256: rulesSha256(agentRules),
-        agentFileSha256: await lireFichierAgent(assistant),
+        agentFileSha256: fichier.sha,
         floor,
         floorSha256: floorHash("ETAPE", { agentRules }),
         droits: rightLines([...agentRules, ...floor], [], assistant.steps),
@@ -445,7 +494,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         taille: step.taille,
       });
     }
-    return etapes;
+    return { etapes, methodes };
   };
 
   // --- Lectures d'opencode : fin --------------------------------------------------------------------------------------------
@@ -529,6 +578,13 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     deja: number;
     /** false : B4 sauté (le contrôle de fraîcheur ne rejoue que B1 à B3 et B5 ; budget et plafond ont été tranchés au lancement). */
     calculs: boolean;
+    // <c5:methodes-entree>
+    /**
+     * Contexte `methods` de la grammaire (5b, L45b), tiré des fichiers d'agent DÉJÀ LUS pour l'estimation. ABSENT → seul le
+     * NOMBRE de méthodes d'une étape est contrôlé : rien n'est supposé, et surtout aucune lecture n'est ajoutée pour le savoir.
+     */
+    methodes?: FlowMethodsContext;
+    // </c5:methodes-entree>
   }
 
   /** Résultat du groupe B : refus ou estimation calculée (réutilisée par l'estimation et par le plan). */
@@ -600,7 +656,15 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
 
     // B2 P2 : grammaire dans le mode courant, sur les assistants de l'instantané.
     const problems: FlowProblem[] = [
-      ...validateFlow(flow, { assistants: [...src.assistants.values()], mode, niveauDisponible, pour: "lancement" }),
+      ...validateFlow(flow, {
+        assistants: [...src.assistants.values()],
+        mode,
+        niveauDisponible,
+        pour: "lancement",
+        // <c5:methodes-validation>
+        ...(entree.methodes ? { methods: entree.methodes } : {}),
+        // </c5:methodes-validation>
+      }),
       ...estimateProblems(flow, ctx),
     ];
 
@@ -679,6 +743,12 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     if (agent === null) return { ok: false, status: 400, code: "invalid", details: { champ: "agentConversation" } };
 
     const chemin = input.relance ? input.relance.restantes : planSteps(flow).map((planned) => planned.stepId);
+    // <c5:methodes-check>
+    // A4 à la lettre : les méthodes viennent de l'instantané, donc des fichiers lus par `POST /estimate`. Aucune lecture, aucune
+    // requête, et un refus `methodes` n'émet rien. Un instantané d'avant la 5b n'en a pas : la grammaire contrôle alors le seul
+    // nombre de méthodes, jamais davantage.
+    const methodes = methodesDInstantane.get(snap);
+    // </c5:methodes-check>
     const sortie = groupeB({
       lectures: snap,
       flow,
@@ -690,6 +760,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin,
       deja: input.relance?.depense ?? 0,
       calculs: true,
+      ...(methodes ? { methodes: contexteMethodes(methodes) } : {}),
     });
     if (sortie.refus !== null) return { ok: false, ...sortie.refus };
 
@@ -776,7 +847,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       // Lecture impossible : aucun instantané n'est gardé, donc aucun lancement ne peut s'appuyer dessus.
       return { ok: false, status: 502, code: "opencode-injoignable" };
     }
-    const etapes = await planifier(flow, chemin, src, mode);
+    const { etapes, methodes } = await planifier(flow, chemin, src, mode);
     // Blocage : refus PRÉVISIBLE, donc jugé toutes confirmations accordées (celles-ci sont annoncées par `confirmations`) et
     // garde-fou budgétaire P6 mis de côté (il se confirme par l'en-tête, après le clic).
     const sortie = groupeB({
@@ -791,13 +862,16 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin,
       deja,
       calculs: true,
+      // <c5:methodes-estimate>
+      methodes: contexteMethodes(methodes),
+      // </c5:methodes-estimate>
     });
     const at = now();
     const confirmations: TeamConfirmation[] = [
       ...(body.directory === c11.projects.opencodeRoot ? (["workspace"] as const) : []),
       ...sortie.confirmations,
     ];
-    garder({
+    const snapshot: EstimateSnapshot = {
       estimateSha256: sortie.empreinte,
       teamId: team.id,
       runId: relance?.runId ?? null,
@@ -810,7 +884,13 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       config: src.config,
       rootBusy: src.rootBusy,
       etapes,
-    });
+    };
+    // <c5:methodes-garder>
+    // Les méthodes suivent l'instantané, sans entrer dans son contrat (it4) : la table faible les libère avec lui. Elles sont
+    // posées AVANT `garder`, pour qu'un `check` ne trouve jamais un instantané sans ses méthodes.
+    methodesDInstantane.set(snapshot, methodes);
+    // </c5:methodes-garder>
+    garder(snapshot);
     return {
       ok: true,
       response: {
@@ -860,6 +940,11 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin: plan.etapes.map((etape) => etape.stepId),
       deja: 0,
       calculs: false,
+      // <c5:methodes-recheck>
+      // Aucun contexte `methods` ici : la fraîcheur juge l'état d'OPENCODE (B1 à B3, B5), et les fichiers d'agent ne sont pas
+      // relus. Une méthode ajoutée à la main dans un fichier après l'acceptation change ce fichier : c'est la reprise de
+      // fraîcheur de l'exécuteur (pause « À vérifier », L42b) qui la voit, jamais une lecture ajoutée ici.
+      // </c5:methodes-recheck>
     });
     if (sortie.refus === null) return { ok: true };
     return { ok: false, genre: "changement", code: sortie.refus.code, ...(sortie.refus.details ? { details: sortie.refus.details } : {}) };

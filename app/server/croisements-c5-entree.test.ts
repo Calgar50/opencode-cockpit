@@ -218,9 +218,16 @@ const codes = (flow: Flow, ctx: FlowValidationContext): FlowProblemCode[] => val
 describe("croisement d'entrée (FE4) : la grammaire de l'it4 accepte ce que la construction pose", () => {
   it("les deux exemples de l'it4, installés par leur vraie route, passent validateFlow dans les deux modes", async (t) => {
     const h = await banc(t);
-    assert.deepEqual(TEAM_EXAMPLES.map((exemple) => exemple.id), ["revue-sql", "relecture-script"], "exemples livrés par l'it4 (réponse (a) à sa Q3)");
+    // <c5:exemples-it4>
+    // Les deux exemples de l'it4 (réponse (a) à sa Q3) ouvrent TOUJOURS le registre, dans cet ordre, et ne sont jamais
+    // réécrits. La 5b en ajoute quatre à la suite (L45b, C §12.1) : ce croisement d'entrée reste celui de l'it4 et ne juge
+    // que ces deux-là ; les quatre autres ont leurs propres contrôles dans `team-examples-c5.test.ts`.
+    const EXEMPLES_IT4 = ["revue-sql", "relecture-script"];
+    assert.deepEqual(TEAM_EXAMPLES.slice(0, 2).map((exemple) => exemple.id), EXEMPLES_IT4, "exemples livrés par l'it4 (réponse (a) à sa Q3)");
+    const exemplesIt4 = TEAM_EXAMPLES.filter((candidat) => EXEMPLES_IT4.includes(candidat.id));
+    // </c5:exemples-it4>
 
-    for (const exemple of TEAM_EXAMPLES) {
+    for (const exemple of exemplesIt4) {
       const installe = await installerExemple(h, exemple.id);
       const assistants = assistantsDuFaux(h);
       for (const mode of ["simple", "avance"] as UiMode[]) {
