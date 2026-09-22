@@ -543,14 +543,21 @@ describe("carte des assistants : vues et feuille (L39b)", () => {
     assert.equal(/\banimation\b|\btransition\b/.test(css.replace(/\/\*[\s\S]*?\*\//g, "")), false);
   });
 
-  it("l'onglet remplace le squelette de T4w : propriétés figées, liste toujours rendue, « Vue d'ensemble » non annoncée", () => {
+  it("l'onglet remplace le squelette de T4w : propriétés figées, liste toujours rendue, « Vue d'ensemble » en Avancé seulement", () => {
     const tab = fs.readFileSync(path.join(CARTE, "CarteTab.tsx"), "utf8");
     assert.equal((tab.split("\n")[0] ?? "").replace(/\r$/, ""), "// Propriétaire : L39b.");
     assert.equal(tab.includes("Squelette T4w"), false);
     assert.match(tab, /export function CarteTab\(\{ directory, advanced, element \}: CarteTabProps\)/);
     assert.match(tab, /<CarteListe result=\{data\} advanced=\{advanced\} element=\{montre\} onChoisir=\{choisir\} \/>/);
     assert.match(tab, /<CarteCentree result=\{data\} advanced=\{advanced\} element=\{montre\} onChoisir=\{choisir\} \/>/);
-    assert.equal(/ensemble/i.test(tab.replace(/^\s*\/\/.*$/gm, "")), false, "« Vue d'ensemble » arrive en itération 5 (P3)");
+    // <c5:vue-ensemble>
+    // Itération 5b (L48) : la « Vue d'ensemble » est LIVRÉE. La garde P3 de l'itération 4 (« aucun libellé ne l'annonce »)
+    // devient sa garde d'arrivée : le troisième bouton comme son bloc ne sont rendus que sous `advanced`, donc jamais en mode
+    // Simple. Le reste de la vue est tenu par agent-map-overview.test.ts.
+    const code = tab.replace(/^\s*\/\/.*$/gm, "");
+    assert.match(code, /\{advanced \? \(\s*<button type="button" className="btn" aria-pressed=\{vue === "ensemble"\}/);
+    assert.match(code, /\{advanced \? \(\s*<div className="ca-bloc-ensemble">/);
+    // </c5:vue-ensemble>
     // Connecteurs SVG décoratifs : jamais lus, jamais focalisables (§5.2).
     const centree = fs.readFileSync(path.join(CARTE, "CarteCentree.tsx"), "utf8");
     assert.match(centree, /<svg className="ca-connecteur"[^>]*aria-hidden="true" focusable="false" role="presentation">/);
