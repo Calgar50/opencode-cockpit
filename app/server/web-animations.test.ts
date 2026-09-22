@@ -1,6 +1,6 @@
 // Test « web-animations » (1.1, T2 ; spécification §5.5 et JP-13 ; plan d'exécution, fiche T2). Lecture statique des sources de
 // l'interface 1.1, sans navigateur ni dépendance :
-// - dans web/pages/chat/{activity,autonomy,delegation,plan}/** et web/pages/diagnostics/** (.css, .ts, .tsx) : aucune animation
+// - dans web/pages/chat/{activity,autonomy,delegation,plan}/**, web/pages/diagnostics/** et web/pages/omo/** (.css, .ts, .tsx) : aucune animation
 //   `infinite`, aucune option WAAPI `iterations` autre qu'un nombre écrit en clair (donc jamais Infinity) ; toute animation CSS
 //   (`animation`, `animation-name`, sauf `none`) sous `@media (prefers-reduced-motion: no-preference)` ; aucune animation CSS en
 //   ligne (style React ou texte CSS dans une chaîne), qui ne peut pas être placée sous cette requête ; un appel WAAPI `.animate(`
@@ -16,8 +16,14 @@ import { describe, it } from "node:test";
 
 const WEB_DIR = path.join(import.meta.dirname, "..", "web");
 
-/** Dossiers de l'interface 1.1 soumis aux règles de mouvement (relatifs à web/). */
-const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics"];
+/**
+ * Dossiers de l'interface 1.1 soumis aux règles de mouvement (relatifs à web/). « pages/omo » est celui de la Salle OMO
+ * (itération 2 ter, L26a) : la règle l'attend, le dossier arrive avec son paquet, et le train de la vague 2 le voit apparaître.
+ */
+const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics", "pages/omo"];
+
+/** Dossiers qui doivent exister : un périmètre effacé ferait passer le test pour rien. « pages/omo » y entre avec L26a. */
+const SCOPES_REQUIS = SCOPES.filter((scope) => scope !== "pages/omo");
 
 /** Fichiers sans aucune boucle (nom de fichier, où qu'il soit sous web/). */
 const NO_LOOP_FILES = new Set(["NeonBand.tsx", "neon.css", "DemoPlayer.tsx"]);
@@ -284,9 +290,26 @@ describe("web-animations : contrôles discriminants", () => {
 
 describe("web-animations : interface 1.1", () => {
   it("périmètre présent : dossiers 1.1 et fichiers sans boucle", () => {
-    for (const scope of SCOPES) assert.ok(fs.statSync(path.join(WEB_DIR, scope)).isDirectory(), scope);
+    for (const scope of SCOPES_REQUIS) assert.ok(fs.statSync(path.join(WEB_DIR, scope)).isDirectory(), scope);
     const names = new Set(webSources().map((s) => path.posix.basename(s.fichier)));
     for (const name of ["NeonBand.tsx", "DemoPlayer.tsx"]) assert.ok(names.has(name), name);
+    // Salle OMO : le dossier de L26a est déjà dans le périmètre ; présent, il est contrôlé comme les autres.
+    assert.ok(SCOPES.includes("pages/omo"), "pages/omo est soumis aux règles de mouvement");
+    const omo = path.join(WEB_DIR, "pages", "omo");
+    if (fs.existsSync(omo)) assert.ok(fs.statSync(omo).isDirectory(), "pages/omo");
+  });
+
+  it("Salle OMO : pages/omo est contrôlé comme le reste de l'interface 1.1", () => {
+    const omo = (texte: string, fichier: string): Source => ({ fichier: `pages/omo/${fichier}`, texte });
+    assert.deepEqual(rules(checkAnimations([omo("el.animate(frames, { duration: 900, iterations: Infinity });", "SalleOmoPage.tsx")])), [
+      "WAAPI sans test de prefers-reduced-motion: no-preference",
+      "iterations non bornée par un nombre (Infinity interdit)",
+    ]);
+    assert.deepEqual(rules(checkAnimations([omo(".enceinte { animation: glow 1s linear infinite; }", "omo.css")])), [
+      "animation CSS hors @media (prefers-reduced-motion: no-preference)",
+      "animation infinie (infinite)",
+    ]);
+    assert.deepEqual(checkAnimations([omo("@media (prefers-reduced-motion: no-preference) { .enceinte { animation: fade 900ms ease-out; } }", "omo.css")]), []);
   });
 
   it("aucune animation infinie, toute animation sous prefers-reduced-motion: no-preference, aucune boucle dans la bande néon", () => {
