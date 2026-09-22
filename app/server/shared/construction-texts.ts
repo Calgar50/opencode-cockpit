@@ -77,11 +77,13 @@ export const TEXTES = {
       },
       etroit: "Le schéma modifiable demande un écran plus large : utilisez les étapes.",
     },
+    // <c5:vue-ensemble-doc>
     /**
      * Vue d'ensemble de la carte des assistants (spécification §5.2) : les noms techniques y sont permis. Les huit libellés de
      * genre (« Vous » à « Fiches ») servent DEUX FOIS : ils titrent un groupe de la vue et nomment la puce de filtre qui le
      * montre — un groupe, une puce, un libellé (L48).
      */
+    // </c5:vue-ensemble-doc>
     vueEnsemble: {
       titre: "Vue d'ensemble",
       vous: "Vous",
@@ -94,12 +96,15 @@ export const TEXTES = {
       fiches: "Fiches",
       aide: "Survolez ou sélectionnez un élément pour n'afficher que ses liens.",
       horsSujet: "(hors sujet)",
+      // <c5:vue-ensemble-groupes>
       // Deux noms de groupe ajoutés par L48, qui n'annoncent aucune fonction de plus : le groupe des puces de filtre, et la
       // reprise EN TEXTE des liens, exigée parce que les connecteurs SVG sont décoratifs (aria-hidden, §5.2).
+      // Section posée par l'intégrateur au train de V1 : ce fichier est de classe A (§2.6), donc tout ajout y est balisé.
       /** Groupe des puces de filtre (nom accessible). */
       filtres: "Afficher",
       /** Reprise en toutes lettres de chaque lien dessiné : la vue se lit sans le dessin. */
       liens: "Liens",
+      // </c5:vue-ensemble-groupes>
     },
   },
   partout: {
