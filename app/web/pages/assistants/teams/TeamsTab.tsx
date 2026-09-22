@@ -3,7 +3,12 @@
 // lu (spécification §5.3 l.896, §5.4 l.909, §5.5, §5.6 ; C §9.10 ; plan d'exécution it4, fiche L40a). Propriétés FIGÉES dans
 // ../../chat/team/slots.ts (T4w) : il remplace le squelette posé par T4w.
 // - État vide : la définition d'une équipe, la phrase d'accueil et [Partir d'un exemple], qui porte le focus sur la galerie.
-//   [Voir une démonstration] de la spéc. §5.4 l.909 est MASQUÉ : la démonstration d'équipe arrive en itération 5 (P3).
+// <c5:demonstration-equipe-doc>
+// - [Voir une démonstration] (spéc. §5.3 l.896, §5.4 l.909 ; fiche L49) : dans l'état vide et dans la galerie, il ouvre TeamDemo,
+//   un enregistrement rejoué sans aucun appel d'IA ni aucune requête. Il suit ce que rend cet onglet : il n'apparaît donc pas
+//   tant que les équipes sont fermées dans le mode courant (`ouvertesEnSimple`, U1, D-5-24), et AUCUNE constante propre au mode
+//   Simple n'est ajoutée pour lui.
+// </c5:demonstration-equipe-doc>
 // - Galerie : mini-schéma, phrase, « ≈ X $ en général », « Lecture seule », [Aperçu] [Installer]. L'estimation d'un exemple est
 //   lue par POST /api/teams/preview (route qui n'écrit rien) : sans elle, la carte n'affiche simplement aucun coût.
 // - Équipes installées : ligne, état dit par son mot, déroulé lu, [Utiliser dans le chat] [Modifier] [Dupliquer] [Supprimer] ;
@@ -34,6 +39,10 @@ import {
   type TeamCardModel,
   texteRefusSuppression,
 } from "./teams-tab-model.ts";
+// <c5:demonstration-equipe-import>
+import { TEXTES as TEXTES_CONSTRUCTION } from "../../../../server/shared/construction-texts.ts";
+import { TeamDemo } from "./TeamDemo.tsx";
+// </c5:demonstration-equipe-import>
 import "./teams.css";
 
 /**
@@ -64,6 +73,10 @@ export function TeamsTab({ advanced }: TeamsTabProps) {
   /** Phrase d'un refus d'action (suppression), affichée jusqu'à la prochaine action. */
   const [refus, setRefus] = useState<string | null>(null);
   const galerie = useRef<HTMLDivElement>(null);
+  // <c5:demonstration-equipe-etat>
+  /** Lecteur de la démonstration ouvert ; fermé au premier rendu, et jamais ouvert tout seul (L49). */
+  const [demonstration, setDemonstration] = useState(false);
+  // </c5:demonstration-equipe-etat>
 
   const ouvertes = equipesOuvertes(advanced, data);
 
@@ -159,9 +172,17 @@ export function TeamsTab({ advanced }: TeamsTabProps) {
           <Icon name="users" size={32} strokeWidth={1.4} />
           <h3>{modele.vide.definition}</h3>
           <p>{modele.vide.accueil}</p>
-          <button type="button" className="btn primary" onClick={() => galerie.current?.focus()}>
-            {modele.vide.partirExemple}
-          </button>
+          {/* <c5:demonstration-equipe-vide> */}
+          {/* Les deux boutons de la spéc. l.909 sur une ligne : [Voir une démonstration] rejoint [Partir d'un exemple] de l'it4. */}
+          <div className="row wrap">
+            <button type="button" className="btn" onClick={() => setDemonstration(true)}>
+              {TEXTES_CONSTRUCTION.partout.demonstration.voir}
+            </button>
+            <button type="button" className="btn primary" onClick={() => galerie.current?.focus()}>
+              {modele.vide.partirExemple}
+            </button>
+          </div>
+          {/* </c5:demonstration-equipe-vide> */}
         </div>
       ) : null}
 
@@ -181,11 +202,17 @@ export function TeamsTab({ advanced }: TeamsTabProps) {
               setRefus(null);
               setAInstaller(data?.exemples.find((exemple) => exemple.id === id) ?? null);
             }}
+            // <c5:demonstration-equipe-galerie>
+            onDemonstration={() => setDemonstration(true)}
+            // </c5:demonstration-equipe-galerie>
           />
         </div>
       ) : null}
 
       <TeamInstallDialog exemple={aInstaller} onClose={() => setAInstaller(null)} onInstalled={() => reload()} />
+      {/* <c5:demonstration-equipe-lecteur> */}
+      {demonstration ? <TeamDemo advanced={advanced} onClose={() => setDemonstration(false)} /> : null}
+      {/* </c5:demonstration-equipe-lecteur> */}
     </div>
   );
 }
