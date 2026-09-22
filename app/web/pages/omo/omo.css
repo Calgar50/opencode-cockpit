@@ -1,0 +1,181 @@
+/* Propriétaire : L26a. Page de la Salle OMO : état de la salle et sa raison, choix du projet préparé, pré-contrôle, écran
+   d'activation, conversation en lecture, tableau « sans demande » (spécification §4.14.1 l.806-811, §4.14.6, §4.13 l.802,
+   §5.5, §5.6, §6).
+   - icône + mot partout, jamais la couleur seule (P7) ;
+   - textes secondaires en --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes), jamais une opacité ;
+   - AUCUNE animation (web-animations, périmètre étendu à pages/omo/** par L26b) ;
+   - à 400 px : les listes ne défilent pas horizontalement, les chemins se coupent (overflow-wrap), les feuilles défilent ;
+   - @media (forced-colors: active) : bordures et focus en couleurs système. */
+
+.omo-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* --- État de la salle et raison de son attente (A16 point 4) -------------------------------------------------------------- */
+
+.omo-etat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.omo-etat-libelle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.omo-raisons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.omo-raison {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning-ink);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+/* --- Choix du projet préparé et pré-contrôle ------------------------------------------------------------------------------ */
+
+.omo-projets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.omo-projet {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.omo-projet-chemin {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.omo-chemins {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.omo-chemins li {
+  overflow-wrap: anywhere;
+}
+
+/* --- Écran d'activation (§4.14.6) ----------------------------------------------------------------------------------------- */
+
+.omo-activation-phrases {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-1);
+}
+
+.omo-champ-ligne {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.omo-champ-ligne .input {
+  width: 8em;
+  max-width: 100%;
+}
+
+.omo-champ-borne {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* --- Tableau « sans demande » (§6) ----------------------------------------------------------------------------------------- */
+
+.omo-sans-demande {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.omo-sans-demande th,
+.omo-sans-demande td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.omo-sans-demande th {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* --- Conversation en lecture ---------------------------------------------------------------------------------------------- */
+
+.omo-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.omo-message {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.omo-message-qui {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+@media (forced-colors: active) {
+  .omo-raison,
+  .omo-message {
+    border: 1px solid CanvasText;
+  }
+}
