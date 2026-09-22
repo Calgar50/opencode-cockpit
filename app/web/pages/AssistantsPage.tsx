@@ -7,6 +7,7 @@ import { EQUIPIER_ROLE } from "../../server/shared/construction-constants.ts";
 import { TEXTES as TEXTES_C5 } from "../../server/shared/construction-texts.ts";
 import { methodLabels, texteAssistantsEquipe } from "../../server/shared/methods-view.ts";
 import { getMethods } from "../lib/api-construction.ts";
+import { assistantsTabHref } from "../lib/router.ts";
 import { MethodsLibrary } from "./assistants/methods/MethodsLibrary.tsx";
 // </c5:imports>
 import { useApp } from "../app/AppContext.tsx";
@@ -43,6 +44,11 @@ export function AssistantsPage() {
   if (teamView.mode === "equipe-modifier") {
     return <TeamEditor key={`modifier/${teamView.id}`} mode="modifier" id={teamView.id} advanced={advanced} />;
   }
+  // <c5:onglet-methodes>
+  // Itération 5 (L44f) : onglet « Méthodes » (#/assistants/methodes). Même page à onglets que l'itération 4 ; la bibliothèque
+  // de L44d y vit désormais seule, et la section « Méthodes » de la liste plus bas n'en garde que le lien.
+  if (teamView.mode === "methodes") return <MethodsTab advanced={advanced} />;
+  // </c5:onglet-methodes>
   if (teamView.mode === "equipes" || teamView.mode === "carte") {
     return (
       <AssistantsTabsPage current={teamView.mode}>
@@ -63,6 +69,42 @@ export function AssistantsPage() {
   }
   return <AssistantsList detail={view.mode === "detail" ? view.name : null} />;
 }
+
+// <c5:onglet-methodes-vue>
+/**
+ * Onglet « Méthodes » (L44f) : la bibliothèque de L44d, sur la page à onglets de l'itération 4. Elle lit le catalogue
+ * (`GET /api/methods`) et les assistants (`GET /api/assistants`) pour elle-même : l'onglet est une page à part entière, et la
+ * liste des assistants n'est plus montée quand on y arrive. Lecture seule, aucun appel d'IA, aucun coût.
+ */
+function MethodsTab({ advanced }: { advanced: boolean }) {
+  const assistants = useAsync(() => api.assistants(), []);
+  const methodes = useAsync(() => getMethods(), []);
+  const reloadRef = useRef<() => void>(() => undefined);
+  reloadRef.current = () => {
+    // « Utilisée par » et « déjà appliquée » se lisent dans les fichiers d'agent : les deux lectures vont de pair.
+    assistants.reload();
+    methodes.reload();
+  };
+  const onChanged = useCallback(() => reloadRef.current(), []);
+  // --- équipes (it4) : début ---
+  // Branchement de la construction SUR la page à onglets de l'itération 4, d'où les deux balises ici.
+  const page = (
+    <AssistantsTabsPage current="methodes">
+      <MethodsLibrary
+        catalogue={methodes.data}
+        erreur={methodes.error}
+        chargement={methodes.loading}
+        onReessayer={methodes.reload}
+        assistants={assistants.data?.assistants ?? null}
+        onChanged={onChanged}
+        avance={advanced}
+      />
+    </AssistantsTabsPage>
+  );
+  // --- équipes (it4) : fin ---
+  return page;
+}
+// </c5:onglet-methodes-vue>
 
 function Section({ title, count, subtitle, actions, children }: { title: string; count?: number; subtitle?: string; actions?: ReactNode; children: ReactNode }) {
   const id = useId();
@@ -382,17 +424,16 @@ function AssistantsList({ detail }: { detail: string | null }) {
         </Section>
 
         {/* <c5:methodes-section> */}
-        {/* Bibliothèque des méthodes (L44d). L44f la déplacera dans l'onglet « Méthodes » en 5b : la section entière bouge alors d'un bloc. */}
-        <Section title="Méthodes">
-          <MethodsLibrary
-            catalogue={methodes.data}
-            erreur={methodes.error}
-            chargement={methodes.loading}
-            onReessayer={methodes.reload}
-            assistants={res?.assistants ?? null}
-            onChanged={reloadAll}
-            avance={advanced}
-          />
+        {/* Bibliothèque des méthodes (L44d), déplacée par L44f dans l'onglet « Méthodes » : la section n'en garde que le lien,
+            à la même place qu'avant, pour que personne ne la cherche. Le catalogue reste lu par la page : la fiche d'identité
+            d'un assistant en tire ses libellés de méthodes (`libellesMethodes`). */}
+        <Section title="Méthodes" subtitle={TEXTES_C5.partout.methodes.fiche.phrase}>
+          <p>
+            <a className="btn ghost sm" href={assistantsTabHref("methodes")}>
+              <Icon name="list" size={14} />
+              Voir les méthodes
+            </a>
+          </p>
         </Section>
         {/* </c5:methodes-section> */}
         {/* --- équipes (it4) : début --- */}

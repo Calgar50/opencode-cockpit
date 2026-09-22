@@ -14,6 +14,10 @@ import { Deroule } from "../chat/activity/Deroule.tsx";
 // <c5:equipes>
 // Itération 5 (L46b) : équipes lancées dans cette conversation (D-5-10). Rien n'est rendu quand il n'y en a aucune.
 import { ArchiveTeams } from "./ArchiveTeams.tsx";
+// Itération 5 (L44f) : les deux messages qu'une équipe fait écrire au cockpit entraient dans la transcription enregistrée sous
+// « 🧑 Vous », que vous ne les ayez pas écrits (conception A §7.7). Le découpage est PUR (team-transcript.ts, it4) ; ici, seul
+// l'affichage. Le texte reste rendu par le composant Markdown existant, assaini comme toute la transcription.
+import { type ArchiveBlocGenre, blocsDArchive } from "../chat/team/team-transcript.ts";
 // </c5:equipes>
 import { ClassificationBadge, classificationMethod, DeletedBadge, formatConfidence } from "./shared.tsx";
 
@@ -505,18 +509,61 @@ export function ArchiveDetailView({ sessionId, onDeleted }: { sessionId: string;
             )
           }
         >
+          {/* <c5:equipes-transcription> */}
+          {/* Itération 5 (L44f) : la transcription enregistrée est découpée pour rendre à l'équipe les deux messages que le
+              cockpit a écrits pour elle (conception A §7.7). Sans aucun marqueur — la très grande majorité des fiches —
+              `blocsDArchive` rend un bloc unique et l'affichage est exactement celui de l'itération 1. */}
           {transcript.trim() ? (
-            <Markdown text={transcript} className="archive-transcript" />
+            <TranscriptionArchivee texte={transcript} />
           ) : (
             <EmptyState icon="file" title="Transcription vide">
               Utilisez « Actualiser » pour relire la session dans opencode.
             </EmptyState>
           )}
+          {/* </c5:equipes-transcription> */}
         </Card>
       </div>
     </div>
   );
 }
+
+// <c5:equipes-transcription-vue>
+/**
+ * Titres des deux cartes de la transcription enregistrée (conception A §7.7). Ce sont des LIBELLÉS d'interface, écrits ici
+ * comme les onglets de la page Assistants : le §4.3 n'en fait pas des phrases du module de textes, et ils ne portent aucun mot
+ * interdit ni banni.
+ */
+const TITRES_EQUIPE: Readonly<Record<Exclude<ArchiveBlocGenre, "texte">, string>> = {
+  "equipe-demande": "Demande à l'équipe",
+  "equipe-resultat": "Réponse de l'équipe",
+};
+
+/**
+ * Transcription enregistrée : les sections ordinaires comme avant, les deux messages d'une équipe dans leur propre carte. Le
+ * texte reste rendu par le composant Markdown (assaini par DOMPurify) : aucun HTML brut, aucun `dangerouslySetInnerHTML`.
+ */
+function TranscriptionArchivee({ texte }: { texte: string }) {
+  const blocs = blocsDArchive(texte);
+  return (
+    <>
+      {blocs.map((bloc, index) =>
+        bloc.genre === "texte" ? (
+          // eslint-disable-next-line react/no-array-index-key -- l'ordre des blocs EST leur identité (une transcription figée).
+          <Markdown key={`t${index}`} text={bloc.texte} className="archive-transcript" />
+        ) : (
+          // eslint-disable-next-line react/no-array-index-key -- idem.
+          <section key={`e${index}`} className="card stack tight" aria-label={TITRES_EQUIPE[bloc.genre]}>
+            <h3 className="small">
+              <Icon name="users" size={14} /> {TITRES_EQUIPE[bloc.genre]}
+            </h3>
+            <Markdown text={bloc.texte} className="archive-transcript" />
+          </section>
+        ),
+      )}
+    </>
+  );
+}
+// </c5:equipes-transcription-vue>
 
 function StatTile({ label, value, sub, title }: { label: string; value: ReactNode; sub?: ReactNode; title?: string }) {
   return (

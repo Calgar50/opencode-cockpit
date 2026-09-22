@@ -10,8 +10,9 @@
 // - routes de la page Assistants (assistantsViewOf, assistantsHref) : cas valides, identifiant invalide ou trop long → vue par
 //   défaut ; élément de la carte = identifiant de nœud (C §9.8 element=<id>, mapNodeId de L39a ; correction du train de V0) ;
 //   onglets ;
-// - onglets « Assistants · Équipes · Carte » : motif APG, position annoncée, focus jamais pris, libellés seuls textes, onglet actif
-//   marqué par une bordure (jamais par la couleur seule) ;
+// - onglets « Assistants · Équipes · Carte · Méthodes » (l'onglet « Méthodes » est ajouté EN FIN de liste par L44f, itération 5,
+//   sans toucher à l'ordre des trois onglets de l'itération 4) : motif APG, position annoncée, focus jamais pris, libellés seuls
+//   textes, onglet actif marqué par une bordure (jamais par la couleur seule) ;
 // - contraste forcé (U9) : un bloc @media (forced-colors: active) non vide dans chaque feuille des périmètres des équipes et de la
 //   carte (chat/team/**, assistants/teams/**, assistants/carte/**, assistants/assistants-tabs.css, settings/TeamsBudgetSettings*),
 //   y compris les feuilles ajoutées par les vagues suivantes.
@@ -590,10 +591,11 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
   });
 
   it("onglets : ordre, adresse de chaque onglet, onglet actif de chaque vue (aucun pour les vues en pleine page)", () => {
-    assert.deepEqual([...ASSISTANTS_TABS], ["assistants", "equipes", "carte"]);
+    // Les trois premiers onglets sont ceux de l'itération 4, dans leur ordre ; « methodes » est ajouté en fin par L44f (it5).
+    assert.deepEqual([...ASSISTANTS_TABS], ["assistants", "equipes", "carte", "methodes"]);
     assert.deepEqual(
       ASSISTANTS_TABS.map((tab) => assistantsTabHref(tab)),
-      ["#/assistants", "#/assistants/equipes", "#/assistants/carte"],
+      ["#/assistants", "#/assistants/equipes", "#/assistants/carte", "#/assistants/methodes"],
     );
     for (const tab of ASSISTANTS_TABS) assert.equal(assistantsTabOf(viewOf(assistantsTabHref(tab))), tab);
     const tabs: Array<[AssistantsView, string | null]> = [
@@ -601,6 +603,7 @@ describe("emplacements des équipes : routes de la page Assistants", () => {
       [{ mode: "detail", name: "build" }, "assistants"],
       [{ mode: "equipes" }, "equipes"],
       [{ mode: "carte", element: "agent:build" }, "carte"],
+      [{ mode: "methodes" }, "methodes"],
       [{ mode: "nouveau" }, null],
       [{ mode: "modifier", name: "x" }, null],
       [{ mode: "completer", name: "x" }, null],
@@ -688,10 +691,13 @@ describe("emplacements des équipes : onglets de la page Assistants", () => {
     assert.match(code, /reopened = \{ tab, at: Date\.now\(\) \};\s*goTo\(assistantsTabHref\(tab\)\);/);
   });
 
-  it("textes : les trois libellés seulement, aucun texte en dur dans le rendu", () => {
-    assert.match(code, /const LABELS: Readonly<Record<AssistantsTab, string>> = \{ assistants: "Assistants", equipes: "Équipes", carte: "Carte" \};/);
+  it("textes : les libellés des onglets seulement, aucun texte en dur dans le rendu", () => {
+    assert.match(
+      code,
+      /const LABELS: Readonly<Record<AssistantsTab, string>> = \{ assistants: "Assistants", equipes: "Équipes", carte: "Carte", methodes: "Méthodes" \};/,
+    );
     const literals = [...code.matchAll(/"([^"\n]*)"/g)].map((m) => m[1] ?? "").filter((s) => /[A-ZÀ-Ý][a-zà-ÿ]|[À-ÿ]/.test(s));
-    assert.deepEqual([...new Set(literals)].sort(), ["ArrowLeft", "ArrowRight", "Assistants", "Carte", "End", "Home", "Équipes"].sort());
+    assert.deepEqual([...new Set(literals)].sort(), ["ArrowLeft", "ArrowRight", "Assistants", "Carte", "End", "Home", "Méthodes", "Équipes"].sort());
     assert.doesNotMatch(code, />[ \t]*[\p{L}][^<{}\n]*<\//u);
     const templates = [...code.matchAll(/`([^`]*)`/g)].map((m) => (m[1] ?? "").replace(/\$\{[^}]*\}/g, ""));
     assert.deepEqual(
