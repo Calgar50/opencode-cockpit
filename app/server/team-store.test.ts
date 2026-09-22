@@ -190,7 +190,8 @@ describe("magasin des équipes : transitions", () => {
     const amener = (id: string, from: TeamRunState) => {
       if (from === "preparation") return;
       // « terminee » ne s'atteint que depuis « en-cours » ; tous les autres états partent de « preparation ».
-      if (from === "terminee") assert.equal(store.runs.setState(id, "en-cours"), true);
+      // 5b (L42a) : « attente-choix » aussi — l'aiguilleur vient de finir, donc le lancement est forcément « en-cours ».
+      if (from === "terminee" || from === "attente-choix") assert.equal(store.runs.setState(id, "en-cours"), true);
       assert.equal(store.runs.setState(id, from), true, `arrivée en ${from}`);
     };
     for (const from of etats) {

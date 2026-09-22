@@ -33,6 +33,11 @@ export const STEP_ICONS: Readonly<Record<TeamStepState, TeamIconName>> = {
   interrompue: "plug",
   plafond: "gauge",
   "non-lancee": "minus",
+  // <c5:icone-non-choisi>
+  // Branche minimale (L42a) : « Non choisi » prend l'icône de « Non lancée » — aucune étape écartée n'a rien envoyé. Le rendu
+  // propre de l'aiguillage (lignes grisées, « Non choisi » sur les spécialistes écartés) vient de L42c.
+  "non-choisi": "minus",
+  // </c5:icone-non-choisi>
 };
 
 /** Icône de chaque état de lancement (TeamRunState). */
@@ -42,6 +47,10 @@ export const RUN_ICONS: Readonly<Record<TeamRunState, TeamIconName>> = {
   "attente-verification": "pause",
   "attente-budget": "coins",
   "attente-modification": "alert",
+  // <c5:icone-attente-choix>
+  // Branche minimale (L42a) : l'attente d'un choix prend l'icône des autres pauses. La carte de choix vient de L42c.
+  "attente-choix": "pause",
+  // </c5:icone-attente-choix>
   terminee: "check",
   arretee: "stop",
   echec: "x",
@@ -50,7 +59,18 @@ export const RUN_ICONS: Readonly<Record<TeamRunState, TeamIconName>> = {
 };
 
 /** États qui verrouillent la saisie (D-eq-16) : `interrompue`, `plafond`, `echec` et `terminee` ne verrouillent PAS. */
-export const ETATS_VERROU: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification"]);
+export const ETATS_VERROU: ReadonlySet<TeamRunState> = new Set<TeamRunState>([
+  "preparation",
+  "en-cours",
+  "attente-verification",
+  "attente-budget",
+  "attente-modification",
+  // <c5:verrou-attente-choix>
+  // Branche minimale (L42a) : une équipe qui attend votre choix travaille encore, donc elle verrouille et peut être arrêtée,
+  // comme les autres attentes. La carte de choix elle-même (proposition, raison, boutons) vient de L42c.
+  "attente-choix",
+  // </c5:verrou-attente-choix>
+]);
 
 /** Cartes finales (D-eq-22 : [Ajouter les résultats obtenus à la conversation] y est proposé). */
 export const ETATS_FINAUX: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["arretee", "plafond", "echec", "interrompue"]);

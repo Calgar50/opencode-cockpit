@@ -17,7 +17,7 @@
 // - `depassementUnAppel` chiffre ce qu'un appel déjà parti peut ajouter au-delà du plafond (§2.1 l.66).
 import { type ModelPrice, ratesFor, roundUsd } from "../pricing.ts";
 import { chooseEstimate, estimateTaskCost, TASK_PROFILES, type TaskSize, type Tier } from "./assistant-rules.ts";
-import { planSteps, receivedFrom } from "./team-limits.ts";
+import { choixMaxDe, planSteps, receivedFrom, toursDe } from "./team-limits.ts";
 import type { Flow, FlowEstimate, FlowProblem, FlowStep, StepAssistant, StepEstimate, TeamStepState } from "./team-types.ts";
 
 // --- Contexte -------------------------------------------------------------------------------------------------------------------
@@ -108,6 +108,10 @@ function stepsById(flow: Flow): Map<string, FlowStep> {
   for (const block of flow.blocs) {
     if (block.type === "etape") out.set(block.etape.id, block.etape);
     else if (block.type === "avis") for (const step of [...block.avis, block.synthese]) out.set(step.id, step);
+    else if (block.type === "relecture") for (const step of [block.auteur, block.relecteur]) out.set(step.id, step);
+    else if (block.type === "aiguillage") {
+      for (const step of [block.aiguilleur, ...block.specialistes, ...(block.synthese ? [block.synthese] : [])]) out.set(step.id, step);
+    }
   }
   return out;
 }
@@ -153,7 +157,8 @@ function estimateStep(step: FlowStep, ctx: FlowEstimateContext): StepLine {
 function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly string[]): FlowEstimate {
   const steps = stepsById(flow);
   const parEtape: StepEstimate[] = [];
-  const appels: number[] = [];
+  // Un appel par étape EN COURS : une étape ne compte qu'une fois, même quand le chemin la fait revenir (tours d'une relecture).
+  const appels = new Map<string, number>();
   let typique = 0;
   let maximum = 0;
   let relais = 0;
@@ -164,16 +169,16 @@ function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly s
     parEtape.push(ligne);
     typique += ligne.typique ?? 0;
     maximum += ligne.maximum ?? 0;
-    appels.push(unAppel);
+    if (!appels.has(stepId)) appels.set(stepId, unAppel);
     // Relais : un coût par résultat reçu, SELON receivedFrom (T4). Un avis (« demande ») n'en reçoit aucun ; la synthèse d'un
-    // bloc d'avis en reçoit un par avis.
+    // bloc d'avis en reçoit un par avis ; une étape à `recoit: {etapes}` (5b) en reçoit un par étape listée.
     if (!prix) continue;
     for (const source of receivedFrom(flow, stepId)) {
       const producteur = steps.get(source);
       if (producteur) relais += relayCost(producteur.taille, prix);
     }
   }
-  const dessus = appels.toSorted((a, b) => b - a).slice(0, Math.max(0, ctx.simultanees));
+  const dessus = [...appels.values()].toSorted((a, b) => b - a).slice(0, Math.max(0, ctx.simultanees));
   const total = roundUsd(typique + relais);
   const haut = roundUsd(maximum + relais);
   return {
@@ -188,13 +193,43 @@ function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly s
   };
 }
 
-/** Estimation du chemin complet (en itération 4, chemin typique = chemin maximal : aucun bloc facultatif ni aiguillage). */
+/**
+ * Estimation d'un déroulé : « en général » se compte sur le chemin TYPIQUE, « au plus » sur le chemin MAXIMAL, tous deux rendus
+ * par planSteps (T4, étendue par L42a). Pour les formes de l'itération 4 les deux chemins sont les mêmes : l'estimation ne
+ * change pas d'un iota. Pour une relecture ou un aiguillage, « au plus » couvre tous les tours et tous les spécialistes que le
+ * plafond doit payer — c'est ce qui rend « au plus » vrai (P3).
+ * `parEtape` garde UNE ligne par étape, dans l'ordre du chemin maximal : une étape qui revient à chaque tour n'est pas répétée.
+ */
 export function estimateFlow(flow: Flow, ctx: FlowEstimateContext): FlowEstimate {
-  return estimateChemin(
+  const maximal = estimateChemin(
     flow,
     ctx,
-    planSteps(flow).map((planned) => planned.stepId),
+    planSteps(flow, { chemin: "maximal" }).map((planned) => planned.stepId),
   );
+  const typique = estimateChemin(
+    flow,
+    ctx,
+    planSteps(flow, { chemin: "typique" }).map((planned) => planned.stepId),
+  );
+  const vues = new Set<string>();
+  const parEtape = maximal.parEtape.filter((ligne) => !vues.has(ligne.stepId) && (vues.add(ligne.stepId), true));
+  const repetitions = repetitionsDe(flow);
+  return { ...maximal, typique: typique.typique, parEtape, ...(repetitions === null ? {} : { repetitions }) };
+}
+
+/**
+ * Répétitions que le chemin maximal couvre (5b) : tours d'une relecture et spécialistes d'un aiguillage. Ce sont les nombres
+ * des lignes « 1 tour en général, {n} au plus » et « 1 spécialiste en général, {n} au plus » (construction-texts.ts, §4.3) ;
+ * ce module ne les met pas en phrase, il ne porte aucun texte. `null` : le déroulé n'a aucune de ces deux formes.
+ */
+function repetitionsDe(flow: Flow): { tours: number; specialistes: number } | null {
+  let tours = 0;
+  let specialistes = 0;
+  for (const block of flow.blocs) {
+    if (block.type === "relecture") tours = Math.max(tours, toursDe(block));
+    if (block.type === "aiguillage") specialistes = Math.max(specialistes, choixMaxDe(block));
+  }
+  return tours === 0 && specialistes === 0 ? null : { tours, specialistes };
 }
 
 /**

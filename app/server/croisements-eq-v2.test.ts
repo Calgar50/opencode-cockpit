@@ -40,6 +40,7 @@ import { planSteps } from "./shared/team-limits.ts";
 import { TEXTES } from "./shared/team-texts.ts";
 import type {
   Flow,
+  StepInput,
   TeamEstimateResponse,
   TeamInstallResponse,
   TeamRunStarted,
@@ -190,8 +191,8 @@ const fakeAgent = (name: string): FakeAgent => ({
   steps: 20,
 });
 
-/** Étapes d'un déroulé, dans l'ordre de `planSteps`. */
-function etapesDe(flow: Flow): Array<{ id: string; assistant: string; recoit: string }> {
+/** Étapes d'un déroulé, dans l'ordre de `planSteps`. `recoit` est un StepInput depuis la 5b (L42a : `{etapes}` s'y ajoute). */
+function etapesDe(flow: Flow): Array<{ id: string; assistant: string; recoit: StepInput }> {
   const byId = new Map(
     flow.blocs.flatMap((bloc) => (bloc.type === "etape" ? [bloc.etape] : bloc.type === "avis" ? [...bloc.avis, bloc.synthese] : [])).map((step) => [step.id, step]),
   );

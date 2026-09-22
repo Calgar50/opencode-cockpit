@@ -26,7 +26,7 @@
 // est faux, donc aucune requête d'aperçu ne part. Le parcours Simple reste entièrement construit et testé ici : l'ouverture tient
 // en UNE ligne (EQUIPES_SIMPLE_OUVERTES = true dans wiring-eq.ts), sans qu'aucune autre valeur n'entre en jeu.
 import { type RightLine, slugifyName, TASK_SIZES, type TaskSize, type Tier, TIER_IDS } from "./assistant-rules.ts";
-import { FLOW_LIMITS, FLOW_VERSION, TEAM_TEXT_LIMITS } from "./team-limits.ts";
+import { FLOW_LIMITS, FLOW_VERSION, isStepInputName, TEAM_TEXT_LIMITS } from "./team-limits.ts";
 import { montant, refusEnregistrement, remplir, TEXTES } from "./team-texts.ts";
 import type {
   Flow,
@@ -75,14 +75,21 @@ const TEAM_ID_MAX = 40;
 /** Identifiant d'un bloc ou d'une étape : lettre, puis le compteur (STEP_ID_RE : ^[a-z0-9-]{1,24}$). */
 const identifiant = (prefixe: "b" | "e", n: number): string => `${prefixe}${n}`;
 
-const estTravail = (block: FlowBlock): boolean => block.type === "etape" || block.type === "avis";
+// <c5:compte-formes>
+// Branche minimale (L42a) : les formes de la 5b sont des blocs de TRAVAIL et leurs étapes comptent dans les 12, sinon les
+// bornes de l'éditeur mentiraient sur un déroulé qui en contient. Rien de nouveau n'est proposé pour autant : BLOCS_AJOUTABLES
+// et FORMES_DEPART restent ceux de l'itération 4, et l'éditeur guidé de ces formes arrive avec L42d.
+const estTravail = (block: FlowBlock): boolean => block.type !== "pause";
 
 /** Étapes déclarées d'un bloc, dans l'ordre d'écriture (aucun ordre d'exécution : planSteps reste la référence). */
 function etapesDe(block: FlowBlock): FlowStep[] {
   if (block.type === "etape") return [block.etape];
   if (block.type === "avis") return [...block.avis, block.synthese];
+  if (block.type === "relecture") return [block.auteur, block.relecteur];
+  if (block.type === "aiguillage") return [block.aiguilleur, ...block.specialistes, ...(block.synthese ? [block.synthese] : [])];
   return [];
 }
+// </c5:compte-formes>
 
 /** Nombre d'étapes déclarées d'un déroulé (bornes FLOW_LIMITS.etapes). */
 export function compterEtapes(flow: Flow): number {
@@ -139,7 +146,12 @@ function copierFlow(flow: Flow): Flow {
       if (block.type === "avis") {
         return { type: "avis", id: block.id, avis: block.avis.map((step) => ({ ...step })), synthese: { ...block.synthese } };
       }
-      return { type: "pause", id: block.id, message: block.message };
+      if (block.type === "pause") return { type: "pause", id: block.id, message: block.message };
+      // <c5:copie-formes>
+      // Branche minimale (L42a) : les formes de la 5b (relecture, aiguillage) sont recopiées telles quelles. L42d donne leur
+      // copie champ par champ avec l'éditeur guidé ; ici, rien de nouveau n'est rendu possible.
+      return { ...block };
+      // </c5:copie-formes>
     }),
   };
 }
@@ -163,11 +175,15 @@ function reglerEntrees(flow: Flow): Flow {
     if (block.type === "etape") {
       if (premier) block.etape.recoit = "demande";
       else if (block.etape.recoit === "demande") block.etape.recoit = "precedent";
-    } else {
+    } else if (block.type === "avis") {
       // Les avis reçoivent la demande seule : c'est ce qui les rend indépendants (spéc. §6 l.1034).
       for (const avis of block.avis) avis.recoit = "demande";
       block.synthese.recoit = "tous";
     }
+    // <c5:entrees-formes>
+    // Branche minimale (L42a) : les entrées des formes de la 5b sont IMPLICITES (le relecteur reçoit la version courante, un
+    // spécialiste la raison de l'aiguilleur, la synthèse les résultats choisis) et ne se réparent pas ici. L42d les pose.
+    // </c5:entrees-formes>
   }
   return flow;
 }
@@ -310,7 +326,12 @@ export function dupliquerBloc(draft: FlowDraft, blocId: string): FlowDraft {
   if (original.type === "etape") copie = { type: "etape", id: copieId, etape: copieEtape(original.etape) };
   else if (original.type === "avis") {
     copie = { type: "avis", id: copieId, avis: original.avis.map(copieEtape), synthese: copieEtape(original.synthese) };
-  } else copie = { type: "pause", id: copieId, message: original.message };
+  } else if (original.type === "pause") copie = { type: "pause", id: copieId, message: original.message };
+  // <c5:duplication-formes>
+  // Branche minimale (L42a) : une forme de la 5b se duplique telle quelle, identifiant du bloc changé. L42d renumérotera ses
+  // étapes comme l'éditeur guidé le fait pour les formes de l'itération 4.
+  else copie = { ...original, id: copieId };
+  // </c5:duplication-formes>
 
   const blocs = copierFlow(draft.flow).blocs;
   blocs.splice(index + 1, 0, copie);
@@ -770,6 +791,11 @@ const TAILLES_CHOIX: ReadonlyArray<{ valeur: TaskSize; libelle: string }> = Obje
 const AIDES_BLOC: Readonly<Record<FlowBlock["type"], string | null>> = {
   etape: null,
   avis: P.honnetete.avis,
+  // <c5:aides-formes>
+  // Branche minimale (L42a) : aucune aide propre aux formes de la 5b tant que l'éditeur guidé ne les propose pas (L42d).
+  relecture: null,
+  aiguillage: null,
+  // </c5:aides-formes>
   pause: P.pauses.verification.gratuite,
 };
 
@@ -800,7 +826,11 @@ function stepForm(
     recoit: {
       libelle: E.champs.recoit,
       aide: E.champs.recoitAide,
-      texte: Object.hasOwn(recoitChoix, step.recoit) ? recoitChoix[step.recoit] : "",
+      // <c5:recoit-etapes>
+      // Branche minimale (L42a) : `recoit: {etapes}` (mode Avancé) n'a pas de libellé dans l'éditeur guidé de l'itération 4 ;
+      // la case « Le résultat d'étapes choisies » et la liste des étapes arrivent avec L42d.
+      texte: isStepInputName(step.recoit) && Object.hasOwn(recoitChoix, step.recoit) ? recoitChoix[step.recoit] : "",
+      // </c5:recoit-etapes>
     },
     // D-eq-12 : aucun réglage d'IA par étape en mode Simple.
     ia: simple
