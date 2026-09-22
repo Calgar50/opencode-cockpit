@@ -1092,7 +1092,6 @@
 1273de12572576fff853de91f77c4c459af733e75dcfc8312de16edc54063b34  /opt/omo/node_modules/effect/dist/unstable/socket/SocketServer.d.ts.map
 1274da07478f0a1bbc63beb732645cfc36ee006dce06f9eac97fcd088924b65a  /opt/omo/node_modules/zod/src/v4/locales/ca.ts
 1275eb601d363ac069d1c8512babea0df53342398d00fc67c3fb6c562787fbcd  /opt/omo/node_modules/@babel/types/lib/validators/isImmutable.js.map
-127797ca64c1f4f0cd8c2309ab404db225c31a67eafb6e500f8d7d80be150304  /etc/opencode-omo/opencode.jsonc
 127e438ca422efb068196319f5d5b6386c90d25592de352ae63c5866906977cc  /opt/omo/node_modules/zod/src/v3/tests/intersection.test.ts
 1287153722f1fc3c5342647de7ae1d7b6fb68bdb3378a0776a937d273fc97e0d  /opt/omo/node_modules/ajv/dist/compile/codegen/code.js
 12884a35533ff650a24f16a49c5079f4f01437b8bbb72246a80c1dbe51eb0ef8  /opt/omo/node_modules/parse5/node_modules/entities/src/decode.ts
@@ -3171,7 +3170,6 @@
 35920e126bf5a6cfd038246701a93eb05ce20f20e01e64bd8604af65583f9400  /opt/omo/node_modules/@posthog/core/dist/error-tracking/exception-steps.d.ts.map
 35934fbd99d4ca1d46932dfcddb6071c203b5c980862cf58e254998c49e1e5b8  /opt/omo/node_modules/@opencode-ai/plugin/node_modules/zod/v4/index.cjs
 3593cc2ba7d16cb2f422dd4c1bf329d1d21d251dbdfca9803bd30556a31ddbde  /opt/omo/node_modules/oh-my-openagent/.agents/skills/opencode-qa/scripts/db-session-by-text.sh
-3597ce61b037f9335e0cd31374cda5d3b05e777ae058b16b1f9840b4b6a7abe6  /etc/opencode-omo/omo/omo.jsonc
 359cf849e05ca1eb2833e300adf8e415fa5e35ea68154f398be1a7519c4827e8  /opt/omo/node_modules/@babel/core/lib/errors/config-error.js.map
 35a6383174325984daa7918c7ef4e421047249226cead96d514e825ec55a3f95  /opt/omo/node_modules/hono/dist/types/middleware/method-override/index.d.ts
 35ab0be1595ec7ba03a2c25e5ee865fa73656e50b7ea8a44867268a2b930f62f  /opt/omo/node_modules/@babel/types/lib/converters/toKeyAlias.js
@@ -4066,6 +4064,7 @@
 43e818adf60173644896298637f47b01d5819b17eda46eaa32d0c7d64724d012  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/components/lsp/dist/cli.d.ts
 43e818adf60173644896298637f47b01d5819b17eda46eaa32d0c7d64724d012  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/components/ulw-loop/dist/cli.d.ts
 4408bdcd0326609a8dd6c58e749c1797287ea12b7cff28c6ed99d7d081e362b3  /opt/omo/node_modules/oh-my-openagent/dist/features/tmux-subagent/index.d.ts
+44090e5d5a35a78366aab7e7e65f2f5e2b2ee93f94efaf036c97088fa98dec9d  /etc/opencode-omo/opencode.jsonc
 4409f3a413e194faff4c25552efe35ce0cca3d6f9aeb1e0626f30aa811ebe782  /opt/omo/node_modules/@modelcontextprotocol/sdk/dist/esm/examples/client/simpleOAuthClientProvider.js
 440b7897a0537788ba5b018bf8cabaa7287ba9012145134151d1e2f36bbe587a  /opt/omo/node_modules/@jridgewell/trace-mapping/types/by-source.d.mts
 44105baf79e1c87290a9ce11cdb9a5f75550a51fd0459724207fdad3ea4fb86b  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/test/component-codegraph-mcp-smoke.test.mjs
@@ -4809,7 +4808,6 @@
 50b069793d3a7cc371f50c60cf65f55065b5b582a0aa424f5d952b69179e1244  /opt/omo/node_modules/oh-my-openagent/dist/plugin-state.d.ts
 50b5aea4c6f894bb332570bbcc33943fa4158155862d8e3c4b602f5a64ede83a  /opt/omo/node_modules/hono/dist/request.js
 50b6c88b0a456db8bfd1d5f82c2434d1b0adfe4843b717b1a4507b0ddbfb71fa  /opt/omo/node_modules/effect/src/unstable/rpc/RpcClientError.ts
-50b8ee3aa503eac2f9fc5f0bf2b809630d31d09069f424ec7fd98fd80cf631eb  /usr/local/bin/omo-supervisor
 50b94b09d12fd908e93920d413c9a4f78a591abf68325b0f9484368cf647fcd6  /opt/omo/node_modules/oh-my-openagent/dist/hooks/anthropic-context-window-limit-recovery/tool-part-types.d.ts
 50bbfdbcc4048d18b3e595a735b2f0f7018eb89ffb5d265736ea26496a6cdf48  /opt/omo/node_modules/effect/dist/unstable/cli/HelpDoc.d.ts
 50bcc13794b1e2ddeaddd202dee20f7dfa1f0d238f6b5177572a8dbb844f76d8  /opt/omo/node_modules/seroval/src/core/constructors.ts
@@ -6218,7 +6216,6 @@
 6790244265636511a227992e7dab908dad0a1029ff9a1503cd009e7fced08178  /opt/omo/node_modules/@babel/types/lib/retrievers/getAssignmentIdentifiers.js
 67930676bff4a5a057b631e0fe7d40d27e2efc7d2e39e9d26451643b343502b8  /opt/omo/node_modules/router/HISTORY.md
 6799e3cf403d6de19b718f9da9c9c59c18d6558a5397bd58dbedc2767774af49  /opt/omo/node_modules/effect/dist/FiberMap.js
-679a4864db6c8188a8ebf356fd3e5bd58e4cfbb8e374a77602c54e848a5867dd  /opt/omo-guard/cockpit-guard.js
 67a00c4c9a06d6a9c84c5d598230d28a9be97eeb023c455c4300bcbb67f85baf  /opt/omo/node_modules/@opencode-ai/plugin/node_modules/zod/v4/locales/uk.js
 67a6154125f0173bd2bcee64e92e6121bb92d7e6227b342a99256a39edaf5cfb  /opt/omo/node_modules/oh-my-openagent/dist/features/tmux-subagent/spawn-action-decider.d.ts
 67aee549129f6f460bd500278347e13c96322a35f0c12c76aa3632cc3dbe724d  /opt/omo/node_modules/@opencode-ai/plugin/node_modules/zod/src/v4/locales/sv.ts
@@ -8637,6 +8634,7 @@
 8e23a640258c070f67ef1dafe6cff86ccd392527487db5e7da3a1889205e4811  /opt/omo/node_modules/parse5/node_modules/entities/dist/commonjs/generated/decode-data-html.js
 8e317a88765ad1a96e92a4e6c1db204f63de463f65c8804be9f41090f03d429a  /opt/omo/node_modules/oh-my-openagent/dist/cli/get-local-version/index.d.ts
 8e3843ae114ac1cfc102513384426bfc027687a03e6c0f429c33463b7e421152  /opt/omo/node_modules/eventsource-parser/README.md
+8e38c1b2a3f2f1f6821dc1d99b4673525b377880d6160d0476ec277d47acc964  /etc/opencode-omo/omo/omo.jsonc
 8e39aa4b2adf457cec3492c62f0560aabbedfe46a745511ed3f7888337d596d7  /opt/omo/node_modules/caniuse-lite/data/features/fetch.js
 8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c  /opt/omo/node_modules/marked/LICENSE.md
 8e3c06ea092138bf9fa5e874a1fdbc9d54805d074bee1de31b99a11e2fec239d  /opt/omo/node_modules/typescript/lib/lib.es2023.intl.d.ts
@@ -11717,6 +11715,7 @@ c0d4a1742ffc498476e7e3db3ffaf48b18515236d682c122562e5138f9949e7c  /opt/omo/node_
 c0d78b7244ec9fa9e2298deadca6b50e279ee58b4a12d853620f6f1840bc7329  /opt/omo/node_modules/@babel/helpers/lib/helpers/callSuper.js.map
 c0e6bc86b610ca3322d6841dc6720f1662203355e2327a7cf0474d6ffcc0115d  /opt/omo/node_modules/@opentui/keymap/src/services/conditions.d.ts
 c0efbc5e986dbf29a908b50cd140cbe5fd58796fc773e6f9a8cd4557c52e69ad  /opt/omo/node_modules/oh-my-openagent/dist/hooks/no-sisyphus-gpt/index.d.ts
+c0f076854f6b1710ec2eb2959573b72c2bc88caaa10b7e5e38f6808a07052c22  /usr/local/bin/omo-supervisor
 c0f468d071cbd8594f4e98523a9c2d6ab837b1c8195dfcbbd4ead1409bb19fce  /opt/omo/node_modules/oh-my-openagent/dist/cli/refresh-model-capabilities.d.ts
 c0f49b23a41368c6173560704d38a3f40324926b2b983ffee5208f957f43ba01  /opt/omo/node_modules/parse5/node_modules/entities/dist/esm/decode-codepoint.js.map
 c0f6ffe32ebcbf03fa19e7b8af10d080dfd8ece9310ad99cccb9d20f0800e8e9  /opt/omo/node_modules/s-js/txt/bottomup.md
@@ -11960,6 +11959,7 @@ c4f848c83bbdd2858710eefd6cfa5e891a254976b796f0b012f9252a2f52d67c  /opt/omo/node_
 c4fc30edf06d6987f24997607b3ea8c37206d97fe23f46eed3bb2eaacb3466f0  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/components/ulw-loop/test/steering.test.ts
 c4fdbf1ebbe804eee5c66925dbd18ea32f841c90c684fda1cb560ed35aa94638  /opt/omo/node_modules/effect/dist/unstable/http/HttpServerError.js.map
 c50847d61a3b27eab9537d87d3f640e675fbc9c7360017b04c12550a8637792b  /opt/omo/node_modules/hono/dist/types/middleware/serve-static/path.d.ts
+c50b5f65e626b7a58013aa050b9aca86905d75dbcc48604aaec2c3e459f1dc5e  /opt/omo-guard/cockpit-guard.js
 c51336535632e1404455bca333ccafc143191600047251a3e3e13f551693c516  /opt/omo/node_modules/@opencode-ai/plugin/node_modules/zod/src/v3/tests/nullable.test.ts
 c51336535632e1404455bca333ccafc143191600047251a3e3e13f551693c516  /opt/omo/node_modules/zod/src/v3/tests/nullable.test.ts
 c5188cd455c45b486350ed74bb08b6fb47db13bea6f218cce9d2cbf88044352b  /opt/omo/node_modules/ajv/lib/vocabularies/dynamic/index.ts
