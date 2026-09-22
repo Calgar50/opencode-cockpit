@@ -522,9 +522,13 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * — L19b a rempli le port `omoPrecheck` (`omo-precheck-service.ts`) : il appelle les deux modules du pré-contrôle
  *   (`shared/omo-precheck-rules.ts` et `omo-precheck-reader.ts`).
  * Ces six noms sont désormais parcourus comme des fichiers de production, exactement comme `omo-control.ts` et ses modules
- * depuis le train de V2. `egress-proxy.ts` reste dans la liste : rien ne l'importe hors de son propre lancement. Les autres
- * modules de comportement de la salle (plafonds, détections, audit de l'extension au-delà de la version branchée, superviseur)
- * restent interdits d'importation : ils arrivent avec leurs paquets, en V4.
+ * depuis le train de V2. Même chose pour L26a (itération 2 ter, vague 2), qui branche l'écran d'activation de la salle :
+ * `shared/omo-activation-view.ts` rejoue la vérification du montant saisi (`shared/omo-cap.ts`, fiche L22a) pour annoncer
+ * l'erreur près du champ — le serveur reste seul juge —, donc `omo-cap.ts` sort de la liste ; sans quoi le modèle de l'écran,
+ * parcouru comme un fichier de production, serait pris en faute pour sa propre importation.
+ * `egress-proxy.ts` reste dans la liste : rien ne l'importe hors de son propre lancement. Les autres modules de comportement de
+ * la salle (plafonds fixes, détections, audit de l'extension au-delà de la version branchée, superviseur) restent interdits
+ * d'importation : ils arrivent avec leurs paquets, en V4.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
@@ -533,7 +537,6 @@ const MODULES_SALLE_V0 = new Set([
   "cockpit-guard.js",
   // V0
   "omo-limits.ts",
-  "omo-cap.ts",
   "omo-detections.ts",
   "egress-proxy.ts",
   "omo-audit-texts.ts",

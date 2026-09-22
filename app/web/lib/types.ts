@@ -13,6 +13,7 @@ import type {
 } from "../../server/shared/api-types.ts";
 import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
 import type { BootstrapAutonomy } from "../../server/shared/autonomy-types.ts";
+import type { BootstrapOmo } from "../../server/shared/omo-types.ts";
 
 // 0.2.0 « Assistants et niveaux d'IA » : types définis une seule fois dans server/shared (serveur et interface).
 export type {
@@ -248,6 +249,12 @@ export interface Bootstrap {
   copilot: CopilotView;
   /** 1.1 : interrupteur COCKPIT_AUTONOMY et porte I1 (ACTIVATION_OUVERTE) ; envoyé par le serveur à partir de L1a. */
   autonomy?: BootstrapAutonomy;
+  /**
+   * 1.1, Salle OMO (L26a) : COCKPIT_OMO, image chargée et porte SALLE_OUVERTE. Champ ABSENT quand la salle n'est pas configurée
+   * sur ce cockpit. C'est le canal qui répond même salle coupée, quand GET /api/omo/status refuse (403) : l'entrée « Salle OMO »
+   * et l'état « coupée » se lisent ici (§4.14.1 l.806, arbitrage A16 point 4 b).
+   */
+  omo?: BootstrapOmo;
 }
 
 /** IA de votre compte GitHub Copilot que vous ne pouvez pas utiliser, avec la raison. */
