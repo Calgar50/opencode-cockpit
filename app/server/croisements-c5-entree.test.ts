@@ -225,7 +225,6 @@ describe("croisement d'entrée (FE4) : la grammaire de l'it4 accepte ce que la c
     const EXEMPLES_IT4 = ["revue-sql", "relecture-script"];
     assert.deepEqual(TEAM_EXAMPLES.slice(0, 2).map((exemple) => exemple.id), EXEMPLES_IT4, "exemples livrés par l'it4 (réponse (a) à sa Q3)");
     const exemplesIt4 = TEAM_EXAMPLES.filter((candidat) => EXEMPLES_IT4.includes(candidat.id));
-    // </c5:exemples-it4>
 
     for (const exemple of exemplesIt4) {
       const installe = await installerExemple(h, exemple.id);
@@ -239,6 +238,7 @@ describe("croisement d'entrée (FE4) : la grammaire de l'it4 accepte ce que la c
         );
       }
     }
+    // </c5:exemples-it4>
     h.assertNoGlobalRestart();
   });
 

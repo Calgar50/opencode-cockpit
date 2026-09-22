@@ -487,6 +487,7 @@ export function secondReadingPrefix(cible: SecondReadingTarget): string {
   return at === -1 ? message : message.slice(0, at);
 }
 
+// <c5:ecarts-l42c>
 /** Remplit un gabarit « {nom} » ; un nom absent des valeurs garde son gabarit. */
 function remplir(gabarit: string, valeurs: Readonly<Record<string, string | number>>): string {
   return gabarit.replace(/\{(\w+)\}/g, (match: string, nom: string) => (Object.hasOwn(valeurs, nom) ? String(valeurs[nom]) : match));
@@ -520,6 +521,7 @@ export function ecartSpecialistes(prevu: number, reel: number): string {
 export function repetitionBloc(tours: number): string {
   return remplir(TEXTES.partout.execution.deroule.repetition, { n: compte(tours) });
 }
+// </c5:ecarts-l42c>
 
 /**
  * Annonce de la 1.1.0 (D-5-24, U1). Équipes ouvertes dans le mode courant : le titre et le texte proposent une équipe.

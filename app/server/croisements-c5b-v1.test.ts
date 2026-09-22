@@ -404,7 +404,6 @@ describe("croisement V1 : les exemples de l'itération 4 restent valides sans `m
   // `team-examples-c5.test.ts` et ne passeraient évidemment pas « tour 1 partout ».
   const EXEMPLES_IT4 = ["revue-sql", "relecture-script"];
   const exemplesIt4 = () => TEAM_EXAMPLES.filter((exemple) => EXEMPLES_IT4.includes(exemple.id));
-  // </c5:exemples-it4>
 
   it("les deux exemples livrés passent validateFlow en Simple et en Avancé, sans aucune méthode ni lien avancé", () => {
     assert.equal(exemplesIt4().length, 2);
@@ -431,6 +430,8 @@ describe("croisement V1 : les exemples de l'itération 4 restent valides sans `m
       for (const planned of defaut) assert.equal(planned.tour, 1, `${exemple.id} : ${planned.stepId}`);
     }
   });
+  // </c5:exemples-it4>
+
 
   it("une donnée enregistrée par l'itération 4 (sans `methodes`) garde son message d'étape mot pour mot", () => {
     const flow = flowOf({ type: "etape", id: "b1", etape: step("seule", { titre: "Seule" }) });
