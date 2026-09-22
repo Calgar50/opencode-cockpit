@@ -18,6 +18,9 @@
 // `Ecran2Model.formes`). Un genre de la 5b passé à `ajouterBloc` rend donc toujours le brouillon tel quel.
 // Aucun TYPE n'est touché par L42d : `FlowStep.methodes`, `recoit: {etapes}`, les deux genres de bloc et leurs bornes viennent de
 // L42a (`team-types.ts`, `team-limits.ts`), et la grammaire qui les juge de `flow.ts` (L42a) — ce module n'en réécrit aucune.
+// Les PROBLÈMES de la 5b s'affichent sur le bloc ou l'étape fautifs avec les phrases que L42a a posées dans team-texts.ts ; seul
+// `synthese-requise`, partagé avec les blocs d'avis de l'itération 4, prend sur un AIGUILLAGE la phrase du §4.3
+// (construction-texts.ts) : ce qui manque n'y est pas la synthèse des avis.
 //
 // Valeurs par défaut (C §5.1, adaptées à D-eq-10) : `recoit = "precedent"` pour une étape, « demande » pour le premier bloc de
 // travail ; chaque avis reçoit « demande » (c'est ce qui les rend indépendants) et la synthèse « tous » ; `niveau = null` (l'IA de
@@ -1198,11 +1201,28 @@ export interface EditorInput {
 }
 
 /** Phrase d'un problème, par code (T4t) ; un code hors de la liste est ignoré plutôt qu'affiché sans phrase. */
-function problemesAffiches(problems: readonly FlowProblem[], garde: (probleme: FlowProblem) => boolean): ProblemeAffiche[] {
+function problemesAffiches(
+  problems: readonly FlowProblem[],
+  garde: (probleme: FlowProblem) => boolean,
+  // <c5:probleme-forme-l42d>
+  // L42d : genre du bloc concerné, pour le SEUL code que la 5b partage avec l'itération 4. `synthese-requise` a deux phrases
+  // selon ce qui manque : « Il manque la synthèse qui rassemble les avis. » sur un bloc d'avis (T4t, phrase du code dans
+  // team-texts.ts) et « Avec 2 spécialistes possibles, ajoutez une étape de synthèse. » sur un aiguillage (§4.3,
+  // construction-texts.ts). Sans cette distinction, un aiguillage sans synthèse parlerait d'avis qu'il n'a pas.
+  // Tous les autres codes de la 5b (L42a) ont leur phrase unique dans team-texts.ts : elle est lue comme avant.
+  forme: FlowBlock["type"] | null = null,
+  // </c5:probleme-forme-l42d>
+): ProblemeAffiche[] {
   const out: ProblemeAffiche[] = [];
   for (const probleme of problems) {
     if (!garde(probleme)) continue;
-    const texte = Object.hasOwn(P.problemes, probleme.code) ? P.problemes[probleme.code as keyof typeof P.problemes] : null;
+    // c5 (L42d) : la phrase de `synthese-requise` sur un aiguillage vient du §4.3 ; tout le reste de team-texts.ts (T4t).
+    const texte =
+      probleme.code === "synthese-requise" && forme === "aiguillage"
+        ? C5.problemes["synthese-requise"]
+        : Object.hasOwn(P.problemes, probleme.code)
+          ? P.problemes[probleme.code as keyof typeof P.problemes]
+          : null;
     if (texte !== null) out.push({ code: probleme.code, texte, bloquant: probleme.bloquant });
   }
   return out;
@@ -1384,7 +1404,12 @@ function blockCard(block: FlowBlock, index: number, input: EditorInput, groupes:
       block.type === "pause"
         ? { libelle: E.champs.pause, exemple: E.champs.pauseExemple, valeur: block.message, max: TEAM_TEXT_LIMITS.messagePause }
         : null,
-    problemes: problemesAffiches(input.apercu?.problems ?? [], (probleme) => probleme.bloc === block.id && probleme.etape === null),
+    // c5 (L42d) : le genre du bloc choisit la phrase de `synthese-requise` (avis, T4t ; aiguillage, §4.3).
+    problemes: problemesAffiches(
+      input.apercu?.problems ?? [],
+      (probleme) => probleme.bloc === block.id && probleme.etape === null,
+      block.type,
+    ),
     // <c5:bloc-reglages-l42d>
     tours:
       block.type === "relecture"

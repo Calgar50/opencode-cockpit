@@ -708,6 +708,50 @@ describe("L42d : écran 1, menu [+ Ajouter] et cartes de blocs (§4.3)", () => {
     assert.deepEqual(modele.ecran2?.blocs[1]?.problemes, [], "rien sur un bloc qui n'est pas en cause");
     assert.deepEqual(modele.problemes, [], "rien au niveau de l'équipe");
   });
+
+  it("`synthese-requise` : la phrase de l'aiguillage sur un aiguillage, celle des avis sur un bloc d'avis", () => {
+    // Un seul code, deux phrases, parce que ce qui manque n'est pas la même chose (§4.3 pour l'aiguillage, T4t pour les avis).
+    // Sans la distinction, un aiguillage sans synthèse parlerait d'avis qu'il n'a pas : c'est ce que ce test empêche.
+    const draft = ajouterBloc(ajouterBlocC5(brouillonVide(), "aiguillage", 0), "avis", 1);
+    const aiguillage = draft.flow.blocs[0];
+    const avis = draft.flow.blocs[1];
+    assert.ok(aiguillage && aiguillage.type === "aiguillage");
+    assert.ok(avis && avis.type === "avis");
+    const apercu = apercuDe([
+      { code: "synthese-requise", bloc: aiguillage.id, etape: null, bloquant: true },
+      { code: "synthese-requise", bloc: avis.id, etape: null, bloquant: true },
+    ]);
+    const blocs = buildEditor(entree({ historique: historiqueDe(draft), apercu })).ecran2?.blocs ?? [];
+    assert.equal(blocs[0]?.problemes[0]?.texte, "Avec 2 spécialistes possibles, ajoutez une étape de synthèse.");
+    assert.equal(blocs[0]?.problemes[0]?.texte, C5.problemes["synthese-requise"], "phrase reprise de construction-texts.ts");
+    assert.equal(blocs[1]?.problemes[0]?.texte, "Il manque la synthèse qui rassemble les avis.");
+    assert.equal(blocs[1]?.problemes[0]?.texte, P.problemes["synthese-requise"], "les avis gardent la phrase de l'it4");
+    // Le code, lui, est le même des deux côtés : rien n'est ajouté à FlowProblemCode (aucun type touché par L42d).
+    assert.deepEqual(blocs.slice(0, 2).map((bloc) => bloc.problemes[0]?.code), ["synthese-requise", "synthese-requise"]);
+  });
+
+  it("les autres codes de la 5b gardent leur phrase unique, sur un bloc comme sur une étape", () => {
+    const draft = ajouterBlocC5(brouillonVide(), "relecture", 0);
+    const bloc = draft.flow.blocs[0];
+    assert.ok(bloc && bloc.type === "relecture");
+    const apercu = apercuDe([
+      { code: "aiguillage-premier", bloc: bloc.id, etape: null, bloquant: true },
+      { code: "relecteur-distinct", bloc: bloc.id, etape: bloc.relecteur.id, bloquant: true },
+      { code: "lien-arriere", bloc: bloc.id, etape: bloc.auteur.id, bloquant: true },
+      { code: "methodes", bloc: bloc.id, etape: bloc.auteur.id, bloquant: true },
+    ]);
+    const carte = buildEditor(entree({ historique: historiqueDe(draft), apercu })).ecran2?.blocs[0];
+    assert.deepEqual(carte?.problemes.map((probleme) => probleme.texte), ["Un aiguillage ne peut être que le premier bloc."]);
+    const auteur = carte?.etapes.find((etape) => etape.stepId === bloc.auteur.id);
+    assert.deepEqual(auteur?.problemes.map((probleme) => probleme.texte), [
+      "Une étape ne peut recevoir que le résultat d'étapes situées plus haut.",
+      "2 méthodes au maximum par étape.",
+    ]);
+    const relecteur = carte?.etapes.find((etape) => etape.stepId === bloc.relecteur.id);
+    assert.deepEqual(relecteur?.problemes.map((probleme) => probleme.texte), [
+      "Le relecteur doit être un autre assistant, ou le même avec une autre IA.",
+    ]);
+  });
 });
 
 describe("L42d : écran « Coût et plafond » et bascule vers le schéma (§4.3, spéc. l.903)", () => {
