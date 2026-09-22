@@ -17,12 +17,28 @@
 // - MODE SIMPLE FERMÉ (décision U1, D-eq-13 ; plan §2.6) : tant que `ouvertesEnSimple` de GET /api/teams est faux, en Simple,
 //   l'éditeur n'est PAS monté (buildEditor rend « ferme ») : le texte du §2.6 et un lien vers l'onglet Équipes, et AUCUNE requête
 //   d'aperçu (`apercuDemande` reste faux). Le web ne lit que `ouvertesEnSimple` : l'ouverture tient en UNE ligne.
+// L42d (5b, plan d'exécution it5 fiche L42d ; spécification §5.3 l.896-903 ; C §8.1, §9.11, §10) :
+// - écran 1 : les DEUX formes de la 5b (« Rédaction et relecture », « Aiguillage ») s'ajoutent aux deux de l'itération 4, sous le
+//   même titre « Partir d'une forme », chacune avec sa phrase d'aide ;
+// - [+ Ajouter] : « Une rédaction et relecture » à chaque place, « Un aiguillage » EN TÊTE SEULEMENT (ailleurs, l'entrée reste
+//   lisible et désactivée) ;
+// - formulaire d'étape : méthodes de l'étape (catalogue GET /api/methods, lu une fois, sans aucun appel d'IA) et, en AVANCÉ,
+//   « Le résultat d'étapes choisies » ;
+// - en AVANCÉ : bascule « Étapes | Schéma modifiable » ; le schéma est l'EMPLACEMENT posé pour L43 (SchemaEditor), et sous
+//   900 px la phrase du spéc. l.903 le remplace.
+// Le mode Simple ne reçoit AUCUNE garde propre (U1, D-5-24) : l'éditeur reste fermé tant que `ouvertesEnSimple` est faux, et ce
+// qui est Simple (aucune IA par étape, aucun « Le résultat d'étapes choisies ») est prêt pour l'ouverture en une ligne.
 // Toute la logique testable est dans ../../../../server/shared/flow-edit.ts (D-eq-24, tests server/flow-edit.test.ts) ; tous les
 // textes viennent de server/shared/team-texts.ts (T4t). Aucune animation, aucun texte d'interface écrit ici.
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ajouterAvis,
   ajouterBloc,
+  // <c5:import-l42d>
+  ajouterBlocC5,
+  ajouterSpecialiste,
+  type AjoutC5Model,
+  // </c5:import-l42d>
   type AjoutModel,
   annuler,
   appliquer,
@@ -41,10 +57,22 @@ import {
   historiqueDe,
   identifiantEquipe,
   modifierEtape,
+  // <c5:import-ops-l42d>
+  modifierChoixMax,
+  modifierMethodes,
+  modifierPauseAvantRelecture,
+  modifierRecoitEtapes,
+  modifierTours,
+  // </c5:import-ops-l42d>
   modifierPause,
   monter,
   retablir,
   retirerAvis,
+  // <c5:import-ops2-l42d>
+  retirerSpecialiste,
+  SCHEMA_LARGEUR_MIN,
+  type VueEtapes,
+  // </c5:import-ops2-l42d>
   type StepPatch,
   supprimerBloc,
 } from "../../../../server/shared/flow-edit.ts";
@@ -55,6 +83,10 @@ import { useApp } from "../../../app/AppContext.tsx";
 import { Icon } from "../../../components/Icon.tsx";
 import { Spinner, useAsync, useConfirm } from "../../../components/ui.tsx";
 import { api, errorText } from "../../../lib/api.ts";
+// <c5:import-methodes-l42d>
+import { getMethods } from "../../../lib/api-construction.ts";
+import type { MethodView } from "../../../lib/types.ts";
+// </c5:import-methodes-l42d>
 import { teamError, teamsApi } from "../../../lib/api-teams.ts";
 import { useAnnouncer } from "../../../lib/announcer.ts";
 import { assistantsHref, openAssistants, setNavigationGuard } from "../../../lib/router.ts";
@@ -63,6 +95,9 @@ import type { TeamEditorProps } from "../../chat/team/slots.ts";
 import { BlockCard } from "./BlockCard.tsx";
 import { FlowList } from "./FlowList.tsx";
 import { FlowSchema } from "./FlowSchema.tsx";
+// <c5:import-schema-l42d>
+import { SchemaEditor } from "./SchemaEditor.tsx";
+// </c5:import-schema-l42d>
 import { libelleSchema, texteRefus } from "./teams-tab-model.ts";
 import { prendreDuplication } from "./TeamsTab.tsx";
 import "./teams.css";
@@ -70,6 +105,25 @@ import "./editor.css";
 
 /** Attente après la dernière modification avant l'aperçu (spécification §5.3 l.902). */
 const APERCU_MS = 300;
+
+// <c5:etroit-l42d>
+/**
+ * La fenêtre est plus étroite que la largeur que le schéma modifiable demande (spécification §5.3 l.903). Le nombre vient du
+ * modèle pur (SCHEMA_LARGEUR_MIN), jamais d'une valeur écrite ici ; `matchMedia` absent (rendu hors navigateur) → faux.
+ */
+function useEcranEtroit(): boolean {
+  const [etroit, setEtroit] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const requete = window.matchMedia(`(max-width: ${SCHEMA_LARGEUR_MIN - 1}px)`);
+    const suivre = () => setEtroit(requete.matches);
+    suivre();
+    requete.addEventListener("change", suivre);
+    return () => requete.removeEventListener("change", suivre);
+  }, []);
+  return etroit;
+}
+// </c5:etroit-l42d>
 
 /** Assistant proposable à une étape, tel que l'éditeur le lit (sous-ensemble d'AssistantView). */
 function vueAssistant(assistant: AssistantView): EditorAssistantView {
@@ -84,8 +138,24 @@ function vueAssistant(assistant: AssistantView): EditorAssistantView {
   };
 }
 
-/** [+ Ajouter ▾] entre deux blocs : une entrée par genre de l'itération 4 (D-eq-10), désactivée quand la borne est atteinte. */
-function Ajout({ ajout, onAjouter }: { ajout: AjoutModel; onAjouter: (type: FlowBlock["type"]) => void }) {
+/**
+ * [+ Ajouter ▾] entre deux blocs : une entrée par genre de l'itération 4 (D-eq-10), désactivée quand la borne est atteinte.
+ * c5 (L42d) : `formes` ajoute les deux entrées de la 5b à la SUITE, avec leur propre règle de possibilité — « Un aiguillage »
+ * n'est possible qu'en tête. Une entrée impossible reste focalisable et ne fait rien, comme celles de l'itération 4.
+ */
+function Ajout({
+  ajout,
+  onAjouter,
+  // <c5:ajout-props-l42d>
+  formes,
+  onAjouterForme,
+}: // </c5:ajout-props-l42d>
+{
+  ajout: AjoutModel;
+  onAjouter: (type: FlowBlock["type"]) => void;
+  formes: AjoutC5Model;
+  onAjouterForme: (type: AjoutC5Model["choix"][number]["type"], place: number) => void;
+}) {
   return (
     <div className="row wrap tm-ed-ajout">
       <span className="secondary small tm-ed-ajout-libelle">
@@ -105,6 +175,21 @@ function Ajout({ ajout, onAjouter }: { ajout: AjoutModel; onAjouter: (type: Flow
           {choix.libelle}
         </button>
       ))}
+      {/* <c5:ajout-formes-l42d> */}
+      {formes.choix.map((choix) => (
+        <button
+          key={choix.type}
+          type="button"
+          className="btn sm"
+          aria-disabled={!choix.possible}
+          onClick={() => {
+            if (choix.possible) onAjouterForme(choix.type, formes.place);
+          }}
+        >
+          {choix.libelle}
+        </button>
+      ))}
+      {/* </c5:ajout-formes-l42d> */}
     </div>
   );
 }
@@ -125,6 +210,13 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
   const [erreur, setErreur] = useState<string | null>(null);
   const [modifie, setModifie] = useState(false);
   const [enregistrement, setEnregistrement] = useState(false);
+  // <c5:etat-l42d>
+  /** Catalogue des méthodes « consigne » proposables à une étape (5b) ; null tant qu'aucune lecture n'a abouti. */
+  const [methodes, setMethodes] = useState<readonly MethodView[] | null>(null);
+  /** Vue de l'écran 2 en mode Avancé : « Étapes » ou « Schéma modifiable » (emplacement de L43). */
+  const [vue, setVue] = useState<VueEtapes>("etapes");
+  const etroit = useEcranEtroit();
+  // </c5:etat-l42d>
   /** Brouillon posé (équipe modifiée ou dupliquée) : une seule fois, à la première lecture des équipes. */
   const pose = useRef(false);
   /**
@@ -172,6 +264,25 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
     };
   }, [ouvertes, assistants]);
 
+  // <c5:methodes-l42d>
+  // Catalogue des méthodes, lu UNE FOIS quand l'éditeur est monté : une lecture, aucun appel d'IA, aucun coût. Indisponible
+  // (route absente, refus) → liste vide : le formulaire d'étape ne montre alors aucune section « Méthodes », et rien d'autre
+  // ne change. Aucune requête ne part tant que les équipes sont fermées en Simple (U1).
+  useEffect(() => {
+    if (!ouvertes || methodes !== null) return;
+    const controle = new AbortController();
+    void (async () => {
+      try {
+        const reponse = await getMethods(controle.signal);
+        if (!controle.signal.aborted) setMethodes(reponse.methods);
+      } catch {
+        if (!controle.signal.aborted) setMethodes([]);
+      }
+    })();
+    return () => controle.abort();
+  }, [ouvertes, methodes]);
+  // </c5:methodes-l42d>
+
   const draft = historique.present;
   const noms = useMemo(() => new Map((assistants ?? []).map((assistant) => [assistant.name, assistant.title])), [assistants]);
   const layout = useMemo(() => layoutFlow(draft.flow, noms), [draft, noms]);
@@ -200,6 +311,11 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
     nomsPris: autres.map((team) => team.titre),
     chargement: equipes.loading,
     erreur: erreur ?? (equipes.error === null ? null : errorText(equipes.error)),
+    // <c5:entree-l42d>
+    methodes: methodes ?? [],
+    vue,
+    etroit,
+    // </c5:entree-l42d>
   });
 
   // Aperçu 300 ms après la dernière modification. `apercuDemande` est faux tant que l'éditeur n'est pas monté (Simple fermé, U1) :
@@ -411,6 +527,17 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
                       <p className="secondary small">{forme.aide}</p>
                     </div>
                   ))}
+                  {/* <c5:formes-l42d> */}
+                  {ecran1.formesC5.map((forme) => (
+                    <div key={forme.id} className="card tm-ed-choix">
+                      <button type="button" className="btn primary tm-ed-choix-bouton" onClick={() => partirDe(brouillonDeForme(forme.id))}>
+                        {forme.titre}
+                      </button>
+                      <p className="secondary small">{forme.aide}</p>
+                      {forme.precision === null ? null : <p className="secondary small">{forme.precision}</p>}
+                    </div>
+                  ))}
+                  {/* </c5:formes-l42d> */}
                 </div>
               </section>
             </>
@@ -418,28 +545,88 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
 
           {ecran2 !== null ? (
             <div className="stack loose tm-ed-etapes">
-              <div className="row wrap tm-ed-historique">
-                <Historique modele={ecran2.annuler} icone="undo" onClic={() => setHistorique(annuler)} />
-                <Historique modele={ecran2.retablir} icone="refresh" onClic={() => setHistorique(retablir)} />
-              </div>
-
-              {ecran2.blocs.map((bloc, rang) => (
-                <div key={bloc.blocId} className="stack tm-ed-rang">
-                  <Ajout ajout={ecran2.ajouter} onAjouter={(type) => editer((d) => ajouterBloc(d, type, rang))} />
-                  <BlockCard
-                    bloc={bloc}
-                    onMonter={() => editer((d) => monter(d, bloc.blocId))}
-                    onDescendre={() => editer((d) => descendre(d, bloc.blocId))}
-                    onSupprimer={() => editer((d) => supprimerBloc(d, bloc.blocId))}
-                    onDupliquer={() => editer((d) => dupliquerBloc(d, bloc.blocId))}
-                    onAjouterAvis={() => editer((d) => ajouterAvis(d, bloc.blocId))}
-                    onRetirerAvis={(stepId) => editer((d) => retirerAvis(d, bloc.blocId, stepId))}
-                    onPatchEtape={(stepId, patch: StepPatch) => editer((d) => modifierEtape(d, stepId, patch, { simple: !advanced }))}
-                    onPause={(message) => editer((d) => modifierPause(d, bloc.blocId, message))}
-                  />
+              {/* <c5:bascule-vue-l42d> */}
+              {ecran2.vue === null ? null : (
+                <div className="row wrap tm-ed-vues">
+                  <div className="row wrap tm-ed-vue-boutons" role="group" aria-label={ecran2.vue.schema}>
+                    <button
+                      type="button"
+                      className={`btn sm${ecran2.vue.courant === "etapes" ? " primary" : ""}`}
+                      aria-pressed={ecran2.vue.courant === "etapes"}
+                      onClick={() => setVue("etapes")}
+                    >
+                      {ecran2.vue.etapes}
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn sm${ecran2.vue.courant === "schema" ? " primary" : ""}`}
+                      aria-pressed={ecran2.vue.courant === "schema"}
+                      onClick={() => setVue("schema")}
+                    >
+                      {ecran2.vue.schema}
+                    </button>
+                  </div>
                 </div>
-              ))}
-              <Ajout ajout={ecran2.ajouter} onAjouter={(type) => editer((d) => ajouterBloc(d, type, draft.flow.blocs.length))} />
+              )}
+              {/* </c5:bascule-vue-l42d> */}
+
+              {/* <c5:schema-l42d> */}
+              {/* Vue « Schéma modifiable » : l'emplacement de L43, ou, sous 900 px, la phrase qui renvoie aux étapes. */}
+              {ecran2.vue !== null && ecran2.vue.courant === "schema" ? (
+                ecran2.vue.etroit === null ? (
+                  <SchemaEditor layout={layout} liste={lignes} libelle={libelleSchema(layout, null)} phrase={ecran2.vue.phrase} />
+                ) : (
+                  <p className="callout tm-ed-schema-etroit">
+                    <Icon name="monitor" size={18} />
+                    <span>{ecran2.vue.etroit}</span>
+                  </p>
+                )
+              ) : (
+                <>
+                  {/* </c5:schema-l42d> */}
+                  <div className="row wrap tm-ed-historique">
+                    <Historique modele={ecran2.annuler} icone="undo" onClic={() => setHistorique(annuler)} />
+                    <Historique modele={ecran2.retablir} icone="refresh" onClic={() => setHistorique(retablir)} />
+                  </div>
+
+                  {ecran2.blocs.map((bloc, rang) => (
+                    <div key={bloc.blocId} className="stack tm-ed-rang">
+                      <Ajout
+                        ajout={ecran2.ajouter}
+                        onAjouter={(type) => editer((d) => ajouterBloc(d, type, rang))}
+                        formes={ecran2.formes[rang] ?? { place: rang, choix: [] }}
+                        onAjouterForme={(type, place) => editer((d) => ajouterBlocC5(d, type, place))}
+                      />
+                      <BlockCard
+                        bloc={bloc}
+                        onMonter={() => editer((d) => monter(d, bloc.blocId))}
+                        onDescendre={() => editer((d) => descendre(d, bloc.blocId))}
+                        onSupprimer={() => editer((d) => supprimerBloc(d, bloc.blocId))}
+                        onDupliquer={() => editer((d) => dupliquerBloc(d, bloc.blocId))}
+                        onAjouterAvis={() => editer((d) => ajouterAvis(d, bloc.blocId))}
+                        onRetirerAvis={(stepId) => editer((d) => retirerAvis(d, bloc.blocId, stepId))}
+                        onPatchEtape={(stepId, patch: StepPatch) => editer((d) => modifierEtape(d, stepId, patch, { simple: !advanced }))}
+                        onPause={(message) => editer((d) => modifierPause(d, bloc.blocId, message))}
+                        /* <c5:bloc-actions-l42d> */
+                        onAjouterSpecialiste={() => editer((d) => ajouterSpecialiste(d, bloc.blocId))}
+                        onRetirerSpecialiste={(stepId) => editer((d) => retirerSpecialiste(d, bloc.blocId, stepId))}
+                        onTours={(tours) => editer((d) => modifierTours(d, bloc.blocId, tours))}
+                        onPauseAvantRelecture={(valeur) => editer((d) => modifierPauseAvantRelecture(d, bloc.blocId, valeur))}
+                        onChoixMax={(choixMax) => editer((d) => modifierChoixMax(d, bloc.blocId, choixMax))}
+                        onMethodesEtape={(stepId, liste) => editer((d) => modifierMethodes(d, stepId, liste))}
+                        onRecoitEtapes={(stepId, etapes) => editer((d) => modifierRecoitEtapes(d, stepId, etapes))}
+                        /* </c5:bloc-actions-l42d> */
+                      />
+                    </div>
+                  ))}
+                  <Ajout
+                    ajout={ecran2.ajouter}
+                    onAjouter={(type) => editer((d) => ajouterBloc(d, type, draft.flow.blocs.length))}
+                    formes={ecran2.formes.at(-1) ?? { place: draft.flow.blocs.length, choix: [] }}
+                    onAjouterForme={(type, place) => editer((d) => ajouterBlocC5(d, type, place))}
+                  />
+                </>
+              )}
             </div>
           ) : null}
 
@@ -468,6 +655,16 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
                   </tbody>
                 </table>
               </div>
+              {/* <c5:repetitions-l42d> */}
+              {/* Ce que « au plus » couvre en plus : les tours d'une relecture, les spécialistes d'un aiguillage. */}
+              {ecran3.repetitions.length > 0 ? (
+                <ul className="stack tight tm-ed-repetitions">
+                  {ecran3.repetitions.map((ligne) => (
+                    <li key={ligne}>{ligne}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {/* </c5:repetitions-l42d> */}
               {ecran3.total !== null ? <p className="tm-ed-total">{ecran3.total}</p> : null}
               <p className="callout tm-ed-arret">
                 <Icon name="coins" size={18} />

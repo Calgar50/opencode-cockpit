@@ -6,6 +6,10 @@
 // l'IA d'une étape, ni une simultanéité, ni une Réflexion.
 // Les problèmes de l'aperçu (POST /api/teams/preview) sont rendus SUR l'étape concernée, chacun avec son icône et son texte.
 // Aucun texte écrit ici : tout vient du modèle pur (server/shared/flow-edit.ts), donc de team-texts.ts (T4t). Aucune animation.
+// L42d (5b) : le formulaire porte en plus le NOM DU RÔLE d'une forme de la 5b (« Rédacteur », « Relecteur », « Aiguilleur »,
+// « Synthèse ») avec, pour le relecteur, l'aide sur son IA ; les puces « Méthodes (facultatif, 2 au plus) », désactivées avec
+// leur raison quand elles sont refusées ; et, en mode AVANCÉ seulement, « Le résultat d'étapes choisies » avec les cases des
+// étapes situées plus haut. En mode Simple, le modèle laisse `recoit.etapes` nul : ce choix est ABSENT de l'interface.
 import { useId } from "react";
 import type { StepPatch } from "../../../../server/shared/flow-edit.ts";
 import type { AssistantOption, StepFormModel } from "../../../../server/shared/flow-edit.ts";
@@ -16,8 +20,12 @@ export interface StepFormProps {
   etape: StepFormModel;
   /** Modification d'un champ ; `niveau` n'est passé qu'en mode Avancé (le modèle ne rend `ia` que là). */
   onPatch: (patch: StepPatch) => void;
-  /** [Retirer cet avis] ; appelé seulement quand `etape.retirer` n'est pas nul. */
+  /** [Retirer cet avis] ou [Retirer ce spécialiste] ; appelé seulement quand `etape.retirer` n'est pas nul. */
   onRetirer: () => void;
+  /** Méthodes retenues par l'étape (5b) ; absent quand l'appelant ne propose aucune méthode. */
+  onMethodes?: (methodes: readonly string[]) => void;
+  /** Étapes dont l'étape reçoit le résultat (5b, mode Avancé) ; liste vide = retour à la valeur par défaut de la place. */
+  onRecoitEtapes?: (etapes: readonly string[]) => void;
 }
 
 /** Une option d'assistant ; une option désactivée garde son libellé, suivi de sa raison. */
@@ -29,11 +37,32 @@ function OptionAssistant({ option }: { option: AssistantOption }) {
   );
 }
 
-export function StepForm({ etape, onPatch, onRetirer }: StepFormProps) {
+export function StepForm({ etape, onPatch, onRetirer, onMethodes, onRecoitEtapes }: StepFormProps) {
   const base = useId();
   const id = (champ: string) => `${base}-${champ}`;
+  // <c5:role-l42d>
+  const methodes = etape.methodes;
+  const liens = etape.recoit.etapes;
+  /** Bascule d'une méthode : la liste retenue de l'étape, la méthode en plus ou en moins (le modèle borne à 2). */
+  const basculerMethode = (methodeId: string) => {
+    if (methodes === null || onMethodes === undefined) return;
+    const retenues = methodes.valeur;
+    onMethodes(retenues.includes(methodeId) ? retenues.filter((autre) => autre !== methodeId) : [...retenues, methodeId]);
+  };
+  /** Bascule d'une case d'étape amont : la liste des étapes reçues, celle-ci en plus ou en moins. */
+  const basculerLien = (stepId: string) => {
+    if (liens === null || onRecoitEtapes === undefined) return;
+    const cochees = liens.choix.filter((choix) => choix.cochee).map((choix) => choix.stepId);
+    onRecoitEtapes(cochees.includes(stepId) ? cochees.filter((autre) => autre !== stepId) : [...cochees, stepId]);
+  };
+  // </c5:role-l42d>
   return (
     <div className="stack tm-ed-etape">
+      {/* <c5:role-entete-l42d> */}
+      {etape.roleLibelle === null ? null : <h4 className="tm-ed-role">{etape.roleLibelle}</h4>}
+      {etape.roleAide === null ? null : <p className="secondary small tm-ed-role-aide">{etape.roleAide}</p>}
+      {/* </c5:role-entete-l42d> */}
+
       <div className="tm-ed-champs">
         <div className="field">
           <label htmlFor={id("titre")}>{etape.titre.libelle}</label>
@@ -108,10 +137,55 @@ export function StepForm({ etape, onPatch, onRetirer }: StepFormProps) {
       </div>
       <p className="secondary small tm-ed-limite">{etape.consigne.limite}</p>
 
+      {/* <c5:methodes-l42d> */}
+      {methodes === null || onMethodes === undefined ? null : (
+        <fieldset className="tm-ed-methodes">
+          <legend>{methodes.libelle}</legend>
+          <ul className="row wrap tm-ed-methodes-liste">
+            {methodes.options.map((option) => (
+              <li key={option.id}>
+                {/* Une puce refusée reste FOCALISABLE (aria-disabled, comme les boutons impossibles) : sa raison se lit. */}
+                <label className={`tm-ed-methode${option.desactivee ? " desactivee" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={option.choisie}
+                    aria-disabled={option.desactivee}
+                    onChange={() => {
+                      if (!option.desactivee) basculerMethode(option.id);
+                    }}
+                  />
+                  <span>{option.titre}</span>
+                  {option.raison === null ? null : <span className="secondary small tm-ed-methode-raison">{option.raison}</span>}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </fieldset>
+      )}
+      {/* </c5:methodes-l42d> */}
+
       <p className="secondary small tm-ed-recoit">
         <span className="tm-ed-recoit-libelle">{etape.recoit.libelle}</span>
         <span>{etape.recoit.texte}</span>
       </p>
+
+      {/* <c5:liens-l42d> */}
+      {liens === null || onRecoitEtapes === undefined ? null : (
+        <fieldset className="tm-ed-liens">
+          <legend>{liens.libelle}</legend>
+          <ul className="row wrap tm-ed-liens-liste">
+            {liens.choix.map((choix) => (
+              <li key={choix.stepId}>
+                <label className="tm-ed-lien">
+                  <input type="checkbox" checked={choix.cochee} onChange={() => basculerLien(choix.stepId)} />
+                  <span>{choix.libelle}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </fieldset>
+      )}
+      {/* </c5:liens-l42d> */}
 
       {etape.problemes.length > 0 ? (
         <ul className="stack tight tm-ed-problemes">
