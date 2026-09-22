@@ -12,15 +12,25 @@
 //   remonte au onError de http.ts (502 opencode-unreachable) : le cockpit ne suppose jamais une liste d'assistants.
 // - L'estimation d'un lancement appartient à L37p : la route la délègue à eq.ports.preflight.estimate (seule route du lancement
 //   qui lit opencode, A4/D-eq-17).
+//
+// ITÉRATION 5b (L45b) : l'aperçu et l'enregistrement passent à `validateFlow` le contexte `methods` (C §5.2), et la forme des
+// blocs « relecture » et « aiguillage » (L42a) est reconnue par `flowUtilisable`, sans quoi les exemples qui les emploient
+// seraient tenus pour mal formés. `TeamView.forme` garde ses trois valeurs (type de L42a) : une relecture et un aiguillage y
+// sont comptés « à la suite », faute d'un nom propre dans ce contrat — la disposition et la liste, elles, les distinguent.
 import { CATALOGUE } from "./assistants-catalogue.ts";
 import type { EqContext, EqModule, TeamRow, TeamsPort } from "./contracts-eq.ts";
+// <c5:methodes-import>
+import { METHODS } from "./methods-catalogue.ts";
+import { methodIdsIn } from "./shared/methods.ts";
+// </c5:methodes-import>
+import { errorMessage } from "./log.ts";
 import { isAdvanced } from "./mode.ts";
 import { registerTeamRoutes } from "./routes-teams.ts";
 import type { RightLine, Tier, UiMode } from "./shared/assistant-rules.ts";
 import { modelName } from "./shared/assistant-rules.ts";
 import { estimateFlow, type FlowEstimateContext, type StepIa } from "./shared/flow-estimate.ts";
 import { flowAsList, layoutFlow, rightsUnion } from "./shared/flow-layout.ts";
-import { validateFlow } from "./shared/flow.ts";
+import { type FlowMethodsContext, validateFlow } from "./shared/flow.ts";
 import { FLOW_VERSION, TEAM_ID_RE, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
 import type {
   Flow,
@@ -118,6 +128,17 @@ function flowUtilisable(flow: Flow): boolean {
     if (typeof brut.id !== "string") return false;
     if (brut.type === "etape") return etapeUtilisable(brut.etape);
     if (brut.type === "avis") return Array.isArray(brut.avis) && brut.avis.every(etapeUtilisable) && etapeUtilisable(brut.synthese);
+    // <c5:formes-5b>
+    // Formes de la 5b (L42a) : sans ces deux branches, un déroulé de relecture ou d'aiguillage — celui des exemples
+    // « Compte rendu d'incident relu » et « Tri d'une alerte » (L45b) — serait tenu pour mal formé, donc refusé par
+    // `PUT /api/teams/:id` (400) et privé de disposition, de liste, de droits et d'estimation.
+    if (brut.type === "relecture") return etapeUtilisable(brut.auteur) && etapeUtilisable(brut.relecteur);
+    if (brut.type === "aiguillage") {
+      const specialistes = Array.isArray(brut.specialistes) && brut.specialistes.every(etapeUtilisable);
+      // `synthese` est null quand un seul spécialiste est retenu (la grammaire l'exige à partir de deux).
+      return etapeUtilisable(brut.aiguilleur) && specialistes && (brut.synthese === null || etapeUtilisable(brut.synthese));
+    }
+    // </c5:formes-5b>
     return brut.type === "pause" && typeof brut.message === "string";
   });
 }
@@ -181,8 +202,38 @@ export function createTeamService(eq: EqContext): TeamService {
     simultanees: c11.settings.get().teams.concurrentSteps,
   });
 
-  const problemesDe = (flow: Flow, assistants: ReadonlyMap<string, StepAssistant>, courant: UiMode): FlowProblem[] =>
-    validateFlow(flow, { assistants: [...assistants.values()], mode: courant, niveauDisponible, pour: "enregistrement" });
+  // <c5:contexte-methodes>
+  /**
+   * Contexte `methods` de `validateFlow` (5b, L45b ; conception C §5.2). `flow.ts` est PUR et ne peut pas importer le
+   * catalogue : ses appelants le lui passent. Deux vérités, jamais confondues (D-5-07) :
+   * - `consigne` : les méthodes ATTACHABLES à une étape, c'est-à-dire celles du catalogue de genre « consigne » ; une méthode
+   *   de genre « relecture » (Seconde lecture) n'en est pas une, et une méthode inconnue non plus ;
+   * - `parAssistant` : les méthodes DÉJÀ posées dans le FICHIER de l'assistant, lues par `methodIdsIn` — un bloc ajouté ou
+   *   retiré à la main dans le Studio compte tout de suite, comme dans `methods-service.ts`.
+   * Lecture LOCALE du Studio, en une fois : aucune requête à opencode, aucune écriture.
+   */
+  const METHODES_CONSIGNE: ReadonlySet<string> = new Set(METHODS.filter((methode) => methode.kind === "consigne").map((methode) => methode.id));
+  const AUCUNE_METHODE: ReadonlySet<string> = new Set<string>();
+
+  const contexteMethodes = async (): Promise<FlowMethodsContext> => {
+    const parNom = new Map<string, ReadonlySet<string>>();
+    try {
+      for (const fichier of await c11.studio.list("agents", { type: "global" })) {
+        parNom.set(fichier.name, new Set(methodIdsIn(fichier.body).map((methode) => methode.id)));
+      }
+    } catch (err) {
+      // Fichiers illisibles : l'onglet Équipes répond quand même. Le catalogue reste connu (une méthode inconnue est donc
+      // toujours refusée) ; ce qui se perd est le seul « déjà appliquée par l'assistant », qui ajoute un refus et n'en retire
+      // aucun. La cause technique est journalisée, sans aucun texte d'instantané ni contenu de fichier.
+      c11.log.warn("équipes : méthodes des fichiers d'agent illisibles", { error: errorMessage(err) });
+    }
+    return { consigne: METHODES_CONSIGNE, parAssistant: (nom) => parNom.get(nom) ?? AUCUNE_METHODE };
+  };
+  // </c5:contexte-methodes>
+
+  const problemesDe = (flow: Flow, assistants: ReadonlyMap<string, StepAssistant>, courant: UiMode, methodes?: FlowMethodsContext): FlowProblem[] =>
+    // `methodes` absent : `validateFlow` ne contrôle que le NOMBRE de méthodes d'une étape, sans rien supposer (L42a).
+    validateFlow(flow, { assistants: [...assistants.values()], mode: courant, niveauDisponible, pour: "enregistrement", ...(methodes ? { methods: methodes } : {}) });
 
   /** Noms lisibles des assistants installés (nom technique → titre), pour la disposition et la liste. */
   const nomsDe = (assistants: ReadonlyMap<string, StepAssistant>): ReadonlyMap<string, string> =>
@@ -239,11 +290,11 @@ export function createTeamService(eq: EqContext): TeamService {
 
   const titreCatalogue = (catalogId: string): string => CATALOGUE.find((entry) => entry.id === catalogId)?.title ?? catalogId;
 
-  const vueDe = (row: TeamRow, assistants: ReadonlyMap<string, StepAssistant>, courant: UiMode): TeamView => {
+  const vueDe = (row: TeamRow, assistants: ReadonlyMap<string, StepAssistant>, courant: UiMode, methodes?: FlowMethodsContext): TeamView => {
     const flow = storedFlow(row);
     // « À compléter » : un assistant manque (D-eq-21, aucune 409 à sa suppression) ; « Réglée en mode Avancé » : la grammaire du
     // mode Simple refuse un niveau choisi par l'équipe ou un assistant Personnalisé.
-    const simples = problemesDe(flow, assistants, "simple");
+    const simples = problemesDe(flow, assistants, "simple", methodes);
     const manquant = simples.some((probleme) => probleme.code === "assistant-absent");
     const avance = simples.some((probleme) => CODES_AVANCE.has(probleme.code));
     return {
@@ -307,10 +358,10 @@ export function createTeamService(eq: EqContext): TeamService {
 
     async list() {
       const courant = mode();
-      const assistants = await assistantsMap();
+      const [assistants, methodes] = await Promise.all([assistantsMap(), contexteMethodes()]);
       const installes = nomsInstalles();
       return {
-        teams: store.teams.list().map((row) => vueDe(row, assistants, courant)),
+        teams: store.teams.list().map((row) => vueDe(row, assistants, courant, methodes)),
         exemples: TEAM_EXAMPLES.map((example) => vueExemple(example, assistants, installes)),
         ouvertesEnSimple: eq.simpleOuvertes,
       };
@@ -321,8 +372,8 @@ export function createTeamService(eq: EqContext): TeamService {
       const flow = source === null ? null : flowOf(source.flow);
       if (flow === null) return refuse(400, "invalid", { details: { champ: "flow" } });
       const courant = mode();
-      const assistants = await assistantsMap();
-      const problems = problemesDe(flow, assistants, courant);
+      const [assistants, methodes] = await Promise.all([assistantsMap(), contexteMethodes()]);
+      const problems = problemesDe(flow, assistants, courant, methodes);
       const manquant = problems.some((probleme) => probleme.code === "assistant-absent");
       // Aucune écriture : l'aperçu ne touche ni la base, ni le catalogue, ni opencode (aucun appel d'install).
       return { ok: true, response: { problems, ...derivesDe(flow, assistants, courant, manquant) } };
@@ -338,15 +389,17 @@ export function createTeamService(eq: EqContext): TeamService {
       if (titre === null || description === null || flow === null || !flowUtilisable(flow)) return refuse(400, "invalid");
 
       const courant = mode();
-      const assistants = await assistantsMap();
-      // Grammaire revalidée par le serveur dans le mode courant, quel que soit l'écran (C S4).
-      const problems = problemesDe(flow, assistants, courant);
+      const [assistants, methodes] = await Promise.all([assistantsMap(), contexteMethodes()]);
+      // Grammaire revalidée par le serveur dans le mode courant, quel que soit l'écran (C S4). Le contexte `methodes` (5b) en
+      // fait partie : une méthode inconnue ou déjà posée dans le fichier de l'assistant est refusée ici, pas seulement à
+      // l'écran qui a composé le déroulé.
+      const problems = problemesDe(flow, assistants, courant, methodes);
       if (courant === "simple" && problems.some((probleme) => CODES_AVANCE.has(probleme.code))) return refuse(403, "mode-avance");
       const bloquants = problems.filter((probleme) => probleme.bloquant);
       if (bloquants.length > 0) return refuse(422, "equipe-invalide", { problems: bloquants });
 
       const precedente = store.teams.get(id);
-      const avance = problemesDe(flow, assistants, "simple").some((probleme) => CODES_AVANCE.has(probleme.code));
+      const avance = problemesDe(flow, assistants, "simple", methodes).some((probleme) => CODES_AVANCE.has(probleme.code));
       const row = store.teams.put({
         id,
         titre,
@@ -357,7 +410,7 @@ export function createTeamService(eq: EqContext): TeamService {
         exempleVersion: precedente?.exemple_version ?? null,
         avance,
       });
-      return { ok: true, view: vueDe(row, assistants, courant) };
+      return { ok: true, view: vueDe(row, assistants, courant, methodes) };
     },
 
     remove(id) {
@@ -374,8 +427,10 @@ export function createTeamService(eq: EqContext): TeamService {
       const courant = mode();
       const deja = equipeDeLExemple(example.id);
       if (deja !== null) {
-        // Installation idempotente : l'équipe déjà installée (modifiée ou non) est rendue telle quelle, sans aucune écriture.
-        return { ok: true, response: { team: vueDe(deja, await assistantsMap(), courant), assistantsInstalles: [] } };
+        // Installation idempotente : l'équipe déjà installée (modifiée ou non) est rendue telle quelle, sans aucune écriture —
+        // ni fiche, ni assistant, ni équipe. C'est vrai des six exemples, ceux de la 5b comme ceux de l'itération 4.
+        const [assistantsDeja, methodesDeja] = await Promise.all([assistantsMap(), contexteMethodes()]);
+        return { ok: true, response: { team: vueDe(deja, assistantsDeja, courant, methodesDeja), assistantsInstalles: [] } };
       }
 
       const installes = nomsInstalles();
@@ -390,7 +445,9 @@ export function createTeamService(eq: EqContext): TeamService {
       }
 
       const flow = exampleFlow(example, installes);
-      const assistants = await assistantsMap();
+      // Le contexte des méthodes est lu APRÈS les installations : un assistant posé à l'instant a son fichier, donc ses
+      // méthodes, comptées comme celles d'un assistant installé de longue date.
+      const [assistants, methodes] = await Promise.all([assistantsMap(), contexteMethodes()]);
       const row = store.teams.put({
         id: identifiantLibre(example.id),
         titre: example.titre,
@@ -399,9 +456,9 @@ export function createTeamService(eq: EqContext): TeamService {
         origine: "exemple",
         exempleId: example.id,
         exempleVersion: example.version,
-        avance: problemesDe(flow, assistants, "simple").some((probleme) => CODES_AVANCE.has(probleme.code)),
+        avance: problemesDe(flow, assistants, "simple", methodes).some((probleme) => CODES_AVANCE.has(probleme.code)),
       });
-      return { ok: true, response: { team: vueDe(row, assistants, courant), assistantsInstalles: installesMaintenant } };
+      return { ok: true, response: { team: vueDe(row, assistants, courant, methodes), assistantsInstalles: installesMaintenant } };
     },
 
     async estimate(id, body) {

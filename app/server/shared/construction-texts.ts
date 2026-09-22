@@ -224,6 +224,134 @@ export const TEXTES = {
         phrase: "Un premier assistant propose le bon spécialiste dans une liste fixe ; vous confirmez son choix.",
       },
     },
+    // <c5:exemples-5b>
+    /**
+     * Exemples d'équipe ajoutés par la 5b (L45b ; conception C §12.1) et contrôle SQL local de « Revue SQL sur réplica ».
+     * Les deux exemples de l'itération 4 gardent leurs textes dans `team-texts.ts` : ils ne sont jamais réécrits. Les quatre
+     * exemples d'ici écrivent leurs textes dans ce fichier, qui appartient à la construction (§2.7) ; `team-texts.ts` est de
+     * la vague 1 (L42a) et n'est pas touché.
+     * Vocabulaire : « avis », jamais « regard » ; aucune étape ne conclut à la place de l'équipe (§6, P3).
+     * D-5-25 : `enquete-incident` est livré SANS l'étape facultative « Avocat du diable », `revue-sql` SANS « Seconde lecture
+     * de la synthèse ». Le contrôle SQL local, lui, est toujours livré : `sqlRepere` est la ligne que la feuille de lancement
+     * de `revue-sql` affiche, sans aucun appel d'IA.
+     */
+    exemplesEquipes: {
+      /**
+       * Contrôle SQL LOCAL (C §12.1) : mots d'écriture repérés par `shared/sql-keywords.ts` dans la demande écrite, annoncés
+       * avant l'envoi. Le cockpit dit ce qu'il a repéré, jamais que la requête écrit.
+       */
+      sqlRepere: "Repéré dans la requête : {mots} — la synthèse le signalera en premier.",
+      "enquete-incident": {
+        titre: "Enquête sur un incident",
+        description:
+          "Trois pistes sont examinées sans se voir : changement récent, infrastructure et dépendances, données et traitements. Une synthèse rassemble leurs avis, dit ce qui reste à vérifier et ne conclut pas à la place de l'équipe.",
+        etapes: {
+          changement: {
+            titre: "Changement récent",
+            consigne:
+              "Cherche la cause de l'incident du côté des changements récents seulement : mises en production, correctifs, réglages, droits, certificats, tâches planifiées. Donne un tableau de cinq hypothèses au plus : indice pour, indice contre, contrôle en lecture seule qui départage, état (écartée, possible, probable). Chaque indice cite ce que tu as lu ; sans source, écris « À VÉRIFIER ». D'autres étapes examinent l'infrastructure et les données : ne les traite pas. Écris les causes en termes de systèmes et de procédures, jamais de personnes.",
+          },
+          infrastructure: {
+            titre: "Infrastructure et dépendances",
+            consigne:
+              "Cherche la cause de l'incident du côté de l'infrastructure et des dépendances seulement : serveurs, réseau, stockage, certificats, services extérieurs, saturation, redémarrages. Donne un tableau de cinq hypothèses au plus : indice pour, indice contre, contrôle en lecture seule qui départage, état (écartée, possible, probable). Chaque indice cite ce que tu as lu ; sans source, écris « À VÉRIFIER ». D'autres étapes examinent les changements récents et les données : ne les traite pas.",
+          },
+          donnees: {
+            titre: "Données et traitements",
+            consigne:
+              "Cherche la cause de l'incident du côté des données et des traitements seulement : volumes inhabituels, traitements de nuit, files d'attente, verrous, reprises après échec, données incomplètes ou en double. Donne un tableau de cinq hypothèses au plus : indice pour, indice contre, contrôle en lecture seule qui départage, état (écartée, possible, probable). Chaque indice cite ce que tu as lu ; sans source, écris « À VÉRIFIER ». D'autres étapes examinent les changements récents et l'infrastructure : ne les traite pas.",
+          },
+          synthese: {
+            titre: "Synthèse de l'enquête",
+            consigne:
+              "Rassemble les avis reçus en un seul rapport. Commence par la piste la plus probable et l'avis qui la porte. Puis un tableau unique, sans doublon : hypothèse, indices pour, indices contre, contrôle qui départage, avis qui la citent. Écris « avis concordants » quand plusieurs avis citent le même point : ce n'est pas une preuve. Ajoute « Points de désaccord » quand les avis se contredisent, et « Ce qui reste à vérifier » avec le contrôle à faire pour chaque point. Ne conclus pas que l'incident est expliqué : la décision appartient à l'équipe.",
+          },
+        },
+      },
+      "revue-changement-cab": {
+        titre: "Revue d'un changement avant le comité",
+        description:
+          "Prépare un changement pour le comité : rayon d'impact et retour arrière, une pause pour compléter ce qui manque, puis un pré-mortem. Un dernier rapport rassemble le tout sans décider à la place du comité.",
+        pause: "Complétez les points manquants avant le pré-mortem.",
+        etapes: {
+          impact: {
+            titre: "Rayon d'impact et retour arrière",
+            consigne:
+              "Relis le changement proposé pour son rayon d'impact et son retour arrière seulement. Donne, dans cet ordre : ce qui est touché et qui est gêné, réversible ou non ; les étapes exactes du retour arrière, quand s'en servir et ce qui ne se défait pas ; la façon de vérifier après coup, sur un périmètre réduit si possible. Écris « IRRÉVERSIBLE » et « À VÉRIFIER : sauvegarde testée ? » quand c'est le cas. Termine par la liste des informations qui manquent au dossier. Ne lance aucune commande et ne modifie rien.",
+          },
+          premortem: {
+            titre: "Pré-mortem du changement",
+            consigne:
+              "Imagine que ce changement a échoué, en tenant compte du résultat reçu. Donne les cinq raisons les plus probables, chacune liée à une étape ou à un composant précis de ce plan, avec : le signal visible en premier, la façon de l'éviter, l'équipe concernée. N'invente aucun composant : ce que tu n'as pas lu est « À VÉRIFIER ». Termine par le point le plus fragile du plan, en une ligne. Ne rassure pas.",
+          },
+          dossier: {
+            titre: "Dossier pour le comité",
+            consigne:
+              "Rassemble les résultats des étapes précédentes en un seul dossier. Commence par le résumé du changement en trois lignes : ce qui change, quand, qui est touché. Puis un tableau unique, sans doublon : gravité (bloquant, important, mineur), point, conséquence, ce qui est proposé, étape qui le signale. Ajoute « Retour arrière » avec les étapes exactes, « Points de désaccord » quand les résultats se contredisent, et « Questions pour le comité ». Ne dis pas que le changement peut partir : la décision appartient au comité.",
+          },
+        },
+      },
+      postmortem: {
+        titre: "Compte rendu d'incident relu",
+        description:
+          "Un assistant rédige le compte rendu de l'incident avec la méthode « 5 pourquoi », vous vérifiez le premier jet, puis un relecteur critique le relit ; 2 tours au maximum.",
+        etapes: {
+          redaction: {
+            titre: "Rédaction du compte rendu",
+            consigne:
+              "Rédige le compte rendu de l'incident à partir des notes, des extraits de journaux et de la chronologie fournis : résumé, impact mesuré, chronologie, causes, ce qui a marché, ce qui n'a pas marché, puis les actions avec un rôle responsable, une échéance et un résultat observable. Marque chaque fait Vérifié, Déduit ou À VÉRIFIER. Écris les causes en termes de systèmes et de procédures, jamais de personnes. Ne modifie rien et ne lance aucune commande.",
+          },
+          relecture: {
+            titre: "Relecture critique",
+            consigne:
+              "Relis le compte rendu reçu avec ta liste de contrôle : chaque fait est-il tenu par une source citée, l'impact est-il chiffré, la chronologie est-elle complète, les causes remontent-elles à une cause sur laquelle on peut agir, chaque action a-t-elle un rôle responsable, une échéance et un résultat observable ? Donne les défauts situés, du plus grave au plus léger, avec l'extrait concerné et la correction proposée. Ne réécris pas le compte rendu et ne change pas une conclusion sourcée sans fait nouveau.",
+          },
+        },
+      },
+      "tri-alerte": {
+        titre: "Tri d'une alerte",
+        description:
+          "Un aiguilleur propose, dans une liste fixe, le ou les spécialistes de l'alerte ; vous confirmez son choix. Deux spécialistes au plus l'expliquent, puis une synthèse rassemble leurs avis.",
+        etapes: {
+          aiguilleur: {
+            titre: "Choix du spécialiste",
+            consigne:
+              "Lis l'alerte et choisis, dans la liste proposée, le ou les spécialistes les mieux placés pour l'expliquer. Donne une raison d'une ligne par choix, tirée du texte de l'alerte. Si aucun ne convient, dis-le : n'en choisis pas un par défaut.",
+          },
+          supervision: {
+            titre: "Supervision et seuils",
+            consigne:
+              "Explique l'alerte du côté de la supervision seulement : ce que la sonde mesure vraiment, le seuil et sa fenêtre, la fréquence des relevés, les alertes liées, les faux positifs connus. Dis ce qu'il faut regarder pour confirmer, en lecture seule. Ne propose aucune action qui modifie quelque chose. Ce que tu n'as pas lu est « À VÉRIFIER ».",
+          },
+          reseau: {
+            titre: "Réseau et accès",
+            consigne:
+              "Explique l'alerte du côté du réseau et des accès seulement : liens, pare-feu, résolution de noms, certificats, temps de réponse, pertes. Dis ce qu'il faut regarder pour confirmer, en lecture seule, et ce qui distinguerait une panne réseau d'une panne du service. Ne propose aucune action qui modifie quelque chose. Ce que tu n'as pas lu est « À VÉRIFIER ».",
+          },
+          "base-de-donnees": {
+            titre: "Base de données",
+            consigne:
+              "Explique l'alerte du côté de la base de données seulement : verrous, attentes, requêtes longues, espace disque, réplication en retard, sauvegardes en cours. Dis ce qu'il faut regarder pour confirmer, en lecture seule. Ne propose aucune requête qui écrit. Ce que tu n'as pas lu est « À VÉRIFIER ».",
+          },
+          application: {
+            titre: "Application et traitements",
+            consigne:
+              "Explique l'alerte du côté de l'application et des traitements seulement : files d'attente, traitements de nuit, reprises après échec, mémoire, erreurs répétées dans les journaux, dépendances extérieures. Dis ce qu'il faut regarder pour confirmer, en lecture seule. Ne propose aucune action qui modifie quelque chose. Ce que tu n'as pas lu est « À VÉRIFIER ».",
+          },
+          stockage: {
+            titre: "Stockage et sauvegardes",
+            consigne:
+              "Explique l'alerte du côté du stockage et des sauvegardes seulement : espace restant, croissance, fichiers temporaires, instantanés, sauvegardes en cours ou en échec, lenteurs d'écriture. Dis ce qu'il faut regarder pour confirmer, en lecture seule. Ne propose aucune suppression. Ce que tu n'as pas lu est « À VÉRIFIER ».",
+          },
+          synthese: {
+            titre: "Synthèse de l'alerte",
+            consigne:
+              "Rassemble les avis reçus en un seul rapport. Commence par ce que l'alerte veut dire, en une ligne. Puis un tableau unique, sans doublon : point, ce qu'il faut regarder pour le confirmer, avis qui le citent. Écris « avis concordants » quand plusieurs avis citent le même point : ce n'est pas une preuve. Ajoute « Points de désaccord » quand les avis se contredisent, et « Ce qui reste à vérifier ». Ne conclus pas que l'alerte est traitée : la décision appartient à l'équipe.",
+          },
+        },
+      },
+    },
+    // </c5:exemples-5b>
     /** Éditeur guidé (5b). */
     editeur: {
       champs: {

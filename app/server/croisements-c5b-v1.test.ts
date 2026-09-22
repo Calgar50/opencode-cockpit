@@ -398,10 +398,17 @@ describe("croisement V1 : une étape à `recoit: {etapes}` et à `methodes`", ()
 
 describe("croisement V1 : les exemples de l'itération 4 restent valides sans `methodes`", () => {
   const noms = new Map<string, string>();
+  // <c5:exemples-it4>
+  // Ce croisement juge les exemples DE L'ITÉRATION 4, ceux qui n'ont ni méthode ni forme de la 5b. La V2 (L45b) en ajoute
+  // quatre au registre, dont une relecture et un aiguillage : ils ont leurs propres contrôles dans
+  // `team-examples-c5.test.ts` et ne passeraient évidemment pas « tour 1 partout ».
+  const EXEMPLES_IT4 = ["revue-sql", "relecture-script"];
+  const exemplesIt4 = () => TEAM_EXAMPLES.filter((exemple) => EXEMPLES_IT4.includes(exemple.id));
+  // </c5:exemples-it4>
 
   it("les deux exemples livrés passent validateFlow en Simple et en Avancé, sans aucune méthode ni lien avancé", () => {
-    assert.ok(TEAM_EXAMPLES.length >= 2);
-    for (const exemple of TEAM_EXAMPLES) {
+    assert.equal(exemplesIt4().length, 2);
+    for (const exemple of exemplesIt4()) {
       const flow = exampleFlow(exemple, noms);
       const assistants = toutesLesEtapes(flow).map((s) => assistant(s.assistant));
       for (const mode of ["simple", "avance"] as const) {
@@ -416,7 +423,7 @@ describe("croisement V1 : les exemples de l'itération 4 restent valides sans `m
   });
 
   it("`planSteps` sans option rend l'ORDRE DE L'ITÉRATION 4 sur ces exemples : typique = maximal, tour 1 partout", () => {
-    for (const exemple of TEAM_EXAMPLES) {
+    for (const exemple of exemplesIt4()) {
       const flow = exampleFlow(exemple, noms);
       const defaut = planSteps(flow);
       assert.deepEqual(defaut, planSteps(flow, { chemin: "maximal" }), exemple.id);

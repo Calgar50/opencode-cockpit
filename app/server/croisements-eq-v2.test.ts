@@ -260,10 +260,14 @@ describe("croisement it4 V2 : montage réel des cinq modules", () => {
     const vide = await liste(h);
     assert.deepEqual(vide.teams, []);
     assert.equal(vide.ouvertesEnSimple, false);
+    // <c5:exemples-it4>
+    // Les deux exemples de l'it4 ouvrent la galerie, dans cet ordre ; la 5b (L45b) en ajoute quatre à la suite (C §12.1),
+    // contrôlés par `team-examples-c5.test.ts`. Ce croisement de l'it4 ne juge que les deux premiers.
     assert.deepEqual(
-      vide.exemples.map((exemple) => exemple.id),
+      vide.exemples.slice(0, 2).map((exemple) => exemple.id),
       ["revue-sql", "relecture-script"],
     );
+    // </c5:exemples-it4>
     assert.equal(EQUIPES_SIMPLE_OUVERTES, false);
     h.assertNoGlobalRestart();
   });
