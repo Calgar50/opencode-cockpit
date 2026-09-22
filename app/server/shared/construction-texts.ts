@@ -349,6 +349,40 @@ export function secondReadingPrefix(cible: SecondReadingTarget): string {
   return at === -1 ? message : message.slice(0, at);
 }
 
+/** Remplit un gabarit « {nom} » ; un nom absent des valeurs garde son gabarit. */
+function remplir(gabarit: string, valeurs: Readonly<Record<string, string | number>>): string {
+  return gabarit.replace(/\{(\w+)\}/g, (match: string, nom: string) => (Object.hasOwn(valeurs, nom) ? String(valeurs[nom]) : match));
+}
+
+/** Nombre montré dans un écart : entier, jamais négatif — le Déroulé ne compte pas ce qu'il n'a pas enregistré. */
+function compte(valeur: number): number {
+  return Number.isFinite(valeur) ? Math.max(0, Math.trunc(valeur)) : 0;
+}
+
+/**
+ * Écart « Prévu / Réel » des tours d'une relecture (L42c ; conception A §7.3 : « Prévu : jusqu'à 2 tours · Réel : 1 tour »).
+ * Le singulier du réel suit le nombre de tours RÉELLEMENT faits ; le prévu garde « jusqu'à », car c'est un plafond, jamais une
+ * promesse.
+ */
+export function ecartTours(prevu: number, reel: number): string {
+  const deroule = TEXTES.partout.execution.deroule;
+  const m = compte(reel);
+  return remplir(m === 1 ? deroule.ecartTourUn : deroule.ecartToursPlusieurs, { n: compte(prevu), m });
+}
+
+/**
+ * Écart « Prévu / Réel » des spécialistes d'un aiguillage (L42c) : « Prévu : jusqu'à {n} spécialistes · Réel : {m} ». Le réel
+ * est un nombre nu — il vaut 0 quand aucun spécialiste de la liste ne convenait, et rien n'a alors été appelé.
+ */
+export function ecartSpecialistes(prevu: number, reel: number): string {
+  return remplir(TEXTES.partout.execution.deroule.ecartSpecialistes, { n: compte(prevu), m: compte(reel) });
+}
+
+/** Répétition d'un bloc dans le Déroulé (L42c) : « ×{n} », écrit sur le bloc qui a travaillé plusieurs tours. */
+export function repetitionBloc(tours: number): string {
+  return remplir(TEXTES.partout.execution.deroule.repetition, { n: compte(tours) });
+}
+
 /**
  * Annonce de la 1.1.0 (D-5-24, U1). Équipes ouvertes dans le mode courant : le titre et le texte proposent une équipe.
  * Équipes fermées : même texte sans cette phrase, suivi de la phrase de l'itération 4. Aucun appelant ne compose lui-même.

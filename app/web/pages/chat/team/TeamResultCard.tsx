@@ -5,13 +5,20 @@
 // [Ajouter à la conversation] (onAdd).
 // EXPORTÉ et réutilisé par L38c (V3) dans la transcription : propriétés figées {run, texte, advanced, onAdd?}. Aucun texte écrit
 // ici (team-texts.ts par team-view-model.ts) ; aucune animation ; aucune région aria-live propre.
+// 5b (L42c) : le livrable d'une relecture porte un « Journal de relecture » et ses notes d'honnêteté. Le modèle les DÉCOUPE du
+// résultat (il ne les réécrit jamais) : le journal est rendu REPLIÉ, dans un <details> fermé, et les notes restent visibles sous
+// le résultat — « Non relue après la dernière correction. », « Relecture non conclue après {n} tours : … ».
+// 5b (L42c) : le livrable d'un aiguillage où AUCUN spécialiste ne convenait porte sa phrase et, quand le bloc nomme un repli,
+// « Pour une explication générale, envoyez votre demande à « {assistant} ». ». Les deux phrases restent dans le résultat rendu
+// ci-dessous ; la carte n'ajoute que [Envoyer à cet assistant], qui PRÉREMPLIT le composeur et N'ENVOIE RIEN.
 import { useMemo } from "react";
 import type { TeamRunView } from "../../../../server/shared/team-types.ts";
 import { Icon } from "../../../components/Icon.tsx";
 import { Markdown } from "../../../components/Markdown.tsx";
 import { Button } from "../../../components/ui.tsx";
-import { modeleResultat } from "./team-view-model.ts";
+import { type ComposeurPrerempli, EVENEMENT_COMPOSEUR, modeleResultat } from "./team-view-model.ts";
 import "./team-cards.css";
+import "./team-choice.css";
 
 export interface TeamResultCardProps {
   run: TeamRunView;
@@ -24,6 +31,16 @@ export interface TeamResultCardProps {
 
 export function TeamResultCard({ run, texte, advanced, onAdd }: TeamResultCardProps) {
   const modele = useMemo(() => modeleResultat(run, texte, advanced), [run, texte, advanced]);
+  /**
+   * [Envoyer à cet assistant] : la demande à recopier et l'assistant de repli sont PUBLIÉS pour la page du chat, qui remplit la
+   * saisie et choisit l'assistant. RIEN n'est envoyé ici — aucune requête, aucun coût, et le focus n'est pas déplacé.
+   */
+  const preremplir = (assistant: string) => {
+    const detail: ComposeurPrerempli = { assistant, rootId: run.rootId, runId: run.id, demandeMessageId: run.requestMessageId };
+    window.dispatchEvent(new CustomEvent(EVENEMENT_COMPOSEUR, { detail }));
+  };
+  // Repli d'un aiguillage « aucun ne convient » : le bouton n'existe QUE si le livrable nomme l'assistant (P3).
+  const repli = modele.aucun !== null && modele.aucun.assistant !== null && modele.aucun.envoyer !== null ? { assistant: modele.aucun.assistant, envoyer: modele.aucun.envoyer } : null;
   return (
     <section className="team-card team-result" aria-label={modele.titre}>
       <h3 className="team-card-title">
@@ -33,6 +50,24 @@ export function TeamResultCard({ run, texte, advanced, onAdd }: TeamResultCardPr
       <p className="team-card-note">{modele.redige}</p>
       {modele.iaEquipe === null ? null : <p className="team-card-note">{modele.iaEquipe}</p>}
       {modele.texte === "" ? null : <Markdown text={modele.texte} className="team-result-text" />}
+      {modele.notes.map((note) => (
+        <p key={note} className="team-card-note">
+          {note}
+        </p>
+      ))}
+      {modele.journal === null ? null : (
+        <details className="team-journal">
+          <summary className="team-journal-titre">{modele.journal.titre}</summary>
+          <Markdown text={modele.journal.texte} className="team-result-text" />
+        </details>
+      )}
+      {repli === null ? null : (
+        <div className="team-card-actions team-aucun-actions">
+          <Button size="sm" onClick={() => preremplir(repli.assistant)}>
+            {repli.envoyer}
+          </Button>
+        </div>
+      )}
       <p className="team-card-note tabular">{modele.resume}</p>
       <p className="team-card-verifier">
         <Icon name="alert" className="team-icon" />

@@ -6,20 +6,95 @@
 // raison et [Continuer l'équipe] (le serveur refait le contrôle et la carte reste en pause avec la raison à jour s'il échoue
 // encore), [Arrêter l'équipe].
 // Une pause de budget confirme le garde-fou budgétaire (x-cockpit-confirm: 1). Textes et boutons : team-view-model.ts (T4t).
-import { useId, useState } from "react";
+// 5b (L42c) : PAUSE DE CHOIX d'un aiguillage — titre, phrase de proposition avec la raison de l'aiguilleur (masquée, texte rendu
+// par React donc échappé), cases à cocher (les proposées cochées ; RIEN de coché quand le choix est illisible, et la carte le
+// dit), « {n} au maximum. », puis [Continuer avec {n} spécialiste(s) (≈ {x} $)] — le coût de la SUITE —, [Aucun ne convient] et
+// [Arrêter l'équipe]. [Aucun ne convient] répond au serveur ; le lancement se termine alors, et c'est la carte de RÉSULTAT qui
+// porte la suite du chemin « aucun » (les deux phrases du livrable et [Envoyer à cet assistant]), seul endroit où l'assistant
+// de repli parvient à l'interface.
+// Le focus n'est jamais pris : aucun autoFocus, aucun appel à .focus() ; le bloc porte l'identifiant `teamPauseElementId(runId)`
+// pour qu'un renvoi (le [Répondre] du bandeau) y mène sur un clic de l'utilisateur.
+import { useId, useMemo, useState } from "react";
+import { basculer } from "../../../../server/shared/team-choice-view.ts";
+import { Icon } from "../../../components/Icon.tsx";
 import { Button } from "../../../components/ui.tsx";
-import type { TeamPauseModel } from "./team-view-model.ts";
+import { modeleChoix, type TeamChoixEntree, type TeamPauseModel } from "./team-view-model.ts";
+import "./team-choice.css";
 
 export interface TeamPauseCardProps {
   pause: TeamPauseModel;
+  /** Identifiant du bloc, cible d'un renvoi depuis le bandeau (teamPauseElementId). */
+  blocId: string;
   /** Appel en cours : les deux boutons attendent. */
   occupe: boolean;
-  /** `correction` : résumé transmis modifié ; `precision` : précision pour la suite. */
-  onContinue: (corps: { precision?: string; correction?: string }, confirme: boolean) => void;
+  /** `correction` : résumé transmis modifié ; `precision` : précision pour la suite ; `choix`/`aucun` : réponse d'un aiguillage. */
+  onContinue: (corps: { precision?: string; correction?: string; choix?: string[]; aucun?: true }, confirme: boolean) => void;
   onStop: () => void;
 }
 
-export function TeamPauseCard({ pause, occupe, onContinue, onStop }: TeamPauseCardProps) {
+/** Cases de la carte de choix : une case par spécialiste, le MOT du titre à côté (jamais la couleur seule). */
+function ChoixCases({
+  entree,
+  occupe,
+  gratuite,
+  onContinue,
+  onStop,
+  onAucun,
+}: {
+  entree: TeamChoixEntree;
+  occupe: boolean;
+  /** « Rien n'est facturé pendant la pause. » : écrite AVANT les boutons, jamais sous eux. */
+  gratuite: string | null;
+  onContinue: (choix: string[]) => void;
+  onStop: () => void;
+  onAucun: () => void;
+}) {
+  const baseId = useId();
+  const [selection, setSelection] = useState<string[] | null>(null);
+  const vue = useMemo(() => modeleChoix(entree, selection), [entree, selection]);
+  const retenus = vue.cases.filter((c) => c.coche).map((c) => c.stepId);
+  return (
+    <div className="team-choice">
+      <p className="team-pause-title">{vue.titre}</p>
+      {vue.proposition === null ? null : <p className="team-card-note">{vue.proposition}</p>}
+      {vue.illisible === null ? null : (
+        <p className="team-card-note team-choice-illisible">
+          <Icon name="alert" className="team-icon" />
+          <span>{vue.illisible}</span>
+        </p>
+      )}
+      <ul className="team-choice-list">
+        {vue.cases.map((option) => (
+          <li key={option.stepId} className="team-choice-item">
+            <input
+              type="checkbox"
+              id={`${baseId}-${option.stepId}`}
+              checked={option.coche}
+              disabled={occupe}
+              onChange={() => setSelection(basculer(entree.options, retenus, option.stepId, vue.choixMax))}
+            />
+            <label htmlFor={`${baseId}-${option.stepId}`}>{option.titre}</label>
+          </li>
+        ))}
+      </ul>
+      <p className="team-card-note">{vue.maximum}</p>
+      {gratuite === null ? null : <p className="team-card-note">{gratuite}</p>}
+      <div className="team-card-actions">
+        <Button variant="primary" disabled={occupe} aria-disabled={!vue.continuerActif} onClick={() => (vue.continuerActif ? onContinue(retenus) : undefined)}>
+          {vue.continuer}
+        </Button>
+        <Button disabled={occupe} onClick={onAucun}>
+          {vue.aucunConvient}
+        </Button>
+        <Button variant="danger" disabled={occupe} onClick={onStop}>
+          {vue.arreter}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop }: TeamPauseCardProps) {
   const baseId = useId();
   const [resume, setResume] = useState<string | null>(null);
   const [precision, setPrecision] = useState("");
@@ -33,9 +108,19 @@ export function TeamPauseCard({ pause, occupe, onContinue, onStop }: TeamPauseCa
   };
 
   return (
-    <div className="team-pause">
-      <p className="team-pause-title">{pause.titre}</p>
+    <div className="team-pause" id={blocId}>
+      {pause.choix === null ? <p className="team-pause-title">{pause.titre}</p> : null}
       {pause.message === "" ? null : <p className="team-card-note">{pause.message}</p>}
+      {pause.choix === null ? null : (
+        <ChoixCases
+          entree={pause.choix}
+          occupe={occupe}
+          gratuite={pause.gratuite}
+          onContinue={(choix) => onContinue({ choix }, false)}
+          onStop={onStop}
+          onAucun={() => onContinue({ aucun: true }, false)}
+        />
+      )}
       {pause.resume === null ? null : (
         <div className="team-pause-field">
           <p className="team-card-note">{pause.resume.entete}</p>
@@ -67,20 +152,22 @@ export function TeamPauseCard({ pause, occupe, onContinue, onStop }: TeamPauseCa
           </p>
         </div>
       )}
-      {pause.gratuite === null ? null : <p className="team-card-note">{pause.gratuite}</p>}
-      <div className="team-card-actions">
-        {pause.boutons.map((bouton) => (
-          <Button
-            key={bouton.action}
-            variant={bouton.allure === "danger" ? "danger" : bouton.allure === "primary" ? "primary" : "default"}
-            disabled={occupe || bouton.desactive}
-            title={bouton.raison ?? undefined}
-            onClick={bouton.action === "arreter" ? onStop : continuer}
-          >
-            {bouton.libelle}
-          </Button>
-        ))}
-      </div>
+      {pause.gratuite === null || pause.choix !== null ? null : <p className="team-card-note">{pause.gratuite}</p>}
+      {pause.boutons.length === 0 ? null : (
+        <div className="team-card-actions">
+          {pause.boutons.map((bouton) => (
+            <Button
+              key={bouton.action}
+              variant={bouton.allure === "danger" ? "danger" : bouton.allure === "primary" ? "primary" : "default"}
+              disabled={occupe || bouton.desactive}
+              title={bouton.raison ?? undefined}
+              onClick={bouton.action === "arreter" ? onStop : continuer}
+            >
+              {bouton.libelle}
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
