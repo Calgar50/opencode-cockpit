@@ -1,0 +1,290 @@
+/* Propriétaire : L40a. Onglet « Équipes » : galerie des exemples, équipes installées et schéma lu (spécification §5.3, §5.4,
+   §5.5, §5.6 ; C §9.10).
+   Schéma et liste (§5.6) : la liste du <figure> est la VÉRITÉ pour le lecteur d'écran. Sous 900 px, la liste seule est affichée et
+   le schéma est caché ; au-dessus de 900 px, le schéma paraît et la liste reste dans l'arbre d'accessibilité, hors de l'écran
+   (mêmes règles que .visually-hidden de styles.css). « .tm-figure-liste.visible » garde la liste visible (aperçu, installation).
+   Genre d'une ligne du schéma : dit par le MOT et par la FORME (coins, bordure, trait de gauche), jamais par la couleur seule.
+   États d'une équipe (« À compléter », « Réglée en mode Avancé ») : dits par le MOT, avec une icône ; la couleur n'ajoute rien.
+   Mouvement : aucune animation ; une seule transition de couleur, sous prefers-reduced-motion: no-preference.
+   Contraste forcé (U9) : cartes et mini-schémas bordés, connecteurs SVG explicitement en stroke: CanvasText, focus en Highlight,
+   états dits par le mot (leur fond disparaît, la bordure et le texte restent). */
+
+.tm-onglet-titre {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tm-ferme,
+.tm-erreur {
+  align-items: flex-start;
+}
+
+.tm-vide h3 {
+  max-width: 46ch;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* --- Cartes ------------------------------------------------------------------------------------------------------------ */
+
+.tm-carte,
+.tm-exemple {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.tm-carte-titre,
+.tm-exemple-titre {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tm-carte-ligne,
+.tm-carte-description,
+.tm-carte-aide,
+.tm-exemple-phrase {
+  margin: 0;
+  min-width: 0;
+}
+
+.tm-carte-actions,
+.tm-exemple-actions {
+  gap: 8px;
+}
+
+.tm-carte-actions .btn[aria-disabled="true"],
+.tm-exemple-actions .btn[aria-disabled="true"] {
+  color: var(--text-3);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+
+.tm-etat {
+  gap: 4px;
+  border: 1px solid var(--border-strong);
+}
+.tm-etat-a-completer {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+.tm-etat-avance {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+/* --- Galerie ------------------------------------------------------------------------------------------------------------ */
+
+.tm-galerie-titre {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tm-galerie {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.tm-galerie-ancre:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
+
+.tm-exemple-meta {
+  margin: 0;
+  gap: 8px;
+}
+
+.tm-exemple-lecture {
+  border: 1px solid var(--border-strong);
+}
+
+.tm-installation-aussi,
+.tm-installation-refus {
+  align-items: flex-start;
+  margin: 0;
+}
+
+/* --- Schéma lu ----------------------------------------------------------------------------------------------------------- */
+
+.tm-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+}
+
+.tm-figure-legende {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.tm-figure-liste {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Sous 900 px : la liste seule (§5.6). Le schéma n'apparaît qu'au-dessus, où la liste passe hors de l'écran, sans quitter
+   l'arbre d'accessibilité : elle reste la vérité pour le lecteur d'écran. */
+.tm-schema {
+  display: none;
+}
+
+@media (min-width: 901px) {
+  .tm-schema {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .tm-figure-liste:not(.visible) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+.tm-schema-bloc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tm-schema-mot {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  text-transform: none;
+}
+
+.tm-schema-colonnes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tm-schema-cellule {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 220px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+/* Forme de chaque genre : coins droits pour une étape, coins arrondis pour un avis, pastille pour la synthèse, trait de gauche
+   épais pour une pause. La forme double le mot : aucun genre n'est porté par la couleur seule. */
+.tm-schema-cellule.tm-kind-etape {
+  border-radius: var(--radius-sm);
+}
+.tm-schema-cellule.tm-kind-avis {
+  border-radius: var(--radius-lg);
+}
+.tm-schema-cellule.tm-kind-synthese {
+  border-radius: 999px;
+}
+.tm-schema-cellule.tm-kind-pause {
+  border-radius: var(--radius-sm);
+  border-left-width: 5px;
+  background: transparent;
+}
+
+.tm-schema-titre {
+  font-size: 12px;
+  font-weight: 600;
+}
+.tm-schema-sous-titre {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.tm-connecteur {
+  display: block;
+  flex: none;
+  margin-left: 12px;
+}
+
+.tm-connecteur-trait {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tm-schema.mini .tm-schema-cellule {
+  max-width: 150px;
+  padding: 4px 8px;
+}
+.tm-schema.mini .tm-schema-titre {
+  font-size: 11px;
+}
+.tm-schema.mini .tm-schema-sous-titre,
+.tm-schema.mini .tm-schema-mot {
+  font-size: 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tm-carte-actions .btn,
+  .tm-exemple-actions .btn {
+    transition: background-color 120ms ease;
+  }
+}
+
+/* --- Contraste forcé (U9, spécification §5.5 l.922) ---------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .tm-carte,
+  .tm-exemple,
+  .tm-schema-cellule {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .tm-connecteur-trait {
+    stroke: CanvasText;
+  }
+  .tm-etat,
+  .tm-etat-a-completer,
+  .tm-etat-avance,
+  .tm-exemple-lecture {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .tm-carte-actions .btn[aria-disabled="true"],
+  .tm-exemple-actions .btn[aria-disabled="true"] {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  .tm-galerie-ancre:focus-visible,
+  .tm-carte-actions .btn:focus-visible,
+  .tm-exemple-actions .btn:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}

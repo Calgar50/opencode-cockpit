@@ -80,6 +80,12 @@ import {
   useServerResolve,
 } from "./chat/turn.ts";
 import { type ProfileInfo, WelcomeCards } from "./chat/WelcomeCards.tsx";
+// --- équipes (it4) : début ---
+import type { ComposerDraftHandle } from "./chat/Composer.tsx";
+import type { TeamDraft } from "./chat/team/slots.ts";
+import { TeamLauncher } from "./chat/team/TeamLauncher.tsx";
+import { TeamRunCards } from "./chat/team/TeamRunCards.tsx";
+// --- équipes (it4) : fin ---
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -193,6 +199,12 @@ export function ChatPage() {
   const [journalNonce, setJournalNonce] = useState(0);
   const creatingRef = useRef<Promise<{ id: string; directory: string }> | null>(null);
   const decisionStates = useDecisionStates(sessionId);
+  // --- équipes (it4) : début ---
+  /** Texte de verrou annoncé par les cartes d'équipe (saisie désactivée, « Arrêter » affiché) ; null : saisie libre. */
+  const [teamLock, setTeamLock] = useState<string | null>(null);
+  /** Brouillon de la saisie, lu et vidé par le lanceur d'équipe. */
+  const composerDraft = useRef<ComposerDraftHandle | null>(null);
+  // --- équipes (it4) : fin ---
 
   const sessionRef = useRef<string | null>(sessionId);
   sessionRef.current = sessionId;
@@ -323,6 +335,9 @@ export function ChatPage() {
   useEffect(() => {
     dispatch({ type: "reset", messages: [] });
     setTreeWorking(false);
+    // --- équipes (it4) : début ---
+    setTeamLock(null);
+    // --- équipes (it4) : fin ---
     setTodos([]);
     setDiff([]);
     setChildren([]);
@@ -756,6 +771,20 @@ export function ChatPage() {
     },
     [sessionId],
   );
+  // --- équipes (it4) : début ---
+  /** Ignore le verrou annoncé par les cartes d'équipe d'une conversation précédente. */
+  const onTeamLock = useCallback(
+    (texte: string | null) => {
+      if (sessionRef.current === sessionId) setTeamLock(texte);
+    },
+    [sessionId],
+  );
+  const getTeamDraft = useCallback((): TeamDraft => composerDraft.current?.get() ?? { texte: "", fichiers: [] }, []);
+  const clearTeamDraft = useCallback(() => composerDraft.current?.clear(), []);
+  /** Saisie verrouillée par une équipe : désactivée, texte du verrou en guise d'invite, « Arrêter » affiché. */
+  const teamLockProps: { disabled?: boolean; placeholder?: string; stopVisible?: boolean } =
+    teamLock === null ? {} : { disabled: true, placeholder: teamLock, stopVisible: true };
+  // --- équipes (it4) : fin ---
 
   /** « Résumer » : IA de la conversation (celle de l'assistant, sinon le niveau), jamais une IA choisie pour un message. */
   const summarize = async () => {
@@ -1194,6 +1223,16 @@ export function ChatPage() {
                 </div>
               ) : null}
               <PlanCard rootId={sessionId} directory={sessionDirectory} busy={busy} onOpenConversation={openConversation} />
+              {/* --- équipes (it4) : début --- */}
+              <TeamRunCards
+                key={`equipe-${sessionId}`}
+                rootId={sessionId}
+                directory={sessionDirectory}
+                advanced={advanced}
+                onOpenSession={setDrawer}
+                onLockChange={onTeamLock}
+              />
+              {/* --- équipes (it4) : fin --- */}
             </div>
           )}
         </div>
@@ -1292,6 +1331,22 @@ export function ChatPage() {
           seed={draftSeed}
           autonomy={<AutonomySelector placement="composer" {...selectorProps} />}
           stopVisible={Boolean(sessionId) && treeWorking}
+          // --- équipes (it4) : début ---
+          team={
+            <TeamLauncher
+              rootId={sessionId}
+              directory={sessionDirectory}
+              advanced={advanced}
+              busy={busy || (Boolean(sessionId) && treeWorking) || teamLock !== null}
+              getDraft={getTeamDraft}
+              clearDraft={clearTeamDraft}
+              agentConversation={agent}
+              onLaunched={(rootId) => openConversation(rootId, null)}
+            />
+          }
+          draftHandle={composerDraft}
+          {...teamLockProps}
+          // --- équipes (it4) : fin ---
         />
       </section>
 

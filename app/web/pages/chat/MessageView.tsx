@@ -30,6 +30,9 @@ import {
   turnCosts,
   turnFooterText,
 } from "./turn.ts";
+// --- équipes (it4) : début ---
+import { TeamTranscriptEntry } from "./team/TeamTranscriptEntry.tsx";
+// --- équipes (it4) : fin ---
 
 function StreamingMarkdown({ text }: { text: string }) {
   const deferred = useDeferredValue(text);
@@ -247,6 +250,17 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
   // Le bouton n'est proposé que sous une réponse d'une conversation RACINE : le tiroir d'un travail délégué n'en est pas une.
   const sessionDeTour = turn.replies[0]?.info.sessionID ?? null;
   // </c5:methodes-demande>
+  // --- équipes (it4) : début ---
+  // Message recopié par le cockpit pour une équipe (demande, résultat) ou consigne d'une étape dans le tiroir de lecture : le
+  // rendu est celui de TeamTranscriptEntry (bulle sans marqueur, carte de résultat, ou consigne repliée). Tout autre message,
+  // c'est-à-dire le cas ordinaire, garde EXACTEMENT le rendu calculé ci-dessus, passé en `fallback` : la reconnaissance se fait
+  // par l'IDENTIFIANT du message (risque 19), jamais par un marqueur que vous ou une IA pourriez écrire.
+  if (turn.user) {
+    opening = (
+      <TeamTranscriptEntry message={turn.user} conversationRoot={conversationRoot} advanced={advanced} fallback={opening} />
+    );
+  }
+  // --- équipes (it4) : fin ---
   return (
     <article className="turn">
       {opening}

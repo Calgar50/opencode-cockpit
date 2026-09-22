@@ -39,6 +39,10 @@ import { TierService } from "../tiers.ts";
 import type { BuildCockpit11Options } from "../wiring-11.ts";
 import { FakeOpencode } from "./fake-opencode.ts";
 import { listenFetchable, until } from "./helpers.ts";
+// --- équipes (it4) : début ---
+import type { CockpitAppDeps } from "../app-factory.ts";
+import type { BuildEquipesOptions } from "../wiring-eq.ts";
+// --- équipes (it4) : fin ---
 
 export interface CockpitHarnessOptions {
   /** Réglages appliqués avant createApp (SettingsStore.update) ; sans rien : réglages par défaut, mode Simple. */
@@ -59,6 +63,15 @@ export interface CockpitHarnessOptions {
   ports?: BuildCockpit11Options["ports"];
   /** Portillon remplacé (espion), construit sur les dépendances finales ; absent : createPermissionGate. */
   gate?: (deps: AppDeps) => PermissionGate;
+  // --- équipes (it4) : début ---
+  /**
+   * Modules d'équipes installés (noms ou modules factices). Absent : aucun (ports neutres, comportement 1.1). « tous » : réservé
+   * aux tests de croisement et aux e2e.
+   */
+  equipes?: BuildEquipesOptions["modules"] | "tous";
+  /** Surcharges des ports d'équipes, posées après l'installation des modules. */
+  eqPorts?: BuildEquipesOptions["ports"];
+  // --- équipes (it4) : fin ---
 }
 
 export interface CallResult {
@@ -279,10 +292,19 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   const processor = makeProcessor(merged);
   const deps: AppDeps = { ...merged, processor };
 
+  // --- équipes (it4) : début ---
+  // AssistantService du harnais (ou celui qu'un test a mis dans `deps`) : l'installation des exemples d'équipe appelle install.
+  const eqAssistants = deps.assistants as CockpitAppDeps["assistants"];
   const cockpit = createCockpitApp(
-    { ...deps, configQueue: deps.configQueue ?? configQueue, sessions, ...(options.gate ? { gate: options.gate(deps) } : {}) },
-    { modules: options.modules === "tous" ? undefined : (options.modules ?? []), ports: options.ports },
+    { ...deps, assistants: eqAssistants, configQueue: deps.configQueue ?? configQueue, sessions, ...(options.gate ? { gate: options.gate(deps) } : {}) },
+    {
+      modules: options.modules === "tous" ? undefined : (options.modules ?? []),
+      ports: options.ports,
+      equipes: options.equipes === "tous" ? undefined : (options.equipes ?? []),
+      eqPorts: options.eqPorts,
+    },
   );
+  // --- équipes (it4) : fin ---
   cockpitRef = cockpit;
   cleanups.push(() => cockpit.close());
   const server = createAdaptorServer({ fetch: cockpit.app.fetch }) as http.Server;

@@ -13,6 +13,11 @@ import { createPermissionGate } from "./permission-gate.ts";
 import { reloadOccupancy } from "./reload-guard.ts";
 import type { SessionTracker } from "./sessions.ts";
 import { type BuildCockpit11Options, buildCockpit11, type Cockpit11Wiring, STEP_ORDER } from "./wiring-11.ts";
+// --- équipes (it4) : début ---
+import type { AssistantService } from "./assistants.ts";
+import type { AssistantsPort } from "./http.ts";
+import { type BuildEquipesOptions, buildEquipes, type EquipesWiring } from "./wiring-eq.ts";
+// --- équipes (it4) : fin ---
 
 export interface CockpitAppDeps extends Omit<AppDeps, "gate" | "proxyHooks" | "internalAgents" | "reloadBusy" | "configQueue"> {
   /** Suivi des sessions (arbre d'une conversation pour le portillon, modules 1.1). */
@@ -21,6 +26,10 @@ export interface CockpitAppDeps extends Omit<AppDeps, "gate" | "proxyHooks" | "i
   configQueue: ConfigWriteQueue;
   /** Portillon remplacé (tests) ; absent : createPermissionGate. */
   gate?: PermissionGate;
+  // --- équipes (it4) : début ---
+  /** Resserré : l'installation des exemples d'équipe (L37a) appelle install ; main.ts et le harnais passent l'AssistantService. */
+  assistants: AssistantsPort & Pick<AssistantService, "install">;
+  // --- équipes (it4) : fin ---
 }
 
 export interface CockpitAppOptions {
@@ -28,6 +37,12 @@ export interface CockpitAppOptions {
   modules?: BuildCockpit11Options["modules"];
   /** Surcharges de ports (tests), posées après l'installation des modules. */
   ports?: BuildCockpit11Options["ports"];
+  // --- équipes (it4) : début ---
+  /** Modules d'équipes. Absent : tous (production). Tableau : seulement ceux-là, les autres gardent leur port neutre (tests). */
+  equipes?: BuildEquipesOptions["modules"];
+  /** Surcharges des ports d'équipes (tests), posées après l'installation des modules. */
+  eqPorts?: BuildEquipesOptions["ports"];
+  // --- équipes (it4) : fin ---
 }
 
 export interface CockpitApp {
@@ -35,6 +50,10 @@ export interface CockpitApp {
   wiring: Cockpit11Wiring;
   c11: Cockpit11;
   gate: PermissionGate;
+  // --- équipes (it4) : début ---
+  /** Câblage des équipes, composé à côté du câblage 1.1 (D-eq-03). */
+  equipes: EquipesWiring;
+  // --- équipes (it4) : fin ---
   /**
    * Démarrage 1.1, une fois opencode joignable et l'adresse de l'API Copilot synchronisée, avant processor.start : inscriptions
    * « startup » dans l'ordre de STEP_ORDER, ports.internalAgents.ensureAll() à sa place. Une étape en échec est journalisée et
@@ -80,6 +99,12 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
   };
   const built = buildCockpit11(c11Deps, { modules: options.modules, ports: options.ports });
   wiring = built;
+  // --- équipes (it4) : début ---
+  // Câblage des équipes composé à côté du câblage 1.1 (D-eq-03) : décorateur de stopTree (D-eq-05) et c11.reloadBusy composé
+  // (D-eq-06) posés AVANT createApp ; le prédicat local reloadBusy ci-dessus lit wiring.c11.reloadBusy() à l'appel.
+  const equipes = buildEquipes({ c11: built.c11, classifier: deps.classifier, assistants: deps.assistants }, { modules: options.equipes, ports: options.eqPorts });
+  equipes.apply(built.c11);
+  // --- équipes (it4) : fin ---
 
   // Dérivations (synchrones, avant la file du processeur) et abonnements aux événements du cockpit, dans l'ordre de STEP_ORDER.
   // Un abonné qui lève n'arrête pas les autres : EventHub.publish isole chaque abonné.
@@ -93,6 +118,20 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
       }),
     );
   }
+  // --- équipes (it4) : début ---
+  // Après ceux de la 1.1, dans l'ordre d'EQ_STEP_ORDER ; retirés par close() avec eux.
+  for (const derivation of equipes.derivations) detach.push(deps.processor.addDerivation(derivation));
+  for (const subscription of equipes.subscriptions) {
+    const fn = subscription.fn as (data: HubEventMap[typeof subscription.type]) => void;
+    detach.push(
+      hub.subscribe((event) => {
+        if (event.kind === "cockpit" && event.type === subscription.type) fn(event.data as HubEventMap[typeof subscription.type]);
+      }),
+    );
+  }
+  // Verrou passé à createApp seulement s'il est inscrit (module teamGuards) : sans lui, proxy et Archives inchangés.
+  const teamGuard = equipes.registrations.some((r) => r.kind === "proxyGuard") ? { teamGuard: equipes.proxyGuard } : {};
+  // --- équipes (it4) : fin ---
 
   // Port lu au moment de l'appel (jamais en copie) : un module ou une surcharge qui le pose après reste pris en compte.
   const internalAgents: Pick<InternalAgentsPort, "ensureAll"> = { ensureAll: () => built.c11.ports.internalAgents.ensureAll() };
@@ -102,7 +141,10 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
     proxyHooks: built,
     internalAgents,
     reloadBusy,
-    routes: [...(deps.routes ?? []), ...built.routes],
+    // --- équipes (it4) : début ---
+    routes: [...(deps.routes ?? []), ...built.routes, ...equipes.routes],
+    ...teamGuard,
+    // --- équipes (it4) : fin ---
   });
 
   const startup = async (): Promise<void> => {
@@ -123,6 +165,17 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
       }
     }
     if (!ensured) await ensureAll();
+    // --- équipes (it4) : début ---
+    // Démarrage des équipes après celui de la 1.1 (reprise des lancements) ; une étape en échec n'arrête pas les suivantes.
+    const eqSteps = equipes.registrations.filter((r) => r.kind === "startup");
+    for (const [index, run] of equipes.startup.entries()) {
+      try {
+        await run();
+      } catch (err) {
+        log.warn("démarrage des équipes : étape en échec", { module: eqSteps[index]?.module, error: errorMessage(err) });
+      }
+    }
+    // --- équipes (it4) : fin ---
   };
 
   return {
@@ -130,6 +183,9 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
     wiring: built,
     c11: built.c11,
     gate,
+    // --- équipes (it4) : début ---
+    equipes,
+    // --- équipes (it4) : fin ---
     startup,
     close: () => {
       for (const undo of detach.splice(0)) undo();
