@@ -17,17 +17,23 @@
 // Avant cet envoi facturé, `secondReadingSendGuard` relit la réponse de la résolution : la route ne refuse pas un assistant
 // disparu, elle retombe sur l'assistant par défaut du chat et le dit par `agentMissing`. Sans cette garde, le clic partait à
 // l'Assistant général, avec d'autres droits, une autre IA et un autre coût que ceux annoncés par l'infobulle.
+//
+// 5b (L44f) : le même bouton sert au RÉSULTAT D'UNE ÉQUIPE (`cible: "equipe"`, conception C §9.6). Rien d'autre ne change —
+// même Relecteur, même conversation, même envoi, même garde budgétaire : seuls le texte du message (variante `equipe` du §4.3)
+// et le corps de l'estimation suivent la cible. L'appelant (TeamResultCard) décide QUAND le proposer ; le bouton ne connaît
+// aucune équipe.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   secondReadingButtonLabel,
   secondReadingButtonVisible,
-  secondReadingMessage,
+  secondReadingMessageFor,
   secondReadingSendGuard,
   secondReadingTooltip,
 } from "../../../../server/shared/chat-methods-view.ts";
 import { BUDGET_CONFIRM_CANCEL, BUDGET_CONFIRM_SEND, BUDGET_CONFIRM_TITLE } from "../../../../server/shared/assistant-rules.ts";
 import { SECOND_READING_CATALOG_ID } from "../../../../server/shared/construction-constants.ts";
 import { TEXTES } from "../../../../server/shared/construction-texts.ts";
+import type { SecondReadingTarget } from "../../../../server/shared/construction-types.ts";
 import { useApp } from "../../../app/AppContext.tsx";
 import { useReloadGuard } from "../../../components/reloadGuard.ts";
 import { useToast } from "../../../components/Toast.tsx";
@@ -57,16 +63,27 @@ function montantSansDevise(usd: number | null): string | null {
 /**
  * Le magasin lui-même vit dans `second-reading-store.ts`, sans React ni réseau : ici, seules la lecture réelle
  * (`estimateSecondReading`) et le flux réel (`eventBus`) lui sont données.
+ *
+ * UNE TABLE PAR CIBLE (L44f) : l'estimation d'un résultat d'équipe se demande avec `cible: "equipe"`, et une même conversation
+ * peut porter les deux. Deux tables, donc deux estimations, jamais une valeur prise pour l'autre.
  */
-const magasinDe = creerTableMagasins({
-  estimer: (directory, sessionId) => estimateSecondReading({ directory, sessionId, cible: "reponse" }),
-  abonnerFlux: (ecouter) => eventBus.subscribe(ecouter),
-  avertir: (message, detail) => console.warn(message, errorText(detail)),
-});
+const tablePour = (cible: SecondReadingTarget) =>
+  creerTableMagasins({
+    estimer: (directory, sessionId) => estimateSecondReading({ directory, sessionId, cible }),
+    abonnerFlux: (ecouter) => eventBus.subscribe(ecouter),
+    avertir: (message, detail) => console.warn(message, errorText(detail)),
+  });
+
+const TABLES: Readonly<Record<SecondReadingTarget, ReturnType<typeof tablePour>>> = {
+  reponse: tablePour("reponse"),
+  equipe: tablePour("equipe"),
+};
+
+const magasinDe = (cible: SecondReadingTarget, sessionId: string) => TABLES[cible](sessionId);
 
 /** Estimation et occupation de la conversation, et le tour courant signalé au magasin. */
-function useSecondeLecture(sessionId: string, directory: string, cle: string, terminee: boolean): EtatSecondeLecture {
-  const magasin = useMemo(() => magasinDe(sessionId), [sessionId]);
+function useSecondeLecture(cible: SecondReadingTarget, sessionId: string, directory: string, cle: string, terminee: boolean): EtatSecondeLecture {
+  const magasin = useMemo(() => magasinDe(cible, sessionId), [cible, sessionId]);
   const subscribe = useCallback((listener: () => void) => magasin.abonner(listener, directory), [magasin, directory]);
   const snapshot = useCallback(() => magasin.etat, [magasin]);
   useEffect(() => {
@@ -89,14 +106,20 @@ export interface SecondReadingButtonProps {
   repere: boolean;
   /** Cette réponse EST une seconde lecture : on ne relit pas une relecture d'un clic. */
   estSecondeLecture: boolean;
+  /**
+   * L44f : ce qui est relu. « reponse » (défaut) : la réponse précédente de l'assistant, et `assistant` le nomme. « equipe » :
+   * le RÉSULTAT d'une équipe, et `assistant` porte alors le titre de l'équipe. Seuls le texte envoyé (§4.3) et le corps de
+   * l'estimation changent : même assistant relecteur, même conversation, même envoi — aucun contrat de repli (MC5-1).
+   */
+  cible?: SecondReadingTarget;
 }
 
-export function SecondReadingButton({ sessionId, cle, assistant, terminee, repere, estSecondeLecture }: SecondReadingButtonProps) {
+export function SecondReadingButton({ sessionId, cle, assistant, terminee, repere, estSecondeLecture, cible = "reponse" }: SecondReadingButtonProps) {
   const { directory } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
   const guardReload = useReloadGuard();
-  const { estimation, lue, occupee } = useSecondeLecture(sessionId, directory, cle, terminee);
+  const { estimation, lue, occupee } = useSecondeLecture(cible, sessionId, directory, cle, terminee);
   const [envoi, setEnvoi] = useState(false);
   const enVol = useRef(false);
 
@@ -108,7 +131,7 @@ export function SecondReadingButton({ sessionId, cle, assistant, terminee, reper
     setEnvoi(true);
     try {
       await guardReload((options) => api.installCatalogueAssistant(SECOND_READING_CATALOG_ID, undefined, options));
-      await magasinDe(sessionId).rafraichir();
+      await magasinDe(cible, sessionId).rafraichir();
       toast.success("Assistant installé", "Il apparaît maintenant dans le chat.");
     } catch (err) {
       toast.error("Installation impossible", err);
@@ -119,7 +142,7 @@ export function SecondReadingButton({ sessionId, cle, assistant, terminee, reper
 
   /**
    * Envoi : l'IA est résolue par `POST /api/chat/resolve` pour l'assistant du Relecteur (son IA propre, sinon son niveau —
-   * « Rapide » par la réponse Q1 (a)), puis un seul `prompt_async` avec le TEXTE EXACT du §4.3, variante « reponse ».
+   * « Rapide » par la réponse Q1 (a)), puis un seul `prompt_async` avec le TEXTE EXACT du §4.3, dans la variante de `cible`.
    * La garde budgétaire de la 1.0 peut refuser : sa confirmation est reprise telle quelle. Un 409 « l'IA de l'assistant a
    * changé » est renvoyé UNE fois avec l'IA annoncée, comme dans le chat.
    */
@@ -129,7 +152,7 @@ export function SecondReadingButton({ sessionId, cle, assistant, terminee, reper
     enVol.current = true;
     setEnvoi(true);
     try {
-      const texte = secondReadingMessage(assistant);
+      const texte = secondReadingMessageFor(cible, assistant);
       let resolu: ResolveResponse;
       try {
         resolu = await api.resolveChat({ directory, agent: relecteur.name });
@@ -148,7 +171,7 @@ export function SecondReadingButton({ sessionId, cle, assistant, terminee, reper
       });
       if (!garde.envoyer) {
         toast.error("Rien n'a été envoyé", garde.message ?? textes.absente);
-        if (garde.code === "absent") await magasinDe(sessionId).rafraichir();
+        if (garde.code === "absent") await magasinDe(cible, sessionId).rafraichir();
         return;
       }
       const corps = (model: ResolveResponse["send"]["model"], variant: string | undefined) => ({

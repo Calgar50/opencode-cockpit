@@ -182,3 +182,84 @@ export function stepOpeningOf(message: TranscriptMessageLike, run: TeamRunView |
 export function puceConsigne(titre: string): string {
   return remplir(P.transcription.consigne, { titre: borne(titre, TITRE_MAX) });
 }
+
+// --- Archives : transcription enregistrée (itération 5, L44f) -------------------------------------------------------------------
+
+/**
+ * La fiche d'Archives ne reçoit PAS les messages : `GET /api/archive/:id` rend la transcription déjà écrite en Markdown par
+ * `buildDigest` (archive.ts), où chaque message ouvre une section « ## 🧑 Vous · … » ou « ## 🤖 … ». Les deux messages qu'une
+ * équipe fait écrire au cockpit dans la conversation — la demande recopiée et le résultat injecté — y entrent donc sous
+ * « Vous », alors que vous ne les avez pas écrits (conception A §7.7).
+ *
+ * Le découpage ci-dessous les rend à leur auteur. Il reconnaît la LIGNE DE MARQUEUR que `injectionText` (flow.ts, it4) pose en
+ * tête de ces deux messages, et elle seule : les genres viennent de `PromptKind` (`ledger.ts`, it4), avec lesquels le cockpit
+ * marque les mêmes messages dans sa base. Aucune autre règle — un texte qui ressemble à une demande d'équipe reste une section
+ * ordinaire, et un marqueur écrit AILLEURS que sur une ligne à lui n'est pas reconnu (flow.ts n'en écrit pas d'autre).
+ *
+ * Ici, contrairement à la transcription du chat, l'identifiant du message n'existe plus : la fiche d'Archives n'a que du texte.
+ * Le marqueur est donc la seule preuve disponible, et il ne sert qu'à ÉTIQUETER une section de la copie écrite par le cockpit
+ * lui-même — jamais à décider ce qui est envoyé, ni à qui. Le risque 19 (un marqueur recopié par une IA) se limite donc à une
+ * section d'archive mal étiquetée, et il est borné : la ligne doit être seule sur sa ligne, en TÊTE de la section.
+ */
+export type ArchiveBlocGenre = "texte" | "equipe-demande" | "equipe-resultat";
+
+export interface ArchiveBloc {
+  genre: ArchiveBlocGenre;
+  /** Markdown du bloc, sans aucune ligne de marqueur du cockpit. */
+  texte: string;
+}
+
+/** Ligne de marqueur d'injection d'équipe, seule sur sa ligne : les deux genres de `PromptKind` (it4). */
+const LIGNE_MARQUEUR_EQUIPE = /^[ \t]*<!--[ \t]*cockpit:(equipe-demande|equipe-resultat)[ \t]+run=[^\n>]*-->[ \t]*$/;
+
+/** Début d'une section de la transcription enregistrée (`buildDigest` : « ## 🧑 Vous · … », « ## 🤖 … »). */
+const TITRE_SECTION = "## ";
+
+interface SectionArchive {
+  genre: ArchiveBlocGenre;
+  lignes: string[];
+  /** Le corps de la section (tout sauf son titre) n'a encore aucune ligne non vide : un marqueur y est en tête. */
+  corpsVide: boolean;
+}
+
+/** Sections de la transcription, marqueurs du cockpit retirés et genre posé sur ceux qui ouvrent le corps d'une section. */
+function sectionsDArchive(lignes: readonly string[]): SectionArchive[] {
+  const sections: SectionArchive[] = [];
+  let courante: SectionArchive = { genre: "texte", lignes: [], corpsVide: true };
+  sections.push(courante);
+  for (const ligne of lignes) {
+    if (ligne.startsWith(TITRE_SECTION)) {
+      courante = { genre: "texte", lignes: [ligne], corpsVide: true };
+      sections.push(courante);
+      continue;
+    }
+    if (LIGNE_MARQUEUR.test(ligne)) {
+      // Aucune ligne de marqueur du cockpit n'est rendue : elles ne sont pas faites pour être lues.
+      const trouve = courante.corpsVide ? LIGNE_MARQUEUR_EQUIPE.exec(ligne) : null;
+      if (trouve !== null) courante.genre = trouve[1] as ArchiveBlocGenre;
+      continue;
+    }
+    courante.lignes.push(ligne);
+    if (ligne.trim() !== "") courante.corpsVide = false;
+  }
+  return sections;
+}
+
+/**
+ * Sections de la transcription enregistrée, réunies par genre : les sections ordinaires restent collées entre elles (un seul
+ * rendu Markdown), chaque message d'équipe forme son propre bloc. Une transcription sans marqueur rend un bloc unique, à
+ * l'octet près : la très grande majorité des fiches d'archives ne change donc pas d'un cheveu.
+ */
+export function blocsDArchive(transcript: string): ArchiveBloc[] {
+  const blocs: ArchiveBloc[] = [];
+  for (const section of sectionsDArchive(transcript.split("\n"))) {
+    const texte = trimLignes(section.lignes).join("\n");
+    const dernier = blocs.at(-1);
+    if (section.genre === "texte" && dernier?.genre === "texte") {
+      dernier.texte = trimLignes(`${dernier.texte}\n\n${texte}`.split("\n")).join("\n");
+    } else if (texte !== "" || section.genre !== "texte") {
+      blocs.push({ genre: section.genre, texte });
+    }
+  }
+  return blocs.length > 0 ? blocs : [{ genre: "texte", texte: "" }];
+}

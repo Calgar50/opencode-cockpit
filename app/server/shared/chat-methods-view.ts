@@ -280,9 +280,22 @@ export function secondReadingSendGuard(input: {
   return { envoyer: true, code: null, message: null };
 }
 
-/** Message envoyé au Relecteur, variante « reponse » (§4.3) : le texte EXACT, jamais une reformulation. */
+/**
+ * Message envoyé au Relecteur (§4.3) : le texte EXACT, jamais une reformulation. Deux variantes, et rien d'autre : « reponse »
+ * nomme l'assistant dont la réponse est relue, « equipe » nomme l'équipe dont le RÉSULTAT est relu (L44f). Les deux commencent
+ * par le début fixe que le crochet du serveur reconnaît (`secondReadingPrefix`), donc la ligne est requalifiée dans les deux cas.
+ *
+ * Le gabarit est rempli par une FONCTION de remplacement : un titre d'équipe est un texte libre, et « $& », « $' », « $` » ou
+ * « $$ » y seraient lus comme des séquences de remplacement par `String.replace` avec un motif chaîne.
+ */
+export function secondReadingMessageFor(cible: SecondReadingTarget, nom: string): string {
+  const textes = TEXTES.partout.secondeLecture;
+  return cible === "equipe" ? textes.messageEquipe.replace("{equipe}", () => nom) : textes.message.replace("{assistant}", () => nom);
+}
+
+/** Message envoyé au Relecteur, variante « reponse » (§4.3). */
 export function secondReadingMessage(assistant: string): string {
-  return TEXTES.partout.secondeLecture.message.replace("{assistant}", assistant);
+  return secondReadingMessageFor("reponse", assistant);
 }
 
 /**

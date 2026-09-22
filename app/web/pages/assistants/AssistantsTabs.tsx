@@ -1,4 +1,5 @@
-// Onglets de la page Assistants : « Assistants · Équipes · Carte » (T4w ; spécification §5.5, §5.6 ; C §9.8 ; plan it4 §4.2).
+// Onglets de la page Assistants : « Assistants · Équipes · Carte · Méthodes » (T4w ; spécification §5.5, §5.6 ; C §9.8 ;
+// plan it4 §4.2). 5b (L44f) : « Méthodes » ajouté EN FIN de liste, l'ordre des trois onglets de l'itération 4 restant le sien.
 // Motif « onglets » de l'APG, activation manuelle (ouvrir un onglet change d'adresse et lit d'autres données) : role="tablist" ;
 // seul l'onglet actif est dans l'ordre de tabulation ; flèches gauche et droite (et Début, Fin) déplacent le focus d'un onglet à
 // l'autre, en boucle ; Entrée ou Espace ouvre l'onglet. Chaque onglet annonce sa position (aria-posinset, aria-setsize). Le focus
@@ -8,7 +9,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef } from "re
 import { ASSISTANTS_TABS, type AssistantsTab, assistantsTabHref, goTo } from "../../lib/router.ts";
 import "./assistants-tabs.css";
 
-const LABELS: Readonly<Record<AssistantsTab, string>> = { assistants: "Assistants", equipes: "Équipes", carte: "Carte" };
+const LABELS: Readonly<Record<AssistantsTab, string>> = { assistants: "Assistants", equipes: "Équipes", carte: "Carte", methodes: "Méthodes" };
 
 /** Délai au-delà duquel un onglet ouvert ne reprend plus le focus (changement de vue refusé ou abandonné). */
 const REFOCUS_WINDOW_MS = 2_000;

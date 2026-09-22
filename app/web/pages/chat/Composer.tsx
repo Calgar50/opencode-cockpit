@@ -10,6 +10,8 @@ import { oc } from "../../lib/api.ts";
 // Itération 5 (L44e) : puce « + Méthode », méthodes retenues et aperçu modifiable du bloc ajouté au message (D-5-08).
 // Les phrases de refus viennent du module pur (§4.3) : aucune n'est réécrite ici.
 import { methodChipReason } from "../../../server/shared/chat-methods-view.ts";
+// L44f : phrase « Les méthodes d'une équipe se règlent sur ses étapes. » (§4.3), prise au module de textes, jamais réécrite.
+import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
 import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodChip.tsx";
 // </c5:methodes-import>
 import type { ComposerSlots } from "./slots.ts";
@@ -177,6 +179,25 @@ export function Composer({
   const raccourci = /^\/([\w-]+)(?=\s|$)/.exec(text.trimStart())?.[1] ?? null;
   // Message sans texte : le bloc seul ne serait une demande pour personne. Le refus est annoncé, comme celui du raccourci.
   const sansTexte = text.trim() === "";
+  // --- équipes (it4) : début ---
+  /**
+   * L44f : une ÉQUIPE tient la saisie. Branchement de la construction SUR l'emplacement de l'itération 4, d'où les deux
+   * balises ici. Le lanceur (emplacement figé, propriété `team`) n'est posé que par la page du chat, et celle-ci ne met
+   * `disabled` QUE par le verrou d'équipe (`TeamRunCardsProps.onLockChange` → `teamLockProps` de ChatPage.tsx, D-eq-16) : les
+   * deux ensemble disent « une équipe est choisie dans cette conversation ». Ce que vous écrirez ira alors aux ÉTAPES de
+   * l'équipe, qui portent leurs propres méthodes (L42a) : la puce est éteinte et la phrase du §4.3 dit pourquoi. Rien n'est
+   * retiré en silence — les méthodes déjà retenues restent visibles et retirables.
+   */
+  const equipeChoisie = team !== undefined && disabled;
+  // --- équipes (it4) : fin ---
+  /** Phrase affichée sous la saisie quand les méthodes retenues ne partiront pas : l'équipe d'abord, puis les refus de L44e. */
+  const raisonMethodes = equipeChoisie
+    ? TEXTES_C5.partout.methodes.limites.equipe
+    : raccourci !== null
+      ? methodChipReason("raccourci")
+      : sansTexte
+        ? methodChipReason("sans-texte")
+        : null;
   // </c5:methodes-raccourci>
   const onCommandChangeRef = useRef(onCommandChange);
   onCommandChangeRef.current = onCommandChange;
@@ -458,13 +479,16 @@ export function Composer({
 
         {/* <c5:methodes-retenues> */}
         {/* Itération 5 (L44e) : méthodes retenues et aperçu MODIFIABLE du texte ajouté, sur leur propre ligne, comme les
-            fichiers joints. Ce que l'aperçu montre est ce qui part. Les deux cas qui n'emportent aucun bloc — raccourci et
-            message sans texte — affichent leur phrase ICI, avant l'envoi. */}
-        <MethodChipList
-          valeur={methodes}
-          onChange={setMethodes}
-          raison={raccourci !== null ? methodChipReason("raccourci") : sansTexte ? methodChipReason("sans-texte") : null}
-        />
+            fichiers joints. Ce que l'aperçu montre est ce qui part. Les cas qui n'emportent aucun bloc — raccourci, message
+            sans texte, et depuis L44f une équipe qui tient la saisie — affichent leur phrase ICI, avant l'envoi.
+            Une équipe choisie sans aucune méthode retenue n'a pas de ligne de puces : la phrase se pose alors seule, pour que
+            la puce éteinte ne reste jamais sans explication. */}
+        {equipeChoisie && methodes.length === 0 ? (
+          <div className="methodes-choisies">
+            <p className="methodes-item-raison">{raisonMethodes}</p>
+          </div>
+        ) : null}
+        <MethodChipList valeur={methodes} onChange={setMethodes} raison={raisonMethodes} />
         {/* </c5:methodes-retenues> */}
 
         <textarea
@@ -510,8 +534,10 @@ export function Composer({
           {autonomy}
           {/* <c5:methodes-puce> */}
           {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci, repéré sur le
-              texte réellement envoyé (`raccourci`) : aucune méthode ne s'y ajoute. */}
-          <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled} valeur={methodes} onChange={setMethodes} />
+              texte réellement envoyé (`raccourci`) : aucune méthode ne s'y ajoute.
+              L44f : désactivée aussi quand une équipe tient la saisie (`equipeChoisie`) — les méthodes d'une équipe se règlent
+              sur ses étapes. Les deux raisons sont écrites, même si `equipeChoisie` implique déjà `disabled` aujourd'hui. */}
+          <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled || equipeChoisie} valeur={methodes} onChange={setMethodes} />
           {/* </c5:methodes-puce> */}
           {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
           {busy || stopVisible ? (
