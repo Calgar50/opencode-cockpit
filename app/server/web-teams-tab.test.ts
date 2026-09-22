@@ -289,6 +289,9 @@ describe("onglet Équipes : schéma lu", () => {
       etape: P.etape,
       avis: P.formes.avis,
       synthese: P.editeur.synthese,
+      // 5b (L42a) : les deux lignes neuves du schéma prennent le mot de leur forme ; leur rendu propre vient de L42d et L43.
+      relecture: P.editeur.blocs.relecture,
+      aiguillage: P.editeur.blocs.aiguillage,
       pause: P.execution.pause,
     });
     for (const mot of Object.values(MOTS_LIGNE)) assert.ok(mot.length > 0);

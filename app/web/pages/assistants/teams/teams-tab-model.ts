@@ -27,6 +27,12 @@ export const MOTS_LIGNE: Readonly<Record<FlowRow["kind"], string>> = {
   etape: P.etape,
   avis: P.formes.avis,
   synthese: P.editeur.synthese,
+  // <c5:mots-formes>
+  // Branche minimale (L42a) : les deux lignes neuves du schéma prennent le mot de leur forme, déjà écrit dans team-texts.ts.
+  // Le rendu propre du schéma (tours, spécialistes proposés) vient de L42d et L43.
+  relecture: P.editeur.blocs.relecture,
+  aiguillage: P.editeur.blocs.aiguillage,
+  // </c5:mots-formes>
   pause: P.execution.pause,
 };
 

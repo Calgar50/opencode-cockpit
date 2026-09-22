@@ -328,9 +328,20 @@ const FLOW_PROBLEM_CODES = [
   "personnalise",
   "niveau-avance",
   "niveau-indisponible",
+  // 5b (L42a) : codes de la relecture, de l'aiguillage, des liens entre étapes et des méthodes des étapes. Leurs phrases sont
+  // en section c5: de team-texts.ts, parce que le croisement de V0 de l'it4 exige une phrase par membre de FlowProblemCode.
+  "aiguillage-premier",
+  "specialistes",
+  "relecteur-distinct",
+  "meme-famille",
+  "lien-arriere",
+  "lien-avis",
+  "lien-avance",
+  "methodes",
 ];
-const TEAM_RUN_STATES = ["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification", "terminee", "arretee", "echec", "interrompue", "plafond"];
-const TEAM_STEP_STATES = ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee"];
+// 5b (L42a) : « attente-choix » (vous confirmez le choix de l'aiguilleur) et « non-choisi » (spécialiste écarté).
+const TEAM_RUN_STATES = ["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification", "attente-choix", "terminee", "arretee", "echec", "interrompue", "plafond"];
+const TEAM_STEP_STATES = ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee", "non-choisi"];
 const TEAM_RUN_CAUSES = ["vous", "equipe", "plafond", "echec", "rechargement", "redemarrage-cockpit", "budget", "modification", "pause", "changement"];
 /** Codes rendus tels quels par la garde de rechargement de la 1.1 : aucune phrase dans les textes des équipes. */
 const TEAM_GUARD_CODES = ["sessions-busy", "redemarrage-en-cours", "reponses-non-verifiables"];

@@ -105,7 +105,12 @@ export function exampleFlow(example: TeamExample, noms: ReadonlyMap<string, stri
     blocs: example.flow.blocs.map((bloc) => {
       if (bloc.type === "etape") return { type: "etape", id: bloc.id, etape: renomme(bloc.etape) };
       if (bloc.type === "avis") return { type: "avis", id: bloc.id, avis: bloc.avis.map(renomme), synthese: renomme(bloc.synthese) };
-      return { type: "pause", id: bloc.id, message: bloc.message };
+      if (bloc.type === "pause") return { type: "pause", id: bloc.id, message: bloc.message };
+      // <c5:formes-5b>
+      // Branche minimale (L42a) : aucun exemple livré n'emploie les formes de la 5b, et elles sont recopiées telles quelles.
+      // Les exemples qui les emploieront viennent avec L45b.
+      return bloc;
+      // </c5:formes-5b>
     }),
   };
 }
