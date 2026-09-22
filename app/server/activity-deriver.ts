@@ -216,6 +216,14 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     sentMessages.set(id, "message");
   };
 
+  // `amont` : demande de contrat de L25a, traitée par le train de la vague 2 (2 ter) sur ce fichier de L18a, clos — plan §2.3
+  // « Changement de contrat après son train ». Ce que la mémoire du flux sait et que les règles pures ne peuvent pas deviner :
+  // l'identité douteuse d'un message (MO-1) et la délégation en tâche de fond dont une session est l'enfant (JP-3). Toutes les
+  // entrées de `FactUpstream` sont facultatives et leur absence rend la règle MUETTE : sans ce branchement, aucune règle
+  // n'inventait quoi que ce soit, elles se taisaient. Hors de la salle, rien ne change : les anomalies de MO-1 ne se produisent
+  // pas dans l'instance principale et aucune clé nouvelle n'est écrite (fixtures p1/p2/p6/p7 et demo-p1.json inchangées).
+  // `noReply` (F-h) reste absent : seul le processeur de la salle sait qu'un message a été déposé sans tour, et il le fournira
+  // avec L23c (vague 4). Tant qu'il manque, le fait `reveil` par drapeau se tait ; le marqueur cru dans la salle suffit au cas 4.
   const context = (receivedAt: number): FactContext => ({
     receivedAt,
     session,
@@ -224,6 +232,7 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     firstUserMessage: (id) => memory.firstUserMessage(id),
     userMessageParts: (id) => memory.userMessageParts(id),
     unansweredUserMessages: (id) => memory.unansweredUserMessages(id),
+    amont: memory.amont(),
   });
 
   // --- Délégations et attentes d'accord (écrivain unique : ports.facts.work) -----------------------------------------------------

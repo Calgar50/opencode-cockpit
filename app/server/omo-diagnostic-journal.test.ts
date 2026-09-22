@@ -5,8 +5,8 @@
 //  1. ce que l'écran AFFICHE, ligne par ligne, calculé par les modules purs `web/pages/diagnostics/omo-diagnostics.ts` et
 //     `web/pages/chat/autonomy/omo-journal.ts` — un `OmoStatusResponse` complet, puis l'état vide « salle non installée » ;
 //  2. ce que les composants NE FONT PAS : aucun appel réseau, aucun import de `web/lib/api-omo.ts` ni de `pages/omo/**` (L26a,
-//     même vague), aucun changement de la bande néon (D-2b-45), et le point d'insertion de `getOmoStatus()` laissé à
-//     l'intégrateur du train de V2.
+//     même vague), aucun changement de la bande néon (D-2b-45). Le point d'insertion de `getOmoStatus()` que L26b avait laissé
+//     est BRANCHÉ par le train de V2 (A15) : le dernier contrôle du §4 vérifie désormais le branchement, pas son absence.
 // Les composants sont en .tsx : Node exécute le TypeScript mais pas le JSX, et P8 interdit d'ajouter un transformateur. Le rendu
 // est donc contrôlé par ses données (1) et par la lecture des sources (2), comme le fait déjà autonomy-replay.test.ts.
 import assert from "node:assert/strict";
@@ -323,13 +323,24 @@ describe("L26b : règle de vague et périmètre", () => {
     }
   });
 
-  it("le point d'insertion de getOmoStatus() est laissé à l'intégrateur, et la carte reste absente sans lui", () => {
+  // TRAIN DE LA VAGUE 2 (2 ter) : le point d'insertion que L26b avait laissé est BRANCHÉ par l'intégrateur, la vague 2 apportant
+  // `api-omo.ts` avec L26a. Le contrôle change donc de sens — il ne vérifie plus que la carte reste absente, mais que le
+  // branchement respecte les quatre promesses de la fiche : lecture par `getOmoStatus()`, relue à l'actualisation, abandonnée au
+  // démontage, gardée par `boot.omo.enabled`, et rien d'inventé quand la lecture échoue (P3 ; A16 point 4 b).
+  // La règle de vague « le COMPOSANT n'importe pas api-omo.ts » reste entière : elle est tenue par le contrôle précédent, qui
+  // porte sur OmoDiagnostics.tsx. Seule la PAGE, qui n'appartient pas à la salle, fait la lecture.
+  it("getOmoStatus() est branché dans la page : lecture gardée, abandonnée au démontage, aucun état inventé", () => {
     const source = lire(...PAGE_TSX);
-    assert.match(source, /POINT D'INSERTION DU TRAIN DE LA VAGUE 2/, "le point d'insertion est signalé");
-    assert.match(source, /getOmoStatus\(\)/, "l'intégrateur sait quoi brancher");
-    assert.match(source, /function useOmoStatus\([^)]*\): OmoStatusResponse \| null \{\s*return null;\s*\}/, "non branché : aucun état inventé");
-    assert.match(source, /<OmoDiagnostics statut=\{omoStatut\} \/>/, "la carte est posée, alimentée par propriétés");
-    assert.equal(code(...PAGE_TSX).includes("api-omo"), false, "la page n'importe pas api-omo.ts (L26a, même vague)");
+    assert.match(source, /import \{ getOmoStatus \} from "\.\.\/lib\/api-omo\.ts";/, "la page lit l'état par le client de L26a");
+    const corps = /function useOmoStatus\(refreshKey: number \| null\): OmoStatusResponse \| null \{([\s\S]*?)\n\}/.exec(source)?.[1];
+    assert.ok(corps !== undefined, "le crochet garde sa signature");
+    assert.match(corps, /boot\.omo\?\.enabled === true/, "gardé par l'interrupteur : salle coupée, aucune requête");
+    assert.match(corps, /getOmoStatus\(controller\.signal\)/, "la lecture est abandonnable");
+    assert.match(corps, /return \(\) => controller\.abort\(\)/, "abandon au démontage, comme DelegatedWorkCard");
+    assert.match(corps, /refreshKey/, "relue à chaque actualisation de la page");
+    assert.match(corps, /setStatut\(null\)/, "une lecture en échec n'invente aucun état : la carte disparaît");
+    assert.equal(/catch[\s\S]*?statut\s*=\s*\{/.test(corps), false, "aucun état de repli fabriqué");
+    assert.match(source, /<OmoDiagnostics statut=\{omoStatut\} \/>/, "la carte reste alimentée par propriétés");
   });
 
   it("le périmètre de web-animations couvre pages/omo", () => {

@@ -24,6 +24,12 @@ const FIXTURES = path.join(import.meta.dirname, "test-support", "fixtures");
 const NON_CAPTURES: Readonly<Record<string, string>> = {
   "omo-control-vectors.json":
     "vecteurs du protocole de contrôle de la salle (T3a) : contenus de fichiers de contrôle et descriptions écrits par le cockpit, aucun événement d'opencode",
+  // Train de la vague 2 (itération 2 ter) : L22b et L25a se rencontrent ici pour la première fois. Le corpus de L22b est écrit
+  // à la main par le cockpit — il le dit lui-même dans son champ `source` (« aucune capture, aucune donnée de la machine ») —
+  // et ses seules chaînes longues sont sa propre documentation en français. Aucune valeur n'y est un texte de message : c'est
+  // ce que vérifie, plus bas, le contrôle « une exception déclarée ne porte aucune partie texte ».
+  "omo-forbidden-corpus.json":
+    "corpus unitaire de la porte G7 (L22b) : demandes d'autorisation et attendus écrits à la main par le cockpit d'après les formes relevées par MX1, aucun événement d'opencode ni de l'extension",
 };
 
 /** Marqueurs de la liste fermée (D-2b-31), les seules suites de l'extension qu'une fixture garde telles quelles. */
@@ -106,6 +112,28 @@ describe("D-2b-31 : aucun texte de l'extension dans une fixture omo-* (L25a)", (
     for (const declaree of Object.keys(NON_CAPTURES)) {
       assert.ok(FICHIERS.includes(declaree), `NON_CAPTURES cite une fixture absente : ${declaree} (à retirer de la liste)`);
       assert.ok((NON_CAPTURES[declaree] ?? "").length > 40, `l'exception ${declaree} doit dire pourquoi elle n'est pas une capture`);
+    }
+  });
+
+  // Train de la vague 2 (2 ter). Déclarer une exception allège la règle : ce contrôle empêche de s'en servir pour faire entrer
+  // une vraie capture. Une capture d'opencode porte des parties texte (`text`, `prompt`, `content`…) ou un marqueur de la liste
+  // fermée ; une fixture écrite par le cockpit n'en porte aucun. Si l'un des deux apparaît, l'exception tombe et le fichier
+  // repasse sous la règle stricte des captures.
+  it("une exception déclarée ne porte aucune partie texte ni marqueur de l'extension — sinon c'est une capture", () => {
+    for (const declaree of Object.keys(NON_CAPTURES)) {
+      for (const [i, document] of documents(declaree).entries()) {
+        for (const { chemin, cle } of chaines(document)) {
+          assert.ok(
+            !CLES_DE_TEXTE.includes(cle),
+            `${declaree} ligne ${i + 1} : valeur de texte de message en ${chemin} — cette fixture est une capture, à retirer de NON_CAPTURES`,
+          );
+        }
+      }
+      const brut = fs.readFileSync(path.join(FIXTURES, declaree), "utf8");
+      for (const marqueur of MARQUEURS) {
+        assert.ok(!brut.includes(marqueur), `${declaree} porte le marqueur ${marqueur} : c'est une capture, à retirer de NON_CAPTURES`);
+      }
+      assert.ok(!/\[SYSTEM DIRECTIVE: OH-MY-OPENCODE/.test(brut), `${declaree} porte le préfixe de relance : c'est une capture, à retirer de NON_CAPTURES`);
     }
   });
 

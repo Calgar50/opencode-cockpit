@@ -14,6 +14,12 @@
 //      app/Dockerfile, et `omo-state`, lu seul, reste à root ;
 //   7. omo-projets.json écrit par install.ps1 = format OmoPreparedProjects de T3a, clé par clé ;
 //   8. le préfixe des tests conteneur est une variable DE TEST, bornée aux préfixes des exécutions de la salle.
+// PUIS, au train de la MÊME vague côté itération 2 ter (A15), avec L22b, L25a, L26a et L26b :
+//   9.  DiagnosticsPage (L26b) branchée sur getOmoStatus() (L26a), lecture gardée par l'interrupteur et abandonnée au démontage ;
+//   10. chemins de clés du filet de L24 ⊆ interdits absolus de L22b, avec l'arbitrage écrit du reste L24 n° 3 (famille .env*) ;
+//   11. motifs refusés d'opencode.jsonc ⊇ clés et .env* de L22b ;
+//   12. demande MO-1 de L25a : activity-deriver.ts passe bien `amont` au contexte des faits ;
+//   13. toute l'interface de la salle est livrée, et la salle reste coupée.
 // Aucun conteneur, aucun réseau, aucune pause fixe : lecture de fichiers et harnais en mémoire seulement.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -36,9 +42,12 @@ import {
 } from "./env.ts";
 import { EventHub } from "./hub.ts";
 import { createOmoControl } from "./omo-control.ts";
+import { EventMemory, type FactUpstream } from "./shared/activity-facts.ts";
+import { classifyOmoPermission } from "./shared/omo-forbidden.ts";
 import { OMO_FICHIER_PROJETS } from "./shared/omo-control-protocol.ts";
 import type { OmoPreparedProjects } from "./shared/omo-types.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
+import * as garde from "../../docker/opencode-omo/guard/cockpit-guard.js";
 
 const RACINE = path.resolve(import.meta.dirname, "..", "..");
 const lire = (...morceaux: string[]) => fs.readFileSync(path.join(RACINE, ...morceaux), "utf8");
@@ -49,6 +58,9 @@ const CONTRAT = JSON.parse(lire("docker", "opencode-omo", "contrat-salle.json"))
   variables: { cockpit: string[]; salle: string[] };
   volumes: { nom: string; proprietaire?: string; ecrivain?: string }[];
 };
+
+/** Projet ouvert des croisements de la 2 ter : chemin ABSOLU dans le conteneur, comme la salle le publie (L22b). */
+const PROJET_OUVERT = "/workspace/mon-projet";
 
 // --- 1. Harnais complet : la salle reste coupée ---------------------------------------------------------------------------------
 
@@ -404,5 +416,235 @@ describe("croisement V2 : préfixe des tests conteneur, variable DE TEST bornée
       assert.match(source, /process\.env\.OMO_TESTS_PREFIXE/, fichier);
       assert.match(source, /\^sal11-\|\^omo11-/, fichier);
     }
+  });
+});
+
+// =================================================================================================================================
+// TRAIN DE LA VAGUE 2, PARTIE « ITÉRATION 2 TER » (A15) : L22b (interdits absolus), L25a (faits OMO), L26a (page, activation,
+// bandeau) et L26b (Diagnostic, Journal) rejoignent la branche. Les quatre croisements que la décision A15 doit à ces paquets,
+// plus l'arbitrage du reste L24 n° 3 et la demande MO-1, sont tenus ici — aucun paquet ne peut les prouver seul.
+//   9.  DiagnosticsPage (L26b) est branchée sur getOmoStatus() (L26a) par l'intégrateur ;
+//   10. chemins de clés du filet de L24 ⊆ interdits de L22b, avec l'arbitrage du reste L24 n° 3 (famille .env*) ;
+//   11. motifs refusés d'opencode.jsonc ⊇ clés et .env* de L22b ;
+//   12. demande MO-1 de L25a : activity-deriver.ts (L18a) passe bien `amont` au contexte des faits ;
+//   13. la salle reste coupée alors même que toute l'interface de la salle est là.
+// =================================================================================================================================
+
+// --- 9. L26b branchée sur L26a (A15) ---------------------------------------------------------------------------------------------
+
+describe("croisement V2 (2 ter) : le Diagnostic de L26b est alimenté par getOmoStatus() de L26a", () => {
+  it("la page lit l'état par le client de L26a, et le composant n'en sait toujours rien", () => {
+    const page = lire("app", "web", "pages", "DiagnosticsPage.tsx");
+    // La PAGE fait la lecture : c'est elle qui relie les deux paquets de la vague.
+    assert.match(page, /import \{ getOmoStatus \} from "\.\.\/lib\/api-omo\.ts";/, "DiagnosticsPage lit getOmoStatus (L26a)");
+    assert.match(page, /<OmoDiagnostics statut=\{omoStatut\} \/>/, "la carte de L26b reçoit l'état par propriétés");
+    // Le COMPOSANT de L26b reste pur : alimenté par propriétés, il n'a ni appel réseau ni dépendance à L26a.
+    // Le contrôle porte sur les IMPORTS, pas sur le texte entier : l'en-tête du composant CITE api-omo.ts pour dire
+    // précisément qu'il ne l'importe pas, et une recherche naïve prendrait ce commentaire pour une infraction.
+    const composant = lire("app", "web", "pages", "diagnostics", "OmoDiagnostics.tsx");
+    const imports = composant.split("\n").filter((ligne) => /^\s*import\b/.test(ligne));
+    assert.equal(/fetch\(|XMLHttpRequest|EventSource/.test(composant), false, "aucun appel réseau dans le composant");
+    assert.deepEqual(imports.filter((ligne) => ligne.includes("api-omo")), [], "le composant n'importe pas le client de L26a");
+    assert.deepEqual(imports.filter((ligne) => ligne.includes("pages/omo")), [], "le composant n'importe rien de pages/omo/** (L26a)");
+  });
+
+  it("la lecture est gardée par l'interrupteur : salle coupée, aucune requête et aucune carte", () => {
+    const page = lire("app", "web", "pages", "DiagnosticsPage.tsx");
+    const corps = /function useOmoStatus\(refreshKey: number \| null\): OmoStatusResponse \| null \{([\s\S]*?)\n\}/.exec(page)?.[1];
+    assert.ok(corps !== undefined, "le crochet garde sa signature");
+    assert.match(corps, /boot\.omo\?\.enabled === true/, "COCKPIT_OMO=off : rien n'est demandé");
+    assert.match(corps, /if \(!actif\)/, "l'interrupteur coupe AVANT la requête, pas après");
+    assert.match(corps, /getOmoStatus\(controller\.signal\)/, "lecture abandonnable");
+    assert.match(corps, /return \(\) => controller\.abort\(\)/, "abandonnée au démontage");
+    assert.match(corps, /setStatut\(null\)/, "un échec — 403 salle-coupee compris — n'invente aucun état (P3)");
+  });
+});
+
+// --- 10. Filet de L24 ⊆ interdits de L22b, et arbitrage du reste L24 n° 3 ---------------------------------------------------------
+
+/**
+ * ARBITRAGE DU RESTE L24 n° 3 (famille `.env*`), rendu par l'intégrateur au train de V2, comme le plan le prévoit.
+ *
+ * CONSTAT de L22b : `classifyOmoPermission` applique « .env* » à CHAQUE segment d'un chemin, alors que le filet
+ * `docker/opencode-omo/guard/cockpit-guard.js` n'applique ses motifs qu'au NOM D'ENTRÉE. `config/.env.d/valeurs.txt` est donc
+ * refusé par le cockpit et passe le filet.
+ *
+ * DÉCISION : l'écart est GARDÉ tel quel, et c'est la bonne relation. Trois raisons :
+ *   1. les deux couches n'ont pas le même métier. L22b est le JUGE : il répond aux demandes d'autorisation de la salle et doit
+ *      être fermé en cas de doute. L24 est un FILET, dernier recours dans le conteneur, volontairement minuscule (ESM sans
+ *      dépendance) ; il se trompe du côté sûr en refusant moins, jamais en autorisant ce que le juge refuse ;
+ *   2. la seule relation dangereuse serait l'inverse — un filet plus large que le juge —, parce qu'elle voudrait dire que le
+ *      cockpit accorde une permission que le conteneur refuse ensuite, sans que personne ne l'explique à l'utilisateur. C'est
+ *      cette relation, et non l'égalité, que le test ci-dessous interdit ;
+ *   3. élargir le filet MAINTENANT coûterait une image : `guard/cockpit-guard.js` est copié octet pour octet dans l'image et
+ *      entre dans `perimetreManifeste` (`docker/opencode-omo/omo-manifest.sha256`). Le modifier périme le manifeste et demande
+ *      une reconstruction avec `-AcceptManifest`, qui est un travail de la VAGUE 4 (reste R-5 de `constats-salle-2bis.md`).
+ *      Le faire ici ferait tomber la porte du manifeste sans rien rendre de plus sûr.
+ * Le filet n'est donc PAS modifié par ce train. La relation « ⊆ » est désormais tenue par un test, et non plus par une lecture.
+ */
+describe("croisement V2 (2 ter) : chemins de clés du filet (L24) ⊆ interdits absolus (L22b)", () => {
+  /** Une demande d'écriture sur ce chemin, telle que la salle la publie. */
+  const ecriture = (chemin: string) =>
+    classifyOmoPermission({ permission: "edit", metadata: { filePath: `${PROJET_OUVERT}/${chemin}` } }, { projetOuvert: PROJET_OUVERT });
+  /** Une demande bash qui lit ce chemin. */
+  const lecture = (chemin: string) => classifyOmoPermission({ permission: "bash", metadata: { command: `cat ${chemin}` } }, { projetOuvert: PROJET_OUVERT });
+
+  it("tout nom d'entrée refusé par le filet est refusé par le juge, en lecture comme en écriture", () => {
+    for (const nom of garde.TEMOINS_CLE) {
+      assert.equal(garde.estNomCle(nom), true, `le filet doit refuser son propre témoin : ${nom}`);
+      assert.equal(ecriture(nom).verdict, "interdit", `L22b doit refuser à l'écriture ce que le filet refuse : ${nom}`);
+      assert.equal(lecture(nom).verdict, "interdit", `L22b doit refuser à la commande ce que le filet refuse : ${nom}`);
+    }
+  });
+
+  it("aucun témoin ordinaire du filet n'est refusé à l'écriture par le juge (pas de refus gratuit)", () => {
+    for (const nom of garde.TEMOINS_ORDINAIRES) {
+      if (nom === "src") continue; // dossier, pas un fichier : la demande d'écriture n'a pas de sens.
+      assert.equal(garde.estNomCle(nom), false, `le filet laisse passer : ${nom}`);
+      assert.equal(ecriture(nom).verdict, "once", `L22b ne doit pas refuser un fichier ordinaire : ${nom}`);
+    }
+  });
+
+  it("sur un NOM D'ENTRÉE seul, filet et juge disent exactement la même chose (aucune dérive silencieuse)", () => {
+    // Le corpus de noms couvre les deux listes du filet ; l'égalité doit tenir nom par nom, dans les deux sens.
+    for (const nom of [...garde.TEMOINS_CLE, ...garde.TEMOINS_ORDINAIRES, ".env.example", "service.env.example", ".env-prod", "prod.env"]) {
+      if (nom === "src") continue;
+      const refuseParLeJuge = ecriture(nom).verdict === "interdit";
+      assert.equal(refuseParLeJuge, garde.estNomCle(nom), `désaccord filet / juge sur le nom « ${nom} »`);
+    }
+  });
+
+  it("arbitrage L24 n° 3 : le juge est PLUS LARGE sur un chemin, et jamais l'inverse", () => {
+    // L'écart assumé : un segment intermédiaire « .env* » est vu par le juge, pas par le filet.
+    const ecart = "config/.env.d/valeurs.txt";
+    assert.equal(garde.estCheminCle(ecart), false, "le filet ne regarde que le nom d'entrée");
+    assert.equal(ecriture(ecart).verdict, "interdit", "le juge regarde le chemin entier");
+    // La relation interdite, elle, doit rester vide : aucun chemin refusé par le filet et accordé par le juge.
+    const vecteurs = [
+      ".env",
+      ".envrc",
+      "prod.env",
+      "src/.env.local",
+      "a/b/c/id_ed25519",
+      "deploy/cert.pem",
+      "infra/terraform.tfstate",
+      ".kube/config",
+      "config/.env.d/valeurs.txt",
+      "src/index.ts",
+      "docs/README.md",
+      ".env.example",
+      "paquet/service.env.example",
+    ];
+    const filetSeul = vecteurs.filter((c) => garde.estCheminCle(c) && ecriture(c).verdict === "once");
+    assert.deepEqual(filetSeul, [], "le filet refuserait ce que le cockpit accorde : relation interdite");
+  });
+
+  it(".env.example reste permis des deux côtés, y compris préfixé", () => {
+    for (const permis of [".env.example", "service.env.example", "paquet/service.env.example"]) {
+      assert.equal(garde.estCheminCle(permis), false, permis);
+      assert.equal(ecriture(permis).verdict, "once", permis);
+    }
+  });
+});
+
+// --- 11. opencode.jsonc ⊇ clés et .env* de L22b (A15) -----------------------------------------------------------------------------
+
+describe("croisement V2 (2 ter) : motifs refusés d'opencode.jsonc ⊇ clés et .env* de L22b", () => {
+  /** Motifs « deny » de la section `permission.edit` d'opencode.jsonc, commentaires JSONC retirés. */
+  const motifsRefuses = (): string[] => {
+    const brut = lire("docker", "opencode-omo", "opencode.jsonc").replace(/^\s*\/\/.*$/gm, "");
+    const config = JSON.parse(brut) as { permission?: { edit?: Record<string, string> } };
+    return Object.entries(config.permission?.edit ?? {})
+      .filter(([, verdict]) => verdict === "deny")
+      .map(([motif]) => motif);
+  };
+  /** Motif d'opencode (wildcardMatch : « * » traverse les dossiers), casse ignorée — comme le fait opencode. */
+  const correspond = (motif: string, chemin: string) =>
+    new RegExp(`^${motif.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "iu").test(chemin);
+
+  it("chaque chemin de clé ou de .env que L22b refuse est aussi refusé par opencode.jsonc", () => {
+    const motifs = motifsRefuses();
+    assert.ok(motifs.length > 20, `motifs deny trouvés : ${motifs.length}`);
+    const cles = [
+      ".env",
+      ".env.local",
+      ".env.production",
+      ".envrc",
+      "prod.env",
+      "src/.env",
+      "config/.env.d/valeurs.txt",
+      "id_rsa",
+      "id_ed25519",
+      "deploy/server.key",
+      "deploy/cert.pem",
+      "client.p12",
+      "store.pfx",
+      "app.jks",
+      "coffre.kdbx",
+      "terraform.tfstate",
+      "prod.tfvars",
+      "cle.asc",
+      "cle.gpg",
+      "acces.ovpn",
+      "cle.p8",
+      "cert.crt",
+      "cert.cer",
+      "cert.der",
+      ".kube/config",
+    ];
+    const manquants = cles.filter((chemin) => {
+      assert.equal(
+        classifyOmoPermission({ permission: "edit", metadata: { filePath: `${PROJET_OUVERT}/${chemin}` } }, { projetOuvert: PROJET_OUVERT }).verdict,
+        "interdit",
+        `L22b doit refuser ${chemin}`,
+      );
+      return !motifs.some((motif) => correspond(motif, chemin));
+    });
+    assert.deepEqual(manquants, [], "chemins refusés par le cockpit mais accordés par opencode.jsonc");
+  });
+
+  it("opencode.jsonc rend .env.example à l'action de base, comme L22b", () => {
+    const brut = lire("docker", "opencode-omo", "opencode.jsonc").replace(/^\s*\/\/.*$/gm, "");
+    const edit = (JSON.parse(brut) as { permission?: { edit?: Record<string, string> } }).permission?.edit ?? {};
+    assert.notEqual(edit["*.env.example"], "deny", "le témoin permis ne doit pas être refusé par la couche opencode");
+  });
+});
+
+// --- 12. Demande MO-1 de L25a : l'amont est branché (A15) --------------------------------------------------------------------------
+
+describe("croisement V2 (2 ter) : activity-deriver passe l'amont au contexte des faits (demande MO-1 de L25a)", () => {
+  it("le contexte porte `amont`, alimenté par la mémoire du flux", () => {
+    const source = lireServeur("activity-deriver.ts");
+    assert.match(source, /amont: memory\.amont\(\)/, "sans ce branchement, MO-1 et JP-3 restent muettes pour toujours");
+  });
+
+  it("les règles qui dépendent de l'amont se TAISENT quand il manque, elles n'inventent rien", () => {
+    // Toutes les entrées de FactUpstream sont facultatives : un contexte sans amont ne doit produire aucun doute ni aucune tâche.
+    const sansAmont: FactUpstream = {};
+    assert.equal(sansAmont.identiteSuspecte?.("msg_1") ?? false, false, "aucune identité douteuse inventée");
+    assert.equal(sansAmont.tacheDeFond?.("ses_1") ?? null, null, "aucune tâche de fond inventée");
+    assert.equal(sansAmont.noReply?.("msg_1") ?? false, false, "aucun réveil inventé");
+    // Et la mémoire du flux, elle, fournit bien les deux qu'elle connaît (noReply reste au processeur de la salle, L23c en V4).
+    const amont = new EventMemory(8).amont();
+    assert.equal(typeof amont.identiteSuspecte, "function");
+    assert.equal(typeof amont.tacheDeFond, "function");
+    assert.equal(amont.noReply, undefined, "noReply est fourni par la salle, pas par la mémoire générique");
+  });
+});
+
+// --- 13. Toute l'interface de la salle est là, et la salle reste coupée -------------------------------------------------------------
+
+describe("croisement V2 (2 ter) : l'interface de la salle est livrée, la salle reste coupée", () => {
+  it("SALLE_OUVERTE est toujours fausse dans le dépôt, page et Diagnostic compris", () => {
+    assert.match(lireServeur("wiring-11.ts"), /export const SALLE_OUVERTE = false;/, "la salle est livrée coupée");
+  });
+
+  it("l'entrée « Salle OMO » de App.tsx demande le mode Avancé ET les deux interrupteurs", () => {
+    const app = lire("app", "web", "app", "App.tsx");
+    const visible = /function salleVisible\(boot: Bootstrap\): boolean \{([\s\S]*?)\n\}/.exec(app)?.[1];
+    assert.ok(visible !== undefined, "l'entrée de la salle a sa propre règle de visibilité");
+    assert.match(visible, /omo\?\.enabled === true/, "interrupteur du cockpit");
+    assert.match(visible, /omo\.imageChargee/, "image réellement chargée sur ce poste");
+    assert.match(app, /id: "salle".*advancedOnly: true.*omoOnly: true/, "mode Avancé seulement, et sous les deux interrupteurs");
   });
 });
