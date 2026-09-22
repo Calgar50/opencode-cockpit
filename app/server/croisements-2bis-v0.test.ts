@@ -525,8 +525,15 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * depuis le train de V2. `egress-proxy.ts` reste dans la liste : rien ne l'importe hors de son propre lancement. Les autres
  * modules de comportement de la salle (plafonds, détections, audit de l'extension au-delà de la version branchée, superviseur)
  * restent interdits d'importation : ils arrivent avec leurs paquets, en V4.
+ *
+ * La vague 2 de l'itération 2 ter AJOUTE un nom : `shared/omo-forbidden.ts` (interdits absolus, L22b), module neuf que rien ne
+ * branche encore — le répondeur (L22d) l'appellera en V4. Il est ici pour lui-même : sans cela, la cloison le lirait comme un
+ * fichier de production et lui reprocherait d'importer les listes de la salle (`shared/omo-detections.ts`) dont il tire les
+ * fichiers d'IDE et de CI, au lieu de les recopier.
  */
 const MODULES_SALLE_V0 = new Set([
+  // Vague 2 de l'itération 2 ter
+  "omo-forbidden.ts",
   // V1
   "validate.mjs",
   "validate-core.mjs",
