@@ -224,14 +224,25 @@ describe("L16b §1 : les services de la salle sont derrière le profil, sans con
 describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7, D-2b-46)", () => {
   const salle = service(SALLE);
   /**
-   * Maximums relevés par la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée, PENDANT la charge de la porte G1
-   * (30 min, 180 passes, 180 envois ; 40 relevés `docker stats` : 516,7 Mio au maximum, 504,6 en moyenne, 29 processus).
-   * Les valeurs d'avant (347,8 Mio et 11 processus) venaient d'un relevé pris au repos, et sous-mesuraient : les marges que ce
-   * describe annonce n'étaient pas tenues (1 g = 1,98 × la mémoire réelle, 128 = 4,4 × les processus réels). Une remesure ne
-   * change que ces deux lignes — et, s'il le faut, les plafonds du compose, jamais les facteurs de marge.
+   * ÉCHANTILLON, PAS UNE BORNE. Plus haut relevé de la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée, PENDANT
+   * la charge de la porte G1 : 547,2 Mio au maximum (moyenne 520), 29 processus, sur 58 relevés `docker stats` pendant les
+   * 171 passes des 30 minutes du rejeu de la revue d'itération 2 bis.
+   *
+   * Ce n'est PAS un plafond que le produit tiendrait : rien ne l'impose au conteneur, et la mesure DÉRIVE d'une exécution à
+   * l'autre. La preuve est dans l'histoire de cette même ligne : 347,8 Mio (relevé au repos, qui sous-mesurait d'un tiers),
+   * puis 516,7 Mio (40 relevés, répétition générale), puis 547,2 Mio (58 relevés, rejeu) — soit + 5,9 % pour la même charge.
+   * La valeur ne sert donc qu'à une chose : refuser un plafond du compose qui descendrait sous deux fois ce qu'on a DÉJÀ vu
+   * passer. Une remesure plus haute remonte cette ligne (et, s'il le faut, les plafonds du compose) ; jamais les facteurs de
+   * marge, qui sont, eux, la règle.
    */
-  const MEM_MAX_MIO = 516.7;
+  const MEM_MAX_MIO = 547.2;
   const PIDS_MAX = 29;
+
+  /**
+   * Plus haut relevé PUBLIÉ par un banc, gardé à part de la constante pour que la garde ci-dessous ne puisse pas être satisfaite
+   * en baissant les deux ensemble. À remonter avec MEM_MAX_MIO quand un banc publie plus haut, jamais à baisser.
+   */
+  const M22_MEM_RELEVE_MAX_PUBLIE = 547.2;
 
   /** `mem_limit` du compose en mébioctets : suffixe k/m/g, ou des octets sans suffixe. */
   const memLimitMio = (valeur: unknown): number => {
@@ -271,6 +282,18 @@ describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7
     // Marges LUES dans le compose, jamais recopiées : un resserrement sous le maximum mesuré fait tomber le test.
     assert.ok(memLimitMio(salle.mem_limit) >= MEM_MAX_MIO * 2, `la mémoire permise garde au moins deux fois le maximum mesuré (${String(salle.mem_limit)})`);
     assert.ok(salle.pids_limit >= PIDS_MAX * 5, `les processus permis gardent au moins cinq fois le maximum mesuré (${String(salle.pids_limit)})`);
+  });
+
+  it("MEM_MAX_MIO n'est jamais sous le plus haut relevé publié par un banc, et son commentaire dit que c'est un échantillon", () => {
+    // Constat BAS de la revue d'itération 2 bis : la constante (516,7) était déjà dépassée par le rejeu (547,2, + 5,9 %) et son
+    // commentaire la présentait comme « le maximum ». Elle est recopiée à la main depuis un rapport, contrairement aux plafonds
+    // qui sont RELUS dans le compose : cette garde est le garde-fou de cette recopie.
+    assert.ok(
+      MEM_MAX_MIO >= M22_MEM_RELEVE_MAX_PUBLIE,
+      `MEM_MAX_MIO = ${MEM_MAX_MIO} Mio est sous le plus haut relevé publié par un banc (${M22_MEM_RELEVE_MAX_PUBLIE} Mio) : la marge annoncée par ce describe n'est plus vraie`,
+    );
+    const source = fs.readFileSync(path.join(import.meta.dirname, "omo-compose.test.ts"), "utf8");
+    assert.match(source, /ÉCHANTILLON, PAS UNE BORNE\./, "le commentaire de MEM_MAX_MIO doit dire que c'est un échantillon, pas une borne");
   });
 
   it("la mesure M22 est prise sous charge, jamais au repos : c'est la porte G1 qui la relève", () => {
