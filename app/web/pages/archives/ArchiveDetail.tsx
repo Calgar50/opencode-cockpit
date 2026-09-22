@@ -1,5 +1,5 @@
 // Archives : fiche d'une conversation (classement, tags, résumé, statistiques, transcription).
-import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react"; // c5 : useMemo pour le découpage de la transcription (L44f)
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { Markdown } from "../../components/Markdown.tsx";
@@ -543,7 +543,8 @@ const TITRES_EQUIPE: Readonly<Record<Exclude<ArchiveBlocGenre, "texte">, string>
  * texte reste rendu par le composant Markdown (assaini par DOMPurify) : aucun HTML brut, aucun `dangerouslySetInnerHTML`.
  */
 function TranscriptionArchivee({ texte }: { texte: string }) {
-  const blocs = blocsDArchive(texte);
+  // Découpage MÉMOÏSÉ : la fiche se rend à chaque événement reçu, et une transcription archivée ne change jamais.
+  const blocs = useMemo(() => blocsDArchive(texte), [texte]);
   return (
     <>
       {blocs.map((bloc, index) =>

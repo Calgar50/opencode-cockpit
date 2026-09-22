@@ -270,12 +270,34 @@ function toutesLesOperations(flow: Flow): Jouee[] {
   return jouees;
 }
 
+/**
+ * Déroulé de départ porteur d'un lien `recoit: {etapes}` du mode Avancé, que les six exemples du catalogue n'ont pas : c'est
+ * exactement ce que le port de sortie et le menu « Reçoit le résultat de… » laissent poser dans le schéma. Sans lui, aucune
+ * opération jouée ici n'avait de lien à casser, et un lien laissé PENDANT par une opération qui retire une étape passait
+ * inaperçu (corrections de la relecture de la vague 3).
+ */
+const DEROULE_AVEC_LIEN: { id: string; flow: Flow } = {
+  id: "déroulé-avec-lien",
+  flow: {
+    version: 1,
+    blocs: [
+      { type: "etape", id: "b-1", etape: { id: "e1", titre: "Collecte", assistant: "collecte", niveau: null, taille: "S", consigne: "Relever les faits.", recoit: "demande" } },
+      { type: "etape", id: "b-2", etape: { id: "e2", titre: "Analyse", assistant: "analyse", niveau: null, taille: "M", consigne: "Chercher les causes.", recoit: "precedent" } },
+      { type: "etape", id: "b-3", etape: { id: "e3", titre: "Rapport", assistant: "rapport", niveau: null, taille: "M", consigne: "Écrire le rapport.", recoit: { etapes: ["e1"] } } },
+    ],
+  },
+};
+
+/** Problèmes de LIEN qui bloquent : un lien vers une étape disparue en laisse derrière lui. */
+const liensBloquants = (problemes: readonly FlowProblem[]) => problemes.filter((probleme) => probleme.bloquant && probleme.code.startsWith("lien-")).map(cleProbleme);
+
 describe("croisement V3 : chaque opération du schéma, puis le serveur (C §11 S4)", () => {
   it("les six exemples réels : une opération rend un déroulé que `validateFlow` explique, ou un refus qui ne change rien", () => {
-    for (const exemple of TEAM_EXAMPLES) {
+    for (const exemple of [...TEAM_EXAMPLES, DEROULE_AVEC_LIEN]) {
       const depart = exemple.flow;
       const jouees = toutesLesOperations(depart);
       assert.ok(jouees.length >= 20, `${exemple.id} : trop peu d'opérations jouées (${jouees.length})`);
+      const liensDuDepart = liensBloquants(validateFlow(depart, contexteStructure().validation));
       for (const { nom, res } of jouees) {
         const ou = `${exemple.id} · ${nom}`;
         // (a) Le déroulé rendu est TOUJOURS expliqué par `validateFlow`, la même que le serveur emploie.
@@ -297,6 +319,12 @@ describe("croisement V3 : chaque opération du schéma, puis le serveur (C §11 
         ]);
         for (const probleme of bloquants(structurels(res.problemes))) {
           assert.ok(affiches.has(probleme.code), `${ou} : le problème bloquant « ${probleme.code} » n'est affiché nulle part`);
+        }
+        // (e) Une opération ACCEPTÉE ne pose jamais un problème de LIEN que le déroulé de départ n'avait pas : un lien laissé
+        //     pendant par une étape retirée rendrait l'équipe irrecevable, avec une phrase qui parle d'ordre là où le lien
+        //     vise une étape disparue — et sans aucune case à décocher pour la réparer.
+        if (res.refus === null) {
+          assert.deepEqual(liensBloquants(res.problemes).filter((cle) => !liensDuDepart.includes(cle)), [], `${ou} : lien resté pendant`);
         }
       }
     }

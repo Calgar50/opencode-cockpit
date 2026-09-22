@@ -217,6 +217,12 @@ const TITRE_SECTION = "## ";
 
 interface SectionArchive {
   genre: ArchiveBlocGenre;
+  /**
+   * Ligne de titre de la section (« ## 🧑 Vous · … »), TENUE À PART : une carte d'équipe est là pour rendre le message à son
+   * auteur, elle ne recopie donc pas l'attribution que `buildDigest` a écrite. Vide pour ce qui précède le premier titre.
+   */
+  titre: string;
+  /** Corps de la section, titre exclu. */
   lignes: string[];
   /** Le corps de la section (tout sauf son titre) n'a encore aucune ligne non vide : un marqueur y est en tête. */
   corpsVide: boolean;
@@ -225,11 +231,11 @@ interface SectionArchive {
 /** Sections de la transcription, marqueurs du cockpit retirés et genre posé sur ceux qui ouvrent le corps d'une section. */
 function sectionsDArchive(lignes: readonly string[]): SectionArchive[] {
   const sections: SectionArchive[] = [];
-  let courante: SectionArchive = { genre: "texte", lignes: [], corpsVide: true };
+  let courante: SectionArchive = { genre: "texte", titre: "", lignes: [], corpsVide: true };
   sections.push(courante);
   for (const ligne of lignes) {
     if (ligne.startsWith(TITRE_SECTION)) {
-      courante = { genre: "texte", lignes: [ligne], corpsVide: true };
+      courante = { genre: "texte", titre: ligne, lignes: [], corpsVide: true };
       sections.push(courante);
       continue;
     }
@@ -247,19 +253,40 @@ function sectionsDArchive(lignes: readonly string[]): SectionArchive[] {
 
 /**
  * Sections de la transcription enregistrée, réunies par genre : les sections ordinaires restent collées entre elles (un seul
- * rendu Markdown), chaque message d'équipe forme son propre bloc. Une transcription sans marqueur rend un bloc unique, à
- * l'octet près : la très grande majorité des fiches d'archives ne change donc pas d'un cheveu.
+ * rendu Markdown) et gardent leur titre, chaque message d'équipe forme son propre bloc et laisse derrière lui le titre
+ * « ## 🧑 Vous · … » que la carte est justement là pour corriger. Une transcription sans marqueur rend un bloc unique, à l'octet
+ * près : la très grande majorité des fiches d'archives ne change donc pas d'un cheveu.
+ *
+ * Les LIGNES sont accumulées, jamais le texte : recopier le bloc déjà écrit à chaque section coûtait le carré du nombre de
+ * sections (381 ms pour 2 000 sections, sur une transcription au plafond de `MAX_TRANSCRIPT`), sur un écran où l'on ne fait
+ * que lire. Le découpage est par ailleurs mémoïsé par la vue (`ArchiveDetail.tsx`), pour n'être pas rejoué à chaque rendu.
  */
 export function blocsDArchive(transcript: string): ArchiveBloc[] {
   const blocs: ArchiveBloc[] = [];
+  // Bloc en cours d'écriture : son genre et ses LIGNES, jamais son texte (voir le coût, plus haut).
+  let genreCourant: ArchiveBlocGenre | null = null;
+  let lignesCourantes: string[] = [];
+  const clore = () => {
+    const genre = genreCourant;
+    if (genre === null) return;
+    const texte = trimLignes(lignesCourantes).join("\n");
+    if (texte !== "" || genre !== "texte") blocs.push({ genre, texte });
+    genreCourant = null;
+    lignesCourantes = [];
+  };
   for (const section of sectionsDArchive(transcript.split("\n"))) {
-    const texte = trimLignes(section.lignes).join("\n");
-    const dernier = blocs.at(-1);
-    if (section.genre === "texte" && dernier?.genre === "texte") {
-      dernier.texte = trimLignes(`${dernier.texte}\n\n${texte}`.split("\n")).join("\n");
-    } else if (texte !== "" || section.genre !== "texte") {
-      blocs.push({ genre: section.genre, texte });
+    // Le titre revient dans les sections ordinaires, à la place exacte qu'il occupait ; il reste dehors pour une équipe.
+    const brutes = section.genre === "texte" && section.titre !== "" ? [section.titre, ...section.lignes] : section.lignes;
+    const lignes = trimLignes(brutes);
+    if (section.genre === "texte" && genreCourant === "texte") {
+      // Une seule ligne vide entre deux sections réunies : c'est le « \n\n » d'avant, à l'octet près.
+      if (lignes.length > 0) lignesCourantes.push(...(lignesCourantes.length > 0 ? [""] : []), ...lignes);
+      continue;
     }
+    clore();
+    genreCourant = section.genre;
+    lignesCourantes = [...lignes];
   }
+  clore();
   return blocs.length > 0 ? blocs : [{ genre: "texte", texte: "" }];
 }

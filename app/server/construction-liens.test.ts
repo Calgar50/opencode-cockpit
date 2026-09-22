@@ -374,6 +374,70 @@ describe("liens de la construction : marqueurs de l'itération 4 dans les Archiv
     assert.match(code, /<Markdown text=\{bloc\.texte\} className="archive-transcript" \/>/);
     assert.match(code, /aria-label=\{TITRES_EQUIPE\[bloc\.genre\]\}/);
   });
+
+  it("une carte d'équipe ne garde pas le titre « ## 🧑 Vous · … » qu'elle est là pour corriger", () => {
+    const blocs = blocsDArchive(transcriptionAvecEquipe());
+    for (const bloc of blocs) {
+      if (bloc.genre !== "texte") assert.doesNotMatch(bloc.texte, /^## /m, `${bloc.genre} : ${JSON.stringify(bloc.texte)}`);
+    }
+    // Le corps, lui, est rendu entier, et sans les lignes vides laissées par le retrait du marqueur : la demande recopiée
+    // commence à la demande, et le résultat injecté garde son enveloppe de l'itération 4, rien de plus.
+    assert.equal(blocs[1]?.texte, DEMANDE);
+    assert.ok((blocs[2]?.texte ?? "").includes(RESULTAT), blocs[2]?.texte);
+    assert.doesNotMatch(blocs[2]?.texte ?? "", /^\s/, "aucune ligne vide de tête laissée par le marqueur");
+    // Contrôle discriminant : les sections ORDINAIRES gardent bien leurs titres, à la place qu'elles occupaient.
+    assert.match(blocs[0]?.texte ?? "", /^## 🧑 Vous · /);
+    assert.match(blocs[3]?.texte ?? "", /^## 🤖 /);
+  });
+
+  it("le découpage reste linéaire, et il n'est pas rejoué à chaque rendu de la fiche", () => {
+    // Une conversation longue archivée : `buildDigest` ouvre une section par message, et `MAX_TRANSCRIPT` (archive.ts) laisse
+    // passer 200 000 caractères. Recopier le bloc déjà écrit à chaque section coûtait le carré du nombre de sections.
+    const lignes: string[] = [];
+    for (let i = 0; i < 2000; i++) lignes.push(`## 🧑 Vous · section ${i}`, "", `Corps de la section ${i}, avec de quoi peser.`, "");
+    const texte = lignes.join("\n");
+    const debut = performance.now();
+    const blocs = blocsDArchive(texte);
+    const duree = performance.now() - debut;
+    assert.equal(blocs.length, 1, "les sections ordinaires restent collées entre elles");
+    assert.equal(blocs[0]?.texte, texte.trim(), "et le texte reste celui de la transcription, à l'octet près");
+    assert.ok(duree < 100, `2 000 sections découpées en ${duree.toFixed(0)} ms : le coût est redevenu quadratique`);
+    // Et la vue ne refait pas le découpage à chaque rendu : la transcription archivée ne change jamais.
+    assert.match(sansCommentaires(lire(ARCHIVE)), /useMemo\(\(\) => blocsDArchive\(texte\), \[texte\]\)/);
+  });
+
+  it("sections mêlées : le découpage rend exactement ce qu'il rendait, marqueurs et lignes vides compris", () => {
+    // Cas composés à la main, dont la sortie est écrite ici en toutes lettres : c'est le garde-fou de la réunion des
+    // sections, qui accumule désormais des LIGNES au lieu de recopier le texte.
+    const cas: ReadonlyArray<readonly [string, ReadonlyArray<{ genre: string; texte: string }>]> = [
+      ["", [{ genre: "texte", texte: "" }]],
+      ["\n\n\n", [{ genre: "texte", texte: "" }]],
+      ["## A\n\nun\n\n## B\n\ndeux\n", [{ genre: "texte", texte: "## A\n\nun\n\n## B\n\ndeux" }]],
+      // Une section vide entre deux sections ordinaires ne double pas la ligne vide qui les sépare.
+      ["## A\n\nun\n\n## vide\n\n\n## B\n\ndeux", [{ genre: "texte", texte: "## A\n\nun\n\n## vide\n\n## B\n\ndeux" }]],
+      [
+        "## A\n\nun\n\n## 🧑 Vous · x\n\n<!-- cockpit:equipe-demande run=r -->\n\nma demande\n\n## B\n\ndeux",
+        [
+          { genre: "texte", texte: "## A\n\nun" },
+          { genre: "equipe-demande", texte: "ma demande" },
+          { genre: "texte", texte: "## B\n\ndeux" },
+        ],
+      ],
+      // Deux cartes d'équipe à la suite restent deux blocs, sans rien entre elles.
+      [
+        "## 🧑 Vous · x\n\n<!-- cockpit:equipe-demande run=r -->\n\nma demande\n\n## 🧑 Vous · y\n\n<!-- cockpit:equipe-resultat run=r -->\n\nle résultat",
+        [
+          { genre: "equipe-demande", texte: "ma demande" },
+          { genre: "equipe-resultat", texte: "le résultat" },
+        ],
+      ],
+      // Une carte d'équipe au corps vide reste une carte (son titre ne la remplit pas).
+      ["## 🧑 Vous · x\n\n<!-- cockpit:equipe-resultat run=r -->\n", [{ genre: "equipe-resultat", texte: "" }]],
+    ];
+    for (const [transcript, attendu] of cas) {
+      assert.deepEqual(blocsDArchive(transcript), attendu, JSON.stringify(transcript));
+    }
+  });
 });
 
 // --- Gardes communes du paquet -------------------------------------------------------------------------------------------------

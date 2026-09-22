@@ -340,6 +340,21 @@ export function moveTo(flow: Flow, blocId: string, index: number, ctx: SchemaCon
   return etat;
 }
 
+/**
+ * Dépôt d'un bloc sur une PLACE du schéma (glisser au pointeur). Une place n'est PAS un rang : la vue dessine la place `index`
+ * dans l'interstice qui précède le bloc de ce rang (`data-sc-place={index}`), et il y en a une de plus après le dernier bloc.
+ * La place est donc convertie en rang avant d'appeler `moveTo` — sans quoi un dépôt vers le bas ferait descendre le bloc d'un
+ * cran de trop, et le dépôt sur l'un des deux interstices qui bordent le bloc, qui ne demande rien, le ferait bouger quand même.
+ */
+export function moveToPlace(flow: Flow, blocId: string, place: number, ctx: SchemaContext): SchemaOpResult {
+  const depart = flow.blocs.findIndex((block) => block.id === blocId);
+  if (depart === -1) return resultat(flow, brouillon(flow, ctx).compteur, false, ctx);
+  const vise = Math.trunc(place);
+  // Les deux interstices qui bordent le bloc sont sa place actuelle : rien à faire, et rien à dire.
+  if (vise === depart || vise === depart + 1) return resultat(flow, brouillon(flow, ctx).compteur, false, ctx);
+  return moveTo(flow, blocId, vise > depart ? vise - 1 : vise, ctx);
+}
+
 /** « Supprimer » : le bloc et ses étapes quittent le déroulé ; les identifiants des autres ne bougent pas. */
 export function removeBloc(flow: Flow, blocId: string, ctx: SchemaContext): SchemaOpResult {
   const avant = brouillon(flow, ctx);

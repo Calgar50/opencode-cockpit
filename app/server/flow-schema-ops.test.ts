@@ -2,9 +2,9 @@
 // §6 ; conception C §8.2, §9.12, §11 S4, D10 ; D-5-20 : opérations pures d'abord, interface ensuite).
 //
 // Ce que ces tests tiennent :
-// - chaque OPÉRATION du §6 : insertAfter, moveUp, moveDown, moveTo, removeBloc, addAvis, removeAvis, addSpecialiste,
-//   removeSpecialiste, transform, setRecoit, setTours, setChoixMax — chacune rend un NOUVEAU déroulé, revalidé par validateFlow,
-//   et laisse le déroulé reçu intact ;
+// - chaque OPÉRATION du §6 : insertAfter, moveUp, moveDown, moveTo, moveToPlace, removeBloc, addAvis, removeAvis,
+//   addSpecialiste, removeSpecialiste, transform, setRecoit, setTours, setChoixMax — chacune rend un NOUVEAU déroulé, revalidé
+//   par validateFlow, et laisse le déroulé reçu intact ; une étape retirée n'abandonne jamais un lien qui la visait ;
 // - chaque REFUS de C §8.2 avec son code et sa phrase du §4.3, à l'octet ;
 // - la PROPRIÉTÉ : aucune suite d'opérations n'aboutit à un déroulé que le serveur refuserait sans qu'un problème soit AFFICHÉ
 //   (200 suites tirées au hasard, graine fixe) ;
@@ -29,6 +29,7 @@ import {
   insertAfter,
   moveDown,
   moveTo,
+  moveToPlace,
   moveUp,
   phraseRefus,
   PROBLEMES_DES_ASSISTANTS,
@@ -48,7 +49,7 @@ import {
 } from "./shared/flow-schema-ops.ts";
 import { FLOW_LIMITS, FLOW_VERSION, stepInputEtapes } from "./shared/team-limits.ts";
 import { TEXTES as TEAM_TEXTES } from "./shared/team-texts.ts";
-import type { Flow, FlowBlock, FlowStep, StepAssistant } from "./shared/team-types.ts";
+import type { Flow, FlowBlock, FlowProblem, FlowStep, StepAssistant } from "./shared/team-types.ts";
 
 // --- Montages -------------------------------------------------------------------------------------------------------------------
 
@@ -150,6 +151,10 @@ function etapesDe(block: FlowBlock): FlowStep[] {
 
 const toutesLesEtapes = (flow: Flow): FlowStep[] => flow.blocs.flatMap(etapesDe);
 
+/** Problèmes de LIEN qui bloquent, réduits à leur code et à leur étape : ce qu'un lien pendant laisse derrière lui. */
+const liensBloquants = (problemes: readonly FlowProblem[]): string[] =>
+  problemes.filter((probleme) => probleme.bloquant && probleme.code.startsWith("lien-")).map((probleme) => `${probleme.code}|${probleme.etape ?? ""}`);
+
 /** Chaque opération revalide : ce qu'elle rend est EXACTEMENT ce que le serveur dira du déroulé rendu (C §11 S4). */
 function revalide(resultat: SchemaOpResult, ctx: SchemaContext = contexte()): void {
   assert.deepEqual(resultat.problemes, validateFlow(resultat.flow, ctx.validation));
@@ -217,6 +222,71 @@ describe("schéma modifiable : opérations pures (C §8.2)", () => {
     assert.equal(moveTo(flow, "b-inconnu", 0, contexte()).change, false);
     // Place hors de la liste : bornée à la liste, jamais une erreur.
     assert.deepEqual(blocIds(moveTo(flow, "b-un", 99, contexte()).flow), ["b-deux", "b-trois", "b-un"]);
+  });
+
+  it("moveToPlace : la PLACE dessinée par la vue (l'interstice AVANT un bloc), jamais un rang", () => {
+    // Quatre blocs, quatre rangs 0 1 2 3 ; cinq places 0 1 2 3 4, chacune dans l'interstice qui PRÉCÈDE le bloc de ce rang,
+    // la cinquième après le dernier bloc (SchemaEditor.tsx : `place(ligne.index)` puis `place(ligne.index + 1)`).
+    const quatre = flowOf(
+      etapeBloc("1"),
+      etapeBloc("3", { recoit: "precedent" }),
+      etapeBloc("5", { recoit: "precedent" }),
+      etapeBloc("7", { recoit: "precedent" }),
+    );
+    // Les deux interstices qui bordent le bloc ne demandent rien : les reposer là n'est pas un geste.
+    assert.equal(moveToPlace(quatre, "b-1", 0, contexte()).change, false, "place 0 : juste au-dessus de b-1");
+    assert.equal(moveToPlace(quatre, "b-1", 1, contexte()).change, false, "place 1 : juste au-dessous de b-1");
+    assert.equal(moveToPlace(quatre, "b-5", 2, contexte()).change, false, "place 2 : juste au-dessus de b-5");
+    assert.equal(moveToPlace(quatre, "b-5", 3, contexte()).change, false, "place 3 : juste au-dessous de b-5");
+    // Vers le BAS : le bloc atterrit dans l'interstice montré, pas un cran plus bas.
+    const place2 = moveToPlace(quatre, "b-1", 2, contexte());
+    assert.deepEqual(blocIds(place2.flow), ["b-3", "b-1", "b-5", "b-7"], "place 2 : entre b-3 et b-5");
+    revalide(place2);
+    assert.deepEqual(blocIds(moveToPlace(quatre, "b-1", 3, contexte()).flow), ["b-3", "b-5", "b-1", "b-7"], "place 3 : entre b-5 et b-7");
+    assert.deepEqual(blocIds(moveToPlace(quatre, "b-1", 4, contexte()).flow), ["b-3", "b-5", "b-7", "b-1"], "dernière place : à la fin");
+    // Vers le HAUT, la place et le rang coïncident déjà : rien ne change de ce côté.
+    assert.deepEqual(blocIds(moveToPlace(quatre, "b-7", 1, contexte()).flow), ["b-1", "b-7", "b-3", "b-5"]);
+    assert.deepEqual(blocIds(moveToPlace(quatre, "b-7", 0, contexte()).flow), ["b-7", "b-1", "b-3", "b-5"]);
+    assert.equal(moveToPlace(quatre, "b-inconnu", 0, contexte()).change, false);
+    // `moveTo`, lui, garde sa sémantique de RANG : c'est la conversion qui manquait, pas l'opération.
+    assert.deepEqual(blocIds(moveTo(quatre, "b-1", 2, contexte()).flow), ["b-3", "b-5", "b-1", "b-7"]);
+  });
+
+  it("liens pendants : une étape retirée n'abandonne jamais un `recoit: {etapes}` qui la vise encore", () => {
+    // Déroulé du constat : « Rapport » reçoit le résultat de « Collecte », exactement ce que le port de sortie et le menu
+    // « Reçoit le résultat de… » laissent poser en Avancé.
+    const trois = flowOf(
+      etapeBloc("1", { titre: "Collecte" }),
+      etapeBloc("2", { titre: "Analyse", recoit: "precedent" }),
+      etapeBloc("3", { titre: "Rapport", recoit: { etapes: ["1"] } }),
+    );
+    assert.deepEqual(liensBloquants(validateFlow(trois, contexte().validation)), [], "le déroulé de départ est recevable");
+    for (const [nom, res] of [
+      ["transform", transform(trois, "b-1", "relecture", contexte())],
+      ["removeBloc", removeBloc(trois, "b-1", contexte())],
+    ] as const) {
+      assert.equal(res.change, true, nom);
+      assert.equal(res.refus, null, nom);
+      // Ni `lien-arriere` ni aucun autre `lien-*` : l'utilisateur n'a pas fait de lien vers le bas, il a retiré une étape.
+      assert.deepEqual(liensBloquants(res.problemes), [], `${nom} : lien resté pendant`);
+      // Le lien est OUBLIÉ, et l'étape retombe sur la valeur par défaut de sa place.
+      const rapport = toutesLesEtapes(res.flow).find((etape) => etape.titre === "Rapport");
+      assert.equal(stepInputEtapes(rapport?.recoit), null, `${nom} : lien vers une étape disparue`);
+      // Le menu de l'étape ne propose donc plus rien à décocher qui n'existe pas.
+      const ligne = schemaModel(res.flow, res.problemes, contexte()).lignes.at(-1);
+      const existantes = new Set(toutesLesEtapes(res.flow).map((etape) => etape.id));
+      for (const id of ligne?.recoitDe ?? []) assert.ok(existantes.has(id), `${nom} : ${id} n'existe plus`);
+    }
+    // [Retirer cet avis] fait disparaître une étape de la même façon : le lien qui la visait est oublié aussi.
+    const troisAvis = addAvis(flowOf(avisBloc(), etapeBloc("suite", { recoit: { etapes: ["avis1"] } })), "b-avis", contexte());
+    assert.equal(troisAvis.change, true);
+    const retire = removeAvis(troisAvis.flow, "b-avis", "avis1", contexte());
+    assert.equal(retire.change, true);
+    assert.deepEqual(liensBloquants(retire.problemes), [], "removeAvis : lien resté pendant");
+    // Une liste dont TOUTES les étapes existent encore n'est jamais détruite en silence (contrôle discriminant).
+    const garde = moveUp(trois, "b-3", contexte());
+    assert.equal(garde.change, true);
+    assert.deepEqual(stepInputEtapes(toutesLesEtapes(garde.flow).find((etape) => etape.titre === "Rapport")?.recoit), ["1"]);
   });
 
   it("removeBloc : le bloc et ses étapes quittent le déroulé ; un identifiant inconnu ne change rien", () => {
@@ -664,6 +734,24 @@ describe("schéma modifiable : interface relue en statique", () => {
   const sansCommentaires = (texte: string) => texte.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
   const code = sansCommentaires(editeur);
 
+  /** Corps de chaque gestionnaire `nom={…}` d'un source JSX, accolades appariées. */
+  function corpsDe(source: string, nom: string): string[] {
+    const out: string[] = [];
+    const marque = `${nom}={`;
+    let at = source.indexOf(marque);
+    while (at !== -1) {
+      let profondeur = 0;
+      let fin = at + marque.length - 1;
+      for (; fin < source.length; fin++) {
+        if (source[fin] === "{") profondeur += 1;
+        else if (source[fin] === "}" && --profondeur === 0) break;
+      }
+      out.push(source.slice(at + marque.length, fin));
+      at = source.indexOf(marque, fin);
+    }
+    return out;
+  }
+
   it("le squelette de L42d a laissé la place à l'implémentation (plus de mention « Propriétaire : L43 » de squelette)", () => {
     assert.equal(/SQUELETTE/i.test(editeur), false);
     assert.match(editeur, /Propriétaire : L43\./);
@@ -675,6 +763,37 @@ describe("schéma modifiable : interface relue en statique", () => {
     const imports = [...code.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1] ?? "");
     for (const spec of imports) assert.ok(spec.startsWith(".") || spec === "react", `import refusé : ${spec}`);
     assert.equal(/\bdraggable\b/.test(code), false, "le glisser natif HTML5 ne se pilote pas au clavier");
+  });
+
+  it("un CLIC reste un clic : le glisser ne s'arme qu'au-delà d'un seuil, et l'appui ne vole pas le focus de la ligne", () => {
+    // Le seuil existe, et il se mesure au déplacement du pointeur.
+    assert.match(code, /SEUIL_GLISSER/);
+    assert.match(code, /Math\.hypot\(/);
+    // Les gestionnaires d'appui n'ouvrent qu'une INTENTION : ni `preventDefault` (qui supprime le `mousedown` de
+    // compatibilité, donc la prise de focus à la souris, celle qui arme Alt+↑ / Alt+↓), ni pose du glisser.
+    const appuis = corpsDe(code, "onPointerDown");
+    assert.ok(appuis.length >= 2, `gestionnaires d'appui trouvés : ${appuis.length}`);
+    for (const corps of appuis) {
+      assert.equal(/preventDefault/.test(corps), false, corps);
+      assert.equal(/\bcommencer\s*\(/.test(corps), false, corps);
+      assert.match(corps, /\bviser\s*\(/);
+    }
+    // Contrôles discriminants : le lecteur de corps voit bien ce qu'un gestionnaire contient, accolades imbriquées comprises.
+    assert.deepEqual(corpsDe("<li onPointerDown={(e) => { if (x) { f(e); } }} />", "onPointerDown"), ["(e) => { if (x) { f(e); } }"]);
+    assert.ok(corpsDe("<li onPointerDown={(e) => { e.preventDefault(); }} />", "onPointerDown")[0]?.includes("preventDefault"));
+    // Sous le seuil, aucun glisser n'a été posé : `lacher` sort avant toute consultation de `dropCheck`, donc aucun refus
+    // n'est écrit ni annoncé pour un geste qui n'a pas eu lieu.
+    assert.match(code, /const lacher = useCallback\([\s\S]{0,300}if \(glisse === null\) return;/);
+    const corpsLacher = code.slice(code.indexOf("const lacher = useCallback("));
+    assert.ok(corpsLacher.indexOf("if (glisse === null) return;") < corpsLacher.indexOf("dropCheck("), "dropCheck consulté avant la sortie");
+    // Un bloc reposé sur lui-même ne se voit rien reprocher non plus.
+    assert.match(code, /cible\.blocId === source\.blocId/);
+  });
+
+  it("le glisser dépose sur une PLACE, et la place est convertie en rang par le module pur (moveToPlace)", () => {
+    assert.match(code, /moveToPlace\(/);
+    assert.equal(/\bmoveTo\(/.test(code), false, "la vue ne parle qu'en places : le rang est l'affaire du module pur");
+    assert.match(code, /data-sc-place=\{index\}/);
   });
 
   it("chaque glisser a son bouton ou son menu (WCAG 2.5.7) : Alt+↑ / Alt+↓ et les six entrées du §4.3", () => {
@@ -730,5 +849,9 @@ describe("schéma modifiable : interface relue en statique", () => {
     assert.equal(/animation[^;]*infinite/.test(css), false);
     assert.equal(/animation\s*:/.test(css), false, "aucune animation");
     if (/transition/.test(css)) assert.ok(css.includes("prefers-reduced-motion"), "mouvement hors du garde-fou");
+    // La règle du glisser fait ce que son commentaire annonce : la sélection de texte est écartée (le `preventDefault` de
+    // l'appui, qui s'en chargeait, a disparu avec le seuil), et le contenu continue de capter le pointeur.
+    assert.match(css, /\.sc-ligne\.sc-glisse \{[^}]*user-select: none;/);
+    assert.equal(/ne capte pas le pointeur/.test(css), false, "commentaire démenti par la règle");
   });
 });

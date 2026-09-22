@@ -7,7 +7,9 @@
 // ../../../../server/shared/flow-schema-ops.ts, testé par server/flow-schema-ops.test.ts. Aucun texte n'est écrit ici.
 //
 // GLISSER (P8 : AUCUNE dépendance npm nouvelle) : événements `pointer` natifs, capture du pointeur, et la cible lue sous le
-// pointeur par `elementFromPoint` et les attributs `data-sc-*`. Deux gestes, et CHACUN a son bouton ou son menu (WCAG 2.5.7) :
+// pointeur par `elementFromPoint` et les attributs `data-sc-*`. L'appui n'ARME que le geste : le glisser ne commence qu'au
+// premier déplacement de plus de SEUIL_GLISSER pixels, pour qu'un clic reste un clic (focus de la ligne, qui arme le clavier)
+// et n'écrive jamais le refus d'un dépôt qu'on n'a pas fait. Deux gestes, et CHACUN a son bouton ou son menu (WCAG 2.5.7) :
 // - déplacer un bloc → « Monter » · « Descendre », et Alt+↑ / Alt+↓ sur la ligne ;
 // - tirer un lien depuis le port de sortie d'une étape → menu « Reçoit le résultat de… » de l'étape qui reçoit (cases des étapes
 //   situées plus haut). Le port lui-même est DÉCORATIF (aria-hidden) : il double un chemin clavier complet, il n'en crée pas.
@@ -33,7 +35,7 @@ import {
   fusionnerProblemes,
   insertAfter,
   moveDown,
-  moveTo,
+  moveToPlace,
   moveUp,
   problemesStructurels,
   removeAvis,
@@ -92,6 +94,12 @@ function cibleSous(x: number, y: number): SchemaCible | null {
 /** Commandes d'une ligne : un appui dessus n'est jamais le début d'un glisser de bloc. */
 const COMMANDES = "button, summary, input, label, textarea, .sc-port";
 
+/**
+ * Seuil du glisser, en pixels. En deçà, l'appui reste un CLIC : la ligne prend le focus à la souris (c'est lui qui arme
+ * Alt+↑ / Alt+↓), et rien n'est déposé nulle part — donc aucun refus n'est écrit ni annoncé pour un geste qu'on n'a pas fait.
+ */
+const SEUIL_GLISSER = 4;
+
 /** Clé d'affichage d'un refus : la ligne, l'étape ou la place où la phrase est écrite, au plus près de la cible. */
 function cleDe(cible: SchemaCible | null): string {
   if (cible === null) return "";
@@ -107,6 +115,8 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
   const [survol, setSurvol] = useState<{ cle: string; refus: string | null } | null>(null);
   const [refus, setRefus] = useState<{ cle: string; texte: string } | null>(null);
   const dernierRefus = useRef<string | null>(null);
+  /** Appui en attente : le glisser n'existe qu'au-delà du seuil, et il n'y a donc rien à lâcher avant. */
+  const intention = useRef<{ source: SchemaSource; x: number; y: number } | null>(null);
 
   const locaux = useMemo(() => problemesStructurels(draft.flow), [draft]);
   const vus = useMemo(() => fusionnerProblemes(problemes, locaux), [problemes, locaux]);
@@ -145,6 +155,17 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
     [draft, contexteDe, onOperation, refuser],
   );
 
+  /**
+   * Appui : rien n'est glissé encore, et rien n'est empêché. Le `pointerdown` garde donc son comportement de CLIC — la ligne
+   * prend le focus à la souris, celui qui arme Alt+↑ / Alt+↓ — et la phrase de refus du geste précédent s'efface.
+   */
+  const viser = useCallback((event: ReactPointerEvent<Element>, source: SchemaSource) => {
+    intention.current = { source, x: event.clientX, y: event.clientY };
+    setRefus(null);
+    dernierRefus.current = null;
+  }, []);
+
+  /** Le glisser commence VRAIMENT : le seuil est franchi, le pointeur est capturé, et la sélection de texte est écartée. */
   const commencer = useCallback((event: ReactPointerEvent<Element>, source: SchemaSource) => {
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -154,7 +175,18 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
 
   const bouger = useCallback(
     (event: ReactPointerEvent<Element>) => {
-      if (glisse === null) return;
+      if (glisse === null) {
+        const vise = intention.current;
+        if (vise === null) return;
+        // Bouton relâché hors de la liste : l'appui est périmé, il n'arme plus rien au survol suivant.
+        if (event.buttons === 0) {
+          intention.current = null;
+          return;
+        }
+        if (Math.hypot(event.clientX - vise.x, event.clientY - vise.y) <= SEUIL_GLISSER) return;
+        commencer(event, vise.source);
+        return;
+      }
       const cible = cibleSous(event.clientX, event.clientY);
       if (cible === null) {
         setSurvol(null);
@@ -163,11 +195,13 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
       const verdict = dropCheck(draft.flow, glisse, cible);
       setSurvol({ cle: cleDe(cible), refus: verdict.ok ? null : modele.refus[verdict.code] });
     },
-    [glisse, draft, modele],
+    [glisse, draft, modele, commencer],
   );
 
   const lacher = useCallback(
     (event: ReactPointerEvent<Element>) => {
+      intention.current = null;
+      // Sous le seuil, il n'y a jamais eu de glisser : un clic ordinaire ne consulte donc aucune cible et ne refuse rien.
       if (glisse === null) return;
       const source = glisse;
       setGlisse(null);
@@ -175,13 +209,15 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
       // La capture du pointeur est relâchée par le navigateur au `pointerup` et au `pointercancel` : rien à défaire ici.
       const cible = cibleSous(event.clientX, event.clientY);
       if (cible === null) return;
+      // Un bloc reposé sur lui-même ne demande rien : rien n'est déplacé, et rien ne lui est reproché.
+      if (source.genre === "bloc" && cible.genre === "bloc" && cible.blocId === source.blocId) return;
       const verdict = dropCheck(draft.flow, source, cible);
       if (!verdict.ok) {
         refuser(cleDe(cible), modele.refus[verdict.code]);
         return;
       }
       if (source.genre === "bloc" && cible.genre === "place") {
-        lancer((flow, ctx) => moveTo(flow, source.blocId, cible.index, ctx), cleDe(cible));
+        lancer((flow, ctx) => moveToPlace(flow, source.blocId, cible.index, ctx), cleDe(cible));
         return;
       }
       if (source.genre === "lien" && (cible.genre === "etape" || cible.genre === "bloc")) {
@@ -195,6 +231,7 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
   );
 
   const annuler = useCallback(() => {
+    intention.current = null;
     setGlisse(null);
     setSurvol(null);
   }, []);
@@ -255,10 +292,11 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
               onKeyDown={(event) => auClavier(event, ligne)}
               onPointerDown={(event) => {
                 // Le bloc se glisse par sa ligne, jamais par une commande : un appui sur un bouton, un menu ou une case reste
-                // un appui sur cette commande.
+                // un appui sur cette commande. L'appui ne fait qu'ARMER le glisser : tant que le seuil n'est pas franchi, il
+                // reste un clic, et la ligne garde son focus à la souris.
                 const sous = event.target as HTMLElement;
                 if (!ligne.principale || sous.closest(COMMANDES) !== null) return;
-                commencer(event, { genre: "bloc", blocId: ligne.blocId });
+                viser(event, { genre: "bloc", blocId: ligne.blocId });
               }}
             >
               <p className={`sc-mot tm-kind-${ligne.kind}`}>{MOTS_LIGNE[ligne.kind]}</p>
@@ -274,7 +312,7 @@ export function SchemaEditor({ draft, liste, libelle, phrase, problemes, onOpera
                       aria-hidden="true"
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        commencer(event, { genre: "lien", stepId: etape.stepId });
+                        viser(event, { genre: "lien", stepId: etape.stepId });
                       }}
                     />
                     {etape.recoit === null ? null : (

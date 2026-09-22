@@ -283,9 +283,40 @@ function reglerEntrees(flow: Flow): Flow {
   return flow;
 }
 
-/** Nouvel état du brouillon, entrées recalculées, sans toucher l'état reçu. */
+// <c5:liens-pendants>
+/**
+ * Liens PENDANTS oubliés : `recoit: {etapes}` (5b, L42a) ne garde que des étapes qui existent ENCORE.
+ *
+ * Toute opération qui retire des étapes — « Supprimer », « Retirer cet avis », « Retirer ce spécialiste », et « Transformer
+ * en… », qui repose la forme avec des identifiants neufs — laissait sinon un lien vers une étape disparue. La grammaire pose
+ * alors `lien-arriere` (flow.ts, branche `!place`) sur une étape que l'utilisateur n'a pas touchée, avec une phrase qui parle
+ * d'ordre (« Une étape ne peut recevoir que le résultat d'étapes situées plus haut. ») là où le vrai problème est une étape
+ * disparue — et le menu « Reçoit le résultat de… » ne propose aucune case à décocher pour réparer, puisqu'il ne liste que des
+ * étapes existantes : l'équipe devient irrecevable sans porte de sortie (422 `equipe-invalide`).
+ *
+ * Le lien est donc OUBLIÉ, jamais signalé : c'est ce que l'utilisateur a demandé en retirant l'étape. Une liste dont tous les
+ * identifiants existent n'est JAMAIS touchée — une valeur légitime ne se détruit pas en silence, même règle que `reglerEntrees`
+ * — et une liste devenue vide retombe sur la valeur par défaut de la place, que `reglerEntrees` corrige ensuite si besoin.
+ */
+function oublierLiensPendants(flow: Flow): Flow {
+  const presentes = new Set<string>();
+  for (const block of flow.blocs) for (const step of etapesDe(block)) presentes.add(step.id);
+  for (const block of flow.blocs) {
+    for (const step of etapesDe(block)) {
+      const listees = stepInputEtapes(step.recoit);
+      if (listees === null) continue;
+      const gardees = listees.filter((id) => presentes.has(id));
+      if (gardees.length === listees.length) continue;
+      step.recoit = gardees.length === 0 ? "precedent" : { etapes: gardees };
+    }
+  }
+  return flow;
+}
+// </c5:liens-pendants>
+
+/** Nouvel état du brouillon, liens pendants oubliés et entrées recalculées, sans toucher l'état reçu. */
 function poser(draft: FlowDraft, flow: Flow, compteur: number): FlowDraft {
-  return { flow: reglerEntrees(flow), compteur };
+  return { flow: reglerEntrees(oublierLiensPendants(flow)), compteur };
 }
 
 /** Bloc neuf du genre demandé, avec ses étapes par défaut. */

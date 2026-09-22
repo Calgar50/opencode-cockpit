@@ -48,9 +48,11 @@
   background: var(--surface-1);
 }
 
-/* Pendant un glisser, le contenu ne capte pas le pointeur : la cible lue sous lui reste la ligne ou l'étape. */
+/* Pendant un glisser, plus aucune sélection de texte ne suit le pointeur. Le contenu, lui, continue de capter le pointeur :
+   c'est ainsi que l'étape sous le pointeur est reconnue (`data-sc-etape`, elementFromPoint). */
 .sc-ligne.sc-glisse {
   cursor: grabbing;
+  user-select: none;
 }
 
 .sc-mot {
