@@ -6,13 +6,17 @@
 // A4 / D-eq-17 : le lancement ne lit RIEN d'opencode avant sa décision. Le corps, l'équipe, le mode et l'instantané de
 // l'estimation suffisent (`preflight.check`) ; un refus est rendu tel quel, sans qu'aucune requête ne soit partie. Le contrôle de
 // fraîcheur est fait par le runner APRÈS la réponse 202.
+//
+// 5b (L42b) : POST …/continue porte aussi VOTRE réponse à une pause de choix d'aiguillage (`choix` ou `aucun`, L42a). Aucun autre
+// chemin n'y répond : ni l'autonomie, ni un crochet du navigateur (spéc. l.772). Un choix qui ne tient pas est refusé par le
+// runner en 409, avant toute écriture et sans la moindre requête à opencode.
 // La demande et les pièces jointes ne sont jamais journalisées ni recopiées dans une réponse d'erreur (U2, D-eq-26, D-eq-27).
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { EqContext, RunnerRefusal } from "./contracts-eq.ts";
 import { CONFIRM_HEADER } from "./security.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
-import { FLOW_LIMITS, TEAM_ID_RE, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
+import { FLOW_LIMITS, STEP_ID_RE, TEAM_ID_RE, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
 import { phraseErreur, refusLancement } from "./shared/team-texts.ts";
 import type { TeamContinueBody, TeamErrorBody, TeamErrorCode, TeamRunBody, TeamRunsResponse, TeamRunStarted } from "./shared/team-types.ts";
 
@@ -68,15 +72,29 @@ function readRunBody(raw: unknown): TeamRunBody | null {
   };
 }
 
+/**
+ * Corps de POST …/continue. 5b (L42a) : `choix` porte les identifiants de spécialistes que VOUS retenez, `aucun` dit qu'aucun ne
+ * convient, et les deux ne s'envoient jamais ensemble. Ici, seules les FORMES sont contrôlées (identifiants d'étape, borne
+ * générale FLOW_LIMITS.choixMax) : l'appartenance à la liste du bloc et son `choixMax` propre sont jugés par le runner, qui
+ * refuse en 409 sans qu'aucune requête ne parte.
+ */
 function readContinueBody(raw: unknown): TeamContinueBody | null {
   if (raw === undefined || raw === null) return {};
   if (!isRecord(raw)) return null;
-  const { precision, correction } = raw;
+  const { precision, correction, choix, aucun } = raw;
   if (precision !== undefined && (typeof precision !== "string" || precision.length > FLOW_LIMITS.precision)) return null;
   if (correction !== undefined && (typeof correction !== "string" || correction.length > FLOW_LIMITS.relaisCaracteres)) return null;
+  if (aucun !== undefined && aucun !== true) return null;
+  if (choix !== undefined && aucun !== undefined) return null;
+  if (choix !== undefined) {
+    if (!Array.isArray(choix) || choix.length === 0 || choix.length > FLOW_LIMITS.choixMax) return null;
+    if (!choix.every((id) => typeof id === "string" && STEP_ID_RE.test(id))) return null;
+  }
   return {
     ...(typeof precision === "string" ? { precision } : {}),
     ...(typeof correction === "string" ? { correction } : {}),
+    ...(Array.isArray(choix) ? { choix: choix as string[] } : {}),
+    ...(aucun === true ? { aucun: true as const } : {}),
   };
 }
 
