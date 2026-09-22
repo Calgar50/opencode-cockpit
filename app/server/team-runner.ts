@@ -455,12 +455,37 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     };
   };
 
+  /**
+   * Passages déjà TERMINÉS de chaque étape : depuis L42a une relecture repasse par la même étape à chaque tour, et un seul état
+   * ne dit pas combien de fois elle est passée. Une ligne par (étape, tour), sa dernière tentative faisant foi.
+   */
+  const toursTermines = (runId: string): Map<string, number> => {
+    const derniere = new Map<string, StepRow>();
+    for (const row of store.steps.ofRun(runId)) {
+      const cle = `${row.step_id}\u0000${row.tour}`;
+      const kept = derniere.get(cle);
+      if (!kept || row.tentative >= kept.tentative) derniere.set(cle, row);
+    }
+    const out = new Map<string, number>();
+    for (const row of derniere.values()) if (row.state === "terminee") out.set(row.step_id, (out.get(row.step_id) ?? 0) + 1);
+    return out;
+  };
+
   const suiteOf = (run: RunMemory): { typique: number; maximum: number } => {
     const rows = lastRows(run.runId, run.tour);
-    const etapes = planSteps(run.flow).map((planned) => ({
-      stepId: planned.stepId,
-      state: rows.get(planned.stepId)?.state ?? ("prevue" as TeamStepState),
-    }));
+    const finis = toursTermines(run.runId);
+    // UNE entrée par étape, jamais une par passage : `suiteEstimate` additionne les comptes de tours qu'on lui donne.
+    const vues = new Set<string>();
+    const etapes: Array<{ stepId: string; state: TeamStepState; tours: number }> = [];
+    for (const planned of planSteps(run.flow)) {
+      if (vues.has(planned.stepId)) continue;
+      vues.add(planned.stepId);
+      etapes.push({
+        stepId: planned.stepId,
+        state: rows.get(planned.stepId)?.state ?? ("prevue" as TeamStepState),
+        tours: finis.get(planned.stepId) ?? 0,
+      });
+    }
     const estimate = suiteEstimate(run.flow, { etapes }, estimateContext(run));
     return { typique: estimate.typique, maximum: estimate.maximum };
   };
@@ -941,8 +966,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const plafond = store.runs.get(run.runId)?.plafond ?? null;
     if (plafond !== null) {
       const depense = store.spentOfRun(run.runId);
-      const maximum = run.plan?.estimate.parEtape.find((ligne) => ligne.stepId === planned.stepId)?.maximum ?? 0;
-      if (depense + maximum > plafond) return { kind: "plafond", depense, plafond };
+      // Coût INCONNU : aucune ligne dans l'estimation du lancement (étape hors du chemin estimé), ou une ligne sans montant
+      // (prix illisible à l'estimation). Le contrôle ne peut alors rien garantir, donc il refuse. Un `?? 0` le neutraliserait :
+      // toute étape sans montant passerait sous n'importe quel plafond, et l'arrêt au plafond ne tiendrait plus (P3).
+      const maximum = run.plan?.estimate.parEtape.find((ligne) => ligne.stepId === planned.stepId)?.maximum ?? null;
+      if (maximum === null || depense + maximum > plafond) return { kind: "plafond", depense, plafond };
     }
     return { kind: "ok", agentRules };
   };

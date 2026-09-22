@@ -80,7 +80,8 @@ const AUTEUR = assistant("rediger-note");
 const RELECTEUR = assistant("relecteur-critique");
 const AIGUILLEUR = assistant("aiguilleur");
 const SPECIALISTE = assistant("relire-script");
-const ASSISTANTS = [AUTEUR, RELECTEUR, AIGUILLEUR, SPECIALISTE];
+const SPECIALISTE_RESEAU = assistant("analyser-reseau", "github-copilot/gpt-5");
+const ASSISTANTS = [AUTEUR, RELECTEUR, AIGUILLEUR, SPECIALISTE, SPECIALISTE_RESEAU];
 
 const step = (id: string, over: Partial<FlowStep> = {}): FlowStep => ({
   id,
@@ -105,15 +106,19 @@ const FLOW_RELECTURE: Flow = flowOf({
   pauseAvantRelecture: true,
 });
 
-/** Déroulé à AIGUILLAGE : un aiguilleur, trois spécialistes possibles, deux choix au plus et une synthèse. */
+/**
+ * Déroulé à AIGUILLAGE : un aiguilleur, trois spécialistes possibles, deux choix au plus et une synthèse. Les trois spécialistes
+ * n'ont ni le même assistant ni la même taille, et le plus GROS est écrit en DERNIER : un « au plus » qui ne couvrirait que les
+ * premiers écrits se verrait tout de suite.
+ */
 const FLOW_AIGUILLAGE: Flow = flowOf({
   type: "aiguillage",
   id: "b-aiguillage",
   aiguilleur: step("aiguilleur", { assistant: AIGUILLEUR.name, titre: "Aiguillage" }),
   specialistes: [
-    step("sql", { assistant: SPECIALISTE.name, titre: "Requête SQL" }),
-    step("script", { assistant: SPECIALISTE.name, titre: "Script" }),
-    step("reseau", { assistant: SPECIALISTE.name, titre: "Réseau" }),
+    step("sql", { assistant: SPECIALISTE.name, titre: "Requête SQL", taille: "S" }),
+    step("script", { assistant: SPECIALISTE.name, titre: "Script", taille: "M" }),
+    step("reseau", { assistant: SPECIALISTE_RESEAU.name, titre: "Réseau", taille: "L" }),
   ],
   choixMax: 2,
   synthese: step("synthese", { titre: "Synthèse", recoit: "tous" }),
@@ -217,10 +222,13 @@ describe("croisement V1 : un déroulé à relecture et un à aiguillage traverse
       }
     });
 
-    it(`${nom} : estimateFlow estime CHAQUE étape du plan, et « en général » ≤ « au plus » = plafond`, () => {
+    it(`${nom} : estimateFlow estime CHAQUE étape déclarée, et « en général » ≤ « au plus » = plafond`, () => {
       const estimation = estimateFlow(flow, ctxEstimation());
-      const planifiees = new Set(planSteps(flow).map((p) => p.stepId));
-      assert.deepEqual(new Set(estimation.parEtape.map((e) => e.stepId)), planifiees);
+      // TOUTES les étapes déclarées, pas seulement celles du plan : un spécialiste au-delà de `choixMax` reste choisissable,
+      // donc la feuille de lancement doit pouvoir le nommer. La condition est plus stricte que « les étapes de planSteps ».
+      const declarees = new Set(toutesLesEtapes(flow).map((e) => e.id));
+      assert.deepEqual(new Set(estimation.parEtape.map((e) => e.stepId)), declarees);
+      for (const planifiee of planSteps(flow)) assert.ok(declarees.has(planifiee.stepId), planifiee.stepId);
       assert.ok(estimation.typique <= estimation.maximum, `${estimation.typique} ≤ ${estimation.maximum}`);
       assert.equal(estimation.plafond, estimation.maximum);
       assert.ok(estimation.relais >= 0);

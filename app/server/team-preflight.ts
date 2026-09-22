@@ -83,6 +83,7 @@ import type {
   TeamConfirmation,
   TeamErrorCode,
   TeamEstimateBody,
+  TeamStepState,
 } from "./shared/team-types.ts";
 import { INTERNAL_AGENTS } from "./studio.ts";
 import { createTeamStore, type TeamStore } from "./team-store.ts";
@@ -542,6 +543,27 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     problems: FlowProblem[];
   }
 
+  /** Comptage des passages d'une liste : `chemin` et le plan portent un élément PAR PASSAGE, pas par étape (L42a). */
+  const passagesPar = (ids: readonly string[]): Map<string, number> => {
+    const out = new Map<string, number>();
+    for (const stepId of ids) out.set(stepId, (out.get(stepId) ?? 0) + 1);
+    return out;
+  };
+
+  /**
+   * État des étapes reconstruit à partir du reste du chemin : `tours` = passages prévus moins passages restants. Compter par
+   * identifiant ferait passer une relecture dont le premier jet est fini pour une étape entièrement terminée, et ses révisions
+   * sortiraient du « Coût du reste » comme du plafond de la relance.
+   */
+  const etatDuReste = (flow: Flow, chemin: readonly string[]): Array<{ stepId: string; state: TeamStepState; tours: number }> => {
+    const prevus = passagesPar(planSteps(flow).map((planned) => planned.stepId));
+    const restants = passagesPar(chemin);
+    return [...prevus].map(([stepId, total]) => {
+      const reste = restants.get(stepId) ?? 0;
+      return { stepId, state: (reste > 0 ? "prevue" : "terminee") as TeamStepState, tours: Math.max(0, total - reste) };
+    });
+  };
+
   /**
    * Groupe B, sans aucune nouvelle lecture. Ordre : grammaire et étapes (B2), configuration (B3), calculs locaux (B4),
    * conversation occupée (B5) ; B0 et B1 sont faits par l'appelant, avant.
@@ -561,9 +583,10 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         label: modelName(planned.model, c11.catalog.lite()),
       };
     });
-    const estimate = entree.chemin.length === planSteps(flow).length
-      ? estimateFlow(flow, ctx)
-      : suiteEstimate(flow, { etapes: planSteps(flow).map((planned) => ({ stepId: planned.stepId, state: entree.chemin.includes(planned.stepId) ? "prevue" : "terminee" })) }, ctx);
+    // Reste à faire, compté en PASSAGES et non en identifiants : une relecture repasse par la même étape à chaque tour (L42a),
+    // et `chemin` porte déjà un élément par passage. L'écart entre les passages prévus et ceux qui restent donne le compte de
+    // tours déjà faits, sans quoi les révisions à venir sortiraient du reste — et du plafond de la relance (ligne `plafond`).
+    const estimate = entree.chemin.length === planSteps(flow).length ? estimateFlow(flow, ctx) : suiteEstimate(flow, { etapes: etatDuReste(flow, entree.chemin) }, ctx);
     // P8 : le plafond EST l'estimation haute (`FlowEstimate.plafond` = `maximum`, L36b) ; en relance, il couvre tout le
     // lancement, donc la dépense déjà faite s'y ajoute (comme `spentOfRun`).
     const plafond = roundUsd(entree.deja + estimate.plafond);
@@ -727,8 +750,22 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     if (relance) {
       const run = store().runs.get(relance.runId);
       if (!run || run.root_session_id !== rootId) return { ok: false, status: 404, code: "not-found" };
-      const terminees = new Set(store().steps.ofRun(relance.runId).filter((step) => step.state === "terminee").map((step) => step.step_id));
-      chemin = tous.filter((stepId) => !terminees.has(stepId));
+      // Passages déjà TERMINÉS, une ligne par (étape, tour), sa dernière tentative faisant foi : une relecture repasse par la
+      // même étape à chaque tour (L42a), donc un seul passage fini n'en retire qu'un du chemin, jamais tous.
+      const faits = new Map<string, number>();
+      const derniere = new Map<string, { tentative: number; state: string; stepId: string }>();
+      for (const step of store().steps.ofRun(relance.runId)) {
+        const cle = `${step.step_id}\u0000${step.tour}`;
+        const kept = derniere.get(cle);
+        if (!kept || step.tentative >= kept.tentative) derniere.set(cle, { tentative: step.tentative, state: step.state, stepId: step.step_id });
+      }
+      for (const ligne of derniere.values()) if (ligne.state === "terminee") faits.set(ligne.stepId, (faits.get(ligne.stepId) ?? 0) + 1);
+      chemin = tous.filter((stepId) => {
+        const restant = faits.get(stepId) ?? 0;
+        if (restant <= 0) return true;
+        faits.set(stepId, restant - 1);
+        return false;
+      });
       deja = store().spentOfRun(relance.runId);
     }
 

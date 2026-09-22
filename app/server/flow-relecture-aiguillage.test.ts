@@ -785,6 +785,37 @@ describe("L42a estimation : « en général » sur le chemin typique, « au plus
     assert.ok(estimation.maximum > estimation.typique);
   });
 
+  // --- « Au plus » d'un aiguillage indépendant de l'ordre d'écriture -------------------------------------------------------------
+
+  /** Spécialiste d'essai d'une taille donnée : c'est la taille qui fait le coût, à prix fixe. */
+  const specialiste = (id: string, titre: string, taille: TaskSize): FlowStep => step(id, { assistant: SPECIALISTE.name, titre, taille });
+  const PETIT = specialiste("sql", "Requête SQL", "S");
+  const MOYEN = specialiste("script", "Script", "S");
+  const GROS = specialiste("reseau", "Réseau", "L");
+  const blocDe = (...specialistes: FlowStep[]) => flowOf(aiguillage({ specialistes, choixMax: 2 }));
+
+  it("le plus gros spécialiste écrit en DERNIER est couvert : « au plus » ne dépend pas de l'ordre d'écriture", () => {
+    // La pause de choix liste TOUS les spécialistes du bloc et l'ordonnanceur lance sans réserve ceux qu'on confirme : un
+    // « au plus » bâti sur les premiers ÉCRITS annoncerait un plafond que le choix réel dépasse (§13.2, P3).
+    const dernier = estimateFlow(blocDe(PETIT, MOYEN, GROS), contexte());
+    const premier = estimateFlow(blocDe(GROS, PETIT, MOYEN), contexte());
+    assert.equal(dernier.maximum, premier.maximum, "le même bloc, écrit dans un autre ordre, a le même plafond");
+    assert.equal(dernier.plafond, premier.plafond);
+    // Le choix confirmable le plus cher : les deux plus gros spécialistes, l'aiguilleur et la synthèse.
+    const leplusCher = estimateFlow(blocDe(GROS, MOYEN), contexte());
+    assert.ok(dernier.maximum + 1e-9 >= leplusCher.maximum, `${dernier.maximum} < ${leplusCher.maximum}`);
+  });
+
+  it("la feuille de lancement peut nommer TOUS les spécialistes proposés, même au-delà de `choixMax`", () => {
+    const estimation = estimateFlow(blocDe(PETIT, MOYEN, GROS), contexte());
+    assert.deepEqual(
+      estimation.parEtape.map((ligne) => ligne.stepId),
+      ["aiguilleur", "sql", "script", "reseau", "synthese"],
+    );
+    // …mais seuls `choixMax` spécialistes sont facturés : les lignes montrées ne gonflent pas le plafond.
+    assert.equal(estimation.etapesFacturees, 4, "aiguilleur + 2 spécialistes + synthèse");
+  });
+
   it("relais comptés sur `recoit.etapes` : une étape liée paie l'entrée du résultat transmis, une étape isolée non", () => {
     const lie = flowOf(etapeBloc("a"), etapeBloc("b", { recoit: { etapes: ["a"] } }));
     const isole = flowOf(etapeBloc("a"), etapeBloc("b", { recoit: "demande" }));
