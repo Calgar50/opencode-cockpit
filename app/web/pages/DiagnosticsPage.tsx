@@ -1,6 +1,7 @@
 // Diagnostic : état d'opencode, du flux d'événements, du réseau, de Copilot et journal.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
+import type { OmoStatusResponse } from "../../server/shared/omo-types.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { LOCAL_HTTP_EXPLANATIONS } from "../app/LocalHttpNotice.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -15,6 +16,7 @@ import type { CopilotCheckResult, CopilotView, DiagnosticActiviteResponse, Syste
 import { AutonomyDiagnostics } from "./diagnostics/AutonomyDiagnostics.tsx";
 import { DelegationDiagnostics } from "./diagnostics/DelegationDiagnostics.tsx";
 import { LogsViewer } from "./diagnostics/LogsViewer.tsx";
+import { OmoDiagnostics } from "./diagnostics/OmoDiagnostics.tsx";
 import "./diagnostics/diagnostics.css";
 
 type Tone = "good" | "warning" | "critical" | "neutral";
@@ -94,6 +96,23 @@ function DelegatedWorkCard({ refreshKey }: { refreshKey: number | null }) {
       </Card>
     </div>
   );
+}
+
+/**
+ * ▶ POINT D'INSERTION DU TRAIN DE LA VAGUE 2 (plan d'exécution 2 bis-2 ter §2.9 et §5.2 ; A15) ◀
+ *
+ * État de la Salle OMO montré par `<OmoDiagnostics/>`. L26b livre l'écran ALIMENTÉ PAR PROPRIÉTÉS : il ne fait aucun appel
+ * réseau, parce que `web/lib/api-omo.ts` appartient à L26a, de la MÊME vague (aucun paquet de la vague 2 ne dépend d'un autre).
+ *
+ * L'INTÉGRATEUR remplace le corps de ce crochet par la lecture de `getOmoStatus()` (`../lib/api-omo.ts`, L26a), relue à chaque
+ * actualisation de la page (`refreshKey`), abandonnée proprement au démontage comme `DelegatedWorkCard`, et gardée par
+ * `boot.omo.enabled` (`Bootstrap.omo`, L26a) : la salle est livrée coupée, donc la carte reste absente tant que l'interrupteur
+ * l'est. Une lecture en échec rend `null` : la carte disparaît plutôt que d'inventer un état (P3).
+ *
+ * Tant que le branchement n'est pas fait, ce crochet rend `null` et aucune carte n'est affichée.
+ */
+function useOmoStatus(_refreshKey: number | null): OmoStatusResponse | null {
+  return null;
 }
 
 /** Point à vérifier, avec l'action qui le règle. */
@@ -398,6 +417,7 @@ export function DiagnosticsPage() {
   };
 
   const s = status;
+  const omoStatut = useOmoStatus(loadedAt);
   const problems = s ? problemsOf(s, boot.settings.quotaSync.enabled) : [];
   const proxy = s ? s.security.httpProxy || s.security.httpsProxy : false;
 
@@ -779,6 +799,9 @@ export function DiagnosticsPage() {
               </Card>
 
               <DelegatedWorkCard refreshKey={loadedAt} />
+
+              {/* Salle OMO (L26b) : carte alimentée par propriétés, absente tant que `useOmoStatus` n'est pas branché. */}
+              {omoStatut === null ? null : <OmoDiagnostics statut={omoStatut} />}
             </div>
           </div>
         )}
