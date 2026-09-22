@@ -31,7 +31,13 @@ import type { SessionInstance } from "./shared/activity-types.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 import { until } from "./test-support/helpers.ts";
 
-const T = Date.UTC(2026, 8, 21, 11, 0, 0);
+// Horodatage des fixtures : RELATIF à l'exécution, JAMAIS une date de calendrier.
+// knownDirectories() (assistants.ts) ne garde que les sessions dont `updated_at` tombe dans les dernières 24 h
+// (RECENT_SESSION_MS). Une date figée — ici Date.UTC(2026, 8, 21, 11, 0, 0) — rendait donc ce fichier rouge à
+// heure fixe, le 22/09/2026 à 11:00 UTC, sur toutes les machines et pour toujours ensuite. `knownDirectories`
+// n'accepte pas d'horloge injectée (contrairement à `now?: () => number` ailleurs dans le dépôt) : la fixture
+// prend l'heure de l'exécution, moins une minute. Ne pas y remettre de date absolue.
+const T = Date.now() - 60_000;
 
 const session = (id: string, extra: Partial<OcSession> = {}): OcSession => ({
   id,
@@ -270,6 +276,20 @@ describe("L18a : knownDirectories limité à l'instance principale (réservation
     const sessions = new SessionTracker(db, {} as OpencodeClient);
     sessions.upsert(session("ses_p", { directory: "/workspace/app" }));
     sessions.upsert(session("ses_o", { directory: "/workspace/salle" }), undefined, { instance: "omo" });
+    const projects = { isAllowedDirectory: () => true, list: async () => [] } as unknown as ProjectsService;
+    assert.deepEqual(await knownDirectories({ projects, db }), [null, "/workspace/app"]);
+    db.close();
+  });
+
+  // Garde de la fixture relative : si `T` redevenait une date de calendrier, les deux sessions sortiraient de la
+  // fenêtre de 24 h et le test ci-dessus passerait au vert POUR LA MAUVAISE RAISON (liste réduite à [null], donc
+  // plus aucune preuve que c'est bien l'instance qui écarte la salle). Ici, seule la vieille sort.
+  it("la fenêtre de 24 h discrimine vraiment : une session récente entre, une de plus de 24 h non", async () => {
+    const db = openMemoryDb();
+    const sessions = new SessionTracker(db, {} as OpencodeClient);
+    const vieux = T - 25 * 3_600_000;
+    sessions.upsert(session("ses_recente", { directory: "/workspace/app" }));
+    sessions.upsert(session("ses_ancienne", { directory: "/workspace/ancien", time: { created: vieux, updated: vieux } }));
     const projects = { isAllowedDirectory: () => true, list: async () => [] } as unknown as ProjectsService;
     assert.deepEqual(await knownDirectories({ projects, db }), [null, "/workspace/app"]);
     db.close();
