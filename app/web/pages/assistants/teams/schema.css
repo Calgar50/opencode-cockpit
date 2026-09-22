@@ -1,0 +1,216 @@
+/* Propriétaire : L43. Schéma MODIFIABLE d'une équipe (spécification §5.3 l.903, §5.5, §5.6 l.928 ; C §8.2, §9.12).
+   Mode Avancé seulement, et jamais sous 900 px : TeamEditor rend alors la phrase « Le schéma modifiable demande un écran plus
+   large : utilisez les étapes. » à sa place (editor.css). Les formes des lignes (.tm-kind-*) viennent de teams.css, chargée avec
+   l'éditeur : cette feuille n'ajoute que ce que le schéma MODIFIABLE apporte — places de dépôt, port de sortie, menus, refus.
+   Genre d'une ligne : dit par son MOT et par sa FORME (bordure, coins), jamais par la couleur seule (§2.3, §5.5).
+   Refus (C §8.2) : écrit PRÈS DE LA CIBLE, avec son icône et sa phrase ; un trait à gauche le distingue, la couleur ne porte
+   jamais l'information seule.
+   Mouvement : AUCUNE animation ; la seule transition (survol d'une place de dépôt) est sous prefers-reduced-motion:
+   no-preference.
+   Contraste forcé (U9, §5.5 l.922) : lignes, places, port, refus et problèmes bordés en CanvasText, focus en Highlight. */
+
+.sc-aide {
+  margin: 0;
+}
+
+.sc-lignes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: 2px;
+}
+
+/* --- Place de dépôt entre deux blocs ---------------------------------------------------------------------------------- */
+
+/* Une place reste visible même au repos : c'est elle qui dit où un bloc peut aller. */
+.sc-place {
+  min-height: 14px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sc-place {
+    transition: background-color 120ms ease;
+  }
+}
+
+/* --- Ligne d'un bloc ---------------------------------------------------------------------------------------------------- */
+
+.sc-ligne {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+/* Pendant un glisser, le contenu ne capte pas le pointeur : la cible lue sous lui reste la ligne ou l'étape. */
+.sc-ligne.sc-glisse {
+  cursor: grabbing;
+}
+
+.sc-mot {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sc-cellules {
+  gap: 8px;
+  align-items: stretch;
+}
+
+.sc-cellule {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.sc-titre {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sc-sous-titre {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* Port de sortie : décoratif (aria-hidden), doublé par le menu « Reçoit le résultat de… » de l'étape qui reçoit. */
+.sc-port {
+  position: absolute;
+  right: 6px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-1);
+  cursor: grab;
+  touch-action: none;
+}
+
+/* --- Actions et menus --------------------------------------------------------------------------------------------------- */
+
+.sc-actions {
+  gap: 6px;
+  align-items: center;
+}
+
+.sc-menu {
+  position: relative;
+}
+
+.sc-menu-corps {
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.sc-case {
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.sc-nombre {
+  gap: 6px;
+  align-items: center;
+}
+
+/* --- Refus et problèmes -------------------------------------------------------------------------------------------------- */
+
+/* Le refus porte son icône ET sa phrase : il se lit sans la couleur (§5.5). */
+.sc-refus,
+.sc-probleme {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--text-1);
+  font-size: 12px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-2);
+}
+
+.sc-probleme.bloquant {
+  border-left-width: 5px;
+}
+
+/* --- JSON en lecture seule ------------------------------------------------------------------------------------------------ */
+
+.sc-json-texte {
+  width: 100%;
+  min-height: 160px;
+  padding: 8px;
+  color: var(--text-1);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+}
+
+/* --- Contraste forcé (U9) ------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .sc-ligne,
+  .sc-cellule,
+  .sc-menu-corps,
+  .sc-json-texte {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .sc-place {
+    border: 1px dashed CanvasText;
+    background: Canvas;
+  }
+  /* Le port reste visible : un trait plein en CanvasText, jamais une couleur de fond seule. */
+  .sc-port {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+  .sc-refus,
+  .sc-probleme {
+    border-left: 3px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .sc-probleme.bloquant {
+    border-left: 5px solid CanvasText;
+  }
+  /* L'icône n'est jamais seule : la phrase la suit toujours. */
+  .sc-refus .icon,
+  .sc-probleme .icon {
+    color: CanvasText;
+  }
+  .sc-lignes .btn[aria-disabled="true"] {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  .sc-ligne:focus-visible,
+  .sc-lignes .btn:focus-visible,
+  .sc-lignes summary:focus-visible,
+  .sc-lignes input:focus-visible,
+  .sc-json-texte:focus-visible,
+  .sc-json summary:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

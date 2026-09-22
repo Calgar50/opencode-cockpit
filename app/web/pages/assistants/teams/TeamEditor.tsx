@@ -571,10 +571,21 @@ export function TeamEditor({ mode, id, advanced }: TeamEditorProps) {
               {/* </c5:bascule-vue-l42d> */}
 
               {/* <c5:schema-l42d> */}
-              {/* Vue « Schéma modifiable » : l'emplacement de L43, ou, sous 900 px, la phrase qui renvoie aux étapes. */}
+              {/* Vue « Schéma modifiable » : le schéma modifiable de L43, ou, sous 900 px, la phrase qui renvoie aux étapes. */}
               {ecran2.vue !== null && ecran2.vue.courant === "schema" ? (
                 ecran2.vue.etroit === null ? (
-                  <SchemaEditor layout={layout} liste={lignes} libelle={libelleSchema(layout, null)} phrase={ecran2.vue.phrase} />
+                  // L43 : le schéma MODIFIABLE reçoit le brouillon, les problèmes de l'aperçu et l'opération à appliquer. Son
+                  // historique annuler / rétablir est CELUI de l'éditeur (`editer`), et ses refus sont annoncés par la région
+                  // de la page (`say`), sans région nouvelle.
+                  <SchemaEditor
+                    draft={draft}
+                    liste={lignes}
+                    libelle={libelleSchema(layout, null)}
+                    phrase={ecran2.vue.phrase}
+                    problemes={apercu?.problems ?? []}
+                    onOperation={editer}
+                    onAnnonce={say}
+                  />
                 ) : (
                   <p className="callout tm-ed-schema-etroit">
                     <Icon name="monitor" size={18} />

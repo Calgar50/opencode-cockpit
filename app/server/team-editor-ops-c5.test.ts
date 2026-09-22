@@ -835,16 +835,18 @@ describe("L42d : composants (contrat statique)", () => {
       .filter((ligne) => !ligne.trim().startsWith("//"))
       .join("\n");
 
-  it("SchemaEditor.tsx est un SQUELETTE, en tête « Propriétaire : L43 » : aucune opération de schéma", () => {
+  // L43 (vague 3) a rempli le squelette que L42d avait posé : ce contrôle dit maintenant l'inverse de celui de la vague 2 — le
+  // schéma est MODIFIABLE, ses opérations viennent du module pur, et la liste reste la vérité du lecteur d'écran. Le reste du
+  // contrat de L42d est inchangé (en-tête de propriété, aucun texte en dur, phrase des écrans étroits rendue par TeamEditor).
+  it("SchemaEditor.tsx : le schéma MODIFIABLE de L43, dont les opérations viennent du module pur", () => {
     assert.equal(schemaEditor.split("\n")[0], "// Propriétaire : L43.");
     const corps = sansCommentaires(schemaEditor);
     for (const operation of ["insertAfter", "moveUp", "moveDown", "addAvis", "removeAvis", "transform", "setRecoit", "dropCheck", "flow-schema-ops"]) {
-      assert.equal(corps.includes(operation), false, `SchemaEditor ne doit implémenter aucune opération de schéma (${operation})`);
+      assert.ok(corps.includes(operation), `opération du schéma attendue dans SchemaEditor (${operation})`);
     }
-    for (const glisser of ["onPointerDown", "onDragStart", "draggable"]) {
-      assert.equal(corps.includes(glisser), false, `aucun glisser dans le squelette (${glisser})`);
-    }
-    assert.match(corps, /FlowSchema/, "le squelette occupe la place avec le schéma LU");
+    assert.ok(corps.includes("onPointerDown"), "le glisser passe par les événements pointer natifs");
+    assert.equal(corps.includes("onDragStart"), false, "aucun glisser natif HTML5");
+    assert.equal(corps.includes("draggable"), false, "aucun glisser natif HTML5");
     assert.match(corps, /FlowList/, "la liste reste la vérité du lecteur d'écran");
   });
 
