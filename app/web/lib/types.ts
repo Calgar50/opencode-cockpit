@@ -101,6 +101,9 @@ export type * from "../../server/shared/cockpit-event-types.ts";
 // Itération 5 : méthodes, Seconde lecture, chronologie, coûts par équipe et archives d'équipe (T5a).
 export type * from "../../server/shared/construction-types.ts";
 // </c5:types>
+// --- équipes (it4) : début ---
+export type * from "../../server/shared/team-types.ts";
+// --- équipes (it4) : fin ---
 
 export interface PriceRates {
   input: number;

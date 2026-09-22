@@ -262,9 +262,12 @@ Trois modes, parce que ce sont les trois qui changent le dessin : `normal`, `con
 (`prefers-reduced-motion: reduce` avec une vue sans couleurs). Chacun dans les deux thèmes et aux trois tailles :
 `<scénario>-<vue>-<mode>-<taille>-<thème>.png`.
 
-L'émulation passe par l'envoi brut de `cdp.mjs` (`navigateur.client.envoyer(methode, params, onglet.sessionId)`) :
-`Emulation.setEmulatedMedia` pour les trois réglages de média EN UN SEUL APPEL (il remplace toute la liste) et
-`Emulation.setEmulatedVisionDeficiency` pour les couleurs. `e2e/lib/cdp.mjs` n'est jamais écrit par l'itération 5.
+Les trois réglages de média (`prefers-color-scheme`, `forced-colors`, `prefers-reduced-motion`) passent depuis FE4 par
+`onglet.medias({theme, forcedColors, reducedMotion})` de `cdp.mjs`, la seule aide d'émulation de média du banc
+(itération 4, L41), qui les envoie EN UN SEUL APPEL (`Emulation.setEmulatedMedia` remplace toute la liste). Les
+couleurs restent dans `a11y.mjs`, par l'envoi brut de `cdp.mjs`
+(`navigateur.client.envoyer("Emulation.setEmulatedVisionDeficiency", …, onglet.sessionId)`).
+`e2e/lib/cdp.mjs` n'est jamais écrit par l'itération 5.
 Le contexte d'un scénario ne porte que l'ONGLET : `ouvrirNavigateurEpingle(ctx)` ouvre un navigateur propre au
 scénario, avec le même épinglage et la même isolation, fermé dans un `finally`.
 
@@ -281,6 +284,38 @@ et ne propose un assistant au composeur, que si opencode le lui rend. La déclar
 avant, le nom serait déjà pris et le cockpit en choisirait un autre (« relecteur-critique-2 »).
 
 <!-- /c5:scenarios -->
+
+<!-- équipes (it4) : début -->
+## Scénarios de l'itération 4 — équipes et carte des assistants (chantier 1.1)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it4-*' --project-prefix eq11-e2e --image-tag eq11
+scripts/run-e2e.sh --reel-hors-ligne --scenarios it4-outils-etape --project-prefix eq11-e2e --image-tag eq11
+```
+
+Aucun appel facturé, aucun jeton Copilot : faux opencode, ou opencode 1.18.30 réel avec le faux fournisseur hors ligne.
+`it4-commun.mjs` porte les outils de la famille et vérifie ses préalables, comme les `*-commun.mjs` de l'itération 1.
+Trois formes réservées de `sessionID` pilotent le faux depuis un scénario (`e2e/fake-opencode-server.ts`) :
+`quand:<champ>=<valeur>` (scripter les sessions d'étape que le runner crée lui-même), `config:global` (configuration
+globale lue à l'estimation) et `agents:defaut` (agents servis par `GET /agent`, que le faux ne lit pas dans les fichiers
+du Studio).
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it4-commun.mjs` | préalables : mode Simple par défaut, équipes fermées en Simple dans le dépôt, exemples au catalogue, carte ouverte, pilotage du faux accepté (et un sélecteur inconnu refusé) |
+| `it4-avis.mjs` | « Revue SQL sur réplica » de bout en bout : trois avis démarrés à moins de 2 s d'écart, chacun sans voir les autres, synthèse qui les reçoit tous, résultat injecté `noReply` et carte « … recopié ici par le cockpit, sans appel d'IA. », une seule fois, sans marqueur |
+| `it4-pause.mjs` | « Chaîne de relecture de script » : pause du déroulé après l'étape 1, rien envoyé pendant la pause, [Continuer] avec une précision → précision présente dans le message de l'étape 2 (journal du faux) |
+| `it4-arret.mjs` | arrêt pendant l'étape 2 : équipe `arretee`, aucune session occupée, aucun envoi après l'arrêt ; arrêt au plafond : état `plafond`, plus aucun envoi, et le lancement reste relançable |
+| `it4-studio.mjs` | garde de rechargement composée pendant une étape : Studio, réalignement (confirmé depuis la page) et redémarrage d'opencode refusés en 409, installation d'un exemple aussi ; acceptés après l'équipe, une fois le repos attendu et mesuré sur les sessions d'étape **de ce lancement**, et sur elles seules — jamais sur tout le dossier `/workspace`, que les 27 scénarios partagent (le refus qui suit « terminee » est voulu : opencode compte encore la session occupée) ; témoin P6 |
+| `it4-carte.mjs` | `GET /api/agent-map` : `build` → `general` et `explore` « demandée », appliquées par opencode ; carte en lecture seule ; vues Centrée et Liste au clavier seul ; une arête par étape, numérotées |
+| `it4-prelancement.mjs` | « Rien n'a été envoyé ni facturé » : chaque refus de `POST …/run` et de `POST …/relancer` laisse le faux sans la moindre requête, pour un code de chaque groupe ; `mcp` ajouté après l'estimation → 202 puis pause « À vérifier », sans envoi. Le scénario pose **lui-même ses deux équipes**, dérivées du même exemple (il ne suppose aucun exemple installé par un autre scénario), attend que l'instantané des agents du cockpit ait expiré avant de compter les lectures de l'estimation, met le classement automatique des conversations de côté le temps de la mesure, et ne mesure un refus qu'après une fenêtre calme plus large que le rafraîchissement d'archive (4 s). Une mesure salie par cette relecture d'archive (`GET /session/:id` et `GET /session/:id/message`, et elles seules) est REPRISE, au plus deux fois ; toute autre requête fait tomber le refus sur-le-champ |
+| `it4-outils-etape.mjs` | outils offerts à l'IA d'une étape : ni `edit`, `write`, `apply_patch`, `bash`, `task`, `webfetch`, `websearch` ni `question` (journal du faux fournisseur en `--reel-hors-ligne`, oracle du faux en `--faux`) |
+| `it4-captures.mjs` | captures 1440, 1024 et 400 px dans les deux thèmes de chaque vue neuve ; contraste forcé émulé (`forced-colors: active`) et mouvement réduit pour la feuille, le Déroulé, l'éditeur, la carte et la carte d'exécution en pause ; feuille et éditeur au clavier seul ; console muette |
+| `it4-simple-ouvert.mjs` | ouverture des équipes en mode Simple (décision U1). Son corps ne s'exécute que si `EQUIPES_SIMPLE_OUVERTES` est vraie ; sinon il s'annonce « non joué » et **ne vérifie rien**, tout en comptant vert. Pour le jouer : passer `app/server/wiring-eq.ts` à `export const EQUIPES_SIMPLE_OUVERTES = true;` dans la copie jetable du banc, **avant de bâtir les images** (le banc prépare son contexte à partir du dossier de travail), jamais dans le dépôt (U1), puis `scripts/run-e2e.sh --faux --scenarios it4-simple-ouvert …`, et remettre la ligne à `false`. Joué ainsi le 21 septembre 2026 : **vert** (22 s) |
+
+
+<!-- équipes (it4) : fin -->
+
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`

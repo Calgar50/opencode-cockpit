@@ -338,6 +338,39 @@ async function creerOnglet(client, sessionId, targetId) {
       await envoyer("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: nom === "sombre" ? "dark" : "light" }] });
     },
 
+    // --- équipes (it4) : début ---
+    /**
+     * Émulation des requêtes de média de la page (`Emulation.setEmulatedMedia`), en UN SEUL envoi : `forced-colors`,
+     * `prefers-reduced-motion` et, si on le demande, `prefers-color-scheme`. C'est la SEULE aide d'émulation de média du
+     * banc (plan it4 §2.7) : `theme()` n'est pas touchée, et rien d'autre ici n'émule un média.
+     *
+     * Le protocole remplace la liste entière à chaque envoi : un `theme()` posé avant efface donc `forced-colors`, et
+     * inversement. Pour une capture en contraste forcé dans un thème donné, tout se demande d'un coup :
+     *   `await onglet.medias({ forcedColors: "active", reducedMotion: "reduce", theme: "sombre" })`.
+     * `medias({})` rend la page à ses médias réels (liste vide), comme `captureSuite` le fait à la fin.
+     *
+     * Valeurs acceptées, celles de la spécification CSS : `forcedColors` « active » ou « none » ; `reducedMotion`
+     * « reduce » ou « no-preference » ; `theme` « sombre » ou « clair ». Une valeur inconnue est refusée ici plutôt
+     * qu'ignorée par le navigateur, qui rendrait une capture trompeuse.
+     */
+    async medias({ forcedColors = null, reducedMotion = null, theme = null } = {}) {
+      const features = [];
+      const ajouter = (name, valeur, permises) => {
+        if (valeur === null) return;
+        if (!permises.includes(valeur)) throw new Error(`valeur refusée pour « ${name} » : « ${valeur} » (${permises.join(", ")}).`);
+        features.push({ name, value: valeur });
+      };
+      ajouter("forced-colors", forcedColors, ["active", "none"]);
+      ajouter("prefers-reduced-motion", reducedMotion, ["reduce", "no-preference"]);
+      if (theme !== null) {
+        if (theme !== "sombre" && theme !== "clair") throw new Error(`thème refusé : « ${theme} » (sombre, clair).`);
+        features.push({ name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" });
+      }
+      await envoyer("Emulation.setEmulatedMedia", { features });
+      return features.map((feature) => `${feature.name}: ${feature.value}`);
+    },
+
+    // --- équipes (it4) : fin ---
     /**
      * Coupe (true) ou rétablit (false) le réseau de l'onglet, comme un Wi-Fi perdu : toute requête nouvelle échoue
      * (ERR_INTERNET_DISCONNECTED), `navigator.onLine` suit et la page reçoit « offline » puis « online ». Un flux

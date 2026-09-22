@@ -14,6 +14,10 @@ import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodC
 // </c5:methodes-import>
 import type { ComposerSlots } from "./slots.ts";
 import type { CommandOption } from "./turn.ts";
+// --- équipes (it4) : début ---
+import { type RefObject, useImperativeHandle } from "react";
+import type { TeamDraft } from "./team/slots.ts";
+// --- équipes (it4) : fin ---
 
 export interface ComposerAttachment {
   id: string;
@@ -35,6 +39,21 @@ export interface AgentOption {
   help: string | null;
 }
 
+// --- équipes (it4) : début ---
+/** Brouillon de la saisie, lu et vidé par le lanceur d'équipe (ChatPage le relie à TeamLauncher : getDraft, clearDraft). */
+export interface ComposerDraftHandle {
+  get(): TeamDraft;
+  clear(): void;
+}
+
+/** Brouillon transmis à une équipe : texte sans espaces autour ; fichiers joints par « @ » encore cités (même règle que l'envoi), jamais d'image. */
+function teamDraftOf(text: string, attachments: readonly ComposerAttachment[]): TeamDraft {
+  const texte = text.trim();
+  const fichiers = attachments.filter((a) => a.kind === "file" && texte.includes(`@${a.filename}`)).map((a) => a.filename);
+  return { texte, fichiers };
+}
+
+// --- équipes (it4) : fin ---
 interface MenuItem {
   value: string;
   label: string;
@@ -85,6 +104,10 @@ export function Composer({
   seed,
   autonomy,
   stopVisible = false,
+  // --- équipes (it4) : début ---
+  team,
+  draftHandle,
+  // --- équipes (it4) : fin ---
 }: ComposerSlots & {
   directory: string;
   busy: boolean;
@@ -110,6 +133,12 @@ export function Composer({
   onAbort: () => void;
   /** Texte à insérer ; `nonce` change à chaque insertion. */
   seed?: { text: string; nonce: number } | undefined;
+  // --- équipes (it4) : début ---
+  /** Lanceur d'équipe (TeamLauncher), rendu juste avant le sélecteur d'autonomie. */
+  team?: ReactNode;
+  /** Reçoit la lecture et l'effacement du brouillon (lanceur d'équipe). */
+  draftHandle?: RefObject<ComposerDraftHandle | null> | undefined;
+  // --- équipes (it4) : fin ---
 }) {
   const toast = useToast();
   const [text, setText] = useState("");
@@ -125,6 +154,20 @@ export function Composer({
   const searchTimer = useRef<number | undefined>(undefined);
   const searchSeq = useRef(0);
   const selectId = useId();
+  // --- équipes (it4) : début ---
+  useImperativeHandle(
+    draftHandle,
+    () => ({
+      get: () => teamDraftOf(text, attachments),
+      clear: () => {
+        setText("");
+        setAttachments([]);
+        setMenu(null);
+      },
+    }),
+    [text, attachments],
+  );
+  // --- équipes (it4) : fin ---
 
   const commandName = /^\/([\w-]+)(?=\s|$)/.exec(text)?.[1] ?? null;
   // <c5:methodes-raccourci>
@@ -461,6 +504,9 @@ export function Composer({
               }}
             />
           </label>
+          {/* --- équipes (it4) : début --- */}
+          {team}
+          {/* --- équipes (it4) : fin --- */}
           {autonomy}
           {/* <c5:methodes-puce> */}
           {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci, repéré sur le

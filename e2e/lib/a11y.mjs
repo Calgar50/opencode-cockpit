@@ -11,10 +11,9 @@
 // Chacun dans les deux thèmes et aux trois tailles de `cdp.mjs` (1440, 1024, 400) : 18 captures par vue.
 //
 // `e2e/lib/cdp.mjs` N'EST JAMAIS ÉCRIT par la construction (§2.8) : l'it4 (L41) en est le seul propriétaire pour
-// l'émulation de média. L'émulation passe donc par l'ENVOI BRUT que `cdp.mjs` expose déjà
-// (`navigateur.client.envoyer(methode, params, onglet.sessionId)`), et la partie MÉDIA est isolée dans une seule
-// fonction locale (`emulerMedias`), que FE4 remplacera en 5b par `onglet.medias` de l'it4 : une seule aide par commande
-// CDP. `Emulation.setEmulatedVisionDeficiency` reste ici.
+// l'émulation de média. Depuis FE4 (5b), la partie MÉDIA passe par `onglet.medias(...)` de l'it4 : une seule aide par
+// commande CDP. `Emulation.setEmulatedVisionDeficiency`, qui n'est pas un réglage de média, reste ici et continue de
+// passer par l'ENVOI BRUT que `cdp.mjs` expose (`navigateur.client.envoyer(methode, params, onglet.sessionId)`).
 //
 // Le contexte d'un scénario ne porte que l'ONGLET (`ctx.navigateur` = l'onglet, docker-e2e.mjs) : l'objet navigateur,
 // seul à tenir la prise CDP, n'y est pas. Un scénario qui émule ouvre donc son propre navigateur avec
@@ -34,22 +33,21 @@ export const MODES_A11Y = Object.freeze([
 ]);
 
 /**
- * Partie MÉDIA de l'émulation, ISOLÉE ICI : `prefers-color-scheme`, `forced-colors` et `prefers-reduced-motion` dans un
- * MÊME appel (`Emulation.setEmulatedMedia` remplace toute la liste : trois appels séparés n'en laisseraient qu'un).
- * FE4 remplace le corps de cette fonction par `onglet.medias(features)` de l'it4 (L41), sans toucher aux appelants.
+ * Partie MÉDIA de l'émulation : `prefers-color-scheme`, `forced-colors` et `prefers-reduced-motion` dans un MÊME appel
+ * (`Emulation.setEmulatedMedia` remplace toute la liste : trois appels séparés n'en laisseraient qu'un).
+ *
+ * FE4 (fusion d'entrée de l'it4) a remplacé le corps de cette fonction par un appel à `onglet.medias(...)`, la SEULE
+ * aide d'émulation de média du banc, apportée par l'it4 (L41, `e2e/lib/cdp.mjs`) : une seule aide par commande CDP.
+ * Les booléens du banc de captures y sont traduits en valeurs de la spécification CSS, celles qu'attend `medias`. Le
+ * paramètre `navigateur` est gardé pour ne rien changer aux appelants ; il ne sert plus ici.
  */
 async function emulerMedias(navigateur, onglet, { theme, forcedColors, reducedMotion }) {
-  await navigateur.client.envoyer(
-    "Emulation.setEmulatedMedia",
-    {
-      features: [
-        { name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" },
-        { name: "forced-colors", value: forcedColors ? "active" : "none" },
-        { name: "prefers-reduced-motion", value: reducedMotion ? "reduce" : "no-preference" },
-      ],
-    },
-    onglet.sessionId,
-  );
+  void navigateur;
+  await onglet.medias({
+    theme: theme === "sombre" ? "sombre" : "clair",
+    forcedColors: forcedColors ? "active" : "none",
+    reducedMotion: reducedMotion ? "reduce" : "no-preference",
+  });
 }
 
 /**

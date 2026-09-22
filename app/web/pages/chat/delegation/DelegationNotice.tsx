@@ -20,7 +20,14 @@ import { eventBus } from "../../../lib/events.ts";
 import type { PermissionWaitView } from "../../../lib/types.ts";
 import type { DelegationNoticeProps } from "../slots.ts";
 import "./delegation.css";
+// --- équipes (it4) : début ---
+import { type AvisDelegation, avisDelegationSimple } from "../../../../server/shared/delegation-texts.ts";
+import { Button } from "../../../components/ui.tsx";
+import { teamsApi } from "../../../lib/api-teams.ts";
+import { errorText } from "../../../lib/api.ts";
+import { goTo } from "../../../lib/router.ts";
 
+// --- équipes (it4) : fin ---
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Attente d'une délégation refusée par le cockpit : refus Simple de la garde (L1d, work.markWait(…, « cockpit »)). */
@@ -45,17 +52,44 @@ function Notice({ rootId }: { rootId: string }) {
   const [shown, setShown] = useState(false);
   const [reload, setReload] = useState(0);
   const shownRef = useRef(false);
+  // --- équipes (it4) : début ---
+  // `ouvertesEnSimple` de GET /api/teams (EQUIPES_SIMPLE_OUVERTES, U1) : faux tant que la réponse n'est pas là, ou si elle ne
+  // vient pas — l'avis garde alors son texte court, et n'invite jamais à une fonction que le serveur refuserait (P3).
+  const [ouvertesEnSimple, setOuvertesEnSimple] = useState(false);
+  // Équipes fermées : le texte court d'avant, `avisSimple()`, sans bouton ; ouvertes : le texte complet et [Voir les équipes].
+  const avis: AvisDelegation = ouvertesEnSimple ? avisDelegationSimple(true) : { texte: avisSimple(), bouton: null };
+  const avisRef = useRef(avis.texte);
+  avisRef.current = avis.texte;
 
+  // --- équipes (it4) : fin ---
   const show = useCallback(
     (announce: boolean) => {
       if (shownRef.current) return;
       shownRef.current = true;
       setShown(true);
-      if (announce) say(avisSimple());
+      // --- équipes (it4) : début ---
+      // Annoncé : le texte réellement affiché (court ou complet), jamais l'autre.
+      if (announce) say(avisRef.current);
+      // --- équipes (it4) : fin ---
     },
     [say],
   );
+  // --- équipes (it4) : début ---
 
+  // Une seule lecture par conversation, et seulement quand l'avis est affiché : rien n'est demandé tant qu'il n'y a pas de refus.
+  useEffect(() => {
+    if (!shown) return undefined;
+    const controller = new AbortController();
+    teamsApi.list(controller.signal).then(
+      (reponse) => setOuvertesEnSimple(reponse.ouvertesEnSimple === true),
+      (err: unknown) => {
+        if (!controller.signal.aborted) console.warn("avis du mode Simple : ouverture des équipes illisible", errorText(err));
+      },
+    );
+    return () => controller.abort();
+  }, [shown]);
+
+  // --- équipes (it4) : fin ---
   // Relecture (ouverture, reconnexion du flux) : un refus déjà fait montre l'avis, sans l'annoncer.
   useEffect(() => {
     const controller = new AbortController();
@@ -85,7 +119,14 @@ function Notice({ rootId }: { rootId: string }) {
   return (
     <div className="callout small delegation-notice" role="note">
       <Icon name="users" size={14} />
-      <span>{avisSimple()}</span>
+      {/* --- équipes (it4) : début --- */}
+      <span>{avis.texte}</span>
+      {avis.bouton === null ? null : (
+        <Button variant="ghost" size="sm" icon="users" onClick={() => goTo(avis.bouton?.href ?? "")}>
+          {avis.bouton.libelle}
+        </Button>
+      )}
+      {/* --- équipes (it4) : fin --- */}
     </div>
   );
 }
