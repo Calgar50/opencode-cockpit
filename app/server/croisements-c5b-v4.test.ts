@@ -17,15 +17,25 @@
 //      phrase écrite en clair dans le scénario est exactement celle des modules de textes ;
 //   4. `EQUIPES_SIMPLE_OUVERTES` vaut false dans la branche, n'a aucune sœur, et l'ouverture documentée (e2e/README.md de
 //      L50b, RECAPITULATIF de DOC5) tient en UNE ligne du code réel ;
-//   5. les six recettes réelles du §3.2 sont consignées « en attente » par DOC5, aucune n'est dite faite.
+//   5. les six recettes réelles du §3.2 sont consignées « en attente » par DOC5, aucune n'est dite faite ;
+// et les corrections de la relecture de la vague (5b-vague-4) :
+//   6. la section « Démonstration d'équipe » du README ne cite que des libellés qu'un écran LIT (pas seulement définis) et
+//      dit ce que fait le mouvement réduit ; la ligne « Contrôle de mutation » du RECAPITULATIF compte le train de V4 ; les
+//      scénarios `c5b-*` exigent les deux notes et le dernier jet (relecture), lisent le CSV cellule par cellule (coûts) et
+//      n'attendent la fin d'un lancement que sur des états réels (`FINIS`). Les fonctions des scénarios sont chargées telles
+//      quelles, comme `croisements-eq-v4` charge `it4-studio`. La procédure d'ouverture d'e2e/README.md est, elle, JOUÉE dans un
+//      dépôt jetable par `ouverture-u1-procedure.test.ts`.
 //
 // Aucune exécution facturée, aucun appel à un fournisseur, aucun réseau : ce fichier ne lit que le dépôt.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { TEXTES as C5, ecartTours } from "./shared/construction-texts.ts";
 import { TEXTES as DELEGATION } from "./shared/delegation-texts.ts";
+import { DELIVERABLE_TEXTS } from "./shared/flow.ts";
+import { TEXTES as NEON } from "./shared/neon-texts.ts";
 import { TEAM_RUN_TRANSITIONS, TEAM_STEP_TRANSITIONS } from "./shared/team-limits.ts";
 import { TEXTES as EQ } from "./shared/team-texts.ts";
 import { EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
@@ -235,7 +245,8 @@ describe("grille V4 : équipes fermées en Simple, ouverture en une ligne (U1, D
 
   it("la bascule documentée par L50b (e2e/README.md) touche exactement une ligne du code réel, celle que nomme DOC5", () => {
     const readme = sectionMarkdown(lire("e2e/README.md"), "scenarios");
-    const sed = /sed -i 's\/(\^[^/]+\$)\/([^/]+)\/' (app\/server\/wiring-eq\.ts)/.exec(readme);
+    // Depuis la relecture de la vague 4, la procédure n'agit que sous `"$copie"` (jamais sur le dossier courant).
+    const sed = /sed -i 's\/(\^[^/]+\$)\/([^/]+)\/' "\$copie\/(app\/server\/wiring-eq\.ts)"/.exec(readme);
     assert.ok(sed?.[1] && sed[2] && sed[3], "commande de bascule introuvable dans e2e/README.md");
     const motif = new RegExp(sed[1]);
     const lignes = lignesDe(lire(sed[3]));
@@ -266,5 +277,203 @@ describe("grille V4 : les recettes réelles du §3.2 sont consignées « en atte
     }
     assert.match(limites, /aucune de ces recettes n'est présentée comme faite/);
     assert.match(limites, /bloquent la publication de la 1\.1\*\*, \*\*pas\*\* l'itération/);
+  });
+});
+
+// --- 6. Corrections de la relecture de la vague 4 (5b-vague-4) --------------------------------------------------------------
+
+/** Sous-section « ### {titre} » d'un texte Markdown, jusqu'au titre suivant de niveau 1 à 3. */
+function sousSection(texte: string, titre: string): string {
+  const lignes = lignesDe(texte);
+  const debut = lignes.findIndex((ligne) => ligne.trim() === `### ${titre}`);
+  assert.ok(debut >= 0, `sous-section « ${titre} » introuvable`);
+  const fin = lignes.findIndex((ligne, i) => i > debut && /^#{1,3} /.test(ligne));
+  return lignes.slice(debut, fin < 0 ? undefined : fin).join("\n");
+}
+
+/** Feuilles d'un module de textes : [chemin pointé depuis TEXTES, valeur]. */
+function feuilles(valeur: unknown, prefixe: string): Array<[string, string]> {
+  if (typeof valeur === "string") return [[prefixe, valeur]];
+  if (!valeur || typeof valeur !== "object") return [];
+  return Object.entries(valeur).flatMap(([cle, v]) => feuilles(v, prefixe === "" ? cle : `${prefixe}.${cle}`));
+}
+
+const echapper = (texte: string): string => texte.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Fichiers qui LISENT la feuille `chemin` du module de textes `module` (`construction-texts`, `neon-texts`…) : le fichier importe
+ * `TEXTES` de ce module (renommé ou non) et écrit l'accès complet, ou passe par un alias local d'un sous-objet
+ * (« const T = TEXTES.partout.demonstration; » puis « T.titre »). Une constante définie que personne ne lit n'a aucun lecteur.
+ */
+function lecteurs(sources: ReadonlyArray<readonly [string, string]>, module: string, chemin: string): string[] {
+  const trouves: string[] = [];
+  for (const [fichier, source] of sources) {
+    const bloc = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*"[^"]*/server/shared/${echapper(module)}\\.ts"`).exec(source);
+    const nom = bloc ? /\bTEXTES(?:\s+as\s+(\w+))?/.exec(bloc[1] ?? "") : null;
+    if (!nom) continue;
+    const local = nom[1] ?? "TEXTES";
+    const acces = [`${local}.${chemin}`];
+    for (const alias of source.matchAll(new RegExp(`\\b(?:const|let)\\s+(\\w+)\\s*=\\s*${local}((?:\\.\\w+)+)\\s*;`, "g"))) {
+      const prefixe = (alias[2] ?? "").slice(1);
+      if (chemin.startsWith(`${prefixe}.`)) acces.push(`${alias[1]}.${chemin.slice(prefixe.length + 1)}`);
+    }
+    if (acces.some((expression) => new RegExp(`(?<![\\w.])${echapper(expression)}\\b`).test(source))) trouves.push(fichier);
+  }
+  return trouves;
+}
+
+/** Sources de production de l'interface, lues une fois. */
+const sourcesWeb = (): Array<readonly [string, string]> => sourcesDeProduction("app/web").map((fichier) => [fichier, lire(fichier)] as const);
+
+/** Charge un module de scénario du banc tel quel (il n'est pas dans `tsconfig`, d'où l'import par URL). */
+const chargerScenario = (nom: string): Promise<unknown> => import(pathToFileURL(path.join(DEPOT, SCENARIOS, nom)).href);
+
+const demonstrationDuReadme = (): string => sousSection(sectionMarkdown(lire("README.md"), "construction"), "Démonstration d'équipe");
+
+describe("relecture de la vague 4 : la documentation de DOC5 dit ce que le code fait", () => {
+  it("README, « Démonstration d'équipe » : chaque libellé de la démonstration qu'il cite est LU par un écran, pas seulement défini", () => {
+    const section = demonstrationDuReadme();
+    const cites = new Set([...section.matchAll(/«\s*([^«»]+?)\s*»/g)].map((m) => m[1] ?? ""));
+    const retenus = feuilles(C5.partout.demonstration, "partout.demonstration").filter(([, valeur]) => cites.has(valeur));
+    // Le titre, l'étiquette, la phrase et l'entrée au moins : le contrôle ne tourne pas à vide.
+    assert.ok(retenus.length >= 4, `libellés de la démonstration cités par le README : ${JSON.stringify(retenus)}`);
+    const sources = sourcesWeb();
+    for (const [chemin, valeur] of retenus) {
+      // Une même phrase peut être lue par un autre module de textes, à l'octet : l'étiquette de la construction est celle du
+      // lecteur de l'itération 1 (`neon-texts.ts`, `demonstrationEnregistree`), que DemoPlayer lit.
+      const jumeaux: Array<[string, string]> = [
+        ["construction-texts", chemin],
+        ...feuilles(NEON, "").filter(([, v]) => v === valeur).map(([c]): [string, string] => ["neon-texts", c]),
+      ];
+      const lus = jumeaux.flatMap(([module, c]) => lecteurs(sources, module, c));
+      assert.ok(lus.length > 0, `« ${valeur} » (${chemin}) est cité par le README, mais aucun écran ne le lit : l'utilisateur le cherchera en vain`);
+    }
+
+    // Contrôles discriminants du lecteur d'accès : alias local et import renommé reconnus ; une feuille définie, jamais lue, rien.
+    const imports = `import { TEXTES as X } from "../../../server/shared/construction-texts.ts";\n`;
+    const essai = (corps: string, chemin: string) => lecteurs([["essai.tsx", imports + corps]], "construction-texts", chemin);
+    assert.deepEqual(essai("const T = X.partout.demonstration;\nT.titre;", "partout.demonstration.titre"), ["essai.tsx"]);
+    assert.deepEqual(essai("X.partout.demonstration.voir;", "partout.demonstration.voir"), ["essai.tsx"]);
+    assert.deepEqual(essai("const T = X.partout.demonstration;\nT.titre;", "partout.demonstration.bascule.aLaSuite"), []);
+    assert.deepEqual(lecteurs([["essai.tsx", "T.titre;"]], "construction-texts", "partout.demonstration.titre"), []);
+  });
+
+  it("README, « Démonstration d'équipe » : la bande qu'elle dessine a des transitions, que le mouvement réduit coupe ; le README le dit", () => {
+    // Faits du code : la démonstration dessine NeonCarte, qui joue une transition WAAPI à chaque signe qui apparaît ou change,
+    // et seulement quand le système ne demande pas de mouvement réduit.
+    const lecteur = lire("app/web/pages/chat/activity/DemoPlayer.tsx");
+    const bande = lire("app/web/pages/chat/activity/NeonBand.tsx");
+    assert.match(lecteur, /<NeonCarte\b/);
+    const carte = bande.indexOf("export function NeonCarte(");
+    assert.ok(carte >= 0 && bande.slice(carte, carte + 400).includes("useTransitions(svgRef, vue);"), "NeonCarte ne joue plus ses transitions");
+    assert.match(bande, /matchMedia\("\(prefers-reduced-motion: no-preference\)"\)/);
+    assert.match(bande, /signe\.animate\(/);
+
+    const section = demonstrationDuReadme();
+    assert.doesNotMatch(section, /rien n'y est animé/);
+    assert.doesNotMatch(section, /mouvement réduit[^.\n]*n'y change/);
+    assert.match(section, /Elle ne se lance \*\*jamais toute seule\*\*/);
+    assert.match(section, /transitions de la bande[^.\n]*sont coupées si votre système demande un mouvement réduit/);
+    // Même fait dans l'en-tête du composant de la démonstration.
+    const demo = lire("app/web/pages/assistants/teams/TeamDemo.tsx");
+    assert.doesNotMatch(demo, /le mouvement réduit ne change rien/);
+    assert.match(demo, /le mouvement réduit les coupe/);
+  });
+
+  it("RECAPITULATIF, « Contrôle de mutation » : les quatre trains qui consignent une campagne, celui de la vague 4 de la 5b compris", () => {
+    const ligne = lignesDe(sectionMarkdown(lire("docs/RECAPITULATIF.md"), "validations")).find((l) => l.startsWith("| Contrôle de mutation |"));
+    assert.ok(ligne, "ligne « Contrôle de mutation » absente de la section c5:validations");
+    // Le train de V4 (1b965fe) consigne douze mutations posées une à une, toutes vues.
+    assert.match(ligne, /Consigné dans les commits de quatre trains/);
+    for (const train of ["vague 0 de la 5a (17 mutations, toutes détectées)", "vague 2 de la 5a (9, toutes détectées)", "vague 3 de la 5b (6, toutes détectées)", "vague 4 de la 5b (12, toutes détectées)"]) {
+      assert.ok(ligne.includes(train), `train absent : ${train}`);
+    }
+    assert.match(ligne, /Aucune campagne de mutation n'est consignée pour les autres trains : ce contrôle n'est pas revendiqué pour eux\./);
+  });
+});
+
+describe("relecture de la vague 4 : les scénarios c5b éprouvent ce qu'ils annoncent", () => {
+  it("c5b-relecture : au plafond, la carte doit porter les DEUX notes et le DERNIER jet, jamais le deuxième", async () => {
+    const { manquesDeLaCarte } = (await chargerScenario("c5b-relecture.mjs")) as { manquesDeLaCarte: (texte: string) => string[] };
+    // Le produit écrit les deux notes ensemble quand le dernier verdict dit encore « à reprendre » (flow.ts,
+    // `relectureDeliverable`) ; le scénario les écrit en clair, à l'octet, pour un plafond de 2 tours.
+    const nonRelue = C5.partout.execution.relecture.nonRelue;
+    const nonConclue = C5.partout.execution.relecture.nonConclue.replace("{n}", "2");
+    assert.equal(DELIVERABLE_TEXTS.nonRelue, nonRelue);
+    assert.equal(DELIVERABLE_TEXTS.nonConclue, C5.partout.execution.relecture.nonConclue);
+    assert.equal(phraseDuScenario("c5b-relecture.mjs", "nonRelue"), nonRelue);
+    assert.equal(phraseDuScenario("c5b-relecture.mjs", "nonConclue"), nonConclue);
+
+    const jet3 = "Compte rendu (v3) Impact : 42 minutes, 1 380 paiements refusés (source : journal de la passerelle). Actions : surveiller l'échéance des certificats (exploitation, 30/09, alerte à J-30).";
+    const jet2 = "Compte rendu (corrigé) Impact : 42 minutes, 1 380 paiements refusés (source : journal de la passerelle). Cause : un certificat périmé, renouvellement non surveillé.";
+    assert.deepEqual(manquesDeLaCarte(`${jet3} ${nonRelue} ${nonConclue} Journal de relecture`), []);
+    // Une seule des deux notes : un défaut, dans un sens comme dans l'autre.
+    assert.equal(manquesDeLaCarte(`${jet3} ${nonRelue}`).length, 1);
+    assert.equal(manquesDeLaCarte(`${jet3} ${nonConclue}`).length, 1);
+    // « après 3 tours » n'est pas la note d'un plafond de 2.
+    assert.equal(manquesDeLaCarte(`${jet3} ${nonRelue} ${C5.partout.execution.relecture.nonConclue.replace("{n}", "3")}`).length, 1);
+    // Le deuxième jet montré à la place du dernier est vu, alors que « 1 380 paiements refusés » y figure aussi.
+    assert.equal(manquesDeLaCarte(`${jet2} ${nonRelue} ${nonConclue}`).length, 2);
+
+    const source = lire(`${SCENARIOS}/c5b-relecture.mjs`);
+    assert.match(source, /const manques = manquesDeLaCarte\(carte\.texte\);\r?\n\s*exiger\(manques\.length === 0,/);
+    assert.doesNotMatch(source, /exiger\(notes\.length > 0,/);
+  });
+
+  it("c5b-couts-archives : une ligne du CSV porte un lancement d'équipe par SES cellules, pas par le titre de la conversation", async () => {
+    const { lireCsv, lignesDEquipe } = (await chargerScenario("c5b-couts-archives.mjs")) as {
+      lireCsv: (texte: string) => string[][];
+      lignesDEquipe: (tableau: string[][], titres: string[]) => string[][];
+    };
+    const entete = "date_utc,conversation,titre,cout_usd,lancement_equipe,etape";
+    const equipe = "Compte rendu d'incident relu (c5b)";
+    const csv = (...lignes: string[]) => `${[entete, ...lignes].join("\r\n")}\r\n`;
+
+    // La colonne `titre` porte le titre de l'équipe (conversation racine « {équipe} : {demande} ») et les deux colonnes
+    // d'équipe sont VIDES : aucune ligne n'est retenue — l'ancienne recherche dans la ligne entière, elle, la retenait.
+    const vides = csv(`2026-09-23T08:00:00.000Z,ses_1,"${equipe} : Rédige, vite",0.020000,,`);
+    assert.deepEqual(lignesDEquipe(lireCsv(vides), [equipe]), []);
+    assert.ok(vides.split("\r\n").slice(1).some((ligne) => ligne.includes(equipe)), "contrôle discriminant : l'ancien filtre la retenait");
+    // Les deux colonnes remplies : retenue. `etape` vide seule, ou une autre équipe : non retenue.
+    const pleine = csv(`2026-09-23T08:00:00.000Z,ses_1,"${equipe} : Rédige, vite",0.020000,${equipe},Rédaction`);
+    assert.deepEqual(lignesDEquipe(lireCsv(pleine), [equipe]).map((cellules) => cellules.at(-1)), ["Rédaction"]);
+    assert.deepEqual(lignesDEquipe(lireCsv(csv(`d,ses_1,x,0.01,${equipe},`)), [equipe]), []);
+    assert.deepEqual(lignesDEquipe(lireCsv(csv(`d,ses_1,x,0.01,Autre équipe,Rédaction`)), [equipe]), []);
+    // Une ligne décalée (une cellule de trop) n'est jamais retenue : ses colonnes ne sont plus les bonnes.
+    assert.deepEqual(lignesDEquipe(lireCsv(csv(`d,ses_1,x,0.01,en trop,${equipe},Rédaction`)), [equipe]), []);
+    // Cellules de `csvCell` : virgule, guillemet doublé et retour à la ligne entre guillemets.
+    assert.deepEqual(lireCsv('a,"b,c","d ""e""","f\r\ng"\r\n1,2,3,4\r\n'), [["a", "b,c", 'd "e"', "f\r\ng"], ["1", "2", "3", "4"]]);
+    assert.throws(() => lireCsv('a,"b\r\n'), /guillemet non fermé/);
+
+    const source = lire(`${SCENARIOS}/c5b-couts-archives.mjs`);
+    assert.match(source, /const avecEquipe = lignesDEquipe\(tableauCsv, \[relecture\.titre, aiguillage\.titre\]\);/);
+    assert.match(source, /const tableauCsv = lireCsv\(csv\.corps\);/);
+  });
+
+  it("c5b : `FINIS` est l'ensemble des états finaux d'un lancement, et les scénarios c5 ne comparent un état qu'à un état réel", async () => {
+    const { FINIS } = (await chargerScenario("c5b-relecture.mjs")) as { FINIS: ReadonlySet<string> };
+    // Un lancement est « en cours » en préparation, en cours ou en attente (de vous, du budget, d'une modification, d'un
+    // choix) ; tout autre état de TeamRunState est final.
+    const etatsLancement = Object.keys(TEAM_RUN_TRANSITIONS);
+    const enCours = (etat: string) => etat === "preparation" || etat === "en-cours" || etat.startsWith("attente-");
+    assert.deepEqual([...FINIS].sort(), etatsLancement.filter((etat) => !enCours(etat)).sort());
+
+    const reels = new Set([...etatsLancement, ...Object.keys(TEAM_STEP_TRANSITIONS)]);
+    const inconnus: string[] = [];
+    const finsSansFinis: string[] = [];
+    for (const nom of scenarios().filter((n) => n.startsWith("c5"))) {
+      lignesDe(lire(`${SCENARIOS}/${nom}`)).forEach((ligne, i) => {
+        for (const m of ligne.matchAll(/\.state\s*[!=]==?\s*"([^"]+)"/g)) if (!reels.has(m[1] ?? "")) inconnus.push(`${nom}:${i + 1} « ${m[1]} »`);
+        // Une attente de FIN de lancement (libellé « … terminé(e) ») rend tout état final, pour que l'état réel soit nommé.
+        if (/\battendreRun\(/.test(ligne) && /terminée?[" ]/.test(ligne) && !ligne.includes("FINIS.has(vue.state)")) finsSansFinis.push(`${nom}:${i + 1}`);
+      });
+    }
+    assert.deepEqual(inconnus, [], "état inconnu de TeamRunState et de TeamStepState : l'attente épuiserait son délai");
+    assert.deepEqual(finsSansFinis, [], "attente de fin de lancement qui ne s'arrête pas sur tous les états finaux");
+    // c5b-a11y n'enchaîne pas ses captures sur un lancement fini autrement que « terminee ».
+    assert.match(
+      lire(`${SCENARIOS}/c5b-a11y.mjs`),
+      /const finie = await attendreRun\(api, runId, \(vue\) => FINIS\.has\(vue\.state\), "aiguillage des captures terminé", 90_000\);\r?\n\s*exiger\(finie\.state === "terminee",/,
+    );
   });
 });

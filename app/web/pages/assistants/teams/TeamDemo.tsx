@@ -9,7 +9,8 @@
 // - Données FICTIVES : l'équipe, ses étapes, ses assistants et leurs réponses sont inventés, et les heures sont celles des
 //   moments, pas celles d'un enregistrement réel. La ligne « Déroulé enregistré avec des données fictives. » le dit.
 // - Pas à pas : le curseur, [Moment précédent] et [Moment suivant] du lecteur, en « Moment n / N » — jamais le mot « étape »,
-//   réservé aux étapes de l'équipe. AUCUNE lecture automatique, aucune animation : le mouvement réduit ne change rien ici.
+//   réservé aux étapes de l'équipe. AUCUNE lecture automatique. Les transitions de la bande sont celles de NeonCarte (NeonBand,
+//   `useTransitions`, environ 900 ms à chaque signe qui apparaît ou change d'un moment à l'autre) : le mouvement réduit les coupe.
 // - Mode Simple : ce composant n'est monté que par l'onglet Équipes, qui suit `ouvertesEnSimple` (U1, D-5-24). Il ne lit
 //   lui-même AUCUN réglage.
 // - Accessibilité : la boîte, le curseur et le tableau sont ceux du lecteur ; l'état de chaque étape est dit par son MOT à côté

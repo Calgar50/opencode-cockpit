@@ -15,7 +15,7 @@
 import { attendre, exiger, nonJoue, releve, resume } from "./it1-api-commun.mjs";
 import { preparerPage } from "./it1-ui-commun.mjs";
 import { attendreRun, enAvance, equipes, ouvrirLaConversation, repere, requetesDepuis, scripterEtape } from "./it4-commun.mjs";
-import { arreterLesLancements, equipeDeriveeC5, lancerAvec } from "./c5b-relecture.mjs";
+import { arreterLesLancements, equipeDeriveeC5, FINIS, lancerAvec } from "./c5b-relecture.mjs";
 
 /**
  * Exemple éprouvé ici, en DEUX copies : un lancement par copie. Les scripts du faux se posent par identifiant d'étape et
@@ -171,7 +171,7 @@ export async function run(ctx) {
     // à l'Entrée ET à la barre d'espace (APG) ; le banc frappe l'espace, que `taper` envoie avec son caractère.
     await page.evaluer(`document.querySelector(".team-choice .team-card-actions button")?.focus()`);
     await page.taper(" ");
-    const finieA = await attendreRun(api, runA, (vue) => vue.state === "terminee" || vue.state === "en-echec", "aiguillage terminé après confirmation", 90_000);
+    const finieA = await attendreRun(api, runA, (vue) => FINIS.has(vue.state), "aiguillage terminé après confirmation", 90_000);
     exiger(finieA.state === "terminee", `lancement A en état « ${finieA.state} » : ${resume(finieA.steps.map((s) => `${s.stepId}=${s.state}`))}`);
 
     // 3. Spécialistes écartés : « non-choisi », état final SANS coût ; la synthèse aussi (moins de deux résultats choisis).
@@ -217,7 +217,7 @@ export async function run(ctx) {
     })()`);
     exiger(focaliseAucun, `[${PHRASES.aucunConvient}] ne prend pas le focus : ${resume(carteB.boutons)}`);
     await page.taper(" ");
-    const finieB = await attendreRun(api, runB, (vue) => vue.state === "terminee" || vue.state === "en-echec", "lancement « aucun ne convient » terminé", 60_000);
+    const finieB = await attendreRun(api, runB, (vue) => FINIS.has(vue.state), "lancement « aucun ne convient » terminé", 60_000);
     exiger(finieB.state === "terminee", `lancement B en état « ${finieB.state} ».`);
     for (const stepId of etapesEcarteesB) {
       const step = finieB.steps.find((candidat) => candidat.stepId === stepId);

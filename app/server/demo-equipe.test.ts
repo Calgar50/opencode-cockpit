@@ -14,7 +14,8 @@
 //   NOMMÉE, dont ce fichier prouve la pureté et qui signale tout autre nom qu'on y prendrait ;
 // - en mode Simple, [Voir une démonstration] ne paraît pas tant que `ouvertesEnSimple` est faux : le bouton n'est rendu que dans
 //   l'état vide et dans la galerie, que le modèle pur de l'itération 4 laisse nuls (U1, D-5-24). AUCUNE constante propre ;
-// - mouvement réduit : aucune lecture automatique, aucune minuterie, aucune animation ;
+// - mouvement réduit : aucune lecture automatique, aucune minuterie, aucune animation PROPRE au lecteur ni à la démonstration
+//   (les transitions de la bande sont celles de NeonCarte, que le mouvement réduit coupe ; croisements-c5b-v4 le relie au README) ;
 // - textes : ceux de `construction-texts.ts`, à l'octet ; les moments se disent « n / N », jamais « étape ».
 // Chaque garde a son contrôle discriminant (fixture modifiée, secret planté, import réseau ajouté, bouton déplacé).
 import assert from "node:assert/strict";

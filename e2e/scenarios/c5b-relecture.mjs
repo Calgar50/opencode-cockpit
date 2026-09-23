@@ -7,8 +7,9 @@
 //   2. le verdict est lu sur la DERNIÈRE ligne du relecteur, à l'octet, accents compris (D-5-14, MC5-2) : « À REPRENDRE » au
 //      tour 1 fait repartir le rédacteur, et le relecteur relit une seconde fois ;
 //   3. le PLAFOND de tours est respecté : `toursMax` vaut 2, le relecteur ne travaille pas trois fois, et le livrable porte
-//      la note d'honnêteté « Relecture non conclue après 2 tours : points restants ci-dessous. » quand le second verdict
-//      reste « à reprendre » ;
+//      les DEUX notes d'honnêteté que le produit écrit ensemble quand le second verdict reste « à reprendre » (flow.ts,
+//      `relectureDeliverable`) : « Non relue après la dernière correction. » et « Relecture non conclue après 2 tours :
+//      points restants ci-dessous. » ; le résultat montré est le DERNIER jet (le troisième), jamais le deuxième ;
 //   4. le JOURNAL de relecture est REPLIÉ sous le résultat (C §9.6), avec ses deux tours et leurs verdicts ; le livrable
 //      n'est pas réécrit, il est découpé ;
 //   5. le COÛT du lancement est la somme des CINQ appels scriptés (trois jets, deux relectures), il reste sous le PLAFOND
@@ -89,6 +90,26 @@ const RELECTURE_2 = {
 };
 
 const COUT_ATTENDU = JET_1.cost + JET_2.cost + JET_3.cost + RELECTURE_1.cost + RELECTURE_2.cost;
+
+/** Fragment du SEUL troisième jet : « 1 380 paiements refusés » est aussi dans le deuxième et ne distingue pas les deux. */
+const PROPRE_AU_JET_3 = "alerte à J-30";
+/** Titre du deuxième jet : un résultat qui le montre montre une version dépassée. */
+const TITRE_DU_JET_2 = "Compte rendu (corrigé)";
+
+/**
+ * Manques de la carte de résultat d'une relecture arrêtée au plafond, lus sur son texte VISIBLE (journal replié exclu) : les
+ * DEUX notes d'honnêteté, que le produit écrit toujours ensemble dans ce cas (flow.ts, `relectureDeliverable`), le fragment
+ * propre au dernier jet, et jamais le titre du deuxième. Rend la liste des manques, vide quand la carte dit tout.
+ */
+export function manquesDeLaCarte(texte) {
+  const manques = [];
+  for (const note of [PHRASES.nonRelue, PHRASES.nonConclue]) {
+    if (!texte.includes(note)) manques.push(`note « ${note} » absente`);
+  }
+  if (!texte.includes(PROPRE_AU_JET_3)) manques.push(`le résultat n'est pas le dernier jet (« ${PROPRE_AU_JET_3} » absent)`);
+  if (texte.includes(TITRE_DU_JET_2)) manques.push(`le résultat montre le deuxième jet (« ${TITRE_DU_JET_2} »)`);
+  return manques;
+}
 
 /** Envois facturables reçus par le faux, hors requêtes de fond. */
 const envois = (requetes) => requetes.filter((requete) => requete.method === "POST" && requete.pathname.endsWith("/prompt_async"));
@@ -289,8 +310,12 @@ export async function equipeDeriveeC5(api, exemple, suffixe, patch = () => ({}))
   return { id: equipeId, flow, titre: JSON.parse(reponse.corps).titre };
 }
 
-/** États FINAUX d'un lancement : au-delà, il n'occupe plus de place parmi les équipes en cours. */
-const FINIS = new Set(["terminee", "arretee", "echec", "interrompue", "plafond"]);
+/**
+ * États FINAUX d'un lancement (TeamRunState, team-types.ts) : au-delà, il n'occupe plus de place parmi les équipes en cours.
+ * Exporté pour les attentes de fin des scénarios `c5b-*` : un lancement en « echec » ou au « plafond » est rendu tout de
+ * suite, et le message qui suit l'attente nomme son état, au lieu d'épuiser le délai.
+ */
+export const FINIS = new Set(["terminee", "arretee", "echec", "interrompue", "plafond"]);
 
 /**
  * Arrête les lancements qui n'ont pas abouti. Un lancement laissé en attente occupe une place parmi les « équipes en cours en
@@ -379,7 +404,7 @@ export async function run(ctx) {
     // 2 et 3. Deux tours, puis l'arrêt au plafond : le relecteur ne travaille pas trois fois.
     const reprise = await api.continuerBrut(runId, {});
     exiger(reprise.code === 200, `reprise refusée (${reprise.code}) : ${resume(reprise.corps, 300)}`);
-    const finie = await attendreRun(api, runId, (vue) => vue.state === "terminee" || vue.state === "en-echec", "relecture terminée", 90_000);
+    const finie = await attendreRun(api, runId, (vue) => FINIS.has(vue.state), "relecture terminée", 90_000);
     exiger(finie.state === "terminee", `lancement en état « ${finie.state} » : ${resume(finie.steps.map((s) => `${s.stepId}/${s.tour}=${s.state}`))}`);
 
     const tours = (stepId) => finie.steps.filter((step) => step.stepId === stepId);
@@ -442,13 +467,16 @@ export async function run(ctx) {
     // Les deux relectures sont dans le journal, pas dans le résultat : le livrable n'est pas réécrit, il est découpé.
     exiger(carte.journalTexte.includes("aucune source n'est citée"), `le journal ne reprend pas la relecture du tour 1 : ${resume(carte.journalTexte, 400)}`);
     exiger(carte.journalTexte.includes("aucune action n'a d'échéance"), `le journal ne reprend pas la relecture du tour 2 : ${resume(carte.journalTexte, 400)}`);
-    // La carte DIT que la relecture n'a pas conclu : « Relecture non conclue après 2 tours … », ou « Non relue après la
-    // dernière correction. » quand c'est cette correction-là que vous lisez. L'une des deux, jamais le silence.
-    const notes = [PHRASES.nonConclue, PHRASES.nonRelue].filter((phrase) => carte.texte.includes(phrase));
+    // La carte DIT que la relecture n'a pas conclu, par les DEUX notes que le produit écrit ensemble au plafond : « Non relue
+    // après la dernière correction. » (la correction que vous lisez n'a pas été relue) et « Relecture non conclue après
+    // 2 tours … » (le dernier verdict disait encore « à reprendre »). L'une sans l'autre est un défaut, comme le silence.
+    const notes = [PHRASES.nonRelue, PHRASES.nonConclue].filter((phrase) => carte.texte.includes(phrase));
     releve(ctx, `notes d'honnêteté de la carte : ${resume(notes)}`);
-    exiger(notes.length > 0, `la carte ne dit pas que la relecture n'a pas conclu : ${resume(carte.texte, 400)}`);
-    // Le livrable n'est pas réécrit : le dernier jet du rédacteur reste le résultat, journal mis à part.
+    // Le livrable n'est pas réécrit : le DERNIER jet du rédacteur reste le résultat, journal mis à part — le troisième, lu par
+    // un fragment qui n'est qu'à lui, et jamais le deuxième.
     exiger(carte.texte.includes("1 380 paiements refusés"), `le résultat ne porte pas le dernier jet : ${resume(carte.texte, 400)}`);
+    const manques = manquesDeLaCarte(carte.texte);
+    exiger(manques.length === 0, `carte de résultat : ${manques.join(" ; ")} — ${resume(carte.texte, 400)}`);
     exiger(!carte.texte.includes(RIEN_A_REPRENDRE), "un verdict « rien à reprendre » apparaît alors qu'aucun tour ne l'a rendu.");
   }).finally(async () => {
     if (apiDuScenario !== null) await arreterLesLancements(apiDuScenario, lancements);

@@ -10,7 +10,9 @@
 //      lancées dans cette conversation »), et ils ne coûtent rien ;
 //   3. COÛTS : la ligne « Par équipe » du mois, avec ses colonnes, et les deux lancements comptés ;
 //   4. CSV des coûts : les colonnes `lancement_equipe` et `etape` à la FIN de l'en-tête, et au moins une ligne qui les
-//      porte — sans quoi les coûts d'équipe ne se retrouvent pas hors du cockpit ;
+//      porte — sans quoi les coûts d'équipe ne se retrouvent pas hors du cockpit. Les lignes sont lues CELLULE par cellule :
+//      le titre d'équipe figure aussi dans la colonne `titre` de chaque ligne du lancement (titre de la conversation racine,
+//      « {équipe} : {demande} »), et une recherche dans la ligne entière passerait avec les deux colonnes vides ;
 //   5. ARCHIVES : la section « Équipes lancées dans cette conversation » et le filtre « Avec une équipe » ;
 //   6. SECONDE LECTURE d'un RÉSULTAT D'ÉQUIPE : le bouton chiffré est proposé sous la carte de résultat, EN DERNIER — la
 //      seconde lecture relit ce qui précède —, et son clic envoie UN message au Relecteur critique, dans la conversation de
@@ -20,7 +22,7 @@
 import { attendre, attendreQue, exiger, nonJoue, releve, resume } from "./it1-api-commun.mjs";
 import { LARGE, preparerPage } from "./it1-ui-commun.mjs";
 import { attendreRun, enAvance, equipes, ouvrirLaConversation, scripterEtape } from "./it4-commun.mjs";
-import { arreterLesLancements, equipeDeriveeC5, lancerAvec } from "./c5b-relecture.mjs";
+import { arreterLesLancements, equipeDeriveeC5, FINIS, lancerAvec } from "./c5b-relecture.mjs";
 
 /** Suffixe des équipes propres à ce scénario : les scénarios partagent UN faux, et un script « quand:etape= » vaut pour tous. */
 const SUFFIXE = "c5b";
@@ -41,6 +43,58 @@ const PHRASES = {
   messageEquipe: (equipe) =>
     `Seconde lecture du résultat de l'équipe « ${equipe} ». Vérifie-le avec ta liste de contrôle. Relis les fichiers cités si tu y as accès. Ne change pas une conclusion sourcée sans fait nouveau.`,
 };
+
+/**
+ * Lignes d'un CSV (RFC 4180, comme l'écrit `csvCell` de ledger.ts), chacune en cellules : champs entre guillemets, `""` pour
+ * un guillemet, virgule comme séparateur, fin de ligne CRLF ou LF, retours à la ligne permis DANS un champ entre guillemets.
+ * Un guillemet non fermé fait échouer : un export mal formé ne doit jamais se lire à moitié.
+ */
+export function lireCsv(texte) {
+  const lignes = [];
+  let ligne = [];
+  let cellule = "";
+  let entreGuillemets = false;
+  const finDeLigne = () => {
+    ligne.push(cellule);
+    lignes.push(ligne);
+    ligne = [];
+    cellule = "";
+  };
+  for (let i = 0; i < texte.length; i++) {
+    const c = texte[i];
+    if (entreGuillemets) {
+      if (c !== '"') cellule += c;
+      else if (texte[i + 1] === '"') {
+        cellule += '"';
+        i++;
+      } else entreGuillemets = false;
+    } else if (c === '"') entreGuillemets = true;
+    else if (c === ",") {
+      ligne.push(cellule);
+      cellule = "";
+    } else if (c === "\n") finDeLigne();
+    else if (c === "\r" && texte[i + 1] === "\n") {
+      finDeLigne();
+      i++;
+    } else cellule += c;
+  }
+  if (entreGuillemets) throw new Error("CSV : guillemet non fermé.");
+  if (cellule !== "" || ligne.length > 0) finDeLigne();
+  return lignes;
+}
+
+/**
+ * Lignes du CSV (en-tête comprise en tête du tableau) qui PORTENT un lancement d'équipe : la cellule `lancement_equipe` vaut
+ * le titre d'une des équipes données, et la cellule `etape` n'est pas vide. Une ligne qui n'a pas autant de cellules que
+ * l'en-tête n'est jamais retenue : ses colonnes seraient décalées.
+ */
+export function lignesDEquipe(tableau, titres) {
+  const [entete = [], ...lignes] = tableau;
+  const equipe = entete.indexOf("lancement_equipe");
+  const etape = entete.indexOf("etape");
+  if (equipe < 0 || etape < 0) return [];
+  return lignes.filter((cellules) => cellules.length === entete.length && titres.includes(cellules[equipe]) && cellules[etape] !== "");
+}
 
 /** Nom installé du Relecteur critique (l'assistant du catalogue), ou null. */
 async function nomDuRelecteur(ctx) {
@@ -119,7 +173,7 @@ export async function run(ctx) {
     await scripterEtape(ctx, blocRelecture.relecteur.id, TOUR("Rien à redire : chaque fait est sourcé.\n\nVERDICT: RIEN À REPRENDRE", 0.01));
     const lancementR = await lancerAvec(api, relecture.id, "Rédige le compte rendu de l'incident de paiement.");
     lancements.push(lancementR.runId);
-    const finieR = await attendreRun(api, lancementR.runId, (vue) => vue.state === "terminee" || vue.state === "en-echec", "relecture en un tour terminée", 90_000);
+    const finieR = await attendreRun(api, lancementR.runId, (vue) => FINIS.has(vue.state), "relecture en un tour terminée", 90_000);
     exiger(finieR.state === "terminee", `relecture en état « ${finieR.state} » : ${resume(finieR.steps.map((s) => `${s.stepId}=${s.state}`))}`);
     const toursFaits = finieR.steps.filter((step) => step.stepId === blocRelecture.relecteur.id).length;
     exiger(toursFaits === 1, `${toursFaits} relecture(s) : le verdict « rien à reprendre » doit conclure au premier tour.`);
@@ -203,7 +257,7 @@ export async function run(ctx) {
     await attendreRun(api, lancementA.runId, (vue) => vue.state === "attente-choix", "aiguillage dérivé en attente de choix");
     const reponse = await api.continuerBrut(lancementA.runId, { choix: [retenu.id] });
     exiger(reponse.code === 200, `confirmation du choix refusée (${reponse.code}) : ${resume(reponse.corps, 300)}`);
-    const finieA = await attendreRun(api, lancementA.runId, (vue) => vue.state === "terminee" || vue.state === "en-echec", "aiguillage dérivé terminé", 90_000);
+    const finieA = await attendreRun(api, lancementA.runId, (vue) => FINIS.has(vue.state), "aiguillage dérivé terminé", 90_000);
     exiger(finieA.state === "terminee", `aiguillage en état « ${finieA.state} ».`);
     const ecartes = blocAiguillage.specialistes.filter((step) => step.id !== retenu.id);
     for (const step of ecartes) {
@@ -289,16 +343,21 @@ export async function run(ctx) {
     const mois = new Date().toISOString().slice(0, 7);
     const csv = await ctx.api.brut("GET", `/api/usage/export.csv?month=${mois}`);
     exiger(csv.code === 200, `export CSV refusé (${csv.code}).`);
-    const entete = csv.corps.split("\r\n")[0].split(",");
+    const tableauCsv = lireCsv(csv.corps);
+    const entete = tableauCsv[0] ?? [];
     releve(ctx, `en-tête du CSV : ${resume(entete.slice(-4))}`);
     exiger(
       entete.slice(-COLONNES_CSV.length).join(",") === COLONNES_CSV.join(","),
       `les colonnes d'équipe ne terminent pas l'en-tête du CSV : ${resume(entete.slice(-4))}`,
     );
-    const lignesCsv = csv.corps.split("\r\n").slice(1).filter((ligne) => ligne !== "");
-    const avecEquipe = lignesCsv.filter((ligne) => ligne.includes(relecture.titre) || ligne.includes(aiguillage.titre));
-    releve(ctx, `${avecEquipe.length} ligne(s) du CSV portent un lancement d'équipe sur ${lignesCsv.length}`);
-    exiger(avecEquipe.length >= 1, "aucune ligne du CSV ne nomme un lancement d'équipe : les coûts d'équipe ne se retrouvent pas hors du cockpit.");
+    // Lu cellule par cellule : `lancement_equipe` vaut le titre d'une des deux équipes ET `etape` n'est pas vide. Le titre de
+    // l'équipe est aussi dans la colonne `titre` (conversation racine « {équipe} : {demande} ») : il ne prouve rien là.
+    const avecEquipe = lignesDEquipe(tableauCsv, [relecture.titre, aiguillage.titre]);
+    releve(ctx, `${avecEquipe.length} ligne(s) du CSV portent un lancement d'équipe dans leurs colonnes lancement_equipe et etape, sur ${tableauCsv.length - 1}`);
+    exiger(
+      avecEquipe.length >= 1,
+      "aucune ligne du CSV ne porte un lancement d'équipe dans ses colonnes `lancement_equipe` et `etape` : les coûts d'équipe ne se retrouvent pas hors du cockpit.",
+    );
 
     // --- 7. Onglet Méthodes ---------------------------------------------------------------------------------------------
     await page.evaluer('location.hash = "#/assistants/methodes"');

@@ -300,17 +300,31 @@ Les scénarios d'équipe tournent en **mode Avancé** : les équipes sont fermé
 dans une **copie jetable** tirée de la tête par `git archive`, jamais dans le dépôt ni dans le dossier de travail : la copie
 reçoit son propre `git init` (le banc prépare son contexte par `git ls-files`), son arbre doit être EXACTEMENT celui de la
 tête, puis une seule ligne y est basculée et le diff doit n'en compter qu'une. Le banc est lancé depuis la copie, qui
-est ensuite supprimée :
+est supprimée à la sortie, réussite ou échec.
+
+La procédure s'arrête au **premier échec**, en le disant, et n'agit jamais sur le dossier courant : tout passe par
+`git -C "$copie"` et par des chemins sous `"$copie"`. La copie est un dossier **neuf** (`mktemp -d`, sous `$TEMP`, à
+défaut `$TMPDIR`, à défaut `/tmp`) : une copie laissée par un passage précédent n'est jamais reprise. Si le dossier ne
+peut pas être créé, rien d'autre ne se fait ; si la copie n'est pas la tête, si la bascule ne touche pas exactement une
+ligne, ou si l'état du dépôt a changé pendant la procédure, le banc n'est pas lancé. À lancer depuis le dépôt :
 
 ```sh
-copie="$TEMP/c511-ouverture-u1"                     # dossier neuf, hors du dépôt
-mkdir "$copie" && git archive --format=tar HEAD | tar -x -C "$copie"
-arbre_tete="$(git rev-parse 'HEAD^{tree}')"
-cd "$copie" && git init -q && git add -A
-test "$(git write-tree)" = "$arbre_tete"            # la copie EST la tête
-sed -i 's/^export const EQUIPES_SIMPLE_OUVERTES = false;$/export const EQUIPES_SIMPLE_OUVERTES = true;/' app/server/wiring-eq.ts
-git diff --numstat                                  # attendu : « 1 1 app/server/wiring-eq.ts », et rien d'autre
-scripts/run-e2e.sh --faux --scenarios c5b-demonstration --project-prefix c511-e2e --image-tag c511
+( set -euo pipefail
+  depot="$(git rev-parse --show-toplevel)"
+  etat_depot="$(git -C "$depot" status --porcelain=v1)"
+  arbre_tete="$(git -C "$depot" rev-parse 'HEAD^{tree}')"
+  copie="$(mktemp -d "${TEMP:-${TMPDIR:-/tmp}}/c511-ouverture-u1.XXXXXX")"   # dossier NEUF, hors du dépôt
+  trap 'cd / && rm -rf -- "$copie"' EXIT                                     # la copie est supprimée à la sortie
+  git -C "$depot" archive --format=tar HEAD | tar -x -C "$copie"
+  git -C "$copie" init -q
+  git -C "$copie" add -A
+  test "$(git -C "$copie" write-tree)" = "$arbre_tete" || { echo "copie différente de la tête" >&2; exit 1; }
+  sed -i 's/^export const EQUIPES_SIMPLE_OUVERTES = false;$/export const EQUIPES_SIMPLE_OUVERTES = true;/' "$copie/app/server/wiring-eq.ts"
+  test "$(git -C "$copie" diff --numstat)" = "$(printf '1\t1\tapp/server/wiring-eq.ts')" || { echo "la bascule ne touche pas exactement une ligne" >&2; exit 1; }
+  test "$(git -C "$depot" status --porcelain=v1)" = "$etat_depot" || { echo "le dépôt a changé : banc non lancé" >&2; exit 1; }
+  cd "$copie"
+  scripts/run-e2e.sh --faux --scenarios c5b-demonstration --project-prefix c511-e2e --image-tag c511
+)
 ```
 
 Le scénario lit alors `ouvertesEnSimple` de `GET /api/teams` et éprouve, EN SIMPLE et sans autre changement, le lanceur,

@@ -26,7 +26,7 @@ import { animationsActives, captureAccessibilite, DUREE_PERCEPTIBLE_MS, emuler, 
 import { attendre, exiger, nonJoue, releve, resume } from "./it1-api-commun.mjs";
 import { attendreModeAffiche, LARGE, preparerPage } from "./it1-ui-commun.mjs";
 import { attendreRun, enAvance, equipes, scripterEtape } from "./it4-commun.mjs";
-import { arreterLesLancements, equipeDeriveeC5, lancerAvec } from "./c5b-relecture.mjs";
+import { arreterLesLancements, equipeDeriveeC5, FINIS, lancerAvec } from "./c5b-relecture.mjs";
 
 /** Suffixe des équipes propres à ce scénario : un script « quand:etape= » vaut pour tout scénario qui suit. */
 const SUFFIXE = "a11";
@@ -213,7 +213,9 @@ export async function run(ctx) {
       );
 
       // 6. Carte de résultat.
-      await attendreRun(api, runId, (vue) => vue.state === "terminee" || vue.state === "en-echec", "aiguillage des captures terminé", 90_000);
+      // Un lancement fini autrement (« echec », « plafond »…) est dit tout de suite : les captures ne s'enchaînent pas dessus.
+      const finie = await attendreRun(api, runId, (vue) => FINIS.has(vue.state), "aiguillage des captures terminé", 90_000);
+      exiger(finie.state === "terminee", `aiguillage des captures en état « ${finie.state} » : ${resume(finie.steps.map((s) => `${s.stepId}=${s.state}`))}`);
       await allerA(onglet, `#/chat/${rootId}`, "document.querySelector('.team-result')", "carte de résultat de l'équipe");
       nombreDeVues += 1;
       faites.push(

@@ -578,11 +578,11 @@ Dans le panneau **Déroulé**, une bascule « Déroulé » / « Chronologie » o
 
 ### Démonstration d'équipe
 
-« Voir une démonstration » ouvre « Comment se déroule une équipe », un déroulé enregistré, avec la bascule « À la suite » / « En même temps ».
+« Voir une démonstration » ouvre « Comment se déroule une équipe », un déroulé enregistré : une équipe de trois avis indépendants, suivis d'une synthèse. C'est le seul déroulé livré : la démonstration n'a pas de bascule entre deux déroulés.
 
 - L'étiquette est permanente : « Démonstration enregistrée : aucune IA n'est appelée », avec « Déroulé enregistré avec des données fictives. »
 - **Aucune requête** n'est émise vers opencode pendant la démonstration : elle lit un fichier du dépôt, pas votre historique.
-- Elle ne se lance **jamais toute seule** et rien n'y est animé : c'est vous qui avancez, moment par moment (« Moment {n} / {total} », le lecteur de l'itération 1). Le mouvement réduit demandé par votre système n'y change donc rien.
+- Elle ne se lance **jamais toute seule** : c'est vous qui avancez, moment par moment (« Moment {n} / {total} », le lecteur de l'itération 1). Les courtes transitions de la bande, au passage d'un moment à l'autre, sont coupées si votre système demande un mouvement réduit.
 
 ### Limites à connaître
 
