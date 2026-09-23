@@ -35,10 +35,13 @@ const DEPOT = path.resolve(import.meta.dirname, "..", "..");
 const lire = (relatif: string): string => fs.readFileSync(path.join(DEPOT, relatif), "utf8");
 const lignesDe = (texte: string): string[] => texte.split(/\r?\n/);
 
-/** Contenu d'une section Markdown balisée `<!-- c5:nom -->` … `<!-- /c5:nom -->` (une seule par nom, §2.6). */
+/**
+ * Contenu d'une section Markdown balisée (une seule par nom, §2.6). Les balises sont assemblées en deux morceaux : écrites
+ * d'un bloc, elles seraient prises pour des balises mal formées par `construction-balises.test.ts`.
+ */
 function sectionMarkdown(texte: string, nom: string): string {
-  const debut = texte.indexOf(`<!-- c5:${nom} -->`);
-  const fin = texte.indexOf(`<!-- /c5:${nom} -->`);
+  const debut = texte.indexOf("<!-- " + `c5:${nom} -->`);
+  const fin = texte.indexOf("<!-- /" + `c5:${nom} -->`);
   assert.ok(debut >= 0 && fin > debut, `section c5:${nom} introuvable ou mal fermée`);
   return texte.slice(debut, fin);
 }
