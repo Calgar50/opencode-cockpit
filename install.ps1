@@ -75,6 +75,10 @@
     Genere seulement les deux fichiers des projets prepares (liste et surcharge compose) a partir du dossier
     donne par -WorkspacePath, sans toucher a .env ni a Docker. Sert aux bancs et aux tests. Code de sortie 4
     si un depot git du dossier ne peut pas etre protege.
+    Dans la salle, le dossier de travail est en LECTURE SEULE ; la surcharge n'y ouvre en ecriture que les
+    entrees de premier niveau des projets prepares, une par une (jamais .git, jamais la racine d'un projet).
+    L'IA de la salle ne peut donc creer ni fichier ni dossier a la racine d'un projet (refus net), et un
+    fichier ou dossier ajoute a la racine d'un projet demande de relancer install.ps1.
 
 .PARAMETER WorkspacePath
     Dossier de travail parcouru par -OmoProjetsSeulement (obligatoire avec lui, ignore sinon).
@@ -288,9 +292,13 @@ function ConvertTo-CockpitVersionOrNull([string]$Text) {
     return $null
 }
 
-# --- Salle Oh My OpenAgent : archive, projets prepares et protection git (D-2b-28, MO-3) ---------------
+# --- Salle Oh My OpenAgent : archive, projets prepares et protection git (D-2b-28, MO-3, L16c) ----------
 # Valeurs reprises du contrat machine docker\opencode-omo\contrat-salle.json (services.salle, fichiersControle.projets)
 # et des bornes du superviseur (supervisor-lib.mjs) : l'egalite est verifiee par tests\ps51\Test-OmoInstall.ps1.
+# L16c (decision A16, option E1) : docker-compose.yml monte le dossier de travail ENTIER en lecture seule dans la salle ;
+# la surcharge generee ici n'y rouvre l'ecriture que par exception, une entree de premier niveau de projet a la fois.
+# Sur Docker Desktop Windows, un .git:ro pose SOUS un dossier en ecriture se contourne (casse, noms courts 8.3, dossier
+# parent : 10 alias inscriptibles mesures) ; sous un ancetre en lecture seule, tout alias repond EROFS.
 $OmoServiceSalle = 'opencode-omo'
 $OmoServiceCockpit = 'cockpit'
 $OmoFichierProjets = 'omo-projets.json'
@@ -360,6 +368,22 @@ function Test-OmoReparsePoint($Info) {
     return (([int]$Info.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0)
 }
 
+# Nom ramene a ce que Windows en fait : casse ignoree, points et espaces de fin retires (Win32 les ignore).
+function ConvertTo-OmoNomNormalise([string]$Nom) { return $Nom.ToLowerInvariant().TrimEnd('.', ' ') }
+
+# Nom qui designe .git pour git sous Windows (.git, .GIT, .Git...) : un depot, quelle que soit la casse (L16c).
+function Test-OmoNomGit([string]$Nom) { return ($Nom -ieq '.git') }
+
+# Nom JAMAIS ouvert en ecriture (decision A16) : tout nom qui se ramene a .git (casse, points ou espaces de fin) et les
+# noms courts 8.3 de .git (GIT~1...), meme quand ils designent autre chose : ce n'est pas a la salle de le deviner.
+function Test-OmoNomGitOuCourt([string]$Nom) {
+    $normal = ConvertTo-OmoNomNormalise $Nom
+    return (($normal -ceq '.git') -or ($normal -cmatch '^git~[0-9]+\z'))
+}
+
+# Dossier des carnets de l'extension (.omo) : jamais cree dans un projet, jamais ouvert en ecriture s'il existe (A16 point 2).
+function Test-OmoNomCarnets([string]$Nom) { return ((ConvertTo-OmoNomNormalise $Nom) -ceq '.omo') }
+
 # Depot nu (git clone --bare, .bare d'un montage bare + worktrees, x.git servant de depot local) : un fichier HEAD,
 # un dossier objects et un dossier refs, comme git lui-meme le reconnait (meme regle que le superviseur).
 function Test-OmoBareRepo($Entries) {
@@ -399,13 +423,16 @@ function Resolve-OmoGitdirTarget([string]$GitFile, [string]$Workspace) {
 }
 
 # Parcours du dossier de travail (D-2b-28) : liens et jonctions jamais suivis, node_modules et interieurs de .git
-# exclus, nombre d'entrees et profondeur bornes. Rend les projets prepares, les depots a proteger et, le cas
-# echeant, la liste de ce qui ne peut pas l'etre (un seul element suffit a refuser la surcharge).
+# exclus, nombre d'entrees et profondeur bornes. Rend les projets prepares, les depots a proteger, les entrees de
+# premier niveau de chaque projet (L16c : ce que la surcharge peut ouvrir en ecriture) et, le cas echeant, la liste
+# de ce qui ne peut pas l'etre (un seul element suffit a refuser la surcharge).
 function Get-OmoWorkspaceScan([string]$Workspace) {
     $root = Get-NormalizedPath $Workspace
     $projets = New-Object System.Collections.Generic.List[object]
     $proteges = New-Object System.Collections.Generic.List[object]
     $problemes = New-Object System.Collections.Generic.List[string]
+    # Cles comparees a l'octet : deux projets ne different jamais que par la casse sur NTFS, mais rien n'est suppose.
+    $entreesProjets = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
     $entrees = 0
     $ajouter = {
         param([string]$Texte)
@@ -437,6 +464,7 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
             break
         }
         $aGit = $false
+        $estProjet = $false
         $sousDossiers = New-Object System.Collections.Generic.List[object]
         foreach ($entry in $entries) {
             $entrees++
@@ -447,7 +475,8 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
             $nom = $entry.Name
             $cheminRelatif = $nom
             if ($relatif -cne '') { $cheminRelatif = $relatif + '/' + $nom }
-            if ($nom -ceq '.git') {
+            # .git a la casse pres (.GIT est le depot pour git sous Windows) : L16c.
+            if (Test-OmoNomGit $nom) {
                 $aGit = $true
                 if (Test-OmoReparsePoint $entry) {
                     & $ajouter ('{0} : lien ou jonction, impossible a proteger par un montage' -f $cheminRelatif)
@@ -455,7 +484,10 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
                 }
                 if ($entry -is [System.IO.DirectoryInfo]) {
                     $proteges.Add([pscustomobject]@{ Chemin = $cheminRelatif; Forme = 'dossier'; Source = $entry.FullName })
-                    if ($relatif -cne '') { $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'dossier' }) }
+                    if ($relatif -cne '' -and -not $estProjet) {
+                        $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'dossier' })
+                        $estProjet = $true
+                    }
                     continue
                 }
                 # .git fichier : protege par un bind de fichier :ro (MO-3 point 5), a condition que sa cible le soit aussi.
@@ -481,7 +513,12 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
         }
         if ($entrees -gt $OmoPlafondEntrees) { break }
         # Dossier de premier niveau sans aucun .git : projet prepare quand meme (spec. 3.15.2 "projet sans .git : accepte").
-        if ($relatif -cne '' -and -not $aGit -and ($relatif -cnotmatch '/')) { $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'absent' }) }
+        if ($relatif -cne '' -and -not $aGit -and ($relatif -cnotmatch '/')) {
+            $projets.Add([pscustomobject]@{ Chemin = $relatif; Git = 'absent' })
+            $estProjet = $true
+        }
+        # Entrees de premier niveau du projet, deja lues et comptees : la surcharge n'ouvre en ecriture que parmi elles (L16c).
+        if ($estProjet) { $entreesProjets[$relatif] = @($entries) }
         foreach ($sous in $sousDossiers) { $pile.Push($sous) }
     }
     # Un meme dossier peut etre vu deux fois (cible d'un .git fichier qui est aussi un depot nu) : un seul montage.
@@ -495,7 +532,57 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
         Projets = @($projets.ToArray() | Sort-Object -Property Chemin)
         Proteges = @($uniques.ToArray())
         Problemes = @($problemes.ToArray())
-        Entrees = $entrees }
+        Entrees = $entrees
+        EntreesProjets = $entreesProjets }
+}
+
+# Ecriture par exception (L16c, decision A16, option E1). docker-compose.yml monte le dossier de travail ENTIER en
+# lecture seule sur /workspace ; seule cette liste y rouvre l'ecriture : un montage distinct par entree de premier
+# niveau (dossier OU fichier) de chaque projet prepare. Restent en lecture seule, proteges par l'ancetre :
+#   - .git et tout nom qui s'y ramene (casse, points ou espaces de fin, nom court GIT~n) ;
+#   - .omo, dossier des carnets de l'extension : la salle n'ecrit jamais ses carnets sur le poste (A16 point 2) ;
+#   - toute entree qui contient un depot git (sous-module, depot imbrique, depot nu, cible gitdir:) ou un autre projet
+#     prepare : ouverte en ecriture, elle rendrait ce depot inscriptible, crochets compris, sous tous ses alias.
+# Jamais d'ecriture sur la racine d'un projet ni sur le dossier de travail : la salle ne peut rien creer a la racine
+# d'un projet (refus net, EROFS), et une entree ajoutee apres l'installation attend la relance d'install.ps1. Un lien
+# de fichier a ce niveau est refuse (les liens de dossier le sont deja par le parcours) : docker le suivrait sur l'hote
+# et ouvrirait sa cible en ecriture.
+function Get-OmoEcritures($Scan) {
+    $ecritures = New-Object System.Collections.Generic.List[object]
+    $gardees = New-Object System.Collections.Generic.List[object]
+    $problemes = New-Object System.Collections.Generic.List[string]
+    $depots = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($Scan.Proteges)) { $depots.Add([string]$item.Chemin) }
+    foreach ($item in @($Scan.Projets)) { $depots.Add([string]$item.Chemin) }
+    foreach ($projet in @($Scan.Projets)) {
+        $chemin = [string]$projet.Chemin
+        if (-not $Scan.EntreesProjets.ContainsKey($chemin)) { continue }
+        foreach ($entry in @($Scan.EntreesProjets[$chemin] | Sort-Object -Property Name -CaseSensitive)) {
+            $nom = [string]$entry.Name
+            $relatif = $chemin + '/' + $nom
+            if (Test-OmoNomGitOuCourt $nom) { continue }
+            if (Test-OmoNomCarnets $nom) {
+                $gardees.Add([pscustomobject]@{ Chemin = $relatif; Raison = 'carnets de l extension, jamais ouverts en ecriture' })
+                continue
+            }
+            if (Test-OmoReparsePoint $entry) {
+                if (-not ($entry -is [System.IO.DirectoryInfo]) -and $problemes.Count -lt $OmoListeMax) {
+                    $problemes.Add(('{0} : lien a la racine d un projet ; l ouvrir en ecriture ouvrirait sa cible' -f $relatif))
+                }
+                continue
+            }
+            $contient = $false
+            foreach ($depot in $depots) {
+                if ($depot -ceq $relatif -or $depot.StartsWith($relatif + '/', [System.StringComparison]::Ordinal)) { $contient = $true; break }
+            }
+            if ($contient) {
+                $gardees.Add([pscustomobject]@{ Chemin = $relatif; Raison = 'contient un depot git' })
+                continue
+            }
+            $ecritures.Add([pscustomobject]@{ Projet = $chemin; Nom = $nom; Source = $entry.FullName; Cible = ($OmoCibleWorkspace + '/' + $relatif) })
+        }
+    }
+    return [pscustomobject]@{ Ecritures = @($ecritures.ToArray()); Gardees = @($gardees.ToArray()); Problemes = @($problemes.ToArray()) }
 }
 
 # omo-projets.json : format OmoPreparedProjects (T3a), chemins relatifs a /workspace, fins de ligne LF.
@@ -516,14 +603,16 @@ function ConvertTo-OmoProjectsJson($Scan) {
     return (($lignes -join "`n") + "`n")
 }
 
-# docker-compose.omo-projets.yml : un montage en lecture seule par depot git, sur le service de la salle, et le montage
-# en lecture seule de la liste des projets prepares sur le service du cockpit. La liste est portee par cette surcharge,
-# jamais par docker-compose.yml : le fichier est git-ignore et absent tant qu'install.ps1 n'a pas tourne, et docker
-# creerait alors un DOSSIER vide a sa place, que le cockpit relirait "illisible".
-function ConvertTo-OmoProjectsYaml($Scan, [string]$ProjectsFile) {
+# docker-compose.omo-projets.yml : sur le service de la salle, un montage EN ECRITURE par entree de premier niveau de
+# projet prepare (L16c : le dossier de travail y est deja monte en lecture seule par docker-compose.yml, ce sont les
+# seules exceptions) ; sur le service du cockpit, le montage en lecture seule de la liste des projets prepares. La liste
+# est portee par cette surcharge, jamais par docker-compose.yml : le fichier est git-ignore et absent tant qu'install.ps1
+# n'a pas tourne, et docker creerait alors un DOSSIER vide a sa place, que le cockpit relirait "illisible".
+function ConvertTo-OmoProjectsYaml($Ecritures, [string]$ProjectsFile) {
     $lignes = New-Object System.Collections.Generic.List[string]
-    $lignes.Add('# Genere par install.ps1 (D-2b-28) : un montage en lecture seule par depot git du dossier de travail.')
-    $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute ou retire un projet.')
+    $lignes.Add('# Genere par install.ps1 (D-2b-28, L16c) : dossier de travail en lecture seule, ecriture par exception.')
+    $lignes.Add('# Un montage en ecriture par entree de premier niveau de chaque projet prepare ; jamais .git, jamais la racine d un projet.')
+    $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute ou retire un projet, un fichier ou un dossier a sa racine.')
     $lignes.Add('services:')
     # Source de la liste des projets prepares : le cockpit la LIT ici, puis la recopie normalisee dans /control-omo.
     $lignes.Add('  ' + $OmoServiceCockpit + ':')
@@ -532,13 +621,16 @@ function ConvertTo-OmoProjectsYaml($Scan, [string]$ProjectsFile) {
     $monteListe = ($sourceListe + ':' + $OmoCibleProjetsSource + ':ro') -replace '\$', '$$$$'
     $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monteListe))
     $lignes.Add('  ' + $OmoServiceSalle + ':')
-    $lignes.Add('    volumes:')
-    foreach ($item in $Scan.Proteges) {
-        $source = ($item.Source -replace '\\', '/')
-        $cible = $OmoCibleWorkspace + '/' + $item.Chemin
-        # Un dollar dans un nom de dossier serait interprete par compose : il se double ($$) pour rester litteral.
-        $monte = ($source + ':' + $cible + ':ro') -replace '\$', '$$$$'
-        $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monte))
+    # Aucune entree a ouvrir (aucun projet, ou des projets sans rien a leur racine) : une liste vide, jamais une cle nulle.
+    if (@($Ecritures).Count -eq 0) { $lignes.Add('    volumes: []') }
+    else {
+        $lignes.Add('    volumes:')
+        foreach ($item in @($Ecritures)) {
+            $source = ($item.Source -replace '\\', '/')
+            # Un dollar dans un nom serait interprete par compose : il se double ($$) pour rester litteral.
+            $monte = ($source + ':' + $item.Cible + ':rw') -replace '\$', '$$$$'
+            $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monte))
+        }
     }
     return (($lignes -join "`n") + "`n")
 }
@@ -558,15 +650,28 @@ function Get-OmoHooksPathNotice([string]$Workspace) {
     return ("core.hooksPath global de git pointe dans le dossier de travail ({0}) : un depot ouvert dans la salle pourrait y deposer un script execute par vos commandes git. Retirez ce reglage (git config --global --unset core.hooksPath) ou deplacez ce dossier hors du dossier des projets." -f $resolved)
 }
 
+# Frictions de l'ecriture par exception (L16c, decision A16 point 6), dites a chaque generation ; le README et la
+# documentation de la salle les reprennent. Rien n'est modifie sur le poste pour cela : ni droit administrateur, ni
+# attribut de fichier, ni dossier ajoute dans les projets.
+function Write-OmoFrictionNotice {
+    Write-Info 'Salle : le dossier de travail y est en LECTURE SEULE ; seules les entrees de premier niveau des projets prepares y sont ouvertes en ecriture, une par une.'
+    Write-Attention 'L IA de la salle ne peut creer ni fichier ni dossier a la racine d un projet : elle recoit un refus net (systeme de fichiers en lecture seule), jamais une perte silencieuse.'
+    Write-Attention 'Apres avoir ajoute un fichier ou un dossier a la racine d un projet, relancez install.ps1 : sans cela, la salle ne peut pas y ecrire.'
+    Write-Info 'Aucun dossier .omo n est cree dans vos projets : l extension n y tient pas ses carnets (plans, notes), et un .omo deja present reste en lecture seule pour la salle.'
+}
+
 # Ecrit les deux fichiers, ou n'ecrit rien et rend faux : la surcharge ne doit jamais decrire une protection partielle.
 function Write-OmoProjectFiles([string]$Workspace, [string]$Destination) {
     $scan = Get-OmoWorkspaceScan $Workspace
+    $ouverture = Get-OmoEcritures $scan
     $overlay = Join-Path $Destination $CockpitOmoOverlay
     $projectsFile = Join-Path $Destination $OmoFichierProjets
-    if ($scan.Problemes.Count -gt 0) {
+    $problemes = New-Object System.Collections.Generic.List[string]
+    foreach ($probleme in (@($scan.Problemes) + @($ouverture.Problemes))) { if ($problemes.Count -lt $OmoListeMax) { $problemes.Add([string]$probleme) } }
+    if ($problemes.Count -gt 0) {
         Write-Host ''
         Write-Attention 'Depots git du dossier de travail qui ne peuvent pas etre proteges en lecture seule :'
-        foreach ($probleme in $scan.Problemes) { Write-Host ('    - ' + $probleme) -ForegroundColor Yellow }
+        foreach ($probleme in $problemes) { Write-Host ('    - ' + $probleme) -ForegroundColor Yellow }
         Write-Attention 'La surcharge du profil de la salle n est PAS ecrite : sans elle, la salle refuse de s activer.'
         # Une surcharge d'une execution precedente decrirait une protection qui n'a plus cours : elle est retiree.
         foreach ($stale in @($overlay, $projectsFile)) { if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force } }
@@ -574,8 +679,15 @@ function Write-OmoProjectFiles([string]$Workspace, [string]$Destination) {
     }
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($projectsFile, (ConvertTo-OmoProjectsJson $scan), $utf8)
-    [System.IO.File]::WriteAllText($overlay, (ConvertTo-OmoProjectsYaml $scan $projectsFile), $utf8)
-    Write-Good ('Projets prepares pour la salle : {0} ; depots git montes en lecture seule : {1} ({2} entrees parcourues)' -f $scan.Projets.Count, $scan.Proteges.Count, $scan.Entrees)
+    [System.IO.File]::WriteAllText($overlay, (ConvertTo-OmoProjectsYaml $ouverture.Ecritures $projectsFile), $utf8)
+    Write-Good ('Projets prepares pour la salle : {0} ; entrees ouvertes en ecriture : {1} ; depots git proteges par la lecture seule : {2} ({3} entrees parcourues)' -f $scan.Projets.Count, @($ouverture.Ecritures).Count, $scan.Proteges.Count, $scan.Entrees)
+    $gardees = @($ouverture.Gardees)
+    if ($gardees.Count -gt 0) {
+        Write-Info 'Restent en lecture seule pour la salle, en plus des .git :'
+        foreach ($garde in ($gardees | Select-Object -First $OmoListeMax)) { Write-Info ('  - {0} : {1}' -f $garde.Chemin, $garde.Raison) }
+        if ($gardees.Count -gt $OmoListeMax) { Write-Info ('  - ... et {0} de plus' -f ($gardees.Count - $OmoListeMax)) }
+    }
+    Write-OmoFrictionNotice
     $notice = Get-OmoHooksPathNotice $Workspace
     if ($notice) { Write-Attention $notice }
     return $true

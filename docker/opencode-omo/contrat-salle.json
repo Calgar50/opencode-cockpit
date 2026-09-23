@@ -64,6 +64,12 @@
         { "service": "salle", "cible": "/home/node/.claude", "mode": "ro" },
         { "service": "salle", "cible": "/home/node/.agents", "mode": "ro" }
       ]
+    },
+    {
+      "nom": "omo-carnets",
+      "proprietaire": "node",
+      "ecrivain": "salle",
+      "montages": [{ "service": "salle", "cible": "/omo-carnets", "mode": "rw" }]
     }
   ],
   "cheminsImage": {

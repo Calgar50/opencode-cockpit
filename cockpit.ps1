@@ -63,7 +63,7 @@ function Write-Attention([string]$Message) { Write-Host "[!] $Message" -Foregrou
 # 'uninstall -Purge' n'efface que les premiers ; les seconds portent les conversations de la salle et sa configuration
 # figee, et ne partent qu'avec -PurgeOmo (decision du 17/09 n. 3). Egalite verifiee par tests\ps51\Test-Cockpit.ps1.
 $CockpitVolumes = @('oc-config', 'oc-data', 'oc-cache', 'cockpit-data', 'cockpit-tls', 'control')
-$OmoVolumes = @('control-omo', 'omo-auth', 'omo-state', 'egress-log', 'oc-omo-data', 'omo-config')
+$OmoVolumes = @('control-omo', 'omo-auth', 'omo-state', 'egress-log', 'oc-omo-data', 'omo-config', 'omo-carnets')
 # Volume des conversations de la salle : sauvegarde comme oc-data, sans jamais son auth.json.
 $OmoDataVolume = 'oc-omo-data'
 

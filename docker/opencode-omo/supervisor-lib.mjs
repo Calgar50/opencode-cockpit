@@ -78,6 +78,11 @@ export const CHEMINS = {
   tmp: "/tmp",
   /** Volume `omo-config`, seul montage en écriture, hors du HOME : root y pose la configuration du HOME (D-2b-33 révisée). */
   configHome: "/omo-config",
+  /**
+   * Volume `omo-carnets` (L16c, décision A16 point 2) : la place de la salle HORS de tout projet, à `node`. Aucun dossier `.omo`
+   * n'est jamais créé dans les projets de l'utilisateur ; la 4.19.4, elle, n'écrit ses carnets que sous `<projet>/.omo`.
+   */
+  carnets: "/omo-carnets",
   /** `omo.jsonc` de référence, dans le périmètre du manifeste (`configuration`), lu aussi par `validate.mjs`. */
   configurationOmo: "/etc/opencode-omo/omo/omo.jsonc",
   superviseur: "/usr/local/bin/omo-supervisor",
@@ -130,6 +135,7 @@ export const VOLUMES_SALLE = [
   { volume: "omo-state", chemin: CHEMINS.etat, uid: 0 },
   { volume: "oc-omo-data", chemin: CHEMINS.donnees, uid: UID_NODE },
   { volume: "omo-config", chemin: CHEMINS.configHome, uid: 0 },
+  { volume: "omo-carnets", chemin: CHEMINS.carnets, uid: UID_NODE },
 ];
 
 /**
@@ -653,31 +659,179 @@ export function aliasDeNom(nom) {
 }
 
 /**
- * SONDE de la protection d'un dépôt (relecture 2bis-vague-2, risque 11 / C2-5) : le bind `:ro` et le point de montage ne disent
- * rien des ALIAS du même dossier. Sur un partage insensible à la casse, `/workspace/p/.GIT`, `/workspace/p/.Git` et
- * `/workspace/p/GIT~1` désignent le dossier `.git` protégé, mais ne traversent pas le montage en lecture seule : un crochet
- * `hooks/pre-commit` y est écrit ou créé, et s'exécute sur le poste au prochain `git commit`. Ni le bind, ni `readdir` (qui ne
- * montre que « .git ») ne voient ce détour.
- *
- * Vrai dès qu'un alias EXISTE et est inscriptible : le dépôt entre alors dans `nonProteges` et la salle refuse de démarrer
- * (« fermé en cas de doute »). Aucune écriture n'est tentée dans le dépôt de l'utilisateur : `access(W_OK)` est exactement la
- * primitive qui juge déjà le `.git` lui-même, et une écriture réelle poserait un fichier dans un dépôt qu'on promet intact.
- * Aucune dépendance nouvelle (P8) : `fs` seul.
+ * Formes RÉDUITES d'un nom, pour la sonde des dossiers PARENTS (L16c) : minuscules, majuscules, capitale initiale, et les quatre
+ * noms courts 8.3. Pas l'énumération complète : un parent a 2 puissance (nombre de lettres) variantes (65 536 pour
+ * « opencode-cockpit »), et UNE seule variante qui atteint l'écriture suffit à trahir une topologie fautive — si un alias du parent
+ * contourne le montage, tous le contournent. La protection, elle, ne vient pas de cette liste : elle vient de l'ancêtre en lecture
+ * seule (`sousLectureSeule`) ; la sonde n'est que le détecteur d'une topologie qui ne serait pas celle-là.
  */
-export function aliasInscriptible(chemin, acces = accesEcriture) {
-  const parent = path.dirname(chemin);
-  if (parent === chemin) return false;
-  for (const alias of aliasDeNom(path.basename(chemin))) {
-    const candidat = path.join(parent, alias);
-    try {
-      fs.lstatSync(candidat);
-    } catch {
-      // Absent : sur un système sensible à la casse, cet alias n'existe tout simplement pas.
-      continue;
+export function aliasReduitsDeNom(nom) {
+  const minuscules = nom.toLowerCase();
+  const capitale = minuscules.charAt(0).toUpperCase() + minuscules.slice(1);
+  const alias = new Set([minuscules, nom.toUpperCase(), capitale, ...nomsCourtsDeNom(nom)]);
+  alias.delete(nom);
+  return [...alias];
+}
+
+/**
+ * Nom qui désigne `.git` pour l'hôte Windows (L16c, décision A16) : même nom à la casse près, points et espaces de fin retirés
+ * (Win32 les ignore), ou nom court 8.3 (`GIT~1`). Un tel nom n'est JAMAIS ouvert en écriture, ni par install.ps1, ni par un
+ * montage que la sonde accepterait.
+ */
+export function estNomGit(nom) {
+  const normal = String(nom).toLowerCase().replace(/[. ]+$/, "");
+  return normal === ".git" || /^git~\d+$/.test(normal);
+}
+
+/** Le chemin existe (lien compris, jamais suivi). */
+export function existeSansSuivre(chemin) {
+  try {
+    fs.lstatSync(chemin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Module de chemins qui convient à `chemin` : POSIX dans le conteneur et pour un `mountinfo` simulé, Windows pour un dossier de test. */
+const modulePour = (chemin) => (/^[A-Za-z]:|\\/.test(String(chemin)) ? path.win32 : path.posix);
+
+/**
+ * Autres chemins du MÊME objet sur un partage insensible à la casse : alias de la feuille (complets par défaut), et, quand `racine`
+ * est donnée, alias RÉDUITS de chaque dossier parent situé sous elle (`/workspace/PROJET/.git`, `/workspace/Projet/src`), un
+ * composant à la fois. Le chemin lui-même n'y est pas.
+ */
+export function aliasDeChemin(chemin, { racine = null, feuilleComplete = true } = {}) {
+  const P = modulePour(racine ?? chemin);
+  const feuille = P.basename(chemin);
+  const parent = P.dirname(chemin);
+  const candidats = [];
+  const ajouter = (candidat) => {
+    if (candidat !== chemin && !candidats.includes(candidat)) candidats.push(candidat);
+  };
+  if (parent !== chemin) for (const alias of feuilleComplete ? aliasDeNom(feuille) : aliasReduitsDeNom(feuille)) ajouter(P.join(parent, alias));
+  if (racine !== null) {
+    const relatif = P.relative(racine, parent);
+    if (relatif !== "" && !relatif.startsWith("..") && !P.isAbsolute(relatif)) {
+      const composants = relatif.split(P.sep);
+      composants.forEach((composant, rang) => {
+        for (const alias of aliasReduitsDeNom(composant)) {
+          const variante = [...composants];
+          variante[rang] = alias;
+          ajouter(P.join(racine, ...variante, feuille));
+        }
+      });
     }
+  }
+  return candidats;
+}
+
+/**
+ * SONDE de la protection d'un dépôt (relecture 2bis-vague-2, risque 11 / C2-5 ; étendue par L16c aux PARENTS) : un montage en
+ * lecture seule protège un CHEMIN, pas un dossier. Sur le partage insensible à la casse de Docker Desktop Windows, `.GIT`, `.Git`,
+ * `GIT~1` (alias de la feuille) et `/workspace/PROJET/.git` (alias du parent, essai 1 bis de l'arbitrage) désignent le même
+ * dossier ; ils ne traversent pas un montage posé sur le seul nom exact. `readdir` ne montre pourtant que « .git ».
+ *
+ * Vrai dès qu'un alias EXISTE et est inscriptible : fermé en cas de doute. Aucune écriture n'est tentée dans le dépôt de
+ * l'utilisateur : `access(W_OK)` est exactement la primitive qui juge déjà le `.git` lui-même.
+ *
+ * NE PAS « SIMPLIFIER » : `fs.lstatSync` et `fs.accessSync(W_OK)` sont les seules primitives fiables ici. Le `test -w` de busybox
+ * répond « oui » sur un montage en lecture seule (mesuré, arbitrage-ro-windows.md §1) ; une sonde écrite avec lui serait verte sur
+ * un poste exposé. Aucune dépendance nouvelle (P8) : `fs` seul.
+ *
+ * `racine` : parents sondés jusqu'à elle (exclue) ; sans elle, la feuille seule. `sauf` : chemins POSIX à ne pas juger (points de
+ * montage déjà jugés pour eux-mêmes). `existe` : injectable pour les tests (partage simulé).
+ */
+export function aliasInscriptible(chemin, acces = accesEcriture, { racine = null, feuilleComplete = true, existe = existeSansSuivre, sauf = null } = {}) {
+  for (const candidat of aliasDeChemin(chemin, { racine, feuilleComplete })) {
+    if (sauf?.has(posix(candidat))) continue;
+    // Absent : sur un système sensible à la casse, cet alias n'existe tout simplement pas.
+    if (!existe(candidat)) continue;
     if (acces(candidat)) return true;
   }
   return false;
+}
+
+// --- Montages du dossier de travail : lecture seule par défaut, écriture par exception (L16c, décision A16, option E1) ----------
+
+/** Chemin aux séparateurs POSIX : `/proc/self/mountinfo` ne connaît que ceux-là ; seuls les tests sous Windows en ont d'autres. */
+const posix = (chemin) => String(chemin).replaceAll("\\", "/");
+
+/**
+ * Montages sous leur forme détaillée `{ point, lectureSeule }`. Un point donné sans ses options (chaîne seule) vaut « en
+ * écriture » : on ne présume jamais la lecture seule qu'on n'a pas lue.
+ */
+export function normaliserMontages(montages) {
+  if (!Array.isArray(montages)) return [];
+  return montages.map((m) => (typeof m === "string" ? { point: posix(m), lectureSeule: false } : { point: posix(m?.point ?? ""), lectureSeule: m?.lectureSeule === true }));
+}
+
+/** `chemin` est `base` ou en dessous, composant par composant (jamais par simple préfixe de texte). */
+const dansChemin = (chemin, base) => chemin === base || chemin.startsWith(base === "/" ? "/" : `${base}/`);
+
+/**
+ * Vrai si `chemin` est SERVI par un montage en lecture seule : le point de montage le plus profond qui le contient (lui-même ou un
+ * ancêtre) porte l'option `ro`. Plusieurs lignes pour ce point (montages empilés) : toutes doivent la porter. Aucun montage : faux.
+ */
+export function servieEnLectureSeule(chemin, montages) {
+  const vise = posix(chemin);
+  const englobants = normaliserMontages(montages).filter((m) => dansChemin(vise, m.point));
+  if (englobants.length === 0) return false;
+  const profond = englobants.reduce((a, b) => (b.point.length > a.point.length ? b : a)).point;
+  return englobants.filter((m) => m.point === profond).every((m) => m.lectureSeule);
+}
+
+/** Montages en écriture posés sur `chemin` ou en dessous. */
+export function montagesEcritureSous(chemin, montages) {
+  const vise = posix(chemin);
+  return normaliserMontages(montages).filter((m) => !m.lectureSeule && dansChemin(m.point, vise));
+}
+
+/**
+ * Protection E1 d'un chemin (`.git`, dépôt nu, cible `gitdir:`) : servi par un ancêtre en lecture seule, et aucune écriture rouverte
+ * sur lui ni en dessous. C'est la POSITION du montage qui protège (essai 6b : tout alias résolu sous un montage en lecture seule
+ * hérite de sa protection), plus le nom exact d'un bind.
+ */
+export function sousLectureSeule(chemin, montages) {
+  return servieEnLectureSeule(chemin, montages) && montagesEcritureSous(chemin, montages).length === 0;
+}
+
+/**
+ * SONDE des montages du dossier de travail (L16c, décision A16 du 22/09, option E1). Le bind `.git:ro` posé SOUS un dossier ouvert
+ * en écriture ne tient pas sur Docker Desktop Windows (10 alias inscriptibles mesurés : casse, 8.3, parent) ; ce qui tient, c'est
+ * un ANCÊTRE en lecture seule. Exigences lues dans `/proc/self/mountinfo`, jamais déduites de l'existence d'un dossier :
+ * 1. `racine` (`/workspace`) est un point de montage, et chacune de ses lignes porte l'option `ro` ;
+ * 2. chaque montage en écriture sous la racine est un ENFANT DIRECT d'un projet préparé (`<racine>/<projet>/<entrée>`) ;
+ * 3. ce n'est ni `.git` ni un nom qui s'y ramène (`estNomGit`), ni la racine d'un projet préparé, ni un dossier qui en contient un ;
+ * 4. aucun alias de son chemin, parents compris (`/workspace/PROJET/src`), n'est inscriptible : l'écriture ne vaut qu'au chemin
+ *    exact, sous lequel le noyau trouve le montage (essai E1 : 19/19 refus attendus).
+ * Rend `{ ok, racineLectureSeule, ecritures, problemes }` ; `problemes` : chemins relatifs à la racine (« . » pour la racine
+ * elle-même), 20 au plus, publiés avec les `.git` non protégés dans `workspaceGit.nonProteges`. Fermé en cas de doute : un
+ * `mountinfo` illisible ne donne aucune racine, donc un refus.
+ */
+export function controlerMontagesWorkspace(prepares, montages, { racine = CHEMINS.workspace, acces = accesEcriture, existe = existeSansSuivre } = {}) {
+  const base = posix(racine).replace(/(.)\/+$/, "$1");
+  const liste = normaliserMontages(montages);
+  const problemes = [];
+  const signaler = (relatif) => {
+    if (!problemes.includes(relatif) && problemes.length < OMO_LISTE_MAX) problemes.push(relatif);
+  };
+  const racines = liste.filter((m) => m.point === base);
+  const racineLectureSeule = racines.length > 0 && racines.every((m) => m.lectureSeule);
+  if (!racineLectureSeule) signaler(".");
+  const projets = (prepares?.projets ?? []).map((projet) => posix(projet.chemin));
+  const points = new Set(liste.map((m) => m.point));
+  const ecritures = liste.filter((m) => !m.lectureSeule && m.point.startsWith(`${base}/`));
+  for (const montage of ecritures) {
+    const relatif = montage.point.slice(base.length + 1);
+    const parent = relatif.includes("/") ? relatif.slice(0, relatif.lastIndexOf("/")) : "";
+    const nom = relatif.slice(relatif.lastIndexOf("/") + 1);
+    const horsProjet = parent === "" || !projets.includes(parent);
+    const contientUnProjet = projets.some((projet) => projet === relatif || projet.startsWith(`${relatif}/`));
+    const aliasOuvert = aliasInscriptible(montage.point, acces, { racine: base, feuilleComplete: false, existe, sauf: points });
+    if (horsProjet || estNomGit(nom) || contientUnProjet || aliasOuvert) signaler(relatif);
+  }
+  return { ok: problemes.length === 0, racineLectureSeule, ecritures: ecritures.length, problemes };
 }
 
 /** Forme d'une entrée déjà lue par `readdir` (aucun accès disque de plus) ; tout ce qui n'est ni dossier ni fichier est un doute. */
@@ -699,16 +853,16 @@ export function lireGitdir(cheminGit) {
 
 /**
  * Le vrai dossier git d'un `.git` FICHIER (sous-module, worktree, `--separate-git-dir`, bare + worktrees) est-il protégé ? Un
- * fichier pointeur lié en `:ro` ne protège rien par lui-même : git écrit et exécute ce qui est au bout (config, hooks). Protégé
- * seulement si la cible, relative ou absolue du conteneur :
+ * fichier pointeur en lecture seule ne protège rien par lui-même : git écrit et exécute ce qui est au bout (config, hooks).
+ * Protégé seulement si la cible, relative ou absolue du conteneur :
  * - existe, et son chemin réel est celui qu'on lit (aucun lien sur le chemin : on ne juge pas un détour) ;
  * - est DANS le dossier de travail ;
- * - est dans un point de montage (ou en est un) non inscriptible par `node` : le premier point de montage rencontré en remontant
- *   décide (le `.git` dossier monté du projet qui contient un sous-module, ou la cible montée elle-même).
+ * - est servie par un montage en lecture seule sans écriture rouverte sur elle ni dessous (`sousLectureSeule`, L16c), et n'est
+ *   inscriptible par `node` ni par son nom, ni par un alias (le sien ou celui d'un parent).
  * Cible absolue de l'hôte (C:/… d'un worktree de Git for Windows), absente, illisible, hors du dossier de travail ou inscriptible :
  * non protégé. Le conteneur ne peut pas trancher, donc fermé en cas de doute.
  */
-export function cibleGitdirProtegee(cheminGit, racine, montages, acces) {
+export function cibleGitdirProtegee(cheminGit, racine, montages, acces, existe = existeSansSuivre) {
   const gitdir = lireGitdir(cheminGit);
   if (gitdir === null) return false;
   let base;
@@ -724,11 +878,7 @@ export function cibleGitdirProtegee(cheminGit, racine, montages, acces) {
   }
   const relatif = path.relative(racineReelle, cible);
   if (relatif === "" || relatif.startsWith("..") || path.isAbsolute(relatif)) return false;
-  for (let courant = cible; courant !== racineReelle; courant = path.dirname(courant)) {
-    if (estPointDeMontage(courant, montages)) return !acces(courant);
-    if (path.dirname(courant) === courant) return false;
-  }
-  return false;
+  return sousLectureSeule(cible, montages) && !acces(cible) && !aliasInscriptible(cible, acces, { racine: racineReelle, existe });
 }
 
 /**
@@ -745,40 +895,48 @@ function estDepotNu(entrants) {
  * Balaye le dossier de travail en tant que `node` et rend l'état de protection de chaque dépôt git (D-2b-28) :
  * - les liens ne sont jamais suivis (`readdir` avec les types, `lstat` seulement), `node_modules` et l'intérieur des `.git` et des
  *   dépôts nus sont sautés, la profondeur et le nombre d'entrées sont bornés ;
- * - un `.git` est « protégé » s'il est un dossier ou un fichier NON inscriptible par `node` ET un point de montage (bind `:ro` posé
- *   par la surcharge) : un `.git` que personne n'a monté n'est protégé que par ses droits, et un parent renommé suffit à le
- *   remplacer par un `.git` inscriptible (MO-3). Un `.git` FICHIER ne l'est en plus que si sa cible `gitdir:` l'est
- *   (`cibleGitdirProtegee`) ;
- * - « non inscriptible » se juge AUSSI par les alias du même dossier (`aliasInscriptible`) : sur le partage insensible à la casse
- *   de l'hôte Windows, `.GIT` ou `GIT~1` ouvrent le dépôt hors du bind `:ro`, et `readdir` ne montre pourtant que « .git » ;
+ * - un `.git` est « protégé » s'il est un dossier ou un fichier NON inscriptible par `node` ET servi par un montage en lecture seule
+ *   sans écriture rouverte sur lui ni dessous (`sousLectureSeule`, L16c, option E1 : `/workspace` en lecture seule, écriture par
+ *   exception sur les entrées de premier niveau des projets). Un `.git` servi par un montage en écriture — dépôt imbriqué dans une
+ *   entrée ouverte, racine restée en écriture — n'est pas protégé. Un `.git` FICHIER ne l'est en plus que si sa cible `gitdir:`
+ *   l'est (`cibleGitdirProtegee`) ;
+ * - « non inscriptible » se juge AUSSI par les alias du même dossier ET de ses parents (`aliasInscriptible`) : sur le partage
+ *   insensible à la casse de l'hôte Windows, `.GIT`, `GIT~1` ou `/workspace/PROJET/.git` ouvrent le dépôt hors d'un montage posé sur
+ *   le seul nom exact, et `readdir` ne montre pourtant que « .git » ;
  * - un dépôt nu (`HEAD`, `objects/`, `refs/`) est protégé aux mêmes conditions qu'un `.git` dossier ;
- * - un `.git` lien, inscriptible, ou hors montage, et un dépôt nu non protégé, sont listés dans `nonProteges` : un seul suffit à
- *   refuser l'activation ;
+ * - un `.git` lien, inscriptible, ou hors lecture seule, et un dépôt nu non protégé, sont listés dans `nonProteges` : un seul
+ *   suffit à refuser l'activation ;
  * - plafond atteint, profondeur dépassée ou dossier illisible (racine comprise) : `limiteAtteinte`, donc « git non protégé »
- *   aussi — on ne déduit rien de ce qu'on n'a pas fini de regarder, et un dossier qu'on ne peut pas lire peut cacher un `.git`.
+ *   aussi — on ne déduit rien de ce qu'on n'a pas fini de regarder, et un dossier qu'on ne peut pas lire peut cacher un `.git` ;
+ * - les liens symboliques rencontrés sont SIGNALÉS (`liens`), jamais suivis ni supprimés : posés par la salle dans une entrée
+ *   ouverte en écriture, ils arrivent sur le poste comme de vrais liens (essai E1, réserve d'hygiène), et un outil de l'hôte qui
+ *   suit les liens les suivrait.
  */
 export function balayerGit(racine = CHEMINS.workspace, options = {}) {
   const plafond = options.plafond ?? BALAYAGE_PLAFOND;
   const profondeurMax = options.profondeurMax ?? BALAYAGE_PROFONDEUR_MAX;
   const exclus = options.exclus ?? BALAYAGE_EXCLUS;
   const acces = options.accesEcriture ?? accesEcriture;
-  const montages = options.montages ?? pointsDeMontage();
+  const montages = normaliserMontages(options.montages ?? lireMontages());
+  const existe = options.existe ?? existeSansSuivre;
   const maintenant = options.maintenant ?? Date.now();
   const gitsMax = options.gitsMax ?? 200;
   const lireDossier = options.lireDossier ?? ((chemin) => fs.readdirSync(chemin, { withFileTypes: true }));
-  // Sonde des alias : un dépôt ouvert par un autre nom du même dossier est ouvert, quoi que dise le point de montage.
-  const sonde = (chemin) => aliasInscriptible(chemin, acces);
+  // Sonde des alias, feuille ET parents : un dépôt ouvert par un autre nom du même dossier est ouvert, quoi que dise le montage.
+  const sonde = (chemin) => aliasInscriptible(chemin, acces, { racine, existe });
 
   const gits = [];
   const nonProteges = [];
+  const liens = [];
+  let liensTotal = 0;
   let entrees = 0;
   let illisibles = 0;
   let limiteAtteinte = false;
   const pile = [{ relatif: "", profondeur: 0 }];
 
   /** Inscrit un dépôt trouvé ; faux quand la liste ne peut plus tout dire (plus de 20 dépôts ouverts). */
-  const inscrire = (chemin, forme, inscriptible, montage, protege) => {
-    if (gits.length < gitsMax) gits.push({ chemin, forme, inscriptible, montage });
+  const inscrire = (chemin, forme, inscriptible, lectureSeule, protege) => {
+    if (gits.length < gitsMax) gits.push({ chemin, forme, inscriptible, lectureSeule });
     if (protege) return true;
     if (nonProteges.length < OMO_LISTE_MAX) {
       nonProteges.push(chemin);
@@ -805,8 +963,8 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
     }
     if (estDepotNu(entrants)) {
       const inscriptible = acces(absolu) || (relatif !== "" && sonde(absolu));
-      const montage = estPointDeMontage(absolu, montages);
-      if (!inscrire(relatif === "" ? "." : relatif, "dossier", inscriptible, montage, !inscriptible && montage)) limiteAtteinte = true;
+      const lectureSeule = sousLectureSeule(absolu, montages);
+      if (!inscrire(relatif === "" ? "." : relatif, "dossier", inscriptible, lectureSeule, !inscriptible && lectureSeule)) limiteAtteinte = true;
       // Comme l'intérieur d'un `.git` : jamais parcouru.
       continue;
     }
@@ -819,23 +977,28 @@ export function balayerGit(racine = CHEMINS.workspace, options = {}) {
       const cheminRelatif = relatif === "" ? entree.name : `${relatif}/${entree.name}`;
       if (entree.name === ".git") {
         const forme = formeDeLEntree(entree);
-        // Un lien n'est pas protégeable par un bind : il vaut « inscriptible », sans même tenter l'accès (jamais suivi).
+        // Un lien n'est pas protégeable par un montage : il vaut « inscriptible », sans même tenter l'accès (jamais suivi).
         const cheminGit = path.join(racine, cheminRelatif);
-        // Un alias du même dossier (`.GIT`, `GIT~1`…) qui reste inscriptible vaut « inscriptible » : le bind `:ro` ne le couvre pas.
+        // Un alias du même dossier (`.GIT`, `GIT~1`) ou d'un parent (`PROJET/.git`) qui reste inscriptible vaut « inscriptible ».
         const inscriptible = forme === "lien" ? true : acces(cheminGit) || sonde(cheminGit);
-        const montage = estPointDeMontage(cheminGit, montages);
-        const protege = !inscriptible && montage && (forme !== "fichier" || cibleGitdirProtegee(cheminGit, racine, montages, acces));
+        const lectureSeule = sousLectureSeule(cheminGit, montages);
+        const protege = !inscriptible && lectureSeule && (forme !== "fichier" || cibleGitdirProtegee(cheminGit, racine, montages, acces, existe));
         // Plus de 20 `.git` ouverts : la liste ne dit plus tout.
-        if (!inscrire(cheminRelatif, forme, inscriptible, montage, protege)) limiteAtteinte = true;
+        if (!inscrire(cheminRelatif, forme, inscriptible, lectureSeule, protege)) limiteAtteinte = true;
         continue;
       }
-      if (entree.isSymbolicLink() || !entree.isDirectory()) continue;
+      if (entree.isSymbolicLink()) {
+        liensTotal++;
+        if (liens.length < OMO_LISTE_MAX) liens.push(cheminRelatif);
+        continue;
+      }
+      if (!entree.isDirectory()) continue;
       if (exclus.includes(entree.name)) continue;
       pile.push({ relatif: cheminRelatif, profondeur: profondeur + 1 });
     }
   }
 
-  return { verifieLe: maintenant, limiteAtteinte, nonProteges, gits, entrees, illisibles };
+  return { verifieLe: maintenant, limiteAtteinte, nonProteges, gits, entrees, illisibles, liens: { total: liensTotal, chemins: liens } };
 }
 
 /**
@@ -849,21 +1012,25 @@ export const resumeWorkspaceGit = (balayage) => ({
 });
 
 /**
- * État des `.git` des projets préparés, vu par `node` : `test -w` doit échouer sur chacun (M32) — sur le `.git` lui-même ET sur ses
- * alias (`aliasInscriptible` : `.GIT`, `GIT~1`… échappent au bind `:ro`) —, et chacun doit être un point de montage (MO-3). Un
- * `.git` devenu fichier ne l'est en plus que si sa cible `gitdir:` l'est (`cibleGitdirProtegee`).
+ * État des `.git` des projets préparés, vu par `node` : `access(W_OK)` doit échouer sur chacun (M32) — sur le `.git` lui-même ET
+ * sur ses alias, ceux de son nom (`.GIT`, `GIT~1`) comme ceux de ses parents (`/workspace/PROJET/.git`, L16c) —, et chacun doit
+ * être servi par un montage en lecture seule sans écriture rouverte sur lui (`sousLectureSeule`, option E1 ; il n'est plus un
+ * point de montage à lui seul). Un `.git` devenu fichier ne l'est en plus que si sa cible `gitdir:` l'est (`cibleGitdirProtegee`).
  */
-export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, acces = accesEcriture, montages = pointsDeMontage()) {
+export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, acces = accesEcriture, montages = lireMontages(), existe = existeSansSuivre) {
   const projets = [];
   if (!prepares) return projets;
+  const liste = normaliserMontages(montages);
   for (const projet of prepares.projets) {
     const cheminGit = path.join(racine, projet.chemin, ".git");
     const forme = formeGit(cheminGit);
-    const formeProtegee = forme === "dossier" || (forme === "fichier" && cibleGitdirProtegee(cheminGit, racine, montages, acces));
+    const formeProtegee = forme === "dossier" || (forme === "fichier" && cibleGitdirProtegee(cheminGit, racine, liste, acces, existe));
+    // La sonde d'alias (feuille ET parents) est appelée ici, à chaque projet préparé : les tests de croisement de l'arbitrage L21
+    // n° 3 échouent si elle disparaît ou cesse de l'être.
     const gitLectureSeule =
       projet.git === "absent"
         ? forme === "absent"
-        : formeProtegee && !acces(cheminGit) && !aliasInscriptible(cheminGit, acces) && estPointDeMontage(cheminGit, montages);
+        : formeProtegee && !acces(cheminGit) && !aliasInscriptible(cheminGit, acces, { racine, existe }) && sousLectureSeule(cheminGit, liste);
     projets.push({ chemin: projet.chemin, gitLectureSeule });
   }
   return projets;
@@ -871,19 +1038,31 @@ export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, a
 
 // --- Purge (D-2b-17, D-2b-36) ---------------------------------------------------------------------------------------------------
 
-/** Points de montage vus depuis le conteneur ; liste vide si `/proc` n'est pas lisible (la purge saute alors moins de choses). */
-export function pointsDeMontage(fichier = "/proc/self/mountinfo") {
+/**
+ * Montages vus depuis le conteneur, avec leur lecture seule : `/proc/self/mountinfo`, champ 5 (point de montage, caractères
+ * spéciaux échappés en octal) et champ 6 (options PROPRES au montage). C'est ce champ-là qui porte le « ro » d'un bind en lecture
+ * seule : les options du superbloc, après « - », disent « rw » pour tout le partage 9p de Docker Desktop et ne décident de rien
+ * (mesure E1 : `/workspace ro,noatime - 9p … rw,…`). Ligne sans options : « en écriture », jamais présumée en lecture seule.
+ * Liste vide si le fichier est illisible : la sonde des montages ne trouve alors aucune racine et ferme la salle.
+ */
+export function lireMontages(fichier = "/proc/self/mountinfo") {
   const texte = lireTexteBorne(fichier, 4 * 1024 * 1024);
   if (texte === null) return [];
-  const points = [];
+  const montages = [];
   for (const ligne of texte.split("\n")) {
     const champs = ligne.split(" ");
     if (champs.length < 5) continue;
     // Champ 5 : point de montage, avec les caractères spéciaux échappés en octal.
     const point = champs[4].replaceAll(/\\([0-7]{3})/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 8)));
-    if (point.startsWith("/")) points.push(point);
+    if (!point.startsWith("/")) continue;
+    montages.push({ point, lectureSeule: (champs[5] ?? "").split(",").includes("ro") });
   }
-  return points;
+  return montages;
+}
+
+/** Points de montage vus depuis le conteneur ; liste vide si `/proc` n'est pas lisible (la purge saute alors moins de choses). */
+export function pointsDeMontage(fichier = "/proc/self/mountinfo") {
+  return lireMontages(fichier).map((montage) => montage.point);
 }
 
 /**
@@ -1132,29 +1311,54 @@ export function gitProtege(etat) {
 }
 
 /**
- * Constat de `node` sur les dépôts git : `.git` des projets préparés et balayage du dossier de travail, sur UNE vue de la table des
- * montages. Sert à l'étape 5 et au second balayage de l'étape 7 (`rebalayage`).
+ * Constat de `node` sur les dépôts git : sonde des montages du dossier de travail (L16c : racine en lecture seule, écriture par
+ * exception), `.git` des projets préparés et balayage du dossier de travail, sur UNE vue de la table des montages. Sert à l'étape 5
+ * et au second balayage de l'étape 7 (`rebalayage`).
+ *
+ * Publication (A16 point 4, sans rien ajouter au contrat de `state.json`) : les montages refusés rejoignent les `.git` non protégés
+ * dans `workspaceGit.nonProteges` (« . » quand la racine n'est pas en lecture seule), que le cockpit affiche déjà avec la phrase
+ * « L'historique git de ces dossiers n'est pas protégé : la salle ne démarre pas. {liste} » (état de la salle, Diagnostic).
+ * Les liens symboliques sont signalés dans le constat (`liens`) et au journal du conteneur, jamais bloquants.
  */
-export function constatGit(prepares, { racine = CHEMINS.workspace, montages = pointsDeMontage(), acces = accesEcriture, maintenant } = {}) {
-  const projets = controlerProjetsPrepares(prepares, racine, acces, montages);
-  const balayage = balayerGit(racine, { montages, accesEcriture: acces, maintenant });
-  const workspaceGit = resumeWorkspaceGit(balayage);
+export function constatGit(prepares, { racine = CHEMINS.workspace, montages = lireMontages(), acces = accesEcriture, existe = existeSansSuivre, maintenant } = {}) {
+  const liste = normaliserMontages(montages);
+  const projets = controlerProjetsPrepares(prepares, racine, acces, liste, existe);
+  const balayage = balayerGit(racine, { montages: liste, accesEcriture: acces, existe, maintenant });
+  const sonde = controlerMontagesWorkspace(prepares, liste, { racine, acces, existe });
+  const nonProteges = [...new Set([...sonde.problemes, ...balayage.nonProteges])].slice(0, OMO_LISTE_MAX);
+  const workspaceGit = { ...resumeWorkspaceGit(balayage), nonProteges };
   return {
     ok: gitProtege({ workspaceGit, projets }),
     projets,
     workspaceGit,
     projetsPrepares: prepares === null ? null : prepares.projets.length,
     balayage: { entrees: balayage.entrees, illisibles: balayage.illisibles, gits: balayage.gits.length },
+    montages: { racineLectureSeule: sonde.racineLectureSeule, ecritures: sonde.ecritures, refuses: sonde.problemes },
+    liens: balayage.liens,
   };
+}
+
+/**
+ * Ce que `node` dit au journal du conteneur (sortie d'erreur ; la sortie standard porte le constat JSON) : montages refusés et
+ * liens symboliques trouvés. Chemins en JSON : un nom de fichier ne peut pas fabriquer une fausse ligne de journal.
+ */
+function journaliserConstatGit(git) {
+  if (git.montages.refuses.length > 0) {
+    ecrire(2, `omo-supervisor: ATTENTION: montages du dossier de travail refuses (racine non en lecture seule, ou ecriture ouverte ailleurs que sur une entree de premier niveau d'un projet prepare, sur .git ou par un alias) : ${git.montages.refuses.map((c) => JSON.stringify(c)).join(", ")}\n`);
+  }
+  if (git.liens.total > 0) {
+    ecrire(2, `omo-supervisor: ATTENTION: ${git.liens.total} lien(s) symbolique(s) dans le dossier de travail, presents aussi sur le poste (signales, jamais suivis ni supprimes) : ${git.liens.chemins.map((c) => JSON.stringify(c)).join(", ")}\n`);
+  }
 }
 
 /** Constat de `node` sur les étapes 4 et 5 : purge, copie d'`auth.json`, `.git` des projets préparés, balayage du dossier de travail. */
 function etapePreparation(dossierControle) {
   // Une seule lecture de la table des montages pour toute l'étape : purge, projets et balayage jugent sur la même vue.
-  const montages = pointsDeMontage();
-  const purge = purger({ montages });
+  const montages = lireMontages();
+  const purge = purger({ montages: montages.map((m) => m.point) });
   const auth = copierAuth();
   const git = constatGit(lireProjetsPrepares(dossierControle), { montages });
+  journaliserConstatGit(git);
   return { etape: "preparation", ok: git.ok, purge, auth, ...git };
 }
 
@@ -1165,7 +1369,9 @@ function etapePreparation(dossierControle) {
  * pas encore : aucun processus de `node` ne peut fausser ce constat.
  */
 function etapeRebalayage(dossierControle) {
-  return { etape: "rebalayage", ...constatGit(lireProjetsPrepares(dossierControle)) };
+  const git = constatGit(lireProjetsPrepares(dossierControle));
+  journaliserConstatGit(git);
+  return { etape: "rebalayage", ...git };
 }
 
 /**

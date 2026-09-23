@@ -377,12 +377,73 @@ describe("L16b §3 : montages exactement ceux du contrat (D-2b-26, D-2b-33 révi
     assert.doesNotMatch(TEXTE_COMPOSE, /omo-vide/);
   });
 
-  it("le dossier de travail et les autorités d'entreprise sont montés comme pour l'instance principale", () => {
+  it("le dossier de travail est celui de l'instance principale, mais en LECTURE SEULE (L16c) ; les autorités d'entreprise aussi", () => {
     const parCible = new Map(montages(SALLE).map((m) => [m.cible, m]));
     assert.equal(parCible.get("/workspace")?.source, "${WORKSPACE_DIR}");
-    assert.equal(parCible.get("/workspace")?.mode, "rw");
+    assert.equal(parCible.get("/workspace")?.mode, "ro");
+    // L'instance principale et le cockpit gardent l'écriture : seule la salle voit le dossier de travail en lecture seule.
+    assert.equal(montages(PRINCIPALE).find((m) => m.cible === "/workspace")?.mode, "rw");
     assert.equal(parCible.get("/certs")?.source, "./certs");
     assert.equal(parCible.get("/certs")?.mode, "ro");
+  });
+});
+
+// --- L16c : montages inversés et carnets de la salle (décision A16, option E1) -----------------------------------------------
+
+describe("L16c : dossier de travail en lecture seule, écriture par exception, carnets dans un volume nommé", () => {
+  /** Cible sous le dossier de travail de la salle, ou le dossier de travail lui-même. */
+  const sousWorkspace = (cible: string) => cible === "/workspace" || cible.startsWith("/workspace/");
+
+  it("le compose ne rouvre RIEN en écriture sous /workspace : toute exception vient de la surcharge d'install.ps1", () => {
+    const sous = montages(SALLE).filter((m) => sousWorkspace(m.cible));
+    assert.deepEqual(sous, [{ source: "${WORKSPACE_DIR}", cible: "/workspace", mode: "ro" }], JSON.stringify(sous));
+    // Aucune ligne de la salle ne monte le dossier de travail en écriture, sous aucune forme (long ou court, avec ou sans mode).
+    const bloc = TEXTE_COMPOSE.slice(TEXTE_COMPOSE.search(/^ {2}opencode-omo:$/m), TEXTE_COMPOSE.search(/^volumes:$/m));
+    assert.doesNotMatch(bloc, /\$\{WORKSPACE_DIR\}:\/workspace(?::rw)?\s*$/m, "le dossier de travail de la salle doit rester en :ro");
+  });
+
+  it("carnets : le volume nommé `omo-carnets` est déclaré, monté dans la salle seule, HORS de tout projet, et donné à node", () => {
+    assert.ok(Object.hasOwn(COMPOSE.volumes, "omo-carnets"), "volume omo-carnets non déclaré");
+    const carnets = CONTRAT.volumes.find((v) => v.nom === "omo-carnets");
+    assert.deepEqual(carnets, { nom: "omo-carnets", proprietaire: "node", ecrivain: "salle", montages: [{ service: "salle", cible: "/omo-carnets", mode: "rw" }] });
+    const monte = montages(SALLE).find((m) => m.source === "omo-carnets");
+    assert.deepEqual(monte, { source: "omo-carnets", cible: "/omo-carnets", mode: "rw" });
+    assert.equal(sousWorkspace(monte?.cible ?? "/workspace"), false, "les carnets ne vivent jamais sous /workspace");
+    // Aucun autre service ne le monte : ni le cockpit, ni egress, ni l'instance principale.
+    for (const [nom, s] of Object.entries(COMPOSE.services)) {
+      if (nom === SALLE || nom === SERVICE_INIT) continue;
+      assert.equal((s.volumes ?? []).map(decouperMontage).some((m) => m.source === "omo-carnets"), false, `${nom} monte omo-carnets`);
+    }
+    // omo-init le donne à node (MO-11) : sans cela, node reçoit EACCES dans un volume neuf à root (mesure L16c, cas B).
+    assert.match((service(SERVICE_INIT).command ?? []).join(" "), /chown node:node(?: \/[a-z0-9/-]+)* \/omo-carnets(?: |;|$)/);
+  });
+
+  it("aucun dossier .omo n'est créé sur le poste : aucun montage vers un .omo, ni dans le compose ni dans la surcharge générée", () => {
+    // Monter un volume sous `/workspace/<projet>/.omo` CRÉE `.omo` chez l'utilisateur quand la racine est en écriture, et empêche
+    // la salle de démarrer quand elle est en lecture seule (mesure L16c : « mkdirat …/.omo: read-only file system »).
+    for (const [nom, s] of Object.entries(COMPOSE.services)) {
+      for (const m of (s.volumes ?? []).map(decouperMontage)) {
+        // `~/.omo` (dossier de configuration du HOME, D-2b-33) est dans l'image, jamais chez l'utilisateur : seul /workspace compte.
+        assert.doesNotMatch(m.cible, /^\/workspace\/(?:.*\/)?\.omo(?:\/|$)/i, `${nom} : montage vers ${m.cible}`);
+      }
+    }
+    // install.ps1 ne crée aucun dossier .omo et n'ouvre jamais un .omo existant : le nom est écarté des ouvertures en écriture.
+    assert.doesNotMatch(TEXTE_INSTALL, /(?:New-Item|CreateDirectory|mkdir)[^\n]*\.omo/i);
+    assert.match(TEXTE_INSTALL, /function Test-OmoNomCarnets\(/);
+    assert.match(TEXTE_INSTALL, /if \(Test-OmoNomCarnets \$nom\) \{/);
+  });
+
+  it("la surcharge générée n'ouvre qu'en écriture, entrée par entrée, jamais .git ni la racine d'un projet (lecture d'install.ps1)", () => {
+    // Le générateur est joué pour de vrai par tests/ps51/Test-OmoInstall.ps1 (arbre jetable, faux docker) ; ici, la forme.
+    assert.match(TEXTE_INSTALL, /\$monte = \(\$source \+ ':' \+ \$item\.Cible \+ ':rw'\)/);
+    assert.match(TEXTE_INSTALL, /Cible = \(\$OmoCibleWorkspace \+ '\/' \+ \$relatif\)/);
+    assert.match(TEXTE_INSTALL, /\$relatif = \$chemin \+ '\/' \+ \$nom/);
+    assert.match(TEXTE_INSTALL, /if \(Test-OmoNomGitOuCourt \$nom\) \{ continue \}/);
+    // Plus aucun `.git:ro` généré : la protection vient de l'ancêtre en lecture seule, plus d'un bind sur le nom exact.
+    assert.doesNotMatch(TEXTE_INSTALL, /\$cible \+ ':ro'/);
+    // Friction dite à l'utilisateur (A16 point 6) : pas de création à la racine d'un projet, relance après un ajout.
+    assert.match(TEXTE_INSTALL, /ne peut creer ni fichier ni dossier a la racine d un projet/);
+    assert.match(TEXTE_INSTALL, /relancez install\.ps1/);
   });
 });
 

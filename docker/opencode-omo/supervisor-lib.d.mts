@@ -34,6 +34,7 @@ export declare const CHEMINS: {
   home: string;
   tmp: string;
   configHome: string;
+  carnets: string;
   configurationOmo: string;
   superviseur: string;
   superviseurLib: string;
@@ -95,10 +96,29 @@ export interface WorkspaceGit {
   nonProteges: string[];
 }
 
+/**
+ * Montage lu dans `/proc/self/mountinfo` (L16c) : point (chemin POSIX) et lecture seule (option `ro` du montage lui-même). Une chaîne
+ * seule vaut un montage EN ÉCRITURE : la lecture seule ne se présume jamais.
+ */
+export interface Montage {
+  point: string;
+  lectureSeule: boolean;
+}
+
+export type MontageDonne = Montage | string;
+
+/** Liens symboliques rencontrés par le balayage : 20 chemins au plus, relatifs au dossier de travail, et leur nombre total. */
+export interface LiensSignales {
+  total: number;
+  chemins: string[];
+}
+
 export interface Balayage extends WorkspaceGit {
-  gits: { chemin: string; forme: GitForme; inscriptible: boolean; montage: boolean }[];
+  /** `lectureSeule` : servi par un montage en lecture seule, sans écriture rouverte dessus ni dessous (option E1). */
+  gits: { chemin: string; forme: GitForme; inscriptible: boolean; lectureSeule: boolean }[];
   entrees: number;
   illisibles: number;
+  liens: LiensSignales;
 }
 
 export interface BalayageOptions {
@@ -106,12 +126,24 @@ export interface BalayageOptions {
   profondeurMax?: number;
   exclus?: string[];
   accesEcriture?: (chemin: string) => boolean;
+  /** Existence d'un chemin sans suivre de lien (tests : partage insensible à la casse simulé) ; par défaut `lstat`. */
+  existe?: (chemin: string) => boolean;
   maintenant?: number;
   gitsMax?: number;
-  /** Points de montage (chemins POSIX) ; par défaut, ceux de /proc/self/mountinfo. */
-  montages?: string[];
+  /** Montages ; par défaut, ceux de /proc/self/mountinfo. */
+  montages?: MontageDonne[];
   /** Lecture d'un dossier (tests : échec injecté) ; par défaut `readdirSync` avec les types, sans suivre les liens. */
   lireDossier?: (chemin: string) => import("node:fs").Dirent[];
+}
+
+/** Verdict de la sonde des montages du dossier de travail (L16c, décision A16, option E1). */
+export interface SondeMontages {
+  ok: boolean;
+  racineLectureSeule: boolean;
+  /** Nombre de montages en écriture sous la racine. */
+  ecritures: number;
+  /** Chemins relatifs à la racine (« . » pour elle-même), 20 au plus. */
+  problemes: string[];
 }
 
 export interface DossierConfigVerdict {
@@ -247,11 +279,28 @@ export declare function preparerConfigHome(options?: { dossier?: string; referen
 export declare const ALIAS_CASSE_MAX: number;
 /** Autres noms du même dossier sur un partage insensible à la casse : variantes de casse (bornées) et formes courtes 8.3. */
 export declare function aliasDeNom(nom: string): string[];
-/** Un alias du dossier existe-t-il et reste-t-il inscriptible ? Le bind `:ro` ne porte que sur le nom exact. */
-export declare function aliasInscriptible(chemin: string, acces?: (chemin: string) => boolean): boolean;
+/** Formes réduites d'un nom (minuscules, majuscules, capitale initiale, formes courtes 8.3), pour les dossiers parents. */
+export declare function aliasReduitsDeNom(nom: string): string[];
+/** Nom qui désigne `.git` pour l'hôte Windows : casse, points et espaces de fin, forme courte `GIT~n`. */
+export declare function estNomGit(nom: string): boolean;
+export declare function existeSansSuivre(chemin: string): boolean;
+/** Alias d'un chemin : ceux de sa feuille, et, sous `racine`, ceux de chacun de ses dossiers parents (un composant à la fois). */
+export declare function aliasDeChemin(chemin: string, options?: { racine?: string | null; feuilleComplete?: boolean }): string[];
+/** Un alias du chemin (feuille ou parent) existe-t-il et reste-t-il inscriptible ? Un montage ne porte que sur le chemin exact. */
+export declare function aliasInscriptible(
+  chemin: string,
+  acces?: (chemin: string) => boolean,
+  options?: { racine?: string | null; feuilleComplete?: boolean; existe?: (chemin: string) => boolean; sauf?: Set<string> | null },
+): boolean;
 export declare function formeGit(chemin: string): GitForme;
 export declare function lireGitdir(cheminGit: string): string | null;
-export declare function cibleGitdirProtegee(cheminGit: string, racine: string, montages: string[], acces: (chemin: string) => boolean): boolean;
+export declare function cibleGitdirProtegee(
+  cheminGit: string,
+  racine: string,
+  montages: MontageDonne[],
+  acces: (chemin: string) => boolean,
+  existe?: (chemin: string) => boolean,
+): boolean;
 export declare function balayerGit(racine?: string, options?: BalayageOptions): Balayage;
 export declare function resumeWorkspaceGit(balayage: Balayage): WorkspaceGit;
 export declare function gitProtege(etat: { workspaceGit?: WorkspaceGit; projets?: { gitLectureSeule: boolean }[] } | null | undefined): boolean;
@@ -261,18 +310,33 @@ export interface ConstatGit {
   workspaceGit: WorkspaceGit;
   projetsPrepares: number | null;
   balayage: { entrees: number; illisibles: number; gits: number };
+  /** Sonde des montages (L16c) : jamais publiée telle quelle ; `refuses` rejoint `workspaceGit.nonProteges`. */
+  montages: { racineLectureSeule: boolean; ecritures: number; refuses: string[] };
+  liens: LiensSignales;
 }
 export declare function constatGit(
   prepares: ProjetsPrepares | null,
-  options?: { racine?: string; montages?: string[]; acces?: (chemin: string) => boolean; maintenant?: number },
+  options?: { racine?: string; montages?: MontageDonne[]; acces?: (chemin: string) => boolean; existe?: (chemin: string) => boolean; maintenant?: number },
 ): ConstatGit;
 export declare function controlerProjetsPrepares(
   prepares: ProjetsPrepares | null,
   racine?: string,
   acces?: (chemin: string) => boolean,
-  montages?: string[],
+  montages?: MontageDonne[],
+  existe?: (chemin: string) => boolean,
 ): { chemin: string; gitLectureSeule: boolean }[];
 
+export declare function normaliserMontages(montages: MontageDonne[] | null | undefined): Montage[];
+export declare function servieEnLectureSeule(chemin: string, montages: MontageDonne[]): boolean;
+export declare function montagesEcritureSous(chemin: string, montages: MontageDonne[]): Montage[];
+export declare function sousLectureSeule(chemin: string, montages: MontageDonne[]): boolean;
+export declare function controlerMontagesWorkspace(
+  prepares: ProjetsPrepares | null,
+  montages: MontageDonne[],
+  options?: { racine?: string; acces?: (chemin: string) => boolean; existe?: (chemin: string) => boolean },
+): SondeMontages;
+
+export declare function lireMontages(fichier?: string): Montage[];
 export declare function pointsDeMontage(fichier?: string): string[];
 export declare function porteUnMontage(chemin: string, montages: string[]): boolean;
 export declare function estPointDeMontage(chemin: string, montages: string[]): boolean;
