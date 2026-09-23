@@ -515,6 +515,34 @@ try {
     $simpleResult = Invoke-CockpitScript $SalleDir @('uninstall')
     Assert-Test 'uninstall sans -Purge : les donnees restent' ($simpleResult.Host.Contains('Les donnees restent dans les volumes Docker') -and -not (Test-DockerCall '^volume rm ') -and -not (Test-DockerCall '^image rm ')) (Get-Extract $simpleResult.Host)
 
+    # --- Relecture 2ter-vague-3 : une entree de premier niveau supprimee apres install.ps1 ne fait jamais demarrer la salle ----
+    # Docker recreerait la source absente en DOSSIER vide sur le poste (un fichier devient un dossier) : cockpit.ps1 ne passe pas le
+    # profil de la salle a la creation ni au demarrage des conteneurs, le dit, et le garde pour l'arret.
+    Write-Section 'start et restart : la salle ne demarre pas quand une source de la surcharge manque'
+    $SourcesDir = New-TestInstallation $Work 'salle-sources' (New-TestEnvValues $Ports.plain 'https' '' '1.0.5' 'Pull' $SalleKeys)
+    $WsSources = Join-Path $Work 'ws-salle-sources'
+    New-Item -ItemType Directory -Path (Join-Path $WsSources 'app\src') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $WsSources 'app\README.md'), "lisez-moi`n")
+    $montage = { param([string]$Relatif, [string]$Forme) '      - { type: bind, source: "' + ((Join-Path $WsSources ($Relatif -replace '/', '\')) -replace '\\', '/') + '", target: "/workspace/' + $Relatif + '", bind: { create_host_path: false } } # ' + $Forme }
+    $surcharge = "services:`n  cockpit:`n    volumes: []`n  " + ('opencode' + '-omo') + ":`n    volumes:`n" + (& $montage 'app/README.md' 'fichier') + "`n" + (& $montage 'app/src' 'dossier') + "`n"
+    [System.IO.File]::WriteAllText((Join-Path $SourcesDir $CockpitOmoOverlay), $surcharge, (New-Object System.Text.UTF8Encoding $false))
+    Set-DockerScenario (New-CockpitDockerRules)
+    $temoinSources = Invoke-CockpitScript $SourcesDir @('start')
+    Assert-Test 'start, sources presentes : la salle demarre avec son profil (temoin)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo up -d\z') -and -not $temoinSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Remove-Item -LiteralPath (Join-Path $WsSources 'app\README.md') -Force
+    Set-DockerScenario (New-CockpitDockerRules)
+    $sansSource = Invoke-CockpitScript $SourcesDir @('start')
+    Assert-Test 'start, fichier supprime : up sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'start, fichier supprime : message qui nomme l entree et demande la relance d install.ps1' ($sansSource.Host.Contains('Salle non demarree') -and $sansSource.Host.Contains('app/README.md') -and $sansSource.Host.Contains('Relancez install.ps1')) (Get-Extract $sansSource.Host)
+    Assert-Test 'start, fichier supprime : rien n est recree sur le poste' (-not (Test-Path -LiteralPath (Join-Path $WsSources 'app\README.md')))
+    Set-DockerScenario (New-CockpitDockerRules)
+    $recree = Invoke-CockpitScript $SourcesDir @('restart')
+    Assert-Test 'restart, fichier supprime : recreation sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d --force-recreate\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'restart, fichier supprime : message' ($recree.Host.Contains('Salle non demarree')) (Get-Extract $recree.Host)
+    Set-DockerScenario (New-CockpitDockerRules)
+    $arretSources = Invoke-CockpitScript $SourcesDir @('stop')
+    Assert-Test 'stop, fichier supprime : profil garde, la salle s arrete aussi (MO-3)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo stop\z') -and -not $arretSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+
     $quoted = Invoke-CockpitProcess -FilePath (Get-TestGit) -Arguments @('-C', $full.Directory, 'rev-parse', '--sq-quote', '@{u}', '@{u}..HEAD') -TimeoutSec 60
     Assert-Test "P8 : '@{u}' transmis intact a git par Invoke-CockpitProcess" ($quoted.ExitCode -eq 0 -and $quoted.StdOut.Trim() -ceq "'@{u}' '@{u}..HEAD'") ($quoted.StdOut.Trim() + $quoted.StdErr.Trim())
 

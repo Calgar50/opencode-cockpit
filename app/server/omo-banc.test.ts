@@ -19,6 +19,8 @@ import { describe, it } from "node:test";
 import type { ContexteDePorte } from "../../e2e/omo-banc/scenarios/git-protection.mjs";
 import porteGit, { FEUILLES, NETTOYAGE_E1, PROJET_ECRIT, SONDE_E1, TEMOIN } from "../../e2e/omo-banc/scenarios/git-protection.mjs";
 import { cheminDeFixture, typeDEvenement } from "../../e2e/omo-banc/scenarios/mesures.mjs";
+import type { ContexteSources } from "../../e2e/omo-banc/scenarios/sources-supprimees.mjs";
+import porteSup from "../../e2e/omo-banc/scenarios/sources-supprimees.mjs";
 import {
   BancRefus,
   ETIQUETTE_BANC,
@@ -482,6 +484,113 @@ describe("L21 / L16c, porte « git » : ce que le dossier de travail en lecture 
     // Primitives du superviseur, jamais `test -w` (busybox ment sur un montage en lecture seule).
     assert.match(SONDE_E1, /fs\.accessSync\(chemin, fs\.constants\.W_OK\)/);
     assert.doesNotMatch(SONDE_E1, /test -w/);
+  });
+});
+
+describe("relecture 2ter-vague-3, porte « sup » : une entrée supprimée après install.ps1 n'est jamais recréée sur le poste", () => {
+  /** Projet jetable : un dépôt, un fichier et un dossier de premier niveau. */
+  function projetJetable(t: { after: (fn: () => void) => void }): string {
+    const ws = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "omo-banc-sup-"));
+    t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(ws, PROJET_ECRIT, ".git", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(ws, PROJET_ECRIT, "src"), { recursive: true });
+    fs.writeFileSync(path.join(ws, PROJET_ECRIT, "src", "app.js"), "export {};\n");
+    fs.writeFileSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md"), "lisez-moi\n");
+    return ws;
+  }
+
+  /** Surcharge telle qu'install.ps1 l'écrit depuis la correction (ou dans sa forme d'avant, syntaxe courte). */
+  function surcharge(ws: string, forme: "longue" | "courte"): string {
+    const ligne = (rel: string, nature: string) =>
+      forme === "longue"
+        ? `      - { type: bind, source: "${ws.replaceAll("\\", "/")}/${rel}", target: "/workspace/${rel}", bind: { create_host_path: false } } # ${nature}`
+        : `      - "${ws.replaceAll("\\", "/")}/${rel}:/workspace/${rel}:rw"`;
+    return ["services:", "  opencode-omo:", "    volumes:", ligne(`${PROJET_ECRIT}/LISEZMOI.md`, "fichier"), ligne(`${PROJET_ECRIT}/src`, "dossier"), ""].join("\n");
+  }
+
+  interface DoubleDocker {
+    forme?: "longue" | "courte";
+    /** Comportement d'avant la correction : Docker recrée les sources absentes en dossiers vides à la relance. */
+    recree?: boolean;
+    /** La relance réussit (aucune erreur de montage) : la salle repart. */
+    repart?: boolean;
+  }
+
+  function contexteSources(ws: string, d: DoubleDocker): ContexteSources & { appels: string[] } {
+    const appels: string[] = [];
+    let etat = "running|0|";
+    const relancer = () => {
+      if (d.recree) for (const rel of ["LISEZMOI.md", "src"]) fs.mkdirSync(path.join(ws, PROJET_ECRIT, rel), { recursive: true });
+      etat = d.repart || d.recree ? "running|1|" : "exited|1|failed to create task for container: error during container init: failed to fulfil mount request: open /run/desktop/mnt/host/x: no such file or directory";
+    };
+    return {
+      appels,
+      projet: "sal11-omo-banc-double",
+      chemins: { ws },
+      surcharge: () => surcharge(ws, d.forme ?? "longue"),
+      docker: (args) => {
+        appels.push(`docker ${args[0]}`);
+        return Promise.resolve({ code: 0, sortie: `${etat}\n` });
+      },
+      compose: (args) => {
+        appels.push(`compose ${args.join(" ")}`);
+        if (args[0] === "stop") relancer();
+        if (args[0] === "restart") {
+          relancer();
+          return Promise.resolve({ code: d.repart || d.recree ? 0 : 1, sortie: "", erreur: d.repart || d.recree ? "" : "no such file or directory" });
+        }
+        return Promise.resolve({ code: 0, sortie: "" });
+      },
+      jusqua: async (condition) => condition(),
+      attendre: () => Promise.resolve(),
+      ecrireSortie: () => undefined,
+    };
+  }
+
+  const rougesSup = (points: { nom: string; ok: boolean }[]) =>
+    points
+      .filter((p) => !p.ok)
+      .map((p) => p.nom)
+      .join(" | ");
+
+  it("correction tenue : relances refusées sans rien créer, poste intact, la porte est entièrement verte", async (t) => {
+    const ws = projetJetable(t);
+    const ctx = contexteSources(ws, {});
+    const resultat = await porteSup.executer(ctx);
+    const points = resultat.points ?? [];
+    assert.ok(points.length >= 9, `${points.length} constats`);
+    assert.equal(rougesSup(points), "", "tout doit être vert");
+    assert.equal(fs.existsSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md")), false);
+    assert.equal(fs.existsSync(path.join(ws, PROJET_ECRIT, "src")), false);
+    assert.ok(fs.existsSync(path.join(ws, PROJET_ECRIT, ".git")), "le dépôt n'est jamais touché");
+    // Le chemin qui échappe à cockpit.ps1 est bien joué : la politique restart (battement arrêté), puis compose restart.
+    assert.deepEqual(
+      ctx.appels.filter((a) => a.startsWith("compose")),
+      ["compose stop --timeout 5 banc-battement", "compose restart opencode-omo", "compose start banc-battement"],
+    );
+  });
+
+  it("comportement d'avant (Docker recrée les sources en dossiers vides) : la porte est ROUGE", async (t) => {
+    const ws = projetJetable(t);
+    const points = (await porteSup.executer(contexteSources(ws, { recree: true }))).points ?? [];
+    const rouges = rougesSup(points);
+    assert.match(rouges, /le fichier supprimé n'est pas recréé/);
+    assert.match(rouges, /le dossier supprimé n'est pas recréé/);
+    assert.match(rouges, /ÉCHOUE franchement/);
+  });
+
+  it("une salle qui repart malgré la source absente, ou une surcharge en syntaxe courte : ROUGE", async (t) => {
+    const repart = (await porteSup.executer(contexteSources(projetJetable(t), { repart: true }))).points ?? [];
+    assert.match(rougesSup(repart), /la salle ne repart pas/);
+    const courte = (await porteSup.executer(contexteSources(projetJetable(t), { forme: "courte" }))).points ?? [];
+    assert.match(rougesSup(courte), /create_host_path: false/);
+  });
+
+  it("la porte « sup » est la DERNIÈRE du banc : elle laisse la salle arrêtée", () => {
+    const lanceur = fs.readFileSync(path.join(BANC, "run-banc.mjs"), "utf8");
+    assert.match(lanceur, /import sup from "\.\/scenarios\/sources-supprimees\.mjs";/);
+    assert.match(lanceur, /const SCENARIOS = \[[^\]]*, sup\];/);
+    assert.match(lanceur, /surcharge: \(\) =>/);
   });
 });
 

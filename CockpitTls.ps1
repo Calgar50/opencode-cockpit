@@ -36,7 +36,7 @@ $CockpitComposeEnvNames = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'COCKPIT_TL
 # toute seule par compose (son nom n'est pas un nom de surcharge automatique).
 $CockpitOmoOverlay = 'docker-compose.omo-projets.yml'
 # Etat propre a ce processus PowerShell : A8 une seule fois, echec d'Add-Type memorise.
-$CockpitTlsSession = @{ A8Shown = $false; AddTypeError = $null }
+$CockpitTlsSession = @{ A8Shown = $false; AddTypeError = $null; OmoNotice = $false }
 $CockpitA19 = 'Installation arretee avant toute modification (voir les messages ci-dessus).'
 
 # Masque les formes de secrets les plus courantes avant affichage (identifiants dans une URL, jetons GitHub, mots de passe).
@@ -112,6 +112,15 @@ function Test-CockpitOmoEnabled([string]$Root) {
     foreach ($line in $lines) { if ($line -cmatch '^\s*COCKPIT_OMO\s*=\s*on\s*\z') { return $true } }
     return $false
 }
+# Relecture 2ter-vague-3 : entrees que la surcharge d'install.ps1 ouvre en ecriture et qui ont disparu, change de forme (fichier, dossier) ou sont devenues lien ou jonction depuis la generation ; Docker les recreerait en DOSSIER vide sur le poste, ou suivrait la jonction hors du dossier de travail. Ligne hors format : a regenerer.
+function Get-CockpitOmoSourceProblems([string]$Root) {
+    $salle = $false; $overlay = Join-Path $Root $CockpitOmoOverlay; if (-not (Test-Path -LiteralPath $overlay -PathType Leaf)) { return }
+    foreach ($line in [System.IO.File]::ReadAllLines($overlay)) {
+        if ($line -cmatch '^  ([^ #]+):\s*\z') { $salle = ($Matches[1] -ceq 'opencode-omo') } elseif (-not $salle -or -not $line.StartsWith('      - ')) { }
+        elseif ($line -cnotmatch '^      - \{ type: bind, source: "([^"]+)", target: "/workspace/([^"]+)", bind: \{ create_host_path: false \} \} # (fichier|dossier)\z') { 'surcharge a regenerer' }
+        elseif ($null -eq ($item = Get-Item -LiteralPath ($Matches[1] -replace '\$\$', '$$') -Force -ErrorAction SilentlyContinue) -or ([int]$item.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0 -or ($item -is [System.IO.DirectoryInfo]) -ne ($Matches[3] -ceq 'dossier')) { $Matches[2] -replace '\$\$', '$$' }
+    }
+}
 
 # Fonction simple, sans [Parameter()] : des options docker comme -v ou -d ne sont jamais prises pour -Verbose ou -Debug.
 function ConvertTo-CockpitDockerArgs([string]$Root, [object[]]$DockerArgs) {
@@ -119,13 +128,14 @@ function ConvertTo-CockpitDockerArgs([string]$Root, [object[]]$DockerArgs) {
     if ($list.Count -eq 0 -or $list[0] -cne 'compose' -or ($list.Count -gt 1 -and $list[1] -ceq 'version')) { return , $list }
     if (-not $Root) { throw 'Dossier du cockpit requis pour une commande docker compose.' }
     $prefix = @('compose', '-f', (Join-Path $Root 'docker-compose.yml'))
-    # Surcharge des projets prepares : ses binds .git:ro s'ajoutent a ceux du fichier de base (D-2b-28).
-    $overlay = Join-Path $Root $CockpitOmoOverlay
-    if (Test-Path -LiteralPath $overlay -PathType Leaf) { $prefix += @('-f', $overlay) }
+    # Surcharge des projets prepares (D-2b-28, L16c) : ses montages en ecriture s'ajoutent a ceux du fichier de base.
+    if (Test-Path -LiteralPath (Join-Path $Root $CockpitOmoOverlay) -PathType Leaf) { $prefix += @('-f', (Join-Path $Root $CockpitOmoOverlay)) }
     # Profil de la salle sur TOUTES les commandes, stop et down compris : sans lui, le service du profil reste en vie
     # et le reseau du projet ne peut pas etre supprime (MO-3 point 2). COMPOSE_PROFILES n'est jamais melangee a
     # --profile (MO-3 point 3) : elle est retiree de l'environnement de l'enfant par $CockpitComposeEnvNames.
-    if (Test-CockpitOmoEnabled $Root) { $prefix += @('--profile', 'omo') }
+    # Jamais, en revanche, pour creer ou demarrer un conteneur quand une source de la surcharge manque ou a change (relecture 2ter-vague-3).
+    $blocked = @(if ((Test-CockpitOmoEnabled $Root) -and @('up', 'create', 'start', 'restart', 'run') -ccontains $list[1]) { Get-CockpitOmoSourceProblems $Root })
+    if ((Test-CockpitOmoEnabled $Root) -and $blocked.Count -eq 0) { $prefix += @('--profile', 'omo') } elseif ($blocked.Count -gt 0 -and -not $CockpitTlsSession.OmoNotice) { $CockpitTlsSession.OmoNotice = $true; Write-Host ('    [!] Salle non demarree : depuis install.ps1, ces entrees de premier niveau ont ete supprimees, renommees ou remplacees par un lien ou une jonction : {0}. Relancez install.ps1 ; sans cela Docker recreerait un dossier vide a leur place sur le poste. Le reste du cockpit demarre.' -f (@($blocked | Select-Object -First 20) -join ', ')) -ForegroundColor Yellow }
     return , ($prefix + @($list | Select-Object -Skip 1))
 }
 

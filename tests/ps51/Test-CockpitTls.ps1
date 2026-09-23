@@ -252,6 +252,20 @@ try {
     }
     Assert-Test 'compose version : ni surcharge ni profil' ((Get-SalleArgs @('compose', 'version', '--short')) -ceq 'compose|version|--short')
     Assert-Test 'commande hors compose : ni surcharge ni profil' ((Get-SalleArgs @('image', 'inspect', 'x')) -ceq 'image|inspect|x')
+    # Relecture 2ter-vague-3 : une source de la surcharge absente, changee de forme ou devenue lien retire le profil des seules
+    # commandes qui creent ou demarrent un conteneur (Docker la recreerait en dossier vide sur le poste) ; stop et down le gardent.
+    $sourceDir = Join-Path $Work 'salle-sources'
+    New-Item -ItemType Directory -Path (Join-Path $sourceDir 'app\src') -Force | Out-Null
+    $ligneSalle = { param([string]$Relatif, [string]$Forme) '      - { type: bind, source: "' + ($sourceDir -replace '\\', '/') + '/' + $Relatif + '", target: "/workspace/' + $Relatif + '", bind: { create_host_path: false } } # ' + $Forme }
+    [System.IO.File]::WriteAllText($overlayFile, ("services:`n  " + ('opencode' + '-omo') + ":`n    volumes:`n" + (& $ligneSalle 'app/src' 'dossier') + "`n" + (& $ligneSalle 'app/README.md' 'fichier') + "`n"), (New-Object System.Text.UTF8Encoding $false))
+    Assert-Test 'sources de la salle : l entree absente est nommee' ((@(Get-CockpitOmoSourceProblems $salleDir) -join ',') -ceq 'app/README.md') (@(Get-CockpitOmoSourceProblems $salleDir) -join ', ')
+    foreach ($sous in @('up', 'create', 'start', 'restart', 'run')) { Assert-Test ('sources de la salle : aucun profil pour ' + $sous) ((Get-SalleArgs @('compose', $sous)) -cnotmatch 'profile') (Get-SalleArgs @('compose', $sous)) }
+    foreach ($sous in @('stop', 'down')) { Assert-Test ('sources de la salle : profil garde pour ' + $sous) ((Get-SalleArgs @('compose', $sous)) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|' + $sous)) }
+    [System.IO.File]::WriteAllText((Join-Path $sourceDir 'app\README.md'), "lisez-moi`n")
+    Assert-Test 'sources de la salle : toutes presentes, profil rendu a up' ((Get-SalleArgs @('compose', 'up', '-d')) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|up|-d'))
+    [System.IO.File]::Delete((Join-Path $sourceDir 'app\README.md')); New-Item -ItemType Directory -Path (Join-Path $sourceDir 'app\README.md') | Out-Null
+    Assert-Test 'sources de la salle : un fichier devenu dossier est refuse' ((@(Get-CockpitOmoSourceProblems $salleDir) -join ',') -ceq 'app/README.md')
+    [System.IO.File]::WriteAllText($overlayFile, "services: {}`n", (New-Object System.Text.UTF8Encoding $false))
     $divergenceSalle = Get-CockpitComposeDivergence $salleDir @('Process')
     Assert-Test 'divergence : la surcharge generee n est pas un fichier voisin inattendu' (@($divergenceSalle.Files).Count -eq 0) ((@($divergenceSalle.Files)) -join ', ')
     # MO-3 point 3 : COMPOSE_PROFILES et --profile ne se melangent jamais ; la variable ne suit pas l'appel.

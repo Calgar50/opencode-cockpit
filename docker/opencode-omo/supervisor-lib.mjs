@@ -758,13 +758,29 @@ export function aliasInscriptible(chemin, acces = accesEcriture, { racine = null
 const posix = (chemin) => String(chemin).replaceAll("\\", "/");
 
 /**
- * Montages sous leur forme détaillée `{ point, lectureSeule }`. Un point donné sans ses options (chaîne seule) vaut « en
- * écriture » : on ne présume jamais la lecture seule qu'on n'a pas lue.
+ * Montages sous leur forme détaillée `{ point, lectureSeule, racineFs, periph, type }`. Un point donné sans ses options (chaîne
+ * seule) vaut « en écriture » : on ne présume jamais la lecture seule qu'on n'a pas lue. `racineFs` (champ 4 de mountinfo : ce qui
+ * est monté, dans son système de fichiers), `periph` (champ 3, major:minor) et `type` (premier champ après « - ») valent `null`
+ * quand ils n'ont pas été lus : la sonde les tient alors pour douteux (fermé), jamais pour conformes.
  */
 export function normaliserMontages(montages) {
   if (!Array.isArray(montages)) return [];
-  return montages.map((m) => (typeof m === "string" ? { point: posix(m), lectureSeule: false } : { point: posix(m?.point ?? ""), lectureSeule: m?.lectureSeule === true }));
+  const texte = (valeur) => (typeof valeur === "string" && valeur !== "" ? valeur : null);
+  return montages.map((m) =>
+    typeof m === "string"
+      ? { point: posix(m), lectureSeule: false, racineFs: null, periph: null, type: null }
+      : { point: posix(m?.point ?? ""), lectureSeule: m?.lectureSeule === true, racineFs: texte(m?.racineFs), periph: texte(m?.periph), type: texte(m?.type) },
+  );
 }
+
+/**
+ * Systèmes de fichiers d'un partage de l'HÔTE (Docker Desktop : 9p/drvfs sous WSL 2, virtiofs, fakeowner ou grpcfuse ailleurs).
+ * Les volumes nommés (ext4 de la machine virtuelle) et les tmpfs n'en sont pas.
+ */
+const TYPES_PARTAGE_HOTE = /^(?:9p|drvfs|virtiofs|fakeowner|grpcfuse|osxfs|fuse(?:\.[a-z0-9_-]+)?)$/i;
+
+/** Étiquette publiée pour un montage en écriture posé HORS du dossier de travail : jamais le chemin absolu de l'hôte. */
+export const HORS_DOSSIER_DE_TRAVAIL = "(hors du dossier de travail)";
 
 /** `chemin` est `base` ou en dessous, composant par composant (jamais par simple préfixe de texte). */
 const dansChemin = (chemin, base) => chemin === base || chemin.startsWith(base === "/" ? "/" : `${base}/`);
@@ -804,10 +820,18 @@ export function sousLectureSeule(chemin, montages) {
  * 2. chaque montage en écriture sous la racine est un ENFANT DIRECT d'un projet préparé (`<racine>/<projet>/<entrée>`) ;
  * 3. ce n'est ni `.git` ni un nom qui s'y ramène (`estNomGit`), ni la racine d'un projet préparé, ni un dossier qui en contient un ;
  * 4. aucun alias de son chemin, parents compris (`/workspace/PROJET/src`), n'est inscriptible : l'écriture ne vaut qu'au chemin
- *    exact, sous lequel le noyau trouve le montage (essai E1 : 19/19 refus attendus).
+ *    exact, sous lequel le noyau trouve le montage (essai E1 : 19/19 refus attendus) ;
+ * 5. ce qu'il monte est bien l'entrée de l'hôte à ce chemin : sa racine dans le système de fichiers (champ 4) vaut celle de
+ *    `/workspace` suivie du chemin relatif (relecture 2ter-vague-3). Une entrée remplacée sur le poste par une jonction ou un lien
+ *    absolu APRÈS install.ps1 est suivie par Docker : le montage en écriture porte alors un dossier du poste HORS du dossier de
+ *    travail (mesuré : `echo > /workspace/app/lien/x` écrit dans la cible) ;
+ * 6. aucun montage en écriture qui vient du partage de l'hôte n'est posé HORS de la racine : Docker Desktop suit aussi, côté
+ *    conteneur, le lien absolu que le partage 9p montre pour une jonction, et pose le montage sur `/mnt/host/c/…` (mesuré). Est du
+ *    partage de l'hôte un montage d'un type de `TYPES_PARTAGE_HOTE`, ou du même périphérique que `/workspace` quand celui-ci en est
+ *    un ; type illisible : douteux. Les volumes nommés et les tmpfs ne sont pas concernés. Publié sous `HORS_DOSSIER_DE_TRAVAIL`.
  * Rend `{ ok, racineLectureSeule, ecritures, problemes }` ; `problemes` : chemins relatifs à la racine (« . » pour la racine
  * elle-même), 20 au plus, publiés avec les `.git` non protégés dans `workspaceGit.nonProteges`. Fermé en cas de doute : un
- * `mountinfo` illisible ne donne aucune racine, donc un refus.
+ * `mountinfo` illisible ne donne aucune racine, donc un refus ; une racine dans le système de fichiers illisible aussi.
  */
 export function controlerMontagesWorkspace(prepares, montages, { racine = CHEMINS.workspace, acces = accesEcriture, existe = existeSansSuivre } = {}) {
   const base = posix(racine).replace(/(.)\/+$/, "$1");
@@ -819,8 +843,21 @@ export function controlerMontagesWorkspace(prepares, montages, { racine = CHEMIN
   const racines = liste.filter((m) => m.point === base);
   const racineLectureSeule = racines.length > 0 && racines.every((m) => m.lectureSeule);
   if (!racineLectureSeule) signaler(".");
+  // Ce que `/workspace` monte (champ 4) : une seule valeur lue, sinon rien n'est comparable (fermé).
+  const sourcesRacine = [...new Set(racines.map((m) => m.racineFs))];
+  const sourceRacine = sourcesRacine.length === 1 ? sourcesRacine[0] : null;
+  const partage = (m) => m.type !== null && TYPES_PARTAGE_HOTE.test(m.type);
+  const racinePartagee = racines.length > 0 && racines.every(partage);
+  const periphRacine = racines[0]?.periph ?? null;
+  // Sur le partage d'un hôte Windows, un chemin ne se distingue pas par la casse ; ailleurs, il se compare à l'octet.
+  const memeSource = (a, b) => (racinePartagee ? a.toLowerCase() === b.toLowerCase() : a === b);
   const projets = (prepares?.projets ?? []).map((projet) => posix(projet.chemin));
   const points = new Set(liste.map((m) => m.point));
+  for (const montage of liste) {
+    if (montage.lectureSeule || dansChemin(montage.point, base)) continue;
+    const duPartage = montage.type === null || partage(montage) || (racinePartagee && periphRacine !== null && montage.periph === periphRacine);
+    if (duPartage) signaler(HORS_DOSSIER_DE_TRAVAIL);
+  }
   const ecritures = liste.filter((m) => !m.lectureSeule && m.point.startsWith(`${base}/`));
   for (const montage of ecritures) {
     const relatif = montage.point.slice(base.length + 1);
@@ -828,8 +865,10 @@ export function controlerMontagesWorkspace(prepares, montages, { racine = CHEMIN
     const nom = relatif.slice(relatif.lastIndexOf("/") + 1);
     const horsProjet = parent === "" || !projets.includes(parent);
     const contientUnProjet = projets.some((projet) => projet === relatif || projet.startsWith(`${relatif}/`));
+    const sourceAttendue = sourceRacine === null ? null : sourceRacine === "/" ? `/${relatif}` : `${sourceRacine}/${relatif}`;
+    const detourne = sourceAttendue === null || montage.racineFs === null || !memeSource(montage.racineFs, sourceAttendue);
     const aliasOuvert = aliasInscriptible(montage.point, acces, { racine: base, feuilleComplete: false, existe, sauf: points });
-    if (horsProjet || estNomGit(nom) || contientUnProjet || aliasOuvert) signaler(relatif);
+    if (horsProjet || estNomGit(nom) || contientUnProjet || detourne || aliasOuvert) signaler(relatif);
   }
   return { ok: problemes.length === 0, racineLectureSeule, ecritures: ecritures.length, problemes };
 }
@@ -1043,19 +1082,32 @@ export function controlerProjetsPrepares(prepares, racine = CHEMINS.workspace, a
  * spéciaux échappés en octal) et champ 6 (options PROPRES au montage). C'est ce champ-là qui porte le « ro » d'un bind en lecture
  * seule : les options du superbloc, après « - », disent « rw » pour tout le partage 9p de Docker Desktop et ne décident de rien
  * (mesure E1 : `/workspace ro,noatime - 9p … rw,…`). Ligne sans options : « en écriture », jamais présumée en lecture seule.
- * Liste vide si le fichier est illisible : la sonde des montages ne trouve alors aucune racine et ferme la salle.
+ * Sont gardés aussi, pour la sonde des montages (relecture 2ter-vague-3) : le champ 4 (`racineFs`, ce qui est monté, dans son
+ * système de fichiers : là se voit une entrée suivie à travers une jonction), le champ 3 (`periph`, major:minor) et le type du
+ * système de fichiers (premier champ après « - »). Liste vide si le fichier est illisible : la sonde des montages ne trouve alors
+ * aucune racine et ferme la salle.
  */
 export function lireMontages(fichier = "/proc/self/mountinfo") {
   const texte = lireTexteBorne(fichier, 4 * 1024 * 1024);
   if (texte === null) return [];
+  // Caractères spéciaux échappés en octal par le noyau (espace, tabulation, saut de ligne, contre-oblique).
+  const decoder = (champ) => champ.replaceAll(/\\([0-7]{3})/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 8)));
   const montages = [];
   for (const ligne of texte.split("\n")) {
     const champs = ligne.split(" ");
     if (champs.length < 5) continue;
-    // Champ 5 : point de montage, avec les caractères spéciaux échappés en octal.
-    const point = champs[4].replaceAll(/\\([0-7]{3})/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 8)));
+    // Champ 5 : point de montage.
+    const point = decoder(champs[4]);
     if (!point.startsWith("/")) continue;
-    montages.push({ point, lectureSeule: (champs[5] ?? "").split(",").includes("ro") });
+    // Champs optionnels (champ 7 et suivants) jusqu'au séparateur « - », puis le type du système de fichiers.
+    const tiret = champs.indexOf("-", 6);
+    montages.push({
+      point,
+      lectureSeule: (champs[5] ?? "").split(",").includes("ro"),
+      racineFs: decoder(champs[3]),
+      periph: champs[2],
+      type: tiret > 0 && champs[tiret + 1] ? champs[tiret + 1] : null,
+    });
   }
   return montages;
 }
@@ -1344,7 +1396,7 @@ export function constatGit(prepares, { racine = CHEMINS.workspace, montages = li
  */
 function journaliserConstatGit(git) {
   if (git.montages.refuses.length > 0) {
-    ecrire(2, `omo-supervisor: ATTENTION: montages du dossier de travail refuses (racine non en lecture seule, ou ecriture ouverte ailleurs que sur une entree de premier niveau d'un projet prepare, sur .git ou par un alias) : ${git.montages.refuses.map((c) => JSON.stringify(c)).join(", ")}\n`);
+    ecrire(2, `omo-supervisor: ATTENTION: montages du dossier de travail refuses (racine non en lecture seule, ou ecriture ouverte ailleurs que sur une entree de premier niveau d'un projet prepare, sur .git, par un alias, a travers un lien ou une jonction, ou hors du dossier de travail ; relancez install.ps1) : ${git.montages.refuses.map((c) => JSON.stringify(c)).join(", ")}\n`);
   }
   if (git.liens.total > 0) {
     ecrire(2, `omo-supervisor: ATTENTION: ${git.liens.total} lien(s) symbolique(s) dans le dossier de travail, presents aussi sur le poste (signales, jamais suivis ni supprimes) : ${git.liens.chemins.map((c) => JSON.stringify(c)).join(", ")}\n`);

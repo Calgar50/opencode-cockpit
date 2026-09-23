@@ -51,11 +51,13 @@ import g12 from "./scenarios/g12-agents.mjs";
 import g14 from "./scenarios/g14-configuration.mjs";
 import git from "./scenarios/git-protection.mjs";
 import mes from "./scenarios/mesures.mjs";
+import sup from "./scenarios/sources-supprimees.mjs";
 import sul from "./scenarios/sul-sous-chaines.mjs";
 
 // L'ordre compte : `git` sonde le dossier de travail avant que quoi que ce soit ne l'ouvre, G9 coupe la salle et la remet en
-// marche, les mesures veulent une salle vivante, G14 et SUL n'en ont pas besoin.
-const SCENARIOS = [git, g1, g2, g12, g9, mes, g14, sul];
+// marche, les mesures veulent une salle vivante, G14 et SUL n'en ont pas besoin. `sup` (relecture 2ter-vague-3) supprime des
+// entrées du projet jetable et laisse la salle arrêtée : toujours en dernier.
+const SCENARIOS = [git, g1, g2, g12, g9, mes, g14, sul, sup];
 
 const RACINE = path.resolve(import.meta.dirname, "..", "..");
 const BANC = import.meta.dirname;
@@ -88,7 +90,7 @@ if (values.aide) {
       "  --id <id>            identifiant du banc (défaut : local) ; le projet vaut sal11-omo-banc-<id>",
       "  --image <ref>        image de la salle (défaut : sal11-omo/opencode-omo:sal11)",
       "  --image-app <ref>    image du cockpit employée par les pilotes (défaut : sal11-omo/app:sal11)",
-      "  --scenarios <liste>  g1,g2,g9,g12,g14,sul (défaut : tous)",
+      "  --scenarios <liste>  git,g1,g2,g12,g9,mes,g14,sul,sup (défaut : tous)",
           "  --duree-g1-min <n>   durée des scénarios scriptés de G1, en minutes (défaut : 30)",
       "  --image-base <ref>   image opencode de base, épinglée par empreinte : G14 rejoue alors -SelfTest",
       "  --contournement      ajoute le tmpfs du contournement (défaut fautif reproduit par G2) pour laisser les mesures se faire",
@@ -545,6 +547,8 @@ async function construireContexte({ projet, chemins, compose, motDePasse, jetonP
     dire,
     bilan,
     lireVolume,
+    /** Texte de la surcharge des projets écrite par `install.ps1 -OmoProjetsSeulement` pour ce banc (porte `sup`). */
+    surcharge: () => (fs.existsSync(COMPOSE_PROJETS) ? fs.readFileSync(COMPOSE_PROJETS, "utf8") : ""),
     /**
      * Commande dans un service du banc, **en tant que `node`** par défaut (uid 1000). C'est l'utilisateur qui compte : le
      * conteneur de la salle démarre root pour son superviseur, et une sonde lancée sans `--user` écrirait donc là où `node`

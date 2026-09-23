@@ -8984,6 +8984,7 @@
 9388ed81dd1d9f061cc1e8068e11e68a4e10a6945d26b7c0282928ecb0b837f9  /opt/omo/node_modules/@babel/helpers/lib/helpers/classCheckPrivateStaticAccess.js
 938a4cf4d77dafd5766d6e5156523ce77dcf5ad8e04f3cbbd5e6a58e07ebc572  /opt/omo/node_modules/seroval-plugins/web/response.ts
 938cf90fb6714833abbb42bab8a4545810d05370d46403400738339ba4cd2894  /opt/omo/node_modules/multipasta/dist/esm/node.js
+938d6c38688cf6bfd731d1e1c9ce81a0b9e5530ff3e0930526b0bb1e0f8a85d8  /opt/omo-check/supervisor-lib.mjs
 9391169ffbc72f777a83230b6ffcc3f4cf46ab5945ec540de9ef4609dca1f4cc  /opt/omo/node_modules/@opencode-ai/plugin/node_modules/zod/v4/locales/ua.js
 9391169ffbc72f777a83230b6ffcc3f4cf46ab5945ec540de9ef4609dca1f4cc  /opt/omo/node_modules/zod/v4/locales/ua.js
 93933d053fb70337594e0826536acfe0e9787007e199878dbd357b99f026e5c7  /opt/omo/node_modules/express/lib/application.js
@@ -15190,7 +15191,6 @@ f90250fdd6094102fcd5a7e9abc64269fb735b95e849894809d9b7dced852ad2  /opt/omo/node_
 f903655dab0dcd12829676e43e5f57e60aebb9ace780fde578e302b1fa31dbce  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/components/rules/vitest.config.ts
 f903655dab0dcd12829676e43e5f57e60aebb9ace780fde578e302b1fa31dbce  /opt/omo/node_modules/oh-my-openagent/packages/omo-codex/plugin/components/telemetry/vitest.config.ts
 f914c05a42c287d81a81c2d5817ebfd9cf225e66bf01f0b1acfcf393ba871dc5  /opt/omo/node_modules/caniuse-lite/data/features/css-sticky.js
-f9151e32997469374f46754c795d1c26a1643d26591ed1a22ef85c4b59615b5e  /opt/omo-check/supervisor-lib.mjs
 f91650ec8e2248bdbcaa0b11a0f4018a4cfd9b42f30219b0ba7e839e86172e70  /opt/omo/node_modules/jose/dist/webapi/lib/jws_sign.js
 f917de312a0e1dbc20cfc28423549760dc5245b2fdd7a1ee5f42946c3369c01e  /opt/omo/node_modules/parse5/node_modules/entities/dist/commonjs/decode-codepoint.js
 f9186f438f3e538752a2955b296b50e81bc95c97c3418e9d9efbf28f952593c1  /opt/omo/node_modules/effect/dist/unstable/http/internal/preResponseHandler.d.ts.map

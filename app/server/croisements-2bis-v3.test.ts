@@ -674,11 +674,14 @@ describe("croisement V3 : la couche utilisateur d'omo.jsonc est inerte, et le pr
  * main entre lui et la page : le cockpit relit ce fichier par son service de contrôle (L17b), le rend par GET /api/omo/status
  * (L18c), et les modèles de la page (L26a) et du Diagnostic (L26b) en tirent la phrase affichée.
  */
-function publierConstatDuSuperviseur(a: Atelier, montages: { point: string; lectureSeule: boolean }[]): void {
+function publierConstatDuSuperviseur(a: Atelier, montages: superviseur.Montage[]): void {
   const prepares = superviseur.analyserProjetsPrepares(JSON.stringify(projetsPrepares("app")));
   assert.ok(prepares !== null);
   // `acces` : rien n'est inscriptible pour `node` en dehors de ce que les montages ouvrent ; c'est la TOPOLOGIE qui est jugée.
-  const constat = superviseur.constatGit(prepares, { racine: a.workspace, montages, acces: () => false, maintenant: T0 });
+  // Un montage sans `racineFs` explicite monte le chemin de l'hôte de même nom (bind du même chemin, forme d'install.ps1) ; un
+  // montage détourné par une jonction le donne explicitement (relecture 2ter-vague-3).
+  const lus = montages.map((m) => ({ ...m, racineFs: m.racineFs ?? m.point }));
+  const constat = superviseur.constatGit(prepares, { racine: a.workspace, montages: lus, acces: () => false, maintenant: T0 });
   superviseur.initTravail(a.stateDir, T0);
   superviseur.majTravail(a.stateDir, { imageId: "sha256:image-de-croisement" });
   const fichier = path.join(a.stateDir, "constat-preparation.json");
@@ -746,6 +749,25 @@ describe("croisement V3 (2 ter, L16c) : pourquoi la salle attend va du supervise
     ]);
     const ferme = (await a.h.call("GET", "/api/omo/status", { headers: a.h.headers.authed })).json<OmoStatusResponse>();
     assert.ok(ferme.workspaceGit?.nonProteges.includes("app"), JSON.stringify(ferme.workspaceGit));
+  });
+
+  it("relecture 2ter-vague-3 : une entrée devenue jonction après install.ps1 ferme la salle, et la page le dit sans chemin de l'hôte", async (t: TestContext) => {
+    const a = await atelier(t);
+    const ws = posixDe(a.workspace);
+    // Mesure sal11-fixm-jonction : Docker Desktop suit la jonction, et pose le montage en écriture hors de /workspace.
+    publierConstatDuSuperviseur(a, [
+      { point: ws, lectureSeule: true, periph: "0:68", type: "9p" },
+      { point: `${ws}/app/README.md`, lectureSeule: false, periph: "0:68", type: "9p" },
+      { point: "/mnt/host/c/Users/u/dehors", lectureSeule: false, racineFs: "/Users/u/dehors", periph: "0:68", type: "9p" },
+    ]);
+    const statut = (await a.h.call("GET", "/api/omo/status", { headers: a.h.headers.authed })).json<OmoStatusResponse>();
+    assert.deepEqual(statut.workspaceGit?.nonProteges, [superviseur.HORS_DOSSIER_DE_TRAVAIL], JSON.stringify(statut.workspaceGit));
+    const vue = vueEtatSalle({ boot: null, statut });
+    assert.equal(vue.prete, false);
+    const affichee = vue.raisons.find((raison) => raison.startsWith(PHRASE_GIT));
+    assert.ok(affichee?.includes(superviseur.HORS_DOSSIER_DE_TRAVAIL), `raisons : ${JSON.stringify(vue.raisons)}`);
+    assert.ok(raisonsAttente(statut).some((raison) => raison.chemins.includes(superviseur.HORS_DOSSIER_DE_TRAVAIL)), JSON.stringify(raisonsAttente(statut)));
+    assert.equal(JSON.stringify(statut).includes("/Users/u"), false, "le chemin de l'hôte ne sort jamais du superviseur");
   });
 });
 

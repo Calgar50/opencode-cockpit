@@ -544,7 +544,8 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
 #   - toute entree qui contient un depot git (sous-module, depot imbrique, depot nu, cible gitdir:) ou un autre projet
 #     prepare : ouverte en ecriture, elle rendrait ce depot inscriptible, crochets compris, sous tous ses alias.
 # Jamais d'ecriture sur la racine d'un projet ni sur le dossier de travail : la salle ne peut rien creer a la racine
-# d'un projet (refus net, EROFS), et une entree ajoutee apres l'installation attend la relance d'install.ps1. Un lien
+# d'un projet (refus net, EROFS), et une entree ajoutee apres l'installation attend la relance d'install.ps1 ; une entree
+# supprimee, renommee ou remplacee par un lien aussi, la salle ne demarrant plus d'ici la (relecture 2ter-vague-3). Un lien
 # de fichier a ce niveau est refuse (les liens de dossier le sont deja par le parcours) : docker le suivrait sur l'hote
 # et ouvrirait sa cible en ecriture.
 function Get-OmoEcritures($Scan) {
@@ -579,7 +580,10 @@ function Get-OmoEcritures($Scan) {
                 $gardees.Add([pscustomobject]@{ Chemin = $relatif; Raison = 'contient un depot git' })
                 continue
             }
-            $ecritures.Add([pscustomobject]@{ Projet = $chemin; Nom = $nom; Source = $entry.FullName; Cible = ($OmoCibleWorkspace + '/' + $relatif) })
+            # Forme relevee a la generation (relecture 2ter-vague-3) : cockpit.ps1 la compare avant chaque demarrage de la salle.
+            $forme = 'fichier'
+            if ($entry -is [System.IO.DirectoryInfo]) { $forme = 'dossier' }
+            $ecritures.Add([pscustomobject]@{ Projet = $chemin; Nom = $nom; Source = $entry.FullName; Cible = ($OmoCibleWorkspace + '/' + $relatif); Forme = $forme })
         }
     }
     return [pscustomobject]@{ Ecritures = @($ecritures.ToArray()); Gardees = @($gardees.ToArray()); Problemes = @($problemes.ToArray()) }
@@ -608,11 +612,17 @@ function ConvertTo-OmoProjectsJson($Scan) {
 # seules exceptions) ; sur le service du cockpit, le montage en lecture seule de la liste des projets prepares. La liste
 # est portee par cette surcharge, jamais par docker-compose.yml : le fichier est git-ignore et absent tant qu'install.ps1
 # n'a pas tourne, et docker creerait alors un DOSSIER vide a sa place, que le cockpit relirait "illisible".
+# Relecture 2ter-vague-3 : chaque exception est ecrite en syntaxe longue avec bind.create_host_path: false, et porte en
+# commentaire la forme relevee (fichier ou dossier). Une entree supprimee ou renommee sur le poste apres cette generation
+# serait sinon recreee par Docker en DOSSIER vide, a chaque relance (un fichier devient un dossier) : mesure, Docker Desktop
+# 4.91. Avec create_host_path: false, une relance par la politique restart ou par compose restart echoue sans rien creer ;
+# seule la creation d'un conteneur (compose up) cree encore la source, et ConvertTo-CockpitDockerArgs (CockpitTls.ps1)
+# ne passe alors plus le profil de la salle tant qu'une source manque, a change de forme ou est devenue lien ou jonction.
 function ConvertTo-OmoProjectsYaml($Ecritures, [string]$ProjectsFile) {
     $lignes = New-Object System.Collections.Generic.List[string]
     $lignes.Add('# Genere par install.ps1 (D-2b-28, L16c) : dossier de travail en lecture seule, ecriture par exception.')
     $lignes.Add('# Un montage en ecriture par entree de premier niveau de chaque projet prepare ; jamais .git, jamais la racine d un projet.')
-    $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute ou retire un projet, un fichier ou un dossier a sa racine.')
+    $lignes.Add('# Ne pas modifier a la main ; relancez install.ps1 apres avoir ajoute, supprime, renomme ou remplace par un lien un projet, un fichier ou un dossier a sa racine.')
     $lignes.Add('services:')
     # Source de la liste des projets prepares : le cockpit la LIT ici, puis la recopie normalisee dans /control-omo.
     $lignes.Add('  ' + $OmoServiceCockpit + ':')
@@ -626,10 +636,10 @@ function ConvertTo-OmoProjectsYaml($Ecritures, [string]$ProjectsFile) {
     else {
         $lignes.Add('    volumes:')
         foreach ($item in @($Ecritures)) {
-            $source = ($item.Source -replace '\\', '/')
             # Un dollar dans un nom serait interprete par compose : il se double ($$) pour rester litteral.
-            $monte = ($source + ':' + $item.Cible + ':rw') -replace '\$', '$$$$'
-            $lignes.Add('      - ' + (ConvertTo-OmoYamlText $monte))
+            $source = ($item.Source -replace '\\', '/') -replace '\$', '$$$$'
+            $cible = $item.Cible -replace '\$', '$$$$'
+            $lignes.Add('      - { type: bind, source: ' + (ConvertTo-OmoYamlText $source) + ', target: ' + (ConvertTo-OmoYamlText $cible) + ', bind: { create_host_path: false } } # ' + $item.Forme)
         }
     }
     return (($lignes -join "`n") + "`n")
@@ -657,6 +667,7 @@ function Write-OmoFrictionNotice {
     Write-Info 'Salle : le dossier de travail y est en LECTURE SEULE ; seules les entrees de premier niveau des projets prepares y sont ouvertes en ecriture, une par une.'
     Write-Attention 'L IA de la salle ne peut creer ni fichier ni dossier a la racine d un projet : elle recoit un refus net (systeme de fichiers en lecture seule), jamais une perte silencieuse.'
     Write-Attention 'Apres avoir ajoute un fichier ou un dossier a la racine d un projet, relancez install.ps1 : sans cela, la salle ne peut pas y ecrire.'
+    Write-Attention 'Apres avoir supprime, renomme ou remplace par un lien ou une jonction un fichier ou un dossier a la racine d un projet (git clean, npm run clean, changement de branche...), relancez aussi install.ps1 : sans cela, la salle ne demarre plus (cockpit.ps1 le dit), pour que Docker ne recree pas un dossier vide a sa place sur le poste.'
     Write-Info 'Aucun dossier .omo n est cree dans vos projets : l extension n y tient pas ses carnets (plans, notes), et un .omo deja present reste en lecture seule pour la salle.'
 }
 

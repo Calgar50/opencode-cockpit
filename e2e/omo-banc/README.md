@@ -66,7 +66,7 @@ node e2e/omo-banc/run-banc.mjs --id l21 --scenarios g2,g9 --duree-g1-min 1
 |---|---|
 | `--a-blanc` | n'appelle jamais Docker : affiche les commandes, vérifie les refus et la présence des fichiers |
 | `--id <id>` | identifiant du banc ; le projet Compose vaut `sal11-omo-banc-<id>` |
-| `--scenarios` | `git,g1,g2,g12,g9,mes,g14,sul` (défaut : tous, dans cet ordre) |
+| `--scenarios` | `git,g1,g2,g12,g9,mes,g14,sul,sup` (défaut : tous, dans cet ordre ; `sup` supprime une entrée fichier et une entrée dossier du projet jetable, relance la salle par la politique `restart` puis par `compose restart`, et vérifie côté poste que rien n'est recréé : elle laisse la salle arrêtée, donc toujours en dernier) |
 | `--duree-g1-min` | durée des scénarios scriptés de G1 (défaut : 30 minutes, comme la porte le demande) |
 | `--image`, `--image-app`, `--image-base` | images employées ; `--image-base` déclenche l'auto-test `-SelfTest` de G14 |
 | `--contournement` | ajoute `banc-contournement.compose.yml` — **défaut du produit reproduit**, voir §5 |

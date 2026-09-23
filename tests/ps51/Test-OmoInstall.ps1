@@ -36,6 +36,12 @@ function Get-Extract([string]$Text, [int]$Length = 260) {
     if ($flat.Length -le $Length) { return $flat }
     return $flat.Substring(0, $Length)
 }
+# Texte ecrit par Write-Host (flux 6) pendant un bloc ; les valeurs rendues sont ignorees.
+function Invoke-Captured6([scriptblock]$Block) {
+    $texte = New-Object System.Collections.Generic.List[string]
+    & $Block 6>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.InformationRecord]) { $texte.Add([string]$_.MessageData) } }
+    return ($texte -join "`n")
+}
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('cockpit-omo-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Work | Out-Null
@@ -130,11 +136,18 @@ function Get-OverlayLines([string]$Root, [string]$Service = $NomSalle) {
     }
     return @($montages)
 }
-# Cibles des montages de la salle (L16c : "<source hote>:<cible>:rw" entre guillemets), dans l'ordre de la surcharge.
+# Forme d'un montage de la salle (relecture 2ter-vague-3) : syntaxe longue, bind.create_host_path: false, et la forme relevee
+# a la generation en commentaire. Groupes : 1 source, 2 cible, 3 forme.
+$MotifMontageSalle = '^\{ type: bind, source: "([^"]+)", target: "(/workspace(?:/[^"]*)?)", bind: \{ create_host_path: false \} \} # (fichier|dossier)\z'
+# Cibles des montages de la salle, dans l'ordre de la surcharge.
 function Get-OverlayTargets([string]$Root) {
     return @(Get-OverlayLines $Root | ForEach-Object {
-        if ($_ -cmatch '^"(.*):(/workspace(?:/[^:"]*)?):(rw|ro)"\z') { $Matches[2] } else { '?' + $_ }
+        if ($_ -cmatch $MotifMontageSalle) { $Matches[2] } else { '?' + $_ }
     })
+}
+# Montage attendu pour une source de l'hote (chemin Windows) et une cible, avec sa forme.
+function Get-ExpectedMount([string]$Source, [string]$Target, [string]$Forme) {
+    return ('{ type: bind, source: "' + (($Source -replace '\\', '/') -replace '\$', '$$$$') + '", target: "' + ($Target -replace '\$', '$$$$') + '", bind: { create_host_path: false } } # ' + $Forme)
 }
 # Chemin d'une cible relatif a /workspace ('' pour /workspace), et celui de son dossier parent ('' s'il n'y en a pas).
 function Get-TargetRelative([string]$Target) {
@@ -258,11 +271,11 @@ try {
     # mono reste en lecture seule ; depots/x.git et gitdirs/sousmod sont des depots, leurs entrees aussi.
     $lines = @(Get-OverlayLines $Root)
     Assert-Test 'surcharge : service du contrat' (([System.IO.File]::ReadAllText((Get-OverlayFile $Root))).Contains('  ' + $NomSalle + ':'))
-    Assert-Test 'surcharge : chaque montage est entre guillemets et en ecriture (rw)' ($lines.Count -gt 0 -and @($lines | Where-Object { $_.StartsWith('"') -and $_.EndsWith(':rw"') }).Count -eq $lines.Count) ($lines -join ' | ')
+    Assert-Test 'surcharge : chaque montage en syntaxe longue, create_host_path: false, forme relevee, jamais en lecture seule' ($lines.Count -gt 0 -and @($lines | Where-Object { $_ -cmatch $MotifMontageSalle -and -not $_.Contains('read_only') }).Count -eq $lines.Count) ($lines -join ' | ')
     $cibles = @(Get-OverlayTargets $Root | Sort-Object)
     $attendues = @('/workspace/alpha/node_modules', '/workspace/alpha/src', '/workspace/beta/sous') | Sort-Object
     Assert-Test 'surcharge : exactement les entrees de premier niveau ouvrables' (($cibles -join ',') -ceq ($attendues -join ',')) ($cibles -join ' | ')
-    $attendu = '"' + ($Ws -replace '\\', '/') + '/alpha/src:/workspace/alpha/src:rw"'
+    $attendu = Get-ExpectedMount (Join-Path $Ws 'alpha\src') '/workspace/alpha/src' 'dossier'
     Assert-Test 'surcharge : source de l hote et cible sous /workspace' ($lines -ccontains $attendu) ($lines -join ' | ')
     Assert-Test 'surcharge : plus aucun montage de .git' (@($lines | Where-Object { $_ -cmatch '/\.git[:"]' }).Count -eq 0) ($lines -join ' | ')
     $dollar = @($lines | Where-Object { $_.Contains('pro jet') })
@@ -288,8 +301,8 @@ try {
     $RootDollar = New-InstallRoot $Work $RepoRoot 'cockpit-dollar'
     $result = Invoke-Install -Root $RootDollar -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsDollar }
     $lignesDollar = @(Get-OverlayLines $RootDollar)
-    $attenduDollar = '"' + (($WsDollar -replace '\\', '/') + '/pro jet $test/src') -replace '\$', '$$$$'
-    $attenduDollar = $attenduDollar + ':/workspace/pro jet $$test/src:rw"'
+    $attenduDollar = '{ type: bind, source: "' + ((($WsDollar -replace '\\', '/') + '/pro jet $test/src') -replace '\$', '$$$$')
+    $attenduDollar = $attenduDollar + '", target: "/workspace/pro jet $$test/src", bind: { create_host_path: false } } # dossier'
     Assert-Test 'surcharge : dollar double et espace conserve, source et cible' ($result.ExitCode -eq 0 -and $lignesDollar.Count -eq 1 -and $lignesDollar[0] -ceq $attenduDollar) (($lignesDollar -join ' | ') + ' / attendu ' + $attenduDollar)
     Assert-Test 'omo-projets.json : le chemin garde le dollar tel quel' ((Get-ProjectState (Read-Projects $RootDollar) 'pro jet $test') -ceq 'dossier')
 
@@ -338,8 +351,9 @@ try {
     $ciblesE1 = @(Get-OverlayTargets $RootE1)
     $attenduesE1 = @('/workspace/app/README.md', '/workspace/app/src', '/workspace/app/vendor/lib/code.c', '/workspace/casse/src', '/workspace/court/doc', '/workspace/point/doc')
     Assert-Test 'E1 : un montage en ecriture par entree de premier niveau, dossiers ET fichiers' ((@($ciblesE1 | Sort-Object) -join ',') -ceq (@($attenduesE1 | Sort-Object) -join ',')) ($ciblesE1 -join ' | ')
-    Assert-Test 'E1 : chaque montage est en ecriture (:rw), aucun :ro dans la salle' (@($linesE1 | Where-Object { $_.EndsWith(':rw"') }).Count -eq $linesE1.Count) ($linesE1 -join ' | ')
-    Assert-Test 'E1 : source de l hote = cible, fichier compris' ($linesE1 -ccontains ('"' + ($WsE1 -replace '\\', '/') + '/app/README.md:/workspace/app/README.md:rw"')) ($linesE1 -join ' | ')
+    Assert-Test 'E1 : chaque montage est en ecriture (syntaxe longue sans read_only), aucun :ro dans la salle' (@($linesE1 | Where-Object { $_ -cmatch $MotifMontageSalle -and -not $_.Contains('read_only') -and -not $_.Contains(':ro') }).Count -eq $linesE1.Count) ($linesE1 -join ' | ')
+    Assert-Test 'E1 : source de l hote = cible, fichier compris (forme fichier)' ($linesE1 -ccontains (Get-ExpectedMount (Join-Path $WsE1 'app\README.md') '/workspace/app/README.md' 'fichier')) ($linesE1 -join ' | ')
+    Assert-Test 'E1 : forme relevee pour un dossier' ($linesE1 -ccontains (Get-ExpectedMount (Join-Path $WsE1 'app\src') '/workspace/app/src' 'dossier')) ($linesE1 -join ' | ')
     $surGit = @($ciblesE1 | Where-Object { Test-TargetIsGit $_ })
     Assert-Test 'E1 : aucun montage en ecriture sur .git ni sur un nom qui s y ramene (.GIT, GIT~1, .git.)' ($surGit.Count -eq 0) ($surGit -join ' | ')
     Assert-Test 'E1 : .GIT reconnu comme le depot du projet' ((Get-ProjectState $ProjectsE1 'casse') -ceq 'dossier' -and (Get-ProtectedForm $ProjectsE1 'casse/.GIT') -ceq 'dossier')
@@ -355,7 +369,81 @@ try {
     Assert-Test 'E1 : aucun dossier .omo cree sur le poste (seul celui de l utilisateur existe)' ($omoCrees.Count -eq 1 -and $omoCrees[0].FullName -ceq (Join-Path $WsE1 'app\.omo')) (($omoCrees | ForEach-Object { $_.FullName }) -join ' | ')
     Assert-Test 'E1 : friction dite (aucune creation a la racine d un projet)' ($result.Host.Contains('ne peut creer ni fichier ni dossier a la racine d un projet') -and $result.Host.Contains('refus net')) (Get-Extract $result.Host)
     Assert-Test 'E1 : friction dite (relancer install.ps1 apres un ajout a la racine)' ($result.Host.Contains('relancez install.ps1')) (Get-Extract $result.Host)
+    Assert-Test 'E1 : friction dite (relancer install.ps1 apres une suppression, un renommage ou un lien a la racine)' ($result.Host.Contains('supprime, renomme ou remplace par un lien ou une jonction un fichier ou un dossier a la racine d un projet') -and $result.Host.Contains('relancez aussi install.ps1')) (Get-Extract $result.Host)
     if (-not $avecPointFinal) { Write-Host '  (nom .git. non creable sur ce poste : ce cas est joue sans lui)' -ForegroundColor DarkGray }
+
+    # --- 2 quater. Sources de la surcharge verifiees avant chaque demarrage de la salle (relecture 2ter-vague-3) ------
+    # Mesure (Docker Desktop 4.91, moteur 29.8.0) : une source de bind supprimee sur le poste apres la generation est recreee par
+    # Docker en DOSSIER vide a chaque relance (un fichier devient un dossier), et une entree devenue jonction ouvre sa cible en
+    # ecriture. Syntaxe longue + create_host_path: false : une relance par la politique restart ou par compose restart echoue
+    # sans rien creer ; seule une creation (compose up) cree encore la source. ConvertTo-CockpitDockerArgs ne passe donc pas le
+    # profil de la salle a up, create, start, restart ni run tant qu'une source manque ou a change, et le dit une fois.
+    Write-Section 'Sources de la surcharge verifiees avant chaque demarrage de la salle'
+    $WsSrc = New-Folder (Join-Path $Work 'ws-sources')
+    New-GitFolder (Join-Path $WsSrc 'app\.git')
+    New-TextFile (Join-Path $WsSrc 'app\src\main.ts') "export {};`n"
+    New-TextFile (Join-Path $WsSrc 'app\README.md') "lisez-moi`n"
+    New-TextFile (Join-Path $WsSrc 'app\dist\sortie.js') "x`n"
+    $RootSrc = New-InstallRoot $Work $RepoRoot 'cockpit-sources'
+    $result = Invoke-Install -Root $RootSrc -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsSrc }
+    Assert-Test 'sources : surcharge generee' ($result.ExitCode -eq 0 -and (Test-Path -LiteralPath (Get-OverlayFile $RootSrc))) (Get-Extract ($result.Host + ' ' + $result.Error))
+    [System.IO.File]::WriteAllText((Join-Path $RootSrc '.env'), "COCKPIT_OMO=on`n", (New-Object System.Text.UTF8Encoding $false))
+    # Arguments docker et texte affiche (flux 6) d'un appel de la bibliotheque, l'avertissement remis a zero avant l'appel.
+    function Get-SalleCall([string[]]$DockerArgs) {
+        $CockpitTlsSession.OmoNotice = $false
+        $texte = New-Object System.Collections.Generic.List[string]
+        $valeurs = New-Object System.Collections.Generic.List[string]
+        & { ConvertTo-CockpitDockerArgs $RootSrc $DockerArgs } 6>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.InformationRecord]) { $texte.Add([string]$_.MessageData) } else { $valeurs.Add([string]$_) } }
+        return [pscustomobject]@{ Args = ($valeurs -join ' '); Host = ($texte -join "`n") }
+    }
+    $Demarrages = @('up', 'create', 'start', 'restart', 'run')
+    Assert-Test 'sources : toutes presentes, rien a signaler' (@(Get-CockpitOmoSourceProblems $RootSrc).Count -eq 0) (@(Get-CockpitOmoSourceProblems $RootSrc) -join ', ')
+    foreach ($sous in $Demarrages) {
+        $appel = Get-SalleCall @('compose', $sous)
+        Assert-Test ('sources presentes : profil de la salle passe a ' + $sous) ($appel.Args.Contains('--profile omo') -and $appel.Host -ceq '') ($appel.Args + ' / ' + $appel.Host)
+    }
+    # Un FICHIER de la racine supprime (npm run clean, git clean...) : jamais recree, profil retire pour les demarrages seulement.
+    Remove-Item -LiteralPath (Join-Path $WsSrc 'app\README.md') -Force
+    Assert-Test 'fichier supprime : l entree est nommee' ((@(Get-CockpitOmoSourceProblems $RootSrc) -join ',') -ceq 'app/README.md') (@(Get-CockpitOmoSourceProblems $RootSrc) -join ', ')
+    foreach ($sous in $Demarrages) {
+        $appel = Get-SalleCall @('compose', $sous, '-d')
+        Assert-Test ('fichier supprime : aucun profil de la salle pour ' + $sous) (-not $appel.Args.Contains('--profile') -and $appel.Args.Contains($CockpitOmoOverlay)) $appel.Args
+        Assert-Test ('fichier supprime : message pour ' + $sous) ($appel.Host.Contains('Salle non demarree') -and $appel.Host.Contains('app/README.md') -and $appel.Host.Contains('Relancez install.ps1')) (Get-Extract $appel.Host)
+    }
+    foreach ($sous in @('stop', 'down', 'ps', 'logs')) {
+        $appel = Get-SalleCall @('compose', $sous)
+        Assert-Test ('fichier supprime : profil garde pour ' + $sous + ' (arret de la salle, MO-3)') ($appel.Args.Contains('--profile omo') -and $appel.Host -ceq '') ($appel.Args + ' / ' + $appel.Host)
+    }
+    $CockpitTlsSession.OmoNotice = $false
+    $deux = Invoke-Captured6 { ConvertTo-CockpitDockerArgs $RootSrc @('compose', 'up', '-d') | Out-Null; ConvertTo-CockpitDockerArgs $RootSrc @('compose', 'start') | Out-Null }
+    Assert-Test 'message dit une seule fois par execution' (([regex]::Matches($deux, 'Salle non demarree')).Count -eq 1) (Get-Extract $deux)
+    Assert-Test 'fichier supprime : rien n est recree sur le poste par la verification' (-not (Test-Path -LiteralPath (Join-Path $WsSrc 'app\README.md')))
+    # Le meme nom revenu en DOSSIER (forme changee) : toujours refuse.
+    New-Folder (Join-Path $WsSrc 'app\README.md') | Out-Null
+    Assert-Test 'forme changee (fichier devenu dossier) : refuse' ((@(Get-CockpitOmoSourceProblems $RootSrc) -join ',') -ceq 'app/README.md')
+    Remove-Item -LiteralPath (Join-Path $WsSrc 'app\README.md') -Force
+    New-TextFile (Join-Path $WsSrc 'app\README.md') "lisez-moi`n"
+    Assert-Test 'fichier revenu : rien a signaler' (@(Get-CockpitOmoSourceProblems $RootSrc).Count -eq 0)
+    # Un DOSSIER supprime (dist, par tsc --build --clean) : meme refus.
+    Remove-Item -LiteralPath (Join-Path $WsSrc 'app\dist') -Recurse -Force
+    Assert-Test 'dossier supprime : refuse, rien recree' ((@(Get-CockpitOmoSourceProblems $RootSrc) -join ',') -ceq 'app/dist' -and -not (Test-Path -LiteralPath (Join-Path $WsSrc 'app\dist')))
+    New-Folder (Join-Path $WsSrc 'app\dist') | Out-Null
+    # Un dossier remplace par une JONCTION vers un dossier hors du dossier de travail : Docker l'ouvrirait en ecriture.
+    $dehors = New-Folder (Join-Path $Work 'dehors-sources')
+    Remove-Item -LiteralPath (Join-Path $WsSrc 'app\src') -Recurse -Force
+    New-Junction (Join-Path $WsSrc 'app\src') $dehors
+    Assert-Test 'jonction a la place d un dossier : refusee' ((@(Get-CockpitOmoSourceProblems $RootSrc) -join ',') -ceq 'app/src') (@(Get-CockpitOmoSourceProblems $RootSrc) -join ', ')
+    Assert-Test 'jonction : aucun profil pour up' (-not (Get-SalleCall @('compose', 'up', '-d')).Args.Contains('--profile'))
+    [System.IO.Directory]::Delete((Join-Path $WsSrc 'app\src'), $false)
+    New-TextFile (Join-Path $WsSrc 'app\src\main.ts') "export {};`n"
+    # Surcharge d'une version precedente (syntaxe courte, sans create_host_path ni forme) : a regenerer.
+    $ancienne = [System.IO.File]::ReadAllText((Get-OverlayFile $RootSrc)) -replace '(?m)^      - \{ type: bind, source: "([^"]+)", target: "([^"]+)", bind: \{ create_host_path: false \} \} # \w+$', '      - "$1:$2:rw"'
+    [System.IO.File]::WriteAllText((Get-OverlayFile $RootSrc), $ancienne, (New-Object System.Text.UTF8Encoding $false))
+    Assert-Test 'surcharge d avant (syntaxe courte) : a regenerer, aucun profil pour up' (((@(Get-CockpitOmoSourceProblems $RootSrc) | Select-Object -Unique) -join ',') -ceq 'surcharge a regenerer' -and -not (Get-SalleCall @('compose', 'up')).Args.Contains('--profile')) (@(Get-CockpitOmoSourceProblems $RootSrc) -join ', ')
+    # Relance d'install.ps1 : la surcharge suit le poste, le profil revient.
+    Remove-Item -LiteralPath (Join-Path $WsSrc 'app\dist') -Recurse -Force
+    $result = Invoke-Install -Root $RootSrc -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsSrc }
+    Assert-Test 'relance d install.ps1 : entree retiree de la surcharge, profil revenu' ($result.ExitCode -eq 0 -and @(Get-CockpitOmoSourceProblems $RootSrc).Count -eq 0 -and -not ((Get-OverlayTargets $RootSrc) -ccontains '/workspace/app/dist') -and (Get-SalleCall @('compose', 'up', '-d')).Args.Contains('--profile omo')) (Get-Extract ($result.Host + ' ' + $result.Error))
 
     # Un projet sans rien a ouvrir : la liste de la salle est vide mais bien formee (jamais une cle nulle pour compose).
     $WsVide = New-Folder (Join-Path $Work 'ws-e1-vide')

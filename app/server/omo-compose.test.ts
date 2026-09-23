@@ -435,8 +435,15 @@ describe("L16c : dossier de travail en lecture seule, écriture par exception, c
 
   it("la surcharge générée n'ouvre qu'en écriture, entrée par entrée, jamais .git ni la racine d'un projet (lecture d'install.ps1)", () => {
     // Le générateur est joué pour de vrai par tests/ps51/Test-OmoInstall.ps1 (arbre jetable, faux docker) ; ici, la forme.
-    assert.match(TEXTE_INSTALL, /\$monte = \(\$source \+ ':' \+ \$item\.Cible \+ ':rw'\)/);
-    assert.match(TEXTE_INSTALL, /Cible = \(\$OmoCibleWorkspace \+ '\/' \+ \$relatif\)/);
+    // Relecture 2ter-vague-3 : syntaxe longue, jamais en lecture seule, `create_host_path: false` (une relance par la politique
+    // restart échoue sans recréer une source supprimée sur le poste, mesuré) et la forme relevée en commentaire (fichier, dossier).
+    assert.match(
+      TEXTE_INSTALL,
+      /\$lignes\.Add\('      - \{ type: bind, source: ' \+ \(ConvertTo-OmoYamlText \$source\) \+ ', target: ' \+ \(ConvertTo-OmoYamlText \$cible\) \+ ', bind: \{ create_host_path: false \} \} # ' \+ \$item\.Forme\)/,
+    );
+    assert.doesNotMatch(TEXTE_INSTALL, /read_only: true/);
+    assert.match(TEXTE_INSTALL, /\$forme = 'fichier'\s+if \(\$entry -is \[System\.IO\.DirectoryInfo\]\) \{ \$forme = 'dossier' \}/);
+    assert.match(TEXTE_INSTALL, /Cible = \(\$OmoCibleWorkspace \+ '\/' \+ \$relatif\); Forme = \$forme/);
     assert.match(TEXTE_INSTALL, /\$relatif = \$chemin \+ '\/' \+ \$nom/);
     assert.match(TEXTE_INSTALL, /if \(Test-OmoNomGitOuCourt \$nom\) \{ continue \}/);
     // Plus aucun `.git:ro` généré : la protection vient de l'ancêtre en lecture seule, plus d'un bind sur le nom exact.
@@ -444,6 +451,21 @@ describe("L16c : dossier de travail en lecture seule, écriture par exception, c
     // Friction dite à l'utilisateur (A16 point 6) : pas de création à la racine d'un projet, relance après un ajout.
     assert.match(TEXTE_INSTALL, /ne peut creer ni fichier ni dossier a la racine d un projet/);
     assert.match(TEXTE_INSTALL, /relancez install\.ps1/);
+    // Relecture 2ter-vague-3 : et après une suppression, un renommage ou un lien à la racine d'un projet.
+    assert.match(TEXTE_INSTALL, /supprime, renomme ou remplace par un lien ou une jonction un fichier ou un dossier a la racine d un projet[^']*relancez aussi install\.ps1/);
+  });
+
+  it("relecture 2ter-vague-3 : CockpitTls.ps1 retire le profil de la salle aux SEULES commandes qui créent ou démarrent un conteneur quand une source manque", () => {
+    // Joué pour de vrai par tests/ps51 (Test-CockpitTls, Test-OmoInstall, Test-Cockpit : faux docker) ; ici, la forme, pour qu'une
+    // réécriture qui lâcherait la vérification des sources ou l'étendrait à stop et down tombe aussi dans `npm test`.
+    const tls = fs.readFileSync(path.join(RACINE, "CockpitTls.ps1"), "utf8");
+    assert.match(tls, /function Get-CockpitOmoSourceProblems\(\[string\]\$Root\)/);
+    assert.match(tls, /@\('up', 'create', 'start', 'restart', 'run'\) -ccontains \$list\[1\]\) \{ Get-CockpitOmoSourceProblems \$Root \}/);
+    assert.match(tls, /if \(\(Test-CockpitOmoEnabled \$Root\) -and \$blocked\.Count -eq 0\) \{ \$prefix \+= @\('--profile', 'omo'\) \}/);
+    // La ligne attendue est exactement celle qu'écrit install.ps1 : une autre forme vaut « à régénérer ».
+    assert.match(tls, /create_host_path: false \\\} \\\} # \(fichier\|dossier\)\\z/);
+    // Jamais pour stop ni down : la salle doit toujours pouvoir s'arrêter (MO-3 point 2).
+    assert.doesNotMatch(tls, /'up', 'create', 'start', 'restart', 'run'[^)]*'(?:stop|down)'/);
   });
 });
 

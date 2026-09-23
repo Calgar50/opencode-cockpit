@@ -98,12 +98,20 @@ export interface WorkspaceGit {
 
 /**
  * Montage lu dans `/proc/self/mountinfo` (L16c) : point (chemin POSIX) et lecture seule (option `ro` du montage lui-même). Une chaîne
- * seule vaut un montage EN ÉCRITURE : la lecture seule ne se présume jamais.
+ * seule vaut un montage EN ÉCRITURE : la lecture seule ne se présume jamais. Relecture 2ter-vague-3 : `racineFs` (champ 4, ce qui
+ * est monté dans son système de fichiers), `periph` (champ 3, major:minor) et `type` (système de fichiers) ; `lireMontages` les
+ * donne toujours, un montage simulé peut les omettre, et la sonde tient alors l'absence pour un doute (fermé).
  */
 export interface Montage {
   point: string;
   lectureSeule: boolean;
+  racineFs?: string | null;
+  periph?: string | null;
+  type?: string | null;
 }
+
+/** Étiquette publiée pour un montage en écriture posé hors du dossier de travail (jamais le chemin absolu de l'hôte). */
+export declare const HORS_DOSSIER_DE_TRAVAIL: string;
 
 export type MontageDonne = Montage | string;
 

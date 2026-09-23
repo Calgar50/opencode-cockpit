@@ -631,9 +631,16 @@ describe("superviseur : volumes de la salle", () => {
 
 // --- Balayage git (D-2b-28) ---------------------------------------------------------------------------------------------------------
 
-/** Montages EN LECTURE SEULE, au format de /proc/self/mountinfo (chemins POSIX), relatifs à un dossier de test (« » : lui-même). */
+/**
+ * Montages EN LECTURE SEULE, au format de /proc/self/mountinfo (chemins POSIX), relatifs à un dossier de test (« » : lui-même).
+ * Chacun monte le chemin de l'hôte qui porte son nom (`racineFs` = point, un bind du même chemin comme sous Linux) : c'est la forme
+ * d'install.ps1, où chaque exception monte l'entrée de même chemin relatif (relecture 2ter-vague-3, règle n° 5 de la sonde).
+ */
 const ro = (dir: string, ...relatifs: string[]): salle.Montage[] =>
-  relatifs.map((relatif) => ({ point: `${dir.replaceAll("\\", "/")}${relatif === "" ? "" : `/${relatif}`}`, lectureSeule: true }));
+  relatifs.map((relatif) => {
+    const point = `${dir.replaceAll("\\", "/")}${relatif === "" ? "" : `/${relatif}`}`;
+    return { point, lectureSeule: true, racineFs: point };
+  });
 /** Montages EN ÉCRITURE, même forme. */
 const rw = (dir: string, ...relatifs: string[]): salle.Montage[] => ro(dir, ...relatifs).map((m) => ({ ...m, lectureSeule: false }));
 
@@ -1310,6 +1317,126 @@ describe("superviseur : sonde des montages du dossier de travail, sur des mounti
     assert.equal(ferme.workspaceGit.nonProteges[0], ".");
     assert.ok(ferme.workspaceGit.nonProteges.includes("projet/.git"), JSON.stringify(ferme.workspaceGit));
     assert.equal(salle.gitProtege(ferme), false);
+  });
+
+  // --- Relecture 2ter-vague-3 : une entrée de premier niveau remplacée par une jonction APRÈS install.ps1 -------------------------
+  // Mesure `scratchpad/sal11-fix-mesure/mesure-jonction.log` (Docker 29.8.0, compose 5.5.1, projet jetable sal11-fixm-jonction,
+  // options de la salle : read_only, user 1000, cap_drop ALL) : Docker Desktop suit la jonction ET, côté conteneur, le lien absolu
+  // que le partage 9p montre pour elle ; le montage en écriture atterrit sur /mnt/host/c/…, hors de /workspace, et l'uid 1000 y
+  // écrit (témoin retrouvé sur le poste). Lignes reprises telles quelles, chemins de l'hôte anonymisés.
+
+  /** Ligne relevée : l'entrée `projet/lib`, devenue jonction vers `C:\Users\u\dehors`, montée en écriture à côté de /workspace. */
+  const LIGNE_JONCTION = ligneBind(2004, 1983, "/Users/u/dehors", "/mnt/host/c/Users/u/dehors", "rw");
+
+  it("lit le champ 4 (ce qui est monté), le major:minor et le type ; les échappements octaux du champ 4 sont décodés", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/src", "mon projet/a b"], enPlus: [LIGNE_JONCTION] }));
+    const parPoint = new Map(montages.map((m) => [m.point, m]));
+    assert.deepEqual(parPoint.get("/workspace"), { point: "/workspace", lectureSeule: true, racineFs: "/Users/u/projets", periph: "0:68", type: "9p" });
+    assert.equal(parPoint.get("/workspace/mon projet/a b")?.racineFs, "/Users/u/projets/mon projet/a b");
+    assert.deepEqual(parPoint.get("/omo-carnets"), { point: "/omo-carnets", lectureSeule: false, racineFs: "/data/docker/volumes/opencode-cockpit_omo-carnets/_data", periph: "8:48", type: "ext4" });
+    assert.equal(parPoint.get("/home/node")?.type, "tmpfs");
+    assert.equal(parPoint.get("/mnt/host/c/Users/u/dehors")?.racineFs, "/Users/u/dehors");
+    // Champs optionnels avant « - » (master:31) : le type reste celui qui suit le séparateur.
+    assert.equal(salle.normaliserMontages(montages).find((m) => m.point === "/omo-carnets")?.type, "ext4");
+  });
+
+  it("entrée devenue jonction après install.ps1 : le montage en écriture posé HORS de /workspace ferme la salle (ligne mesurée)", (t) => {
+    // Ce que mountinfo montre après la relance : l'exception `projet/lib` n'est plus sous /workspace, elle est sur /mnt/host/c/….
+    const ecritures = ECRITURES_E1.filter((e) => e !== "projet/src");
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures, enPlus: [LIGNE_JONCTION] }));
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+    assert.deepEqual({ ok: sonde.ok, problemes: sonde.problemes }, { ok: false, problemes: [salle.HORS_DOSSIER_DE_TRAVAIL] });
+    // Le chemin absolu de l'hôte n'est jamais publié : seule l'étiquette relative l'est.
+    assert.equal(sonde.problemes.some((p) => p.includes("/Users/")), false);
+    // Témoin : sans la ligne détournée, la même topologie est ouverte. C'est bien cette règle qui ferme.
+    const temoin = montagesSimules(t, mountinfoSalle({ ecritures }));
+    assert.equal(salle.controlerMontagesWorkspace(PREPARES_E1, temoin, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, temoin) }).ok, true);
+  });
+
+  it("chemin complet : la jonction ferme constatGit et rejoint nonProteges, même quand le balayage ne voit qu'un lien", (t) => {
+    const ws = arbreSurDisque(t, ARBRE_E1);
+    const nominal = [...ro(ws, ""), ...rw(ws, "projet/src", "projet/README.md", "notes/idees.md")];
+    const partage = partageWindows(ws, ARBRE_E1, nominal);
+    assert.equal(salle.constatGit(PREPARES_E1, { racine: ws, montages: nominal, ...partage, maintenant: 3 }).ok, true);
+    // Le même point de montage détourné : la source suivie à travers la jonction est ailleurs sur le poste, typée 9p.
+    const detourne = [...ro(ws, ""), ...rw(ws, "projet/README.md", "notes/idees.md"), { point: "/mnt/host/c/Users/u/dehors", lectureSeule: false, racineFs: "/Users/u/dehors", periph: "0:68", type: "9p" }];
+    const ferme = salle.constatGit(PREPARES_E1, { racine: ws, montages: detourne, ...partageWindows(ws, ARBRE_E1, detourne), maintenant: 3 });
+    assert.equal(ferme.ok, false);
+    assert.deepEqual(ferme.workspaceGit.nonProteges, [salle.HORS_DOSSIER_DE_TRAVAIL]);
+    assert.deepEqual(ferme.montages.refuses, [salle.HORS_DOSSIER_DE_TRAVAIL]);
+    assert.equal(salle.gitProtege(ferme), false);
+  });
+
+  it("entrée suivie à travers un lien SANS que le point quitte /workspace (lien relatif, hôte Linux) : ce qui est monté n'est pas l'entrée → FERMÉE", (t) => {
+    const detournee = ligneBind(1999, 1993, "/Users/u/ailleurs/lib", "/workspace/projet/src", "rw");
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/README.md", "notes/idees.md"], enPlus: [detournee] }));
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+    assert.deepEqual({ ok: sonde.ok, problemes: sonde.problemes }, { ok: false, problemes: ["projet/src"] });
+    // Une source sous le dossier de travail mais d'une AUTRE entrée (lien vers un voisin) est détournée aussi.
+    const voisin = ligneBind(1999, 1993, "/Users/u/projets/notes", "/workspace/projet/src", "rw");
+    const autre = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/README.md"], enPlus: [voisin] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, autre, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, autre) }).problemes, ["projet/src"]);
+  });
+
+  it("aucun faux positif : volumes nommés et tmpfs en écriture hors de /workspace, /certs du partage en lecture seule", (t) => {
+    const enPlus = [
+      "1995 1983 0:75 / /tmp rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=1777",
+      "1996 1983 8:48 /data/docker/volumes/opencode-cockpit_omo-state/_data /omo-state rw,relatime master:31 - ext4 /dev/sdd rw",
+      "1997 1983 8:48 /data/docker/volumes/opencode-cockpit_oc-omo-data/_data /home/node/.local/share/opencode rw,relatime master:31 - ext4 /dev/sdd rw",
+      "1998 1983 8:48 /data/docker/containers/0123456789ab/hosts /etc/hosts ro,relatime - ext4 /dev/sdd rw",
+      ligneBind(1999, 1983, "/Users/u/cockpit/certs", "/certs", "ro"),
+    ];
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) }), {
+      ok: true,
+      racineLectureSeule: true,
+      ecritures: 3,
+      problemes: [],
+    });
+    // Le même /certs rouvert en écriture, lui, est un morceau du poste écrit hors du dossier de travail : fermé.
+    const certsEcrits = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus: [ligneBind(1999, 1983, "/Users/u/cockpit/certs", "/certs", "rw")] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, certsEcrits, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, certsEcrits) }).problemes, [salle.HORS_DOSSIER_DE_TRAVAIL]);
+  });
+
+  it("casse : sur le partage d'un hôte Windows, la source se compare sans la casse ; sur un volume, à l'octet", (t) => {
+    // WORKSPACE_DIR écrit « Projets », entrées lues « projets » : même dossier pour Windows, donc ouvert.
+    const lignes = [
+      "1983 1946 0:62 / / ro,relatime master:1 - overlay overlay rw",
+      ligneBind(1993, 1983, "/Users/u/Projets", "/workspace", "ro"),
+      ligneBind(1994, 1993, "/Users/u/projets/projet/src", "/workspace/projet/src", "rw"),
+    ];
+    const windows = montagesSimules(t, `${lignes.join("\n")}\n`);
+    assert.equal(salle.controlerMontagesWorkspace(PREPARES_E1, windows, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, windows) }).ok, true);
+    // Même écart de casse sur un volume nommé (ext4, sensible à la casse) : deux dossiers différents, fermé.
+    const volume = [
+      "1983 1946 0:62 / / ro,relatime master:1 - overlay overlay rw",
+      "1993 1983 8:48 /data/docker/volumes/ws/_data/Projets /workspace ro,relatime - ext4 /dev/sdd rw",
+      "1994 1993 8:48 /data/docker/volumes/ws/_data/projets/projet/src /workspace/projet/src rw,relatime - ext4 /dev/sdd rw",
+    ];
+    const ext4 = montagesSimules(t, `${volume.join("\n")}\n`);
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, ext4, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, ext4) }).problemes, ["projet/src"]);
+  });
+
+  it("fermé en cas de doute : source illisible, /workspace monté depuis deux sources, type illisible hors de /workspace", (t) => {
+    const partageDe = (montages: salle.Montage[]) => ({ racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+    // Montage donné sans son champ 4 (simulé) : rien ne dit ce qu'il monte.
+    const sansSource: salle.Montage[] = [
+      { point: "/workspace", lectureSeule: true, racineFs: "/Users/u/projets", periph: "0:68", type: "9p" },
+      { point: "/workspace/projet/src", lectureSeule: false },
+    ];
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, sansSource, partageDe(sansSource)).problemes, ["projet/src"]);
+    // /workspace monté deux fois en lecture seule, depuis deux dossiers différents : aucune source de référence, tout est refusé.
+    const deuxSources = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/src"], enPlus: [ligneBind(1999, 1983, "/Users/u/autre", "/workspace", "ro")] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, deuxSources, partageDe(deuxSources)).problemes, ["projet/src"]);
+    // Montage en écriture hors de /workspace dont le type n'est pas lu (ligne sans « - ») : douteux, même sur un autre périphérique.
+    const sansType = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus: ["1999 1983 8:48 /x /ailleurs rw,noatime"] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, sansType, partageDe(sansType)).problemes, [salle.HORS_DOSSIER_DE_TRAVAIL]);
+    // Type inconnu de la liste, mais MÊME périphérique que /workspace (le partage de l'hôte) : un morceau du poste, fermé.
+    const memePeriph = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus: ["1999 1983 0:68 /Users/u/x /ailleurs rw,noatime - partage-inconnu C:\\134 rw"] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, memePeriph, partageDe(memePeriph)).problemes, [salle.HORS_DOSSIER_DE_TRAVAIL]);
+    // Témoin : le même type inconnu sur un AUTRE périphérique (un volume de la machine virtuelle) n'est pas du partage : ouvert.
+    const autrePeriph = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus: ["1999 1983 8:48 /x /ailleurs rw,noatime - partage-inconnu /dev/sdd rw"] }));
+    assert.equal(salle.controlerMontagesWorkspace(PREPARES_E1, autrePeriph, partageDe(autrePeriph)).ok, true);
   });
 });
 
