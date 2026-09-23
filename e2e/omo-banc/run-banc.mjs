@@ -92,7 +92,7 @@ if (values.aide) {
           "  --duree-g1-min <n>   durée des scénarios scriptés de G1, en minutes (défaut : 30)",
       "  --image-base <ref>   image opencode de base, épinglée par empreinte : G14 rejoue alors -SelfTest",
       "  --contournement      ajoute le tmpfs du contournement (défaut fautif reproduit par G2) pour laisser les mesures se faire",
-      "  --sans-git           projets préparés sans dépôt git : banc DÉGRADÉ, seul moyen de mesurer le reste sur un hôte Windows",
+      "  --sans-git           projets préparés sans dépôt git : banc DÉGRADÉ (porte git sans objet, M23 non mesurable)",
       "  --ecrire-fixtures    REMPLACE les fixtures du dépôt (app/server/test-support/fixtures/omo-banc-*.jsonl) avec les",
       "                       captures du scénario « mes » ; sans cette option, elles vont dans la sortie du banc et le dépôt",
       "                       n'est jamais touché",
@@ -418,15 +418,20 @@ async function principal() {
 /**
  * Deux projets jetables : un projet ouvert par le banc, un second préparé mais jamais ouvert (M31).
  *
- * Par défaut ce sont de VRAIS dépôts git, avec un commit et une modification non commitée : sans `.git`, `install.ps1`
- * n'aurait rien à monter en lecture seule, et la mesure M23 (`git status` et `git diff` avec `.git:ro`) n'observerait rien.
- * C'est aussi le cas RÉEL d'un poste : un dossier de travail sans aucun dépôt n'existe guère.
+ * Par défaut ce sont de VRAIS dépôts git, avec un commit et une modification non commitée : sans `.git`, la porte `git`
+ * n'aurait rien à protéger, et la mesure M23 (`git status` et `git diff` sur un dépôt que la salle ne peut pas écrire)
+ * n'observerait rien. C'est aussi le cas RÉEL d'un poste : un dossier de travail sans aucun dépôt n'existe guère.
  *
- * `--sans-git` retire les dépôts. Ce n'est pas une commodité : sur un hôte Windows, un `.git` protégé ferme la salle (porte
- * G2, scénario `git`), et c'est la seule façon d'aller mesurer tout le reste sur ce PC. Le banc le dit alors à chaque
- * exécution, pour que personne ne prenne un banc dégradé pour un banc complet.
+ * `--sans-git` retire les dépôts. Avant L16c, c'était la seule façon d'aller mesurer tout le reste sur un hôte Windows : un
+ * `.git` monté `:ro` y restait inscriptible par ses alias, et la sonde du superviseur fermait la salle. Depuis L16c (dossier de
+ * travail en lecture seule, écriture par exception), la salle démarre avec de vrais dépôts. Le banc dégradé le dit toujours
+ * à chaque exécution, pour que personne ne le prenne pour un banc complet.
  *
  * L'identité git est locale au dépôt et factice : rien de la machine n'entre dans ces projets.
+ *
+ * Deux DOSSIERS de premier niveau (`src`, `docs`) à côté des deux fichiers (train de V3 de la 2 ter, L16c) : `install.ps1` ouvre
+ * en écriture chaque entrée de premier niveau, dossiers ET fichiers, et la porte `git` mesure l'écriture légitime dans un dossier
+ * ouvert, l'alias d'un dossier ouvert, la remontée `..` depuis lui et le lien dur entre deux dossiers ouverts.
  */
 async function preparerProjets(ws, { avecGit = true } = {}) {
   for (const [nom, contenu] of [
@@ -434,9 +439,12 @@ async function preparerProjets(ws, { avecGit = true } = {}) {
     ["projet-temoin", "Projet préparé, jamais ouvert : témoin de la mesure M31.\n"],
   ]) {
     const racine = path.join(ws, nom);
-    fs.mkdirSync(racine, { recursive: true });
+    fs.mkdirSync(path.join(racine, "src"), { recursive: true });
+    fs.mkdirSync(path.join(racine, "docs"), { recursive: true });
     fs.writeFileSync(path.join(racine, "LISEZMOI.md"), contenu);
     fs.writeFileSync(path.join(racine, "notes.txt"), `Fichier témoin de ${nom}.\n`);
+    fs.writeFileSync(path.join(racine, "src", "app.js"), `// Code jetable de ${nom}.\nexport const nom = "${nom}";\n`);
+    fs.writeFileSync(path.join(racine, "docs", "guide.md"), `Guide jetable de ${nom}.\n`);
     if (!avecGit) continue;
     const git = (args) => lancer("git", ["-C", racine, ...args], { delaiMs: 60_000 });
     await git(["init", "--initial-branch=main"]);

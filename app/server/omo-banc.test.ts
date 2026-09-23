@@ -17,7 +17,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import type { ContexteDePorte } from "../../e2e/omo-banc/scenarios/git-protection.mjs";
-import porteGit from "../../e2e/omo-banc/scenarios/git-protection.mjs";
+import porteGit, { FEUILLES, NETTOYAGE_E1, PROJET_ECRIT, SONDE_E1, TEMOIN } from "../../e2e/omo-banc/scenarios/git-protection.mjs";
 import { cheminDeFixture, typeDEvenement } from "../../e2e/omo-banc/scenarios/mesures.mjs";
 import {
   BancRefus,
@@ -252,82 +252,236 @@ describe("L21, mode « à blanc » : aucune commande Docker, tous les refus vér
   });
 });
 
-describe("L21, porte « git » : ce qu'un `.git` monté en lecture seule protège vraiment", () => {
-  /** Double du contexte du banc : aucune commande, aucun Docker, juste les réponses que la porte lit. */
-  function contexte(options: { amorce: unknown; alias: unknown; etat?: Record<string, unknown> }): ContexteDePorte & { ecrits: Map<string, string> } {
+describe("L21 / L16c, porte « git » : ce que le dossier de travail en lecture seule protège vraiment", () => {
+  // Train de V3 de la 2 ter (L21b anticipé pour cette porte) : la porte mesure désormais la topologie E1 de L16c — racine en
+  // lecture seule, écriture par exception — par les huit familles de l'essai E1, puis vérifie côté POSTE. Le double ci-dessous
+  // joue la salle sur un arbre jetable : la sonde « écrit » ce qu'une salle réelle écrirait, le nettoyage le retire.
+  const PROJETS = ["projet-ouvert", "projet-temoin"];
+  const EROFS_PARTOUT = {
+    "racine du dossier de travail": "EROFS",
+    "fichier neuf a la racine du projet": "EROFS",
+    "dossier neuf a la racine du projet": "EROFS",
+    "fichier existant de .git ouvert en ecriture": "EROFS",
+    "entree ouverte sous un parent aliase (PROJET-OUVERT/src)": "EROFS",
+    "entree ouverte sous son nom aliase (projet-ouvert/SRC)": "EROFS",
+    "fichier ouvert sous un parent aliase (PROJET-OUVERT/notes.txt)": "EROFS",
+    "remontee .. vers .git/hooks": "EROFS",
+    "remontee .. vers la racine du projet": "EROFS",
+    "remontee .. vers le dossier de travail": "EROFS",
+    "remontee .. vers le .git d'un parent aliase": "EROFS",
+  };
+  const EXDEV_PARTOUT = {
+    ".git/config vers une entree ouverte": "EXDEV",
+    ".git/HEAD vers une entree ouverte": "EXDEV",
+    "entre deux entrees ouvertes (src vers docs)": "EXDEV",
+    "fichier ouvert vers une entree ouverte (notes.txt vers src)": "EXDEV",
+  };
+  const ferme = { existe: "dossier", inscriptible: false, ecriture: "EROFS", crochet: "EROFS" };
+  type Surcharge = Record<string, Record<string, unknown>>;
+  const aliasFermes = (surcharge: Surcharge = {}) =>
+    Object.fromEntries(PROJETS.map((p) => [p, { ".git": { ...ferme }, ".GIT": { ...ferme }, "GIT~1": { ...ferme }, ".gIt": { existe: "ENOENT" }, ...(surcharge[p] ?? {}) }]));
+  const parentsFermes = (surcharge: Surcharge = {}) =>
+    Object.fromEntries(PROJETS.map((p) => [p, { [`${p.toUpperCase()}/.git`]: { ...ferme }, "PROJET~1/.git": { ...ferme }, ...(surcharge[p] ?? {}) }]));
+  const montagesE1 = () => [
+    { point: "/workspace", ro: true },
+    ...PROJETS.flatMap((p) => ["LISEZMOI.md", "docs", "notes.txt", "src"].map((nom) => ({ point: `/workspace/${p}/${nom}`, ro: false }))),
+  ];
+
+  /** Arbre jetable du « poste » : deux projets tels que run-banc.mjs les prépare, dépôts compris. */
+  function arbre(t: { after: (f: () => void) => void }): string {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "banc-porte-git-"));
+    t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+    for (const p of PROJETS) {
+      for (const d of [".git/hooks", "src", "docs"]) fs.mkdirSync(path.join(ws, p, ...d.split("/")), { recursive: true });
+      fs.writeFileSync(path.join(ws, p, ".git", "config"), "[core]\n");
+      fs.writeFileSync(path.join(ws, p, ".git", "HEAD"), "ref: refs/heads/main\n");
+      fs.writeFileSync(path.join(ws, p, "LISEZMOI.md"), `Projet ${p}.\n`);
+      fs.writeFileSync(path.join(ws, p, "notes.txt"), "notes\n");
+      fs.writeFileSync(path.join(ws, p, "src", "app.js"), "export {};\n");
+      fs.writeFileSync(path.join(ws, p, "docs", "guide.md"), "guide\n");
+    }
+    return ws;
+  }
+
+  interface Simulation {
+    vue?: Record<string, unknown>;
+    /** La sonde écrit-elle vraiment sur le « poste » ? (faux : écritures légitimes perdues) */
+    persiste?: boolean;
+    /** Écriture parasite laissée par la « salle » là où elle devait être refusée (chemin relatif au dossier de travail). */
+    fuite?: string;
+    etat?: Record<string, unknown>;
+    amorce?: unknown;
+  }
+
+  function contexte(ws: string | null, sim: Simulation): ContexteDePorte & { ecrits: Map<string, string>; appels: string[] } {
     const ecrits = new Map<string, string>();
+    const appels: string[] = [];
+    const vue = sim.vue ?? {
+      montages: montagesE1(),
+      alias: aliasFermes(),
+      parents: parentsFermes(),
+      legitimes: { fichierNeuf: "acceptee", dossierProfond: "acceptee", fichierEnPlace: "acceptee" },
+      refus: EROFS_PARTOUT,
+      liensDurs: EXDEV_PARTOUT,
+      liensSymboliques: { cree: "acceptee", ecritureAtravers: "EROFS" },
+    };
     return {
       ecrits,
-      exec: () => Promise.resolve({ code: 0, sortie: JSON.stringify(options.alias) }),
-      etat: () => Promise.resolve(options.etat ?? { phase: "attente", workspaceGit: { nonProteges: ["projet-ouvert/.git"] }, projets: [] }),
-      sortie: (nom: string) => (nom === "projets-amorce.json" ? JSON.stringify(options.amorce) : null),
+      appels,
+      chemins: ws === null ? undefined : { ws },
+      exec: (_service: string, argv: string[]) => {
+        const src = ws === null ? "" : path.join(ws, PROJET_ECRIT, "src");
+        if (argv[2] === SONDE_E1) {
+          appels.push("sonde");
+          if (ws !== null && sim.persiste !== false) {
+            fs.writeFileSync(path.join(src, `${TEMOIN}legitime.txt`), `banc ${argv[3]}\n`);
+            fs.mkdirSync(path.join(src, `${TEMOIN}sous`, "dossier"), { recursive: true });
+            fs.writeFileSync(path.join(src, `${TEMOIN}sous`, "dossier", "profond.txt"), `profond ${argv[3]}\n`);
+            fs.appendFileSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md"), `temoin en place ${argv[3]}\n`);
+          }
+          if (ws !== null && sim.fuite) fs.writeFileSync(path.join(ws, ...sim.fuite.split("/")), "x");
+          return Promise.resolve({ code: 0, sortie: JSON.stringify(vue) });
+        }
+        if (argv[2] === NETTOYAGE_E1) {
+          appels.push("nettoyage");
+          if (ws !== null) {
+            fs.rmSync(path.join(src, `${TEMOIN}legitime.txt`), { force: true });
+            fs.rmSync(path.join(src, `${TEMOIN}sous`), { recursive: true, force: true });
+            if (argv[3]) fs.writeFileSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md"), Buffer.from(argv[3], "base64"));
+          }
+          return Promise.resolve({ code: 0, sortie: JSON.stringify({ lien: "ok", fichier: "ok", dossier: "ok", enPlace: "ok" }) });
+        }
+        appels.push(`inconnu:${argv.slice(0, 2).join(" ")}`);
+        return Promise.resolve({ code: 1, sortie: "" });
+      },
+      etat: () =>
+        Promise.resolve(
+          sim.etat ?? {
+            phase: "opencode-lance",
+            workspaceGit: { nonProteges: [] },
+            projets: PROJETS.map((chemin) => ({ chemin, gitLectureSeule: true })),
+          },
+        ),
+      sortie: (nom: string) => (nom === "projets-amorce.json" ? JSON.stringify(sim.amorce ?? { gitProteges: 2 }) : null),
       ecrireSortie: (nom: string, texte: string) => {
         ecrits.set(nom, texte);
       },
     };
   }
 
-  /** Un dépôt protégé du seul côté du chemin exact : `.git` fermé, alias de casse grands ouverts. */
-  const aliasOuverts = {
-    "projet-ouvert": {
-      ".git": { existe: "dossier", inscriptible: false, ecriture: "EROFS", crochet: "EROFS" },
-      ".GIT": { existe: "dossier", inscriptible: true, ecriture: "acceptee", crochet: "acceptee" },
-      ".Git": { existe: "ENOENT" },
-    },
-  };
+  const rouges = (points: { nom: string; ok: boolean }[]) =>
+    points
+      .filter((p) => !p.ok)
+      .map((p) => p.nom)
+      .join(" | ");
 
   it("sans dépôt préparé, la porte est SANS OBJET et ne se dit surtout pas verte", async () => {
-    const ctx = contexte({ amorce: { amorce: true, projets: ["projet-ouvert"], gitProteges: 0 }, alias: {} });
+    const ctx = contexte(null, { amorce: { amorce: true, projets: ["projet-ouvert"], gitProteges: 0 } });
     const resultat = await porteGit.executer(ctx);
     assert.equal(typeof resultat.sansObjet, "string");
     assert.equal(resultat.points, undefined, "une porte sans objet ne rend aucun constat");
+    assert.deepEqual(ctx.appels, [], "rien n'est sondé quand il n'y a rien à protéger");
   });
 
-  it("un alias de casse inscriptible est un constat ROUGE, alias et crochet nommés", async () => {
-    const ctx = contexte({ amorce: { gitProteges: 1 }, alias: aliasOuverts });
+  it("topologie E1 réellement tenue : la porte est entièrement verte, et le banc repart propre à l'octet", async (t) => {
+    const ws = arbre(t);
+    const avant = fs.readFileSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md"));
+    const ctx = contexte(ws, {});
     const resultat = await porteGit.executer(ctx);
     const points = resultat.points ?? [];
-    const alias = points.find((p) => p.nom.includes("alias de casse"));
-    const crochet = points.find((p) => p.nom.includes("crochet git"));
-    assert.equal(alias?.ok, false, "un alias inscriptible doit faire tomber la porte");
-    assert.match(alias?.detail ?? "", /projet-ouvert\/\.GIT/);
-    assert.equal(crochet?.ok, false, "un crochet posable doit faire tomber la porte");
+    assert.ok(points.length >= 15, `${points.length} constats`);
+    assert.equal(rouges(points), "", "tout doit être vert");
+    assert.deepEqual(ctx.appels, ["sonde", "nettoyage"]);
+    assert.ok(fs.readFileSync(path.join(ws, PROJET_ECRIT, "LISEZMOI.md")).equals(avant), "fichier écrit en place rétabli");
+    assert.deepEqual(fs.readdirSync(path.join(ws, PROJET_ECRIT, "src")), ["app.js"], "écritures légitimes retirées");
+    // Le verdict qui compte : sans doute, la salle DÉMARRE avec des dépôts (c'était impossible avant L16c sur Windows).
+    assert.equal(points.find((p) => p.nom.includes("la salle démarre"))?.ok, true);
+  });
+
+  it("un alias de casse inscriptible (vecteur de la FEUILLE) est un constat ROUGE, alias et crochet nommés", async (t) => {
+    const alias = aliasFermes({ "projet-ouvert": { ".GIT": { existe: "dossier", inscriptible: true, ecriture: "acceptee", crochet: "acceptee" } } });
+    const vue = { montages: montagesE1(), alias, parents: parentsFermes(), legitimes: {}, refus: EROFS_PARTOUT, liensDurs: EXDEV_PARTOUT, liensSymboliques: { ecritureAtravers: "EROFS" } };
+    const ctx = contexte(arbre(t), { vue, etat: { phase: "attente", workspaceGit: { nonProteges: ["projet-ouvert/.git"] }, projets: [] } });
+    const resultat = await porteGit.executer(ctx);
+    const points = resultat.points ?? [];
+    const feuille = points.find((p) => p.nom.includes("alias de casse"));
+    assert.equal(feuille?.ok, false, "un alias inscriptible doit faire tomber la porte");
+    assert.match(feuille?.detail ?? "", /projet-ouvert\/\.GIT/);
+    assert.equal(points.find((p) => p.nom.includes("crochet git"))?.ok, false, "un crochet posable doit faire tomber la porte");
     // Le chemin exact, lui, est bien protégé : la porte ne doit pas confondre les deux.
     assert.equal(points.find((p) => p.nom.includes("chemin exact"))?.ok, true);
     assert.deepEqual(resultat.mesures?.gitAliasOuverts, ["projet-ouvert/.GIT"]);
-  });
-
-  it("le superviseur qui ferme la salle sur un dépôt douteux reste, lui, un constat VERT", async () => {
-    const ctx = contexte({ amorce: { gitProteges: 1 }, alias: aliasOuverts });
-    const points = (await porteGit.executer(ctx)).points ?? [];
+    // Fermé en cas de doute : le superviseur qui ferme la salle reste, lui, un constat VERT.
     assert.equal(points.find((p) => p.nom.includes("ferme la salle"))?.ok, true, "fermé en cas de doute : c'est le comportement attendu");
     assert.equal(points.find((p) => p.nom.includes("même doute"))?.ok, true);
   });
 
-  it("un dépôt réellement protégé rend la porte entièrement verte", async () => {
-    const ctx = contexte({
-      amorce: { gitProteges: 1 },
-      alias: { "projet-ouvert": { ".git": { existe: "dossier", inscriptible: false, ecriture: "EROFS", crochet: "EROFS" }, ".GIT": { existe: "ENOENT" } } },
-      etat: { phase: "opencode-lance", workspaceGit: { nonProteges: [] }, projets: [{ chemin: "projet-ouvert", gitLectureSeule: true }] },
-    });
-    const resultat = await porteGit.executer(ctx);
-    assert.ok((resultat.points ?? []).length >= 4);
-    assert.ok(
-      (resultat.points ?? []).every((p) => p.ok),
-      (resultat.points ?? [])
-        .filter((p) => !p.ok)
-        .map((p) => p.nom)
-        .join(", "),
-    );
+  it("un alias du dossier PARENT inscriptible (essai 1 bis) est un constat ROUGE, même quand la feuille est fermée", async (t) => {
+    const parents = parentsFermes({ "projet-ouvert": { "PROJET-OUVERT/.git": { existe: "dossier", inscriptible: true, ecriture: "acceptee", crochet: "acceptee" } } });
+    const vue = { montages: montagesE1(), alias: aliasFermes(), parents, legitimes: {}, refus: EROFS_PARTOUT, liensDurs: EXDEV_PARTOUT, liensSymboliques: { ecritureAtravers: "EROFS" } };
+    const resultat = await porteGit.executer(contexte(arbre(t), { vue }));
+    const points = resultat.points ?? [];
+    const parent = points.find((p) => p.nom.includes("dossier PARENT"));
+    assert.equal(parent?.ok, false);
+    assert.match(parent?.detail ?? "", /PROJET-OUVERT\/\.git/);
+    assert.equal(points.find((p) => p.nom.includes("alias de casse"))?.ok, true, "la feuille, elle, est fermée");
+    // La salle a démarré alors qu'un alias écrit : le superviseur n'a pas vu le doute, c'est rouge.
+    assert.equal(points.find((p) => p.nom.includes("même doute"))?.ok, false);
+    // Un vecteur jamais exercé (aucun alias de parent n'existe) ne se dit pas vert.
+    const sansParent = { ...vue, parents: {} };
+    const muet = ((await porteGit.executer(contexte(arbre(t), { vue: sansParent }))).points ?? []).find((p) => p.nom.includes("dossier PARENT"));
+    assert.equal(muet?.ok, false, "un vecteur non exercé n'est pas une preuve");
   });
 
-  it("la sonde des alias couvre les casses ET le nom court 8.3 du superviseur", () => {
+  it("racine sans l'option ro, montage en écriture en trop, remontée `..` acceptée, lien dur accepté : chacun est ROUGE", async (t) => {
+    const base = { alias: aliasFermes(), parents: parentsFermes(), legitimes: {}, liensSymboliques: { ecritureAtravers: "EROFS" } };
+    const cas: [string, Record<string, unknown>, string][] = [
+      ["racine", { ...base, montages: [{ point: "/workspace", ro: false }, ...montagesE1().slice(1)], refus: EROFS_PARTOUT, liensDurs: EXDEV_PARTOUT }, "LECTURE SEULE"],
+      ["en trop", { ...base, montages: [...montagesE1(), { point: "/workspace/projet-ouvert/.git", ro: false }], refus: EROFS_PARTOUT, liensDurs: EXDEV_PARTOUT }, "premier niveau"],
+      ["remontée", { ...base, montages: montagesE1(), refus: { ...EROFS_PARTOUT, "remontee .. vers .git/hooks": "acceptee" }, liensDurs: EXDEV_PARTOUT }, "refus francs"],
+      ["autre refus", { ...base, montages: montagesE1(), refus: { ...EROFS_PARTOUT, "remontee .. vers la racine du projet": "EACCES" }, liensDurs: EXDEV_PARTOUT }, "refus francs"],
+      ["lien dur", { ...base, montages: montagesE1(), refus: EROFS_PARTOUT, liensDurs: { ...EXDEV_PARTOUT, ".git/config vers une entree ouverte": "acceptee" } }, "EXDEV"],
+      ["lien dur EPERM", { ...base, montages: montagesE1(), refus: EROFS_PARTOUT, liensDurs: { ...EXDEV_PARTOUT, ".git/HEAD vers une entree ouverte": "EPERM" } }, "EXDEV"],
+      ["lien symbolique", { ...base, montages: montagesE1(), refus: EROFS_PARTOUT, liensDurs: EXDEV_PARTOUT, liensSymboliques: { cree: "acceptee", ecritureAtravers: "acceptee" } }, "lien symbolique"],
+    ];
+    for (const [nom, vue, point] of cas) {
+      const points = (await porteGit.executer(contexte(arbre(t), { vue }))).points ?? [];
+      assert.equal(points.find((p) => p.nom.includes(point))?.ok, false, `${nom} : le constat « ${point} » doit tomber`);
+    }
+  });
+
+  it("côté POSTE : écriture légitime perdue, témoin arrivé dans un dépôt, dossier .omo créé — chacun est ROUGE", async (t) => {
+    const perdue = (await porteGit.executer(contexte(arbre(t), { persiste: false }))).points ?? [];
+    assert.equal(perdue.find((p) => p.nom.includes("LÉGITIME"))?.ok, false, "une écriture que le poste n'a pas reçue n'est pas une preuve");
+
+    const fuite = (await porteGit.executer(contexte(arbre(t), { fuite: `projet-ouvert/.git/hooks/${TEMOIN}pre-commit` }))).points ?? [];
+    assert.equal(fuite.find((p) => p.nom.includes("aucun témoin"))?.ok, false);
+    assert.equal(fuite.find((p) => p.nom.includes("dépôts intacts"))?.ok, false, "un fichier de plus dans .git change ses empreintes");
+
+    const wsOmo = arbre(t);
+    const ctx = contexte(wsOmo, {});
+    fs.mkdirSync(path.join(wsOmo, "projet-temoin", ".omo"));
+    const omo = (await porteGit.executer(ctx)).points ?? [];
+    assert.equal(omo.find((p) => p.nom.includes(".omo"))?.ok, false, "A16 point 2 : aucun .omo dans les projets");
+  });
+
+  it("la sonde couvre les casses ET le nom court 8.3 de la feuille, le parent, et n'écrit que sous /workspace", () => {
     const scenario = fs.readFileSync(path.join(BANC, "scenarios", "git-protection.mjs"), "utf8");
     for (const alias of [".git", ".GIT", ".Git", "GIT~1"]) {
       assert.ok(scenario.includes(`"${alias}"`), `alias absent de la sonde : ${alias}`);
+      assert.ok(FEUILLES.includes(alias), `alias absent des feuilles : ${alias}`);
     }
-    // Rien d'autre que les dépôts jetables du banc n'est touché : la sonde n'écrit que sous /workspace.
-    assert.doesNotMatch(scenario, /writeFileSync\("(?!\/workspace)/, "la sonde n'écrit nulle part ailleurs");
+    // Parent : casses et nom court du dossier du projet, puis .git et ses alias sous chacun.
+    assert.match(SONDE_E1, /projet\.toUpperCase\(\)/);
+    assert.match(SONDE_E1, /court \+ "~1"/);
+    assert.match(SONDE_E1, /out\.parents\[projet\]\[v \+ "\/" \+ nom\] = sonder\("\/workspace\/" \+ v/);
+    // Rien d'autre que les dépôts jetables du banc n'est touché : garde dans la sonde, et aucune écriture directe ailleurs.
+    assert.match(SONDE_E1, /const DANS = \(chemin\) => chemin\.startsWith\("\/workspace\/"\);/);
+    assert.match(SONDE_E1, /if \(!DANS\(chemin\)\) return "refuse-hors-workspace";/);
+    assert.doesNotMatch(SONDE_E1, /writeFileSync\("(?!\/workspace)/, "la sonde n'écrit nulle part ailleurs");
+    // Primitives du superviseur, jamais `test -w` (busybox ment sur un montage en lecture seule).
+    assert.match(SONDE_E1, /fs\.accessSync\(chemin, fs\.constants\.W_OK\)/);
+    assert.doesNotMatch(SONDE_E1, /test -w/);
   });
 });
 

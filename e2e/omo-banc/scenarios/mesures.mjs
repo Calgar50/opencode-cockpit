@@ -331,9 +331,9 @@ export default {
       `mémoire max ${mesures.M22Repos.memoireMioMax} Mio, ${mesures.M22Repos.pidsMax} processus, CPU max ${mesures.M22Repos.cpuPourcentMax} %`,
     );
 
-    // --- M23 : git status et git diff avec .git:ro ------------------------------------------------------------------------
+    // --- M23 : git status et git diff sur un dépôt en lecture seule (L16c : dossier de travail monté ro) -------------------
     // Le banc dégradé (`--sans-git`) n'a AUCUN dépôt : la mesure n'a pas d'objet, et la dire rouge tromperait autant que la
-    // dire verte. La cause — la salle ne démarre pas sur cet hôte quand un dépôt est protégé — est mesurée par la porte `git`.
+    // dire verte. Ce que la topologie des montages protège vraiment est mesuré par la porte `git`.
     const git = lire(await ctx.exec("opencode-omo", ["node", "-e", SONDE_GIT], { delaiMs: 90_000 }));
     mesures.M23 = ctx.sansGit ? { nonMesurable: "banc dégradé --sans-git : aucun dépôt dans le dossier de travail", vue: git } : git;
     ctx.ecrireSortie("mes-git.json", `${JSON.stringify(mesures.M23, null, 2)}\n`);
@@ -343,7 +343,7 @@ export default {
       const projets = Object.entries(git ?? {});
       const lisibles = projets.filter(([, v]) => v.status?.code === 0);
       const fermes = projets.filter(([, v]) => v.ecriture !== "acceptee");
-      ajouter("M23 : git status et git diff répondent malgré .git:ro", lisibles.length === projets.length && projets.length > 0, `${lisibles.length}/${projets.length} projets lisibles`);
+      ajouter("M23 : git status et git diff répondent sur un dépôt que la salle ne peut pas écrire", lisibles.length === projets.length && projets.length > 0, `${lisibles.length}/${projets.length} projets lisibles`);
       const detailEcriture = projets.map(([p, v]) => `${p}=${v.ecriture}`).join(", ");
       ajouter("M23 : aucun .git n'est inscriptible par la salle", fermes.length === projets.length, `${fermes.length}/${projets.length} fermés : ${detailEcriture}`);
     }

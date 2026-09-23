@@ -22,7 +22,20 @@ export interface ContexteDePorte {
   etat: () => Promise<Record<string, unknown> | null>;
   sortie: (nom: string) => string | null;
   ecrireSortie: (nom: string, texte: string) => void;
+  /** Dossiers du banc sur le poste : `ws` est le dossier de travail jetable monté sur `/workspace` (vérifications côté poste). */
+  chemins?: { ws: string } | undefined;
 }
+
+/** Projet ouvert par le banc, seul à recevoir les écritures légitimes de la sonde. */
+export declare const PROJET_ECRIT: string;
+/** Noms de `.git` sondés : casses et noms courts 8.3. */
+export declare const FEUILLES: string[];
+/** Préfixe de tout ce que la sonde écrit. */
+export declare const TEMOIN: string;
+/** Sonde jouée en tant que `node` dans la salle (`node -e`), jeton de la passe en premier argument. */
+export declare const SONDE_E1: string;
+/** Nettoyage joué en tant que `node` dans la salle, contenu d'origine du fichier écrit en place (base64) en premier argument. */
+export declare const NETTOYAGE_E1: string;
 
 declare const porte: {
   id: string;

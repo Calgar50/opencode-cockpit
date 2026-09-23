@@ -51,11 +51,11 @@ docker tag opencode-cockpit/opencode-omo:4.19.4-<horodatage> sal11-omo/opencode-
 # à blanc : commandes affichées, refus vérifiés, aucune commande Docker
 node e2e/omo-banc/run-banc.mjs --a-blanc
 
-# le cas réel : projets avec de vrais dépôts git — sur un hôte Windows, la salle REFUSE de démarrer (§5)
+# le cas réel : projets avec de vrais dépôts git (depuis L16c, la salle démarre aussi sur un hôte Windows, §5.1)
 node e2e/omo-banc/run-banc.mjs --id defaut --scenarios git,g2 --duree-g1-min 1
 
-# banc complet, dégradé pour que tout le reste soit mesurable sur ce PC
-node e2e/omo-banc/run-banc.mjs --id l21 --sans-git --contournement --duree-g1-min 30 \
+# banc complet, avec de vrais dépôts
+node e2e/omo-banc/run-banc.mjs --id l21 --duree-g1-min 30 \
   --image-base 127.0.0.1:5111/<dépôt>/opencode@sha256:<64 hex>
 
 # une porte seule, en abrégeant G1
@@ -70,7 +70,7 @@ node e2e/omo-banc/run-banc.mjs --id l21 --scenarios g2,g9 --duree-g1-min 1
 | `--duree-g1-min` | durée des scénarios scriptés de G1 (défaut : 30 minutes, comme la porte le demande) |
 | `--image`, `--image-app`, `--image-base` | images employées ; `--image-base` déclenche l'auto-test `-SelfTest` de G14 |
 | `--contournement` | ajoute `banc-contournement.compose.yml` — **défaut du produit reproduit**, voir §5 |
-| `--sans-git` | projets préparés **sans dépôt** : banc DÉGRADÉ, seul moyen de mesurer le reste sur un hôte Windows (§5) |
+| `--sans-git` | projets préparés **sans dépôt** : banc DÉGRADÉ (porte `git` sans objet, M23 non mesurable) ; plus nécessaire sur un hôte Windows depuis L16c (§5.1) |
 | `--garder` | ne nettoie pas à la fin (diagnostic) ; le verrou est rendu, le projet reste à retirer à la main |
 | `--base <dossier>` | dossier de travail du banc, hors du dépôt |
 | `--ecrire-fixtures` | **remplace les fixtures du dépôt** par les captures du scénario `mes` ; sans cette option le dépôt n'est jamais touché |
@@ -130,22 +130,34 @@ vérification TLS n'est jamais coupée : c'est l'autorité de banc, désignée p
 
 ## 5. Défauts reproduits par le banc (à corriger dans le produit)
 
-### 5.1 Sur un hôte Windows, un `.git` monté `:ro` n'est pas protégé — et la salle ne démarre plus
+### 5.1 Sur un hôte Windows, un `.git` monté `:ro` n'était pas protégé — **corrigé dans le produit (L16c, montages inversés)**
 
-C'est le défaut le plus grave que ce banc ait trouvé, et il en cache un second.
+> **Depuis L16c (décision A16, option E1), le dossier de travail ENTIER est monté en lecture seule sur `/workspace`**, et
+> `install.ps1` ne rouvre l'écriture que par exception : un montage par entrée de premier niveau de chaque projet préparé,
+> jamais `.git` ni un nom qui s'y ramène, jamais la racine d'un projet. Tout alias est alors résolu sous un ancêtre en lecture
+> seule et répond `EROFS`. **L'image doit être reconstruite** : la sonde du superviseur a changé (`supervisor-lib.mjs` est
+> dans le périmètre du manifeste).
 
-Le partage de Docker Desktop (9p/drvfs) est **insensible à la casse**. Le montage `:ro` protège **un chemin**, pas un dossier :
-`/workspace/p/.git` est bien en lecture seule (`EROFS`), mais `/workspace/p/.GIT`, `/workspace/p/.Git` et le nom court
-`GIT~1` désignent le même dossier **sans traverser le montage**. Mesuré sur ce PC : écriture acceptée par tous les alias, y
-compris `hooks/pre-commit` — un crochet posé depuis la salle s'exécuterait sur le poste au prochain `git commit`.
+Ce que le banc avait mesuré, et qui reste la raison d'être de cette topologie. Le partage de Docker Desktop (9p/drvfs) est
+**insensible à la casse**. Un montage `:ro` protège **un chemin**, pas un dossier : `/workspace/p/.git` était bien en lecture
+seule (`EROFS`), mais `.GIT`, `.Git`, le nom court `GIT~1` (alias de la feuille) et `/workspace/P/.git` (alias du dossier
+parent) désignaient le même dossier **sans traverser le montage** — crochet `hooks/pre-commit` compris. La sonde du
+superviseur voyait ce doute et fermait la salle : sur un poste Windows, la salle ne démarrait jamais dès qu'un projet portait
+un dépôt.
 
-La sonde `aliasInscriptible` du superviseur (relecture 2bis-vague-2, risque 11 / C2-5) **voit** ce doute et ferme la salle,
-comme elle le doit. Conséquence directe : sur un poste Windows, dès qu'un projet préparé porte un dépôt — c'est-à-dire
-toujours — le superviseur s'arrête à `ATTENTION: dossier de travail non protege` et **n'ouvre jamais opencode**.
+La porte `git` mesure désormais la topologie E1, depuis la salle en tant que `node`, puis **côté poste** : `/workspace` en
+`ro` dans `mountinfo` et l'écriture rouverte sur les seules entrées attendues ; zéro alias inscriptible par la feuille ET par
+le parent, zéro crochet posable ; écriture LÉGITIME (fichier neuf, dossier profond, fichier écrit en place) persistée sur le
+poste ; refus `EROFS` à la racine d'un projet et du dossier de travail, sous un alias d'entrée ouverte et par remontée `..` ;
+liens durs refusés par `EXDEV`, même entre deux entrées ouvertes ; dépôts intacts (empreinte de chaque fichier de `.git`
+avant et après) ; aucun `.omo` créé ; et la salle **démarre**. Elle retire ensuite ce qu'elle a écrit légitimement et
+rétablit le fichier écrit en place, à l'octet. Rejouée au train de V3 de la 2 ter : verte trois fois sur ce PC.
 
-La porte `git` mesure les deux faits : les alias inscriptibles (rouge, c'est le défaut) et la fermeture de la salle (vert,
-c'est le comportement attendu). `--sans-git` retire les dépôts pour que tout le reste soit mesurable ; M23 est alors déclarée
-non mesurable au lieu d'être déclarée fausse.
+Conséquence pour le banc : un banc complet se joue avec de vrais dépôts. `--sans-git` reste disponible (porte `git` sans
+objet, M23 non mesurable), mais n'est plus le seul moyen de mesurer le reste sur un hôte Windows.
+
+Friction dite à l'utilisateur (A16 point 6) : l'IA de la salle ne peut créer ni fichier ni dossier à la racine d'un projet
+(refus net), et `install.ps1` est à relancer après un ajout à cette racine.
 
 ### 5.2 `CLAUDE_CONFIG_DIR` : la salle mourait au premier envoi — **corrigé dans le produit**
 
