@@ -534,17 +534,21 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * branche encore — le répondeur (L22d) l'appellera en V4. Il est ici pour lui-même : sans cela, la cloison le lirait comme un
  * fichier de production et lui reprocherait d'importer les listes de la salle (`shared/omo-detections.ts`) dont il tire les
  * fichiers d'IDE et de CI, au lieu de les recopier.
+ *
+ * La vague 4 de l'itération 2 ter RETIRE trois noms, que L22d branche (demande de nécessité de L22d, au train de V4) :
+ * — le répondeur (`omo-responder.ts`) appelle `shared/omo-forbidden.ts`, qui entre donc dans le produit avec la liste des fichiers
+ *   d'IDE et de CI qu'il tire de `shared/omo-detections.ts` (les règles de détection elles-mêmes restent à L23c) ;
+ * — les plafonds (`omo-caps.ts`) lisent les limites fixes de la salle (`shared/omo-limits.ts` : durée, sessions, repos de fin de
+ *   demande).
+ * Sans ces retraits, les deux modules branchés, parcourus comme des fichiers de production, seraient pris en faute pour leurs
+ * propres importations. La salle reste coupée pour autant : `SALLE_OUVERTE` est fausse et ces modules n'inscrivent rien.
  */
 const MODULES_SALLE_V0 = new Set([
-  // Vague 2 de l'itération 2 ter
-  "omo-forbidden.ts",
   // V1
   "validate.mjs",
   "validate-core.mjs",
   "cockpit-guard.js",
   // V0
-  "omo-limits.ts",
-  "omo-detections.ts",
   "egress-proxy.ts",
   "omo-audit-texts.ts",
   "supervisor-lib.mjs",
