@@ -21,8 +21,18 @@
 //   9. le défaut n° 3 (L21 §4), lui, N'EST PAS corrigeable dans le produit : la 4.19.4 n'applique pas `~/.omo/omo.jsonc`
 //      (mesuré deux fois). Les coupures d'outils sont donc portées par le filet du cockpit, et plus aucun document de la
 //      salle ne présente cette couche comme appliquée.
+//
+// Train de V3 de la 2 ter (L16c seul, décision A16 : montages inversés), ajouté au même fichier :
+//  10. la raison de l'attente va du superviseur RÉEL au navigateur par la VRAIE route : constat de la sonde (L16c) → `state.json`
+//      publié par le superviseur → service de contrôle (L17b) → GET /api/omo/status (L18c) → modèle de la page (L26a) et du
+//      Diagnostic (L26b). Fermé : la racine est nommée ; ouvert (topologie E1) : aucune raison git. Le test n° 3 de L16c passe
+//      par un statut écrit à la main ; celui-ci ne fabrique rien entre le superviseur et la page (arbitrage L21 n° 3, point 3) ;
+//  11. la référence du manifeste suit les fichiers que l'image copie tels quels : L16c avait changé `supervisor-lib.mjs` sans la
+//      régénérer (écart n° 4 de sa fiche), et le superviseur aurait refusé de démarrer sur l'image reconstruite. Plus jamais
+//      d'une lecture : ce test tombe dès qu'une ligne est périmée.
 // Aucun conteneur, aucun réseau, aucune pause fixe : deux faux opencode en mémoire et des lectures de fichiers.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +40,9 @@ import { describe, it, type TestContext } from "node:test";
 import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
 import * as gardeSalle from "../../docker/opencode-omo/guard/cockpit-guard.js";
+import * as superviseur from "../../docker/opencode-omo/supervisor-lib.mjs";
 import { lireJsonc } from "../../docker/opencode-omo/validate-core.mjs";
+import { raisonsAttente } from "../web/pages/diagnostics/omo-diagnostics.ts";
 import type { Cockpit11, Cockpit11Module, HookSignatures, ProxyContext } from "./contracts-11.ts";
 import { forbiddenCommandArguments, forbiddenProxyBody } from "./http.ts";
 import { createInstanceRouter } from "./instance-router.ts";
@@ -42,9 +54,11 @@ import { createOmoRoom } from "./omo-room.ts";
 import type { OcGlobalEvent, OcSession } from "./opencode.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { StopResult } from "./shared/cockpit-event-types.ts";
+import { SEPARATEUR_LISTE, vueEtatSalle } from "./shared/omo-activation-view.ts";
 import { OUTILS_A_COUPER } from "./shared/omo-audit-4.19.4.ts";
 import { analyserPrecheckOk, ecrireEtat } from "./shared/omo-control-protocol.ts";
-import type { OmoPreparedProjects, OmoSalleContract, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
+import { TEXTES } from "./shared/omo-room-texts.ts";
+import type { OmoPreparedProjects, OmoSalleContract, OmoStatusResponse, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { createId } from "./test-support/fake-opencode.ts";
 import { SALLE_OUVERTE } from "./wiring-11.ts";
@@ -175,6 +189,8 @@ interface Atelier {
   /** Service de contrôle RÉEL de L17b, sur des dossiers temporaires. */
   precheckOk(): ReturnType<typeof analyserPrecheckOk> | null;
   publierEtat(etat: OmoSupervisorState): void;
+  /** Volume `omo-state` de l'atelier : là où le superviseur RÉEL publie son `state.json` (croisement 10, train de V3 de la 2 ter). */
+  stateDir: string;
   /** Demande le pré-contrôle de démarrage, comme la surveillance de `state.json` le ferait. */
   beforeStart(startId: string): Promise<{ ok: boolean; code?: string }>;
   /** Deux montages de proxy, exactement comme createApp les construit (SALLE_OUVERTE fermée dans le dépôt). */
@@ -322,6 +338,7 @@ async function atelier(t: TestContext, options: { projets?: string[]; pieges?: s
       return fs.existsSync(fichier) ? analyserPrecheckOk(fs.readFileSync(fichier, "utf8")) : null;
     },
     publierEtat: (etat) => fs.writeFileSync(path.join(stateDir, "state.json"), ecrireEtat(etat), "utf8"),
+    stateDir,
     beforeStart: async (startId) => {
       const service = precheckService as ReturnType<typeof createOmoPrecheckService> | null;
       assert.ok(service, "pré-contrôle installé");
@@ -646,5 +663,127 @@ describe("croisement V3 : la couche utilisateur d'omo.jsonc est inerte, et le pr
     assert.doesNotMatch(g2, /la configuration figée est APPLIQUÉE/, "l'ancien verdict de G2 doit avoir disparu");
     assert.match(g2, /"la configuration d'INSTANCE est appliquée/, "G2 juge la couche appliquée");
     assert.match(g2, /coucheUtilisateurAppliquee/, "G2 garde la couche utilisateur comme MESURE");
+  });
+});
+
+// --- 10. 2 ter, V3 (L16c) : la raison de l'attente, du superviseur réel à la page, par la vraie route -----------------------------
+
+/**
+ * Le superviseur RÉEL (supervisor-lib.mjs) juge une topologie de montages et publie son `state.json` dans le volume d'état de
+ * l'atelier, exactement comme `supervisor.sh` le fait (init, constat de `node`, absorption, publication). Rien n'est écrit à la
+ * main entre lui et la page : le cockpit relit ce fichier par son service de contrôle (L17b), le rend par GET /api/omo/status
+ * (L18c), et les modèles de la page (L26a) et du Diagnostic (L26b) en tirent la phrase affichée.
+ */
+function publierConstatDuSuperviseur(a: Atelier, montages: { point: string; lectureSeule: boolean }[]): void {
+  const prepares = superviseur.analyserProjetsPrepares(JSON.stringify(projetsPrepares("app")));
+  assert.ok(prepares !== null);
+  // `acces` : rien n'est inscriptible pour `node` en dehors de ce que les montages ouvrent ; c'est la TOPOLOGIE qui est jugée.
+  const constat = superviseur.constatGit(prepares, { racine: a.workspace, montages, acces: () => false, maintenant: T0 });
+  superviseur.initTravail(a.stateDir, T0);
+  superviseur.majTravail(a.stateDir, { imageId: "sha256:image-de-croisement" });
+  const fichier = path.join(a.stateDir, "constat-preparation.json");
+  fs.writeFileSync(fichier, JSON.stringify({ etape: "preparation", ...constat }));
+  assert.equal(superviseur.absorber(a.stateDir, fichier).ok, true);
+  superviseur.publierEtat(a.stateDir, superviseur.lireTravail(a.stateDir), "attente");
+}
+
+const posixDe = (chemin: string) => chemin.replaceAll("\\", "/");
+
+describe("croisement V3 (2 ter, L16c) : pourquoi la salle attend va du superviseur réel à la page, sans rien fabriquer entre eux", () => {
+  const PHRASE_GIT = TEXTES.avance.refus["git-inscriptible"].replace(" {liste}", "");
+
+  it("racine du dossier de travail restée en écriture (forme d'avant L16c) : la route rend « . », la page et le Diagnostic le disent", async (t: TestContext) => {
+    const a = await atelier(t);
+    const ws = posixDe(a.workspace);
+    // Forme d'avant : le dossier de travail en écriture, et un `.git:ro` posé sur le nom exact — ce qui ne tenait pas sous Windows.
+    publierConstatDuSuperviseur(a, [
+      { point: ws, lectureSeule: false },
+      { point: `${ws}/app/.git`, lectureSeule: true },
+    ]);
+    const res = await a.h.call("GET", "/api/omo/status", { headers: a.h.headers.authed });
+    assert.equal(res.status, 200, res.body);
+    const statut = res.json<OmoStatusResponse>();
+    assert.ok(statut.workspaceGit?.nonProteges.includes("."), JSON.stringify(statut.workspaceGit));
+
+    // Page de la salle (L26a) : la phrase est parmi les raisons AFFICHÉES, et elle nomme la racine.
+    const vue = vueEtatSalle({ boot: null, statut });
+    assert.equal(vue.prete, false);
+    const affichee = vue.raisons.find((raison) => raison.startsWith(PHRASE_GIT));
+    assert.ok(affichee !== undefined, `phrase absente des raisons : ${JSON.stringify(vue.raisons)}`);
+    assert.ok(affichee.slice(PHRASE_GIT.length).split(SEPARATEUR_LISTE).map((c) => c.trim()).includes("."), affichee);
+    // Diagnostic (L26b, branché sur getOmoStatus() au train de V2) : la racine est listée sous une raison, et la carte l'écrit.
+    assert.ok(raisonsAttente(statut).some((raison) => raison.chemins.includes(".")), JSON.stringify(raisonsAttente(statut)));
+    const carte = lire("app", "web", "pages", "diagnostics", "OmoDiagnostics.tsx");
+    assert.match(carte, /attentes\.map\(\(attente\) => \([\s\S]{0,400}?\{attente\.phrase\}[\s\S]{0,200}?<Chemins chemins=\{attente\.chemins\} \/>/);
+  });
+
+  it("topologie E1 (racine en lecture seule, écriture par exception) : la route ne rend AUCUNE raison git, la salle n'est pas retenue par elle", async (t: TestContext) => {
+    const a = await atelier(t);
+    const ws = posixDe(a.workspace);
+    publierConstatDuSuperviseur(a, [
+      { point: ws, lectureSeule: true },
+      { point: `${ws}/app/README.md`, lectureSeule: false },
+      { point: `${ws}/app/.vscode`, lectureSeule: false },
+    ]);
+    const res = await a.h.call("GET", "/api/omo/status", { headers: a.h.headers.authed });
+    assert.equal(res.status, 200, res.body);
+    const statut = res.json<OmoStatusResponse>();
+    assert.deepEqual(statut.workspaceGit?.nonProteges, [], JSON.stringify(statut.workspaceGit));
+    assert.deepEqual(statut.projetsPrepares, [{ chemin: "app", git: "lecture-seule" }]);
+    assert.equal(
+      vueEtatSalle({ boot: null, statut }).raisons.some((raison) => raison.startsWith(PHRASE_GIT)),
+      false,
+    );
+    assert.equal(
+      raisonsAttente(statut).some((raison) => raison.cle === "workspace-non-verifie" || raison.cle === "git-inscriptible"),
+      false,
+    );
+    // Et une écriture rouverte sur la RACINE D'UN PROJET, même sous une racine en lecture seule, ferme de nouveau : c'est le
+    // superviseur qui le dit, la route qui le rend.
+    publierConstatDuSuperviseur(a, [
+      { point: ws, lectureSeule: true },
+      { point: `${ws}/app`, lectureSeule: false },
+    ]);
+    const ferme = (await a.h.call("GET", "/api/omo/status", { headers: a.h.headers.authed })).json<OmoStatusResponse>();
+    assert.ok(ferme.workspaceGit?.nonProteges.includes("app"), JSON.stringify(ferme.workspaceGit));
+  });
+});
+
+// --- 11. 2 ter, V3 (L16c) : la référence du manifeste suit les fichiers que l'image copie tels quels ------------------------------
+
+describe("croisement V3 (2 ter, L16c) : la référence du manifeste porte l'empreinte de CHAQUE fichier que l'image copie tel quel", () => {
+  it("toute copie du Dockerfile dans le périmètre du manifeste a sa ligne exacte dans omo-manifest.sha256", () => {
+    const dossier = path.join(RACINE, "docker", "opencode-omo");
+    const lignes = new Set(
+      lire("docker", "opencode-omo", "omo-manifest.sha256")
+        .split("\n")
+        .filter((ligne) => /^[0-9a-f]{64} {2}\//.test(ligne)),
+    );
+    const dansLePerimetre = (cible: string) => superviseur.PERIMETRE_MANIFESTE.some((p) => cible === p || cible.startsWith(`${p}/`));
+    const copies: [string, string][] = [];
+    for (const brute of lire("docker", "opencode-omo", "Dockerfile").split("\n")) {
+      const ligne = brute.trim();
+      if (!/^COPY\s/i.test(ligne)) continue;
+      const mots = ligne.split(/\s+/).slice(1);
+      // Une copie depuis une autre étape ne vient pas du dépôt ; une forme que ce test ne sait pas lire le fait tomber.
+      if (mots.some((mot) => mot.startsWith("--from"))) continue;
+      assert.ok(!mots.some((mot) => mot.startsWith("[")), `forme JSON de COPY non lue par ce croisement : ${ligne}`);
+      const utiles = mots.filter((mot) => !mot.startsWith("--"));
+      const cible = utiles.pop() ?? "";
+      for (const source of utiles) copies.push([source, cible.endsWith("/") ? `${cible}${path.posix.basename(source)}` : cible]);
+    }
+    const jugees = copies.filter(([, cible]) => dansLePerimetre(cible));
+    // package.json, package-lock.json, opencode.jsonc, omo.jsonc, supervisor.sh, les cinq de /opt/omo-check, le filet.
+    assert.ok(jugees.length >= 11, JSON.stringify(jugees));
+    assert.ok(jugees.some(([source]) => source === "supervisor-lib.mjs"), "la sonde du superviseur doit être jugée (écart n° 4 de L16c)");
+    for (const [source, cible] of jugees) {
+      const empreinte = createHash("sha256")
+        .update(fs.readFileSync(path.join(dossier, ...source.split("/"))))
+        .digest("hex");
+      assert.ok(
+        lignes.has(`${empreinte}  ${cible}`),
+        `${source} → ${cible} : ligne périmée dans omo-manifest.sha256 (sha256 du dépôt ${empreinte.slice(0, 12)}…) — reconstruire l'image avec build-omo-image.ps1 -AcceptManifest`,
+      );
+    }
   });
 });
