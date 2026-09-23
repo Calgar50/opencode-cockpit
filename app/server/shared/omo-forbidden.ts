@@ -16,11 +16,19 @@
 // - `external_directory`, `webfetch`, `websearch` : toujours refusés (décision du 19/09 n° 7 : refus explicite dans la
 //   configuration d'instance ET ici, le filet de L24 en troisième ligne).
 //
-// Fermé en cas de doute : une demande d'écriture dont aucun chemin n'est lisible, un projet ouvert qui n'est pas un chemin
+// Fermé en cas de doute : une demande d'écriture dont aucun chemin n'est lisible, un correctif de plus de 256 fichiers ou dont
+// une entrée est illisible (refusé EN BLOC, jamais tronqué : décision A18 n° 1), un projet ouvert qui n'est pas un chemin
 // absolu, une demande `bash` sans commande lisible sont refusés (catégorie « hors-projet » : rien ne dit que la demande reste
 // dans le projet ouvert). Une commande que la porte de L8a ne sait pas découper n'est pas refusée pour autant — un enchaînement
 // et un tube sont permis par la décision n° 7 — mais elle est analysée par fragments, chaque début de fragment valant un
-// programme : le contrôle y est plus large, jamais plus étroit.
+// programme : le contrôle y est plus large, jamais plus étroit. Trois lectures s'y ajoutent (A18 n° 2 et n° 3) : le texte
+// RECOLLÉ comme le lit le shell (guillemets et contre-obliques retirés : `.e"nv"`, `.e'nv'` et `.e\nv` redeviennent `.env`,
+// `g'i't` redevient `git`), le contenu de chaque chaîne citée relu comme une commande (`sh -c "git push"`), et P03 appliqué
+// EN ENTIER à chaque mot de chaque lecture, catégorie « nom » comprise (`cat credentials.json | head`).
+//
+// Limite, dite telle quelle : le contrôle d'une commande reste LEXICAL. Il porte sur les noms écrits dans la commande. Un motif
+// (`cat .e*`, `cat .en?`), une variable concaténée (`F=.e; cat ${F}nv`), une substitution, une lecture récursive (`grep -r . .`)
+// ou un programme du projet lisent encore un `.env` : c'est la décision n° 7, et §4.14.6 le dit à l'utilisateur.
 //
 // Aucune liste n'est recopiée : les programmes S4 et les chemins P03 viennent de `shell-gate.ts` (L8a), les noms de
 // configuration et les fichiers de clés de `omo-precheck-rules.ts` (L19a), les fichiers d'IDE et de CI de `omo-detections.ts`
@@ -139,9 +147,11 @@ const AZURE_PIPELINES = /^azure-pipelines[^/]*\.yml$/iu;
  * Catégorie d'un chemin sensible tel qu'il est écrit (P03 de L8a, §4.5), ou null.
  *
  * `nomsQuiRessemblent` : P03 refuse aussi les DERNIERS segments qui contiennent « credential », « secret », « passw » ou
- * « token ». C'est la règle de la commande (`bash`, où tout mot est un chemin possible) ; une demande d'écriture ne la suit pas,
- * sans quoi `src/token-parser.ts` ou `docs/secrets.md` seraient refusés à l'IA alors qu'ils ne portent aucune clé. Les vrais
- * fichiers de clés (`id_ed25519`, `*privkey*`, `*kubeconfig*`, extensions de clés) restent refusés dans les deux cas.
+ * « token », et les clés qu'il nomme (`id_dsa`…). C'est la règle de la commande (`bash`, où tout mot est un chemin possible) :
+ * elle vaut pour CHAQUE mot d'une commande, découpage de L8a, fragments, texte recollé et contenu cité compris (A18 n° 3 : un
+ * tube ou une redirection ne l'éteint jamais). Une demande d'écriture ne la suit pas, sans quoi `src/token-parser.ts` ou
+ * `docs/secrets.md` seraient refusés à l'IA alors qu'ils ne portent aucune clé. Les vrais fichiers de clés (`id_ed25519`,
+ * `*privkey*`, `*kubeconfig*`, extensions de clés) restent refusés dans les deux cas.
  */
 export function categorieCheminSensible(chemin: string, nomsQuiRessemblent: boolean): OmoForbiddenCategory | null {
   if (typeof chemin !== "string" || chemin === "") return null;
@@ -191,6 +201,18 @@ const SEPARATEURS = /[\s;|&()<>{}$`"']+/u;
 
 /** Caractères qui séparent deux commandes dans un texte que la porte de L8a n'a pas découpé (ou dans un mot cité). */
 const ENCHAINEMENTS = /[;|&()<>{}`\n\r]+/u;
+
+/** Guillemets et contre-obliques : le shell les retire en recollant les morceaux d'un même mot (`.e"nv"`, `g'i't`, `.e\nv`). */
+const CITATIONS = /["'\\]/gu;
+
+/** Seul séparateur d'un texte recollé : le « $ » y reste collé à son mot, pour que `git $P` soit vu (A18 n° 2). */
+const BLANCS = /\s+/u;
+
+/** Chaîne citée, double ou simple : son contenu est relu comme une commande (`sh -c "git push"`). */
+const CHAINE_CITEE = /"([^"]*)"|'([^']*)'/gu;
+
+/** Profondeur de relecture des chaînes citées dans des chaînes citées : au-delà, les deux premières lectures suffisent. */
+const IMBRICATION_MAX = 4;
 
 /** Enveloppes de S4 : le programme qu'elles lancent est un mot qui suit (`env … curl`, `sudo docker`, `timeout 5 kubectl`). */
 const ENVELOPPES: ReadonlySet<string> = new Set(SHELL_FORBIDDEN.enveloppes.map((nom) => nom.toLowerCase()));
@@ -243,14 +265,15 @@ const GIT_OPTIONS_A_VALEUR: readonly string[] = Object.freeze(["-c", "-C"]);
 
 /**
  * Catégorie d'une commande git : d'abord toute option globale placée avant la sous-commande (`-c`, `-C`, `--git-dir`,
- * `--exec-path`, `--work-tree`, `--config-env`, collées ou non à leur valeur), puis `push` et `remote`. Les autres
- * sous-commandes passent (décision n° 7).
+ * `--exec-path`, `--work-tree`, `--config-env`, collées ou non à leur valeur), puis `push` et `remote`. Une sous-commande
+ * donnée par une expansion (`git $P`, `git "$SOUS_COMMANDE"`) n'est pas décidable lexicalement : refusée comme un envoi (fermé
+ * en cas de doute, A18 n° 2). Les autres sous-commandes passent (décision n° 7), et un « $ » ailleurs dans une commande aussi.
  */
 function categorieGit(commande: CommandeCandidate): OmoForbiddenCategory | null {
   if (!memeNom(nomProgramme(commande.mots[commande.depart] ?? ""), "git")) return null;
   for (let index = commande.depart + 1; index < commande.mots.length; index++) {
     const mot = commande.mots[index] ?? "";
-    if (!mot.startsWith("-")) return nomDansListe(mot, GIT_SOUS_COMMANDES_REFUSEES) ? "git-envoi" : null;
+    if (!mot.startsWith("-")) return nomDansListe(mot, GIT_SOUS_COMMANDES_REFUSEES) || mot.startsWith("$") ? "git-envoi" : null;
     const nom = mot.includes("=") ? mot.slice(0, mot.indexOf("=")) : mot;
     if (GIT_GLOBAL_OPTIONS.includes(nom)) return "git-options-globales";
     // Option courte collée à sa valeur (`-C/ailleurs`, `-cuser.name=x`).
@@ -260,50 +283,63 @@ function categorieGit(commande: CommandeCandidate): OmoForbiddenCategory | null 
   return null;
 }
 
-/** Fragments de commande d'un texte libre : une suite de mots par morceau séparé par un enchaînement. */
-function fragmentsDe(texte: string): string[][] {
+/** Suites de mots d'un texte : une par morceau séparé par un enchaînement, mots coupés par `separateur`. */
+function morceauxDe(texte: string, separateur: RegExp): string[][] {
   return texte
     .split(ENCHAINEMENTS)
-    .map((morceau) => morceau.split(SEPARATEURS).filter((mot) => mot !== ""))
+    .map((morceau) => morceau.split(separateur).filter((mot) => mot !== ""))
     .filter((mots) => mots.length > 0);
 }
 
-/** Suite de mots à analyser, et ce que ses mots valent comme chemins. */
-interface Suite {
-  mots: readonly string[];
-  /** Mots du découpage de L8a : P03 s'y applique entièrement, comme dans l'instance principale. */
-  premierNiveau: boolean;
+/**
+ * Fragments de commande d'un texte libre, TROIS lectures rendues ensemble (plus large, jamais plus étroit) :
+ * 1. le découpage aux métacaractères et aux blancs, guillemets compris (une suite de mots par enchaînement) ;
+ * 2. le texte RECOLLÉ comme le lit le shell : guillemets et contre-obliques retirés, coupé aux enchaînements et aux blancs
+ *    seulement (`cat .e"nv"` → `cat .env`, `g'i't push` → `git push`, `P=push; git $P` → `git $P`) ;
+ * 3. le contenu de chaque chaîne citée, double ou simple, relu de même (`sh -c "git push"`), sur `IMBRICATION_MAX` niveaux.
+ */
+function fragmentsDe(texte: string, profondeur = 0): string[][] {
+  const out = morceauxDe(texte, SEPARATEURS);
+  out.push(...morceauxDe(texte.replace(CITATIONS, ""), BLANCS));
+  if (profondeur < IMBRICATION_MAX) {
+    for (const chaine of texte.matchAll(CHAINE_CITEE)) {
+      const contenu = chaine[1] ?? chaine[2] ?? "";
+      if (contenu !== "") out.push(...fragmentsDe(contenu, profondeur + 1));
+    }
+  }
+  return out;
 }
 
 /**
- * Suites de mots d'une commande : le découpage de L8a, puis le contenu de chaque mot cité, découpé à son tour (`sh -c 'git
- * push'`). Texte refusé par L8a (métacaractère, caractère hors ASCII, longueur) : fragments du texte entier.
+ * Suites de mots d'une commande : le découpage de L8a, puis le contenu de chaque mot cité, relu par `fragmentsDe` (`sh -c 'git
+ * push'`). Texte refusé par L8a (métacaractère, citation au milieu d'un mot, caractère hors ASCII, longueur) : `fragmentsDe` du
+ * texte entier. P03 s'applique EN ENTIER à chaque mot de chaque suite (A18 n° 3) : un tube, une redirection ou un guillemet ne
+ * change jamais le verdict d'un nom (`cat credentials.json | head` comme `cat credentials.json`).
  */
-function suitesDeMots(texte: string): Suite[] {
+function suitesDeMots(texte: string): string[][] {
   const decoupe = tokenizeCommand(texte);
-  if (!decoupe.ok) return fragmentsDe(texte).map((mots) => ({ mots, premierNiveau: false }));
-  const suites: Suite[] = [{ mots: decoupe.words.map((mot) => mot.value), premierNiveau: true }];
+  if (!decoupe.ok) return fragmentsDe(texte);
+  const suites: string[][] = [decoupe.words.map((mot) => mot.value)];
   for (const mot of decoupe.words) {
-    if (!mot.quoted) continue;
-    for (const mots of fragmentsDe(mot.value)) suites.push({ mots, premierNiveau: false });
+    if (mot.quoted) suites.push(...fragmentsDe(mot.value));
   }
   return suites;
 }
 
-/** Interdits d'une commande `bash` : S4 « réseau » et « production », git, puis les chemins sensibles de chaque mot. */
+/** Interdits d'une commande `bash` : S4 « réseau » et « production », git, puis les chemins sensibles P03 de chaque mot. */
 export function categorieCommande(texte: string): OmoForbiddenCategory | null {
   const suites = suitesDeMots(texte);
-  for (const suite of suites) {
-    for (const commande of candidates(suite.mots)) {
+  for (const mots of suites) {
+    for (const commande of candidates(mots)) {
       const programme = categorieProgramme(commande);
       if (programme !== null) return programme;
       const git = categorieGit(commande);
       if (git !== null) return git;
     }
   }
-  for (const suite of suites) {
-    for (const mot of suite.mots) {
-      const chemin = categorieCheminSensible(mot, suite.premierNiveau);
+  for (const mots of suites) {
+    for (const mot of mots) {
+      const chemin = categorieCheminSensible(mot, true);
       if (chemin !== null) return chemin;
     }
   }
@@ -315,27 +351,51 @@ export function categorieCommande(texte: string): OmoForbiddenCategory | null {
 /** Longueur maximale d'un chemin lu dans des métadonnées : au-delà, il n'est pas exploitable (fermé en cas de doute). */
 const CHEMIN_MAX = 4_096;
 
-/** Nombre maximal de fichiers lus dans un correctif : un correctif plus gros est refusé par le premier chemin qui pèche. */
+/**
+ * Nombre maximal de fichiers d'un correctif : au-delà, la demande n'est pas contrôlable en entier ; elle est refusée EN BLOC
+ * (fermé en cas de doute), jamais tronquée (décision A18 n° 1). Le travail sur une entrée non fiable reste ainsi borné.
+ */
 const FICHIERS_MAX = 256;
 
 const estChaineUtile = (valeur: unknown): valeur is string => typeof valeur === "string" && valeur !== "" && valeur.length <= CHEMIN_MAX;
 
 const estObjet = (valeur: unknown): valeur is Record<string, unknown> => typeof valeur === "object" && valeur !== null && !Array.isArray(valeur);
 
+/** Chemin PRÉSENT dans une entrée de `files[]` mais inexploitable (pas une chaîne, vide, trop long) : jamais sauté en silence. */
+const estPresentInexploitable = (valeur: unknown) => valeur !== undefined && !estChaineUtile(valeur);
+
+/**
+ * Vrai si `metadata.files` ne peut pas être contrôlé EN ENTIER (A18 n° 1) : présent sans être une liste, plus de `FICHIERS_MAX`
+ * entrées, une entrée qui n'est pas un objet, qui ne porte ni `filePath` ni `relativePath` lisible, ou dont un chemin
+ * (`filePath`, `relativePath`, `movePath`) est présent mais inexploitable.
+ */
+function fichiersDouteux(fichiers: unknown): boolean {
+  if (fichiers === undefined) return false;
+  if (!Array.isArray(fichiers) || fichiers.length > FICHIERS_MAX) return true;
+  return fichiers.some(
+    (fichier) =>
+      !estObjet(fichier) ||
+      [fichier.filePath, fichier.relativePath, fichier.movePath].some(estPresentInexploitable) ||
+      (!estChaineUtile(fichier.filePath) && !estChaineUtile(fichier.relativePath)),
+  );
+}
+
 /**
  * Chemins d'écriture d'une demande (formes relevées par la mesure MX1) : `metadata.files[]` quand il est là (`filePath`,
  * `movePath`, à défaut `relativePath`), sinon `metadata.filepath`. Le `filepath` d'un correctif multiple est la liste des
- * fichiers jointe par « , » : chaque morceau est contrôlé (plus strict, jamais plus permissif).
+ * fichiers jointe par « , » : chaque morceau est contrôlé (plus strict, jamais plus permissif). `null` quand `files[]` ne peut
+ * pas être contrôlé en entier (`fichiersDouteux`) : la demande est alors refusée en bloc, rien n'est jamais tronqué ni sauté.
  */
-export function cheminsEcriture(metadata: Record<string, unknown>): string[] {
+export function cheminsEcriture(metadata: Record<string, unknown>): string[] | null {
   const out: string[] = [];
   const ajouter = (valeur: unknown) => {
     if (estChaineUtile(valeur)) out.push(valeur);
   };
   const fichiers = metadata.files;
+  if (fichiersDouteux(fichiers)) return null;
   if (Array.isArray(fichiers)) {
-    for (const fichier of fichiers.slice(0, FICHIERS_MAX)) {
-      if (!estObjet(fichier)) continue;
+    for (const fichier of fichiers) {
+      if (!estObjet(fichier)) return null;
       if (estChaineUtile(fichier.filePath)) ajouter(fichier.filePath);
       else ajouter(fichier.relativePath);
       ajouter(fichier.movePath);
@@ -358,8 +418,9 @@ const PERMISSIONS_WEB: readonly string[] = Object.freeze(["webfetch", "websearch
 
 /**
  * Verdict du portillon P9 pour UNE demande de la salle : « once », ou le refus et sa catégorie. Aucune attente, aucun accord
- * possible (décision n° 6). Une demande qu'aucun interdit ne vise passe : la lecture des clés, elle, est refusée en amont par la
- * configuration d'instance (§4.1) et par le filet de L24.
+ * possible (décision n° 6). Une demande qu'aucun interdit ne vise passe. La lecture des clés et des `.env*` par les outils de
+ * lecture (`read`, `grep`, `glob`, `list`) est refusée en amont par la configuration d'instance (§4.1) ; par `bash`, c'est ce
+ * portillon qui la refuse, sur les noms écrits dans la commande (contrôle lexical, voir l'en-tête).
  */
 export function classifyOmoPermission(demande: OmoForbiddenDemande, ctx: OmoForbiddenContext): OmoPermissionVerdict {
   const permission = typeof demande?.permission === "string" ? demande.permission.toLowerCase() : "";
@@ -383,8 +444,9 @@ function verdictEcriture(metadata: Record<string, unknown>, ctx: OmoForbiddenCon
   // Projet ouvert inconnu : aucun chemin ne peut être dit « dans le projet ».
   if (projet === null) return interdit("hors-projet");
   const chemins = cheminsEcriture(metadata);
-  // Aucun chemin lisible : la demande n'est pas contrôlable (fermé en cas de doute).
-  if (chemins.length === 0) return interdit("hors-projet");
+  // Aucun chemin lisible, correctif de plus de 256 fichiers ou entrée illisible : la demande n'est pas contrôlable en entier,
+  // elle est refusée en bloc (fermé en cas de doute, A18 n° 1).
+  if (chemins === null || chemins.length === 0) return interdit("hors-projet");
   const dynamiques = Array.isArray(ctx?.ideCiDynamiques) ? ctx.ideCiDynamiques : [];
   for (const chemin of chemins) {
     const relatif = dedans(projet, resoudre(projet, chemin));

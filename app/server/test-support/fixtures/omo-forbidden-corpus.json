@@ -7,7 +7,7 @@
   "ideCiDynamiques": [".githooks", "outils/hooks"],
   "notes": [
     "attendu.verdict vaut « once » ou « interdit » ; une catégorie n'est donnée que pour un refus.",
-    "Les commandes passent par tokenizeCommand (L8a) ; celles que la porte refuse de découper sont analysées par fragments (cas « enchaînement »).",
+    "Les commandes passent par tokenizeCommand (L8a) ; celles que la porte refuse de découper sont analysées par fragments (cas « enchaînement »), texte recollé et chaînes citées compris, et P03 s'y applique en entier (décision A18).",
     "Décision n° 7 (Q2) : les interpréteurs, les tests, les scripts et les programmes du projet passent, c'est le réseau fermé (G1) qui tient le reste."
   ],
   "cas": [
@@ -136,6 +136,30 @@
       "demande": { "permission": "bash", "metadata": { "command": "echo ok | git push" } },
       "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
       "pourquoi": "Même analyse par fragments."
+    },
+    {
+      "nom": ".env coupé par une citation",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .e\"nv\"" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "Décision A18 n° 2 : le texte recollé comme le lit le shell fait foi (§4.5), une citation au milieu d'un mot ne cache rien."
+    },
+    {
+      "nom": "git coupé par une citation",
+      "demande": { "permission": "bash", "metadata": { "command": "g'i't push" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
+      "pourquoi": "Décision A18 n° 2 : même recollage pour le programme."
+    },
+    {
+      "nom": "nom P03 derrière un tube",
+      "demande": { "permission": "bash", "metadata": { "command": "cat credentials.json | head" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Décision A18 n° 3 : P03 s'applique en entier à chaque fragment, catégorie « nom » comprise."
+    },
+    {
+      "nom": "nom P03 dans une commande citée",
+      "demande": { "permission": "bash", "metadata": { "command": "sh -c 'cat credentials.json > /tmp/x'" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Décision A18 n° 3 : même règle pour le contenu d'un mot cité."
     },
     {
       "nom": "npm test",

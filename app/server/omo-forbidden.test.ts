@@ -295,6 +295,183 @@ describe("web et sortie du dossier (décision du 19/09 n° 7)", () => {
   });
 });
 
+// --- Décision A18 (23/09) : trois failles du portillon, arbitrage 3 juges × 3 angles, mesurées sur 89385da ----------------------
+
+describe("A18 n° 1 : un correctif de plus de 256 fichiers n'est jamais tronqué en silence", () => {
+  const PROJET = "/workspace/projet";
+  const CTX_256: OmoForbiddenContext = { projetOuvert: PROJET, ideCiDynamiques: ["outils/hooks"] };
+  const anodins = (n: number) => Array.from({ length: n }, (_, i) => `src/f${i}.ts`);
+  /** Forme MX1 META-PMULTI d'opencode 1.18.30 : `filepath` joint par « , » et `files[]`. */
+  const correctif = (relatifs: readonly string[], forme: "complete" | "relatif" = "complete") => ({
+    permission: "edit",
+    metadata: {
+      filepath: relatifs.join(", "),
+      files: relatifs.map((rel) => (forme === "complete" ? { filePath: `${PROJET}/${rel}`, relativePath: rel, type: "add" } : { relativePath: rel, type: "add" })),
+    },
+  });
+  const CIBLES: readonly [string, OmoForbiddenCategory][] = [
+    [".git/hooks/pre-commit", "git-interne"],
+    [".GIT/hooks/pre-commit", "git-interne"],
+    [".husky/pre-commit", "ide-ci"],
+    [".vscode/tasks.json", "ide-ci"],
+    [".github/workflows/ci.yml", "ide-ci"],
+    ["outils/hooks/pre-commit", "ide-ci"],
+    ["opencode.jsonc", "config-extension"],
+    ["packages/web/opencode.jsonc", "config-extension"],
+    [".claude/settings.json", "config-extension"],
+    [".agents/skills/x/SKILL.md", "config-extension"],
+    [".env", "env"],
+    ["id_ed25519", "fichier-cle"],
+    ["../autre-projet/src/x.ts", "hors-projet"],
+  ];
+
+  it("témoins : la cible seule, puis en 256e et dernière position, est refusée par sa catégorie", () => {
+    for (const [cible, categorie] of CIBLES) {
+      assert.deepEqual(classifyOmoPermission(correctif([cible]), CTX_256), refus(categorie), cible);
+      assert.deepEqual(classifyOmoPermission(correctif([...anodins(255), cible]), CTX_256), refus(categorie), `255 + ${cible}`);
+    }
+  });
+
+  it("une cible placée APRÈS le 256e fichier est refusée, formes complète et relative", () => {
+    for (const [cible] of CIBLES) {
+      for (const n of [256, 257, 1000]) {
+        assert.equal(classifyOmoPermission(correctif([...anodins(n), cible]), CTX_256).verdict, "interdit", `${n} + ${cible}`);
+        assert.equal(classifyOmoPermission(correctif([...anodins(n), cible], "relatif"), CTX_256).verdict, "interdit", `${n} + ${cible} (relativePath)`);
+      }
+    }
+    // Les entrées en double comptent aussi : 256 fois le même fichier, puis la cible.
+    const doubles = correctif([...Array.from({ length: 256 }, () => "src/a.ts"), ".git/hooks/pre-commit"]);
+    assert.equal(classifyOmoPermission(doubles, CTX_256).verdict, "interdit");
+  });
+
+  it("la cible d'un déplacement placé après le 256e fichier est refusée", () => {
+    const demande = correctif(anodins(256));
+    (demande.metadata.files as Record<string, unknown>[]).push({ filePath: `${PROJET}/src/x.ts`, relativePath: "src/x.ts", movePath: `${PROJET}/.git/hooks/pre-commit`, type: "move" });
+    assert.equal(classifyOmoPermission(demande, CTX_256).verdict, "interdit");
+  });
+
+  it("au-delà de 256 fichiers : refus EN BLOC « hors-projet », même tout anodin ; 256 fichiers anodins passent", () => {
+    assert.deepEqual(classifyOmoPermission(correctif(anodins(257)), CTX_256), refus("hors-projet"));
+    assert.deepEqual(classifyOmoPermission(correctif(anodins(257), "relatif"), CTX_256), refus("hors-projet"));
+    assert.deepEqual(classifyOmoPermission(correctif([...anodins(256), ".git/hooks/pre-commit"]), CTX_256), refus("hors-projet"));
+    assert.deepEqual(classifyOmoPermission(correctif(anodins(256)), CTX_256), ONCE);
+    assert.deepEqual(classifyOmoPermission(correctif(anodins(256), "relatif"), CTX_256), ONCE);
+    assert.equal(cheminsEcriture(correctif(anodins(257)).metadata), null);
+  });
+
+  it("une entrée de files[] illisible n'est jamais sautée : la demande entière est refusée", () => {
+    const avec = (entree: unknown) => ({ permission: "edit", metadata: { filepath: "src/a.ts", files: [{ filePath: `${PROJET}/src/a.ts`, relativePath: "src/a.ts" }, entree] } });
+    const illisibles: unknown[] = [null, {}, "src/b.ts", { type: "add" }, { filePath: 7 }, { filePath: "" }, { relativePath: `./${"a/".repeat(2100)}.git/hooks/pre-commit` }, { filePath: `${PROJET}/src/b.ts`, movePath: null }];
+    for (const entree of illisibles) assert.deepEqual(classifyOmoPermission(avec(entree), CTX_256), refus("hors-projet"), JSON.stringify(entree).slice(0, 80));
+    // `files` présent sans être une liste : illisible aussi.
+    assert.deepEqual(classifyOmoPermission({ permission: "edit", metadata: { filepath: "src/a.ts", files: "src/a.ts" } }, CTX_256), refus("hors-projet"));
+    // Témoin : une entrée complète de plus passe.
+    assert.deepEqual(classifyOmoPermission(avec({ filePath: `${PROJET}/src/b.ts`, relativePath: "src/b.ts", type: "add" }), CTX_256), ONCE);
+  });
+});
+
+describe("A18 n° 2 : une citation au milieu d'un mot ne cache jamais un nom interdit (le texte complet fait foi, §4.5)", () => {
+  it("les morceaux cités d'un même mot sont recollés comme le fait le shell", () => {
+    const attendus: readonly [string, OmoForbiddenCategory][] = [
+      ['cat .e"nv"', "env"],
+      ["cat .e'nv'", "env"],
+      ["cat .''env", "env"],
+      ['cat .e""nv', "env"],
+      ["cat .e''nv", "env"],
+      ['cat ./.e"nv"', "env"],
+      ['cp .e"nv" /tmp/vol.txt', "env"],
+      ['echo CLE=x > .e"nv"', "env"],
+      [String.raw`cat .e\nv`, "env"],
+      [String.raw`cat .en\v`, "env"],
+      [String.raw`cat .\env`, "env"],
+      ['cat deploiement/id_ed2"5"519', "fichier-cle"],
+      ['echo x > .g"it"/hooks/pre-commit', "git-interne"],
+      ["cp outils/h .gi't'/hooks/pre-commit", "git-interne"],
+      ["g'i't push", "git-envoi"],
+      ['gi"t" push', "git-envoi"],
+      ['git p"u"sh', "git-envoi"],
+      ['sh -c "git push"', "git-envoi"],
+      ["P=push; git $P", "git-envoi"],
+      ['git "$SOUS_COMMANDE" origin', "git-envoi"],
+      ["cu'r'l adresse", "reseau"],
+      ['cu"r"l adresse', "reseau"],
+      ['bash -c "curl adresse"', "reseau"],
+      ['kube"ctl" get pods', "production"],
+    ];
+    for (const [commande, categorie] of attendus) assert.deepEqual(bash(commande), refus(categorie), commande);
+  });
+
+  it("propriété : une citation, où qu'elle coupe le mot, ne change jamais le verdict d'un chemin refusé", () => {
+    const temoins = [".env", ".env.local", "config/.env", "prod.env", ".ssh/id_ed25519", "cle.pem", "auth.json", ".netrc", ".git/config"];
+    for (const temoin of temoins) {
+      const attendu = bash(`cat ${temoin}`);
+      assert.equal(attendu.verdict, "interdit", temoin);
+      for (let i = 0; i <= temoin.length; i++) {
+        const avant = temoin.slice(0, i);
+        const apres = temoin.slice(i);
+        for (const commande of [`cat ${avant}""${apres}`, `cat ${avant}''${apres}`, `cat ${avant}"${apres}"`, `cat ${avant}'${apres}'`]) {
+          assert.deepEqual(bash(commande), attendu, commande);
+        }
+      }
+    }
+  });
+
+  it("non-régression : les commandes ordinaires, citées ou non, passent toujours", () => {
+    for (const commande of [
+      "npm test | tee sortie.txt",
+      'git commit -m "passage a docker"',
+      "git commit -m 'passage a docker'",
+      'echo "ok" && npm test',
+      "echo $HOME && npm test",
+      "for f in src/*.ts; do wc -l $f; done",
+      'git log --format="%h $x" -n 3',
+      "python outils/curl.py",
+      "npm run docker",
+      "cat .env.example",
+      'cat ".env.example"',
+      'cat .e"nv".example',
+      "export PATH=$PATH:/x; npm test",
+    ]) {
+      assert.deepEqual(bash(commande), ONCE, commande);
+    }
+  });
+});
+
+describe("A18 n° 3 : un métacaractère de shell ne fait jamais tomber la catégorie « nom » de P03", () => {
+  const TEMOINS_NOM = ["credentials.json", "./credentials.json", ".credentials.json", "config/client_secret.json", "db-secrets.txt", "passwords.md", "mon-token.txt", "id_dsa", "deploy/id_dsa", "/workspace/autre-projet/credentials.json"];
+  const HABILLAGES: readonly ((t: string) => string)[] = [
+    (t) => `cat ${t} | head`,
+    (t) => `cat ${t} && echo ok`,
+    (t) => `cat ${t} > /tmp/x`,
+    (t) => `cat ${t} 2>/dev/null`,
+    (t) => `cat ${t}; true`,
+    (t) => `cat "${t}"`,
+    (t) => `sh -c 'cat ${t} docs/a.md'`,
+  ];
+
+  it("le verdict d'un fragment est celui de la commande seule (repli par fragments, l.284)", () => {
+    for (const temoin of TEMOINS_NOM) {
+      assert.deepEqual(bash(`cat ${temoin}`), refus("fichier-cle"), `cat ${temoin}`);
+      for (const habiller of HABILLAGES) assert.deepEqual(bash(habiller(temoin)), refus("fichier-cle"), habiller(temoin));
+    }
+  });
+
+  it("mot cité réévalué par sh -c : même règle (contenu cité, l.288)", () => {
+    assert.deepEqual(bash("sh -c 'cat credentials.json > /tmp/x'"), refus("fichier-cle"));
+    assert.deepEqual(bash("sh -c 'cat db-secrets.txt | tr a b > out/y'"), refus("fichier-cle"));
+    assert.deepEqual(bash("bash -c 'cat secrets.yaml > out/x.txt'"), refus("fichier-cle"));
+  });
+
+  it("témoins inchangés : clés et .env derrière un tube, commandes ordinaires avec un tube", () => {
+    for (const temoin of ["id_ed25519", "auth.json", "cle.pem", "secrets/x", ".netrc"]) assert.deepEqual(bash(`cat ${temoin} | head`), refus("fichier-cle"), temoin);
+    assert.deepEqual(bash("cat .env | head"), refus("env"));
+    assert.deepEqual(bash("echo x > .git/hooks/pre-commit"), refus("git-interne"));
+    for (const commande of ["npm test | tee sortie.txt", "npm run build && npm test", "git log --oneline | head -20", "cat src/index.ts | head", "echo ok | git status"]) {
+      assert.deepEqual(bash(commande), ONCE, commande);
+    }
+  });
+});
+
 describe("croisements de listes (train de V2)", () => {
   it("tout programme S4 « réseau » ou « production » de L8a est refusé, les autres catégories passent", () => {
     for (const categorie of ["reseau", "production"] as const) {
