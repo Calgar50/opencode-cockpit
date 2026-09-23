@@ -157,9 +157,9 @@ services:
     cap_add: ["CHOWN"]
     pids_limit: 32
     network_mode: none
-    # Commande fixe, sans aucune entrée : les six chemins sont ceux que app/Dockerfile crée pour ce service.
+    # Commande fixe, sans aucune entrée : un chemin par volume du contrat, rien d'autre.
     entrypoint: ["/bin/sh", "-c"]
-    command: ["set -eu; chown node:node /control-omo /omo-auth /egress-log /oc-omo-data; chown root:root /omo-state /omo-config"]
+    command: ["set -eu; chown node:node /control-omo /omo-auth /egress-log /oc-omo-data /omo-carnets; chown root:root /omo-state /omo-config"]
     volumes:
       - control-omo:/control-omo
       - omo-auth:/omo-auth
@@ -167,6 +167,7 @@ services:
       - oc-omo-data:/oc-omo-data
       - omo-state:/omo-state
       - omo-config:/omo-config
+      - omo-carnets:/omo-carnets
 
   # Proxy de sortie de la salle : seul `CONNECT <hôte de l'API Copilot>:443` passe, tout le reste reçoit 403 et entre au journal.
   # Membre des DEUX réseaux (MO-10 point 5) : c'est la seule forme qui donne une sortie à un réseau `internal: true`.
@@ -266,7 +267,15 @@ services:
       - omo-config:/home/node/.omo:ro
       - omo-config:/home/node/.claude:ro
       - omo-config:/home/node/.agents:ro
-      - ${WORKSPACE_DIR}:/workspace
+      # Carnets de la salle (décision A16 point 2) : un volume à elle, HORS de tout projet. Aucun dossier `.omo` n'est jamais créé
+      # dans les projets de l'utilisateur, ni par ce fichier, ni par la surcharge, ni par la salle (sa racine est en lecture seule).
+      - omo-carnets:/omo-carnets
+      # Dossier de travail ENTIER en LECTURE SEULE (L16c, décision A16, option E1) : l'écriture n'est rouverte que par la surcharge
+      # `docker-compose.omo-projets.yml` d'install.ps1, un montage par entrée de premier niveau de chaque projet préparé, jamais sur
+      # `.git`, jamais sur la racine d'un projet. Sur Docker Desktop Windows, un `.git:ro` posé SOUS un dossier en écriture se
+      # contourne par la casse (`.GIT`), les noms courts (`GIT~1`) et le dossier parent (`PROJET/.git`) : mesuré, 10 alias
+      # inscriptibles. Sous un ANCÊTRE en lecture seule, tout alias répond EROFS. Le superviseur exige ce `ro` dans mountinfo.
+      - ${WORKSPACE_DIR}:/workspace:ro
       - ./certs:/certs:ro
     # Aucun port publié : la salle n'est joignable que par le cockpit, sur le réseau fermé.
     expose: ["4096"]
@@ -286,6 +295,7 @@ volumes:
   egress-log:
   oc-omo-data:
   omo-config:
+  omo-carnets:
 
 networks:
   default:

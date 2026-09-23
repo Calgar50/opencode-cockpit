@@ -332,7 +332,14 @@ describe("T3a : contrat machine contrat-salle.json (D-2b-39)", () => {
 
   it("volumes : contrôle et authentification écrits par le cockpit, état par la salle, journal par egress, sessions de la salle", () => {
     const par = (nom: string) => contrat.volumes.find((volume) => volume.nom === nom);
-    assert.deepEqual(contrat.volumes.map((volume) => volume.nom), ["control-omo", "omo-auth", "omo-state", "egress-log", "oc-omo-data", "omo-config"]);
+    // omo-carnets : ajouté par L16c (décision A16 point 2), les carnets de la salle hors de tout projet, à node, écrits par la salle.
+    assert.deepEqual(contrat.volumes.map((volume) => volume.nom), ["control-omo", "omo-auth", "omo-state", "egress-log", "oc-omo-data", "omo-config", "omo-carnets"]);
+    assert.deepEqual(par("omo-carnets"), {
+      nom: "omo-carnets",
+      proprietaire: "node",
+      ecrivain: "salle",
+      montages: [{ service: "salle", cible: "/omo-carnets", mode: "rw" }],
+    });
     assert.deepEqual(par("control-omo")?.montages, [
       { service: "cockpit", cible: "/control-omo", mode: "rw" },
       { service: "salle", cible: "/control", mode: "ro" },

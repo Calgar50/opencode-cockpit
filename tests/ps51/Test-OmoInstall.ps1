@@ -2,7 +2,8 @@
 # Usage : powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/ps51/Test-OmoInstall.ps1 [-FailFast]
 # Banc partage : copie jetable du cockpit (install/InstallBench.ps1), faux docker en tete du PATH, espions (Spies.ps1).
 # Couvre : le contrat machine, l'archive de la salle (empreinte verifiee AVANT tout chargement, identifiant compare),
-# les projets prepares et la protection des depots git du dossier de travail, enfin l'encodage de tous les .ps1 livres.
+# les projets prepares et la protection des depots git du dossier de travail (L16c : dossier de travail en lecture seule,
+# ecriture par exception sur les entrees de premier niveau des projets), enfin l'encodage de tous les .ps1 livres.
 # Aucun secret reel : les mots de passe generes sont compares par longueur et par condense, jamais affiches.
 # Aucune ressource Docker : le faux docker du banc repond a tout, et tout appel non prevu fait echouer le cas.
 #
@@ -119,7 +120,7 @@ function Get-ProtectedForm($Projects, [string]$Chemin) {
     return [string]$entry[0].forme
 }
 # Montages d'UN service de la surcharge (defaut : la salle). La surcharge en porte deux depuis la relecture
-# 2bis-vague-2 : les binds .git:ro de la salle, et la source de la liste des projets prepares sur le cockpit.
+# 2bis-vague-2 : les ouvertures en ecriture de la salle (L16c), et la source de la liste des projets prepares sur le cockpit.
 function Get-OverlayLines([string]$Root, [string]$Service = $NomSalle) {
     $montages = New-Object System.Collections.Generic.List[string]
     $dedans = $false
@@ -128,6 +129,27 @@ function Get-OverlayLines([string]$Root, [string]$Service = $NomSalle) {
         if ($dedans -and $ligne.StartsWith('      - ')) { $montages.Add($ligne.Substring(8)) }
     }
     return @($montages)
+}
+# Cibles des montages de la salle (L16c : "<source hote>:<cible>:rw" entre guillemets), dans l'ordre de la surcharge.
+function Get-OverlayTargets([string]$Root) {
+    return @(Get-OverlayLines $Root | ForEach-Object {
+        if ($_ -cmatch '^"(.*):(/workspace(?:/[^:"]*)?):(rw|ro)"\z') { $Matches[2] } else { '?' + $_ }
+    })
+}
+# Chemin d'une cible relatif a /workspace ('' pour /workspace), et celui de son dossier parent ('' s'il n'y en a pas).
+function Get-TargetRelative([string]$Target) {
+    if ($Target.StartsWith('/workspace/')) { return $Target.Substring(11) }
+    return ''
+}
+function Get-TargetParent([string]$Target) {
+    $relatif = Get-TargetRelative $Target
+    if ($relatif.IndexOf('/') -lt 0) { return '' }
+    return $relatif.Substring(0, $relatif.LastIndexOf('/'))
+}
+# Vrai si le dernier segment d'une cible se ramene a .git (casse, points ou espaces de fin, nom court GIT~n).
+function Test-TargetIsGit([string]$Target) {
+    $leaf = ($Target.Substring($Target.LastIndexOf('/') + 1)).ToLowerInvariant().TrimEnd('.', ' ')
+    return ($leaf -ceq '.git' -or $leaf -cmatch '^git~[0-9]+\z')
 }
 # Valeur d'une variable d'environnement du service cockpit, lue dans docker-compose.yml du depot.
 function Get-ComposeCockpitEnv([string]$Name) {
@@ -231,14 +253,20 @@ try {
     Assert-Test 'protection : aucun chemin monte deux fois' ($doublons.Count -eq 0) (($doublons | ForEach-Object { $_.Name }) -join ', ')
     Assert-Test 'protection : forme des chemins = celle que la salle compare (dossier du depot ou son .git)' (@($Projects.gitProteges | Where-Object { ([string]$_.chemin).StartsWith('/') -or ([string]$_.chemin).Contains('\') }).Count -eq 0)
 
-    $lines = Get-OverlayLines $Root
-    Assert-Test 'surcharge : un montage par depot protege' ($lines.Count -eq @($Projects.gitProteges).Count) ('{0} / {1}' -f $lines.Count, @($Projects.gitProteges).Count)
+    # L16c : plus aucun .git:ro ; la surcharge n'ouvre en ECRITURE que les entrees de premier niveau des projets prepares.
+    # alpha/node_modules l'est (le parcours n'y cherche pas de depot, D-2b-28) ; mono/pkg est un projet, donc l'entree pkg de
+    # mono reste en lecture seule ; depots/x.git et gitdirs/sousmod sont des depots, leurs entrees aussi.
+    $lines = @(Get-OverlayLines $Root)
     Assert-Test 'surcharge : service du contrat' (([System.IO.File]::ReadAllText((Get-OverlayFile $Root))).Contains('  ' + $NomSalle + ':'))
-    Assert-Test 'surcharge : chaque montage est entre guillemets et en lecture seule' (@($lines | Where-Object { $_.StartsWith('"') -and $_.EndsWith(':ro"') }).Count -eq $lines.Count) ($lines -join ' | ')
-    $attendu = '"' + ($Ws -replace '\\', '/') + '/alpha/.git:/workspace/alpha/.git:ro"'
+    Assert-Test 'surcharge : chaque montage est entre guillemets et en ecriture (rw)' ($lines.Count -gt 0 -and @($lines | Where-Object { $_.StartsWith('"') -and $_.EndsWith(':rw"') }).Count -eq $lines.Count) ($lines -join ' | ')
+    $cibles = @(Get-OverlayTargets $Root | Sort-Object)
+    $attendues = @('/workspace/alpha/node_modules', '/workspace/alpha/src', '/workspace/beta/sous') | Sort-Object
+    Assert-Test 'surcharge : exactement les entrees de premier niveau ouvrables' (($cibles -join ',') -ceq ($attendues -join ',')) ($cibles -join ' | ')
+    $attendu = '"' + ($Ws -replace '\\', '/') + '/alpha/src:/workspace/alpha/src:rw"'
     Assert-Test 'surcharge : source de l hote et cible sous /workspace' ($lines -ccontains $attendu) ($lines -join ' | ')
+    Assert-Test 'surcharge : plus aucun montage de .git' (@($lines | Where-Object { $_ -cmatch '/\.git[:"]' }).Count -eq 0) ($lines -join ' | ')
     $dollar = @($lines | Where-Object { $_.Contains('pro jet') })
-    Assert-Test 'surcharge : un dollar du nom de dossier est double pour compose' ($dollar.Count -eq 0) ($dollar -join ' | ')
+    Assert-Test 'surcharge : un projet vide n ouvre rien' ($dollar.Count -eq 0) ($dollar -join ' | ')
 
     # Relecture 2bis-vague-2 : COCKPIT_OMO_PROJECTS_FILE est la SOURCE lue par le cockpit, jamais la destination qu'il
     # ecrit dans le volume de controle. Cette source vit sur l'hote et n'atteint le conteneur que par la surcharge,
@@ -252,15 +280,90 @@ try {
     $attenduListe = '"' + ((Get-ProjectsFile $Root) -replace '\\', '/') + ':' + $cibleSource + ':ro"'
     Assert-Test 'surcharge : liste des projets prepares montee en lecture seule sur le cockpit' ($lignesCockpit -ccontains $attenduListe) (($lignesCockpit -join ' | ') + ' / attendu ' + $attenduListe)
 
-    # Le dossier a dollar n'a pas de depot git : il n'apparait donc pas dans la surcharge. On eprouve l'echappement
-    # sur un arbre dedie, ou ce dossier porte un .git.
+    # Le dossier a dollar est vide : il n'apparait donc pas dans la surcharge. On eprouve l'echappement sur un arbre
+    # dedie, ou ce dossier porte un .git (jamais ouvert) et une entree src (ouverte en ecriture).
     $WsDollar = New-Folder (Join-Path $Work 'ws-dollar')
     New-GitFolder (Join-Path $WsDollar 'pro jet $test\.git')
+    New-TextFile (Join-Path $WsDollar 'pro jet $test\src\a.txt') "a`n"
     $RootDollar = New-InstallRoot $Work $RepoRoot 'cockpit-dollar'
     $result = Invoke-Install -Root $RootDollar -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsDollar }
-    $lignesDollar = Get-OverlayLines $RootDollar
-    Assert-Test 'surcharge : dollar double et espace conserve' ($result.ExitCode -eq 0 -and @($lignesDollar | Where-Object { $_.Contains('pro jet $$test/.git') }).Count -eq 1) ($lignesDollar -join ' | ')
+    $lignesDollar = @(Get-OverlayLines $RootDollar)
+    $attenduDollar = '"' + (($WsDollar -replace '\\', '/') + '/pro jet $test/src') -replace '\$', '$$$$'
+    $attenduDollar = $attenduDollar + ':/workspace/pro jet $$test/src:rw"'
+    Assert-Test 'surcharge : dollar double et espace conserve, source et cible' ($result.ExitCode -eq 0 -and $lignesDollar.Count -eq 1 -and $lignesDollar[0] -ceq $attenduDollar) (($lignesDollar -join ' | ') + ' / attendu ' + $attenduDollar)
     Assert-Test 'omo-projets.json : le chemin garde le dollar tel quel' ((Get-ProjectState (Read-Projects $RootDollar) 'pro jet $test') -ceq 'dossier')
+
+    # --- 2 ter. Montages inverses (L16c, decision A16, option E1) ----------------------------------------------------
+    # Le dossier de travail est monte ENTIER en lecture seule par docker-compose.yml ; la surcharge ne rouvre l'ecriture que
+    # par exception : un montage par entree de premier niveau (dossier ET fichier) de chaque projet prepare, jamais sur .git
+    # ni sur un nom qui s'y ramene, jamais sur la racine d'un projet ni sur le dossier de travail, jamais sur .omo.
+    Write-Section 'Montages inverses : lecture seule par defaut, ecriture par exception'
+    $WsE1 = New-Folder (Join-Path $Work 'ws-e1')
+    New-GitFolder (Join-Path $WsE1 'app\.git')
+    New-GitFolder (Join-Path $WsE1 'app\.git\modules\sub')
+    New-TextFile (Join-Path $WsE1 'app\src\main.ts') "export {};`n"
+    New-TextFile (Join-Path $WsE1 'app\README.md') "lisez-moi`n"
+    New-TextFile (Join-Path $WsE1 'app\.omo\notes.md') "note de l utilisateur`n"
+    # Sous-module : le pointeur vit dans libs/, sa cible dans le .git du projet. libs ouvert en ecriture = pointeur reecrit.
+    New-TextFile (Join-Path $WsE1 'app\libs\sub\.git') "gitdir: ../../.git/modules/sub`n"
+    New-TextFile (Join-Path $WsE1 'app\libs\autre.txt') "x`n"
+    # Depot imbrique dans une entree : vendor reste en lecture seule, le depot devient un projet prepare a part entiere.
+    New-GitFolder (Join-Path $WsE1 'app\vendor\lib\.git')
+    New-TextFile (Join-Path $WsE1 'app\vendor\lib\code.c') "int main(void) { return 0; }`n"
+    # Le depot de casse : pour git sous Windows, .GIT EST le depot.
+    New-GitFolder (Join-Path $WsE1 'casse\.GIT')
+    New-TextFile (Join-Path $WsE1 'casse\src\a.txt') "a`n"
+    # Un nom court 8.3 de .git, porte ici par un vrai dossier : jamais ouvert non plus.
+    New-Folder (Join-Path $WsE1 'court\GIT~1') | Out-Null
+    New-TextFile (Join-Path $WsE1 'court\doc\a.md') "a`n"
+    # Un nom qui se ramene a .git par un point final (fichier cree par le prefixe \\?\, que Win32 ne normalise pas). Un
+    # DOSSIER de ce nom ne se lit pas sous Windows : le parcours le dit illisible et refuse la surcharge, ferme en cas de doute.
+    New-TextFile (Join-Path $WsE1 'point\doc\a.md') "a`n"
+    $pointFinal = '\\?\' + (Join-Path $WsE1 'point\.git.')
+    $avecPointFinal = $true
+    try { [System.IO.File]::WriteAllText($pointFinal, "gitdir: ailleurs`n") } catch { $avecPointFinal = $false }
+    New-TextFile (Join-Path $WsE1 'notes-a-la-racine.txt') "hors projet`n"
+    New-Folder (Join-Path $WsE1 'vide') | Out-Null
+
+    $RootE1 = New-InstallRoot $Work $RepoRoot 'cockpit-e1'
+    try {
+        $result = Invoke-Install -Root $RootE1 -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsE1 }
+    } finally {
+        if ($avecPointFinal) { try { [System.IO.File]::Delete($pointFinal) } catch { } }
+    }
+    Assert-Test 'E1 : code de sortie 0 et surcharge ecrite' ($result.ExitCode -eq 0 -and $null -eq $result.Error -and (Test-Path -LiteralPath (Get-OverlayFile $RootE1))) (Get-Extract ($result.Host + ' ' + $result.Error))
+    $ProjectsE1 = Read-Projects $RootE1
+    $projetsE1 = @($ProjectsE1.projets | ForEach-Object { [string]$_.chemin })
+    $linesE1 = @(Get-OverlayLines $RootE1)
+    $ciblesE1 = @(Get-OverlayTargets $RootE1)
+    $attenduesE1 = @('/workspace/app/README.md', '/workspace/app/src', '/workspace/app/vendor/lib/code.c', '/workspace/casse/src', '/workspace/court/doc', '/workspace/point/doc')
+    Assert-Test 'E1 : un montage en ecriture par entree de premier niveau, dossiers ET fichiers' ((@($ciblesE1 | Sort-Object) -join ',') -ceq (@($attenduesE1 | Sort-Object) -join ',')) ($ciblesE1 -join ' | ')
+    Assert-Test 'E1 : chaque montage est en ecriture (:rw), aucun :ro dans la salle' (@($linesE1 | Where-Object { $_.EndsWith(':rw"') }).Count -eq $linesE1.Count) ($linesE1 -join ' | ')
+    Assert-Test 'E1 : source de l hote = cible, fichier compris' ($linesE1 -ccontains ('"' + ($WsE1 -replace '\\', '/') + '/app/README.md:/workspace/app/README.md:rw"')) ($linesE1 -join ' | ')
+    $surGit = @($ciblesE1 | Where-Object { Test-TargetIsGit $_ })
+    Assert-Test 'E1 : aucun montage en ecriture sur .git ni sur un nom qui s y ramene (.GIT, GIT~1, .git.)' ($surGit.Count -eq 0) ($surGit -join ' | ')
+    Assert-Test 'E1 : .GIT reconnu comme le depot du projet' ((Get-ProjectState $ProjectsE1 'casse') -ceq 'dossier' -and (Get-ProtectedForm $ProjectsE1 'casse/.GIT') -ceq 'dossier')
+    $surRacine = @($ciblesE1 | Where-Object { $_ -ceq '/workspace' -or $projetsE1 -ccontains (Get-TargetRelative $_) })
+    Assert-Test 'E1 : aucun montage sur le dossier de travail ni sur la racine d un projet' ($surRacine.Count -eq 0) ($surRacine -join ' | ')
+    $horsProjet = @($ciblesE1 | Where-Object { $projetsE1 -cnotcontains (Get-TargetParent $_) })
+    Assert-Test 'E1 : chaque montage est un enfant direct d un projet prepare' ($horsProjet.Count -eq 0) ($horsProjet -join ' | ')
+    Assert-Test 'E1 : rien a la racine du dossier de travail n est ouvert' (@($ciblesE1 | Where-Object { $_.Contains('notes-a-la-racine') }).Count -eq 0)
+    Assert-Test 'E1 : .omo existant jamais ouvert en ecriture' (@($ciblesE1 | Where-Object { $_.EndsWith('/.omo') }).Count -eq 0 -and $result.Host.Contains('app/.omo : carnets de l extension')) (Get-Extract $result.Host)
+    Assert-Test 'E1 : entree qui porte un sous-module (pointeur gitdir:) gardee en lecture seule' (-not ($ciblesE1 -ccontains '/workspace/app/libs') -and $result.Host.Contains('app/libs : contient un depot git')) (Get-Extract $result.Host)
+    Assert-Test 'E1 : entree qui porte un depot imbrique gardee en lecture seule, le depot prepare a part' (-not ($ciblesE1 -ccontains '/workspace/app/vendor') -and (Get-ProjectState $ProjectsE1 'app/vendor/lib') -ceq 'dossier')
+    $omoCrees = @(Get-ChildItem -LiteralPath $WsE1 -Recurse -Force -Directory | Where-Object { $_.Name -ieq '.omo' })
+    Assert-Test 'E1 : aucun dossier .omo cree sur le poste (seul celui de l utilisateur existe)' ($omoCrees.Count -eq 1 -and $omoCrees[0].FullName -ceq (Join-Path $WsE1 'app\.omo')) (($omoCrees | ForEach-Object { $_.FullName }) -join ' | ')
+    Assert-Test 'E1 : friction dite (aucune creation a la racine d un projet)' ($result.Host.Contains('ne peut creer ni fichier ni dossier a la racine d un projet') -and $result.Host.Contains('refus net')) (Get-Extract $result.Host)
+    Assert-Test 'E1 : friction dite (relancer install.ps1 apres un ajout a la racine)' ($result.Host.Contains('relancez install.ps1')) (Get-Extract $result.Host)
+    if (-not $avecPointFinal) { Write-Host '  (nom .git. non creable sur ce poste : ce cas est joue sans lui)' -ForegroundColor DarkGray }
+
+    # Un projet sans rien a ouvrir : la liste de la salle est vide mais bien formee (jamais une cle nulle pour compose).
+    $WsVide = New-Folder (Join-Path $Work 'ws-e1-vide')
+    New-GitFolder (Join-Path $WsVide 'seul\.git')
+    $RootVide = New-InstallRoot $Work $RepoRoot 'cockpit-e1-vide'
+    $result = Invoke-Install -Root $RootVide -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsVide }
+    $texteVide = [System.IO.File]::ReadAllText((Get-OverlayFile $RootVide))
+    Assert-Test 'E1 : rien a ouvrir, volumes: [] pour la salle' ($result.ExitCode -eq 0 -and $texteVide.Contains("  " + $NomSalle + ":`n    volumes: []`n")) (Get-Extract $texteVide)
 
     # --- 2 bis. core.hooksPath global de l hote (relecture 2bis-vague-0) -----------------------------------------
     # Un core.hooksPath global qui pointe dans le dossier de travail fait executer, a chaque commande git du poste,
@@ -315,6 +418,24 @@ try {
         Assert-Test ('refus ' + $cas.Nom + ' : code de sortie 4') ($result.ExitCode -eq 4) (Get-Extract ($result.Host + ' ' + $result.Error))
         Assert-Test ('refus ' + $cas.Nom + ' : cause nommee') ($result.Host.Contains($cas.Texte)) (Get-Extract $result.Host)
         Assert-Test ('refus ' + $cas.Nom + ' : surcharge perimee retiree') (-not (Test-Path -LiteralPath (Get-OverlayFile $root)) -and -not (Test-Path -LiteralPath (Get-ProjectsFile $root)))
+    }
+
+    # L16c : un LIEN DE FICHIER a la racine d un projet serait un montage en ecriture de sa cible (docker suit le lien sur
+    # l hote). Les liens de dossier sont deja refuses par le parcours ; celui-ci l est par la liste des ouvertures.
+    $wsLien = New-Folder (Join-Path $Work 'ws-lien-fichier')
+    $cibleLien = Join-Path $Work 'cible-lien-fichier.txt'
+    New-TextFile $cibleLien "hors du dossier de travail`n"
+    New-TextFile (Join-Path $wsLien 'projet\src\a.txt') "a`n"
+    $lienCree = $true
+    try { New-Item -ItemType SymbolicLink -Path (Join-Path $wsLien 'projet\raccourci.txt') -Target $cibleLien -ErrorAction Stop | Out-Null } catch { $lienCree = $false }
+    if ($lienCree) {
+        $rootLien = New-InstallRoot $Work $RepoRoot 'cockpit-lien-fichier'
+        $result = Invoke-Install -Root $rootLien -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $wsLien }
+        Assert-Test 'refus lien-fichier : code 4 et lien nomme' ($result.ExitCode -eq 4 -and $result.Host.Contains('projet/raccourci.txt : lien a la racine d un projet')) (Get-Extract $result.Host)
+        Assert-Test 'refus lien-fichier : aucune surcharge ecrite' (-not (Test-Path -LiteralPath (Get-OverlayFile $rootLien)))
+        Remove-Item -LiteralPath (Join-Path $wsLien 'projet\raccourci.txt') -Force
+    } else {
+        Write-Host '  (lien symbolique de fichier non creable sans le mode developpeur : ce cas est saute ; joue la ou il l est)' -ForegroundColor DarkGray
     }
 
     $wsPlafond = New-Folder (Join-Path $Work 'ws-plafond')

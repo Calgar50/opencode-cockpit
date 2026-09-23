@@ -4,12 +4,15 @@
 // Deux étages :
 // 1. UNITAIRES, dans `npm test` : lectures bornées, battement périmé, `startId` d'un autre démarrage, manifeste, dossiers de
 //    configuration et volumes (propriétaire, point de montage : MO-3, MO-11), bascule vers node (MO-7), boucle de l'homme mort,
-//    purge (MO-2), copie d'`auth.json`, balayage git. Aucun conteneur, aucune pause fixe, aucun port.
+//    purge (MO-2), copie d'`auth.json`, balayage git, et (L16c, décision A16) la sonde des montages du dossier de travail sur des
+//    mountinfo simulés, avec les trois tests de croisement de l'arbitrage L21 n° 3. Aucun conteneur, aucune pause fixe, aucun port.
 // 2. CONTENEUR, SAUTÉS sans `OMO_TESTS_CONTENEUR=1` (D-2b-44) : un conteneur Debian jetable, JAMAIS l'image `opencode-omo`, jamais
 //    l'extension, jamais un vrai opencode — un faux opencode d'une douzaine de lignes suffit à prouver l'homme mort. Les options de
 //    sécurité sont celles du service `opencode-omo` de `docker-compose.yml` (L16b, train de V2) : `cap_drop: ALL` + SETUID/SETGID,
 //    `no-new-privileges`, `read_only` et les TROIS tmpfs. Les volumes sont des volumes nommés préfixés (`OMO_TESTS_PREFIXE`,
-//    défaut `omo11-l17a`) : sur un bind de l'hôte, ni les droits 0600 ni le propriétaire ne voudraient dire quoi que ce soit.
+//    défaut `omo11-l17a`) : sur un bind de l'hôte, ni les droits 0600 ni le propriétaire ne voudraient dire quoi que ce soit. Le
+//    dossier de travail suit L16c : volume monté en lecture seule, entrées rouvertes par sous-chemins du même volume (Docker 26 et
+//    plus). Les alias du partage Windows, eux, ne se reproduisent pas sur un volume Linux : ils sont joués par le banc (L21b).
 //    Nettoyage même en échec.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -571,6 +574,8 @@ describe("superviseur : volumes de la salle", () => {
       { volume: "omo-state", chemin: "/omo-state", uid: 0 },
       { volume: "oc-omo-data", chemin: "/home/node/.local/share/opencode", uid: 1000 },
       { volume: "omo-config", chemin: "/omo-config", uid: 0 },
+      // L16c (décision A16 point 2) : les carnets de la salle, hors de tout projet, à node.
+      { volume: "omo-carnets", chemin: "/omo-carnets", uid: 1000 },
     ]);
     assert.equal(salle.UID_NODE, 1000);
     // Le battement, l'authentification, l'état publié et la configuration du HOME : jamais inscriptibles par node (G9, M32).
@@ -626,6 +631,12 @@ describe("superviseur : volumes de la salle", () => {
 
 // --- Balayage git (D-2b-28) ---------------------------------------------------------------------------------------------------------
 
+/** Montages EN LECTURE SEULE, au format de /proc/self/mountinfo (chemins POSIX), relatifs à un dossier de test (« » : lui-même). */
+const ro = (dir: string, ...relatifs: string[]): salle.Montage[] =>
+  relatifs.map((relatif) => ({ point: `${dir.replaceAll("\\", "/")}${relatif === "" ? "" : `/${relatif}`}`, lectureSeule: true }));
+/** Montages EN ÉCRITURE, même forme. */
+const rw = (dir: string, ...relatifs: string[]): salle.Montage[] => ro(dir, ...relatifs).map((m) => ({ ...m, lectureSeule: false }));
+
 describe("superviseur : balayage git du dossier de travail", () => {
   /** Dossier de travail de test : un projet protégé, un projet ouvert, un `.git` fichier, un `.git` sous node_modules. */
   function workspace(t: { after: (fn: () => void) => void }): string {
@@ -643,11 +654,13 @@ describe("superviseur : balayage git du dossier de travail", () => {
 
   const inscriptibleSi = (motif: string) => (chemin: string) => chemin.replace(/\\/g, "/").includes(motif);
 
-  /** Points de montage, au format de /proc/self/mountinfo (chemins POSIX), pour des chemins relatifs au dossier de travail. */
-  const montagesDe = (dir: string, ...relatifs: string[]) => relatifs.map((relatif) => `${dir.replaceAll("\\", "/")}/${relatif}`);
+  const nonProtegesDe = (balayage: salle.Balayage) => balayage.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")).sort();
 
-  /** Les trois `.git` du dossier de travail de test, tous montés en lecture seule comme le fait la surcharge. */
-  const tousMontes = (dir: string) => montagesDe(dir, "protege/.git", "ouvert/.git", "sous-module/.git");
+  /**
+   * Topologie de L16c (décision A16, option E1) : le dossier de travail ENTIER en lecture seule, et plus aucun bind sur les `.git`.
+   * Les trois `.git` du dossier de test sont protégés par cet ancêtre, pas par un montage à leur nom.
+   */
+  const tousMontes = (dir: string) => ro(dir, "");
 
   /** Ajoute un projet dont le `.git` est un lien vers un autre dépôt. Faux si le système refuse les liens (droits Windows). */
   function ajouterLien(dir: string, nom: string): boolean {
@@ -704,8 +717,8 @@ describe("superviseur : balayage git du dossier de travail", () => {
     assert.equal(balayage.limiteAtteinte, false);
 
     if (ajouterLien(dir, "lien")) {
-      // Même « monté » dans la table, un lien n'est jamais protégé : il n'est pas suivi.
-      const apres = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...montagesDe(dir, "lien/.git")] });
+      // Même servi en lecture seule, un lien n'est jamais protégé : il n'est pas suivi.
+      const apres = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...ro(dir, "lien/.git")] });
       assert.deepEqual(
         apres.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")),
         ["lien/.git"],
@@ -713,19 +726,50 @@ describe("superviseur : balayage git du dossier de travail", () => {
     }
   });
 
-  it("un .git non inscriptible mais hors montage n'est pas protégé (MO-3 : un parent renommé le remplace)", (t) => {
+  it("un .git non inscriptible aujourd'hui mais servi par un montage EN ÉCRITURE n'est pas protégé (L16c, option E1)", (t) => {
     const dir = workspace(t);
-    // Personne n'écrit dans « ouvert/.git » aujourd'hui, mais aucun bind ne le tient : renommer « ouvert » suffit à en poser un neuf.
-    const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: montagesDe(dir, "protege/.git", "sous-module/.git") });
+    // Racine restée en écriture (la forme d'avant L16c, sans ses binds) : personne n'écrit dans les .git aujourd'hui, mais rien ne
+    // les tient. `access(W_OK)` d'aujourd'hui ne suffit jamais : c'est l'ancêtre en lecture seule qui protège.
+    const racineEcrite = salle.balayerGit(dir, { accesEcriture: () => false, montages: rw(dir, "") });
+    assert.deepEqual(nonProtegesDe(racineEcrite), ["ouvert/.git", "protege/.git", "sous-module/.git"]);
+    const ouvert = racineEcrite.gits.find((git) => git.chemin.replace(/\\/g, "/") === "ouvert/.git");
+    assert.deepEqual(ouvert && { inscriptible: ouvert.inscriptible, lectureSeule: ouvert.lectureSeule }, { inscriptible: false, lectureSeule: false });
+    // Racine en lecture seule, mais un projet rouvert en écriture à sa RACINE : son .git est dessous, il n'est plus protégé.
+    const projetOuvert = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...rw(dir, "ouvert")] });
+    assert.deepEqual(nonProtegesDe(projetOuvert), ["ouvert/.git"]);
+    // Un préfixe ne compte pas : « /x/prot » en écriture ne dit rien de « /x/protege/.git ».
+    const prefixe = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...rw(dir, "prot", "ouver")] });
+    assert.deepEqual(nonProtegesDe(prefixe), []);
+    // Sans aucune table (mountinfo illisible) : rien n'est servi en lecture seule, rien n'est protégé.
+    assert.equal(salle.balayerGit(dir, { accesEcriture: () => false, montages: [] }).nonProteges.length, 3);
+  });
+
+  it("L16c point 5 : les liens symboliques sont SIGNALÉS (bornés), jamais suivis, jamais supprimés, jamais bloquants", (t) => {
+    const dir = workspace(t);
+    // Ce que la salle peut poser dans une entrée ouverte en écriture : un lien vers le .git du projet. Il arrive sur le poste comme
+    // un vrai lien (essai E1) ; l'écriture à travers lui répond EROFS, mais un outil de l'hôte qui suit les liens le suivrait.
+    if (!lienDossier(path.join(dir, "protege", ".git"), path.join(dir, "sans-depot", "src", "lien-git"))) {
+      t.skip("lien de dossier non créable sur ce système ; joué en CI Linux");
+      return;
+    }
+    const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
+    assert.equal(balayage.liens.total, 1);
     assert.deepEqual(
-      balayage.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")),
-      ["ouvert/.git"],
+      balayage.liens.chemins.map((c) => c.replace(/\\/g, "/")),
+      ["sans-depot/src/lien-git"],
     );
-    const ouvert = balayage.gits.find((git) => git.chemin.replace(/\\/g, "/") === "ouvert/.git");
-    assert.deepEqual(ouvert && { inscriptible: ouvert.inscriptible, montage: ouvert.montage }, { inscriptible: false, montage: false });
-    // Un préfixe ne compte pas : « /x/protege » monté ne fait pas de « /x/protege/.git » un point de montage.
-    const prefixe = salle.balayerGit(dir, { accesEcriture: () => false, montages: montagesDe(dir, "protege", "ouvert", "sous-module") });
-    assert.equal(prefixe.nonProteges.length, 3);
+    assert.deepEqual(balayage.nonProteges, [], "un lien n'est pas un dépôt : signalé, pas bloquant");
+    assert.equal(fs.lstatSync(path.join(dir, "sans-depot", "src", "lien-git")).isSymbolicLink(), true, "jamais supprimé");
+    // Borné comme toute liste publiée : 20 chemins, le total dit le reste.
+    for (let i = 0; i < 22; i++) lienDossier(path.join(dir, "sans-depot"), path.join(dir, "sans-depot", "src", `l${i}`));
+    const beaucoup = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
+    assert.equal(beaucoup.liens.chemins.length, salle.OMO_LISTE_MAX);
+    assert.equal(beaucoup.liens.total, 23);
+    // Et le constat de node les porte, pour le journal du conteneur.
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-22T20:00:00Z", projets: [{ chemin: "sans-depot", git: "absent" }], gitProteges: [] }),
+    );
+    assert.equal(salle.constatGit(prepares, { racine: dir, montages: tousMontes(dir), acces: () => false }).liens.total, 23);
   });
 
   it("rien d'inscriptible et tout monté : nonProteges vide", (t) => {
@@ -742,8 +786,6 @@ describe("superviseur : balayage git du dossier de travail", () => {
     fs.mkdirSync(path.join(dir, relatif, "hooks"), { recursive: true });
     fs.writeFileSync(path.join(dir, relatif, "HEAD"), "ref: refs/heads/principale\n");
   }
-
-  const nonProtegesDe = (balayage: salle.Balayage) => balayage.nonProteges.map((chemin) => chemin.replace(/\\/g, "/")).sort();
 
   // --- Alias d'un même dossier (relecture 2bis-vague-2, risque 11 / C2-5) ---------------------------------------------------------
   // WORKSPACE_DIR est toujours un chemin Windows, partagé en 9p/drvfs : le partage est INSENSIBLE À LA CASSE et expose encore les
@@ -794,7 +836,7 @@ describe("superviseur : balayage git du dossier de travail", () => {
   it("un dépôt nu ouvert par un alias n'est pas protégé", (t) => {
     const dir = workspace(t);
     depotNu(dir, "remotes/outil.git");
-    const monte = [...tousMontes(dir), ...montagesDe(dir, "remotes/outil.git")];
+    const monte = tousMontes(dir);
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: monte })), []);
     const alias = `${dir.replaceAll("\\", "/")}/remotes/OUTIL.GIT`;
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias), montages: monte })), ["remotes/outil.git"]);
@@ -821,16 +863,14 @@ describe("superviseur : balayage git du dossier de travail", () => {
     const dir = workspace(t);
     depotNu(dir, "outil/.bare");
     fs.writeFileSync(path.join(dir, "outil", ".git"), "gitdir: ./.bare\n");
-    // Seul le fichier pointeur est lié en lecture seule (surcharge d'aujourd'hui) : .bare reste inscriptible par node, et git
-    // exécuterait ses hooks et sa configuration sur le poste au premier « git status ».
-    const pointeurMonte = [...tousMontes(dir), ...montagesDe(dir, "outil/.git")];
+    // .bare inscriptible par node : git exécuterait ses hooks et sa configuration sur le poste au premier « git status ».
     const bareOuvert = (chemin: string) => chemin.replace(/\\/g, "/").includes("/outil/.bare");
-    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: bareOuvert, montages: pointeurMonte })), ["outil/.bare", "outil/.git"]);
-    // Non inscriptible aujourd'hui mais monté par personne (MO-3) : pas protégé non plus.
-    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: pointeurMonte })), ["outil/.bare", "outil/.git"]);
-    // .bare monté en lecture seule lui aussi : le pointeur et sa cible sont protégés.
-    const toutMonte = [...pointeurMonte, ...montagesDe(dir, "outil/.bare")];
-    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: toutMonte })), []);
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: bareOuvert, montages: tousMontes(dir) })), ["outil/.bare", "outil/.git"]);
+    // Non inscriptible aujourd'hui mais rouvert en écriture par un montage (une surcharge qui l'aurait ouvert) : pas protégé non plus.
+    const bareRouvert = [...tousMontes(dir), ...rw(dir, "outil/.bare")];
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: bareRouvert })), ["outil/.bare", "outil/.git"]);
+    // Tout servi par la racine en lecture seule : le pointeur et sa cible sont protégés.
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) })), []);
   });
 
   it("un .git fichier dont la cible est absente, hors du dossier de travail, absolue de l'hôte ou illisible n'est pas protégé", (t) => {
@@ -848,7 +888,7 @@ describe("superviseur : balayage git du dossier de travail", () => {
     }
     // Le parent du dossier de travail est lui-même un montage en lecture seule, comme « / » dans le conteneur (--read-only) : une
     // cible hors du dossier de travail n'est pas « protégée » pour autant, le poste la lit ailleurs.
-    const montages = [...tousMontes(dir), ...montagesDe(dir, ...Object.keys(pointeurs).map((nom) => `${nom}/.git`)), path.dirname(dir).replaceAll("\\", "/")];
+    const montages = [...tousMontes(dir), { point: path.dirname(dir).replaceAll("\\", "/"), lectureSeule: true }];
     const balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages });
     assert.deepEqual(
       nonProtegesDe(balayage),
@@ -875,7 +915,7 @@ describe("superviseur : balayage git du dossier de travail", () => {
     fs.mkdirSync(path.join(dir, "masque"), { recursive: true });
     fs.writeFileSync(path.join(dir, "masque", ".git"), "gitdir: ../protege/.git/modules/detourne\n");
     const ouvertEnVrai = (chemin: string) => chemin.replace(/\\/g, "/").includes("/vrai-git-ouvert");
-    const balayage = salle.balayerGit(dir, { accesEcriture: ouvertEnVrai, montages: [...tousMontes(dir), ...montagesDe(dir, "detour/.git", "masque/.git")] });
+    const balayage = salle.balayerGit(dir, { accesEcriture: ouvertEnVrai, montages: tousMontes(dir) });
     assert.deepEqual(nonProtegesDe(balayage), ["detour/.git", "masque/.git"]);
   });
 
@@ -888,8 +928,8 @@ describe("superviseur : balayage git du dossier de travail", () => {
     fs.writeFileSync(path.join(dir, "docs", "HEAD"), "titre\n");
     const nuOuvert = (chemin: string) => chemin.replace(/\\/g, "/").includes("/remotes/outil.git");
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: nuOuvert, montages: tousMontes(dir) })), ["remotes/outil.git"]);
-    // Monté en lecture seule : protégé, et rien de son intérieur (objects/cache/.git) n'est listé.
-    const monte = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...montagesDe(dir, "remotes/outil.git")] });
+    // Servi en lecture seule : protégé, et rien de son intérieur (objects/cache/.git) n'est listé.
+    const monte = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
     assert.deepEqual(nonProtegesDe(monte), []);
     assert.equal(monte.gits.some((git) => git.chemin.replace(/\\/g, "/") === "remotes/outil.git"), true);
     assert.equal(monte.gits.some((git) => git.chemin.includes("cache")), false);
@@ -926,8 +966,8 @@ describe("superviseur : balayage git du dossier de travail", () => {
   it("un sous-dossier illisible qui cache un .git inscriptible ferme le verdict (EACCES : ACL refusée, chmod 000)", (t) => {
     const dir = workspace(t);
     fs.mkdirSync(path.join(dir, "cache", "p", ".git"), { recursive: true });
-    const montages = [...tousMontes(dir), ...montagesDe(dir, "cache/p/.git")];
-    // Lisible, et tout monté : propre. C'est bien l'illisibilité, et elle seule, qui ferme le verdict plus bas.
+    const montages = tousMontes(dir);
+    // Lisible, et tout servi en lecture seule : propre. C'est bien l'illisibilité, et elle seule, qui ferme le verdict plus bas.
     assert.equal(verdictPublie(salle.balayerGit(dir, { accesEcriture: () => false, montages })), true);
     const lireDossier = (chemin: string) => {
       if (chemin.replaceAll("\\", "/").endsWith("/cache")) throw Object.assign(new Error("permission refusée"), { code: "EACCES" });
@@ -950,7 +990,7 @@ describe("superviseur : balayage git du dossier de travail", () => {
       fs.chmodSync(path.join(dir, "cache"), 0o000);
       let balayage: salle.Balayage;
       try {
-        balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: [...tousMontes(dir), ...montagesDe(dir, "cache/p/.git")] });
+        balayage = salle.balayerGit(dir, { accesEcriture: () => false, montages: tousMontes(dir) });
       } finally {
         // Rendu lisible avant le nettoyage du dossier de test, qui ne saurait pas le retirer sinon.
         fs.chmodSync(path.join(dir, "cache"), 0o755);
@@ -998,9 +1038,11 @@ describe("superviseur : balayage git du dossier de travail", () => {
       { chemin: "ouvert", gitLectureSeule: false },
       { chemin: "sans-depot", gitLectureSeule: true },
     ]);
-    // MO-3 : non inscriptible aujourd'hui, mais plus un point de montage (parent renommé, surcharge oubliée) : pas en lecture seule.
-    const horsMontage = salle.controlerProjetsPrepares(prepares, dir, () => false, montagesDe(dir, "ouvert/.git"));
-    assert.deepEqual(horsMontage[0], { chemin: "protege", gitLectureSeule: false });
+    // Non inscriptible aujourd'hui, mais racine restée en écriture (forme d'avant L16c) : aucun .git n'est en lecture seule.
+    const racineEcrite = salle.controlerProjetsPrepares(prepares, dir, () => false, rw(dir, ""));
+    assert.deepEqual(racineEcrite[0], { chemin: "protege", gitLectureSeule: false });
+    // Un montage donné sans ses options (chaîne seule) ne vaut jamais « lecture seule » : fermé en cas de doute.
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, [dir.replaceAll("\\", "/")])[0], { chemin: "protege", gitLectureSeule: false });
     assert.deepEqual(salle.controlerProjetsPrepares(null, dir), []);
   });
 
@@ -1011,11 +1053,368 @@ describe("superviseur : balayage git du dossier de travail", () => {
     const prepares = salle.analyserProjetsPrepares(
       JSON.stringify({ version: 1, genereLe: "2026-09-19T10:00:00Z", projets: [{ chemin: "outil", git: "dossier" }], gitProteges: [{ chemin: "outil", forme: "fichier" }] }),
     );
-    const pointeurMonte = [...tousMontes(dir), ...montagesDe(dir, "outil/.git")];
-    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, pointeurMonte), [{ chemin: "outil", gitLectureSeule: false }]);
-    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, [...pointeurMonte, ...montagesDe(dir, "outil/.bare")]), [
-      { chemin: "outil", gitLectureSeule: true },
+    // .bare rouvert en écriture (une entrée de premier niveau qu'install.ps1 ne rouvre jamais : c'est un dépôt) : pas protégé.
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, [...tousMontes(dir), ...rw(dir, "outil/.bare")]), [{ chemin: "outil", gitLectureSeule: false }]);
+    assert.deepEqual(salle.controlerProjetsPrepares(prepares, dir, () => false, tousMontes(dir)), [{ chemin: "outil", gitLectureSeule: true }]);
+  });
+});
+
+// --- Sonde des montages du dossier de travail (L16c, décision A16, option E1) --------------------------------------------------------
+//
+// Tests SANS Docker, sur des /proc/self/mountinfo SIMULÉS : des lignes relevées sur le poste réel (Docker Desktop 4.91, partage
+// 9p/drvfs, mesure L16c `sal11-L16c-mesure/mesure-carnets.log`), et un partage SIMULÉ comme l'est celui de Docker Desktop Windows :
+// insensible à la casse (tout alias d'un chemin existant existe aussi), noms courts 8.3 présents, et l'écriture tenue par le montage
+// qui sert le chemin EXACT (un alias est résolu par le montage de son ancêtre : mesure E1, 19/19 refus). Chemins POSIX, joués à
+// l'identique sous Windows et sous Linux.
+
+/** Échappement du noyau dans mountinfo : espace, tabulation, saut de ligne et contre-oblique en octal. */
+const echapperMountinfo = (chemin: string) => chemin.replaceAll("\\", "\\134").replaceAll(" ", "\\040").replaceAll("\t", "\\011").replaceAll("\n", "\\012");
+
+/** Ligne de mountinfo d'un bind du partage Windows (champ 4 : source ; champ 6 : options du montage ; après « - » : superbloc 9p). */
+const ligneBind = (id: number, parent: number, source: string, point: string, options: "ro" | "rw") =>
+  `${id} ${parent} 0:68 ${echapperMountinfo(source)} ${echapperMountinfo(point)} ${options},noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\;uid=0;gid=0;metadata;symlinkroot=/mnt/host/,cache=5,access=client,msize=65536,trans=fd,rfd=5,wfd=5`;
+
+/** mountinfo simulé de la salle : racine du conteneur, HOME en tmpfs, volumes, puis le dossier de travail et ses exceptions. */
+function mountinfoSalle(options: { racine?: "ro" | "rw" | "absente"; ecritures?: string[]; enPlus?: string[] } = {}): string {
+  const lignes = [
+    "1983 1946 0:62 / / ro,relatime master:1 - overlay overlay rw,lowerdir=/x,upperdir=/y,workdir=/z",
+    "1984 1983 0:70 / /home/node rw,nosuid,nodev,relatime - tmpfs tmpfs rw,uid=1000,gid=1000,mode=755",
+    "1992 1983 8:48 /data/docker/volumes/opencode-cockpit_omo-carnets/_data /omo-carnets rw,relatime master:31 - ext4 /dev/sdd rw",
+  ];
+  if ((options.racine ?? "ro") !== "absente") lignes.push(ligneBind(1993, 1983, "/Users/u/projets", "/workspace", options.racine === "rw" ? "rw" : "ro"));
+  let id = 1994;
+  for (const relatif of options.ecritures ?? []) lignes.push(ligneBind(id++, 1993, `/Users/u/projets/${relatif}`, `/workspace/${relatif}`, "rw"));
+  lignes.push(...(options.enPlus ?? []));
+  return `${lignes.join("\n")}\n`;
+}
+
+/**
+ * Partage Windows simulé, sous `racine` (« /workspace », ou un dossier de test). `arbre` : chemins réels relatifs à la racine
+ * (dossiers et fichiers, à la casse de l'hôte). Un chemin « existe » si, casse ignorée, il désigne une entrée réelle ou le nom court
+ * 8.3 de l'un de ses composants (« GIT~1 » pour « .git »). L'écriture est jugée comme le fait le noyau : par le montage qui sert le
+ * chemin TEL QU'IL EST ÉCRIT (point exact ou ancêtre exact), donc un alias de casse retombe sous l'ancêtre. `fuites` : chemins
+ * (exacts, POSIX) qu'une topologie fautive laisserait inscriptibles.
+ */
+function partageWindows(racine: string, arbre: string[], montages: salle.Montage[], fuites: string[] = []) {
+  const reels = new Set(["", ...arbre.flatMap((chemin) => chemin.split("/").map((_, i, t) => t.slice(0, i + 1).join("/")))].map((c) => c.toLowerCase()));
+  const court = (nom: string) => {
+    const corps = nom.replace(/^\.+/, "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6);
+    return `${corps}~1`.toLowerCase();
+  };
+  const reelDe = (composants: string[]): string | null => {
+    const trouves: string[] = [];
+    for (const composant of composants) {
+      const candidats = [...reels].filter((r) => r.split("/").length === trouves.length + 1 && r.startsWith(trouves.length === 0 ? "" : `${trouves.join("/")}/`));
+      const nom = composant.toLowerCase();
+      const trouve = candidats.find((r) => {
+        const feuille = r.slice(r.lastIndexOf("/") + 1);
+        return feuille === nom || court(feuille) === nom;
+      });
+      if (trouve === undefined) return null;
+      trouves.push(trouve.slice(trouve.lastIndexOf("/") + 1));
+    }
+    return trouves.join("/");
+  };
+  const base = racine.replaceAll("\\", "/");
+  const relatif = (chemin: string) => {
+    const p = chemin.replaceAll("\\", "/");
+    if (p === base) return "";
+    return p.startsWith(`${base}/`) ? p.slice(base.length + 1) : null;
+  };
+  return {
+    existe: (chemin: string) => {
+      const r = relatif(chemin);
+      return r !== null && (r === "" || reelDe(r.split("/")) !== null);
+    },
+    acces: (chemin: string) => {
+      const p = chemin.replaceAll("\\", "/");
+      const r = relatif(p);
+      if (r === null || (r !== "" && reelDe(r.split("/")) === null)) return false;
+      if (fuites.includes(p)) return true;
+      return salle.servieEnLectureSeule(p, montages) === false && salle.normaliserMontages(montages).some((m) => p === m.point || p.startsWith(`${m.point}/`));
+    },
+  };
+}
+
+/** Pose `arbre` sur le disque, dans un dossier de test (les contrôles des projets lisent la forme réelle de chaque `.git`). */
+function arbreSurDisque(t: { after: (fn: () => void) => void }, arbre: string[]): string {
+  const dir = dossierTemporaire();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const fichier of arbre) {
+    fs.mkdirSync(path.dirname(path.join(dir, fichier)), { recursive: true });
+    fs.writeFileSync(path.join(dir, fichier), "x\n");
+  }
+  return dir;
+}
+
+/** Écrit un mountinfo simulé et le relit comme le superviseur. */
+function montagesSimules(t: { after: (fn: () => void) => void }, texte: string): salle.Montage[] {
+  const dir = dossierTemporaire();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fichier = path.join(dir, "mountinfo");
+  fs.writeFileSync(fichier, texte);
+  return salle.lireMontages(fichier);
+}
+
+const PREPARES_E1 = salle.analyserProjetsPrepares(
+  JSON.stringify({
+    version: 1,
+    genereLe: "2026-09-22T20:00:00Z",
+    projets: [
+      { chemin: "projet", git: "dossier" },
+      { chemin: "notes", git: "absent" },
+    ],
+    gitProteges: [{ chemin: "projet/.git", forme: "dossier" }],
+  }),
+);
+
+/** Arbre réel du dossier de travail simulé : un dépôt, deux entrées de premier niveau, un projet sans dépôt. */
+const ARBRE_E1 = ["projet/.git/hooks/pre-commit.sample", "projet/.git/config", "projet/src/app.js", "projet/README.md", "notes/idees.md"];
+
+/** Les exceptions qu'install.ps1 génère pour cet arbre : une par entrée de premier niveau, jamais .git. */
+const ECRITURES_E1 = ["projet/src", "projet/README.md", "notes/idees.md"];
+
+describe("superviseur : sonde des montages du dossier de travail, sur des mountinfo simulés (L16c, sans Docker)", () => {
+  it("lit l'option `ro` PROPRE au montage (champ 6), jamais celle du superbloc 9p, qui dit « rw » pour tout le partage", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/src", "mon projet/a b"] }));
+    const parPoint = new Map(montages.map((m) => [m.point, m.lectureSeule]));
+    assert.equal(parPoint.get("/workspace"), true);
+    assert.equal(parPoint.get("/workspace/projet/src"), false);
+    assert.equal(parPoint.get("/workspace/mon projet/a b"), false, "échappements octaux décodés");
+    assert.equal(parPoint.get("/"), true);
+    assert.equal(parPoint.get("/omo-carnets"), false);
+    // Les points de montage seuls restent ceux d'avant : purge et empreinte de la boucle n'ont pas bougé.
+    assert.deepEqual(salle.pointsDeMontage(path.join(dossierTemporaire(), "absent")), []);
+  });
+
+  it("cas nominal : racine en lecture seule, une exception par entrée de premier niveau → salle OUVERTE", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1 }));
+    const partage = partageWindows("/workspace", ARBRE_E1, montages);
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partage });
+    assert.deepEqual(sonde, { ok: true, racineLectureSeule: true, ecritures: 3, problemes: [] });
+    // Même verdict sur le chemin complet de la salle (constat de node), sur le même arbre posé sur le disque.
+    const ws = arbreSurDisque(t, ARBRE_E1);
+    const surDisque = [...ro(ws, ""), ...rw(ws, ...ECRITURES_E1)];
+    const partageDisque = partageWindows(ws, ARBRE_E1, surDisque);
+    const constat = salle.constatGit(PREPARES_E1, { racine: ws, montages: surDisque, ...partageDisque, maintenant: 7 });
+    assert.deepEqual(constat.projets, [
+      { chemin: "projet", gitLectureSeule: true },
+      { chemin: "notes", gitLectureSeule: true },
     ]);
+    assert.deepEqual(constat.workspaceGit, { verifieLe: 7, limiteAtteinte: false, nonProteges: [] });
+    assert.equal(constat.ok, true);
+  });
+
+  it("racine /workspace SANS l'option ro → salle FERMÉE, « . » publié en tête", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ racine: "rw", ecritures: ECRITURES_E1 }));
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+    assert.equal(sonde.ok, false);
+    assert.equal(sonde.racineLectureSeule, false);
+    assert.equal(sonde.problemes[0], ".");
+    // Sous une racine en écriture, chaque exception s'ouvre aussi par l'alias de son parent (/workspace/PROJET/src) : la sonde le
+    // voit pour chacune. C'est exactement le vecteur de l'essai 1 bis.
+    assert.deepEqual(sonde.problemes.slice(1).sort(), [...ECRITURES_E1].sort());
+  });
+
+  it("racine absente de mountinfo (dossier de l'image, pas un montage) → FERMÉE", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ racine: "absente" }));
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+    assert.deepEqual({ ok: sonde.ok, problemes: sonde.problemes }, { ok: false, problemes: ["."] });
+  });
+
+  it("racine montée deux fois, la seconde en écriture (montage empilé) → FERMÉE", (t) => {
+    const empile = ligneBind(1999, 1993, "/Users/u/projets", "/workspace", "rw");
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1, enPlus: [empile] }));
+    assert.equal(salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) }).ok, false);
+    assert.equal(salle.servieEnLectureSeule("/workspace/projet/.git", montages), false);
+  });
+
+  it("mountinfo ILLISIBLE → FERMÉE (aucune racine lue, rien n'est présumé)", () => {
+    const montages = salle.lireMontages(path.join(dossierTemporaire(), "mountinfo-absent"));
+    assert.deepEqual(montages, []);
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", existe: () => true, acces: () => false });
+    assert.deepEqual({ ok: sonde.ok, problemes: sonde.problemes }, { ok: false, problemes: ["."] });
+  });
+
+  for (const cible of ["projet/.git", "projet/.GIT", "projet/.Git", "projet/GIT~1", "projet/.git.", "projet/.git "]) {
+    it(`montage en écriture sur .git ou un nom qui s'y ramène (${JSON.stringify(cible)}) → FERMÉE`, (t) => {
+      const montages = montagesSimules(t, mountinfoSalle({ ecritures: [...ECRITURES_E1, cible] }));
+      const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) });
+      assert.equal(sonde.ok, false);
+      assert.deepEqual(sonde.problemes, [cible]);
+    });
+  }
+
+  it("montage en écriture sur la RACINE d'un projet, ou sur un dossier qui contient un projet préparé → FERMÉE", (t) => {
+    const racineProjet = montagesSimules(t, mountinfoSalle({ ecritures: ["projet"] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(PREPARES_E1, racineProjet, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, racineProjet) }).problemes, ["projet"]);
+    // Projet imbriqué (dépôt dans une entrée) : l'entrée qui le porte reste en lecture seule, sinon son .git serait dessous.
+    const imbrique = salle.analyserProjetsPrepares(
+      JSON.stringify({
+        version: 1,
+        genereLe: "2026-09-22T20:00:00Z",
+        projets: [
+          { chemin: "projet", git: "dossier" },
+          { chemin: "projet/vendor/lib", git: "dossier" },
+        ],
+        gitProteges: [],
+      }),
+    );
+    const porteur = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/vendor"] }));
+    const arbre = [...ARBRE_E1, "projet/vendor/lib/.git/config", "projet/vendor/lib/code.c"];
+    assert.deepEqual(salle.controlerMontagesWorkspace(imbrique, porteur, { racine: "/workspace", ...partageWindows("/workspace", arbre, porteur) }).problemes, ["projet/vendor"]);
+  });
+
+  it("montage en écriture qui n'est pas un ENFANT DIRECT d'un projet préparé → FERMÉE", (t) => {
+    for (const cible of ["projet/src/profond", "inconnu/src", "fichier-a-la-racine.txt"]) {
+      const montages = montagesSimules(t, mountinfoSalle({ ecritures: [cible] }));
+      const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", [...ARBRE_E1, cible], montages) });
+      assert.deepEqual(sonde.problemes, [cible], cible);
+    }
+    // Aucun projet préparé lisible (liste absente) : aucune exception n'est admise.
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ["projet/src"] }));
+    assert.deepEqual(salle.controlerMontagesWorkspace(null, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) }).problemes, ["projet/src"]);
+  });
+
+  it("alias du PARENT inscriptible (/workspace/PROJET/src) → FERMÉE : l'écriture ne doit valoir qu'au chemin exact", (t) => {
+    const montages = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1 }));
+    // Topologie fautive simulée : le montage répond aussi par l'alias du parent (ce que la mesure E1 a prouvé faux sous une racine
+    // en lecture seule, et que la sonde doit voir si un jour il ne l'était plus).
+    const partage = partageWindows("/workspace", ARBRE_E1, montages, ["/workspace/PROJET/src"]);
+    const sonde = salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partage });
+    assert.deepEqual({ ok: sonde.ok, problemes: sonde.problemes }, { ok: false, problemes: ["projet/src"] });
+    // Même partage, sans la fuite : ouvert.
+    assert.equal(salle.controlerMontagesWorkspace(PREPARES_E1, montages, { racine: "/workspace", ...partageWindows("/workspace", ARBRE_E1, montages) }).ok, true);
+  });
+
+  it("chemin complet (constatGit) : les montages refusés rejoignent nonProteges, que le cockpit affiche déjà (A16 point 4)", (t) => {
+    const ws = dossierTemporaire();
+    t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(ws, "projet", ".git", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(ws, "projet", "src"), { recursive: true });
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-22T20:00:00Z", projets: [{ chemin: "projet", git: "dossier" }], gitProteges: [{ chemin: "projet/.git", forme: "dossier" }] }),
+    );
+    const accesSous = (montages: salle.Montage[]) => (chemin: string) => {
+      const p = chemin.replaceAll("\\", "/");
+      return !salle.servieEnLectureSeule(p, montages) && montages.some((m) => p === m.point || p.startsWith(`${m.point}/`));
+    };
+    const nominal = [...ro(ws, ""), ...rw(ws, "projet/src")];
+    const propre = salle.constatGit(prepares, { racine: ws, montages: nominal, acces: accesSous(nominal), maintenant: 5 });
+    assert.equal(propre.ok, true, JSON.stringify(propre));
+    assert.deepEqual(propre.montages, { racineLectureSeule: true, ecritures: 1, refuses: [] });
+    // Racine restée en écriture : « . » dans nonProteges, projets hors lecture seule, et gitProtege faux (aucun precheck-ok).
+    const ecrite = [...rw(ws, ""), ...rw(ws, "projet/src")];
+    const ferme = salle.constatGit(prepares, { racine: ws, montages: ecrite, acces: accesSous(ecrite), maintenant: 5 });
+    assert.equal(ferme.ok, false);
+    assert.equal(ferme.workspaceGit.nonProteges[0], ".");
+    assert.ok(ferme.workspaceGit.nonProteges.includes("projet/.git"), JSON.stringify(ferme.workspaceGit));
+    assert.equal(salle.gitProtege(ferme), false);
+  });
+});
+
+// --- Croisements de l'arbitrage L21 n° 3 (L16c) ------------------------------------------------------------------------------------
+//
+// Trois tests, pas un (arbitrage-ro-windows.md §4.3) : (1) la sonde d'alias existe et le contrôle des projets préparés l'appelle ;
+// (2) elle couvre les alias des dossiers PARENTS (le vecteur de l'essai 1 bis) ; (3) la phrase d'explication est AFFICHÉE.
+
+describe("croisement L21 n° 3 : la sonde d'alias ne peut ni disparaître, ni oublier les parents, ni se taire", () => {
+  it("(1) la sonde d'alias est appelée par le contrôle des projets préparés ET par le balayage : sans elle, un .git ouvert par .GIT passerait", (t) => {
+    const ws = arbreSurDisque(t, ARBRE_E1);
+    const base = ws.replaceAll("\\", "/");
+    const montages = [...ro(ws, ""), ...rw(ws, ...ECRITURES_E1)];
+    // Seul l'alias de la FEUILLE est inscriptible : le chemin exact, lui, répond EROFS. Sans la sonde, tout paraîtrait fermé.
+    const partage = partageWindows(ws, ARBRE_E1, montages, [`${base}/projet/.GIT`]);
+    assert.equal(partage.acces(`${base}/projet/.git`), false);
+    assert.equal(partage.acces(`${base}/projet/.GIT`), true);
+    assert.deepEqual(salle.controlerProjetsPrepares(PREPARES_E1, ws, partage.acces, montages, partage.existe)[0], { chemin: "projet", gitLectureSeule: false });
+    const constat = salle.constatGit(PREPARES_E1, { racine: ws, montages, ...partage });
+    assert.deepEqual(constat.workspaceGit.nonProteges, ["projet/.git"], "le balayage appelle la sonde lui aussi");
+    // Témoin : la même topologie SANS la fuite est ouverte. C'est bien la sonde, et elle seule, qui ferme.
+    const sansFuite = partageWindows(ws, ARBRE_E1, montages);
+    assert.equal(salle.constatGit(PREPARES_E1, { racine: ws, montages, ...sansFuite }).ok, true);
+    // Le module expose bien la sonde, et son appel est écrit dans les deux contrôles (lecture du source : un contrôle réécrit sans
+    // elle ferait échouer ce test même si un autre cas vert passait par hasard).
+    assert.equal(typeof salle.aliasInscriptible, "function");
+    const source = fs.readFileSync(path.join(DOCKER_OMO, "supervisor-lib.mjs"), "utf8");
+    const corps = (nom: string) => source.slice(source.indexOf(`export function ${nom}(`), source.indexOf("\n}\n", source.indexOf(`export function ${nom}(`)));
+    assert.match(corps("controlerProjetsPrepares"), /aliasInscriptible\(cheminGit, acces, \{ racine, existe \}\)/);
+    assert.match(corps("balayerGit"), /aliasInscriptible\(chemin, acces, \{ racine, existe \}\)/);
+    assert.match(corps("constatGit"), /controlerProjetsPrepares\(/);
+    assert.match(corps("constatGit"), /controlerMontagesWorkspace\(/);
+  });
+
+  it("(2) la sonde couvre les alias des dossiers PARENTS : /workspace/PROJET/.git inscriptible → projet non protégé", (t) => {
+    // Le vecteur de l'essai 1 bis, sur le chemin du conteneur : ni `.git` ni ses alias de feuille ne sont inscriptibles ; seul le
+    // PARENT aliasé l'est.
+    const simules = montagesSimules(t, mountinfoSalle({ ecritures: ECRITURES_E1 }));
+    const partage = partageWindows("/workspace", ARBRE_E1, simules, ["/workspace/PROJET/.git"]);
+    for (const alias of salle.aliasDeNom(".git")) assert.equal(partage.acces(`/workspace/projet/${alias}`), false, alias);
+    assert.ok(salle.aliasDeChemin("/workspace/projet/.git", { racine: "/workspace" }).includes("/workspace/PROJET/.git"));
+    assert.equal(salle.aliasInscriptible("/workspace/projet/.git", partage.acces, { racine: "/workspace", existe: partage.existe }), true);
+    // Sans la racine (feuille seule, la sonde d'avant L16c) : le vecteur passe. C'est exactement ce que ce test interdit.
+    assert.equal(salle.aliasInscriptible("/workspace/projet/.git", partage.acces, { existe: partage.existe }), false);
+    // Et sur le contrôle des projets préparés, arbre posé sur le disque.
+    const ws = arbreSurDisque(t, ARBRE_E1);
+    const base = ws.replaceAll("\\", "/");
+    const montages = [...ro(ws, ""), ...rw(ws, ...ECRITURES_E1)];
+    const partageDisque = partageWindows(ws, ARBRE_E1, montages, [`${base}/PROJET/.git`]);
+    assert.deepEqual(salle.controlerProjetsPrepares(PREPARES_E1, ws, partageDisque.acces, montages, partageDisque.existe)[0], { chemin: "projet", gitLectureSeule: false });
+    // Les parents sondés s'arrêtent à la racine donnée : aucun chemin au-dessus du dossier de travail n'est essayé.
+    assert.ok(salle.aliasDeChemin(`${base}/projet/.git`, { racine: ws }).every((c) => c.replaceAll("\\", "/").startsWith(`${base}/`)));
+  });
+
+  it("(3) la phrase d'explication est AFFICHÉE à l'utilisateur quand la sonde ferme la salle, pas seulement présente dans les textes", async (t) => {
+    // Chaîne complète, sans rien écrire à la main de ce que la sonde publie : constat de la salle (racine restée en écriture) →
+    // state.json publié et relu par le cockpit → statut → modèle de la page (L26a) et du Diagnostic (L26b), branchés sur
+    // getOmoStatus() au train de V2 → rendu de la page (lecture du source, Node n'exécute pas le JSX, P8).
+    const { vueEtatSalle } = await import("./shared/omo-activation-view.ts");
+    const { raisonsAttente } = await import("../web/pages/diagnostics/omo-diagnostics.ts");
+    const { TEXTES } = await import("./shared/omo-room-texts.ts");
+    const ws = dossierTemporaire();
+    const etat = dossierTemporaire();
+    t.after(() => {
+      for (const dir of [ws, etat]) fs.rmSync(dir, { recursive: true, force: true });
+    });
+    fs.mkdirSync(path.join(ws, "projet", ".git", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(ws, "projet", "src"), { recursive: true });
+    const prepares = salle.analyserProjetsPrepares(
+      JSON.stringify({ version: 1, genereLe: "2026-09-22T20:00:00Z", projets: [{ chemin: "projet", git: "dossier" }], gitProteges: [{ chemin: "projet/.git", forme: "dossier" }] }),
+    );
+    const montages = rw(ws, "", "projet/src");
+    const constat = salle.constatGit(prepares, { racine: ws, montages, acces: () => false, maintenant: 1757000000000 });
+    salle.initTravail(etat, 1757000000000);
+    const fichier = path.join(etat, "constat.json");
+    fs.writeFileSync(fichier, JSON.stringify({ etape: "preparation", ...constat }));
+    assert.equal(salle.absorber(etat, fichier).gitProtege, false);
+    salle.publierEtat(etat, salle.lireTravail(etat), "attente");
+    const relu = analyserEtat(fs.readFileSync(path.join(etat, salle.FICHIER_ETAT), "utf8"));
+    assert.ok(relu !== null);
+    assert.deepEqual(relu.workspaceGit.nonProteges.slice(0, 1), ["."], "la racine en écriture est publiée");
+
+    const statut = {
+      interrupteurs: { omo: true, autonomie: true, salleOuverte: true },
+      image: { chargee: true, id: "sha256:x", manifesteSha256: null, version: "4.19.4", auditeLe: null },
+      dernierDemarrage: null,
+      listeBlanche: [],
+      projetsPrepares: relu.projets.map((p) => ({ chemin: p.chemin, git: p.gitLectureSeule ? ("lecture-seule" as const) : ("inscriptible" as const) })),
+      workspaceGit: relu.workspaceGit,
+      etatSalle: "arretee" as const,
+      authSalle: { presente: true },
+      sortiesRefusees24h: [],
+      battement: { actif: true, ageMs: 1000 },
+    };
+    const phrase = TEXTES.avance.refus["git-inscriptible"].replace(" {liste}", "");
+    const vue = vueEtatSalle({ boot: null, statut });
+    assert.equal(vue.prete, false);
+    const affichee = vue.raisons.find((raison) => raison.startsWith(phrase));
+    assert.ok(affichee !== undefined, `phrase absente des raisons affichées : ${JSON.stringify(vue.raisons)}`);
+    assert.ok(affichee.slice(phrase.length).split(", ").map((c) => c.trim()).includes("."), affichee);
+    assert.ok(raisonsAttente(statut).some((r) => r.chemins.includes(".")), "le Diagnostic liste la racine");
+    // Et la page ÉCRIT ces raisons à l'écran : le contenu d'un élément, pas une clé de liste.
+    const page = fs.readFileSync(path.join(RACINE, "app", "web", "pages", "omo", "SalleOmoPage.tsx"), "utf8");
+    assert.match(page, /vueEtatSalle/);
+    assert.match(/raisons\.map\(([\s\S]{0,400}?)\)\}/.exec(page)?.[1] ?? "", />\s*\{raison\}/);
   });
 });
 
@@ -1031,11 +1430,15 @@ describe("superviseur : les .git sont balayés de nouveau juste avant le lanceme
     });
     const dossiers = { etat, controle };
     fs.mkdirSync(path.join(ws, "alpha", ".git"), { recursive: true });
-    const montages = [`${ws.replaceAll("\\", "/")}/alpha/.git`];
-    // Seul alpha/.git est monté en lecture seule par la surcharge ; tout le reste du dossier de travail est à node. Le dépôt est
-    // fermé par tous ses noms : sans cela, la sonde d'alias (`.GIT`, `GIT~1`…) le dirait ouvert dès le premier balayage, et ce
-    // cas-ci ne parlerait plus du second. Les alias ont leurs propres cas, plus haut.
-    const acces = (chemin: string) => !/\/alpha\/(\.git|git~\d)$/i.test(chemin.replaceAll("\\", "/"));
+    fs.mkdirSync(path.join(ws, "alpha", "src"), { recursive: true });
+    // L16c : dossier de travail en lecture seule, alpha/src seule entrée rouverte en écriture par la surcharge. node n'écrit que
+    // sous le chemin EXACT de ce montage (un alias de casse retombe sous la racine en lecture seule, mesure E1).
+    const montages = [...ro(ws, ""), ...rw(ws, "alpha/src")];
+    const ouvert = `${ws.replaceAll("\\", "/")}/alpha/src`;
+    const acces = (chemin: string) => {
+      const p = chemin.replaceAll("\\", "/");
+      return p === ouvert || p.startsWith(`${ouvert}/`);
+    };
     const prepares = salle.analyserProjetsPrepares(
       JSON.stringify({ version: 1, genereLe: "2026-09-19T10:00:00Z", projets: [{ chemin: "alpha", git: "dossier" }], gitProteges: [{ chemin: "alpha", forme: "dossier" }] }),
     );
@@ -1055,16 +1458,17 @@ describe("superviseur : les .git sont balayés de nouveau juste avant le lanceme
     fs.writeFileSync(path.join(controle, salle.FICHIERS_CONTROLE.precheck), textePrecheckOk(travail.startId, Date.now(), []));
     assert.equal(salle.executer(["pret"], dossiers), salle.CODES.ok);
 
-    // L'attente a duré (démarrage de la machine, salle fermée) : un dépôt est cloné dans un sous-dossier, hors de toute surcharge.
-    fs.mkdirSync(path.join(ws, "clients", "outil", ".git", "hooks"), { recursive: true });
+    // L'attente a duré (démarrage de la machine, salle fermée) : un dépôt est cloné DANS l'entrée ouverte en écriture, où son .git
+    // est inscriptible (seule place possible : la racine du dossier de travail et celle du projet sont en lecture seule).
+    fs.mkdirSync(path.join(ws, "alpha", "src", "outil", ".git", "hooks"), { recursive: true });
     const second = salle.constatGit(prepares, { racine: ws, montages, acces });
     assert.equal(second.ok, false);
-    assert.deepEqual(second.workspaceGit.nonProteges, ["clients/outil/.git"]);
+    assert.deepEqual(second.workspaceGit.nonProteges, ["alpha/src/outil/.git"]);
     const verdict = absorber({ etape: "rebalayage", ...second });
     assert.deepEqual(verdict, { ok: true, raison: "rebalayage", gitProtege: false });
     // L'état republié le dit au cockpit (qui refuse l'activation), et le second verrou tient : jamais prêt.
     const publie = salle.publierEtat(etat, salle.lireTravail(etat), "attente");
-    assert.deepEqual(publie.workspaceGit.nonProteges, ["clients/outil/.git"]);
+    assert.deepEqual(publie.workspaceGit.nonProteges, ["alpha/src/outil/.git"]);
     assert.equal(salle.executer(["pret"], dossiers), salle.CODES.pasPret);
   });
 
@@ -1470,10 +1874,17 @@ interface OptionsCas {
   sansConfigHome?: boolean;
   /** Restes d'un démarrage précédent dans `omo-config` (relance : le volume est gardé) ; l'étape 1 bis doit les effacer. */
   configPerime?: boolean;
-  /** `.git` inscriptible par `node` dans ce projet (T-L17-d). */
+  /**
+   * T-L17-d, forme L16c : `gamma`, projet NON préparé, dont l'entrée `src` est quand même rouverte en écriture, avec un dépôt
+   * imbriqué dedans (`gamma/src/lib/.git`, inscriptible par `node`).
+   */
   projetOuvert?: boolean;
-  /** `.git` à root, non inscriptible par `node`, mais monté par personne (T-L17-d, MO-3). */
-  gitHorsMontage?: boolean;
+  /** T-L17-d, forme L16c : un montage en écriture posé sur un `.git` (`delta/.git`). */
+  ecritureSurGit?: boolean;
+  /** Dossier de travail monté EN ÉCRITURE (la forme d'avant L16c, sans ses binds `.git:ro`) : la sonde doit fermer la salle. */
+  racineEnEcriture?: boolean;
+  /** Volume des carnets laissé à root (MO-11) : node ne pourrait pas y écrire. */
+  carnetsARoot?: boolean;
   /** Volume d'authentification laissé à root (MO-11) : lisible, mais pas au propriétaire du contrat. */
   authARoot?: boolean;
   /** Volume d'état donné à `node` et ouvert en écriture (M32, MO-11). */
@@ -1528,16 +1939,17 @@ function preparer(cas: Cas, options: OptionsCas): void {
     "printf 'x' > /vol-data/tool-output/tool_1",
     "printf 'x' > /vol-data/log/opencode.log",
     "chown -R 1000:1000 /vol-data",
-    // Dossier de travail : alpha protégé par un volume :ro monté sur son .git, beta sans dépôt, gamma ouvert au besoin.
-    "mkdir -p /vol-ws/alpha /vol-ws/beta/src",
+    // Dossier de travail (L16c) : alpha avec son dépôt, deux entrées de premier niveau (un dossier, un fichier) ; beta sans dépôt.
+    // Tout appartient à node, comme sur le partage de l'hôte (uid 0 partout, mais inscriptible) : seule la LECTURE SEULE du montage
+    // racine protège alpha/.git, jamais ses droits.
+    "mkdir -p /vol-ws/alpha/.git/hooks /vol-ws/alpha/src /vol-ws/beta/src",
+    "printf 'ref: refs/heads/principale\\n' > /vol-ws/alpha/.git/HEAD",
     "printf 'x' > /vol-ws/alpha/fichier.txt",
-    "mkdir -p /vol-git-alpha/hooks",
-    "printf 'ref: refs/heads/principale\\n' > /vol-git-alpha/HEAD",
-    options.projetOuvert ? "mkdir -p /vol-ws/gamma/.git/hooks && printf 'ref: x\\n' > /vol-ws/gamma/.git/HEAD" : "mkdir -p /vol-ws/gamma",
+    options.projetOuvert ? "mkdir -p /vol-ws/gamma/src/lib/.git/hooks && printf 'ref: x\\n' > /vol-ws/gamma/src/lib/.git/HEAD" : "true",
+    options.ecritureSurGit ? "mkdir -p /vol-ws/delta/.git/hooks && printf 'ref: x\\n' > /vol-ws/delta/.git/HEAD" : "true",
     "chown -R 1000:1000 /vol-ws",
-    // delta/.git : à root, 755, donc NON inscriptible par node, mais monté par personne. MO-3 : renommer « delta » suffirait à en
-    // poser un neuf, inscriptible. Posé APRÈS le chown pour rester à root.
-    options.gitHorsMontage ? "mkdir -p /vol-ws/delta/.git/hooks && chown 1000:1000 /vol-ws/delta && chmod 755 /vol-ws/delta/.git" : "true",
+    // Carnets de la salle (L16c, A16 point 2) : à node, comme omo-init les rend ; à root pour le cas MO-11.
+    options.carnetsARoot ? "chown 0:0 /vol-carnets && chmod 755 /vol-carnets" : "chown 1000:1000 /vol-carnets",
     poser(
       "/vol-control/omo-projets.json",
       JSON.stringify({
@@ -1577,7 +1989,7 @@ function preparer(cas: Cas, options: OptionsCas): void {
     "-v",
     `${cas.volume("ws")}:/vol-ws`,
     "-v",
-    `${cas.volume("git-alpha")}:/vol-git-alpha`,
+    `${cas.volume("carnets")}:/vol-carnets`,
     "-v",
     `${cas.volume("control")}:/vol-control`,
     "-v",
@@ -1638,6 +2050,18 @@ describe("options de sécurité du conteneur de L17a = service opencode-omo du c
   });
 });
 
+/**
+ * Montages du dossier de travail d'un cas (L16c) : la racine en lecture seule (sauf `racineEnEcriture`), puis un montage en
+ * écriture par entrée de premier niveau des projets préparés — alpha/src, alpha/fichier.txt, beta/src —, plus les montages
+ * fautifs que certains cas demandent.
+ */
+function montagesDossierDeTravail(cas: Cas, options: OptionsCas): string[] {
+  const ws = cas.volume("ws");
+  const sousChemin = (relatif: string) => ["--mount", `type=volume,src=${ws},dst=/workspace/${relatif},volume-subpath=${relatif}`];
+  const ecritures = ["alpha/src", "alpha/fichier.txt", "beta/src", ...(options.projetOuvert ? ["gamma/src"] : []), ...(options.ecritureSurGit ? ["delta/.git"] : [])];
+  return ["--mount", `type=volume,src=${ws},dst=/workspace${options.racineEnEcriture ? "" : ",readonly"}`, ...ecritures.flatMap(sousChemin)];
+}
+
 /** Lance le superviseur en arrière-plan et rend le nom du conteneur. */
 function lancerSuperviseur(cas: Cas, options: OptionsCas): string {
   const nom = cas.conteneur("salle");
@@ -1667,9 +2091,10 @@ function lancerSuperviseur(cas: Cas, options: OptionsCas): string {
     "-v",
     `${cas.volume("data")}:/home/node/.local/share/opencode`,
     "-v",
-    `${cas.volume("ws")}:/workspace`,
-    "-v",
-    `${cas.volume("git-alpha")}:/workspace/alpha/.git:ro`,
+    `${cas.volume("carnets")}:/omo-carnets`,
+    // L16c (décision A16, option E1) : le dossier de travail ENTIER en lecture seule, et l'écriture rouverte entrée par entrée,
+    // comme le font docker-compose.yml et la surcharge d'install.ps1 (sous-chemins du même volume : Docker 26 et plus).
+    ...montagesDossierDeTravail(cas, options),
     // Contrat, train de V1 : référence de l'image en lecture seule ; omo-config en écriture sur /omo-config (root seul) et en lecture
     // seule sur les cinq dossiers du HOME.
     "-v",
@@ -1956,19 +2381,22 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     assert.equal(etatPublie(c)?.phase, "arret");
   });
 
-  it("T-L17-d : un .git inscriptible par node, ou hors montage, remplit workspaceGit.nonProteges et rien ne démarre", async () => {
+  it("T-L17-d (forme L16c) : écriture rouverte hors d'un projet préparé, dépôt inscriptible, montage sur .git → nonProteges et rien ne démarre", async () => {
     const c = nouveauCas("d");
-    preparer(c, { projetOuvert: true, gitHorsMontage: true });
-    lancerSuperviseur(c, {});
+    const options = { projetOuvert: true, ecritureSurGit: true };
+    preparer(c, options);
+    const salleNom = lancerSuperviseur(c, options);
     const etat = await attendre(() => etatPublie(c), 60_000, "état publié");
-    // gamma/.git : node peut y écrire. delta/.git : node ne le peut pas, mais aucun bind ne le tient (MO-3).
-    assert.deepEqual([...etat.workspaceGit.nonProteges].sort(), ["delta/.git", "gamma/.git"]);
+    // gamma/src : rouverte en écriture alors que gamma n'est pas préparé ; gamma/src/lib/.git : un dépôt sous cette écriture ;
+    // delta/.git : un montage en écriture posé sur un .git. Les trois sont vus, par la sonde des montages ET par le balayage.
+    assert.deepEqual([...etat.workspaceGit.nonProteges].sort(), ["delta/.git", "gamma/src", "gamma/src/lib/.git"], journal(salleNom));
     assert.equal(etat.workspaceGit.limiteAtteinte, false);
-    // Le .git monté en lecture seule, lui, reste protégé : c'est bien l'écriture qui décide, pas la présence du dossier.
+    // Le .git servi par la racine en lecture seule, lui, reste protégé : c'est bien l'écriture qui décide.
     assert.deepEqual(etat.projets, [
       { chemin: "alpha", gitLectureSeule: true },
       { chemin: "beta", gitLectureSeule: true },
     ]);
+    assert.match(journal(salleNom), /montages du dossier de travail refuses/);
     // Le superviseur ne refuse pas (le cockpit refusera l'activation, D-2b-28), mais il ne se déclare jamais prêt :
     // même avec un battement et un pré-contrôle en règle, opencode ne démarre pas sur un dossier de travail non protégé.
     lancerBattement(c);
@@ -1977,19 +2405,64 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     assert.equal(etatPublie(c)?.phase, "attente");
   });
 
-  it("second balayage : un .git inscriptible cloné pendant l'attente (profondeur 2) empêche le lancement, et l'état le dit", async () => {
+  it("L16c : dossier de travail monté EN ÉCRITURE (forme d'avant, sans l'option ro) → « . » publié et rien ne démarre", async () => {
+    const c = nouveauCas("racine-ecrite");
+    const options = { racineEnEcriture: true };
+    preparer(c, options);
+    const salleNom = lancerSuperviseur(c, options);
+    const etat = await attendre(() => etatPublie(c), 60_000, "état publié");
+    assert.equal(etat.workspaceGit.nonProteges[0], ".", JSON.stringify(etat.workspaceGit));
+    assert.ok(etat.workspaceGit.nonProteges.includes("alpha/.git"), JSON.stringify(etat.workspaceGit));
+    assert.deepEqual(etat.projets[0], { chemin: "alpha", gitLectureSeule: false });
+    lancerBattement(c);
+    ecrirePrecheck(c, etat.startId);
+    await resterFaux(() => capacitesDuFaux(c), `opencode lancé sur une racine en écriture\n${journal(salleNom)}`);
+    assert.equal(etatPublie(c)?.phase, "attente");
+  });
+
+  it("L16c : node écrit dans une entrée rouverte et dans ses carnets, jamais à la racine d'un projet, dans .git ni dans un .omo", async () => {
+    const c = nouveauCas("e1");
+    preparer(c, {});
+    const salleNom = lancerSuperviseur(c, {});
+    await attendre(() => etatPublie(c)?.phase === "attente", 60_000, `attente\n${journal(salleNom)}`);
+    // Primitives du superviseur (node, fs), jamais le `test -w` de busybox, qui ment sur un montage en lecture seule.
+    const script = [
+      "const fs = require('fs');",
+      "const essai = (nom, faire) => { try { faire(); return nom + '=ECRIT'; } catch (e) { return nom + '=' + e.code; } };",
+      "console.log([",
+      "  essai('entree', () => fs.writeFileSync('/workspace/alpha/src/temoin.txt', 'x')),",
+      "  essai('fichier', () => fs.appendFileSync('/workspace/alpha/fichier.txt', 'y')),",
+      "  essai('carnets', () => fs.writeFileSync('/omo-carnets/temoin.md', 'x')),",
+      "  essai('racine-projet', () => fs.writeFileSync('/workspace/alpha/nouveau.txt', 'x')),",
+      "  essai('dossier-racine', () => fs.mkdirSync('/workspace/alpha/nouveau')),",
+      "  essai('omo', () => fs.mkdirSync('/workspace/alpha/.omo')),",
+      "  essai('crochet', () => fs.writeFileSync('/workspace/alpha/.git/hooks/pre-commit', 'x')),",
+      "  essai('workspace', () => fs.writeFileSync('/workspace/temoin.txt', 'x')),",
+      "  essai('renommer', () => fs.renameSync('/workspace/alpha', '/workspace/alpha-deplace')),",
+      "].join(' '));",
+    ].join("\n");
+    const res = docker(["exec", "-i", "-u", "1000:1000", salleNom, "node", "-"], script);
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal(
+      res.stdout.trim(),
+      "entree=ECRIT fichier=ECRIT carnets=ECRIT racine-projet=EROFS dossier-racine=EROFS omo=EROFS crochet=EROFS workspace=EROFS renommer=EROFS",
+    );
+  });
+
+  it("second balayage : un .git inscriptible cloné pendant l'attente (dans une entrée ouverte) empêche le lancement, et l'état le dit", async () => {
     const c = nouveauCas("rebalayage");
     preparer(c, {});
     const salleNom = lancerSuperviseur(c, {});
     const etat = await attendre(() => (etatPublie(c)?.phase === "attente" ? etatPublie(c) : null), 60_000, `attente\n${journal(salleNom)}`);
     assert.deepEqual(etat.workspaceGit.nonProteges, []);
-    // Ce que ferait un « git clone » sur le poste pendant l'attente : un dépôt neuf, à node, hors de toute surcharge.
-    const res = docker(["exec", "-u", "1000:1000", salleNom, "mkdir", "-p", "/workspace/clients/outil/.git/hooks"]);
+    // Ce que ferait un « git clone » pendant l'attente : un dépôt neuf, à node. La racine étant en lecture seule, la seule place
+    // possible est une entrée rouverte en écriture — où son .git est inscriptible.
+    const res = docker(["exec", "-u", "1000:1000", salleNom, "mkdir", "-p", "/workspace/alpha/src/clients/outil/.git/hooks"]);
     assert.equal(res.code, 0, `clone simulé refusé : ${res.stderr}`);
     lancerBattement(c);
     ecrirePrecheck(c, etat.startId);
     await attendre(
-      () => etatPublie(c)?.workspaceGit.nonProteges.includes("clients/outil/.git") === true,
+      () => etatPublie(c)?.workspaceGit.nonProteges.includes("alpha/src/clients/outil/.git") === true,
       60_000,
       `second balayage publié\n${journal(salleNom)}`,
     );
@@ -2087,8 +2560,9 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
     assert.equal(etatPublie(c)?.phase, "arret");
   });
 
+  // L16c : « un projet renommé, son .git monté suit l'inode » n'a plus d'objet — la racine du dossier de travail est en lecture
+  // seule, le renommage répond EROFS (cas « node écrit dans une entrée rouverte… » plus haut). Reste le HOME, en tmpfs.
   for (const [nom, suffixe, commande] of [
-    ["un projet renommé, son .git monté suit l'inode", "projet", ["mv", "/workspace/alpha", "/workspace/alpha-deplace"]],
     ["le parent d'un dossier de configuration renommé", "config", ["mv", "/home/node/.config", "/home/node/.config-deplace"]],
   ] as const) {
     it(`MO-3 : ${nom} pendant la salle → arrêt, sortie 13`, async (t) => {
@@ -2114,6 +2588,7 @@ describe("superviseur dans un conteneur jetable", { skip: SAUT ?? false }, () =>
   for (const [nom, suffixe, options] of [
     ["volume d'authentification laissé à root", "auth", { authARoot: true }],
     ["volume d'état donné à node et ouvert en écriture", "etat", { etatOuvertANode: true }],
+    ["volume des carnets laissé à root (L16c)", "carnets", { carnetsARoot: true }],
   ] as const) {
     it(`MO-11 : ${nom} → aucun démarrage`, async () => {
       const c = nouveauCas(`mo11-${suffixe}`);
