@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TEXTES } from "../../../server/shared/construction-texts.ts";
 import { remplir } from "../../../server/shared/neon-texts.ts";
+import { TEXTES as TEAM_TEXTES } from "../../../server/shared/team-texts.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { Badge, Card, Spinner, type Tone, useAsync } from "../../components/ui.tsx";
 import { getTeamCosts } from "../../lib/api-construction.ts";
@@ -47,6 +48,14 @@ const ETATS: Record<string, { libelle: string; tone: Tone }> = {
   ignoree: { libelle: "Ignorée", tone: "neutral" },
   echec: { libelle: "Échec", tone: "critical" },
   plafond: { libelle: "Plafond atteint", tone: "critical" },
+  // États d'ÉTAPE de l'it4 et de la 5b absents de la première version de cette table : ils étaient rendus tels quels
+  // (« non-choisi ») dans la fiche d'Archives. Libellés repris de team-texts.ts, jamais réécrits ici.
+  "en-file": { libelle: TEAM_TEXTES.partout.etatsEtape["en-file"], tone: "neutral" },
+  "attente-accord": { libelle: TEAM_TEXTES.partout.etatsEtape["attente-accord"], tone: "warning" },
+  "non-lancee": { libelle: TEAM_TEXTES.partout.etatsEtape["non-lancee"], tone: "neutral" },
+  "non-choisi": { libelle: TEAM_TEXTES.partout.etatsEtape["non-choisi"], tone: "neutral" },
+  // État de LANCEMENT de l'it4 absent lui aussi (même défaut, sur la puce d'un lancement des Archives).
+  "attente-modification": { libelle: TEAM_TEXTES.partout.etatsEquipe["attente-modification"], tone: "warning" },
 };
 
 /** Texte d'un état, pour la ligne d'étape du §4.3 (« … · {etat} · … »). */

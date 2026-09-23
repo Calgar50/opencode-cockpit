@@ -158,8 +158,8 @@ export async function run(ctx) {
     // fonction ne lit du contexte que `ctx.navigateur`, on lui passe donc l'onglet de ce banc.
     await preparerPage({ ...ctx, navigateur: onglet });
 
-    // 1. Bibliothèque des méthodes.
-    await allerA(onglet, "#/assistants", "document.querySelector('.met-library .met-grid .met-card')", "bibliothèque des méthodes");
+    // 1. Bibliothèque des méthodes, dans l'onglet « Méthodes » où L44f l'a déplacée (la page Assistants n'en garde qu'un lien).
+    await allerA(onglet, "#/assistants/methodes", "document.querySelector('.met-library .met-grid .met-card')", "bibliothèque des méthodes");
     faites.push(...(await captureAccessibilite(navigateur, onglet, `${prefixe}-bibliotheque`, { avant: amener(onglet, ".met-library") })));
 
     // 2. Écran « Consignes et fiches » de l'assistant de création (les méthodes s'y choisissent), ouvert sur un

@@ -287,8 +287,9 @@ export async function run(ctx) {
     `« Utilisée par » ne nomme pas l'assistant pour les deux méthodes : ${resume(utilisee(ATTACHEE_1.id))} / ${resume(utilisee(ATTACHEE_2.id))}`,
   );
 
-  // 2. Bibliothèque des méthodes (page Assistants) : la phrase d'honnêteté, les cartes, et la TROISIÈME refusée.
-  await page.evaluer(`location.hash = "#/assistants"`);
+  // 2. Bibliothèque des méthodes (onglet « Méthodes », où L44f l'a déplacée) : la phrase d'honnêteté, les cartes, et la
+  //    TROISIÈME refusée.
+  await page.evaluer(`location.hash = "#/assistants/methodes"`);
   await page.attendreQue("document.querySelector('.met-library')", { libelle: "bibliothèque des méthodes" });
   const bibliotheque = await texteVisible(page, ".met-library");
   exiger(bibliotheque.includes(PHRASES.bibliotheque), `phrase de la bibliothèque absente : ${resume(bibliotheque, 200)}`);

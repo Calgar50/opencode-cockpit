@@ -52,6 +52,8 @@ const FICHIERS_PARTAGES_C5: readonly string[] = [
   "app/server/croisements-c5b-v2.test.ts",
   // Ajouté au train de V3 de 5b : croisement de la vague (L43, L44f), propriété de l'intégrateur (§2.7).
   "app/server/croisements-c5b-v3.test.ts",
+  // Ajouté au train de V4 de 5b : croisement de la vague (L50b, DOC5), propriété de l'intégrateur (§2.7).
+  "app/server/croisements-c5b-v4.test.ts",
   // Ajoutés au train de V1 : les trois paquets de la vague inscrivent leurs routes et leur crochet, ce qui touche deux listes
   // d'inscriptions écrites par l'itération 1 et partagées avec les autres branches (classe A). Les lignes de la construction y
   // sont balisées pour que la grande fusion les retrouve.
