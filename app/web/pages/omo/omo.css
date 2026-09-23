@@ -173,9 +173,20 @@
   color: var(--text-2);
 }
 
+/* --- Journal du contrôle de la salle (§4.12 l.784), ouvert par [Journal] du bandeau --------------------------------------- */
+/* Le tableau lui-même est celui de L26b (autonomy-journal.css) ; seule la section, focalisable par programme, est stylée ici. */
+
+.omo-journal:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (forced-colors: active) {
   .omo-raison,
   .omo-message {
     border: 1px solid CanvasText;
+  }
+  .omo-journal:focus-visible {
+    outline-color: Highlight;
   }
 }

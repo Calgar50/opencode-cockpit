@@ -197,6 +197,14 @@ export const TEXTES = {
     } satisfies Record<OmoEtatSalle, string>,
     /** §5.4 l.915 : aucune image chargée. */
     nonInstallee: "La Salle Oh My OpenAgent n'est pas installée sur ce poste.",
+    /**
+     * GET /api/omo/status en échec pour une autre raison qu'un 403 « salle-coupee » (erreur du serveur, flux coupé, redémarrage) :
+     * l'état n'est pas connu, et la salle n'est PAS dite coupée (P3 ; relecture 2ter-vague-2). Aucun geste n'est promis.
+     */
+    statutIllisible: {
+      libelle: "État de la salle illisible",
+      raison: "L'état de la salle n'a pas pu être lu : le cockpit ne peut pas dire si une demande est en cours.",
+    },
     /** Relance à neuf (omo.recreation) ; l.401 pour l'arrêt non confirmé. */
     recreation: {
       demandee: "Arrêt demandé",

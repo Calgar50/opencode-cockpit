@@ -242,7 +242,13 @@ export function vueSansDemande(entree: SansDemandeEntree): string[] {
 /** Aucune image de la salle n'est chargée : état hors de l'union `OmoEtatSalle`, avec sa propre phrase (§5.4 l.915). */
 export const ETAT_NON_INSTALLEE = "non-installee";
 
-export type CodeEtatSalle = OmoEtatSalle | typeof ETAT_NON_INSTALLEE;
+/**
+ * GET /api/omo/status a échoué pour une autre raison qu'un 403 « salle-coupee » : état hors de l'union `OmoEtatSalle`, avec sa
+ * propre phrase. Ce n'est PAS « coupée » : rien ne dit que la salle l'est (relecture 2ter-vague-2).
+ */
+export const ETAT_ILLISIBLE = "illisible";
+
+export type CodeEtatSalle = OmoEtatSalle | typeof ETAT_NON_INSTALLEE | typeof ETAT_ILLISIBLE;
 
 export interface EtatSalleEntree {
   /**
@@ -252,6 +258,12 @@ export interface EtatSalleEntree {
   boot: BootstrapOmo | null;
   /** Réponse de GET /api/omo/status ; null : route refusée (403 salle-coupee) ou pas encore lue. */
   statut: OmoStatusResponse | null;
+  /**
+   * La dernière lecture de GET /api/omo/status a échoué pour une AUTRE raison qu'un 403 « salle-coupee » (erreur du serveur, flux
+   * coupé, redémarrage) : l'état n'est pas connu. `statut` est alors ignoré — rien n'est affirmé d'après une lecture périmée — et
+   * seul ce que le Bootstrap sait déjà reste dit (rien d'installé, salle fermée par ses interrupteurs). Absent : faux.
+   */
+  illisible?: boolean;
 }
 
 export interface VueEtatSalle {
@@ -308,12 +320,20 @@ function raisonsDuStatut(statut: OmoStatusResponse): string[] {
 /**
  * État de la salle et raison de son attente. La raison est AFFICHÉE, jamais seulement disponible : c'est ce que vérifie le test
  * de croisement de la vague (arbitrage L21 n° 3, point 3). L'ordre part du plus décisif : rien d'installé, salle coupée, puis ce
- * que le balayage du dossier de travail empêche, puis l'état publié. Fermé en cas de doute : sans statut lisible, la salle est
- * dite coupée, jamais prête.
+ * que le balayage du dossier de travail empêche, puis l'état publié. Fermé en cas de doute : sans statut, la salle n'est jamais
+ * prête ; elle est dite coupée quand le serveur l'a dit (403 « salle-coupee ») ou que le Bootstrap le dit, et « illisible » quand
+ * la lecture a échoué pour une autre raison (relecture 2ter-vague-2 : un 500 passager n'est pas une salle coupée, P3).
  */
 export function vueEtatSalle(entree: EtatSalleEntree): VueEtatSalle {
-  const { etats, nonInstallee } = TEXTES.avance;
+  const { etats, nonInstallee, statutIllisible } = TEXTES.avance;
   const { statut } = entree;
+  if (entree.illisible === true) {
+    // Ce que le Bootstrap sait reste sûr, statut ou pas (A16 point 4 b) : rien d'installé, ou salle fermée par ses interrupteurs.
+    const selonBoot = vueEtatSalle({ boot: entree.boot, statut: null });
+    const fermeeParBoot = entree.boot !== null && (!entree.boot.enabled || !entree.boot.salleOuverte);
+    if (selonBoot.code === ETAT_NON_INSTALLEE || fermeeParBoot) return selonBoot;
+    return { code: ETAT_ILLISIBLE, libelle: statutIllisible.libelle, raisons: [statutIllisible.raison], prete: false };
+  }
   const { imageChargee, omo, salleOuverte, autonomie } = interrupteursDe(entree);
   const brutes = [
     ...(imageChargee ? [] : [nonInstallee]),
@@ -330,6 +350,47 @@ export function vueEtatSalle(entree: EtatSalleEntree): VueEtatSalle {
 /** Annonce polie de l'état : seulement une TRANSITION d'un état à un autre. */
 export function annonceEtatSalle(precedent: VueEtatSalle | null, suivant: VueEtatSalle): string | null {
   return precedent === null || precedent.code === suivant.code ? null : suivant.libelle;
+}
+
+// --- Lecture du statut : « illisible » n'est pas « coupée » (relecture 2ter-vague-2) ----------------------------------------------
+
+/** Ce que la page sait de GET /api/omo/status, lecture après lecture. */
+export interface LectureStatut {
+  /** Dernier statut RÉELLEMENT lu ; null : jamais lu, ou le serveur a répondu 403 « salle-coupee ». */
+  statut: OmoStatusResponse | null;
+  /** La dernière lecture a échoué pour une autre raison qu'un 403 « salle-coupee » : l'état n'est pas connu. */
+  illisible: boolean;
+}
+
+export const LECTURE_INITIALE: LectureStatut = Object.freeze({ statut: null, illisible: false });
+
+/** Issue d'une lecture de GET /api/omo/status : le statut, ou un échec, 403 « salle-coupee » ou autre. */
+export type ResultatLecture = { ok: true; statut: OmoStatusResponse } | { ok: false; salleCoupee: boolean };
+
+/**
+ * Lecture suivante. Un 403 « salle-coupee » est une RÉPONSE du serveur : le statut est oublié, la salle est dite coupée. Toute
+ * autre erreur (500, flux coupé, redémarrage du serveur) ne dit rien de la salle : le dernier statut lu est GARDÉ — pour le
+ * bandeau seulement, jamais pour l'affichage (`statutAffiche`) — et la lecture est marquée illisible.
+ */
+export function apresLecture(precedent: LectureStatut, resultat: ResultatLecture): LectureStatut {
+  if (resultat.ok) return { statut: resultat.statut, illisible: false };
+  if (resultat.salleCoupee) return { statut: null, illisible: false };
+  return { statut: precedent.statut, illisible: true };
+}
+
+/** Statut à afficher : aucun tant que la dernière lecture a échoué (P3 : rien n'est affirmé d'après une lecture périmée). */
+export function statutAffiche(lecture: LectureStatut): OmoStatusResponse | null {
+  return lecture.illisible ? null : lecture.statut;
+}
+
+/**
+ * Une demande est-elle en cours, pour le BANDEAU et son [Arrêter] ? D'après le dernier statut RÉELLEMENT lu : un échec de lecture
+ * ne termine pas une demande. Sans ce maintien, un 500 passager pendant une demande effaçait le bandeau et le seul [Arrêter] de la
+ * salle — POST /api/conversations/:rootId/stop rend 404 sur une racine de la salle (L18c, D-2b-30) —, au moment même où le cockpit
+ * ne voyait plus la salle. Seule une lecture réussie hors « demande-active », ou un 403 « salle-coupee », le retire.
+ */
+export function demandeEnCours(boot: BootstrapOmo | null, lecture: LectureStatut): boolean {
+  return vueEtatSalle({ boot, statut: lecture.statut }).code === "demande-active";
 }
 
 /**
