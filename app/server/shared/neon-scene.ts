@@ -23,11 +23,29 @@
 // - Temps : `t` null = direct (tous les faits) ; sinon, les faits jusqu'au dernier dont l'heure est au plus `t`, dans l'ordre du
 //   magasin (une inversion d'heure entre deux faits est bornée par 223 ms, mesure M15). `moments()` donne les coupures nettes.
 // - Station « Carnet partagé et plan » : toujours vide hors de la Salle OMO (faits `carnet`, L25).
+// - Bornes (§3.10 points 4 et 5) : 3 niveaux sous la conversation et 50 assistants au plus, conversation comprise, comme le
+//   réducteur d'activité (activity.ts) ; au-delà, l'assistant n'est pas dessiné et il est compté (`horsBornes`).
+// Salle OMO (plan 2 bis-2 ter, fiche L25b ; §5.7.1, §5.7.3, §5.7.4, JP-3, JP-6, JP-7, JP-10, JP-13) :
+// - la salle se reconnaît à un fait qu'elle seule écrit (création d'une session `omo`, consigne à métadonnées, carnet, réveil,
+//   origine propre à l'extension, action de l'extension) ; le premier justifie l'ENCEINTE, dessinée en mode Avancé seulement (la
+//   salle y est réservée : ses faits sont refusés en mode Simple, L18c) et STATIQUE (aucune pulsation, JP-13) ;
+// - rôles lus par CLÉ de configuration (`roleSalle`, omo-roles.ts de L20) pour les assistants de la salle ; clé inconnue, ou
+//   réponse qui n'est pas un secteur : « Autres » ;
+// - tâche de fond (consigne `fond: true`) : la consigne rose reste tendue jusqu'à la fin de l'ENFANT, même si l'assistant qui l'a
+//   confiée se met au repos ; le faisceau bleu part du résultat, écrit à la fin de l'enfant (L25a), jamais de « lancée » ;
+// - réveil `noReply` : ni impulsion vers « GitHub Copilot », ni coût, ni reprise du travail dessinée ; seule sa marque d'origine ;
+// - action de l'extension vue sans demande (`decision {par: "extension"}`, L23c) : boucle orange « par l'extension », marquée
+//   « non contrôlé avant exécution » ; jamais un bouclier ni une croix du cockpit, qui n'a rien décidé ;
+// - station « Carnet partagé et plan » : tuiles des fichiers lus (contour) et modifiés (plein), reliées aux assistants dessinés
+//   qui les ont touchés ; chemin RELATIF seulement (fait `carnet`, jamais le contenu) ;
+// - zoom 3 d'un assistant de la salle : métadonnées de sa consigne (JP-7 : catégorie, IA choisie, nombre de compétences,
+//   « attend le résultat » ou « en tâche de fond »), chacune gardée seulement si elle a la forme d'un code, sinon null.
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { ActivityFact, MessageOrigin, StatutCause } from "./activity-types.ts";
 
 export type NeonZoom = 2 | 3;
 export type NeonMode = "simple" | "avance";
+/** Secteurs de la carte ; ce sont aussi les rôles de la salle (OmoRole d'omo-roles.ts), égalité vérifiée par neon-scene.test.ts. */
 export type NeonSector = "planifier" | "chercher" | "conseiller" | "executer" | "verifier" | "autres";
 export type NeonToolCategory = "lire" | "chercher" | "modifier" | "commande" | "confier" | "question";
 
@@ -47,14 +65,28 @@ export const NEON_PLACES = 3;
 /** Zoom 3 : colonnes de dossiers et tuiles par colonne dessinées ; le reste est compté. */
 export const NEON_DOSSIERS_DESSINES = 5;
 export const NEON_TUILES_PAR_DOSSIER = 7;
+/**
+ * Bornes de l'arbre dessiné : profondeur sous la conversation (profondeur 0) et assistants, conversation comprise. Mêmes valeurs
+ * que ACTIVITY_MAX_DEPTH et ACTIVITY_MAX_SESSIONS du réducteur (activity.ts), vérifiées par neon-scene.test.ts : la carte ne
+ * montre jamais un assistant que la liste des acteurs, qui reste la vérité, ne suit pas.
+ */
+export const NEON_PROFONDEUR_MAX = 3;
+export const NEON_SESSIONS_MAX = 50;
+/** Tuiles dessinées sous la station « Carnet partagé et plan » ; les suivantes sont comptées. */
+export const NEON_CARNET_TUILES = 4;
 
 export interface NeonSceneOptions {
   zoom: NeonZoom;
   mode: NeonMode;
   /** Zoom 3 en mode Avancé : session détaillée (délégation dessinée) ; sinon, et toujours en mode Simple, la conversation. */
   focus?: string | null;
-  /** Secteur par nom d'assistant (par exemple les rôles lus par la Salle OMO) ; complète SECTEURS_OPENCODE. */
+  /** Secteur par nom d'assistant, hors de la Salle OMO ; complète SECTEURS_OPENCODE. */
   secteurs?: Readonly<Record<string, NeonSector>>;
+  /**
+   * Salle OMO : rôle d'un assistant lu par sa CLÉ de configuration (roleDeAgent d'omo-roles.ts), appliqué aux seuls assistants
+   * d'une conversation de la salle ; une réponse qui n'est pas un secteur vaut « autres ». Absent : secteurs ordinaires.
+   */
+  roleSalle?: (cle: string) => string;
 }
 
 export interface NeonPoint {
@@ -219,7 +251,69 @@ export interface NeonDetail {
     resultat: { callId: string; etat: "rendu" | "echec" | "interrompu"; faits: NeonRefs } | null;
     /** Dernière réponse rédigée. */
     reponse: { messageId: string; faits: NeonRefs } | null;
+    /** Salle OMO : métadonnées de la consigne reçue (JP-7) ; null hors de la salle, pour la conversation, ou sans consigne. */
+    metadonnees: NeonConsigneSalle | null;
   };
+}
+
+/**
+ * Métadonnées d'une consigne de la salle (JP-7, fait « consigne envoyee » de L25a) : textes venus de l'extension ou de l'IA,
+ * gardés seulement s'ils ont la forme d'un code (sinon null, affiché « non enregistré ») et toujours écrits en texte à l'écran.
+ */
+export interface NeonConsigneSalle {
+  categorie: string | null;
+  /** IA choisie, « fournisseur/nom ». */
+  ia: string | null;
+  /** Nombre de compétences chargées (leurs noms ne sont jamais gardés). */
+  competences: number | null;
+  /** « attend le résultat » ou « en tâche de fond ». */
+  attente: "resultat" | "fond";
+  faits: NeonRefs;
+}
+
+/** Enceinte d'une conversation de la Salle OMO (JP-10) : statique, justifiée par le premier fait propre à la salle. */
+export interface NeonEnclosure {
+  depuis: number;
+  faits: NeonRefs;
+}
+
+/** Actions de l'extension vues sans demande sur un assistant : boucle orange « par l'extension », non contrôlées avant exécution. */
+export interface NeonExtensionMark {
+  sessionId: string;
+  /** Actions distinctes (une par appel d'outil). */
+  actions: number;
+  position: NeonPoint;
+  depuis: number;
+  faits: NeonRefs;
+}
+
+/** Fichier du carnet partagé ou d'un plan (JP-6) : contour = lu, plein = modifié. */
+export interface NeonCarnetTile {
+  /** Clé du fichier (pathKey). */
+  fichier: string;
+  /** Chemin RELATIF (`.omo/notepads/…`, `.omo/plans/…`), écrit par l'IA : toujours rendu en texte. */
+  chemin: string;
+  lu: boolean;
+  modifie: boolean;
+  /** Emplacement sous la station ; null au-delà de NEON_CARNET_TUILES (compté). */
+  position: NeonPoint | null;
+  /** Assistants dessinés qui l'ont lu ou modifié. */
+  sessions: string[];
+  faits: NeonRefs;
+}
+
+/** Lien de la station « Carnet partagé et plan » vers un assistant dessiné qui a touché le carnet. */
+export interface NeonCarnetLink {
+  sessionId: string;
+  depart: NeonPoint;
+  arrivee: NeonPoint;
+  faits: NeonRefs;
+}
+
+export interface NeonCarnet {
+  vide: boolean;
+  tuiles: NeonCarnetTile[];
+  liens: NeonCarnetLink[];
 }
 
 export interface NeonScene {
@@ -227,8 +321,14 @@ export interface NeonScene {
   mode: NeonMode;
   rootId: string | null;
   stations: NeonStation[];
-  /** Station « Carnet partagé et plan » : vide hors de la Salle OMO. */
-  carnet: { vide: true; tuiles: [] };
+  /** Station « Carnet partagé et plan » : vide hors de la Salle OMO, et en mode Simple. */
+  carnet: NeonCarnet;
+  /** Enceinte de la Salle OMO, en mode Avancé ; null ailleurs. */
+  enceinte: NeonEnclosure | null;
+  /** Salle OMO, mode Avancé : actions de l'extension sans demande, par assistant dessiné. */
+  extensions: NeonExtensionMark[];
+  /** Assistants au-delà des bornes (NEON_PROFONDEUR_MAX, NEON_SESSIONS_MAX) : non dessinés, comptés. */
+  horsBornes: number;
   secteurs: NeonSectorView[];
   noeuds: NeonNode[];
   faisceaux: NeonBeam[];
@@ -288,6 +388,8 @@ function toolSlotPosition(index: number): NeonPoint {
 }
 
 const tilePosition = (column: number, row: number): NeonPoint => ({ x: 230 + 64 * column, y: 28 + 26 * row });
+/** Tuiles du carnet : une rangée sous l'étiquette de la station (coin haut gauche). */
+const carnetTilePosition = (index: number): NeonPoint => ({ x: 26 + 14 * index, y: 49 });
 
 // --- Temps ------------------------------------------------------------------------------------------------------------------
 
@@ -336,6 +438,65 @@ const RESULT_STATES: Readonly<Record<string, NeonNodeState>> = { rendu: "termine
 const STOP_CAUSES: ReadonlySet<string> = new Set<StatutCause>(["arret", "plafond", "non-controle", "interrompue"]);
 const RESULT_PHASES: Readonly<Record<string, string>> = { rendu: "termine", echec: "erreur", interrompu: "interrompu" };
 
+// --- Salle OMO -----------------------------------------------------------------------------------------------------------------
+
+/** Origines que seule la salle écrit (§5.7.2, cas 4, 5 et 6 de la salle) : un marqueur n'est jamais cru hors de la salle (L25a). */
+const ORIGINES_SALLE: ReadonlySet<string> = new Set<NeonMarkedOrigin>(["reveil-sans-reponse", "relance-extension", "interne-extension"]);
+/** Nom technique (catégorie) ; IA choisie « fournisseur/nom » : même forme que les faits de L25a, rien d'autre n'est gardé. */
+const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const IA_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?:\/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?$/;
+/** Chemin relatif du carnet ou d'un plan (activity-facts.ts, carnetChemin) et clé de fichier (pathKey). */
+const CARNET_CHEMIN_RE = /^\.omo\/(?:notepads|plans)\/[A-Za-z0-9_./-]{1,90}$/;
+const CLE_FICHIER_RE = /^[0-9a-f]{16}$/;
+
+const own = <T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined => (record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined);
+const secteurValide = (value: unknown): NeonSector => (typeof value === "string" && (NEON_SECTEURS as readonly string[]).includes(value) ? (value as NeonSector) : "autres");
+
+/** Fait « carnet » bien formé ; null sinon (un chemin qui remonte, finit par « / » ou sort du carnet n'est pas une tuile). */
+function carnetOf(data: ActivityFact["data"]): { etat: "lu" | "modifie"; chemin: string; fichier: string } | null {
+  const etat = data.etat === "lu" || data.etat === "modifie" ? data.etat : null;
+  const chemin = typeof data.chemin === "string" && CARNET_CHEMIN_RE.test(data.chemin) && !data.chemin.endsWith("/") && !data.chemin.split("/").includes("..") ? data.chemin : null;
+  const fichier = typeof data.fichier === "string" && CLE_FICHIER_RE.test(data.fichier) ? data.fichier : null;
+  return etat === null || chemin === null || fichier === null ? null : { etat, chemin, fichier };
+}
+
+/** Métadonnées JP-7 d'une consigne envoyée dans la salle (clé `fond` présente) ; null ailleurs. */
+function metadonneesOf(data: ActivityFact["data"], index: number): NeonConsigneSalle | null {
+  if (typeof data.fond !== "boolean") return null;
+  const n = data.competences;
+  return {
+    categorie: typeof data.categorie === "string" && CODE_RE.test(data.categorie) ? data.categorie : null,
+    ia: typeof data.ia === "string" && IA_RE.test(data.ia) ? data.ia : null,
+    competences: typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null,
+    attente: data.fond ? "fond" : "resultat",
+    faits: [index],
+  };
+}
+
+/**
+ * Fait que seule la Salle OMO écrit (L25a, L23c) : création d'une session de l'instance `omo`, consigne à métadonnées, carnet,
+ * réveil, origine propre à l'extension, action de l'extension vue sans demande. Un fait mal formé ne compte pas.
+ */
+function faitDeLaSalle(fact: ActivityFact): boolean {
+  const data = fact.data;
+  switch (fact.kind) {
+    case "statut":
+      return data.etat === "creee" && data.instance === "omo";
+    case "consigne":
+      return data.etat === "envoyee" && typeof data.fond === "boolean";
+    case "carnet":
+      return carnetOf(data) !== null;
+    case "reveil":
+      return data.etat === "depose";
+    case "origine":
+      return ORIGINES_SALLE.has(String(data.origine));
+    case "decision":
+      return data.par === "extension";
+    default:
+      return false;
+  }
+}
+
 interface Open<T> {
   value: T;
   open: number;
@@ -381,6 +542,8 @@ interface TileBuild {
 interface SessionBuild {
   node: NeonNode;
   created: number;
+  /** Profondeur sous la conversation (0 pour elle). */
+  depth: number;
   working: boolean;
   /** Dernière fin de réponse (repos ou erreur) : indice et heure du fait. */
   ended: { index: number; at: number } | null;
@@ -398,6 +561,19 @@ interface SessionBuild {
   resultat: NeonDetail["panneau"]["resultat"];
   origine: Omit<NeonOriginMark, "position"> | null;
   decision: Open<Omit<NeonDecision, "position">> | null;
+  /** Salle OMO : actions de l'extension vues sans demande (clé : appel d'outil, sinon indice du fait). */
+  extension: { actions: Set<string>; depuis: number; faits: NeonRefs } | null;
+  /** Salle OMO : métadonnées de la dernière consigne reçue (JP-7). */
+  metadonnees: NeonConsigneSalle | null;
+}
+
+interface CarnetBuild {
+  chemin: string;
+  lu: boolean;
+  modifie: boolean;
+  /** Faits par assistant qui a lu ou modifié le fichier, dans l'ordre d'apparition. */
+  sessions: Map<string, NeonRefs>;
+  faits: NeonRefs;
 }
 
 /** Fait visible en cours de lecture : son indice, son heure et la session qu'il concerne, si un fait antérieur l'a fait connaître. */
@@ -438,10 +614,11 @@ function waveOfChild(w: Waves, messageId: string | null): number {
   return w.count;
 }
 
-function newSession(node: NeonNode, index: number, at: number): SessionBuild {
+function newSession(node: NeonNode, index: number, at: number, depth: number): SessionBuild {
   return {
     node,
     created: index,
+    depth,
     working: false,
     ended: null,
     baseState: "pas-commence",
@@ -457,6 +634,8 @@ function newSession(node: NeonNode, index: number, at: number): SessionBuild {
     resultat: null,
     origine: null,
     decision: null,
+    extension: null,
+    metadonnees: null,
   };
 }
 
@@ -525,6 +704,7 @@ class RootResponses {
 class SceneBuilder {
   readonly #rootId: string;
   readonly #secteurs: Readonly<Record<string, NeonSector>> | undefined;
+  readonly #roleSalle: ((cle: string) => string) | undefined;
   readonly #sessions = new Map<string, SessionBuild>();
   readonly #places = new Map<string, number>();
   readonly #beams: BeamBuild[] = [];
@@ -535,20 +715,29 @@ class SceneBuilder {
   readonly #waitCalls = new Map<string, { callId: string; index: number }>();
   readonly #refused = new Map<string, NeonRefs>();
   readonly #root = new RootResponses();
+  /** Premier fait propre à la Salle OMO (enceinte) ; null hors de la salle. */
+  #salle: { index: number; at: number } | null = null;
+  /** Assistants au-delà des bornes, et leurs descendants : jamais dessinés. */
+  readonly #horsBornes = new Set<string>();
+  /** Fichiers du carnet partagé et des plans, par clé, dans l'ordre d'apparition. */
+  readonly #carnet = new Map<string, CarnetBuild>();
 
-  constructor(rootId: string, secteurs: Readonly<Record<string, NeonSector>> | undefined) {
+  constructor(rootId: string, secteurs: Readonly<Record<string, NeonSector>> | undefined, roleSalle: ((cle: string) => string) | undefined) {
     this.#rootId = rootId;
     this.#secteurs = secteurs;
+    this.#roleSalle = roleSalle;
   }
 
   add(fact: unknown, index: number): void {
     if (!isFact(fact) || fact.rootId !== this.#rootId) return;
     const at = timeOf(fact);
     const data = fact.data;
+    // Avant de lire le fait : un assistant créé par ce fait même prend déjà son rôle de la salle.
+    if (this.#salle === null && faitDeLaSalle(fact)) this.#salle = { index, at };
     // L'assistant de la conversation n'apparaît que sur un fait de son activité (ni affichage, ni choix, ni arrêt seul).
     if (fact.sessionId === this.#rootId && !this.#sessions.has(this.#rootId) && NODE_KINDS.has(fact.kind) && data.cause === undefined) {
       const node = baseNode({ sessionId: this.#rootId, parentId: null, role: "conversation", agent: null, secteur: null, anneau: 0, place: 0, empile: false, position: point(CENTRE) }, at, index);
-      this.#sessions.set(this.#rootId, newSession(node, index, at));
+      this.#sessions.set(this.#rootId, newSession(node, index, at, 0));
     }
     const step: Step = { fact, data, index, at, session: this.#sessions.get(fact.sessionId) };
     switch (fact.kind) {
@@ -573,6 +762,9 @@ class SceneBuilder {
       case "origine":
         this.#onOrigine(step);
         break;
+      case "carnet":
+        this.#onCarnet(step);
+        break;
       default:
         break;
     }
@@ -580,17 +772,32 @@ class SceneBuilder {
 
   // --- Assistants et réponses ---
 
+  /**
+   * Secteur d'un assistant : dans la salle, son rôle lu par clé de configuration (`roleSalle`) ; ailleurs, ou sans `roleSalle`,
+   * les secteurs donnés puis ceux d'opencode. Une clé héritée d'Object (« constructor »…) ou une réponse qui n'est pas un secteur
+   * vaut « autres » : on n'invente jamais un rôle.
+   */
+  #secteurDe(agent: string | null): NeonSector {
+    if (agent === null) return "autres";
+    if (this.#salle !== null && this.#roleSalle !== undefined) return secteurValide(this.#roleSalle(agent));
+    return secteurValide(own(this.#secteurs, agent) ?? own(SECTEURS_OPENCODE, agent));
+  }
+
   #addChild(sessionId: string, parent: SessionBuild, agent: string | null, messageId: string | null, step: Step): void {
-    if (this.#sessions.has(sessionId)) return;
-    const wanted = agent === null ? undefined : (this.#secteurs?.[agent] ?? SECTEURS_OPENCODE[agent]);
-    const secteur = wanted !== undefined && NEON_SECTEURS.includes(wanted) ? wanted : "autres";
+    if (this.#sessions.has(sessionId) || this.#horsBornes.has(sessionId)) return;
+    // Bornes du réducteur (3 niveaux, 50 assistants) : au-delà, l'assistant n'est pas dessiné, ses descendants non plus.
+    if (parent.depth >= NEON_PROFONDEUR_MAX || this.#sessions.size >= NEON_SESSIONS_MAX) {
+      this.#horsBornes.add(sessionId);
+      return;
+    }
+    const secteur = this.#secteurDe(agent);
     const anneau = parent.node.anneau + waveOfChild(parent.waves, messageId);
     const slotKey = `${secteur}|${Math.min(anneau, NEON_ANNEAUX_DESSINES)}`;
     const place = this.#places.get(slotKey) ?? 0;
     this.#places.set(slotKey, place + 1);
     const position = nodePosition(secteur, anneau, place);
     const node = baseNode({ sessionId, parentId: parent.node.sessionId, role: "delegation", agent, secteur, anneau, place, empile: place >= NEON_PLACES, position }, step.at, step.index);
-    this.#sessions.set(sessionId, newSession(node, step.index, step.at));
+    this.#sessions.set(sessionId, newSession(node, step.index, step.at, parent.depth + 1));
   }
 
   #setState(s: SessionBuild, etat: NeonNodeState, step: Step): void {
@@ -702,7 +909,9 @@ class SceneBuilder {
   #onCreated(step: Step): void {
     const { data, fact, session: s } = step;
     if (data.role === "conversation" && s !== undefined && fact.sessionId === this.#rootId) s.node.agent ??= str(data.agent);
-    const parent = this.#sessions.get(str(data.parent) ?? "");
+    const parentId = str(data.parent) ?? "";
+    const parent = this.#sessions.get(parentId);
+    if (data.role === "delegation" && this.#horsBornes.has(parentId)) this.#horsBornes.add(fact.sessionId);
     if (data.role !== "delegation" || parent === undefined) return;
     // Création avant l'envoi : la délégation appartient au message de la dernière préparation non envoyée.
     const pending = [...parent.pending.values()].at(-1) ?? null;
@@ -751,9 +960,12 @@ class SceneBuilder {
   }
 
   #onConsigne(step: Step): void {
-    const { data, index, at, session: s } = step;
+    const { data, fact, index, at, session: s } = step;
     const callId = str(data.callId);
     const messageId = str(data.messageId);
+    // Travail confié par un assistant au-delà des bornes : hors bornes lui aussi.
+    const enfantHorsBornes = str(data.enfant);
+    if (s === undefined && enfantHorsBornes !== null && this.#horsBornes.has(fact.sessionId)) this.#horsBornes.add(enfantHorsBornes);
     if (s === undefined || callId === null) return;
     const sessionId = s.node.sessionId;
     if (data.etat === "prepare") {
@@ -769,8 +981,13 @@ class SceneBuilder {
     if (enfant === null) return;
     this.#addChild(enfant, s, str(data.agent), messageId, step);
     if (messageId !== null) waveOfMessage(s.waves, messageId);
+    const child = this.#sessions.get(enfant);
+    const metadonnees = metadonneesOf(data, index);
+    if (child !== undefined && metadonnees !== null) child.metadonnees = metadonnees;
     const group = messageId === null ? null : `${sessionId}|${messageId}`;
-    this.#openBeam({ id: `consigne:${sessionId}:${callId}`, kind: "consigne", de: sessionId, vers: enfant, callId, messageId, depuis: at, faits: [index] }, sessionId, index, group);
+    // Tâche de fond (JP-3) : l'assistant qui confie ne l'attend pas, son repos ne ferme pas la consigne ; la fin de l'enfant, si.
+    const owner = metadonnees?.attente === "fond" ? enfant : sessionId;
+    this.#openBeam({ id: `consigne:${sessionId}:${callId}`, kind: "consigne", de: sessionId, vers: enfant, callId, messageId, depuis: at, faits: [index] }, owner, index, group);
     s.confie.set(callId, { categorie: "confier", phase: "en-cours", faits: [...(s.confie.get(callId)?.faits ?? []), index] });
   }
 
@@ -817,6 +1034,16 @@ class SceneBuilder {
 
   #onDecision(step: Step): void {
     const { data, fact, index, at, session: s } = step;
+    // Action de l'extension vue sans demande : le cockpit n'a rien décidé, ni bouclier ni croix, quel que soit le verdict écrit.
+    if (data.par === "extension") {
+      if (s === undefined) return;
+      const extension = s.extension ?? { actions: new Set<string>(), depuis: at, faits: [] };
+      extension.actions.add(str(fact.ref) ?? `fait:${index}`);
+      extension.depuis = at;
+      extension.faits.push(index);
+      s.extension = extension;
+      return;
+    }
     const signe = DECISION_SIGNS[String(data.verdict)];
     if (s === undefined || signe === undefined) return;
     // Une décision à la fois par assistant : la dernière remplace la précédente.
@@ -843,6 +1070,23 @@ class SceneBuilder {
     }
   }
 
+  /** Fichier du carnet partagé ou d'un plan lu ou modifié par un assistant connu (JP-6) : une tuile par fichier. */
+  #onCarnet(step: Step): void {
+    const { data, index, session: s } = step;
+    const carnet = carnetOf(data);
+    if (s === undefined || carnet === null) return;
+    let tile = this.#carnet.get(carnet.fichier);
+    if (!tile) {
+      tile = { chemin: carnet.chemin, lu: false, modifie: false, sessions: new Map(), faits: [] };
+      this.#carnet.set(carnet.fichier, tile);
+    }
+    if (carnet.etat === "lu") tile.lu = true;
+    else tile.modifie = true;
+    tile.faits.push(index);
+    const sessionId = s.node.sessionId;
+    tile.sessions.set(sessionId, [...(tile.sessions.get(sessionId) ?? []), index]);
+  }
+
   #markRefused(sessionId: string, permissionId: string | null, index: number): void {
     const wait = permissionId === null ? undefined : this.#waitCalls.get(permissionId);
     if (wait) this.#refused.set(`${sessionId}|${wait.callId}`, [wait.index, index]);
@@ -853,8 +1097,11 @@ class SceneBuilder {
   render(out: NeonScene, focus: string | null, count: number): NeonScene {
     const root = this.#sessions.get(this.#rootId);
     out.arret = this.#root.shown();
-    if (root === undefined) return out;
+    out.horsBornes = this.#horsBornes.size;
     const simple = out.mode === "simple";
+    // Salle OMO, réservée au mode Avancé : enceinte statique dès le premier fait propre à la salle.
+    if (!simple && this.#salle !== null) out.enceinte = { depuis: this.#salle.at, faits: [this.#salle.index] };
+    if (root === undefined) return out;
     this.#renderBeams(out, simple, count);
     const openWaits = [...this.#waits.values()].filter((wait) => wait.close === null);
     this.#renderSessions(out, simple, openWaits);
@@ -868,12 +1115,28 @@ class SceneBuilder {
       if (!this.#shown(pulse.value.sessionId, simple)) continue;
       out.impulsions.push({ ...pulse.value, faits: [...pulse.value.faits], depart: this.#positionOf(pulse.value.sessionId), arrivee: point(STATION_POSITIONS.copilot) });
     }
+    if (!simple && this.#salle !== null) out.carnet = this.#renderCarnet(simple);
     if (out.zoom === 3) {
       // Une session non dessinée (inconnue, ou délégation en mode Simple) : le détail de la conversation.
       const wanted = focus ?? this.#rootId;
       out.detail = buildDetail(this.#shown(wanted, simple) ? (this.#sessions.get(wanted) ?? root) : root, this.#refused);
     }
     return out;
+  }
+
+  /** Station « Carnet partagé et plan » de la salle : tuiles dans l'ordre d'apparition, liens vers les assistants dessinés. */
+  #renderCarnet(simple: boolean): NeonCarnet {
+    const tuiles: NeonCarnetTile[] = [];
+    const parAssistant = new Map<string, NeonRefs>();
+    for (const [fichier, tile] of this.#carnet) {
+      const sessions = [...tile.sessions.keys()].filter((id) => this.#shown(id, simple));
+      for (const id of sessions) parAssistant.set(id, [...(parAssistant.get(id) ?? []), ...(tile.sessions.get(id) ?? [])]);
+      const position = tuiles.length < NEON_CARNET_TUILES ? carnetTilePosition(tuiles.length) : null;
+      tuiles.push({ fichier, chemin: tile.chemin, lu: tile.lu, modifie: tile.modifie, position, sessions, faits: [...tile.faits] });
+    }
+    const depart = point(STATION_POSITIONS.carnet);
+    const liens = [...parAssistant].map(([sessionId, faits]) => ({ sessionId, depart: point(depart), arrivee: this.#positionOf(sessionId), faits: [...new Set(faits)].sort(byIndex) }));
+    return { vide: tuiles.length === 0, tuiles, liens };
   }
 
   /** Session dessinée : connue, et la conversation seule en mode Simple. */
@@ -926,6 +1189,11 @@ class SceneBuilder {
       });
       if (s.decision?.close === null) out.decisions.push({ ...s.decision.value, faits: [...s.decision.value.faits], position: point(position) });
       if (s.origine !== null) out.origines.push({ ...s.origine, faits: [...s.origine.faits], position: point(position) });
+      // Salle OMO (mode Avancé) : les actions de l'extension restent marquées, jamais effacées par la fin d'une réponse.
+      if (!simple && s.extension !== null) {
+        const { actions, depuis, faits } = s.extension;
+        out.extensions.push({ sessionId, actions: actions.size, position: point(position), depuis, faits: [...faits] });
+      }
     }
   }
 }
@@ -942,7 +1210,7 @@ export function scene(facts: readonly ActivityFact[], t: number | null, options:
   const out = emptyScene(zoom, mode, rootId);
   const count = visibleCount(facts, t);
   if (count === 0 || rootId === null) return out;
-  const builder = new SceneBuilder(rootId, options.secteurs);
+  const builder = new SceneBuilder(rootId, options.secteurs, typeof options.roleSalle === "function" ? options.roleSalle : undefined);
   for (let index = 0; index < count; index++) builder.add(facts[index], index);
   return builder.render(out, options.focus ?? null, count);
 }
@@ -953,7 +1221,10 @@ function emptyScene(zoom: NeonZoom, mode: NeonMode, rootId: string | null): Neon
     mode,
     rootId,
     stations: STATION_ORDER.map((id) => ({ id, position: point(STATION_POSITIONS[id]) })),
-    carnet: { vide: true, tuiles: [] },
+    carnet: { vide: true, tuiles: [], liens: [] },
+    enceinte: null,
+    extensions: [],
+    horsBornes: 0,
     secteurs: sectorViews(),
     noeuds: [],
     faisceaux: [],
@@ -1059,6 +1330,6 @@ function buildDetail(s: SessionBuild, refusedCalls: ReadonlyMap<string, NeonRefs
     autresOutils,
     dossiers: buildFolders(s, refusedCalls),
     dossiersEnPlus: Math.max(0, s.folders.size - NEON_DOSSIERS_DESSINES),
-    panneau: { consigne: s.consigne, actions, resultat: s.resultat, reponse: s.reponse },
+    panneau: { consigne: s.consigne, actions, resultat: s.resultat, reponse: s.reponse, metadonnees: s.metadonnees === null ? null : { ...s.metadonnees, faits: [...s.metadonnees.faits] } },
   };
 }

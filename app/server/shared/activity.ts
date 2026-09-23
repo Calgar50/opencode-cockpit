@@ -10,6 +10,17 @@
 // travail délégué ». Faits lus : statut (dont {cause, debut} d'un arrêt, L1c : une session arrêtée par MessageAbortedError, ou dont
 // le travail s'est fermé entre `debut` et le fait sans erreur, est « arrete »), consigne, resultat, attente, reponse, choix (L6a) et
 // affichage « deroule-partiel » (L4b) ; decision et origine ne changent pas les lignes (Journal et transcription).
+// Salle OMO (plan 2 bis-2 ter, fiche L25b ; §5.7.3, JP-2, JP-3, JP-10) :
+// - tâche de fond (consigne `fond: true`, L25a) : la session qui confie le travail ne l'ATTEND pas. Son état reste son vrai statut
+//   (jamais « attend une délégation »), et le Déroulé ne coupe pas sa génération ni ne dessine d'attente pour cet appel ; l'enfant
+//   garde sa ligne, et son résultat, écrit à la fin de l'enfant (L25a), le dit « terminé » ;
+// - réveil `noReply` (faits « origine » cas 4 et « reveil ») : aucun appel d'IA, aucun coût, aucune période de travail. Ni l'un
+//   ni l'autre n'est lu ici : un appel ne vient que d'un fait « statut appel » (partie `step-start`), un travail que d'un statut ;
+// - `par: extension` (fait « decision » écrit par L23c, un par action vue sans demande, `ref` = appel d'outil) : ne change aucun
+//   état, aucune attente ni aucun total ; seulement compté, par session (LiveRow.actionsExtension) et pour l'arbre
+//   (activityStatus), chaque action étant « non contrôlé avant exécution ».
+// Les bornes (3 niveaux, 50 sessions) valent aussi pour la salle ; le rythme (4 rendus par seconde) est celui de l'appelant
+// (useActivity.ts), mesuré sur les captures de la salle par omo-replay.test.ts.
 // Module pur (server/shared) : aucun module node, aucun accès à process, ni horloge ni aléa (l'heure est passée en paramètre).
 import type {
   ActivityFact,
@@ -248,6 +259,8 @@ interface CallModel {
   source: DelegationSource | null;
   commande: string | null;
   reprise: boolean;
+  /** Tâche de fond de la Salle OMO (JP-3) : la session qui confie le travail ne l'attend pas. */
+  fond: boolean;
   result: string | null;
   permissionId: string | null;
   stopCause: StatutCause | null;
@@ -269,6 +282,8 @@ interface Model {
   partial: boolean;
   choice: { choix: AutonomyChoice; cause: ChoiceCause; at: number } | null;
   stop: { cause: StatutCause; at: number; nonConfirmees: number } | null;
+  /** Actions de l'extension vues sans demande (`par: extension`), par session : une par appel d'outil (ou par fait sans appel). */
+  extension: Map<string, Set<string>>;
 }
 
 const MODELS = new WeakMap<ActivityState, Model>();
@@ -301,7 +316,7 @@ function closeBusy(node: NodeModel, at: number): void {
 
 function build(state: ActivityState): Model {
   const { rootId, facts } = state;
-  const model: Model = { nodes: new Map(), calls: new Map(), waits: new Map(), partial: false, choice: null, stop: null };
+  const model: Model = { nodes: new Map(), calls: new Map(), waits: new Map(), partial: false, choice: null, stop: null, extension: new Map() };
   // Arbre : parent, rôle et assistant par session (fait « creee », sinon consigne ou résultat qui la lie, sinon information de session).
   const parents = new Map<string, string | null>();
   const created = new Map<string, { role: SessionRole | null; agent: string | null; instance: SessionInstance | null }>();
@@ -397,6 +412,7 @@ function build(state: ActivityState): Model {
         source: null,
         commande: null,
         reprise: false,
+        fond: false,
         result: null,
         permissionId: null,
         stopCause: null,
@@ -489,6 +505,8 @@ function build(state: ActivityState): Model {
           call.source = data.source === "raccourci" ? "raccourci" : "ia";
           call.commande = strOf(data.commande);
           call.reprise = data.reprise === true;
+          // Clé écrite dans la salle seulement (L25a, consigneOmo) : absente, la délégation attend son résultat, comme avant.
+          call.fond = data.fond === true;
           bind(call, strOf(data.enfant));
         } else if (fact.kind === "resultat") {
           call.writtenAt ??= at;
@@ -520,6 +538,18 @@ function build(state: ActivityState): Model {
           wait.closedAt = at;
           wait.reponse = strOf(data.reponse);
         }
+        return;
+      }
+      case "decision": {
+        // Action de l'extension vue sans demande (L23c) : comptée une fois par appel d'outil, rien d'autre ne change. Les autres
+        // décisions (cockpit, IA de contrôle, vous) restent lues par le Journal et la scène, jamais par les lignes.
+        if (data.par !== "extension") return;
+        let actions = model.extension.get(node.id);
+        if (!actions) {
+          actions = new Set();
+          model.extension.set(node.id, actions);
+        }
+        actions.add(fact.ref ?? `fait:${index}`);
         return;
       }
       default:
@@ -625,6 +655,11 @@ export interface LiveRow extends ActivityRow {
   erreur: string | null;
   until: number | null;
   durationMs: number | null;
+  /**
+   * Salle OMO : actions de l'extension vues sans demande sur cette session (`par: extension`, une par appel d'outil), chacune
+   * « non contrôlé avant exécution » ; 0 partout ailleurs.
+   */
+  actionsExtension: number;
 }
 
 /** Raccourci lancé sans demande : commande portée par l'appel `task`, et aucune attente d'accord vue pour cet appel. */
@@ -648,7 +683,8 @@ function sessionState(model: Model, node: NodeModel): ActorState {
   if (node.role === "controle") return "controle";
   if (ownOpenWait(model, node) !== null) return "attente-accord";
   if (node.attempt !== null) return "nouvelle-tentative";
-  const open = [...model.calls.values()].filter((c) => c.sessionId === node.id && c.endedAt === null);
+  // Une tâche de fond envoyée n'est pas attendue (JP-3) : l'état de la session qui l'a confiée est son vrai statut.
+  const open = [...model.calls.values()].filter((c) => c.sessionId === node.id && c.endedAt === null && !c.fond);
   if (open.some((c) => c.writtenAt === null)) return "prepare-delegation";
   if (open.some((c) => c.sentAt !== null)) return "attend-delegation";
   // Délégation écrite qui attend votre accord : l'attente et [Répondre] sont sur la ligne de la délégation, jamais en double.
@@ -694,6 +730,7 @@ function sessionRow(state: ActivityState, model: Model, node: NodeModel, now: nu
     erreur: node.busy ? null : node.erreur,
     until,
     durationMs: since === null ? null : Math.max(0, (until ?? now) - since),
+    actionsExtension: model.extension.get(node.id)?.size ?? 0,
   };
 }
 
@@ -738,6 +775,7 @@ function callRow(state: ActivityState, model: Model, call: CallModel, now: numbe
     erreur: null,
     until,
     durationMs: since === null ? null : Math.max(0, (until ?? now) - since),
+    actionsExtension: 0,
   };
 }
 
@@ -814,10 +852,11 @@ function nodeBars(model: Model, node: NodeModel): TimelineBar[] {
     cuts.push([wait.askedAt, wait.closedAt]);
   }
   // Délégations d'un même message : attente du premier appel écrit et envoyé à la fin du dernier (G1) ; la génération s'arrête
-  // quand tous les appels du message sont écrits et reprend à la fin du dernier (G3).
+  // quand tous les appels du message sont écrits et reprend à la fin du dernier (G3). Une tâche de fond n'est pas attendue (JP-3) :
+  // ni attente dessinée, ni génération coupée pour elle.
   const groups = new Map<string, CallModel[]>();
   for (const call of model.calls.values()) {
-    if (call.sessionId !== node.id) continue;
+    if (call.sessionId !== node.id || call.fond) continue;
     const group = call.messageId ?? call.callId;
     groups.set(group, [...(groups.get(group) ?? []), call]);
   }
@@ -927,11 +966,22 @@ export interface ActivityStatus {
   attentesEnregistrees: boolean;
   choix: { choix: AutonomyChoice; cause: ChoiceCause; at: number } | null;
   arret: { cause: StatutCause; at: number; nonConfirmees: number } | null;
+  /** Salle OMO : actions de l'extension vues sans demande dans l'arbre suivi, « non contrôlé avant exécution » ; 0 ailleurs. */
+  actionsExtension: number;
 }
 
 export function activityStatus(state: ActivityState): ActivityStatus {
   const model = derive(state);
-  return { source: state.source, partial: model.partial, attentesEnregistrees: state.source === "faits", choix: model.choice, arret: model.stop };
+  let actionsExtension = 0;
+  for (const actions of model.extension.values()) actionsExtension += actions.size;
+  return {
+    source: state.source,
+    partial: model.partial,
+    attentesEnregistrees: state.source === "faits",
+    choix: model.choice,
+    arret: model.stop,
+    actionsExtension,
+  };
 }
 
 // --- Annonces -------------------------------------------------------------------------------------------------------------------
