@@ -534,6 +534,10 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * branche encore — le répondeur (L22d) l'appellera en V4. Il est ici pour lui-même : sans cela, la cloison le lirait comme un
  * fichier de production et lui reprocherait d'importer les listes de la salle (`shared/omo-detections.ts`) dont il tire les
  * fichiers d'IDE et de CI, au lieu de les recopier.
+ *
+ * La vague 4 de l'itération 2 ter RETIRE `shared/omo-limits.ts` : L23b branche l'arrêt de la salle (`omo-stop.ts`), dont la
+ * suspension après deux activités hors demande en 10 min lit ces limites fixes (D-2b-29) au lieu de les recopier. Le module est
+ * désormais parcouru comme un fichier de production (il n'importe rien).
  */
 const MODULES_SALLE_V0 = new Set([
   // Vague 2 de l'itération 2 ter
@@ -543,7 +547,6 @@ const MODULES_SALLE_V0 = new Set([
   "validate-core.mjs",
   "cockpit-guard.js",
   // V0
-  "omo-limits.ts",
   "omo-detections.ts",
   "egress-proxy.ts",
   "omo-audit-texts.ts",
