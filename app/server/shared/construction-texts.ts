@@ -435,9 +435,13 @@ export const TEXTES = {
        * l'estimation et la MONTRE dans une nouvelle boîte, qui commence par la phrase de la feuille de lancement (« L'estimation
        * n'était plus à jour : voici la nouvelle. », team-texts.ts). `encore` : cette nouvelle estimation est refusée à son tour ;
        * une seule ré-estimation par clic, rien n'est affiché de plus, d'où la phrase.
+       * Tour 3 : la carte ne sait pas POURQUOI le second refus arrive — boîte restée ouverte ou lectures changées (un nouvel essai
+       * peut passer), ou relance d'un lancement dont une relecture a commencé (refusée à chaque fois, constats-5b.md §3). La
+       * phrase ne promet donc plus qu'un nouvel essai aboutira : elle dit ce qui s'est passé, et la suite vraie dans tous les cas.
        */
       relancePerimee: {
-        encore: "L'estimation n'est plus à jour : refaites-la, puis confirmez de nouveau. Rien n'a été envoyé ni facturé.",
+        encore:
+          "La nouvelle estimation a été refusée à son tour : la suite n'est pas repartie. Si le refus se répète, relancez l'équipe depuis la saisie. Rien n'a été envoyé ni facturé.",
       },
       // </c5:relance-perimee>
       choix: {

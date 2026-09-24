@@ -696,7 +696,11 @@ describe("Clôture 5b : …/relancer refusé « estimation-perimee » depuis la 
     const encore = E.relancePerimee.encore;
     assert.deepEqual(VUE_MODELE.relancePerimee("estimation-perimee", true), { genre: "phrase", texte: encore });
     assert.doesNotMatch(encore, /est affichée|voici/, "rien n'est affiché à ce moment-là");
-    assert.match(encore, /refaites-la/, "ce qu'il reste à faire");
+    // Tour 3 : « refaites-la, puis confirmez de nouveau » invitait à un essai qui échoue À CHAQUE FOIS quand la relance porte sur
+    // une relecture commencée (constats-5b.md §3) ; la phrase dit ce qui s'est passé, et la seule suite vraie dans tous les cas.
+    assert.doesNotMatch(encore, /refaites-la|confirmez de nouveau/, "aucune invitation à un nouvel essai qui peut échouer encore");
+    assert.match(encore, /^La nouvelle estimation a été refusée à son tour : la suite n'est pas repartie\./, "ce qui s'est passé");
+    assert.match(encore, /Si le refus se répète, relancez l'équipe depuis la saisie\./, "ce qu'il reste à faire, vrai même quand le refus tient");
     assert.match(encore, /Rien n'a été envoyé ni facturé\.$/, "le refus arrive avant tout envoi (A4)");
   });
 
