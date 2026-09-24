@@ -37,7 +37,14 @@ import type { SessionTracker } from "./sessions.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
 import { egressHoteAutorise } from "./shared/egress-allow.ts";
 import { OMO_VERSION } from "./shared/omo-audit-4.19.4.ts";
-import { analyserBattement, OMO_CONTROL_MAX_OCTETS, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
+import {
+  analyserArret,
+  analyserBattement,
+  arretDuDemarrage,
+  OMO_CONTROL_MAX_OCTETS,
+  OMO_DELAIS,
+  OMO_FICHIERS_CONTROLE,
+} from "./shared/omo-control-protocol.ts";
 import type {
   OmoActivationRefusalCode,
   OmoEtatSalle,
@@ -362,15 +369,31 @@ export function createOmoRoom(deps: OmoRoomDeps): OmoRoomService {
   /** État du superviseur, lu borné par `omoControl` ; `null` = inconnu (absent, invalide ou trop gros). */
   const etatSuperviseur = async (): Promise<OmoSupervisorState | null> => deps.ports().omoControl.readState();
 
-  const etatSalle = (etat: OmoSupervisorState | null): OmoEtatSalle => {
+  /**
+   * Relance à neuf décidée par le cockpit, que le superviseur n'a pas encore faite (relecture 2ter-vague-4, même règle que
+   * l'activation de L22c) : arrêt ou relance en cours (`omoStop.enCours`), ou stop-request écrit pour le démarrage publié
+   * (`arretDuDemarrage`, la règle du superviseur). Sans elle, la page dirait « prête » pendant ces secondes-là.
+   */
+  const relanceDecidee = async (etat: OmoSupervisorState): Promise<boolean> => {
+    try {
+      if (deps.ports().omoStop.enCours?.() === true) return true;
+    } catch (err) {
+      deps.log.warn("salle : arrêt en cours illisible", { error: errorMessage(err) });
+      return true;
+    }
+    const arret = analyserArret(await lireBorne(path.join(deps.controlDir, OMO_FICHIERS_CONTROLE.arret), OMO_CONTROL_MAX_OCTETS));
+    return arretDuDemarrage(arret, etat.startId, etat.startedAt);
+  };
+
+  const etatSalle = async (etat: OmoSupervisorState | null): Promise<OmoEtatSalle> => {
     if (coupee() !== null) return "coupee";
     if (deps.ports().omoControl.suspended()) return "suspendue";
     if (deps.ports().omoActivation.activeRequest() !== null) return "demande-active";
-    // Fermé en cas de doute : un état illisible vaut « aucun opencode lancé ». « en-relance » n'est dit que quand le superviseur
-    // annonce lui-même un arrêt : c'est le seul moment où une relance à neuf est certaine (D-2b-29).
+    // Fermé en cas de doute : un état illisible vaut « aucun opencode lancé ». « en-relance » n'est dit que quand une relance à
+    // neuf est certaine (D-2b-29) : le superviseur annonce lui-même un arrêt, ou le cockpit l'a déjà décidé pour CE démarrage.
     if (etat === null) return "arretee";
+    if (etat.phase === "arret" || (await relanceDecidee(etat))) return "en-relance";
     if (etat.phase === "opencode-lance") return "prete";
-    if (etat.phase === "arret") return "en-relance";
     return "arretee";
   };
 
@@ -420,7 +443,7 @@ export function createOmoRoom(deps: OmoRoomDeps): OmoRoomService {
       listeBlanche: hote === null ? [] : [hote],
       projetsPrepares: (prepares?.projets ?? []).map((projet) => ({ chemin: normaliserProjet(projet.chemin), git: gitDuProjet(projet.chemin, projet.git) })),
       workspaceGit: etat?.workspaceGit ?? null,
-      etatSalle: etatSalle(etat),
+      etatSalle: await etatSalle(etat),
       authSalle: { presente: await authPresente() },
       sortiesRefusees24h,
       battement: await battement(),

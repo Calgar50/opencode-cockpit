@@ -20,7 +20,7 @@ import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { Hono } from "hono";
 import type { CatalogModel, CatalogSources } from "./catalog.ts";
-import type { Cockpit11, Cockpit11Module, FactsPort } from "./contracts-11.ts";
+import { type Cockpit11, type Cockpit11Module, type FactsPort, PortUnavailableError } from "./contracts-11.ts";
 import { ConversationAutonomyStore, interruptSalleAtStartup } from "./conversation-autonomy.ts";
 import type { AppEnv } from "./env.ts";
 import { forbiddenCommandArguments, forbiddenProxyBody } from "./http.ts";
@@ -36,12 +36,12 @@ import {
   type OmoActivationDeps,
   type OmoActivationService,
 } from "./omo-activation.ts";
-import type { OmoControlPort, OmoPrecheckOutcome, OmoPrecheckPort } from "./omo-contracts.ts";
+import type { OmoControlPort, OmoPrecheckOutcome, OmoPrecheckPort, OmoStopPort } from "./omo-contracts.ts";
 import type { OcSession } from "./opencode.ts";
 import { DEFAULT_SETTINGS, SettingsStore } from "./settings.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
 import type { OmoAutonomyView } from "./shared/api-types.ts";
-import { ecrireBattement, ecrirePrecheckOk, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
+import { ecrireArret, ecrireBattement, ecrirePrecheckOk, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
 import { OMO_LIMITES } from "./shared/omo-limits.ts";
 import type { PrecheckBornes } from "./shared/omo-precheck-rules.ts";
 import { TEXTES } from "./shared/omo-room-texts.ts";
@@ -71,6 +71,8 @@ interface Monde {
   bornes: Partial<PrecheckBornes> | undefined;
   /** Décalage de l'horloge du service (expiration du jeton). */
   decalageMs: number;
+  /** Arrêt ou relance à neuf en cours côté cockpit (`omoStop.enCours`, relecture 2ter-vague-4). */
+  arretEnCours: boolean;
 }
 
 interface Salle {
@@ -178,6 +180,7 @@ async function salle(t: TestContext, options: { mode?: "simple" | "avance"; env?
     projetsFichier,
     bornes: undefined,
     decalageMs: 0,
+    arretEnCours: false,
   });
   const monde = nominal();
   const ecrireControle = () => {
@@ -209,6 +212,12 @@ async function salle(t: TestContext, options: { mode?: "simple" | "avance"; env?
   const omoPrecheck: OmoPrecheckPort = {
     check: async (projet) => monde.precheck(projet),
     beforeStart: async (startId) => ({ ok: true, startId, resultats: [] }),
+  };
+  // Arrêt de la salle : seul `enCours` est lu par l'activation (relecture 2ter-vague-4) ; aucun arrêt n'est lancé par ces tests.
+  const omoStop: OmoStopPort = {
+    run: () => Promise.reject(new PortUnavailableError("omoStop")),
+    relaunchAfterRequest: async () => undefined,
+    enCours: () => monde.arretEnCours,
   };
   const facts = spyFacts();
   const journal: Salle["journal"] = [];
@@ -294,7 +303,7 @@ async function salle(t: TestContext, options: { mode?: "simple" | "avance"; env?
   const h = await startCockpit(t, {
     omo: true,
     modules: ["conversationAutonomy", moduleActivation],
-    ports: { omoControl, omoPrecheck, facts },
+    ports: { omoControl, omoPrecheck, omoStop, facts },
     settings: { ui: { mode: options.mode ?? "avance" } },
     env: { workspaceDir: workspace, ...options.env },
   });
@@ -337,6 +346,7 @@ async function salle(t: TestContext, options: { mode?: "simple" | "avance"; env?
       Object.assign(monde, nominal());
       ecrireControle();
       fs.rmSync(path.join(workspace, "app", "vendored"), { recursive: true, force: true });
+      fs.rmSync(path.join(control, OMO_FICHIERS_CONTROLE.arret), { force: true });
       fs.writeFileSync(projetsFichier, `${JSON.stringify(projetsDe(...PROJETS))}\n`, "utf8");
     },
   };
@@ -618,6 +628,23 @@ const CONDITIONS: CasCondition[] = [
     code: "salle-en-relance",
     casser: (s) => void ((s.monde.etat as OmoSupervisorState).startId = AUTRE_START_ID),
   },
+  // Relecture 2ter-vague-4 : la relance à neuf est décidée par le cockpit, mais le superviseur ne l'a pas encore faite (il relit
+  // stop-request toutes les 2 s) : state.json dit encore « opencode-lance » pour l'opencode que le cockpit vient de faire arrêter.
+  {
+    nom: "stop-request du démarrage publié, superviseur pas encore passé (fin de demande)",
+    code: "salle-en-relance",
+    casser: (s) => fs.writeFileSync(path.join(s.control, OMO_FICHIERS_CONTROLE.arret), ecrireArret(Date.now(), "fin-de-demande", START_ID), "utf8"),
+  },
+  {
+    nom: "stop-request sans démarrage nommé (état inconnu à l'écriture), daté du démarrage publié ou d'après",
+    code: "salle-en-relance",
+    casser: (s) => fs.writeFileSync(path.join(s.control, OMO_FICHIERS_CONTROLE.arret), ecrireArret(Date.now(), "vous", null), "utf8"),
+  },
+  {
+    nom: "arrêt ou relance en cours côté cockpit, stop-request pas encore écrit (demande déjà close, abandon des sessions)",
+    code: "salle-en-relance",
+    casser: (s) => void (s.monde.arretEnCours = true),
+  },
   { nom: "manifeste en écart", code: "manifeste", casser: (s) => void ((s.monde.etat as OmoSupervisorState).manifesteReference = "ecart") },
   { nom: "manifeste : amorce", code: "manifeste", casser: (s) => void ((s.monde.etat as OmoSupervisorState).manifesteReference = "amorce") },
   { nom: "validation de l'image en échec", code: "manifeste", casser: (s) => void ((s.monde.etat as OmoSupervisorState).validation = "echec") },
@@ -723,6 +750,19 @@ describe("L22c : conditions du §4.14.2, 409 et phrase, rien n'est envoyé", () 
     s.reparer();
     assert.equal((await activer(s, { choix: "omo", plafondUsd: "1" })).status, 200);
     assert.equal((await envoyer(s)).status, 204);
+  });
+
+  it("relecture 2ter-vague-4 : un stop-request déjà honoré (démarrage précédent, ou daté d'avant le démarrage publié) ne retient rien", async (t) => {
+    const s = await salle(t);
+    const arret = path.join(s.control, OMO_FICHIERS_CONTROLE.arret);
+    const debut = (s.monde.etat as OmoSupervisorState).startedAt;
+    for (const texte of [ecrireArret(Date.now(), "fin-de-demande", AUTRE_START_ID), ecrireArret(debut - 1, "vous", null)]) {
+      fs.writeFileSync(arret, texte, "utf8");
+      const put = await activer(s, { choix: "omo", plafondUsd: "1" });
+      assert.equal(put.status, 200, `${texte} : ${put.body}`);
+    }
+    assert.equal((await envoyer(s)).status, 204);
+    assert.equal(envoisRecus(s), 1);
   });
 
   it("T-L22-j : COCKPIT_AUTONOMY=off dans l'environnement du cockpit → 409 « autonomie-coupee », la vue le dit", async (t) => {

@@ -178,12 +178,19 @@ export const TEXTES = {
     texteIndisponible: "Texte indisponible.",
     /** §3.10 : assistants au-delà des bornes de la carte (3 niveaux, 50 assistants), comptés sans être dessinés (L25b). */
     horsBornes: "Déroulé partiel : {n} assistants non dessinés (plus de 3 niveaux ou de 50 assistants).",
+    /** La même phrase pour un seul assistant (relecture 2ter-vague-4 : « 1 assistants » était écrit, et lu tel quel). */
+    horsBornesUn: "Déroulé partiel : 1 assistant non dessiné (plus de 3 niveaux ou de 50 assistants).",
   },
 };
 
 /** Remplit un gabarit « {nom} » ; un nom absent des valeurs garde son gabarit. */
 export function remplir(gabarit: string, valeurs: Readonly<Record<string, string | number>>): string {
   return gabarit.replace(/\{(\w+)\}/g, (match: string, nom: string) => (Object.hasOwn(valeurs, nom) ? String(valeurs[nom]) : match));
+}
+
+/** Phrase des assistants non dessinés de la bande (§3.10), accordée : singulier pour un seul, pluriel au-delà. */
+export function texteHorsBornes(n: number): string {
+  return n === 1 ? TEXTES.partout.horsBornesUn : remplir(TEXTES.partout.horsBornes, { n });
 }
 
 export function libelleEtat(etat: NeonNodeState): string {

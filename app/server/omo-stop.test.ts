@@ -683,6 +683,27 @@ describe("L23b : stopTreeOmo (unitaires)", () => {
     assert.deepEqual(s.suspensions, []);
   });
 
+  it("relecture 2ter-vague-4 : enCours() vrai dès l'appel de run ou de relaunchAfterRequest (demande close, stop-request pas encore écrit) et jusqu'à la fin de la sonde, faux ensuite", async (t) => {
+    const s = unite(t, { occupees: [[ROOT, DIR_A]], active: DEMANDE });
+    assert.equal(s.stop.enCours?.(), false, "aucun arrêt");
+    // File des réponses de la salle tenue par le test : l'arrêt attend à l'étape 2, demande déjà close (étape 1).
+    const liberer = await s.gate.acquire();
+    const arret = s.stop.run(ROOT, "vous");
+    assert.equal(s.stop.enCours?.(), true, "posé de façon synchrone par run");
+    await until(() => s.fins.length > 0);
+    assert.deepEqual([s.fins.length, s.stopRequests.length, s.stop.enCours?.()], [1, 0, true], "demande close, stop-request pas encore écrit : en cours");
+    liberer();
+    await arret;
+    assert.deepEqual(s.stopRequests, ["vous"]);
+    assert.equal(s.stop.enCours?.(), false, "arrêt fini");
+
+    const relance = s.stop.relaunchAfterRequest(ROOT);
+    assert.equal(s.stop.enCours?.(), true, "posé de façon synchrone par relaunchAfterRequest");
+    await relance;
+    assert.equal(s.stop.enCours?.(), false, "relance finie");
+    assert.equal(neutralOmoStop({} as never).enCours, undefined, "port neutre inchangé : aucun arrêt possible");
+  });
+
   it("relance pendant un arrêt : aucun second stop-request ; deux arrêts simultanés n'en font qu'un", async (t) => {
     const s = unite(t, { occupees: [[ROOT, DIR_A]] });
     const premier = s.stop.run(ROOT, "vous");

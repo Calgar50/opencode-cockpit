@@ -28,7 +28,9 @@
 //  10. la page de la salle (L26a) envoie avec l'IA de l'assistant de la salle, un seul renvoi sur 409 « assistant-model-changed »,
 //      par le proxy de la salle dont `enforceTurn` exige l'IA (constat n° 2 de L21b) ;
 //  11. l'écran Budget n'envoie jamais `budget.omo`, que L22c rend non inscriptible (remarque n° 6 de L22c) ;
-//  12. le banc complet (L21b) reconnaît dans CE dépôt l'activation de L22c et le battement du cockpit.
+//  12. le banc complet (L21b) reconnaît dans CE dépôt l'activation de L22c et le battement du cockpit ;
+//  14. relance à neuf décidée (fin de demande, stop-request écrit, abandon de stopTreeOmo), superviseur pas encore passé →
+//      activation et envoi refusés « salle-en-relance », rien n'est envoyé (relecture 2ter-vague-4).
 // Le banc complet à blanc est joué par omo-banc-complet.test.ts (L21b) et, au train, par run-banc.mjs --complet --a-blanc.
 //
 // Défauts de croisement trouvés par ce train, corrigés avec lui (chacun tombe ici sans sa correction) :
@@ -206,6 +208,8 @@ interface Atelier {
   lancer(): void;
   /** Superviseur simulé qui n'arrête plus rien (arrêt non confirmé). */
   superviseurMuet(muet: boolean): void;
+  /** Le superviseur n'est pas encore passé relire stop-request (la sonde de L23b l'attend) ; rend la fonction qui le relâche. */
+  retenirSuperviseur(): () => void;
   /** Démarrage du cockpit, battement attendu sans aucun pilote, puis premier démarrage de la salle. */
   pret(): Promise<void>;
   ouvrir(): Promise<CallResult>;
@@ -254,7 +258,11 @@ async function atelier(t: TestContext): Promise<Atelier> {
   // Superviseur simulé pour la sonde de L23b : un stop-request de CE démarrage → opencode arrêté, « arret » publié (supervisor.sh).
   // « Muet » : il n'arrête rien (opencode qui ne répond plus à TERM) ; la sonde de L23b conclut alors « arrêt non confirmé ».
   const muet = { actif: false };
+  // « Retenu » (relecture 2ter-vague-4) : le superviseur n'est pas encore passé relire stop-request (il le fait toutes les 2 s) ;
+  // la sonde de L23b attend avec lui, la relance reste en cours côté cockpit.
+  const retenue: { promesse: Promise<void> | null } = { promesse: null };
   const superviseur = async () => {
+    if (retenue.promesse !== null) await retenue.promesse;
     if (muet.actif) return new Promise<void>((resolve) => setTimeout(resolve, 5));
     const arret = analyserArret(lireFichier(path.join(dirs.control, OMO_FICHIERS_CONTROLE.arret)));
     const courant = etatPublie();
@@ -390,6 +398,16 @@ async function atelier(t: TestContext): Promise<Atelier> {
     etat: etatPublie,
     lancer,
     superviseurMuet: (valeur) => void (muet.actif = valeur),
+    retenirSuperviseur() {
+      let relacher: () => void = () => undefined;
+      retenue.promesse = new Promise<void>((resolve) => {
+        relacher = resolve;
+      });
+      return () => {
+        retenue.promesse = null;
+        relacher();
+      };
+    },
     async demarrer(startId) {
       publier(etatDe(startId, "attente"));
       const issue = await (precheck as NonNullable<typeof precheck>).beforeStart(startId);
@@ -1006,6 +1024,75 @@ describe("croisement V4 (2 ter) n° 13 : salle préparée sans la liste des proj
     assert.equal(memesProjets({ projets: [{ chemin: "app", gitLectureSeule: true }] }, liste), false);
     assert.equal(memesProjets({ projets: [{ chemin: "app", gitLectureSeule: true }, { chemin: "outils/cli", gitLectureSeule: true }, { chemin: "autre", gitLectureSeule: true }] }, liste), false);
     assert.equal(memesProjets({ projets: [] }, { projets: [] }), true);
+  });
+});
+
+// --- 14. Relance à neuf décidée, superviseur pas encore passé (relecture 2ter-vague-4) ------------------------------------------
+// Le superviseur ne relit stop-request que toutes les 2 s, puis attend jusqu'à 3 s avant le KILL : state.json dit encore
+// « opencode-lance » pour l'opencode que le cockpit vient de faire arrêter. Sans la correction, PUT …/autonomie rendait 200 et
+// l'envoi 204 : un appel facturé partait vers un opencode tué 2 à 5 s plus tard, et la demande restait ouverte sans travail.
+
+describe("croisement V4 (2 ter) n° 14 : relance à neuf décidée, superviseur pas encore passé → activation et envoi refusés « salle-en-relance »", () => {
+  it("fin de demande par les 15 s de repos : demande close, stop-request écrit, state.json encore « opencode-lance » → PUT 409, envoi refusé, zéro POST …/prompt_async ; la relance faite, nouvelle demande", async (t: TestContext) => {
+    const a = await atelier(t);
+    await a.pret();
+    const racine = await a.ouvrirSalle();
+    assert.equal((await a.activer(racine, "1,00")).status, 200);
+    a.omo.fake.script(racine, { text: "[synthétique] fini", cost: 0.001 });
+    assert.equal((await a.envoyer(racine)).status, 204);
+    await a.omo.fake.settled(racine);
+    await until(() => a.omo.fake.statusOf(racine).type === "idle");
+    await a.h.emitOmo({ directory: a.dirApp, payload: { type: "harnais.repere", properties: {} } } as OcGlobalEvent);
+    await a.settled();
+
+    const relacher = a.retenirSuperviseur();
+    a.horlogeCaps.avancer(OMO_LIMITES.finDemandeReposS * 1000);
+    await until(() => a.controle(OMO_FICHIERS_CONTROLE.arret), 5_000);
+    assert.equal(a.h.cockpit.c11.ports.omoActivation.activeRequest(), null, "demande close par la fin de demande");
+    assert.deepEqual([analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret))?.startId, a.etat()?.phase], [START_1, "opencode-lance"], "superviseur pas encore passé");
+    const avant = envois(a);
+    refusPut(await a.activer(racine, "1,00"), "salle-en-relance");
+    const envoi = await a.envoyer(racine);
+    assert.equal(envoi.status, 409, JSON.stringify(envoi.body));
+    assert.equal(envois(a), avant, "rien n'est parti vers l'opencode qui va être arrêté");
+
+    relacher();
+    await until(() => a.etat()?.phase === "arret", 5_000);
+    await a.settled();
+    await a.demarrer(START_2);
+    assert.equal((await a.activer(racine, "1,00")).status, 200);
+  });
+
+  it("stop-request de CE démarrage déjà écrit (preuve du constat) : le jeton pris avant ne part pas, une nouvelle activation est refusée", async (t: TestContext) => {
+    const a = await atelier(t);
+    await a.pret();
+    const racine = await a.ouvrirSalle();
+    assert.equal((await a.activer(racine, "1,00")).status, 200);
+    await a.control().requestStop("fin-de-demande");
+    assert.deepEqual([analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret))?.startId, a.etat()?.phase], [START_1, "opencode-lance"]);
+    refusEnvoi(await a.envoyer(racine), "salle-en-relance");
+    refusPut(await a.activer(racine, "1,00"), "salle-en-relance");
+    assert.equal(envois(a), 0);
+    assert.equal(a.h.cockpit.c11.ports.omoActivation.activeRequest(), null, "aucune demande ouverte sans travail");
+  });
+
+  it("« Arrêter » pendant l'abandon des sessions (file des réponses de la salle tenue) : stop-request pas encore écrit → envoi et activation refusés ; l'arrêt fini et la salle relancée, nouvelle demande", async (t: TestContext) => {
+    const a = await atelier(t);
+    await a.pret();
+    const racine = await a.ouvrirSalle();
+    assert.equal((await a.activer(racine, "1,00")).status, 200);
+    const liberer = await a.omo.deps.gate.acquire();
+    const arret = a.h.cockpit.c11.ports.omoStop.run(racine, "vous");
+    refusEnvoi(await a.envoyer(racine), "salle-en-relance");
+    refusPut(await a.activer(racine, "1,00"), "salle-en-relance");
+    assert.equal(a.controle(OMO_FICHIERS_CONTROLE.arret), null, "stop-request pas encore écrit : c'est l'arrêt EN COURS qui refuse");
+    assert.equal(envois(a), 0);
+    liberer();
+    await arret;
+    await a.settled();
+    assert.deepEqual(a.ligneDemarrage(START_1), { cause: "vous", fin: "arret-confirme" });
+    await a.demarrer(START_2);
+    assert.equal((await a.activer(racine, "1,00")).status, 200);
   });
 });
 

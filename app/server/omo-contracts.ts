@@ -165,6 +165,13 @@ export interface OmoStopPort {
   run(rootId: string | null, cause: OmoStopCause): Promise<StopResult>;
   /** Fin de demande (D-2b-29) : stop-request sans renommer boulder.json, omo.recreation {raison: "fin-de-demande"}. */
   relaunchAfterRequest(rootId: string): Promise<void>;
+  /**
+   * Arrêt (`run`) ou relance de fin de demande (`relaunchAfterRequest`) en cours, de l'appel jusqu'à la fin de la sonde (relecture
+   * 2ter-vague-4, demande de contrat portée par le constat) : la demande est déjà close, le stop-request pas encore écrit (abandon
+   * des sessions, jusqu'à 20 s). L'activation (L22c) et l'état de la salle (L18c) le lisent : « salle-en-relance ». Facultatif :
+   * le port neutre (aucune salle, aucun arrêt possible) ne le porte pas, et son absence vaut « aucun arrêt en cours ».
+   */
+  enCours?(): boolean;
 }
 
 /** Détections, répondeur et plafonds agissent par leurs inscriptions : ports vides. */

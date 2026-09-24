@@ -12,7 +12,8 @@
 //   l'emporte : salle coupée (COCKPIT_OMO, SALLE_OUVERTE, instance), COCKPIT_AUTONOMY, salle suspendue, demande active (une seule
 //   dans la salle, D-2b-08), battement du cockpit frais, puis l'état publié par le superviseur — manifeste vérifié, image de la
 //   version auditée installée par install.ps1, `.git` protégés selon la sonde ÉTENDUE de L16c, dossiers de configuration et
-//   pré-contrôle du projet (frais, et `precheck-ok` de CE démarrage), salle lancée —, puis le balayage git refait par le cockpit
+//   pré-contrôle du projet (frais, et `precheck-ok` de CE démarrage), salle lancée et relance à neuf pas encore décidée (aucun
+//   arrêt en cours, aucun stop-request de CE démarrage : relecture 2ter-vague-4) —, puis le balayage git refait par le cockpit
 //   (dépôt apparu hors `gitProteges` depuis le démarrage), le catalogue du compte (P1), l'adresse Copilot, et enfin le montant saisi
 //   (omo-cap.ts, borne `plafondMaxUsd` et garde-fou budgétaire).
 // - **fermé en cas de doute** (A16) : `state.json` illisible, balayage tronqué (`limiteAtteinte`), projet absent de l'état publié,
@@ -53,7 +54,15 @@ import { egressHoteAutorise } from "./shared/egress-allow.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
 import { OMO_VERSION } from "./shared/omo-audit-4.19.4.ts";
 import { proposePlafond, validatePlafond } from "./shared/omo-cap.ts";
-import { analyserBattement, analyserPrecheckOk, OMO_CONTROL_MAX_OCTETS, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
+import {
+  analyserArret,
+  analyserBattement,
+  analyserPrecheckOk,
+  arretDuDemarrage,
+  OMO_CONTROL_MAX_OCTETS,
+  OMO_DELAIS,
+  OMO_FICHIERS_CONTROLE,
+} from "./shared/omo-control-protocol.ts";
 import { gitsHorsProtection, type PrecheckBornes } from "./shared/omo-precheck-rules.ts";
 import type { OmoActivationBody, OmoActivationRefusalCode, OmoActivationView, OmoSupervisorState } from "./shared/omo-types.ts";
 
@@ -123,7 +132,7 @@ export interface OmoActivationDeps {
   /** `omo-projets.json` écrit par install.ps1 (source de `gitProteges`) ; null : aucune liste, balayage non vérifiable. */
   projectsFile: string | null;
   /** Ports voisins en vigueur, relus à CHAQUE appel. */
-  ports: () => Pick<Cockpit11Ports, "omoControl" | "omoPrecheck">;
+  ports: () => Pick<Cockpit11Ports, "omoControl" | "omoPrecheck" | "omoStop">;
   /** `instances.omo` : null tant que la salle est coupée. */
   instance: () => InstanceDeps | null;
   /** Catalogue du compte GitHub Copilot (P1), relu en continu par l'instance principale ; même compte que la salle. */
@@ -280,6 +289,27 @@ export function createOmoActivation(deps: OmoActivationDeps): OmoActivationServi
   };
 
   /**
+   * Relance à neuf déjà décidée par le cockpit (relecture 2ter-vague-4) : state.json dit encore « opencode-lance » pour l'opencode
+   * que le cockpit vient de faire arrêter, parce que le superviseur ne relit stop-request que toutes les `verificationS` secondes,
+   * puis attend jusqu'à `killApresS` avant le KILL. Deux fenêtres :
+   * - arrêt ou relance EN COURS côté cockpit (`omoStop.enCours`) : la demande est close, le stop-request pas encore écrit (fin de
+   *   demande de L22d, abandon des sessions de stopTreeOmo) ;
+   * - stop-request ÉCRIT qui vise le démarrage publié, relu borné, avec la règle même du superviseur (`arretDuDemarrage`).
+   * Un port illisible vaut « en cours » (fermé en cas de doute) ; un fichier absent ou illisible ne vise rien, comme pour le
+   * superviseur, qui ne s'arrête pas sur un fichier qu'il ne sait pas lire.
+   */
+  const relanceDecidee = async (etat: OmoSupervisorState): Promise<boolean> => {
+    try {
+      if (deps.ports().omoStop.enCours?.() === true) return true;
+    } catch (err) {
+      log.warn("salle : arrêt en cours illisible", { error: errorMessage(err) });
+      return true;
+    }
+    const arret = analyserArret(await lireBorne(path.join(deps.controlDir, OMO_FICHIERS_CONTROLE.arret), OMO_CONTROL_MAX_OCTETS));
+    return arretDuDemarrage(arret, etat.startId, etat.startedAt);
+  };
+
+  /**
    * Balayage git refait par le cockpit À CHAQUE activation (relecture 2 bis-vague-0) : le `workspaceGit` de state.json date du
    * démarrage de la salle, et opencode reste lancé au repos entre deux demandes. Un dépôt apparu depuis hors `gitProteges`
    * (liste d'install.ps1, que la salle ne peut pas réécrire), un balayage tronqué ou une liste illisible → refus.
@@ -377,7 +407,8 @@ export function createOmoActivation(deps: OmoActivationDeps): OmoActivationServi
       if (!noter("git-inscriptible", git.ok, git.liste)) return fin();
       const precheck = await precheckDuProjet(etat, projet);
       if (!noter("precheck-refuse", precheck !== "refuse")) return fin();
-      if (!noter("salle-en-relance", etat.phase === "opencode-lance" && precheck === "ok")) return fin();
+      const lancee = etat.phase === "opencode-lance" && precheck === "ok" && !(await relanceDecidee(etat));
+      if (!noter("salle-en-relance", lancee)) return fin();
     }
     const workspace = await workspaceVerifie();
     if (!noter("workspace-non-verifie", workspace.ok, workspace.liste)) return fin();

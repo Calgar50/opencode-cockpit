@@ -38,6 +38,10 @@
 // sans renommer boulder.json et sans marquer la demande (déjà close par L22d) ; même sonde, même clôture, omo.recreation
 // {raison: "fin-de-demande"}. Un arrêt en cours la rend inutile : elle l'attend et n'écrit rien.
 //
+// `enCours()` (relecture 2ter-vague-4) : vrai de l'appel de `run` ou de `relaunchAfterRequest` jusqu'à la fin de la sonde. La
+// demande est close avant le stop-request (étape 1, puis jusqu'à 20 s d'abandon) : l'activation (L22c) et l'état de la salle
+// (L18c) le lisent pour dire « salle-en-relance » au lieu de laisser partir un envoi vers l'opencode qui va être arrêté.
+//
 // Activité hors demande (D-2b-29 point 4) : un arrêt « hors-controle » demandé alors qu'AUCUNE demande n'est active est, par
 // définition, une activité de la salle hors demande (L23c appelle `run(null, "hors-controle")`) ; deux en 10 min (OMO_LIMITES) →
 // omoControl.suspend("activite-hors-demande"), levée seulement par la réouverture confirmée d'une salle (L18c).
@@ -530,6 +534,11 @@ export function createOmoStop(deps: OmoStopDeps, options: OmoStopOptions = {}): 
       relanceEnCours = promesse;
       return promesse;
     },
+
+    // Relecture 2ter-vague-4 : posé DE FAÇON SYNCHRONE par `run` et `relaunchAfterRequest`, donc vrai avant même que la demande ne
+    // soit close (étape 1 de `run`, après sa première lecture ; `endRequest` de L22d juste avant la relance) et jusqu'à la fin de
+    // la sonde. Après, c'est le stop-request lui-même qui dit la relance (`arretDuDemarrage`).
+    enCours: () => arretEnCours !== null || relanceEnCours !== null,
   };
 }
 

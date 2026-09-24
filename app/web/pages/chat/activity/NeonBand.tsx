@@ -76,7 +76,7 @@ import {
   type NeonWait,
   scene,
 } from "../../../../server/shared/neon-scene.ts";
-import { carnetVide, libelleEtat, libelleOutil, libelleSecteur, libelleStation, remplir, TEXTES, titreBande } from "../../../../server/shared/neon-texts.ts";
+import { carnetVide, libelleEtat, libelleOutil, libelleSecteur, libelleStation, remplir, TEXTES, texteHorsBornes, titreBande } from "../../../../server/shared/neon-texts.ts";
 import { roleDeAgent } from "../../../../server/shared/omo-roles.ts";
 import { activityApi } from "../../../lib/api-activity.ts";
 import { oc } from "../../../lib/api.ts";
@@ -225,7 +225,7 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
           {/* Le dessin est aria-hidden : l'enceinte de la salle et les assistants non dessinés sont dits en toutes lettres. */}
           {vue.enceinte === null ? null : <p className="neon-salle">{TEXTES.avance.salle}</p>}
           {contenu}
-          {vue.horsBornes > 0 ? <p className="neon-hors-bornes">{remplir(TEXTES.partout.horsBornes, { n: vue.horsBornes })}</p> : null}
+          {vue.horsBornes > 0 ? <p className="neon-hors-bornes">{texteHorsBornes(vue.horsBornes)}</p> : null}
           {mode === "simple" ? (
             <div className="neon-note">
               <p>{vue.delegationsMasquees > 0 ? TEXTES.simple.travailConfieHorsCarte : TEXTES.simple.resume}</p>

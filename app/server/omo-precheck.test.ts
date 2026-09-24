@@ -40,6 +40,7 @@ import {
   raisonDansDossierOmo,
   raisonDuNom,
 } from "./shared/omo-precheck-rules.ts";
+import { echangerParLienAuLstat } from "./test-support/omo-echange-lien.ts";
 import { DEPOTS_PIEGES, fabriquerDepotsPieges, fabriquerProjet, poser, PROJET_ETAT_OMO, PROJET_SAIN } from "./test-support/omo-trapped-repos.ts";
 
 /** Dossier de travail jetable, effacé à la fin du test même en échec. */
@@ -1153,6 +1154,50 @@ describe("renommage sans suivre les liens (D-2b-37)", () => {
     assert.deepEqual(await renommerSansSuivreLiens(projet, ".git-lien", "quarantaine"), { ok: false, raison: "lien-symbolique" });
     assert.equal(fs.existsSync(path.join(workspace, "dehors", ".git", "HEAD")), true, "rien ne doit avoir bougé hors du projet");
     assert.equal(fs.existsSync(path.join(projet, "quarantaine")), false);
+  });
+
+  // Relecture 2ter-vague-4 (constat L23c) : la salle tourne pendant la quarantaine. Un dossier du chemin remplacé par une jonction
+  // vers un autre projet APRÈS les vérifications ne doit jamais faire renommer le .git protégé de cet autre projet.
+  const HEAD_AUTRE = "ref: refs/heads/principale\n";
+  const suspects = (dossier: string) => fs.readdirSync(dossier).filter((nom) => nom.startsWith(".git.suspect"));
+
+  it("course : dossier du chemin remplacé par une jonction entre la vérification et le renommage → rien n'est renommé, ni dans l'autre projet ni dans le dossier déplacé", async (t) => {
+    const workspace = atelier(t);
+    poser(workspace, "PROJET/src/a/.git/HEAD", "ref: refs/heads/piege\n");
+    poser(workspace, "AUTRE/.git/HEAD", HEAD_AUTRE);
+    const echange = echangerParLienAuLstat(t, workspace, ".git.suspect", "PROJET/src/a", "AUTRE");
+    const resultat = await renommerSansSuivreLiens(workspace, "PROJET/src/a/.git", ".git.suspect");
+    assert.equal(echange.fait(), true, "l'échange doit avoir eu lieu pendant le renommage");
+    assert.equal(resultat.ok, false, JSON.stringify(resultat));
+    assert.equal(fs.readFileSync(path.join(workspace, "AUTRE", ".git", "HEAD"), "utf8"), HEAD_AUTRE, "le .git de l'autre projet reste en place");
+    assert.deepEqual(suspects(path.join(workspace, "AUTRE")), [], "aucun renommage à travers la jonction");
+    assert.ok(fs.existsSync(path.join(workspace, "PROJET", "src", "a-avant", ".git", "HEAD")), "le dossier déplacé n'est pas renommé non plus (son chemin a changé)");
+  });
+
+  it("course pendant la boucle des noms en collision (noms pris d'avance) : même refus, rien n'est renommé ni écrasé", async (t) => {
+    const workspace = atelier(t);
+    poser(workspace, "PROJET/src/a/.git/HEAD", "ref: refs/heads/piege\n");
+    poser(workspace, "PROJET/src/a/.git.suspect/temoin.txt", "pris 1");
+    poser(workspace, "PROJET/src/a/.git.suspect-2/temoin.txt", "pris 2");
+    poser(workspace, "AUTRE/.git/HEAD", HEAD_AUTRE);
+    const echange = echangerParLienAuLstat(t, workspace, ".git.suspect-3", "PROJET/src/a", "AUTRE");
+    const resultat = await renommerSansSuivreLiens(workspace, "PROJET/src/a/.git", ".git.suspect");
+    assert.equal(echange.fait(), true, "l'échange doit avoir eu lieu au troisième nom essayé");
+    assert.equal(resultat.ok, false, JSON.stringify(resultat));
+    assert.equal(fs.readFileSync(path.join(workspace, "AUTRE", ".git", "HEAD"), "utf8"), HEAD_AUTRE);
+    assert.deepEqual(suspects(path.join(workspace, "AUTRE")), []);
+    const deplace = path.join(workspace, "PROJET", "src", "a-avant");
+    assert.ok(fs.existsSync(path.join(deplace, ".git", "HEAD")));
+    assert.deepEqual(suspects(deplace).sort(), [".git.suspect", ".git.suspect-2"], "les noms pris restent intacts");
+  });
+
+  it("sans course : le dossier tenu jusqu'au renommage renomme bien, au premier nom libre", async (t) => {
+    const workspace = atelier(t);
+    poser(workspace, "PROJET/src/a/.git/HEAD", "ref: refs/heads/piege\n");
+    poser(workspace, "PROJET/src/a/.git.suspect/temoin.txt", "pris");
+    assert.deepEqual(await renommerSansSuivreLiens(workspace, "PROJET/src/a/.git", ".git.suspect"), { ok: true, nom: ".git.suspect-2" });
+    assert.ok(fs.existsSync(path.join(workspace, "PROJET", "src", "a", ".git.suspect-2", "HEAD")));
+    assert.equal(fs.readFileSync(path.join(workspace, "PROJET", "src", "a", ".git.suspect", "temoin.txt"), "utf8"), "pris");
   });
 });
 

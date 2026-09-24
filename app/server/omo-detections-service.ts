@@ -19,7 +19,9 @@
 //   chaque outil terminé, et à chaque `session.idle`. Il relève TOUS les projets préparés, `/workspace` et son premier niveau
 //   (relevés de L19a) et les compare aux références du démarrage gardées par L19b ;
 // - quarantaine (D-2b-37) AVANT l'arrêt : chaque `.git` créé est renommé `.git.suspect-{horodatage}` par `renommerSansSuivreLiens`
-//   (L19a), jamais supprimé, jamais à travers un lien ; un renommage refusé est journalisé et le chemin reste listé « à relire » ;
+//   (L19a), jamais supprimé, jamais à travers un lien ; un renommage refusé est journalisé et le chemin reste listé « à relire ».
+//   La salle tourne encore à ce moment : `renommerSansSuivreLiens` tient le dossier d'accueil par son descripteur jusqu'au
+//   `rename` (relecture 2ter-vague-4), pour qu'un lien posé après ses vérifications ne fasse pas renommer le `.git` d'un autre projet ;
 // - l'arrêt : `tentatives-429` → `omoStop.run(…, "plafond-tentatives")`, toute autre cause → `omoStop.run(…, "hors-controle")`,
 //   précédé de l'événement `omo.hors-controle` (cause, fichiers signalés), du fait `detection` et du journal « hors-contrôle » ;
 // - `autonomy_decisions {par: "extension"}` et fait `decision` pour chaque partie d'outil terminée SANS `permission.asked` et

@@ -12,7 +12,7 @@
 //    une borne y rend la liste à relire incomplète (`signalesIncomplet`), jamais un projet ordinaire refusé.
 // 3. **Aucune suppression, aucun écrasement** : `renommerSansSuivreLiens` ne fait que renommer, et seulement vers un nom libre.
 import crypto from "node:crypto";
-import { type Dirent, constants as fsConstants } from "node:fs";
+import { type BigIntStats, type Dirent, constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -777,10 +777,129 @@ export type ResultatRenommage = { ok: true; nom: string } | { ok: false; raison:
 const SUFFIXES_MAX = 50;
 
 /**
+ * Manière de tenir le dossier d'accueil jusqu'au renommage (relecture 2ter-vague-4). La salle TOURNE quand L23c met un `.git` en
+ * quarantaine (D-2b-37 : quarantaine AVANT l'arrêt), et elle peut écrire dans les entrées de premier niveau des projets préparés
+ * (A16) : entre les vérifications et le `rename`, elle peut remplacer un dossier du chemin par un lien vers un autre projet, dont le
+ * `.git` protégé serait alors renommé à travers ce lien.
+ * - « descripteur » (Linux, où tourne le cockpit) : le dossier d'accueil est ouvert UNE fois ; son descripteur est vérifié (même
+ *   `dev`/`ino` que le `lstat` d'avant l'ouverture, chemin rendu par `/proc/self/fd` égal au chemin réel attendu), puis chaque
+ *   `lstat` et le `rename` passent par `/proc/self/fd/<fd>/<nom>`, donc par CE dossier, quoi qu'il arrive ensuite au chemin qui y
+ *   menait. Juste avant le `rename`, le chemin du descripteur est relu : un dossier déplacé entre-temps ne renomme rien. `/proc`
+ *   absent ou descripteur qui ne dit pas le bon dossier : rien n'est renommé (fermé en cas de doute) ;
+ * - « chemin » (hors Linux : les tests sous Windows ; le cockpit n'y tourne jamais) : aucun descripteur de dossier n'y permet de
+ *   renommer. Chaque composant est revérifié juste avant le `rename` : la fenêtre est rétrécie, PAS fermée.
+ */
+const TENUE_DU_DOSSIER: "descripteur" | "chemin" = process.platform === "linux" ? "descripteur" : "chemin";
+
+type VerificationChemin = { ok: true; courant: string } | { ok: false; raison: RenommageRefus };
+
+/** `lstat` de chaque composant de `segments` sous `baseReelle`, du haut vers le bas : un lien sur le chemin refuse tout. */
+async function verifierComposants(baseReelle: string, segments: readonly string[]): Promise<VerificationChemin> {
+  let courant = baseReelle;
+  for (const segment of segments) {
+    courant = path.join(courant, segment);
+    try {
+      const info = await fs.lstat(courant);
+      if (info.isSymbolicLink()) return { ok: false, raison: "lien-symbolique" };
+    } catch (err) {
+      return { ok: false, raison: (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "illisible" };
+    }
+  }
+  return { ok: true, courant };
+}
+
+/**
+ * Premier nom libre (`nouveauNom`, puis `nouveauNom-2`…), puis `rename`. `dans(nom)` est le chemin d'un nom DANS le dossier
+ * d'accueil ; `encoreEnPlace` est relu juste avant le `rename` (null : le dossier est toujours celui qui a été vérifié).
+ */
+async function renommerVersNomLibre(
+  dans: (nom: string) => string,
+  nom: string,
+  nouveauNom: string,
+  encoreEnPlace: () => Promise<RenommageRefus | null>,
+): Promise<ResultatRenommage> {
+  for (let essai = 1; essai <= SUFFIXES_MAX; essai++) {
+    const candidat = essai === 1 ? nouveauNom : `${nouveauNom}-${essai}`;
+    try {
+      await fs.lstat(dans(candidat));
+      continue; // Occupé : on essaie le nom suivant, jamais d'écrasement.
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return { ok: false, raison: "illisible" };
+    }
+    const refus = await encoreEnPlace();
+    if (refus !== null) return { ok: false, raison: refus };
+    try {
+      await fs.rename(dans(nom), dans(candidat));
+    } catch {
+      return { ok: false, raison: "illisible" };
+    }
+    return { ok: true, nom: candidat };
+  }
+  return { ok: false, raison: "collision" };
+}
+
+/** Tenue « descripteur » (Linux) : tout passe par `/proc/self/fd/<fd>` du dossier d'accueil ouvert et vérifié. */
+async function renommerDansDossierTenu(baseReelle: string, parentReel: string, nom: string, nouveauNom: string): Promise<ResultatRenommage> {
+  let avant: BigIntStats;
+  try {
+    avant = await fs.lstat(parentReel, { bigint: true });
+  } catch {
+    return { ok: false, raison: "illisible" };
+  }
+  if (avant.isSymbolicLink()) return { ok: false, raison: "lien-symbolique" };
+  if (!avant.isDirectory()) return { ok: false, raison: "illisible" };
+  let dossier: fs.FileHandle;
+  try {
+    dossier = await fs.open(parentReel, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return { ok: false, raison: "illisible" };
+  }
+  try {
+    const tenu = `/proc/self/fd/${dossier.fd}`;
+    // Le descripteur dit-il toujours le dossier vérifié, à sa place ? Chemin réel rendu par le noyau, jamais deviné.
+    const encoreEnPlace = async (): Promise<RenommageRefus | null> => {
+      try {
+        const reel = await fs.readlink(tenu);
+        return reel === parentReel && dansLaRacine(baseReelle, reel) ? null : "illisible";
+      } catch {
+        return "illisible";
+      }
+    };
+    const ouvert = await dossier.stat({ bigint: true });
+    if (ouvert.dev !== avant.dev || ouvert.ino !== avant.ino) return { ok: false, raison: "illisible" };
+    const refus = await encoreEnPlace();
+    if (refus !== null) return { ok: false, raison: refus };
+    // La source, relue DANS le dossier tenu : un lien n'est jamais renommé.
+    try {
+      if ((await fs.lstat(`${tenu}/${nom}`)).isSymbolicLink()) return { ok: false, raison: "lien-symbolique" };
+    } catch (err) {
+      return { ok: false, raison: (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "illisible" };
+    }
+    return await renommerVersNomLibre((n) => `${tenu}/${n}`, nom, nouveauNom, encoreEnPlace);
+  } catch {
+    return { ok: false, raison: "illisible" };
+  } finally {
+    await dossier.close().catch(() => undefined);
+  }
+}
+
+/** Tenue « chemin » (hors Linux) : chaque composant revérifié juste avant le `rename`. */
+async function renommerParChemin(baseReelle: string, segments: readonly string[], parentReel: string, nom: string, nouveauNom: string): Promise<ResultatRenommage> {
+  const encoreEnPlace = async (): Promise<RenommageRefus | null> => {
+    const verifie = await verifierComposants(baseReelle, segments);
+    if (!verifie.ok) return verifie.raison;
+    const reel = await fs.realpath(path.dirname(verifie.courant)).catch(() => null);
+    return reel === parentReel ? null : "hors-base";
+  };
+  return renommerVersNomLibre((n) => path.join(parentReel, n), nom, nouveauNom, encoreEnPlace);
+}
+
+/**
  * Renomme `relatif` (sous `base`) en `nouveauNom`, sans jamais suivre un lien, sans jamais écraser et sans jamais supprimer
  * (D-2b-37, C2-16). Chaque composant est `lstat`é : un lien sur le chemin refuse tout. Le dossier d'accueil est vérifié par
  * `realpath` : il doit rester dans `base`. Si `nouveauNom` existe déjà, un suffixe est ajouté ; si aucun nom n'est libre, rien
- * n'est fait. Le renommage lui-même reste un `rename` : la salle est arrêtée quand le cockpit met un chemin en quarantaine.
+ * n'est fait. La salle peut encore écrire pendant le renommage (quarantaine de L23c AVANT l'arrêt) : le dossier d'accueil est donc
+ * TENU jusqu'au `rename` (`TENUE_DU_DOSSIER`), pour qu'un lien posé après les vérifications ne détourne pas le renommage.
  */
 export async function renommerSansSuivreLiens(base: string, relatif: string, nouveauNom: string): Promise<ResultatRenommage> {
   if (nouveauNom === "" || nouveauNom.length > 255 || /[\\/]/.test(nouveauNom) || nouveauNom === "." || nouveauNom === "..") {
@@ -796,17 +915,9 @@ export async function renommerSansSuivreLiens(base: string, relatif: string, nou
   } catch {
     return { ok: false, raison: "illisible" };
   }
-  let courant = baseReelle;
-  for (const segment of segments) {
-    courant = path.join(courant, segment);
-    try {
-      const info = await fs.lstat(courant);
-      if (info.isSymbolicLink()) return { ok: false, raison: "lien-symbolique" };
-    } catch (err) {
-      return { ok: false, raison: (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "illisible" };
-    }
-  }
-  const parent = path.dirname(courant);
+  const verifie = await verifierComposants(baseReelle, segments);
+  if (!verifie.ok) return verifie;
+  const parent = path.dirname(verifie.courant);
   let parentReel: string;
   try {
     parentReel = await fs.realpath(parent);
@@ -814,21 +925,8 @@ export async function renommerSansSuivreLiens(base: string, relatif: string, nou
     return { ok: false, raison: "illisible" };
   }
   if (parentReel !== parent || !dansLaRacine(baseReelle, parentReel)) return { ok: false, raison: "hors-base" };
-  for (let essai = 1; essai <= SUFFIXES_MAX; essai++) {
-    const candidat = essai === 1 ? nouveauNom : `${nouveauNom}-${essai}`;
-    const destination = path.join(parentReel, candidat);
-    try {
-      await fs.lstat(destination);
-      continue; // Occupé : on essaie le nom suivant, jamais d'écrasement.
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return { ok: false, raison: "illisible" };
-    }
-    try {
-      await fs.rename(courant, destination);
-    } catch {
-      return { ok: false, raison: "illisible" };
-    }
-    return { ok: true, nom: candidat };
-  }
-  return { ok: false, raison: "collision" };
+  const nom = path.basename(verifie.courant);
+  return TENUE_DU_DOSSIER === "descripteur"
+    ? renommerDansDossierTenu(baseReelle, parentReel, nom, nouveauNom)
+    : renommerParChemin(baseReelle, segments, parentReel, nom, nouveauNom);
 }

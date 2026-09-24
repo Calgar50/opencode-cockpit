@@ -52,6 +52,7 @@ import type { PrecheckBornes } from "./shared/omo-precheck-rules.ts";
 import type { OmoPreparedProjects, OmoSignale, OmoSupervisorState } from "./shared/omo-types.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 import { bash, leaks, promptAsync, until } from "./test-support/helpers.ts";
+import { echangerParLienAuLstat } from "./test-support/omo-echange-lien.ts";
 
 const T0 = 1_790_000_000_000;
 const START_1 = "5b0e2c1a-3d4f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -776,6 +777,27 @@ describe("détection 6 : configuration apparue et .git créé (T-L23-e, D-2b-37)
     const detection = a.detections()[0] as OmoHorsControleData;
     assert.deepEqual(detection.signales, [{ chemin: attendu, genre: "git-quarantaine" }]);
     assert.equal(a.faits.find((f) => f.kind === "detection")?.data.quarantaine, 1);
+  });
+
+  it("relecture 2ter-vague-4 : pendant la quarantaine, la salle remplace un dossier du chemin par une jonction vers un autre projet → rien n'est renommé à travers elle, le .git protégé de l'autre projet reste en place, le chemin est « à relire », jamais « mis de côté »", async (t) => {
+    const a = monter(t);
+    await a.demarrer();
+    a.ouvrirDemande();
+    ecrire(a.workspace, "proj/src/a/.git/HEAD", "ref: refs/heads/piege\n");
+    const echange = echangerParLienAuLstat(t, a.workspace, ".git.suspect-", "proj/src/a", "autre");
+    a.repos();
+    await a.stable();
+    assertArret(a, "git-cree", { rootId: ROOT });
+    assert.equal(echange.fait(), true, "l'échange doit avoir eu lieu pendant la quarantaine");
+    assert.equal(fs.readFileSync(path.join(a.workspace, "autre/.git/HEAD"), "utf8"), "ref: refs/heads/principale\n", ".git protégé de l'autre projet intact");
+    assert.deepEqual(
+      fs.readdirSync(path.join(a.workspace, "autre")).filter((nom) => nom.startsWith(".git.suspect")),
+      [],
+      "aucun renommage à travers la jonction",
+    );
+    const detection = a.detections()[0] as OmoHorsControleData;
+    assert.deepEqual(detection.signales, [{ chemin: "proj/src/a/.git", genre: "ide-ci" }]);
+    assert.equal(a.faits.find((f) => f.kind === "detection")?.data.quarantaine, 0);
   });
 
   it("/workspace/.git créé → quarantaine puis arrêt (depuis A16 : seulement si un montage a bougé)", async (t) => {

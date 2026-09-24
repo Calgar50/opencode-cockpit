@@ -22,7 +22,7 @@ import type { OmoControlPort, OmoPrecheckPort, OmoStopPort } from "./omo-contrac
 import { createOmoRoom, normaliserProjet, OMO_PROJET_MAX_CARACTERES, type OmoRoomService } from "./omo-room.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { StopResult } from "./shared/cockpit-event-types.ts";
-import { ecrireBattement, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
+import { ecrireArret, ecrireBattement, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
 import type { OmoPrecheckProjectResult, OmoPreparedProjects, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
 import { phrasePrecontrole, phraseRefusActivation } from "./shared/omo-room-texts.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
@@ -51,6 +51,8 @@ interface OptionsSalle {
   suspendue?: boolean;
   /** Modules 1.1 réels installés en plus de la salle (par exemple « facts » pour les routes d'activité). */
   modules?: ReadonlyArray<"facts">;
+  /** `omoStop.enCours` : arrêt ou relance à neuf en cours côté cockpit (relecture 2ter-vague-4) ; absent : aucun. */
+  arretEnCours?: () => boolean;
 }
 
 interface Salle {
@@ -112,6 +114,7 @@ async function salle(t: TestContext, options: OptionsSalle = {}): Promise<Salle>
       return { ...ARRET, rootId: rootId ?? "" };
     },
     relaunchAfterRequest: async () => undefined,
+    ...(options.arretEnCours === undefined ? {} : { enCours: options.arretEnCours }),
   };
   const omoControl: OmoControlPort = {
     startHeartbeat: () => undefined,
@@ -509,6 +512,22 @@ describe("L18c : statut de la salle", () => {
     const suspendue = await salle(t, { suspendue: true, etat: ETAT });
     const vue = corps<{ etatSalle: string }>(await suspendue.h.call("GET", "/api/omo/status", { headers: suspendue.h.headers.authed }));
     assert.equal(vue.etatSalle, "suspendue");
+  });
+
+  it("relecture 2ter-vague-4 : relance à neuf décidée, superviseur pas encore passé (stop-request de CE démarrage, ou arrêt en cours) → « en-relance », jamais « prête » ; un stop-request déjà honoré ne change rien", async (t: TestContext) => {
+    let enCours = false;
+    const s = await salle(t, { etat: ETAT, arretEnCours: () => enCours });
+    const etatSalle = async () => corps<{ etatSalle: string }>(await s.h.call("GET", "/api/omo/status", { headers: s.h.headers.authed })).etatSalle;
+    const arret = path.join(s.control, OMO_FICHIERS_CONTROLE.arret);
+    assert.equal(await etatSalle(), "prete");
+    fs.writeFileSync(arret, ecrireArret(Date.now(), "fin-de-demande", "99999999-2222-3333-4444-555555555555"), "utf8");
+    assert.equal(await etatSalle(), "prete", "stop-request d'un démarrage précédent : déjà honoré");
+    fs.writeFileSync(arret, ecrireArret(Date.now(), "fin-de-demande", ETAT.startId), "utf8");
+    assert.equal(await etatSalle(), "en-relance", "stop-request de CE démarrage");
+    fs.rmSync(arret);
+    assert.equal(await etatSalle(), "prete");
+    enCours = true;
+    assert.equal(await etatSalle(), "en-relance", "arrêt en cours, stop-request pas encore écrit");
   });
 
   it("dernier démarrage : la ligne omo_room_starts liée à un start_id, avec ses résultats masqués", async (t: TestContext) => {

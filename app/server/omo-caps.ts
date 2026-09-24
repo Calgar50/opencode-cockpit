@@ -29,6 +29,14 @@
 //    (`consigne` « en tâche de fond » sans `resultat`, dans `activity_facts`), plus les délégations en tâche de fond vues dans le
 //    flux dont l'enfant n'est pas encore connu ou pas encore au repos. Un doute (lecture impossible, borne atteinte) ne termine
 //    jamais la demande : la vérification est refaite 15 s plus tard, et le plafond de durée reste la limite.
+// 4. ÉTAT DU FLUX RÉCONCILIÉ (relecture 2ter-vague-4) : les sessions occupées et les demandes en attente vues dans le flux ne sont
+//    pas une vérité définitive — un « idle » perdu (flux coupé, opencode tué pendant qu'un enfant travaillait) retenait la demande
+//    jusqu'au plafond de durée, puis chaque demande suivante. (a) À toute (re)connexion du flux de la salle (`server.connected` :
+//    coupure, ou nouvel opencode après une relance), les ensembles sont vidés : la fin de demande relit de toute façon la salle
+//    avant de conclure. (b) Quand le flux ne voit pas le repos pendant `finDemandeReposS`, la salle est relue par son portillon
+//    dans chacun de ses dossiers : ce qu'elle ne déclare plus occupé ni en attente est retiré, sauf ce que le flux a revu pendant la
+//    lecture et les états inconnus (fermé en cas de doute : ceux-là ne retiennent que la demande en cours, la reconnexion qui suit
+//    sa relance les lève). Une lecture impossible ne retire rien ; la relecture est refaite 15 s plus tard.
 //
 // Horloge injectée (tests) : aucune variable d'environnement n'est lue ici. `neutralOmoCaps` reste exporté et inchangé : c'est le
 // port des tests qui ne déclarent pas ce module. Dans le dépôt, `SALLE_OUVERTE` est fausse : le module n'inscrit RIEN.
@@ -73,6 +81,9 @@ export const OMO_FAITS_FOND_MAX = 20_000;
 
 /** Borne des sessions occupées et des demandes en attente suivies dans la salle ; au-delà : doute, aucune fin de demande. */
 export const OMO_SUIVIS_MAX = 10_000;
+
+/** Borne des dossiers de la salle relus pour réconcilier l'état du flux (même borne que l'arrêt) ; au-delà : doute, rien n'est retiré. */
+export const OMO_RELECTURE_DOSSIERS_MAX = 50;
 
 /** Longueur maximale d'un identifiant d'appel d'outil (même borne que le portillon). */
 const CALL_ID_MAX = 512;
@@ -168,16 +179,31 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
      WHERE root_id = ? AND at >= ? AND kind IN ('consigne', 'resultat') ORDER BY id LIMIT ?`,
   );
 
+  const dossiersSalle = c11.db.prepare(
+    "SELECT DISTINCT directory FROM sessions WHERE instance = 'omo' AND deleted_at IS NULL AND directory <> '' ORDER BY directory LIMIT ?",
+  );
+
   let suivi: Suivi | null = null;
-  /** Sessions de la salle occupées (busy, retry ou état inconnu), toutes racines : la salle entière doit être au repos. */
+  /**
+   * Sessions de la salle occupées (busy, retry ou état inconnu) selon le flux, toutes racines : la salle entière doit être au repos.
+   * Vidé à la (re)connexion du flux, corrigé par la relecture de la salle (point 4).
+   */
   const occupees = new Set<string>();
-  /** Demandes d'autorisation de la salle en attente (asked sans replied). */
+  /** Parmi `occupees`, celles dont le dernier état lu est INCONNU : jamais retirées par une relecture (fermé en cas de doute). */
+  const inconnues = new Set<string>();
+  /** Demandes d'autorisation de la salle en attente (asked sans replied) selon le flux ; mêmes corrections que `occupees`. */
   const attentes = new Set<string>();
-  /** Une borne a été atteinte : l'état du flux n'est plus sûr, aucune fin de demande jusqu'à la prochaine relance. */
+  /**
+   * Une borne a été atteinte : l'état du flux n'est plus sûr, aucune fin de demande tant que les ensembles ne sont pas vidés, à la
+   * prochaine (re)connexion du flux de la salle ou à son prochain rechargement.
+   */
   let saturee = false;
   let reposDepuis: number | null = null;
   let minuterieRepos: unknown = null;
   let verification = false;
+  /** Relecture de la salle (point 4) : minuterie, et identifiants revus dans le flux pendant la lecture en cours. */
+  let minuterieRelecture: unknown = null;
+  let relecture: { revus: Set<string> } | null = null;
   const enCours = new Set<Promise<void>>();
 
   const suivre = (travail: Promise<void>): void => {
@@ -219,14 +245,36 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     }, Math.max(0, ms));
   };
 
-  /** Arme, garde ou annule l'attente du repos, selon l'état de la salle et de la demande. */
+  const annulerRelecture = (): void => {
+    if (minuterieRelecture !== null) clock.clearTimer(minuterieRelecture);
+    minuterieRelecture = null;
+  };
+
+  /** Relecture de la salle `finDemandeReposS` après que le flux l'a dite occupée ; gardée si elle est déjà armée ou en cours. */
+  const armerRelecture = (): void => {
+    if (minuterieRelecture !== null || relecture !== null) return;
+    minuterieRelecture = clock.setTimer(() => {
+      minuterieRelecture = null;
+      suivre(relireLaSalle());
+    }, OMO_FIN_REPOS_MS);
+  };
+
+  /** Arme, garde ou annule l'attente du repos (et la relecture de la salle), selon l'état de la salle et de la demande. */
   const gererRepos = (): void => {
     const s = suivi;
-    if (s === null || s.arret !== null || s.fin || occupees.size > 0 || attentes.size > 0) {
+    if (s === null || s.arret !== null || s.fin) {
       annulerRepos();
+      annulerRelecture();
       reposDepuis = null;
       return;
     }
+    if (occupees.size > 0 || attentes.size > 0) {
+      annulerRepos();
+      reposDepuis = null;
+      armerRelecture();
+      return;
+    }
+    annulerRelecture();
     if (reposDepuis === null) {
       reposDepuis = clock.now();
       if (!verification) armerRepos(OMO_FIN_REPOS_MS);
@@ -285,6 +333,56 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     return null;
   };
 
+  /** Dossiers où relire la salle : le dossier par défaut de l'instance, puis chaque dossier de ses sessions ; null au-delà de la borne. */
+  const dossiersDeLaSalle = (): Array<string | null> | null => {
+    const lignes = dossiersSalle.all(OMO_RELECTURE_DOSSIERS_MAX + 1) as Array<{ directory: string }>;
+    return lignes.length > OMO_RELECTURE_DOSSIERS_MAX ? null : [null, ...lignes.map((ligne) => ligne.directory)];
+  };
+
+  /** Ce que la salle déclare occupé et en attente dans tous ses dossiers ; null : borne des dossiers atteinte ou aucun portillon. Lève si une lecture échoue. */
+  const lireLaSalle = async (): Promise<{ occupees: Set<string>; attentes: Set<string> } | null> => {
+    const gate = c11.instances?.omo?.gate;
+    const dossiers = dossiersDeLaSalle();
+    if (!gate || dossiers === null) return null;
+    const lues = { occupees: new Set<string>(), attentes: new Set<string>() };
+    for (const dossier of dossiers) {
+      const [travail, attente] = await Promise.all([gate.working(dossier), gate.pending(dossier)]);
+      for (const id of travail) lues.occupees.add(id);
+      for (const demande of attente) lues.attentes.add(demande.id);
+    }
+    return lues;
+  };
+
+  /**
+   * Point 4 (b) : le flux dit la salle occupée ou en attente depuis `finDemandeReposS` sans en voir la fin. La salle est relue par
+   * son portillon dans chacun de ses dossiers ; ce qu'elle ne déclare plus est retiré, SAUF ce que le flux a revu pendant la
+   * lecture (`relecture.revus`) et les états inconnus. Lecture impossible, borne des dossiers atteinte : rien n'est retiré.
+   */
+  const relireLaSalle = async (): Promise<void> => {
+    const s = actualiser();
+    if (s === null || s.arret !== null || s.fin || (occupees.size === 0 && attentes.size === 0)) return;
+    const avant = { occupees: [...occupees], attentes: [...attentes] };
+    const lecture = { revus: new Set<string>() };
+    relecture = lecture;
+    let declarees: { occupees: Set<string>; attentes: Set<string> } | null = null;
+    try {
+      declarees = await lireLaSalle();
+    } catch (err) {
+      log.warn("salle : relecture de la salle impossible, rien n'est retiré de l'état du flux", { rootId: s.demande.rootId, error: errorMessage(err) });
+    } finally {
+      relecture = null;
+    }
+    if (declarees !== null) {
+      const { occupees: dites, attentes: ditesEnAttente } = declarees;
+      const retirable = (id: string) => !lecture.revus.has(id);
+      const occupeesRetirees = avant.occupees.filter((id) => !dites.has(id) && retirable(id) && !inconnues.has(id) && occupees.delete(id));
+      const attentesRetirees = avant.attentes.filter((id) => !ditesEnAttente.has(id) && retirable(id) && attentes.delete(id));
+      const retirees = occupeesRetirees.length + attentesRetirees.length;
+      if (retirees > 0) log.info("salle : état du flux corrigé par la relecture de la salle", { rootId: s.demande.rootId, retirees });
+    }
+    gererRepos();
+  };
+
   const verifierFin = async (): Promise<void> => {
     const s = actualiser();
     if (s === null || s.arret !== null || s.fin || reposDepuis === null || verification) return;
@@ -313,6 +411,7 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     }
     s.fin = true;
     annulerRepos();
+    annulerRelecture();
     if (s.minuterieDuree !== null) clock.clearTimer(s.minuterieDuree);
     s.minuterieDuree = null;
     const { rootId } = s.demande;
@@ -344,6 +443,7 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     if (s.arret !== null || s.fin) return;
     s.arret = cause;
     annulerRepos();
+    annulerRelecture();
     reposDepuis = null;
     if (s.minuterieDuree !== null) clock.clearTimer(s.minuterieDuree);
     s.minuterieDuree = null;
@@ -394,6 +494,7 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     if (s !== null && s.minuterieDuree !== null) clock.clearTimer(s.minuterieDuree);
     suivi = null;
     annulerRepos();
+    annulerRelecture();
     reposDepuis = null;
   };
 
@@ -448,8 +549,22 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
     ensemble.add(id);
   };
 
+  /** Un identifiant revu dans le flux pendant une relecture de la salle : la réponse de celle-ci, déjà partie, ne le retire pas. */
+  const revu = (id: string): void => {
+    relecture?.revus.add(id);
+  };
+
+  /** Point 4 (a) : ensembles du flux vidés (nouvelle connexion, rechargement) ; la fin de demande relit la salle avant de conclure. */
+  const vider = (): void => {
+    occupees.clear();
+    inconnues.clear();
+    attentes.clear();
+    saturee = false;
+  };
+
   const auRepos = (sessionId: string): void => {
     occupees.delete(sessionId);
+    inconnues.delete(sessionId);
     const s = suivi;
     if (s === null) return;
     for (const tache of s.fond.values()) if (tache.enfant === sessionId) tache.rendue = true;
@@ -489,9 +604,16 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
         const id = idOf(p.sessionID);
         if (id === null) return;
         const etat = isRecord(p.status) ? p.status.type : undefined;
-        // Un état inconnu compte comme occupé : la demande ne se termine jamais sur un doute.
-        if (etat === "idle") auRepos(id);
-        else ajouterBorne(occupees, id);
+        if (etat === "idle") {
+          auRepos(id);
+          return;
+        }
+        revu(id);
+        ajouterBorne(occupees, id);
+        // Un état inconnu compte comme occupé : la demande ne se termine jamais sur un doute, même quand la salle relue ne le
+        // déclare plus (point 4 : il n'est levé que par un « idle », une suppression ou une reconnexion du flux).
+        if (etat === "busy" || etat === "retry") inconnues.delete(id);
+        else if (occupees.has(id)) inconnues.add(id);
         return;
       }
       case "session.idle": {
@@ -501,12 +623,18 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
       }
       case "session.deleted": {
         const id = idOf(isRecord(p.info) ? p.info.id : undefined) ?? idOf(p.sessionID);
-        if (id !== null) occupees.delete(id);
+        if (id !== null) {
+          occupees.delete(id);
+          inconnues.delete(id);
+        }
         return;
       }
       case "permission.asked": {
         const id = idOf(p.id);
-        if (id !== null) ajouterBorne(attentes, id);
+        if (id !== null) {
+          revu(id);
+          ajouterBorne(attentes, id);
+        }
         return;
       }
       case "permission.replied": {
@@ -516,10 +644,12 @@ export function createOmoCaps(c11: Cockpit11, options: OmoCapsOptions = {}): Omo
       }
       case "global.disposed":
       case "server.instance.disposed":
+      case "server.connected":
         // Rechargement de la salle : ses sessions sont arrêtées et ses demandes retirées sans événement (mesure MX1 M14).
-        occupees.clear();
-        attentes.clear();
-        saturee = false;
+        // Point 4 (a), `server.connected` : (re)connexion du flux de la salle. Ce qui s'est passé pendant la coupure, ou dans
+        // l'opencode qu'une relance vient de remplacer, n'a pas été vu : les ensembles du flux ne sont plus sûrs. Dans les deux
+        // cas, ils sont vidés, et la salle est relue avant toute fin de demande.
+        vider();
         return;
       default:
         return;

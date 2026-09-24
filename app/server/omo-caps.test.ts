@@ -121,6 +121,21 @@ function banc(options: OptionsBanc = {}) {
     salleAttentes: options.salleAttentes ?? [],
     salleIllisible: options.salleIllisible ?? false,
     lecturesSalle: 0,
+    /** Appelé une fois pendant la prochaine lecture de la salle (un événement du flux arrive pendant qu'elle est relue). */
+    pendantLecture: null as (() => void) | null,
+  };
+  /**
+   * La salle telle que son portillon la relit (relecture 2ter-vague-4) : d'office, une salle qui tient parole — ce que son flux a
+   * dit (`emit` d'origine « omo »), plus `salleOccupee` et `salleAttentes`. `sansEvenement` la change SANS rien émettre : un
+   * événement perdu (flux coupé, opencode tué pendant qu'un enfant travaillait).
+   */
+  const source = { occupees: new Set<string>(), attentes: new Set<string>() };
+  const suivreSource = (type: string, p: Record<string, unknown>) => {
+    const etatSession = typeof p.status === "object" && p.status !== null ? (p.status as { type?: unknown }).type : undefined;
+    if (type === "session.status" && (etatSession === "busy" || etatSession === "retry")) source.occupees.add(String(p.sessionID));
+    else if ((type === "session.status" && etatSession === "idle") || type === "session.idle") source.occupees.delete(String(p.sessionID));
+    else if (type === "permission.asked") source.attentes.add(String(p.id));
+    else if (type === "permission.replied") source.attentes.delete(String(p.requestID));
   };
   const omoActivation: Pick<OmoActivationPort, "activeRequest" | "endRequest"> = {
     activeRequest: () => etat.demande,
@@ -146,12 +161,15 @@ function banc(options: OptionsBanc = {}) {
   const gate = {
     working: async () => {
       etat.lecturesSalle++;
+      const pendant = etat.pendantLecture;
+      etat.pendantLecture = null;
+      pendant?.();
       if (etat.salleIllisible) throw new Error("salle injoignable");
-      return new Set(etat.salleOccupee);
+      return new Set([...etat.salleOccupee, ...source.occupees]);
     },
     pending: async () => {
       if (etat.salleIllisible) throw new Error("salle injoignable");
-      return etat.salleAttentes.map((id) => ({ id, sessionID: RACINE, tool: null }));
+      return [...new Set([...etat.salleAttentes, ...source.attentes])].map((id) => ({ id, sessionID: RACINE, tool: null }));
     },
   };
   const ledger = {
@@ -182,9 +200,13 @@ function banc(options: OptionsBanc = {}) {
     return etat.demande;
   };
   /** `origin` null : événement SANS origine (processeur 1.0.x, lu comme l'instance principale). */
-  const emit = (type: string, properties: Record<string, unknown>, origin: { instance: "omo" | "principale" } | null = { instance: "omo" }) =>
+  const emit = (type: string, properties: Record<string, unknown>, origin: { instance: "omo" | "principale" } | null = { instance: "omo" }) => {
+    if (origin?.instance === "omo") suivreSource(type, properties);
     service.derivation.onEvent({ directory: DOSSIER, payload: { id: `evt_${type}`, type, properties } }, origin ?? undefined);
+  };
   const statut = (sessionID: string, type: "busy" | "idle" | "retry") => emit("session.status", { sessionID, status: { type } });
+  /** La salle change sans que son flux le dise : l'événement est perdu. */
+  const sansEvenement = (type: string, properties: Record<string, unknown>) => suivreSource(type, properties);
   const usage = () => service.onUsage({ sessionId: RACINE, rootId: RACINE, monthSpentUsd: 1, percent: etat.pourcent, instance: "omo" });
   const envoi = (overrides: Partial<ProxyContext> = {}): ProxyContext => ({
     c: {} as ProxyContext["c"],
@@ -205,7 +227,7 @@ function banc(options: OptionsBanc = {}) {
     db
       .prepare("INSERT INTO activity_facts (root_id, session_id, kind, ref, data, at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(RACINE, RACINE, kind, callId, JSON.stringify(data), at);
-  return { horloge, db, sessions, journal, etats, gardes, etat, c11, service, demande, emit, statut, usage, envoi, avancer, fait };
+  return { horloge, db, sessions, journal, etats, gardes, etat, c11, service, demande, emit, statut, sansEvenement, usage, envoi, avancer, fait };
 }
 
 type Banc = ReturnType<typeof banc>;
@@ -597,6 +619,94 @@ describe("L22d : fin de demande (D-2b-29) — 15 s au repos, puis endRequest et 
     arretee.statut(RACINE, "idle");
     await arretee.avancer(OMO_FIN_REPOS_MS * 2);
     assert.deepEqual(arretee.journal, ["garde:task,call_omo_agent", `arret:${RACINE}:plafond-cout`]);
+  });
+
+  // Relecture 2ter-vague-4 : les ensembles du flux (sessions occupées, demandes en attente) ne sont plus une vérité définitive.
+  // Un « idle » perdu retenait la demande jusqu'au plafond de durée, puis TOUTES les suivantes jusqu'au redémarrage du cockpit.
+  const FIN = [`fin:${RACINE}:terminee`, `relance:${RACINE}`];
+
+  it("constat rejoué : enfant « busy » dont l'« idle » est perdu, salle relue au repos → la demande se termine, et la suivante aussi", async () => {
+    const b = banc();
+    await demandeEnCours(b);
+    b.statut("ses_enfant", "busy");
+    b.sansEvenement("session.status", { sessionID: "ses_enfant", status: { type: "idle" } });
+    b.statut(RACINE, "idle");
+    for (let i = 0; i < 2; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, FIN, "relue au repos : fin, jamais le plafond de 60 minutes");
+    assert.ok(b.etat.lecturesSalle >= 2, "la salle a été relue avant de retirer l'enfant");
+
+    await demandeEnCours(b, { requestId: "req_2" });
+    b.statut(RACINE, "idle");
+    for (let i = 0; i < 2; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, FIN, "la demande suivante n'hérite de rien");
+  });
+
+  it("flux de la salle reconnecté (server.connected : opencode relancé, ou coupure) : les ensembles du flux sont vidés, la fin arrive 15 s après le repos de la racine", async () => {
+    const b = banc();
+    await demandeEnCours(b);
+    b.statut("ses_enfant", "busy");
+    // opencode tué pendant que l'enfant travaille : la nouvelle instance est au repos, aucun « idle » n'est jamais émis.
+    b.sansEvenement("session.status", { sessionID: "ses_enfant", status: { type: "idle" } });
+    await b.avancer(1_000);
+    b.emit("server.connected", {});
+    b.statut(RACINE, "busy");
+    await b.avancer(1_000);
+    b.statut(RACINE, "idle");
+    await b.avancer(OMO_FIN_REPOS_MS - 1);
+    assert.deepEqual(b.journal, []);
+    await b.avancer(1);
+    assert.deepEqual(b.journal, FIN);
+  });
+
+  it("état inconnu : retient la demande en cours, même salle relue (fermé en cas de doute), jamais les suivantes : la reconnexion du flux le lève", async () => {
+    const b = banc();
+    await demandeEnCours(b);
+    b.emit("session.status", { sessionID: "ses_y", status: { type: "etrange" } });
+    b.statut(RACINE, "idle");
+    for (let i = 0; i < 3; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, [], "état inconnu : aucune fin");
+    assert.ok(b.etat.lecturesSalle >= 1, "relue, sans rien retirer");
+    b.emit("server.connected", {});
+    await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, FIN);
+  });
+
+  it("demande d'autorisation dont la réponse est perdue, salle relue sans attente → fin après la relecture", async () => {
+    const b = banc();
+    await demandeEnCours(b);
+    b.emit("permission.asked", { id: "per_perdue", sessionID: RACINE, permission: "bash" });
+    b.sansEvenement("permission.replied", { requestID: "per_perdue", reply: "once" });
+    b.statut(RACINE, "idle");
+    for (let i = 0; i < 2; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, FIN);
+  });
+
+  it("un enfant revu occupé PENDANT la relecture n'est pas retiré par elle", async () => {
+    const b = banc();
+    await demandeEnCours(b);
+    b.statut("ses_enfant", "busy");
+    b.sansEvenement("session.status", { sessionID: "ses_enfant", status: { type: "idle" } });
+    b.statut(RACINE, "idle");
+    // Son « busy » arrive dans le flux pendant que la salle est relue, avant la réponse, qui le dit encore au repos.
+    b.etat.pendantLecture = () =>
+      b.service.derivation.onEvent({ directory: DOSSIER, payload: { id: "evt_revu", type: "session.status", properties: { sessionID: "ses_enfant", status: { type: "busy" } } } }, { instance: "omo" });
+    for (let i = 0; i < 2; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, [], "revu pendant la lecture : gardé, la relecture suivante décidera");
+    for (let i = 0; i < 2; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, FIN, "relu ensuite sans nouvel événement : retiré");
+  });
+
+  it("salle relue illisible : rien n'est retiré, aucune fin, et le plafond de durée reste la limite", async () => {
+    const b = banc({ salleIllisible: true });
+    await demandeEnCours(b);
+    b.statut("ses_enfant", "busy");
+    b.sansEvenement("session.status", { sessionID: "ses_enfant", status: { type: "idle" } });
+    b.statut(RACINE, "idle");
+    for (let i = 0; i < 4; i++) await b.avancer(OMO_FIN_REPOS_MS);
+    assert.deepEqual(b.journal, []);
+    assert.ok(b.etat.lecturesSalle >= 2, "relue à chaque fois, sans rien retirer");
+    await b.avancer(OMO_DUREE_MS);
+    assert.deepEqual(arrets(b), ["plafond-duree"]);
   });
 
   it("sans demande active, rien ne se termine ni ne s'arrête", async () => {
