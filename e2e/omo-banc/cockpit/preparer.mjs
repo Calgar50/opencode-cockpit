@@ -73,7 +73,10 @@ export function activationLivreeDansCopie(cible) {
     }
   };
   const autonomie = lire("app/server/conversation-autonomy.ts");
-  const choixOmo = /choix:\s*z\.enum\(\[[^\]]*"omo"/.test(autonomie);
+  // Deux formes du corps : « omo » dans l'énumération des choix, ou le schéma dédié que L22c a livré
+  // (`omoBodySchema = z.strictObject({ choix: z.literal("omo"), … })`). Sans la seconde, une tête qui livre l'activation était
+  // dite « en attente » et la fumée sautait l'activation (train de V4 de la 2 ter).
+  const choixOmo = /choix:\s*z\.enum\(\[[^\]]*"omo"/.test(autonomie) || /choix:\s*z\.literal\(\s*"omo"\s*\)/.test(autonomie);
   const battementDeclenche = battementDeclencheDans(cible);
   return { choixOmo, battementDeclenche, livree: choixOmo && battementDeclenche };
 }

@@ -27,7 +27,8 @@
 //      la réouverture confirmée reprend le battement et la salle redémarre ;
 //  10. la page de la salle (L26a) envoie avec l'IA de l'assistant de la salle, un seul renvoi sur 409 « assistant-model-changed »,
 //      par le proxy de la salle dont `enforceTurn` exige l'IA (constat n° 2 de L21b) ;
-//  11. l'écran Budget n'envoie jamais `budget.omo`, que L22c rend non inscriptible (remarque n° 6 de L22c).
+//  11. l'écran Budget n'envoie jamais `budget.omo`, que L22c rend non inscriptible (remarque n° 6 de L22c) ;
+//  12. le banc complet (L21b) reconnaît dans CE dépôt l'activation de L22c et le battement du cockpit.
 // Le banc complet à blanc est joué par omo-banc-complet.test.ts (L21b) et, au train, par run-banc.mjs --complet --a-blanc.
 //
 // Défauts de croisement trouvés par ce train, corrigés avec lui (chacun tombe ici sans sa correction) :
@@ -40,13 +41,16 @@
 //     orange n'était jamais dessinée (croisement 7) ;
 //   - la page de la salle envoyait `{ parts }` seul : 400 « modele-requis », aucun message ne pouvait partir (croisement 10) ;
 //   - l'écran Budget renvoyait tout le bloc `budget`, `omo` compris : un brouillon ouvert avant une activation recevait 403
-//     « reglage-fixe » (croisement 11).
+//     « reglage-fixe » (croisement 11) ;
+//   - le banc complet ne reconnaissait « omo » que dans une énumération : le schéma dédié de L22c le faisait dire « activation
+//     NON », et la fumée sautait l'activation sur la tête intégrée (croisement 12).
 // Aucun conteneur, aucun appel Copilot, aucune pause fixe hors des bornes mesurées (5 s de G13).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { pathToFileURL } from "node:url";
 import { type Context, Hono } from "hono";
 import type { CatalogModel, CatalogSources } from "./catalog.ts";
 import type { Cockpit11, Cockpit11Module, OmoControlDirs } from "./contracts-11.ts";
@@ -929,6 +933,31 @@ describe("croisement V4 (2 ter) n° 11 : l'écran Budget n'envoie jamais budget.
     const source = fs.readFileSync(path.join(import.meta.dirname, "..", "web", "pages", "settings", "BudgetTab.tsx"), "utf8");
     assert.match(source, /save\(\{ budget: Object\.fromEntries\(Object\.entries\(draft\)\.filter\(\(\[cle\]\) => cle !== "omo"\)\) \}, "Budget enregistré"/);
     assert.equal(/save\(\{ budget: draft \}/.test(source), false);
+  });
+});
+
+// --- 12. Le banc complet reconnaît ce que la tête livre ---------------------------------------------------------------------------
+
+describe("croisement V4 (2 ter) n° 12 : le banc complet (L21b) reconnaît l'activation (L22c) et le battement du cockpit dans CE dépôt", () => {
+  it("activationLivreeDansCopie(racine du dépôt) : choix « omo » (schéma dédié de L22c) et battement déclenché → livrée ; les deux formes du corps reconnues", async (t: TestContext) => {
+    const racine = path.join(import.meta.dirname, "..", "..");
+    const preparer = (await import(pathToFileURL(path.join(racine, "e2e", "omo-banc", "cockpit", "preparer.mjs")).href)) as {
+      activationLivreeDansCopie(cible: string): { choixOmo: boolean; battementDeclenche: boolean; livree: boolean };
+    };
+    // Sans ce croisement, la tête intégrée était dite « activation NON (L22c) » : la fumée sautait l'activation, un faux « partiel ».
+    assert.deepEqual(preparer.activationLivreeDansCopie(racine), { choixOmo: true, battementDeclenche: true, livree: true });
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "croisement-2ter-v4-banc-"));
+    t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+    const arbre = (corps: string) => {
+      const cible = fs.mkdtempSync(path.join(tmp, "arbre-"));
+      fs.mkdirSync(path.join(cible, "app", "server"), { recursive: true });
+      fs.writeFileSync(path.join(cible, "app", "server", "conversation-autonomy.ts"), corps, "utf8");
+      fs.writeFileSync(path.join(cible, "app", "server", "omo-room.ts"), "control.startHeartbeat();\n", "utf8");
+      return preparer.activationLivreeDansCopie(cible).choixOmo;
+    };
+    assert.equal(arbre('const omoBodySchema = z.strictObject({ choix: z.literal("omo"), plafondUsd: z.unknown() });\n'), true);
+    assert.equal(arbre('const Corps = z.object({ choix: z.enum(["demander", "omo"]) });\n'), true);
+    assert.equal(arbre('const Corps = z.object({ choix: z.enum(["demander", "autonome"]) });\n'), false, "tête antérieure à L22c");
   });
 });
 
