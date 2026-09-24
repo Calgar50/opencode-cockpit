@@ -544,6 +544,9 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * propres importations. La salle reste coupée pour autant : `SALLE_OUVERTE` est fausse et ces modules n'inscrivent rien.
  * L22c (activation, même vague) retire lui aussi `shared/omo-limits.ts` : la vue « omo » d'une racine de la salle
  * (`GET …/autonomie`) affiche ces constantes (sortie de la fiche L22c). Train de V4 : un seul retrait gardé (conflit résolu).
+ * L23b (même vague) retire aussi `shared/omo-limits.ts` : il branche l'arrêt de la salle (`omo-stop.ts`), dont la
+ * suspension après deux activités hors demande en 10 min lit ces limites fixes (D-2b-29) au lieu de les recopier. Le module est
+ * désormais parcouru comme un fichier de production (il n'importe rien).
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
