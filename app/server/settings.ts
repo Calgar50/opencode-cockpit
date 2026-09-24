@@ -40,6 +40,13 @@ const modelPrice = z.object({
   note: z.string().max(200).optional(),
 });
 
+/**
+ * Montant d'arrêt de la Salle OMO tel que saisi : même forme qu'omo-cap.ts (partie entière sans zéro de tête, au plus deux
+ * décimales après une virgule ou un point), bornée en longueur. Le montant n'est jugé (strictement positif, bornes) que par
+ * validatePlafond, à l'activation : ce motif ne sert qu'à relire un réglage enregistré sans jamais le transformer.
+ */
+export const OMO_MONTANT_SAISI = /^(0|[1-9][0-9]{0,11})(?:[.,][0-9]{1,2})?$/;
+
 const category = z.object({
   id: z.string().regex(/^[a-z0-9-]{1,32}$/, "Identifiant : minuscules, chiffres, tirets."),
   label: z.string().trim().min(1).max(40),
@@ -80,6 +87,15 @@ export const settingsSchema = z
         controlesIaMax: z.number().int().min(0).max(200),
         /** Contrôle des commandes inconnues par l'IA Rapide ; false : elles attendent votre accord. */
         controleIa: z.boolean(),
+      }),
+      /**
+       * 1.1, Salle OMO (D-2b-11, Q7) : seul `dernierPlafondUsd` est un réglage, et il n'a AUCUNE valeur par défaut (null : champ
+       * vide à la première activation). Il n'est écrit que par une activation confirmée (omo-activation.ts) : PUT /api/settings le
+       * refuse (settingsPatchGuard, mode.ts) et la réinitialisation de « budget » le garde (SettingsStore.reset). Montant tel que
+       * saisi, forme d'omo-cap.ts ; une valeur enregistrée illisible est lue null (champ vide), jamais remplacée par un montant.
+       */
+      omo: z.object({
+        dernierPlafondUsd: z.string().regex(OMO_MONTANT_SAISI).nullable().catch(null),
       }),
     }),
     pricing: z.object({
@@ -263,6 +279,8 @@ export const DEFAULT_SETTINGS: Settings = {
       controlesIaMax: 20,
       controleIa: true,
     },
+    // Salle OMO (Q7) : aucun montant par défaut, nulle part ; null = champ vide à la première activation.
+    omo: { dernierPlafondUsd: null },
   },
   pricing: { preferTable: false, overrides: {} },
   classifier: { mode: "llm", model: null, idleMinutes: 2, reclassifyAfterPrompts: 3, categories: DEFAULT_CATEGORIES },
@@ -356,7 +374,12 @@ export class SettingsStore {
     return parsed.data;
   }
 
+  /**
+   * Remet une section à ses valeurs d'office. « budget » GARDE `budget.omo` (D-2b-11) : le dernier montant d'arrêt de la Salle OMO
+   * n'est écrit que par une activation confirmée, jamais effacé ni remplacé par une réinitialisation (POST /api/settings/reset).
+   */
   reset(section: keyof Settings): Settings {
+    if (section === "budget") return this.update({ budget: { ...DEFAULT_SETTINGS.budget, omo: this.get().budget.omo } });
     return this.update({ [section]: DEFAULT_SETTINGS[section] });
   }
 

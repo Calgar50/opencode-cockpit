@@ -543,7 +543,6 @@ const MODULES_SALLE_V0 = new Set([
   "validate-core.mjs",
   "cockpit-guard.js",
   // V0
-  "omo-limits.ts",
   "omo-detections.ts",
   "egress-proxy.ts",
   "omo-audit-texts.ts",

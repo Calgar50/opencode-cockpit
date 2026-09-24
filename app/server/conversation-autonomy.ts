@@ -6,6 +6,11 @@
 // démarrage (retour_cause redemarrage-cockpit). Le port rend des CODES ; les phrases sont dans shared/autonomy-choice-texts.ts.
 // Un relâchement vers un choix automatique demande au cycle d'autonomie (L10a) de relire les demandes d'autorisation déjà en
 // attente de la conversation (§4.3 étape 8) : ce module ne décide rien lui-même, il ne fait que le signaler.
+// Salle OMO (L22c, réservations 1 à 3 du plan 2 bis ; §3.9 l.336, §4.11 l.774, §4.14.2) : `SalleAutonomy` aiguille la route AVANT
+// le port de l'instance principale. Une racine de la salle (sessions.instance = « omo ») est servie par GET (vue « omo » seule,
+// OmoAutonomyView) et par PUT `{choix: "omo", plafondUsd}` (port omoActivation, confirmation à CHAQUE demande) ; tout autre choix
+// y reçoit 409 ; `{choix: "omo"}` hors de la salle reçoit 409 « racine-hors-salle », jamais 400. La ligne « omo » garde le choix
+// et la demande en cours, que le démarrage suivant dit « interrompue » (interruptSalleAtStartup).
 // neutralConversationAutonomy reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
@@ -13,11 +18,14 @@ import { requestPendingRescan } from "./autonomy-requests.ts";
 import { emitCockpit } from "./cockpit-events.ts";
 import type { ActivationVerdict, AutonomyPutResult, Cockpit11, Cockpit11Deps, Cockpit11Module, ConversationAutonomyPort } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
+import { isAdvanced } from "./mode.ts";
 import { registerAutonomyRoutes } from "./routes-autonomy.ts";
 import type { SessionRow } from "./sessions.ts";
 import { settingsSchema } from "./settings.ts";
 import { assertFact } from "./shared/activity-facts.ts";
-import type { ActivityFact, ChoixFactData } from "./shared/activity-types.ts";
+import type { ActivityFact, ChoixFactData, StatutFactData } from "./shared/activity-types.ts";
+import type { OmoAutonomyErrorBody, OmoAutonomyView } from "./shared/api-types.ts";
+import { TEXTES as TEXTES_CHOIX } from "./shared/autonomy-choice-texts.ts";
 import type {
   ActivationRefusalCode,
   AutomaticChoice,
@@ -26,8 +34,12 @@ import type {
   AutonomyChoiceAvailability,
   ChoiceCause,
   ConversationAutonomyView,
+  RequestEnd,
 } from "./shared/autonomy-types.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
+import { montantAffiche, phraseRefus, SEPARATEUR_LISTE } from "./shared/omo-activation-view.ts";
+import { OMO_LIMITES } from "./shared/omo-limits.ts";
+import type { OmoActivationRefusalCode, OmoActivationView } from "./shared/omo-types.ts";
 
 export function neutralConversationAutonomy(deps: Cockpit11Deps): ConversationAutonomyPort {
   const view = (rootId: string): ConversationAutonomyView => {
@@ -75,11 +87,17 @@ const capsSchema = settingsSchema.shape.budget.shape.autonomie
   .partial()
   .strict();
 
-/** Corps de PUT : « omo » (Salle OMO, itération 2 ter) et toute autre valeur refusés. */
+/**
+ * Corps de PUT pour une racine de l'instance principale. « omo » (Salle OMO, L22c) n'y est PAS : la route le traite avant ce port
+ * (`SalleAutonomy.put`, plus bas), sur toute racine — 409 « racine-hors-salle » hors de la salle, jamais 400 (réservation 1).
+ */
 const putBodySchema = z.strictObject({
   choix: z.enum(["demander", "modifications", "plan", "autonome"]),
   plafonds: capsSchema.optional(),
 });
+
+/** Corps de PUT « omo » (L22c) : montant en CHAÎNE saisie, jugé par omo-cap.ts ; absent ou autre chose qu'une chaîne → 409, pas 400. */
+const omoBodySchema = z.strictObject({ choix: z.literal("omo"), plafondUsd: z.unknown().optional() });
 
 const CHOICES: ReadonlySet<string> = new Set<AutonomyChoice>(["demander", "modifications", "plan", "autonome"]);
 const CAUSES: ReadonlySet<string> = new Set<ChoiceCause>([
@@ -201,6 +219,84 @@ export class ConversationAutonomyStore {
       )
       .run(rootId, depuis, planId);
   }
+
+  // --- Choix « omo » d'une racine de la Salle OMO (L22c) --------------------------------------------------------------------------
+  // Ligne `choix = 'omo'` : jamais lue par `read` (qui la ramène à « demander », le plus restrictif), jamais touchée par
+  // `resetAutomatic` (« omo » reste affiché après un redémarrage, §4.11). Sa colonne `plafonds` porte le montant confirmé de la
+  // dernière demande et la demande en cours : c'est ce qui permet, au démarrage suivant, de dire la demande « interrompue ».
+
+  /** Choix « omo » d'une racine ; null si la racine n'a pas de ligne « omo ». Contenu illisible : ni montant ni demande en cours. */
+  readOmo(rootId: string): StoredOmoChoice | null {
+    const row = this.#db.prepare("SELECT * FROM conversation_autonomy WHERE root_id = ? AND choix = 'omo'").get(rootId) as AutonomyRow | undefined;
+    return row ? storedOmo(row) : null;
+  }
+
+  /** Écrit le choix « omo » d'une racine de la salle (activation confirmée, fin de demande) ; plan_source_id et execution_de_plan_id gardés. */
+  writeOmo(rootId: string, value: { plafondUsd: string | null; demande: OmoStoredRequest | null; depuis: number; retourCause: ChoiceCause | null }): void {
+    const plafonds: OmoStoredPlafonds = { plafondUsd: value.plafondUsd, demande: value.demande };
+    this.#db
+      .prepare(
+        `INSERT INTO conversation_autonomy (root_id, choix, plafonds, depuis, retour_cause) VALUES (?, 'omo', ?, ?, ?)
+         ON CONFLICT(root_id) DO UPDATE SET choix = 'omo', plafonds = excluded.plafonds, depuis = excluded.depuis,
+           retour_cause = excluded.retour_cause`,
+      )
+      .run(rootId, JSON.stringify(plafonds), value.depuis, value.retourCause);
+  }
+
+  /** Racines de la salle dont une demande était en cours à la dernière écriture (bornées : une salle par projet ouvert). */
+  omoWithRequest(): StoredOmoChoice[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM conversation_autonomy WHERE choix = 'omo' ORDER BY depuis DESC, root_id LIMIT ?")
+      .all(OMO_LIGNES_MAX) as unknown as AutonomyRow[];
+    return rows.map(storedOmo).filter((row) => row.demande !== null);
+  }
+}
+
+/** Lignes « omo » relues au démarrage, au plus : une salle par projet ouvert, jamais autant. */
+const OMO_LIGNES_MAX = 1_000;
+
+/** Demande de la salle en cours, gardée avec son choix : identifiant et heure de début. */
+export interface OmoStoredRequest {
+  id: string;
+  debut: number;
+}
+
+/** Contenu de `plafonds` d'une ligne « omo ». */
+interface OmoStoredPlafonds {
+  /** Montant d'arrêt confirmé, tel que saisi ; null : illisible. */
+  plafondUsd: string | null;
+  demande: OmoStoredRequest | null;
+}
+
+const omoPlafondsSchema = z.strictObject({
+  plafondUsd: z.string().max(32).nullable(),
+  demande: z.strictObject({ id: z.string().min(1).max(128), debut: z.number().int().nonnegative() }).nullable(),
+});
+
+/** Ligne « omo » de conversation_autonomy, relue. */
+export interface StoredOmoChoice {
+  rootId: string;
+  plafondUsd: string | null;
+  demande: OmoStoredRequest | null;
+  depuis: number;
+  retourCause: ChoiceCause | null;
+}
+
+function storedOmo(row: AutonomyRow): StoredOmoChoice {
+  let plafonds: OmoStoredPlafonds = { plafondUsd: null, demande: null };
+  try {
+    const parsed = omoPlafondsSchema.safeParse(JSON.parse(row.plafonds));
+    if (parsed.success) plafonds = parsed.data;
+  } catch {
+    // Illisible : ni montant ni demande en cours (aucun fait n'est inventé au démarrage).
+  }
+  return {
+    rootId: row.root_id,
+    plafondUsd: plafonds.plafondUsd,
+    demande: plafonds.demande,
+    depuis: row.depuis,
+    retourCause: row.retour_cause !== null && CAUSES.has(row.retour_cause) ? (row.retour_cause as ChoiceCause) : null,
+  };
 }
 
 // --- Événement et fait « choix » ------------------------------------------------------------------------------------------------
@@ -309,7 +405,7 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
     if (!SESSION_ID_RE.test(rootId)) return null;
     const row = c11.sessions.get(rootId) ?? (await c11.sessions.ensure(rootId));
     if (!row || row.parent_id !== null || row.root_id !== row.id || row.purpose !== "chat" || row.deleted_at !== null) return null;
-    // P11 : une conversation de la Salle OMO n'est jamais servie par ces routes (son seul choix, « omo », vient en 2 ter).
+    // P11 : une conversation de la Salle OMO n'est jamais servie par ce port ; la route l'aiguille avant vers SalleAutonomy (L22c).
     return row.instance === "principale" ? row : null;
   };
 
@@ -493,6 +589,167 @@ export function createConversationAutonomy(c11: Cockpit11): ConversationAutonomy
       const roots = returnToAsk(c11, "redemarrage-cockpit", { garder: [...posedNow] });
       for (const rootId of roots) supersede(rootId);
       if (roots.length > 0) c11.log.info("autonomie : choix automatiques revenus à « demander » au démarrage", { conversations: roots.length });
+      // Salle OMO (réservation 3, §4.11, décision n° 10) : « omo » reste affiché (resetAutomatic n'y touche pas) ; une demande de
+      // la salle encore en cours au démarrage précédent devient « interrompue ». Son jeton d'activation, en mémoire, est perdu :
+      // la demande suivante exige une nouvelle confirmation et un montant saisi ou validé.
+      interruptSalleAtStartup(c11, store);
+    },
+  };
+}
+
+/**
+ * Demandes de la Salle OMO laissées en cours par un démarrage précédent (réservation 3) : fin « redemarrage-cockpit », fait
+ * `statut {cause: interrompue}` (motif redemarrage-cockpit) et retour_cause « interrompue » ; le choix reste « omo ». La demande
+ * que CE démarrage a lancée (port d'activation) n'est jamais touchée. Un fait refusé n'empêche pas la ligne d'être close.
+ */
+export function interruptSalleAtStartup(c11: Cockpit11, store = new ConversationAutonomyStore(c11.db)): string[] {
+  const enCours = c11.ports.omoActivation.activeRequest();
+  const interrompues: string[] = [];
+  const now = Date.now();
+  for (const ligne of store.omoWithRequest()) {
+    if (ligne.demande === null || (enCours !== null && enCours.requestId === ligne.demande.id)) continue;
+    store.writeOmo(ligne.rootId, { plafondUsd: ligne.plafondUsd, demande: null, depuis: ligne.depuis, retourCause: "interrompue" });
+    interrompues.push(ligne.rootId);
+    const data: StatutFactData = { cause: "interrompue", motif: "redemarrage-cockpit" satisfies RequestEnd };
+    try {
+      c11.ports.facts.append([assertFact({ rootId: ligne.rootId, sessionId: ligne.rootId, kind: "statut", ref: null, data, at: now })]);
+    } catch (err) {
+      c11.log.warn("salle : fait « statut » non écrit", { rootId: ligne.rootId, error: errorMessage(err) });
+    }
+  }
+  if (interrompues.length > 0) c11.log.info("salle : demandes interrompues par le redémarrage du cockpit", { conversations: interrompues.length });
+  return interrompues;
+}
+
+// --- Salle OMO : GET et PUT /api/conversations/:rootId/autonomie d'une racine de la salle (L22c, réservations 1 et 2) -----------
+
+/** Réponse de la route pour la salle : la vue de la salle, ou un refus déjà formé (statut et corps). */
+export type SalleAutonomyResult =
+  | { ok: true; view: OmoAutonomyView }
+  | { ok: false; status: 400 | 403 | 404 | 409; body: OmoAutonomyErrorBody | { error: "invalid" | "not-found"; message: string } };
+
+/**
+ * Aiguillage de la route d'autonomie vers la salle, AVANT le port de l'instance principale (dont le contrat, AutonomyPutResult et
+ * ConversationAutonomyView, ne connaît ni « omo » ni les codes de la salle) :
+ * - `get` : racine de la salle (sessions.instance = « omo ») → vue de la salle (instance « omo », « omo » seul disponible) ;
+ * - `put` : `{choix: "omo"}` sur toute racine, ou tout choix sur une racine de la salle. Racine hors salle → 409
+ *   « racine-hors-salle » (jamais 400) ; autre choix sur une racine de la salle → 409 ; racine de la salle → port omoActivation.
+ * `null` : rien de la salle, la route passe la main au port de l'instance principale.
+ */
+export interface SalleAutonomy {
+  get(rootId: string): Promise<SalleAutonomyResult | null>;
+  put(rootId: string, body: unknown, options: { confirmed: boolean }): Promise<SalleAutonomyResult | null>;
+}
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Corps d'un refus de la salle (route d'autonomie et crochet d'envoi, omo-activation.ts) : phrase de omo-room-texts.ts, gabarits
+ * {projet}, {plafondMaxUsd} et {liste} remplis. « mode-avance » : 403 « mode-avance » ; tout autre code : 409
+ * « autonomie-indisponible ».
+ */
+export function corpsRefusSalle(
+  code: OmoActivationRefusalCode,
+  valeurs: { projet: string | null; plafondMaxUsd: number; liste?: readonly string[] },
+): OmoAutonomyErrorBody {
+  const liste = [...(valeurs.liste ?? [])];
+  const message = phraseRefus(code, {
+    plafondMaxUsd: montantAffiche(valeurs.plafondMaxUsd),
+    liste: liste.join(SEPARATEUR_LISTE),
+    ...(valeurs.projet === null ? {} : { projet: valeurs.projet }),
+  }).trim();
+  return { error: code === "mode-avance" ? "mode-avance" : "autonomie-indisponible", message, raison: code, ...(liste.length > 0 ? { liste } : {}) };
+}
+
+/** Statut HTTP d'un refus de la salle : 403 en mode Simple, 409 pour toute condition (§4.14.2 : « 409 + phrase »). */
+export const statutRefusSalle = (code: OmoActivationRefusalCode): 403 | 409 => (code === "mode-avance" ? 403 : 409);
+
+/** Racine de la Salle OMO suivie par le cockpit (sessions.instance = « omo »), jamais demandée à opencode ; null sinon. */
+export function salleRootOf(c11: Pick<Cockpit11, "sessions">, rootId: string): SessionRow | null {
+  if (!SESSION_ID_RE.test(rootId)) return null;
+  const row = c11.sessions.get(rootId);
+  if (!row || row.parent_id !== null || row.root_id !== row.id || row.deleted_at !== null || row.instance !== "omo") return null;
+  return row;
+}
+
+/** Projet d'une salle ouverte (omo_rooms, migration 6) ; null : la racine n'est pas une salle. */
+export function projetDeSalle(db: DatabaseSync, rootId: string): string | null {
+  const row = db.prepare("SELECT projet FROM omo_rooms WHERE root_id = ?").get(rootId) as { projet: string } | undefined;
+  return row?.projet ?? null;
+}
+
+export function createSalleAutonomy(c11: Cockpit11, store = new ConversationAutonomyStore(c11.db)): SalleAutonomy {
+  const plafondMaxUsd = () => c11.settings.get().budget.autonomie.plafondMaxUsd;
+  const refus = (code: OmoActivationRefusalCode, projet: string | null, liste?: readonly string[]): SalleAutonomyResult => ({
+    ok: false,
+    status: statutRefusSalle(code),
+    body: corpsRefusSalle(code, { projet, plafondMaxUsd: plafondMaxUsd(), ...(liste === undefined ? {} : { liste }) }),
+  });
+  const { erreurs, raisons } = TEXTES_CHOIX.partout;
+
+  /** Première condition fausse ; racine « omo » sans salle ouverte : hors salle ; port neutre (vue null) : salle coupée. */
+  const premiereRaison = (projet: string | null, activation: OmoActivationView | null): OmoActivationRefusalCode | null => {
+    if (projet === null) return "racine-hors-salle";
+    if (activation === null) return "salle-coupee";
+    return activation.conditions.find((c) => !c.ok)?.code ?? null;
+  };
+
+  const vue = async (rootId: string, activationDonnee?: OmoActivationView): Promise<OmoAutonomyView> => {
+    const projet = projetDeSalle(c11.db, rootId);
+    // Le port d'activation juge chaque condition du §4.14.2 ; une vue déjà rendue par PUT n'est pas recalculée.
+    let activation: OmoActivationView | null = null;
+    if (projet !== null) activation = activationDonnee ?? (await c11.ports.omoActivation.view(rootId));
+    const raison = premiereRaison(projet, activation);
+    const stored = store.readOmo(rootId);
+    const active = c11.ports.omoActivation.activeRequest();
+    return {
+      rootId,
+      instance: "omo",
+      choix: "omo",
+      depuis: stored?.depuis ?? null,
+      retourCause: stored?.retourCause ?? null,
+      interrupteur: c11.env.autonomy,
+      disponibles: [{ choix: "omo", disponible: raison === null, raison }],
+      activation,
+      limites: OMO_LIMITES,
+      demande: active !== null && active.rootId === rootId ? { id: active.requestId, startedAt: active.startedAt, plafondUsd: active.plafondUsd } : null,
+    };
+  };
+
+  return {
+    async get(rootId) {
+      if (salleRootOf(c11, rootId) === null) return null;
+      // Salle réservée au mode Avancé (§4.14.1) : en Simple, elle n'est pas même décrite.
+      if (!isAdvanced(c11.settings)) return refus("mode-avance", null);
+      return { ok: true, view: await vue(rootId) };
+    },
+
+    async put(rootId, body, options) {
+      const racine = salleRootOf(c11, rootId);
+      const omo = isPlainRecord(body) && body.choix === "omo";
+      if (racine === null && !omo) return null;
+      // Réservation 1 : « omo » sur une racine qui n'est pas de la salle (instance principale, inconnue) → 409, jamais 400.
+      if (racine === null) return refus("racine-hors-salle", null);
+      if (!isAdvanced(c11.settings)) return refus("mode-avance", projetDeSalle(c11.db, rootId));
+      if (!isPlainRecord(body)) return { ok: false, status: 400, body: { error: "invalid", message: erreurs.requete } };
+      // Réservation 2 : sur une racine de la salle, « omo » est le seul choix.
+      if (!omo) return { ok: false, status: 409, body: { error: "autonomie-indisponible", message: raisons.autre } };
+      const parsed = omoBodySchema.safeParse(body);
+      if (!parsed.success) return { ok: false, status: 400, body: { error: "invalid", message: erreurs.requete } };
+      const saisie = parsed.data.plafondUsd;
+      // Montant envoyé autrement qu'en chaîne (nombre JSON compris) : invalide, rien n'est lancé (§4.8.2, omo-cap.ts).
+      if (saisie !== undefined && typeof saisie !== "string") return refus("plafond-invalide", projetDeSalle(c11.db, rootId));
+      const result = await c11.ports.omoActivation.put(
+        rootId,
+        { choix: "omo", plafondUsd: saisie ?? "" },
+        { mode: c11.settings.get().ui.mode, confirmed: options.confirmed },
+      );
+      if (result.ok) return { ok: true, view: await vue(rootId, result.view) };
+      if (result.code === "invalid") return { ok: false, status: 400, body: { error: "invalid", message: erreurs.requete } };
+      if (result.code === "not-found") return { ok: false, status: 404, body: { error: "not-found", message: erreurs.inconnue } };
+      // `liste` : chemins en cause, joints par le port d'activation à un refus git (champ en plus du contrat, lu prudemment).
+      const liste = (result as { liste?: unknown }).liste;
+      return refus(result.code, projetDeSalle(c11.db, rootId), Array.isArray(liste) ? liste.filter((c): c is string => typeof c === "string") : undefined);
     },
   };
 }
@@ -502,7 +759,8 @@ export const conversationAutonomyModule: Cockpit11Module = {
   install(reg, c11) {
     const service = createConversationAutonomy(c11);
     c11.ports.conversationAutonomy = service.port;
+    const salle = createSalleAutonomy(c11, service.store);
     reg.startup(() => service.returnToAskAtStartup());
-    reg.routes("autonomy", (app) => registerAutonomyRoutes(app, c11));
+    reg.routes("autonomy", (app) => registerAutonomyRoutes(app, c11, salle));
   },
 };
