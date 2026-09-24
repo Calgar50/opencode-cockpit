@@ -128,7 +128,12 @@ const TOUR = (texte, cout) => ({ text: texte, cost: cout, tokens: { input: 600, 
 async function derouleDEquipe(page) {
   const ouvert = "document.querySelector('.chat')?.classList.contains('aside-open') === true";
   if (!(await page.evaluer(ouvert))) {
-    await page.evaluer(`document.querySelector('.chat-header button[aria-label="Afficher le contexte"]')?.click()`);
+    // Le bouton n'apparaît dans l'en-tête qu'une fois la conversation chargée : cliqué avant (`?.click()` sans bouton), rien ne
+    // se passait et rien ne recliquait. Mesuré à la clôture 5b, poste chargé : au moment du clic, l'en-tête n'avait encore
+    // que « Conversations » et « Autonomie » — le scénario tombait sur « panneau « Contexte » ouvert », à H5b comme après.
+    const bouton = `document.querySelector('.chat-header button[aria-label="Afficher le contexte"]')`;
+    await page.attendreQue(bouton, { delaiMs: 20_000, libelle: "bouton « Afficher le contexte »" });
+    await page.evaluer(`${bouton}.click()`);
     await page.attendreQue(ouvert, { delaiMs: 10_000, libelle: "panneau « Contexte » ouvert" });
   }
   await page.attendreQue("document.querySelector('.team-deroule')", { delaiMs: 20_000, libelle: "Déroulé d'équipe" });
