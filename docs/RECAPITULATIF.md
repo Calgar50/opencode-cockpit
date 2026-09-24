@@ -674,7 +674,7 @@ Revérifié les 23 et 24 septembre pour la 1.0.6 : audit complet des sorties d'o
 - **Une connexion GitHub Enterprise vers un faux domaine** : opencode y enverrait toutes les demandes et le jeton. Le cockpit refuse tout domaine autre que `COCKPIT_GITHUB_ENTERPRISE_DOMAIN`, et n'accepte de connexion que pour Copilot.
 - **Des règles de permission glissées dans une requête** (champ `permission` d'une conversation, ou `tools` dans une demande) : le cockpit les refuse.
 - **Un proxy d'entreprise qui inspecte le TLS** : il voit le trafic en clair, Copilot compris. C'est le principe de ces proxys.
-- **Ce que vous autorisez** : une commande shell (`curl`, `git push`…), une page web ou un sous-agent approuvés pouvaient envoyer des données ailleurs jusqu'à la 1.0.5. Depuis la 1.0.6, ils ne peuvent plus joindre que les adresses de la liste fermée du relais : l'API Copilot, et `github.com` pendant les 20 minutes d'une connexion. Le profil « Autonome » ne demande plus rien.
+- **Ce que vous autorisez** : une commande shell (`curl`, `git push`…), une page web ou un sous-agent approuvés pouvaient envoyer des données ailleurs jusqu'à la 1.0.5. Depuis la 1.0.6, ils ne peuvent plus ouvrir de tunnel que vers les adresses de la liste fermée du relais : l'API Copilot, et `github.com` pendant les 20 minutes d'une connexion. Le tunnel est opaque pour le relais : une commande fabriquée exprès et approuvée pourrait y annoncer un autre nom de site (SNI, Host), que le proxy de l'entreprise pourrait journaliser (mesuré au proxy espion avec `curl`). Le profil « Autonome » ne demande plus rien.
 
 ### Première revue de sécurité (avant publication de la 0.1.0) : 4 failles, toutes corrigées
 
