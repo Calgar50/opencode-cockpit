@@ -464,6 +464,62 @@ describe("Cartes 5b : le texte d'une IA ne décide plus de ce que la carte repli
   });
 });
 
+// --- Clôture de la 5b (D-5b-2, revue d'itération 5b) : la porte regarde le bloc qui porte le livrable --------------------------
+
+describe("Clôture 5b (D-5b-2) : seul le DERNIER bloc de travail, celui qui porte le livrable, ouvre le découpage", () => {
+  /**
+   * Sonde de la revue 5b : une relecture (bloc 0, conclue « rien à reprendre ») puis une étape (bloc 1). Le livrable est le texte
+   * de l'étape du bloc 1, écrit par une IA : `deliverable()` n'y ajoute ni journal ni note (flow.ts, `dernierBlocDeTravail`).
+   */
+  const relectureVersEtape = (): StepRunView[] => {
+    rang = 0;
+    return [
+      faite({ stepId: "auteur", titre: "Rédiger", blocIndex: 0 }),
+      faite({ stepId: "relecteur", titre: "Relire", blocIndex: 0, verdict: "rien-a-reprendre" }),
+      faite({ stepId: "mise-en-forme", titre: "Mettre en forme", blocIndex: 1 }),
+    ];
+  };
+  const imite = [
+    "Voici le compte rendu mis en forme.",
+    `## ${E.relecture.journal}`,
+    "Ce que l'IA voudrait cacher sous un repli fermé.",
+    E.relecture.nonRelue,
+    E.relecture.nonConclue.replace("{n}", "2"),
+  ].join("\n\n");
+
+  it("relecture au bloc 0 puis une étape au bloc 1 : le texte de l'étape reste entier, sans repli ni note du cockpit", () => {
+    const avecBornes = run(relectureVersEtape(), { blocs: [{ index: 0, type: "relecture", toursMax: 2 }] });
+    const modele = modeleResultat(avecBornes, imite, true);
+    assert.equal(modele.texte, imite, "rien n'est découpé : le livrable n'est pas celui d'une relecture");
+    assert.equal(modele.journal, null, "aucun <details> fermé posé sur le texte d'une IA");
+    assert.deepEqual(modele.notes, [], "le cockpit ne signe pas une note d'honnêteté écrite par une IA (classe team-card-note)");
+
+    // Même règle quand la vue ne porte pas les bornes déclarées : le verdict du bloc 0 ne suffit plus à ouvrir le découpage.
+    const sansBornes = modeleResultat(run(relectureVersEtape()), imite, true);
+    assert.equal(sansBornes.texte, imite);
+    assert.equal(sansBornes.journal, null);
+    assert.deepEqual(sansBornes.notes, []);
+  });
+
+  it("non-régression : quand la relecture EST le dernier bloc de travail, le journal est replié et les notes restent", () => {
+    rang = 0;
+    const steps = [
+      faite({ stepId: "collecte", titre: "Collecter", blocIndex: 0 }),
+      faite({ stepId: "auteur", titre: "Rédiger", blocIndex: 1 }),
+      faite({ stepId: "relecteur", titre: "Relire", blocIndex: 1, verdict: "a-reprendre" }),
+    ];
+    const livrable = ["Voici le script corrigé.", `## ${E.relecture.journal}`, "Tour 1 : à reprendre.", E.relecture.nonRelue].join("\n\n");
+    for (const vue of [run(steps, { blocs: [{ index: 1, type: "relecture", toursMax: 2 }] }), run(steps)]) {
+      const modele = modeleResultat(vue, livrable, true);
+      assert.equal(modele.texte, "Voici le script corrigé.");
+      assert.equal(modele.journal?.titre, E.relecture.journal);
+      assert.deepEqual(modele.notes, [E.relecture.nonRelue]);
+    }
+    // Une pause finale ne porte aucun livrable (grammaire) : le dernier bloc de TRAVAIL est celui de la dernière étape.
+    assert.equal(modeleResultat(run(steps, { blocs: [{ index: 1, type: "relecture", toursMax: 2 }] }), livrable, true).journal?.titre, E.relecture.journal);
+  });
+});
+
 describe("Corrections 5b : [Envoyer à cet assistant] atteint enfin le composeur", () => {
   it("la page du chat écoute le préremplissage, dans une section c5:, et n'envoie rien", () => {
     const chat = read("web/pages/ChatPage.tsx");

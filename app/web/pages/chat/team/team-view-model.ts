@@ -491,14 +491,21 @@ export function etapeResultat(run: TeamRunView): StepRunView | null {
 }
 
 /**
- * Le lancement porte-t-il une RELECTURE ? Lu sur l'état ENREGISTRÉ : les bornes déclarées du déroulé (`run.blocs`) et, à défaut,
- * les lignes elles-mêmes — un verdict enregistré ou un tour au-delà du premier ne viennent que d'un bloc « relecture ».
+ * Le livrable est-il celui d'une RELECTURE ? Même règle que `deliverable()` (flow.ts, `dernierBlocDeTravail`) : seul le DERNIER
+ * bloc de travail porte le livrable, et le journal et les notes n'y sont écrits par le cockpit que si ce bloc est une relecture.
+ * Lu sur l'état ENREGISTRÉ : le dernier bloc de travail est celui de la dernière ligne d'étape (un bloc « pause » n'en a
+ * aucune) ; son genre vient des bornes déclarées du déroulé (`run.blocs`) et, à défaut, de ses lignes — un verdict enregistré
+ * ou un tour au-delà du premier ne viennent que d'un bloc « relecture ».
  * Jamais sur le texte du livrable : sans cette porte, une IA qui écrit « ## Journal de relecture » replierait tout ce qui suit
- * dans un `<details>` fermé et signerait une note d'honnêteté à la place du cockpit (P3, §13.2).
+ * dans un `<details>` fermé et signerait une note d'honnêteté à la place du cockpit (P3, §13.2). Clôture 5b (D-5b-2) : la
+ * porte regardait la PRÉSENCE d'une relecture dans le déroulé ; une relecture suivie d'une autre étape suffisait alors à
+ * rendre le texte de cette étape comme notes du cockpit.
  */
 function aRelecture(run: TeamRunView): boolean {
-  if ((run.blocs ?? []).some((bloc) => bloc.type === "relecture")) return true;
-  return run.steps.some((step) => step.tour > 1 || step.verdict !== undefined);
+  if (run.steps.length === 0) return false;
+  const dernierBloc = Math.max(...run.steps.map((step) => step.blocIndex));
+  if (run.blocs !== undefined) return run.blocs.some((bloc) => bloc.type === "relecture" && bloc.index === dernierBloc);
+  return run.steps.some((step) => step.blocIndex === dernierBloc && (step.tour > 1 || step.verdict !== undefined));
 }
 
 /**
