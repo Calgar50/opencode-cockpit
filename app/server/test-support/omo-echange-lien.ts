@@ -1,7 +1,8 @@
-// Course « vérifier puis renommer » de la quarantaine (relecture 2ter-vague-4, constat L23c) : ce que la salle peut faire dans une
-// entrée ouverte en écriture (A16) PENDANT que le cockpit met un `.git` en quarantaine — la salle tourne encore (D-2b-37 :
-// quarantaine AVANT l'arrêt). Au moment choisi, un dossier du chemin est déplacé à côté et remplacé par une jonction (un lien
-// symbolique hors Windows) vers un autre dossier, par exemple un autre projet dont le `.git` est protégé.
+// Course « vérifier puis renommer » de la quarantaine (relecture 2ter-vague-4, constat L23c) : ce que la salle pouvait faire dans
+// une entrée ouverte en écriture (A16) quand le cockpit mettait un `.git` en quarantaine AVANT l'arrêt. Depuis le second tour de
+// la relecture, la quarantaine suit l'arrêt et la relance de la salle ; l'échange reste simulé pour prouver cet ordre et le second
+// rempart de `renommerSansSuivreLiens`. Au moment choisi, un dossier du chemin est déplacé à côté et remplacé par une jonction (un
+// lien symbolique hors Windows) vers un autre dossier, par exemple un autre projet dont le `.git` est protégé.
 //
 // Le moment est un `lstat` : celui du premier nom dont le nom de base commence par `declencheur`. `renommerSansSuivreLiens` ne
 // `lstat` un nom de destination (`.git.suspect-…`) qu'APRÈS toutes ses vérifications du chemin : c'est la fenêtre du constat.

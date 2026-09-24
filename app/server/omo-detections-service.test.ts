@@ -1,10 +1,11 @@
 // Détections en service de la Salle OMO (L23c) : faits du flux et du cockpit remis au module pur de L23a, contrôle du disque borné,
-// quarantaine avant l'arrêt, `par: extension`, fenêtres d'arrêt et de relance du cockpit.
+// quarantaine après l'arrêt et la relance, `par: extension`, fenêtres d'arrêt et de relance du cockpit.
 //
 // Chaque garde a son test qui échoue sans elle (mutations hors dépôt : execution/mesures/mutations-L23c.mjs). Les relevés du disque
 // sont les VRAIS (releverEmpreintesSalle de L19a, sur un dossier de travail jetable) ; le port `omoStop` n'est pas encore réel dans
-// cette vague (L23b) : il est remplacé par un espion, qui note aussi l'état du disque au moment de l'arrêt (quarantaine AVANT
-// l'arrêt). Délais par horloge injectée : aucun test n'attend le temps réel, sauf le dernier bloc, qui passe par le vrai processeur
+// cette vague (L23b) : il est remplacé par un espion, qui note aussi l'état du disque au moment de l'arrêt, et qui publie ensuite
+// le démarrage suivant comme le ferait la relance par Docker (relecture 2ter-vague-4, second tour : la quarantaine suit l'arrêt et
+// la relance, jamais avant, sinon la salle pourrait détourner le renommage par un lien). Délais par horloge injectée : aucun test n'attend le temps réel, sauf le dernier bloc, qui passe par le vrai processeur
 // de la salle et un faux opencode (G13, programme muni du mot de passe), où l'attente est bornée.
 //
 // Décision A16 (montages inversés de L16c) : une création à la racine d'un projet, de /workspace ou d'un dossier de premier niveau
@@ -58,6 +59,8 @@ const T0 = 1_790_000_000_000;
 const START_1 = "5b0e2c1a-3d4f-4a6b-8c9d-0e1f2a3b4c5d";
 const START_2 = "6c1f3d2b-4e5a-4b7c-9d0e-1f2a3b4c5d6e";
 const START_3 = "7d2a4e3c-5f6b-4c8d-8e1f-2a3b4c5d6e7f";
+/** Démarrage relancé par Docker après l'arrêt d'une détection (relecture 2ter-vague-4, second tour). */
+const START_RELANCE = "8e3b5f4d-6a7c-4d9e-9f2a-3b4c5d6e7f80";
 /** Racine ouverte par le cockpit (ligne omo_rooms), projet « proj ». */
 const ROOT = "ses_racine_proj";
 const ROOT_AUTRE = "ses_racine_autre";
@@ -182,9 +185,34 @@ interface Arret {
   at: number;
 }
 
+/**
+ * État publié par le démarrage relancé : son superviseur a balayé le dossier de travail AVANT toute quarantaine (étape 5), il y a vu
+ * le `.git` créé (`nonProteges`) et n'est donc jamais prêt, sauf « opencode-lance » voulu par le test.
+ */
+function etatDeRelance(phase: "attente" | "opencode-lance", at: number): OmoSupervisorState {
+  return {
+    startId: START_RELANCE,
+    phase,
+    imageId: "",
+    manifestSha256: "",
+    manifesteReference: "ok",
+    validation: "ok",
+    dossiersConfig: [],
+    projets: [],
+    workspaceGit: { verifieLe: at, limiteAtteinte: false, nonProteges: phase === "attente" ? ["proj/src/.git"] : [] },
+    startedAt: at,
+  };
+}
+
 interface Options {
   bornes?: Partial<PrecheckBornes>;
   etatSuperviseur?: OmoSupervisorState | null;
+  /**
+   * Ce que `state.json` montre après l'arrêt (relecture 2ter-vague-4, second tour) : « attente » (défaut), le démarrage suivant,
+   * relancé par Docker, balayé et en attente, comme le vrai superviseur ; « aucune » : rien ne change (salle jamais relancée) ;
+   * « lancee » : un démarrage suivant qui a déjà lancé opencode.
+   */
+  relance?: "attente" | "aucune" | "lancee";
   /** Posé avant les références (fichiers présents au démarrage). */
   preparer?: (workspace: string) => void;
   /** Projet préparé « groupe/app », imbriqué dans le dossier de premier niveau « groupe ». */
@@ -225,13 +253,19 @@ function monter(t: TestContext, options: Options = {}) {
   const registre = emittedRegistry();
   let demande: OmoActiveRequest | null = null;
   let references: OmoPrecheckReferences | null = null;
-  const etatSuperviseur = options.etatSuperviseur ?? null;
+  let etatSuperviseur = options.etatSuperviseur ?? null;
   const arrets: Arret[] = [];
   let auArret: (() => void) | null = null;
+  /** Relances demandées au port de contrôle (stop-request), avec le démarrage alors publié. */
+  const relances: Array<{ cause: string; startId: string | null; at: number }> = [];
+  let aLaRelance: (() => void) | null = null;
   const stop: OmoStopPort = {
     run: async (rootId, cause) => {
       arrets.push({ rootId, cause, at: horloge.clock.now() });
       auArret?.();
+      // Superviseur : arrêt, sortie du conteneur, relance par Docker, balayage du dossier de travail, « attente » publiée.
+      const relance = options.relance ?? "attente";
+      if (relance !== "aucune") etatSuperviseur = etatDeRelance(relance === "lancee" ? "opencode-lance" : "attente", horloge.clock.now());
       return { rootId: rootId ?? "", rejected: 0, aborted: [], unconfirmed: [], durationMs: 0 } as never;
     },
     relaunchAfterRequest: async () => undefined,
@@ -260,7 +294,14 @@ function monter(t: TestContext, options: Options = {}) {
     activation: () => ({ activeRequest: () => demande }) as unknown as OmoActivationPort,
     stop: () => stop,
     precheck: () => precheck,
-    control: () => ({ readState: async () => etatSuperviseur }) as unknown as OmoControlPort,
+    control: () =>
+      ({
+        readState: async () => etatSuperviseur,
+        requestStop: async (cause: string) => {
+          relances.push({ cause, startId: etatSuperviseur?.startId ?? null, at: horloge.clock.now() });
+          aLaRelance?.();
+        },
+      }) as unknown as OmoControlPort,
     facts: () => facts,
     clock: horloge.clock,
     ...(options.bornes ? { bornes: options.bornes } : {}),
@@ -302,6 +343,20 @@ function monter(t: TestContext, options: Options = {}) {
     },
     auArret(fn: () => void) {
       auArret = fn;
+    },
+    relances,
+    aLaRelance(fn: () => void) {
+      aLaRelance = fn;
+    },
+    /**
+     * Avance l'horloge SANS attendre le service (une quarantaine qui attend la relance tient `settled()` jusqu'à sa fin) : chaque
+     * pas déclenche les minuteries dues, puis laisse passer les continuations (lectures de `state.json`) avant le pas suivant.
+     */
+    async avancerParPas(total: number, pas: number) {
+      for (let fait = 0; fait < total; fait += pas) {
+        horloge.avancer(pas);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
     },
     emettre(type: string, properties: Record<string, unknown>) {
       numero++;
@@ -760,26 +815,93 @@ describe("détection 6 : configuration apparue et .git créé (T-L23-e, D-2b-37)
     assertArret(a, "config-apparue");
   });
 
-  it(".git créé dans une entrée de premier niveau ouverte en écriture (A16) → quarantaine AVANT l'arrêt, rien de supprimé", async (t) => {
+  it(".git créé dans une entrée de premier niveau ouverte en écriture (A16) → l'arrêt D'ABORD, mis de côté une fois la salle vue relancée, puis relance à neuf ; rien de supprimé (relecture 2ter-vague-4, second tour)", async (t) => {
     const a = monter(t);
     await a.demarrer();
     a.ouvrirDemande();
     ecrire(a.workspace, "proj/src/.git/HEAD", "ref: refs/heads/piege\n");
     const attendu = nomDeQuarantaine("proj/src/.git", a.now());
-    let etatAuArret: [boolean, boolean] | null = null;
+    const disque = (): [boolean, boolean] => [fs.existsSync(path.join(a.workspace, attendu, "HEAD")), fs.existsSync(path.join(a.workspace, "proj/src/.git"))];
+    let auArret: { disque: [boolean, boolean]; publies: number } | null = null;
+    let aLaRelance: [boolean, boolean] | null = null;
     a.auArret(() => {
-      etatAuArret = [fs.existsSync(path.join(a.workspace, attendu, "HEAD")), fs.existsSync(path.join(a.workspace, "proj/src/.git"))];
+      auArret = { disque: disque(), publies: a.detections().length };
+    });
+    a.aLaRelance(() => {
+      aLaRelance = disque();
     });
     a.repos();
     await a.stable();
     assertArret(a, "git-cree", { rootId: ROOT });
-    assert.deepEqual(etatAuArret, [true, false], "le .git est mis de côté avant l'arrêt, avec son contenu");
+    assert.deepEqual(auArret, { disque: [false, true], publies: 0 }, "rien n'est renommé ni dit « mis de côté » tant que la salle peut écrire : l'arrêt passe d'abord");
+    assert.deepEqual(aLaRelance, [true, false], "la relance à neuf suit le renommage, fait avec le contenu");
+    assert.deepEqual(
+      a.relances.map((r) => [r.cause, r.startId]),
+      [["hors-controle", START_RELANCE]],
+      "une seule relance, celle du démarrage balayé AVANT la quarantaine (son superviseur ne serait jamais prêt)",
+    );
     const detection = a.detections()[0] as OmoHorsControleData;
     assert.deepEqual(detection.signales, [{ chemin: attendu, genre: "git-quarantaine" }]);
     assert.equal(a.faits.find((f) => f.kind === "detection")?.data.quarantaine, 1);
   });
 
-  it("relecture 2ter-vague-4 : pendant la quarantaine, la salle remplace un dossier du chemin par une jonction vers un autre projet → rien n'est renommé à travers elle, le .git protégé de l'autre projet reste en place, le chemin est « à relire », jamais « mis de côté »", async (t) => {
+  it("relecture 2ter-vague-4, second tour : salle jamais vue relancée après l'arrêt (state.json inchangé) → RIEN n'est renommé, aucune relance demandée, chemin « à relire », jamais « mis de côté »", async (t) => {
+    const a = monter(t, { relance: "aucune" });
+    await a.demarrer();
+    a.ouvrirDemande();
+    ecrire(a.workspace, "proj/src/.git/HEAD", "ref: refs/heads/piege\n");
+    a.repos();
+    await until(() => a.arrets.length === 1, 5_000);
+    // L'attente de la relance court sur l'horloge injectée : pas à pas jusqu'au-delà de sa borne, sans attendre le service.
+    for (let i = 0; i < 3 * (OMO_DETECTIONS_RELANCE_MAX_MS / OMO_DETECTIONS_VEILLE_MS) && a.detections().length === 0; i++) {
+      await a.avancerParPas(OMO_DETECTIONS_VEILLE_MS, OMO_DETECTIONS_VEILLE_MS);
+    }
+    await a.stable();
+    assertArret(a, "git-cree", { rootId: ROOT });
+    assert.ok(fs.existsSync(path.join(a.workspace, "proj/src/.git/HEAD")), "le .git créé reste en place");
+    assert.deepEqual(fs.readdirSync(path.join(a.workspace, "proj/src")).filter((nom) => nom.startsWith(".git.suspect")), [], "rien n'est renommé");
+    assert.deepEqual(a.relances, [], "aucune relance : rien n'a été mis de côté");
+    assert.deepEqual((a.detections()[0] as OmoHorsControleData).signales, [{ chemin: "proj/src/.git", genre: "ide-ci" }]);
+    assert.equal(a.faits.find((f) => f.kind === "detection")?.data.quarantaine, 0);
+    assert.ok(a.journal.dit("relance à neuf non vue"), a.journal.texte());
+    assert.ok(a.journal.dit("NON mis de côté"), a.journal.texte());
+  });
+
+  it("relecture 2ter-vague-4, second tour : démarrage suivant qui a déjà lancé opencode (la salle peut de nouveau écrire) → rien n'est renommé, chemin « à relire »", async (t) => {
+    const a = monter(t, { relance: "lancee" });
+    await a.demarrer();
+    a.ouvrirDemande();
+    ecrire(a.workspace, "proj/src/.git/HEAD", "ref: refs/heads/piege\n");
+    a.repos();
+    await a.stable();
+    assertArret(a, "git-cree", { rootId: ROOT });
+    assert.ok(fs.existsSync(path.join(a.workspace, "proj/src/.git/HEAD")), "le .git créé reste en place");
+    assert.deepEqual(a.relances, []);
+    assert.deepEqual((a.detections()[0] as OmoHorsControleData).signales, [{ chemin: "proj/src/.git", genre: "ide-ci" }]);
+    assert.ok(a.journal.dit("opencode déjà relancé"), a.journal.texte());
+  });
+
+  it("relecture 2ter-vague-4, second tour : la salle, tant qu'elle tourne, remplace un dossier du chemin par une jonction vers un autre projet → la quarantaine, faite après la relance, ne renomme rien à travers elle", async (t) => {
+    const a = monter(t);
+    await a.demarrer();
+    a.ouvrirDemande();
+    ecrire(a.workspace, "proj/src/a/.git/HEAD", "ref: refs/heads/piege\n");
+    // L'échange du constat, fait par la salle au moment où l'ANCIEN ordre renommait (avant l'arrêt), APRÈS toutes les
+    // vérifications du chemin ; ici, il arrive au premier nom de quarantaine essayé, quel que soit l'ordre.
+    const echange = echangerParLienAuLstat(t, a.workspace, ".git.suspect-", "proj/src/a", "autre");
+    let echangeAuArret: boolean | null = null;
+    a.auArret(() => {
+      echangeAuArret = echange.fait();
+    });
+    a.repos();
+    await a.stable();
+    assertArret(a, "git-cree", { rootId: ROOT });
+    assert.equal(echangeAuArret, false, "aucun nom de quarantaine n'est même essayé avant l'arrêt");
+    assert.equal(fs.readFileSync(path.join(a.workspace, "autre/.git/HEAD"), "utf8"), "ref: refs/heads/principale\n", ".git protégé de l'autre projet intact");
+    assert.deepEqual(fs.readdirSync(path.join(a.workspace, "autre")).filter((nom) => nom.startsWith(".git.suspect")), []);
+  });
+
+  it("relecture 2ter-vague-4, second rempart (la salle est déjà arrêtée à ce moment) : pendant la quarantaine, un dossier du chemin est remplacé par une jonction vers un autre projet → rien n'est renommé à travers elle, le .git protégé de l'autre projet reste en place, le chemin est « à relire », jamais « mis de côté »", async (t) => {
     const a = monter(t);
     await a.demarrer();
     a.ouvrirDemande();
@@ -800,7 +922,7 @@ describe("détection 6 : configuration apparue et .git créé (T-L23-e, D-2b-37)
     assert.equal(a.faits.find((f) => f.kind === "detection")?.data.quarantaine, 0);
   });
 
-  it("/workspace/.git créé → quarantaine puis arrêt (depuis A16 : seulement si un montage a bougé)", async (t) => {
+  it("/workspace/.git créé → arrêt puis quarantaine (depuis A16 : seulement si un montage a bougé)", async (t) => {
     const a = monter(t);
     await a.demarrer();
     a.ouvrirDemande();

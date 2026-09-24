@@ -18,12 +18,18 @@
 // - contrôle du disque (détections 6 et 7, fichiers signalés) : BORNÉ (bornes du pré-contrôle), au plus un toutes les 5 s après
 //   chaque outil terminé, et à chaque `session.idle`. Il relève TOUS les projets préparés, `/workspace` et son premier niveau
 //   (relevés de L19a) et les compare aux références du démarrage gardées par L19b ;
-// - quarantaine (D-2b-37) AVANT l'arrêt : chaque `.git` créé est renommé `.git.suspect-{horodatage}` par `renommerSansSuivreLiens`
-//   (L19a), jamais supprimé, jamais à travers un lien ; un renommage refusé est journalisé et le chemin reste listé « à relire ».
-//   La salle tourne encore à ce moment : `renommerSansSuivreLiens` tient le dossier d'accueil par son descripteur jusqu'au
-//   `rename` (relecture 2ter-vague-4), pour qu'un lien posé après ses vérifications ne fasse pas renommer le `.git` d'un autre projet ;
+// - quarantaine (D-2b-37) APRÈS l'arrêt, jamais pendant que la salle peut écrire (relecture 2ter-vague-4, second tour ; ordre
+//   inverse de la fiche L23c, qui la plaçait avant l'arrêt) : chaque `.git` créé est renommé `.git.suspect-{horodatage}` par
+//   `renommerSansSuivreLiens` (L19a), jamais supprimé, jamais à travers un lien ; un renommage refusé est journalisé et le chemin
+//   reste listé « à relire ». Le renommage se fait par CHEMIN : tant que la salle tourne, elle peut remplacer un dossier du chemin
+//   par un lien vers un autre projet entre les vérifications et le `rename`, et aucune tenue par descripteur n'est établie sur le
+//   partage de Docker Desktop. D'où l'ordre : arrêt, puis démarrage SUIVANT vu dans `state.json` (le conteneur qui a porté la
+//   demande est sorti, et avec lui tout ce que l'IA y avait lancé ; ce démarrage-là n'a pas lancé opencode), puis quarantaine,
+//   puis relance à neuf (le superviseur de ce démarrage a balayé le dossier de travail AVANT le renommage : il a vu le `.git` et
+//   ne lancerait jamais rien). Relance non vue dans `OMO_DETECTIONS_RELANCE_MAX_MS`, ou opencode déjà relancé : RIEN n'est renommé, chemin « à relire » ;
 // - l'arrêt : `tentatives-429` → `omoStop.run(…, "plafond-tentatives")`, toute autre cause → `omoStop.run(…, "hors-controle")`,
-//   précédé de l'événement `omo.hors-controle` (cause, fichiers signalés), du fait `detection` et du journal « hors-contrôle » ;
+//   précédé de l'événement `omo.hors-controle` (cause, fichiers signalés), du fait `detection` et du journal « hors-contrôle » —
+//   sauf quand un `.git` est à mettre de côté : ces trois-là suivent alors la quarantaine, dont ils disent le résultat ;
 // - `autonomy_decisions {par: "extension"}` et fait `decision` pour chaque partie d'outil terminée SANS `permission.asked` et
 //   listée « sans demande » par l'audit de L20 (§4.12 l.784) ; fichiers à relire listés en fin de demande.
 //
@@ -101,7 +107,7 @@ import {
   type OmoReglePermission,
 } from "./shared/omo-detections.ts";
 import { PRECHECK_BORNES, type PrecheckBornes } from "./shared/omo-precheck-rules.ts";
-import type { OmoEventMap, OmoPreparedProjects, OmoSignale, OmoStopCause } from "./shared/omo-types.ts";
+import type { OmoEventMap, OmoPreparedProjects, OmoSignale, OmoStopCause, OmoSupervisorState } from "./shared/omo-types.ts";
 
 // --- Délais et bornes (horloge injectée, jamais lus dans l'environnement) ---------------------------------------------------------
 
@@ -593,6 +599,20 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
     minuteries.add(poignee);
   };
 
+  /** Attentes en cours (relance attendue avant une quarantaine) : `fermer` les réveille toutes, jamais une promesse pendue. */
+  const reveils = new Set<() => void>();
+  const dormir = (ms: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      let poignee: unknown = null;
+      const reveil = (): void => {
+        if (!reveils.delete(reveil)) return;
+        if (poignee !== null) clock.clearTimer(poignee);
+        resolve();
+      };
+      reveils.add(reveil);
+      poignee = clock.setTimer(reveil, ms);
+    });
+
   // --- Lectures des ports, fermées en cas de doute ---------------------------------------------------------------------------------
 
   const lireDemande = (): OmoActiveRequest | null => {
@@ -894,8 +914,11 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
     p.signales.set(`${signale.genre}:${signale.chemin}`, signale);
   };
 
-  /** D-2b-37 : chaque `.git` créé est renommé, jamais supprimé, jamais à travers un lien, jamais s'il est protégé. */
-  const mettreEnQuarantaine = async (p: Periode, chemins: readonly string[]): Promise<number> => {
+  /**
+   * D-2b-37 : chaque `.git` créé est renommé, jamais supprimé, jamais à travers un lien, jamais s'il est protégé — et jamais tant que
+   * la salle peut écrire (`salleRelancee` faux : relance non vue, voir `attendreRelance`) : le chemin reste alors « à relire ».
+   */
+  const mettreEnQuarantaine = async (p: Periode, chemins: readonly string[], salleRelancee: boolean): Promise<number> => {
     const couverts = couvertsParProtection(p.gitProteges ?? []);
     let renommes = 0;
     for (const chemin of chemins) {
@@ -904,6 +927,12 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
         // Listé par install.ps1 : peut-être l'historique de l'utilisateur. Jamais renommé ; à relire, jamais dit « mis de côté ».
         noterSignale(p, { chemin, genre: "ide-ci" });
         log.warn("salle : .git protégé jamais mis de côté", { chemin });
+        continue;
+      }
+      if (!salleRelancee) {
+        // Renommer par chemin pendant que la salle peut écrire, c'est la laisser détourner le renommage par un lien (constat L23c).
+        noterSignale(p, { chemin, genre: "ide-ci" });
+        log.warn("salle : historique git créé NON mis de côté", { chemin, raison: "salle-non-relancee" });
         continue;
       }
       const resultat = await renommerSansSuivreLiens(deps.workspace, chemin, `${nom}.suspect-${horodatageQuarantaine(clock.now())}`);
@@ -937,20 +966,8 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
     }
   };
 
-  /**
-   * Une détection agit une fois par démarrage : un contrôle du disque déjà en cours quand un fait du flux arrête la salle ne
-   * demande pas un second arrêt. Elle agit même si la salle a été relancée entre-temps (contrôle de fin de demande plus lent que la
-   * relance) : les fichiers écrits pendant ce démarrage sont dans les références du suivant, qui ne les verra pas.
-   */
-  const agir = async (p: Periode, detection: OmoDetection, quarantaine: readonly string[]): Promise<void> => {
-    if (p.stoppee) return;
-    p.stoppee = true;
-    p.arret ??= { depuis: clock.now(), raison: "detection" };
-    const rootId = racineConcernee(p, detection);
-    p.demande = null;
-    // 1. Quarantaine AVANT l'arrêt (D-2b-37).
-    const renommes = await mettreEnQuarantaine(p, quarantaine);
-    // 2. Ce qui s'est passé : événement, fait, journal — la cause part AVANT l'arrêt, qui ne la reçoit pas (« hors-controle »).
+  /** Ce qui s'est passé : événement `omo.hors-controle`, fait `detection`, journal « hors-contrôle ». */
+  const publierDetection = (p: Periode, detection: OmoDetection, rootId: string | null, renommes: number, nonRenommes: number): void => {
     const signales = signalesDe(p);
     const donnees: OmoHorsControleData = { rootId, cause: detection.cause, signales, signalesIncomplet: p.signalesIncomplet };
     deps.hub.cockpit("omo.hors-controle", donnees, "omo");
@@ -967,15 +984,95 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
       sessionId: detection.detail.sessionId,
       chemins: detection.detail.chemins.length,
       quarantaine: renommes,
-      nonRenommes: quarantaine.length - renommes,
+      nonRenommes,
     });
-    // 3. L'arrêt (L23b).
-    const cause: OmoStopCause = detection.cause === "tentatives-429" ? "plafond-tentatives" : "hors-controle";
+  };
+
+  /** L'arrêt (L23b) ; un échec est journalisé, jamais avalé en silence. */
+  const arreter = async (rootId: string | null, cause: OmoStopCause): Promise<void> => {
     try {
       await deps.stop().run(rootId, cause);
     } catch (err) {
       log.warn("salle : arrêt après une détection en échec", { cause, error: errorMessage(err) });
     }
+  };
+
+  /**
+   * Relecture 2ter-vague-4, second tour : la salle a-t-elle été vue ARRÊTÉE puis RELANCÉE ? `state.json` est relu toutes les
+   * `OMO_DETECTIONS_VEILLE_MS`, `OMO_DETECTIONS_RELANCE_MAX_MS` au plus après la fin de l'arrêt. Seul un démarrage SUIVANT (un autre
+   * `startId`) le prouve : Docker ne relance le conteneur qu'une fois sorti celui qui a porté la demande, et tout ce que l'IA y avait
+   * lancé, programmes détachés compris, est tombé avec lui. La sonde de L23b n'en dit pas autant (un `/global/health` muet ne dit que
+   * la fin d'opencode), ni la phase « arret », publiée juste AVANT la sortie du superviseur. Ce démarrage ne doit pas avoir lancé
+   * opencode : son superviseur a balayé le dossier de travail avant tout renommage, il y a vu le `.git` et n'est donc jamais prêt
+   * (second verrou) ; une phase « opencode-lance » dit le contraire, et le doute l'emporte. Rend l'état de ce démarrage, `null` sinon.
+   */
+  const attendreRelance = async (p: Periode): Promise<OmoSupervisorState | null> => {
+    const echeance = clock.now() + OMO_DETECTIONS_RELANCE_MAX_MS;
+    for (;;) {
+      if (ferme) return null;
+      let etat: OmoSupervisorState | null = null;
+      try {
+        etat = await deps.control().readState();
+      } catch (err) {
+        log.warn("salle : état du superviseur illisible pendant l'attente de la relance", { error: errorMessage(err) });
+      }
+      if (etat !== null && etat.startId !== p.startId) {
+        if (etat.phase !== "opencode-lance") return etat;
+        log.warn("salle : opencode déjà relancé, aucun historique git mis de côté");
+        return null;
+      }
+      if (clock.now() >= echeance) {
+        log.warn("salle : relance à neuf non vue après l'arrêt, aucun historique git mis de côté", { attenteMs: OMO_DETECTIONS_RELANCE_MAX_MS });
+        return null;
+      }
+      await dormir(OMO_DETECTIONS_VEILLE_MS);
+    }
+  };
+
+  /**
+   * Après la quarantaine : le démarrage relancé a été balayé AVANT le renommage, par son superviseur (qui ne sera donc jamais prêt)
+   * et par L19b (qui l'a refusé et n'y revient jamais). Un stop-request de CE démarrage (omoControl y met le `startId` de l'état lu)
+   * fait sortir son superviseur : la relance suivante voit les dossiers renommés. Un échec est journalisé ; la salle reste alors en
+   * attente, et son état dit pourquoi (L26a).
+   */
+  const relancerApresQuarantaine = async (renommes: number): Promise<void> => {
+    try {
+      await deps.control().requestStop("hors-controle");
+      log.info("salle : relance à neuf demandée après la mise de côté", { renommes });
+    } catch (err) {
+      log.warn("salle : relance à neuf non demandée après la mise de côté", { error: errorMessage(err) });
+    }
+  };
+
+  /**
+   * Une détection agit une fois par démarrage : un contrôle du disque déjà en cours quand un fait du flux arrête la salle ne
+   * demande pas un second arrêt. Elle agit même si la salle a été relancée entre-temps (contrôle de fin de demande plus lent que la
+   * relance) : les fichiers écrits pendant ce démarrage sont dans les références du suivant, qui ne les verra pas.
+   *
+   * Sans `.git` à mettre de côté : ce qui s'est passé part AVANT l'arrêt, qui ne reçoit pas la cause (« hors-controle »). Avec :
+   * l'arrêt d'abord, la relance vue, la quarantaine, puis ce qui s'est passé, avec le résultat réel du renommage (relecture
+   * 2ter-vague-4, second tour : jamais de renommage pendant que la salle peut écrire).
+   */
+  const agir = async (p: Periode, detection: OmoDetection, quarantaine: readonly string[]): Promise<void> => {
+    if (p.stoppee) return;
+    p.stoppee = true;
+    p.arret ??= { depuis: clock.now(), raison: "detection" };
+    const rootId = racineConcernee(p, detection);
+    p.demande = null;
+    const cause: OmoStopCause = detection.cause === "tentatives-429" ? "plafond-tentatives" : "hors-controle";
+    if (quarantaine.length === 0) {
+      publierDetection(p, detection, rootId, 0, 0);
+      await arreter(rootId, cause);
+      return;
+    }
+    log.warn("salle : historique git créé, arrêt de la salle avant de le mettre de côté", { rootId, chemins: quarantaine.length });
+    await arreter(rootId, cause);
+    // La relance à neuf s'attend à partir de la FIN de l'arrêt (abandon et sonde : jusqu'à 35 s) ; la veille compte de même.
+    if (p.arret !== null) p.arret = { ...p.arret, depuis: clock.now() };
+    const relance = await attendreRelance(p);
+    const renommes = await mettreEnQuarantaine(p, quarantaine, relance !== null);
+    if (renommes > 0) await relancerApresQuarantaine(renommes);
+    publierDetection(p, detection, rootId, renommes, quarantaine.length - renommes);
   };
 
   // --- Actions de l'extension vues sans demande (§4.12 l.784) -----------------------------------------------------------------------
@@ -1239,6 +1336,8 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
       ferme = true;
       for (const poignee of minuteries) clock.clearTimer(poignee);
       minuteries.clear();
+      // Une quarantaine qui attendait la relance s'arrête là : rien n'est renommé (voir `attendreRelance`).
+      for (const reveil of [...reveils]) reveil();
       if (periode !== null) abandonner(periode);
       retirerOrigine();
       retirerConflits();

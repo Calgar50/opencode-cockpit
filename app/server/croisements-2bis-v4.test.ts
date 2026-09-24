@@ -18,7 +18,8 @@
 //   4. redémarrage du cockpit pendant une délégation → stop-request « redemarrage-cockpit », demande « interrompue », aucun appel
 //      qui écrive à la salle après la reprise, nouvelle confirmation exigée ;
 //   5. activité hors demande → arrêt ; deux en 10 min → suspendue ; réouverture confirmée → levée, et la salle REDÉMARRE ;
-//   6. `.git` créé pendant une demande → quarantaine AVANT l'arrêt, `.git` protégé jamais touché ;
+//   6. `.git` créé pendant une demande → arrêt, relance vue, quarantaine, relance à neuf (relecture 2ter-vague-4, second tour :
+//      jamais de renommage pendant que la salle peut écrire), `.git` protégé jamais touché ;
 //   7. « différé = direct » sur les faits que les vrais services écrivent, et l'action de l'extension sans demande (L23c) lue par
 //      le réducteur et la scène (L25b) : boucle orange, jamais un signe du cockpit ;
 //   8. le dépôt tel qu'il est livré (modules « tous », SALLE_OUVERTE fausse) : aucun service de la vague n'est construit, aucun
@@ -722,8 +723,8 @@ describe("croisement V4 (2 ter) n° 5 : activité hors demande → arrêt ; deux
 
 // --- 6. .git créé → quarantaine -----------------------------------------------------------------------------------------------------
 
-describe("croisement V4 (2 ter) n° 6 : .git créé pendant une demande → quarantaine puis arrêt", () => {
-  it("un dépôt créé dans une entrée ouverte en écriture est renommé .git.suspect-… AVANT l'arrêt ; le .git protégé du projet n'est jamais touché", async (t: TestContext) => {
+describe("croisement V4 (2 ter) n° 6 : .git créé pendant une demande → arrêt, relance, quarantaine, relance à neuf", () => {
+  it("un dépôt créé dans une entrée ouverte en écriture est renommé .git.suspect-… APRÈS l'arrêt et la relance de la salle (relecture 2ter-vague-4, second tour), puis la salle est relancée à neuf ; le .git protégé du projet n'est jamais touché", async (t: TestContext) => {
     const a = await atelier(t);
     await a.pret();
     const racine = await a.ouvrirSalle();
@@ -742,8 +743,19 @@ describe("croisement V4 (2 ter) n° 6 : .git créé pendant une demande → quar
     });
     assert.equal((await a.envoyer(racine)).status, 204);
     await until(() => a.controle(OMO_FICHIERS_CONTROLE.arret), OMO_DETECTIONS_BORNE_MS);
+    const premier = analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret));
+    assert.deepEqual([premier?.cause, premier?.startId], ["hors-controle", START_1]);
+    // L'arrêt passe d'abord : tant que la salle n'est pas vue relancée, rien n'est renommé ni dit « mis de côté ».
+    await until(() => a.etat()?.phase === "arret", 5_000);
+    assert.equal(fs.existsSync(cree), true, "rien n'est renommé tant que la salle n'est pas relancée");
+    assert.deepEqual(a.evenements("omo.hors-controle"), []);
+    // Docker relance le conteneur ; son superviseur balaie le dossier de travail AVANT toute quarantaine, y voit le .git créé et
+    // attend, sans jamais être prêt (second verrou).
+    a.publier({ ...etatDe(START_2, "attente"), workspaceGit: { verifieLe: Date.now(), limiteAtteinte: false, nonProteges: [`${PROJET}/src/.git`] } });
+    await until(() => a.evenements("omo.hors-controle").length === 1, 10_000);
     await a.settled();
-    assert.equal(analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret))?.cause, "hors-controle");
+    const relance = analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret));
+    assert.deepEqual([relance?.cause, relance?.startId], ["hors-controle", START_2], "relance à neuf du démarrage balayé avant la quarantaine");
     assert.equal(fs.existsSync(cree), false, "le .git créé n'est plus là");
     assert.equal(fs.readdirSync(path.join(a.dirApp, "src")).filter((nom) => /^\.git\.suspect-/.test(nom)).length, 1);
     assert.equal(fs.readFileSync(path.join(a.dirApp, ".git", "HEAD"), "utf8"), "ref: refs/heads/principale\n", ".git protégé intact");

@@ -777,15 +777,19 @@ export type ResultatRenommage = { ok: true; nom: string } | { ok: false; raison:
 const SUFFIXES_MAX = 50;
 
 /**
- * Manière de tenir le dossier d'accueil jusqu'au renommage (relecture 2ter-vague-4). La salle TOURNE quand L23c met un `.git` en
- * quarantaine (D-2b-37 : quarantaine AVANT l'arrêt), et elle peut écrire dans les entrées de premier niveau des projets préparés
- * (A16) : entre les vérifications et le `rename`, elle peut remplacer un dossier du chemin par un lien vers un autre projet, dont le
- * `.git` protégé serait alors renommé à travers ce lien.
+ * Manière de tenir le dossier d'accueil jusqu'au renommage (relecture 2ter-vague-4). Ce n'est qu'un SECOND rempart, jamais la
+ * garantie : entre les vérifications et le `rename`, quiconque peut écrire dans le dossier (la salle, dans les entrées de premier
+ * niveau des projets préparés, A16) peut remplacer un dossier du chemin par un lien vers un autre projet, dont le `.git` protégé
+ * serait alors renommé à travers ce lien. Ce qui ferme cette course, c'est que les appelants ne renomment jamais pendant que la
+ * salle peut écrire : L23c ne met un `.git` en quarantaine qu'une fois la salle arrêtée ET vue relancée (second tour de la
+ * relecture), et L23b ne renomme que dans `.omo`, que la salle ne peut pas écrire (A16).
  * - « descripteur » (Linux, où tourne le cockpit) : le dossier d'accueil est ouvert UNE fois ; son descripteur est vérifié (même
  *   `dev`/`ino` que le `lstat` d'avant l'ouverture, chemin rendu par `/proc/self/fd` égal au chemin réel attendu), puis chaque
- *   `lstat` et le `rename` passent par `/proc/self/fd/<fd>/<nom>`, donc par CE dossier, quoi qu'il arrive ensuite au chemin qui y
- *   menait. Juste avant le `rename`, le chemin du descripteur est relu : un dossier déplacé entre-temps ne renomme rien. `/proc`
- *   absent ou descripteur qui ne dit pas le bon dossier : rien n'est renommé (fermé en cas de doute) ;
+ *   `lstat` et le `rename` passent par `/proc/self/fd/<fd>/<nom>`. Juste avant le `rename`, le chemin du descripteur est relu : un
+ *   dossier déplacé entre-temps ne renomme rien. `/proc` absent ou descripteur qui ne dit pas le bon dossier : rien n'est renommé
+ *   (fermé en cas de doute). Sur un système de fichiers local, le renommage passe ainsi par CE dossier. Sur un dossier du poste
+ *   partagé par Docker Desktop (9p, grpcfuse), rien ne l'établit quand l'échange vient d'un autre conteneur ou du poste : le
+ *   serveur de fichiers peut résoudre le dossier tenu par son ancien chemin, qui mène alors au lien. Non mesuré, donc non promis ;
  * - « chemin » (hors Linux : les tests sous Windows ; le cockpit n'y tourne jamais) : aucun descripteur de dossier n'y permet de
  *   renommer. Chaque composant est revérifié juste avant le `rename` : la fenêtre est rétrécie, PAS fermée.
  */
@@ -898,8 +902,9 @@ async function renommerParChemin(baseReelle: string, segments: readonly string[]
  * Renomme `relatif` (sous `base`) en `nouveauNom`, sans jamais suivre un lien, sans jamais écraser et sans jamais supprimer
  * (D-2b-37, C2-16). Chaque composant est `lstat`é : un lien sur le chemin refuse tout. Le dossier d'accueil est vérifié par
  * `realpath` : il doit rester dans `base`. Si `nouveauNom` existe déjà, un suffixe est ajouté ; si aucun nom n'est libre, rien
- * n'est fait. La salle peut encore écrire pendant le renommage (quarantaine de L23c AVANT l'arrêt) : le dossier d'accueil est donc
- * TENU jusqu'au `rename` (`TENUE_DU_DOSSIER`), pour qu'un lien posé après les vérifications ne détourne pas le renommage.
+ * n'est fait. Le dossier d'accueil est TENU jusqu'au `rename` (`TENUE_DU_DOSSIER`) : second rempart contre un lien posé après les
+ * vérifications. La garantie reste à l'appelant : ne jamais renommer pendant que la salle peut écrire dans ce chemin (L23c attend
+ * l'arrêt puis la relance de la salle ; L23b ne renomme que dans `.omo`, jamais ouvert en écriture à la salle, A16).
  */
 export async function renommerSansSuivreLiens(base: string, relatif: string, nouveauNom: string): Promise<ResultatRenommage> {
   if (nouveauNom === "" || nouveauNom.length > 255 || /[\\/]/.test(nouveauNom) || nouveauNom === "." || nouveauNom === "..") {

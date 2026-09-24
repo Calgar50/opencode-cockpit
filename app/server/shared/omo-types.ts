@@ -236,8 +236,9 @@ export interface OmoEventMap {
   "omo.connection": { connected: boolean; error?: string };
   /**
    * rootId null : activité sans racine attribuable (hors demande). `signales` et `signalesIncomplet` : fichiers signalés et mis
-   * en quarantaine avant l'arrêt (D-2b-37 ; demandes de contrat de L26a et de L23c, reçues au train de V4) ; absents d'un émetteur
-   * qui ne les relève pas, et lus avec prudence par la page (web/pages/omo/salle-journal.ts).
+   * en quarantaine (D-2b-37 ; demandes de contrat de L26a et de L23c, reçues au train de V4) ; absents d'un émetteur qui ne les
+   * relève pas, et lus avec prudence par la page (web/pages/omo/salle-journal.ts). Quand un `.git` est à mettre de côté, l'événement
+   * suit l'arrêt, puis la relance et la quarantaine (relecture 2ter-vague-4) : il dit ce qui a VRAIMENT été renommé.
    */
   "omo.hors-controle": { rootId: string | null; cause: OmoDetectionCause; signales?: OmoSignale[]; signalesIncomplet?: boolean };
   "omo.recreation": { etat: OmoRecreationEtat; raison: OmoRecreationRaison };
