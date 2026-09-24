@@ -47,6 +47,10 @@ services:
   # --- Faux fournisseur Copilot (L21a), TLS sur 443 --------------------------------------------------------------------------
   banc-copilot:
     profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
     image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
     restart: "no"
     read_only: true
@@ -136,6 +140,10 @@ services:
   # --- Battement : le seul fil qui tient la salle en vie (G9) ----------------------------------------------------------------
   banc-battement:
     profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
     image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
     restart: "no"
     read_only: true
@@ -157,6 +165,10 @@ services:
   # --- Pré-contrôle : un `precheck-ok` par démarrage (et donc par relance à neuf, MB-1) ---------------------------------------
   banc-precheck:
     profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
     image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
     restart: "no"
     read_only: true
@@ -179,6 +191,10 @@ services:
   # --- Espion : le seul chemin de l'hôte vers la salle, et le relevé de chaque échange ---------------------------------------
   banc-espion:
     profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
     image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
     restart: "no"
     read_only: true
