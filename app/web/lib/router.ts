@@ -191,9 +191,13 @@ export function assistantsTabOf(view: AssistantsView): AssistantsTab | null {
 export function assistantsTabHref(tab: AssistantsTab): string {
   if (tab === "equipes") return assistantsHref({ mode: "equipes" });
   if (tab === "carte") return assistantsHref({ mode: "carte", element: null });
+  // --- équipes (it4) : fin ---
   // <c5:onglet-methodes-tab>
+  // Clôture 5b (A20) : le bloc de l'itération 4 est refermé juste au-dessus et rouvert juste en dessous, pour que cette ligne de
+  // la construction soit dans sa section et jamais dans le bloc d'une autre branche. Rien ne change à l'exécution.
   if (tab === "methodes") return assistantsHref({ mode: "methodes" });
   // </c5:onglet-methodes-tab>
+  // --- équipes (it4) : début ---
   return assistantsHref(LIST_VIEW);
 }
 

@@ -8,7 +8,8 @@ import { TEXTES as TEXTES_C5 } from "../../server/shared/construction-texts.ts";
 import { methodLabels, texteAssistantsEquipe } from "../../server/shared/methods-view.ts";
 import { getMethods } from "../lib/api-construction.ts";
 import { assistantsTabHref } from "../lib/router.ts";
-import { MethodsLibrary } from "./assistants/methods/MethodsLibrary.tsx";
+// Onglet « Méthodes » (L44f) : composant de la construction, dans son propre fichier depuis la clôture 5b (A20).
+import { MethodsTab } from "./assistants/methods/MethodsTab.tsx";
 // </c5:imports>
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -44,11 +45,6 @@ export function AssistantsPage() {
   if (teamView.mode === "equipe-modifier") {
     return <TeamEditor key={`modifier/${teamView.id}`} mode="modifier" id={teamView.id} advanced={advanced} />;
   }
-  // <c5:onglet-methodes>
-  // Itération 5 (L44f) : onglet « Méthodes » (#/assistants/methodes). Même page à onglets que l'itération 4 ; la bibliothèque
-  // de L44d y vit désormais seule, et la section « Méthodes » de la liste plus bas n'en garde que le lien.
-  if (teamView.mode === "methodes") return <MethodsTab advanced={advanced} />;
-  // </c5:onglet-methodes>
   if (teamView.mode === "equipes" || teamView.mode === "carte") {
     return (
       <AssistantsTabsPage current={teamView.mode}>
@@ -62,6 +58,13 @@ export function AssistantsPage() {
   }
   // --- équipes (it4) : fin ---
   const view = assistantsViewOf(route);
+  // <c5:onglet-methodes>
+  // Itération 5 (L44f) : onglet « Méthodes » (#/assistants/methodes). Même page à onglets que l'itération 4 ; la bibliothèque
+  // de L44d y vit désormais seule, et la section « Méthodes » de la liste plus bas n'en garde que le lien. La vue est lue sur
+  // l'adresse seule : l'onglet ne lit aucun paramètre d'adresse, et les vues de l'itération 4, rendues juste au-dessus, ne
+  // l'interceptent jamais (clôture 5b, A20 : section sortie du bloc de l'itération 4, sans rien changer à ce qui s'affiche).
+  if (view.mode === "methodes") return <MethodsTab advanced={advanced} />;
+  // </c5:onglet-methodes>
   if (view.mode === "nouveau") return <AssistantWizard key="nouveau" mode="nouveau" name={null} />;
   if (view.mode === "modifier" || view.mode === "completer") {
     const mode = view.mode === "modifier" ? "modifier" : "completer";
@@ -69,42 +72,6 @@ export function AssistantsPage() {
   }
   return <AssistantsList detail={view.mode === "detail" ? view.name : null} />;
 }
-
-// <c5:onglet-methodes-vue>
-/**
- * Onglet « Méthodes » (L44f) : la bibliothèque de L44d, sur la page à onglets de l'itération 4. Elle lit le catalogue
- * (`GET /api/methods`) et les assistants (`GET /api/assistants`) pour elle-même : l'onglet est une page à part entière, et la
- * liste des assistants n'est plus montée quand on y arrive. Lecture seule, aucun appel d'IA, aucun coût.
- */
-function MethodsTab({ advanced }: { advanced: boolean }) {
-  const assistants = useAsync(() => api.assistants(), []);
-  const methodes = useAsync(() => getMethods(), []);
-  const reloadRef = useRef<() => void>(() => undefined);
-  reloadRef.current = () => {
-    // « Utilisée par » et « déjà appliquée » se lisent dans les fichiers d'agent : les deux lectures vont de pair.
-    assistants.reload();
-    methodes.reload();
-  };
-  const onChanged = useCallback(() => reloadRef.current(), []);
-  // --- équipes (it4) : début ---
-  // Branchement de la construction SUR la page à onglets de l'itération 4, d'où les deux balises ici.
-  const page = (
-    <AssistantsTabsPage current="methodes">
-      <MethodsLibrary
-        catalogue={methodes.data}
-        erreur={methodes.error}
-        chargement={methodes.loading}
-        onReessayer={methodes.reload}
-        assistants={assistants.data?.assistants ?? null}
-        onChanged={onChanged}
-        avance={advanced}
-      />
-    </AssistantsTabsPage>
-  );
-  // --- équipes (it4) : fin ---
-  return page;
-}
-// </c5:onglet-methodes-vue>
 
 function Section({ title, count, subtitle, actions, children }: { title: string; count?: number; subtitle?: string; actions?: ReactNode; children: ReactNode }) {
   const id = useId();

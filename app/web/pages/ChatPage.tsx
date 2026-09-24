@@ -85,13 +85,13 @@ import type { ComposerDraftHandle } from "./chat/Composer.tsx";
 import type { TeamDraft } from "./chat/team/slots.ts";
 import { TeamLauncher } from "./chat/team/TeamLauncher.tsx";
 import { TeamRunCards } from "./chat/team/TeamRunCards.tsx";
-// <c5:composeur-prerempli>
-// Écoute du préremplissage de la saisie par [Envoyer à cet assistant] (5b, L42c) : dans les balises de l'it4, qui gardent
-// ensemble tout ce que ce fichier partagé emprunte à `chat/team/`.
-import { demandeRecopiee } from "./chat/team/team-transcript.ts";
-import { type ComposeurPrerempli, EVENEMENT_COMPOSEUR } from "./chat/team/team-view-model.ts";
-// </c5:composeur-prerempli>
 // --- équipes (it4) : fin ---
+// <c5:composeur-prerempli>
+// Écoute du préremplissage de la saisie par [Envoyer à cet assistant] (5b, L42c). Les deux noms viennent du dossier des équipes
+// par la passerelle de la construction : le bloc d'imports de l'itération 4, juste au-dessus, reste celui de H4, sans aucune
+// ligne de la construction dedans (clôture 5b, A20).
+import { type ComposeurPrerempli, demandeRecopiee, EVENEMENT_COMPOSEUR } from "./chat/methods/passerelle-equipe.ts";
+// </c5:composeur-prerempli>
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {

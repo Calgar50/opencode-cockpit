@@ -401,7 +401,9 @@ describe("methods-view : sections c5 des fichiers partagés", () => {
   it("page Assistants : groupe des assistants d'équipe, section Méthodes, catalogue marqué", () => {
     assert.ok(page.includes("texteAssistantsEquipe(equipiers.length)"), "« Assistants des équipes ({n}) »");
     assert.ok(page.includes("TEXTES_C5.partout.assistantsEquipe.phrase"), "phrase du groupe");
-    assert.ok(page.includes("<MethodsLibrary"), "section « Méthodes »");
+    // Clôture 5b (A20) : la bibliothèque est montée par l'onglet « Méthodes », dans son propre fichier, que la page appelle.
+    assert.ok(page.includes("<MethodsTab"), "onglet « Méthodes » appelé par la page");
+    assert.ok(lire("methods", "MethodsTab.tsx").includes("<MethodsLibrary"), "bibliothèque des méthodes montée par l'onglet");
     assert.ok(page.includes("EQUIPIER_ROLE"), "rôle lu, jamais un nom d'assistant en dur");
     assert.ok(cataloguegrid.includes("item.role === EQUIPIER_ROLE"), "catalogue : assistants d'équipe marqués");
   });

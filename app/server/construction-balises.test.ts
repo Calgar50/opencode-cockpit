@@ -6,7 +6,7 @@
 // Contrôles : chaque fichier de FICHIERS_PARTAGES_C5 existe (un fichier listé absent fait échouer) ; chaque croisement
 // `croisements-c5*.test.ts` du dépôt est dans la liste (§2.6, la tenue de la liste devient elle-même contrôlée) ; dans ce fichier
 // et dans tout fichier d'app/, e2e/, docs/ et README.md où une balise est trouvée, chaque balise ouverte est fermée, nommée et
-// non imbriquée.
+// non imbriquée — ni dans une autre section, ni avec un bloc de l'itération 4 dans un sens ou dans l'autre (clôture 5b, A20).
 // Ce test s'exclut lui-même : il cite les balises pour les reconnaître, sans en ouvrir aucune.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -118,20 +118,53 @@ const CANDIDATE_UNE = /<!--\s*\/?\s*c5:[^>]*-->|<\/?c5:[^>]*>/;
 /** Balise bien formée : Markdown « <!-- c5:nom --> » et « <!-- /c5:nom --> », ou « <c5:nom> » et « </c5:nom> ». */
 const BALISE = /^(?:<!--\s*(\/?)c5:([A-Za-z][\w-]*)\s*-->|<(\/?)c5:([A-Za-z][\w-]*)>)$/;
 
+/**
+ * Bornes d'un bloc de l'itération 4 (plan it4 §2.7), toutes formes de commentaire : les mots « début » ou « fin » après le nom
+ * du bloc. Clôture 5b (A20, §2.6 « sans imbrication », règle de FE4 « garder les deux blocs, sans imbrication ») : une section
+ * c5: n'est JAMAIS ouverte dans un bloc de l'itération 4, ni l'inverse — sinon un outil qui lit les blocs de l'itération 4 comme
+ * des résolutions de FE4 compterait du code de la construction pour de l'itération 4, et inversement.
+ */
+const BORNE_IT4 = /équipes \(it4\)\s*:\s*(début|fin)/g;
+
+// Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+/** Bornes de l'itération 4 pour les contrôles discriminants, assemblées : aucune n'est écrite d'un seul tenant dans ce fichier. */
+const IT4_DEBUT = "// --- équipes (it4) : " + "début ---";
+const IT4_FIN = "// --- équipes (it4) : " + "fin ---";
+const IT4_DEBUT_JSX = "{/* --- équipes (it4) : " + "début --- */}";
+const IT4_FIN_JSX = "{/* --- équipes (it4) : " + "fin --- */}";
+
 interface Violation {
   fichier: string;
   ligne: number;
   regle: string;
 }
 
-/** Balises d'un source : chacune fermée, nommée, non imbriquée. */
+/** Balises d'un source : chacune fermée, nommée, non imbriquée — ni dans une autre section c5:, ni avec un bloc de l'it4. */
 function verifierBalises(fichier: string, source: string): Violation[] {
   const problemes: Violation[] = [];
   const ligneDe = (at: number) => source.slice(0, at).split("\n").length;
   let ouverte: { nom: string; at: number } | null = null;
+  // Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+  // Bornes de l'itération 4 et balises de la construction, lues dans l'ordre du texte.
+  const bornes = [...source.matchAll(BORNE_IT4)].map((borne) => ({ at: borne.index ?? 0, debut: borne[1] === "début" }));
+  let blocIt4: number | null = null;
+  const avancerJusqua = (at: number) => {
+    while (bornes.length > 0 && (bornes[0]?.at ?? 0) < at) {
+      const borne = bornes.shift();
+      if (borne === undefined) break;
+      if (!borne.debut) {
+        blocIt4 = null;
+        continue;
+      }
+      if (ouverte) problemes.push({ fichier, ligne: ligneDe(borne.at), regle: `imbrication : bloc de l'itération 4 dans la section ${ouverte.nom}` });
+      blocIt4 = borne.at;
+    }
+  };
   for (const candidate of source.matchAll(CANDIDATE)) {
     const brut = candidate[0];
     const at = candidate.index ?? 0;
+    // Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+    avancerJusqua(at);
     const forme = BALISE.exec(brut);
     if (!forme) {
       problemes.push({ fichier, ligne: ligneDe(at), regle: `balise mal formée ou sans nom : ${brut}` });
@@ -139,6 +172,10 @@ function verifierBalises(fichier: string, source: string): Violation[] {
     }
     const fermante = (forme[1] ?? forme[3]) === "/";
     const nom = forme[2] ?? forme[4] ?? "";
+    // Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+    if (!fermante && blocIt4 !== null) {
+      problemes.push({ fichier, ligne: ligneDe(at), regle: `imbrication : section ${nom} dans le bloc de l'itération 4 ouvert ligne ${ligneDe(blocIt4)}` });
+    }
     if (!fermante) {
       if (ouverte) problemes.push({ fichier, ligne: ligneDe(at), regle: `balise imbriquée : ${nom} dans ${ouverte.nom}` });
       else ouverte = { nom, at };
@@ -211,6 +248,12 @@ describe("balises c5 : contrôles discriminants", () => {
     ["nom différent", "// <" + "c5:a>\n// </" + "c5:b>\n", "balise fermée par un autre nom"],
     ["sans nom", "// <" + "c5:>\n", "balise mal formée ou sans nom"],
     ["Markdown non fermée", "<!-- " + "c5:section -->\ntexte\n", "balise non fermée"],
+    // Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+    // Clôture 5b (A20) : les bornes de l'itération 4 sont assemblées ici, jamais écrites d'un seul tenant dans ce fichier.
+    ["section c5 dans un bloc de l'it4", `${IT4_DEBUT}\n// <` + "c5:a>\nx\n// </" + `c5:a>\n${IT4_FIN}\n`, "imbrication : section a dans le bloc"],
+    ["bloc de l'it4 dans une section c5", "// <" + `c5:a>\n${IT4_DEBUT}\nx\n${IT4_FIN}\n// </` + "c5:a>\n", "imbrication : bloc de l'itération 4 dans la section a"],
+    ["bloc JSX de l'it4 dans une section c5", "{/* <" + `c5:a> */}\n${IT4_DEBUT_JSX}\n<X />\n${IT4_FIN_JSX}\n{/* </` + "c5:a> */}\n", "imbrication : bloc"],
+    ["section Markdown dans un bloc de l'it4", "<!-- équipes (it4) : " + "début -->\n<!-- " + "c5:a -->\nx\n<!-- /" + "c5:a -->\n<!-- équipes (it4) : " + "fin -->\n", "imbrication : section a"],
   ];
 
   for (const [nom, source, attendu] of cas) {
@@ -236,6 +279,25 @@ describe("balises c5 : contrôles discriminants", () => {
       "<!-- /" + "c5:section -->",
       "const exception = 1; // c5",
       "balises " + "c5: citées en prose, sans chevrons",
+    ].join("\n");
+    assert.deepEqual(verifierBalises("essai.tsx", source), []);
+  });
+
+  // Clôture 5b (A20) : aucune imbrication entre les sections de la construction et les blocs de l'itération 4.
+  it("réussit : blocs de l'itération 4 et sections c5: côte à côte, jamais l'un dans l'autre (clôture 5b, A20)", () => {
+    const source = [
+      IT4_DEBUT,
+      "import { TeamX } from './x.ts';",
+      IT4_FIN,
+      "// <" + "c5:a>",
+      "import { Y } from './y.ts';",
+      "// </" + "c5:a>",
+      IT4_DEBUT_JSX,
+      "<TeamX />",
+      IT4_FIN_JSX,
+      "{/* <" + "c5:b> */}",
+      "<Y />",
+      "{/* </" + "c5:b> */}",
     ].join("\n");
     assert.deepEqual(verifierBalises("essai.tsx", source), []);
   });

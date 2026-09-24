@@ -332,7 +332,8 @@ export function ArchiveListView({
       {avecEquipe ? <TeamFilterNote charge={list} affichee={listeAffichee} racines={racines} erreur={equipes.error} /> : null}
       {/* </c5:equipe-filtre> */}
 
-      {/* <c5:equipe-filtre> seule la source de la liste change : le filtre est appliqué aux éléments déjà chargés */}
+      {/* <c5:equipe-filtre> */}
+      {/* Seule la source de la liste change : le filtre est appliqué aux éléments déjà chargés. */}
       <ArchiveResults
         list={listeAffichee}
         error={error}

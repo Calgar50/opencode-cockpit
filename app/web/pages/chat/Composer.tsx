@@ -172,6 +172,19 @@ export function Composer({
   // --- équipes (it4) : fin ---
 
   const commandName = /^\/([\w-]+)(?=\s|$)/.exec(text)?.[1] ?? null;
+  // --- équipes (it4) : début ---
+  /**
+   * L44f : une ÉQUIPE tient la saisie. Le lanceur (emplacement figé, propriété `team`) n'est posé que par la page du chat, et
+   * celle-ci ne met `disabled` QUE par le verrou d'équipe (`TeamRunCardsProps.onLockChange` → `teamLockProps` de ChatPage.tsx,
+   * D-eq-16) : les deux ensemble disent « une équipe est choisie dans cette conversation ». Ce que vous écrirez ira alors aux
+   * ÉTAPES de l'équipe, qui portent leurs propres méthodes (L42a) : la puce est éteinte et la phrase du §4.3 dit pourquoi. Rien
+   * n'est retiré en silence — les méthodes déjà retenues restent visibles et retirables.
+   * Ligne de la CONSTRUCTION dans un bloc de l'itération 4 : elle lit la propriété de l'emplacement, que web-equipes-slots.test.ts
+   * (contrat de T4w) n'admet qu'entre ces balises. Clôture 5b (A20) : le bloc est désormais VOISIN de la section
+   * c5:methodes-raccourci, jamais dedans ; l'exception est consignée pour la grande fusion (constats-5b.md).
+   */
+  const equipeChoisie = team !== undefined && disabled;
+  // --- équipes (it4) : fin ---
   // <c5:methodes-raccourci>
   // Le raccourci se repère sur le texte RÉELLEMENT ENVOYÉ (`text.trim()`, plus bas), comme ChatPage.tsx le fait de son côté :
   // « ␣/resume » est un raccourci pour l'envoi, alors que la ligne d'origine ci-dessus, qui lit le texte brut, ne le voit pas.
@@ -179,17 +192,6 @@ export function Composer({
   const raccourci = /^\/([\w-]+)(?=\s|$)/.exec(text.trimStart())?.[1] ?? null;
   // Message sans texte : le bloc seul ne serait une demande pour personne. Le refus est annoncé, comme celui du raccourci.
   const sansTexte = text.trim() === "";
-  // --- équipes (it4) : début ---
-  /**
-   * L44f : une ÉQUIPE tient la saisie. Branchement de la construction SUR l'emplacement de l'itération 4, d'où les deux
-   * balises ici. Le lanceur (emplacement figé, propriété `team`) n'est posé que par la page du chat, et celle-ci ne met
-   * `disabled` QUE par le verrou d'équipe (`TeamRunCardsProps.onLockChange` → `teamLockProps` de ChatPage.tsx, D-eq-16) : les
-   * deux ensemble disent « une équipe est choisie dans cette conversation ». Ce que vous écrirez ira alors aux ÉTAPES de
-   * l'équipe, qui portent leurs propres méthodes (L42a) : la puce est éteinte et la phrase du §4.3 dit pourquoi. Rien n'est
-   * retiré en silence — les méthodes déjà retenues restent visibles et retirables.
-   */
-  const equipeChoisie = team !== undefined && disabled;
-  // --- équipes (it4) : fin ---
   /** Phrase affichée sous la saisie quand les méthodes retenues ne partiront pas : l'équipe d'abord, puis les refus de L44e. */
   const raisonMethodes = equipeChoisie
     ? TEXTES_C5.partout.methodes.limites.equipe

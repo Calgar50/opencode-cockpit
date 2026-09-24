@@ -58,9 +58,11 @@ const PAGE_ASSISTANTS = "web/pages/AssistantsPage.tsx";
 const ONGLETS = "web/pages/assistants/AssistantsTabs.tsx";
 const ARCHIVE = "web/pages/archives/ArchiveDetail.tsx";
 const ROUTEUR = "web/lib/router.ts";
+/** Onglet « Méthodes » : sorti de la page par la clôture 5b (A20), qui n'y garde que son appel, dans sa section c5:. */
+const ONGLET_METHODES = "web/pages/assistants/methods/MethodsTab.tsx";
 
-/** Les six fichiers d'interface touchés par le paquet : les gardes communes valent pour tous. */
-const TOUCHES: readonly string[] = [COMPOSEUR, CARTE_RESULTAT, BOUTON, PAGE_ASSISTANTS, ONGLETS, ARCHIVE, ROUTEUR];
+/** Les fichiers d'interface touchés par le paquet : les gardes communes valent pour tous. */
+const TOUCHES: readonly string[] = [COMPOSEUR, CARTE_RESULTAT, BOUTON, PAGE_ASSISTANTS, ONGLETS, ARCHIVE, ROUTEUR, ONGLET_METHODES];
 
 // --- 1. Onglet « Méthodes » ------------------------------------------------------------------------------------------------
 
@@ -97,9 +99,12 @@ describe("liens de la construction : onglet « Méthodes »", () => {
     const onglets = sansCommentaires(lire(ONGLETS));
     assert.match(onglets, /methodes: "Méthodes"/);
     const page = sansCommentaires(lire(PAGE_ASSISTANTS));
-    assert.match(page, /if \(teamView\.mode === "methodes"\) return <MethodsTab advanced=\{advanced\} \/>;/);
-    assert.match(page, /<AssistantsTabsPage current="methodes">/);
-    assert.match(page, /<MethodsLibrary/);
+    // Clôture 5b (A20) : l'appel lit la vue de l'adresse seule, hors du bloc de l'itération 4 ; le composant vit dans son fichier.
+    assert.match(page, /if \(view\.mode === "methodes"\) return <MethodsTab advanced=\{advanced\} \/>;/);
+    assert.match(page, /import \{ MethodsTab \} from "\.\/assistants\/methods\/MethodsTab\.tsx";/);
+    const onglet = sansCommentaires(lire(ONGLET_METHODES));
+    assert.match(onglet, /<AssistantsTabsPage current="methodes">/);
+    assert.match(onglet, /<MethodsLibrary/);
   });
 
   it("la section « Méthodes » de la page est devenue un LIEN vers l'onglet : elle ne monte plus la bibliothèque", () => {

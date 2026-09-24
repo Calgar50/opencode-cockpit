@@ -508,9 +508,13 @@ describe("croisement V3 : l'onglet « Méthodes » est routé et monte le vrai c
     }
     // L'onglet monte la bibliothèque sur cette réponse : la page n'a plus d'autre montage (contrôle discriminant compris).
     const source = fs.readFileSync(path.join(import.meta.dirname, "..", "web/pages/AssistantsPage.tsx"), "utf8");
-    const montages = source.match(/<MethodsLibrary\b/g) ?? [];
+    // Clôture 5b (A20) : l'onglet vit dans son propre fichier (hors de la page, fichier partagé) ; la bibliothèque est toujours
+    // montée UNE fois en tout, et c'est dans l'onglet.
+    const onglet = fs.readFileSync(path.join(import.meta.dirname, "..", "web/pages/assistants/methods/MethodsTab.tsx"), "utf8");
+    const montages = [...(source.match(/<MethodsLibrary\b/g) ?? []), ...(onglet.match(/<MethodsLibrary\b/g) ?? [])];
     assert.equal(montages.length, 1, "la bibliothèque doit être montée une seule fois, dans l'onglet");
-    assert.match(source, /teamView\.mode === "methodes"/, "l'onglet « Méthodes » n'est pas branché sur la vue");
+    assert.equal((onglet.match(/<MethodsLibrary\b/g) ?? []).length, 1, "… et ce montage est celui de l'onglet");
+    assert.match(source, /\bview\.mode === "methodes"\) return <MethodsTab\b/, "l'onglet « Méthodes » n'est pas branché sur la vue");
     assert.match(source, /assistantsTabHref\("methodes"\)/, "la section « Méthodes » de la liste ne renvoie pas vers l'onglet");
   });
 });

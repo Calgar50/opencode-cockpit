@@ -285,11 +285,16 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 3, beforeOnceRelay: 1, abort: 1 };
     // </c5:inscriptions>
     assert.deepEqual(wiring.registrations, [
-      ...(["createSession", "sessionCreated"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       // <c5:inscriptions>
+      // La section couvre les TROIS lignes que la construction a touchées ici, et pas seulement la ligne ajoutée : le lot
+      // `["createSession", "sessionCreated"]` a perdu `beforeBilledSend` (la Seconde lecture s'inscrit avant le plancher, donc
+      // l'ordre attendu n'est plus celui d'un lot unique), et la ligne du plancher est réécrite à la main juste après celle de
+      // la Seconde lecture. Sans cette borne, ces deux lignes se fondraient dans le code de l'itération 1 à la grande fusion
+      // (reste n° 3 de la 5a, régularisé par la clôture 5b).
+      ...(["createSession", "sessionCreated"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
-      // </c5:inscriptions>
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      // </c5:inscriptions>
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeOnceRelay", module: "taskGuard" },
       { kind: "hook", key: "abort", module: "stopTree" },
