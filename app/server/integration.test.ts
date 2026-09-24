@@ -26,7 +26,7 @@ import type { SyncDueReason } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { type OcAssistantMessage, type OcSession, OpencodeClient, type OcUserMessage } from "./opencode.ts";
 import type { EventProcessor } from "./processor.ts";
-import { ProjectsService } from "./projects.ts";
+import { ForbiddenDirectoryError, ProjectsService } from "./projects.ts";
 import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
 import { SessionTracker } from "./sessions.ts";
@@ -325,6 +325,64 @@ describe("studio : confinement des chemins (régression revue de sécurité)", (
         studio.save("agents", { type: "project", project: "proj" }, { name: "agent-projet", frontmatter: { description: "x" }, body: "y" }),
         StudioValidationError,
       );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("portée projet au nom %XX (opencode l'ouvrirait ailleurs) : refusée avant toute lecture ou écriture, sans requête à opencode", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-studio-pct-"));
+    try {
+      const workspace = path.join(tmp, "workspace");
+      const trap = "st%2F..%2F..%2Fetc";
+      const legit = "Remise 20%";
+      const dir = path.join(workspace, trap);
+      fs.mkdirSync(path.join(dir, ".opencode", "agents"), { recursive: true });
+      fs.mkdirSync(path.join(dir, ".opencode", "skills", "fiche"), { recursive: true });
+      fs.mkdirSync(path.join(workspace, legit));
+      fs.writeFileSync(path.join(dir, "AGENTS.md"), "consignes du projet");
+      fs.writeFileSync(path.join(dir, ".opencode", "agents", "espion.md"), "---\ndescription: x\n---\ncorps\n");
+      fs.writeFileSync(path.join(dir, ".opencode", "skills", "fiche", "SKILL.md"), "---\nname: fiche\ndescription: x\n---\ncorps\n");
+      fs.writeFileSync(path.join(dir, ".opencode", "skills", "fiche", "notes.md"), "notes");
+      /** Arborescence du dossier refusé, contenu des fichiers compris : rien ne doit y être écrit, modifié ni supprimé. */
+      const snapshot = () =>
+        fs
+          .readdirSync(dir, { recursive: true, encoding: "utf8" })
+          .sort()
+          .map((rel) => (fs.statSync(path.join(dir, rel)).isFile() ? `${rel}=${fs.readFileSync(path.join(dir, rel), "utf8")}` : rel));
+      const untouched = snapshot();
+      const requests: string[] = [];
+      const client = {
+        request: async (method: string, route: string, options?: { directory?: string }) => {
+          requests.push(`${method} ${route} ${options?.directory ?? "(aucun)"}`);
+          return {};
+        },
+      } as unknown as OpencodeClient;
+      const env = { opencodeConfigDir: path.join(tmp, "oc-config"), workspaceDir: workspace, opencodeWorkspaceDir: "/workspace", projectConfig: true } as AppEnv;
+      const studio = new StudioService({ env, client, projects: new ProjectsService(env), control: {} as ControlService, log: createLogger("error") });
+      const scope = { type: "project", project: trap } as const;
+      const refused = (err: unknown) => err instanceof ForbiddenDirectoryError && err.message === "Nom de dossier non pris en charge (séquence %XX).";
+
+      // Lectures : jamais servies.
+      await assert.rejects(studio.getInstructions(scope), refused);
+      await assert.rejects(studio.list("agents", scope), refused);
+      await assert.rejects(studio.list("skills", scope), refused);
+      await assert.rejects(studio.get("agents", "espion", scope), refused);
+      await assert.rejects(studio.readSkillFile("fiche", "notes.md", scope), refused);
+      // Écritures : refusées avant d'écrire.
+      await assert.rejects(studio.saveInstructions(scope, "consignes remplacées"), refused);
+      await assert.rejects(studio.save("agents", scope, { name: "nouvel-agent", frontmatter: { description: "x" }, body: "y" }), refused);
+      await assert.rejects(studio.remove("agents", "espion", scope), refused);
+      await assert.rejects(studio.writeSkillFile("fiche", "notes.md", "remplacé", scope), refused);
+      await assert.rejects(studio.deleteSkillFile("fiche", "notes.md", scope), refused);
+      assert.deepEqual(snapshot(), untouched);
+      assert.deepEqual(requests, []);
+
+      // Témoin : « % » isolé, qu'opencode ne décode pas. Écriture faite, puis libération de l'instance de ce dossier.
+      await studio.saveInstructions({ type: "project", project: legit }, "consignes");
+      assert.equal(fs.readFileSync(path.join(workspace, legit, "AGENTS.md"), "utf8"), "consignes");
+      assert.deepEqual(requests, ["POST /global/dispose (aucun)", `POST /instance/dispose /workspace/${legit}`]);
+      assert.deepEqual(await studio.getInstructions({ type: "project", project: legit }), { content: "consignes", exists: true });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -630,8 +688,16 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     };
     hub = new EventHub();
     lookup = new OcLookup({ client, env, hub, log });
+    const projects = new ProjectsService(env);
+    // Studio réel pour les lectures et les instructions (AGENTS.md) : portée projet refusée avant tout accès (1.0.6).
+    const realStudio = new StudioService({ env, client, projects, control: {} as ControlService, log });
     // Studio simulé : les écritures réelles sont couvertes par les tests du lot assistants.
     const studio = {
+      list: realStudio.list.bind(realStudio),
+      get: realStudio.get.bind(realStudio),
+      getInstructions: realStudio.getInstructions.bind(realStudio),
+      saveInstructions: realStudio.saveInstructions.bind(realStudio),
+      readSkillFile: realStudio.readSkillFile.bind(realStudio),
       save: async (kind: string, _scope: unknown, input: { name: string; frontmatter: Record<string, unknown>; body: string }) => ({
         kind,
         name: input.name,
@@ -647,7 +713,6 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       remove: async () => true,
       ensureClassifierAgent: async () => undefined,
     } as unknown as StudioService;
-    const projects = new ProjectsService(env);
     // Services réels (même implémentation que main.ts) : niveaux d'IA et métadonnées d'assistants.
     const tiers = new TierService({ settings, catalog, ledger, env });
     const assistants = new AssistantService({ db, env, client, studio, lookup, tiers, ledger, settings, catalog, projects, hub, log });
@@ -1039,6 +1104,38 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
       fs.rmSync(path.join(tmp, legit), { recursive: true, force: true });
       lookup.invalidate();
+    }
+  });
+
+  it("Studio, projet au nom %XX : 403 forbidden-directory comme le proxy, en lecture comme en écriture, sans fichier écrit ni requête vers opencode", async () => {
+    const trap = "st%2F..%2F..%2Fetc";
+    fs.mkdirSync(path.join(tmp, trap));
+    fs.mkdirSync(path.join(tmp, "Remise 20%"));
+    settings.update({ ui: { mode: "avance" } });
+    try {
+      const scope = `?project=${encodeURIComponent(trap)}`;
+      const before = upstreamRequests.length;
+      const refused = [
+        await call("GET", `/api/studio/instructions${scope}`, authed),
+        await call("PUT", `/api/studio/instructions${scope}`, mutating, JSON.stringify({ content: "consignes" })),
+        await call("GET", `/api/studio/agents${scope}`, authed),
+        await call("GET", `/api/studio/agents/espion${scope}`, authed),
+        await call("GET", `/api/studio/skills/fiche/file${scope}&file=notes.md`, authed),
+      ];
+      for (const res of refused) {
+        assert.equal(res.status, 403, res.body);
+        assert.deepEqual(JSON.parse(res.body), { error: "forbidden-directory", message: "Nom de dossier non pris en charge (séquence %XX)." });
+      }
+      assert.deepEqual(fs.readdirSync(path.join(tmp, trap)), [], "aucun fichier écrit");
+      assert.deepEqual(upstreamRequests.slice(before).map((r) => `${r.method} ${r.url}`), [], "aucune requête vers opencode");
+      // Témoin : « % » isolé, qu'opencode ne décode pas, servi normalement.
+      const legit = await call("GET", `/api/studio/instructions?project=${encodeURIComponent("Remise 20%")}`, authed);
+      assert.equal(legit.status, 200, legit.body);
+      assert.deepEqual(JSON.parse(legit.body), { content: "", exists: false });
+    } finally {
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
+      fs.rmSync(path.join(tmp, "Remise 20%"), { recursive: true, force: true });
     }
   });
 

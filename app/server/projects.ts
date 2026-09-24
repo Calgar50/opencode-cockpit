@@ -25,6 +25,14 @@ const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,255}$/;
  */
 const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/;
 
+/**
+ * Dossier qu'opencode ouvrirait ailleurs (séquence %XX) : refusé comme par le proxy, en 403 « forbidden-directory » (http.ts).
+ * Reste une PathError pour les appelants qui les écartent toutes (list()).
+ */
+export class ForbiddenDirectoryError extends PathError {
+  override name = "ForbiddenDirectoryError";
+}
+
 export class ProjectsService {
   readonly #localRoot: string;
   readonly #ocRoot: string;
@@ -51,8 +59,8 @@ export class ProjectsService {
     const rel = this.#relativeInside(path, this.#localRoot, localPath);
     if (rel === null) throw new PathError("Chemin hors du workspace.");
     const opencodePath = rel === "" ? this.#ocRoot : this.#ocPath.join(this.#ocRoot, ...rel.split(path.sep));
-    // Écarte aussi ces dossiers de list() (#describe en échec) et du Studio.
-    if (PERCENT_ESCAPE.test(opencodePath)) throw new PathError("Nom de dossier non pris en charge (séquence %XX).");
+    // Écarte aussi ces dossiers de list() (#describe en échec) et du Studio (portée refusée avant toute lecture ou écriture).
+    if (PERCENT_ESCAPE.test(opencodePath)) throw new ForbiddenDirectoryError("Nom de dossier non pris en charge (séquence %XX).");
     return opencodePath;
   }
 

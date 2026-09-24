@@ -29,7 +29,7 @@ import type { OcAgentInfo, OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import { COPILOT_PRICES, type ModelPrice, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
 import type { EventProcessor } from "./processor.ts";
-import type { ProjectsService } from "./projects.ts";
+import { ForbiddenDirectoryError, type ProjectsService } from "./projects.ts";
 import type { QuotaSync } from "./quota.ts";
 import {
   AuthTickets,
@@ -626,6 +626,8 @@ export function createApp(deps: AppDeps): Hono {
         issues: err.issues.map((i) => ({ path: i.path.map(String).join("."), message: i.message })),
       });
     }
+    // Dossier qu'opencode ouvrirait ailleurs (séquence %XX, Studio) : même refus que le proxy, 403 et non 400.
+    if (err instanceof ForbiddenDirectoryError) return fail(c, 403, "forbidden-directory", err.message);
     if (err instanceof PathError || err instanceof RangeError) return fail(c, 400, "invalid", err.message);
     if (err instanceof OpencodeError) {
       return fail(c, err.status >= 500 ? 502 : err.status === 404 ? 404 : 400, "opencode", err.message, { detail: err.body });

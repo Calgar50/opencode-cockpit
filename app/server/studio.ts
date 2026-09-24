@@ -178,14 +178,24 @@ export class StudioService {
     }
   }
 
+  /**
+   * Dossier local d'un projet, seul point d'entrée des portées projet. Même règle que le proxy (toOpencodePath) : un dossier
+   * qu'opencode ouvrirait ailleurs (séquence %XX) lève ForbiddenDirectoryError (403) avant toute lecture ou écriture.
+   */
+  async #projectDir(project: string): Promise<string> {
+    const dir = await this.#d.projects.resolve(project);
+    this.#d.projects.toOpencodePath(dir);
+    return dir;
+  }
+
   async #base(scope: StudioScope): Promise<string> {
     if (scope.type === "global") return this.#d.env.opencodeConfigDir;
-    return path.join(await this.#d.projects.resolve(scope.project), ".opencode");
+    return path.join(await this.#projectDir(scope.project), ".opencode");
   }
 
   async #opencodeDirectory(scope: StudioScope): Promise<string | undefined> {
     if (scope.type === "global") return undefined;
-    return this.#d.projects.toOpencodePath(await this.#d.projects.resolve(scope.project));
+    return this.#d.projects.toOpencodePath(await this.#projectDir(scope.project));
   }
 
   #fileFor(kind: StudioKind, base: string, dir: string, name: string): string {
@@ -612,7 +622,7 @@ export class StudioService {
 
   async #instructionsFile(scope: StudioScope): Promise<string> {
     if (scope.type === "global") return path.join(this.#d.env.opencodeConfigDir, "AGENTS.md");
-    return path.join(await this.#d.projects.resolve(scope.project), "AGENTS.md");
+    return path.join(await this.#projectDir(scope.project), "AGENTS.md");
   }
 
   async getInstructions(scope: StudioScope): Promise<{ content: string; exists: boolean }> {

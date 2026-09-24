@@ -442,7 +442,7 @@ flowchart LR
 - **Proxy vers opencode en liste blanche :**
   - seules les routes utilisées par l'interface sont relayées : partage public, mise à jour à distance, injection d'identifiants, terminal, exécution shell directe et routes de lecture de fichiers (`/file*`) ne sont pas relayés ;
   - les dossiers transmis et les fichiers joints sont bornés au workspace ; seules les images collées font exception ;
-  - un dossier dont le nom contient une séquence `%` suivie de deux chiffres ou lettres de A à F (`%2F`, `%41`…) n'est ni proposé comme projet, ni transmis à opencode (1.0.6) : opencode décoderait ce nom une seconde fois et pourrait ouvrir un autre dossier. Un `%` isolé (`Remise 20%`) reste accepté ;
+  - un dossier dont le nom contient une séquence `%` suivie de deux chiffres ou lettres de A à F (`%2F`, `%41`…) n'est ni proposé comme projet, ni transmis à opencode, ni lu ou modifié par le Studio (1.0.6) : opencode décoderait ce nom une seconde fois et pourrait ouvrir un autre dossier. Un `%` isolé (`Remise 20%`) reste accepté ;
   - le cockpit n'envoie jamais à opencode l'en-tête `x-opencode-directory`, qui désignerait un dossier sans ce contrôle ;
   - dans une `/commande`, un texte contenant à la fois « ! » et un accent grave (syntaxe ``!`commande` ``) et les références `@fichier` qui sortiraient du workspace (résolues comme le fait opencode) sont refusés, car opencode les exécuterait ou les lirait sans demander d'autorisation.
 - **Conteneurs :** utilisateurs non-root, `cap_drop: ALL`, `no-new-privileges`, cockpit en système de fichiers en lecture seule, **aucun accès au socket Docker** (le redémarrage d'opencode passe par un fichier de contrôle).
