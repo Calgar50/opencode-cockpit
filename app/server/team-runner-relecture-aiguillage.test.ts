@@ -14,6 +14,8 @@
 // - D-eq-05 : un arrêt pendant le tour 2 clôt tout le lancement, et le plafond l'arrête au tour 2 comme à toute autre étape.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type {
   EqModule,
@@ -35,7 +37,7 @@ import { DELIVERABLE_TEXTS, METHODE_HEADER, STEP_SECTIONS, stepMessage } from ".
 import { renderMethodBlock } from "./shared/methods.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
 import { TEXTES } from "./shared/team-texts.ts";
-import type { Flow, FlowBlock, FlowEstimate, FlowStep, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
+import type { Flow, FlowBlock, FlowEstimate, FlowStep, TeamEstimateResponse, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent, FakeSession } from "./test-support/fake-opencode.ts";
 import { until } from "./test-support/helpers.ts";
@@ -1484,6 +1486,8 @@ function seedLancement(
     state: string;
     cause: string | null;
     lignes: Record<string, { state: string; sessionId: string | null; extrait: string | null }>;
+    /** Dossier du lancement ; défaut : la racine du faux (tour 3 : un sous-dossier, pour le pré-lancement RÉEL, P9). */
+    directory?: string;
   },
 ): void {
   h.db
@@ -1491,7 +1495,7 @@ function seedLancement(
       `INSERT INTO team_runs (id, team_titre, flow, flow_sha256, root_session_id, directory, state, cause, facultatifs, plafond, cost, confirmations, precisions, created_at, started_at)
        VALUES (:id, 'Enquête d''incident', :flow, 'f0', :root, :dir, :state, :cause, '[]', 1, 0, '{}', '[]', 1, 1)`,
     )
-    .run({ id: options.runId, flow: JSON.stringify(options.flow), root: options.rootId, dir: h.fake.directory, state: options.state, cause: options.cause });
+    .run({ id: options.runId, flow: JSON.stringify(options.flow), root: options.rootId, dir: options.directory ?? h.fake.directory, state: options.state, cause: options.cause });
   etapesDeclarees(options.flow).forEach(({ step, blocIndex, ordre }, index) => {
     const ligne = options.lignes[step.id] ?? { state: "prevue", sessionId: null, extrait: null };
     h.db
@@ -1514,3 +1518,150 @@ function seedLancement(
       });
   });
 }
+
+// --- Clôture 5b, tour 3 (D-5b-1) : accords de la reprise, sur le pré-lancement RÉEL ---------------------------------------------
+
+/** Assistant d'étape avec son IA propre : le pré-lancement RÉEL (L37p) estime et juge chaque étape sur l'IA de l'assistant. */
+const agentAvecIa = (name: string): FakeAgent => ({ ...stepAgent(name), model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, steps: 40 });
+
+/**
+ * Cockpit avec les modules d'équipes RÉELS — pré-lancement (L37p), exécuteur, verrous et routes d'incident — et AUCUN port
+ * surchargé : la reprise passe par les vraies règles du garde-fou (P6), du budget du mois (P7), du plafond (P8) et de l'empreinte.
+ * Le lancement travaille dans un sous-dossier du workspace, pour ne pas demander la confirmation « workspace » (P9).
+ */
+async function bancReel(t: TestContext, settings: Record<string, unknown> = {}): Promise<{ h: CockpitHarness; runner: TeamRunner; directory: string }> {
+  const h = await startCockpit(t, {
+    settings: { ui: { mode: "avance" }, ...settings },
+    modules: ["floors", "stopTree"],
+    equipes: ["teams", "teamPreflight", createTeamRunnerModule({ pollMs: 40, retryMs: 25, usageWaitMs: 300 }), "teamGuards"],
+  });
+  h.fake.setAgents([...h.fake.agents(), agentAvecIa(AGENT_SQL), agentAvecIa(AGENT_SCRIPT)]);
+  fs.mkdirSync(path.join(h.deps.env.workspaceDir, "projet"), { recursive: true });
+  return { h, runner: h.cockpit.equipes.eq.ports.runner as TeamRunner, directory: `${h.fake.directory}/projet` };
+}
+
+/** Budget du mois ÉPUISÉ par une dépense d'une autre conversation (réglages par défaut : 150 $, blockAtLimit). */
+function epuiserLeBudget(h: CockpitHarness, usd: number): void {
+  const maintenant = Date.now();
+  h.db
+    .prepare(
+      `INSERT INTO usage (message_id, session_id, root_id, provider_id, model_id, created_at, completed_at, cost_reported, cost, cost_source)
+       VALUES ('msg_budget', 'ses_autre', 'ses_autre', 'github-copilot', 'gpt-5-mini', ?, ?, ?, ?, 'reported')`,
+    )
+    .run(maintenant, maintenant, usd, usd);
+  h.deps.ledger.recompute();
+  assert.ok(h.deps.ledger.percentUsed() >= 100, `budget du mois épuisé : ${h.deps.ledger.percentUsed()} %`);
+}
+
+const confirmationsDe = (h: CockpitHarness, runId: string): unknown =>
+  JSON.parse((h.db.prepare("SELECT confirmations FROM team_runs WHERE id = ?").get(runId) as { confirmations: string }).confirmations);
+
+describe("Clôture 5b, tour 3 (D-5b-1) : les accords montrés par la boîte de la reprise, sur le pré-lancement RÉEL", () => {
+  it("pause « garde-fou budgétaire » reprise avec le budget du mois épuisé (réglages par défaut) : l'accord « budget » écrit dans la boîte la rend, puis VOTRE [Continuer] confirmé fait partir l'étape", async (t) => {
+    const { h, runner, directory } = await bancReel(t);
+    const runId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: duoFlow(),
+      state: "attente-budget",
+      cause: "budget",
+      directory,
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte faite." } },
+    });
+    epuiserLeBudget(h, 150);
+    await h.cockpit.startup();
+
+    const vue = runner.view(runId);
+    assert.deepEqual([vue?.state, vue?.pause?.kind], ["attente-budget", "budget"], "la pause du garde-fou survit au redémarrage");
+    assert.deepEqual(vue?.pause?.reestimation, { aucunLibre: false, possible: true });
+
+    // L'estimation, seule route qui lit opencode, annonce l'accord « budget » : la suite peut coûter plus que ce qui reste.
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const montree = estimation.json<TeamEstimateResponse>();
+    assert.equal(montree.blocage, null);
+    assert.deepEqual(montree.confirmations, ["budget"]);
+
+    // Sans l'accord, refus comme avant (P7) ; toute autre forme d'accord est refusée en 400. Aucun refus n'émet de requête (A4).
+    const avant = h.fake.requests.length;
+    const sansAccord = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: montree.estimateSha256 } });
+    assert.deepEqual([sansAccord.status, sansAccord.json<{ error: string }>().error], [409, "budget-insuffisant"]);
+    for (const confirmations of [{ budget: "oui" }, { workspace: true }, { budget: true, secret: true }, ["budget"], "budget", null]) {
+      const invalide = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+        headers: h.headers.confirmed,
+        body: { estimateSha256: montree.estimateSha256, confirmations },
+      });
+      assert.deepEqual([invalide.status, invalide.json<{ error: string }>().error], [400, "invalid"], JSON.stringify(confirmations));
+    }
+    assert.equal(h.fake.requests.length, avant, "aucun refus n'a émis de requête");
+    assert.equal(runner.view(runId)?.pause?.reestimation !== undefined, true, "la pause attend toujours son estimation");
+
+    // La boîte a ÉCRIT l'accord, votre confirmation le vaut : la pause revient avec son estimation, et rien ne part.
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: montree.estimateSha256, confirmations: { budget: true } },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    const revenue = confirme.json<TeamRunView>();
+    assert.deepEqual([revenue.state, revenue.pause?.kind, revenue.pause?.reestimation], ["attente-budget", "budget", undefined]);
+    assert.equal(revenue.plafond, montree.plafond, "le plafond d'arrêt est celui de l'estimation montrée");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(envois(h).length, 0, "la confirmation de l'estimation ne lance rien : la pause attend votre réponse");
+    assert.deepEqual(confirmationsDe(h, runId), {}, "l'accord de la reprise n'est jamais écrit dans le lancement");
+
+    // Garde-fou budgétaire (P6), inchangé : [Continuer] sans confirmation est refusé, VOTRE [Continuer] confirmé fait partir l'étape.
+    const sansConfirmation = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.mutating, body: {} });
+    assert.deepEqual([sansConfirmation.status, sansConfirmation.json<{ error: string }>().error], [409, "budget-guard"]);
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.01, stepMs: 5 });
+    const reponse = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.confirmed, body: {} });
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await until(() => {
+      const courante = runner.view(runId);
+      return courante && (courante.state === "terminee" || courante.state === "echec" || courante.state === "plafond") ? courante : undefined;
+    }, 8_000);
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.deepEqual(fini.steps.map((step) => `${step.stepId}:${step.tentative}:${step.state}`), ["a:1:terminee", "b:1:terminee"], "rien de déjà fait n'est refait");
+    assert.deepEqual(creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string } }).metadata?.etape), ["b"]);
+    assert.equal(envois(h).length, 1);
+    h.assertNoGlobalRestart();
+  });
+
+  it("pause « vérifier » reprise en mode Avancé avec un plafond maximum dépassé : l'accord « plafond » est exigé tel que la boîte l'a écrit", async (t) => {
+    const { h, runner, directory } = await bancReel(t, { teams: { maxCapUsd: 0.001 } });
+    const runId = "cccccccc-dddd-eeee-ffff-000000000000";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: pauseFlow(),
+      state: "attente-verification",
+      cause: "pause",
+      directory,
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte : trois journaux relevés." } },
+    });
+    await h.cockpit.startup();
+    assert.deepEqual(runner.view(runId)?.pause?.reestimation, { aucunLibre: false, possible: true });
+
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const montree = estimation.json<TeamEstimateResponse>();
+    assert.deepEqual(montree.confirmations, ["plafond"]);
+    const corps = (confirmations?: Record<string, true>) => ({ estimateSha256: montree.estimateSha256, ...(confirmations ? { confirmations } : {}) });
+    const sans = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps() });
+    assert.deepEqual([sans.status, sans.json<{ error: string }>().error], [409, "plafond-a-confirmer"]);
+    // Un accord que la boîte n'a pas écrit ne remplace pas celui qu'elle a écrit.
+    const autre = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps({ budget: true }) });
+    assert.deepEqual([autre.status, autre.json<{ error: string }>().error], [409, "plafond-a-confirmer"]);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps({ plafond: true }) });
+    assert.equal(confirme.status, 200, confirme.body);
+    const revenue = confirme.json<TeamRunView>();
+    assert.deepEqual([revenue.state, revenue.cause, revenue.pause?.kind, revenue.pause?.reestimation], ["attente-verification", "pause", "verification", undefined]);
+    assert.equal(envois(h).length, 0, "rien ne part avant votre réponse");
+    assert.deepEqual(confirmationsDe(h, runId), {}, "l'accord de la reprise n'est jamais écrit dans le lancement");
+    h.assertNoGlobalRestart();
+  });
+});

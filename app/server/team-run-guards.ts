@@ -211,6 +211,25 @@ export function cheminParPassages(store: TeamStore, run: RunRow): string[] {
       return false;
     });
 }
+
+/**
+ * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
+ * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
+ * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
+ * (400 invalid, sans aucune requête, A4).
+ */
+export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const brut = (parsed as Record<string, unknown>).confirmations;
+  if (brut === undefined) return {};
+  if (typeof brut !== "object" || brut === null || Array.isArray(brut)) return null;
+  const accords: { budget?: true; plafond?: true } = {};
+  for (const [cle, valeur] of Object.entries(brut)) {
+    if ((cle !== "budget" && cle !== "plafond") || valeur !== true) return null;
+    accords[cle] = true;
+  }
+  return accords;
+}
 // </c5:reprise-redemarrage>
 
 // --- Module -----------------------------------------------------------------------------------------------------------------------
@@ -431,15 +450,27 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       if (isRefusal(run)) return c.json(body(run), run.status);
       if (simpleFermees()) return c.json(body({ status: 403, code: "equipes-simple-fermees" }), 403);
       if (c.req.header(CONFIRM_HEADER) !== "1") return c.json(body({ status: 428, code: "confirmation-requise" }), 428);
-      const empreinte = relaunchEmpreinte(await c.req.json().catch(() => null));
+      const corps: unknown = await c.req.json().catch(() => null);
+      const empreinte = relaunchEmpreinte(corps);
       if (empreinte === null) return c.json(body({ status: 400, code: "invalid" }), 400);
       // <c5:reprise-redemarrage>
       const reprise = !RELAUNCHABLE.includes(run.state) && repriseAttendue(run);
       if (!RELAUNCHABLE.includes(run.state) && !reprise) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // Tour 3 : les accords (budget P7, plafond P8) que la boîte de la reprise vous a montrés. Une relance de l'itération 4 ne les
+      // lit pas : son comportement ne change pas.
+      const accords = reprise ? accordsDeReprise(corps) : {};
+      if (accords === null) return c.json(body({ status: 400, code: "invalid" }), 400);
       // </c5:reprise-redemarrage>
       const rebuilt = rebuildRunBody(eq, store, run, empreinte);
       // D-eq-27 : textes purgés avec la conversation → la demande n'est plus reconstituable, la suite ne repart pas.
       if (rebuilt === null) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      // Clôture 5b (D-5b-1, tour 3) : ce que la boîte a montré et que vous avez confirmé vaut accord, comme sur la feuille de
+      // lancement. Sans cela, une pause « garde-fou budgétaire » reprise avec un budget du mois épuisé était refusée
+      // « budget-insuffisant » à chaque confirmation, et seul [Arrêter l'équipe] en sortait. Toutes les autres gardes du
+      // pré-lancement restent (P6 par l'en-tête, empreinte, grammaire, configuration, trop d'équipes).
+      if (reprise) rebuilt.confirmations = { ...rebuilt.confirmations, ...accords };
+      // </c5:reprise-redemarrage>
       const input: PreflightInput = {
         team: teamRowOfRun(eq, run),
         body: rebuilt,

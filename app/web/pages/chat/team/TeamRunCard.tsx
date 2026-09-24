@@ -33,7 +33,7 @@ import {
   teamPauseElementId,
 } from "./team-view-model.ts";
 // <c5:reprise-redemarrage>
-import { repriseApresEstimation, repriseDebut } from "./team-view-model.ts";
+import { corpsDeReprise, repriseApresEstimation, repriseDebut } from "./team-view-model.ts";
 // </c5:reprise-redemarrage>
 // <c5:relance-perimee>
 import { confirmationReestimee, relancePerimee } from "./team-view-model.ts";
@@ -176,6 +176,8 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
    * Clôture 5b (D-5b-1) : [Refaire l'estimation de la suite] d'une pause reprise après un redémarrage du cockpit. Même suite que
    * la relance (D-eq-17, A4) : POST …/estimate d'abord (seules lectures), la boîte « Reprendre avec cette estimation ? » ensuite,
    * puis POST …/relancer avec l'EMPREINTE et x-cockpit-confirm: 1. Un refus prévisible (`blocage`) est dit, rien n'est envoyé.
+   * Tour 3 : les accords que l'estimation annonce (budget du mois, plafond maximum) sont écrits dans la boîte, et envoyés avec
+   * l'empreinte seulement quand la boîte les a écrits (`corpsDeReprise`).
    * Après la confirmation, la carte relit le lancement : la pause revient sans demande d'estimation, et c'est votre réponse qui
    * la fait repartir — sauf la pause « Le cockpit a redémarré », que la confirmation relance.
    * `dejaReestimee` : estimation refaite après un 409 `estimation-perimee` (relancerAvecEmpreinte) ; le bouton passe toujours
@@ -207,7 +209,9 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
       const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
       const suite = relanceApresConfirmation(confirmation, ok);
       if (suite === null) return;
-      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }), dejaReestimee, () => reprendreEstimation(true));
+      // Tour 3 : l'empreinte confirmée, et les accords (budget, plafond) que la boîte vient d'écrire — jamais d'autres.
+      const corps = corpsDeReprise(suite, confirmation);
+      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, corps), dejaReestimee, () => reprendreEstimation(true));
     })();
   }, [confirm, relancerAvecEmpreinte, run]);
   const reprendre = useCallback(() => reprendreEstimation(false), [reprendreEstimation]);

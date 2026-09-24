@@ -15,7 +15,7 @@ import { ecartSpecialistes, ecartTours, TEXTES as CONSTRUCTION } from "./shared/
 import { DELIVERABLE_TEXTS, injectionText } from "./shared/flow.ts";
 import { aucunDuLivrable } from "./shared/team-choice-view.ts";
 import { TEXTES } from "./shared/team-texts.ts";
-import type { StepRunView, TeamRunView } from "./shared/team-types.ts";
+import type { StepRunView, TeamConfirmation, TeamRunView } from "./shared/team-types.ts";
 import { buildTeamDeroule, ecartsDe, specialistesDuBloc } from "../web/pages/chat/team/deroule-model.ts";
 import { demandeRecopiee } from "../web/pages/chat/team/team-transcript.ts";
 import { buildTeamRunCard, etapesParTour, modelePause, modeleResultat, teamPauseElementId, toursParBloc, toursPrevusParBloc, verdictLigne } from "../web/pages/chat/team/team-view-model.ts";
@@ -656,8 +656,10 @@ describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre
     const section = withoutComments(carte.slice(debut, fin));
     const estimate = section.indexOf("teamRunsApi.estimate(run.id)");
     const boite = section.indexOf("await confirm({ title: confirmation.titre");
-    const relaunch = section.indexOf("teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte })");
-    assert.ok(estimate > 0 && boite > estimate && relaunch > boite, `estimate=${estimate} boite=${boite} relaunch=${relaunch}`);
+    // Tour 3 : le corps porte l'empreinte confirmée et les accords que la boîte a écrits (`corpsDeReprise`), bâti APRÈS la boîte.
+    const corps = section.indexOf("const corps = corpsDeReprise(suite, confirmation);");
+    const relaunch = section.indexOf("teamRunsApi.relaunch(run.id, corps)");
+    assert.ok(estimate > 0 && boite > estimate && corps > boite && relaunch > corps, `estimate=${estimate} boite=${boite} corps=${corps} relaunch=${relaunch}`);
     assert.match(section, /repriseApresEstimation\(pause, await teamRunsApi\.estimate\(run\.id\)\)/);
     assert.match(withoutComments(carte), /onReprendre=\{reprendre\}/);
 
@@ -725,8 +727,84 @@ describe("Clôture 5b : …/relancer refusé « estimation-perimee » depuis la 
     assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, \{ estimateSha256: suite\.empreinte \}\), dejaReestimee, \(\) => relancer\(true\)\);/);
     // [Refaire l'estimation de la suite] (clôture 5b) : le bouton passe `false` explicitement, jamais l'événement du clic.
     assert.match(code, /const reprendre = useCallback\(\(\) => reprendreEstimation\(false\), \[reprendreEstimation\]\);/);
-    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, \{ estimateSha256: suite\.empreinte \}\), dejaReestimee, \(\) => reprendreEstimation\(true\)\);/);
+    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, corps\), dejaReestimee, \(\) => reprendreEstimation\(true\)\);/);
     assert.match(code, /confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;[\s\S]*confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;/, "les deux boîtes le disent");
+  });
+});
+
+// --- Clôture de la 5b, tour 3 (D-5b-1) : les accords de la reprise sont ÉCRITS dans la boîte, et seuls eux sont envoyés ------------
+
+describe("Clôture 5b, tour 3 (D-5b-1) : la boîte d'une reprise écrit les accords annoncés, et votre confirmation ne vaut que pour eux", () => {
+  const R = E.reprise;
+  const pause = (kind: "budget" | "choix" | "redemarrage-cockpit") => ({
+    kind,
+    blocId: null,
+    message: "",
+    resultat: null,
+    suite: { typique: 0.12, maximum: 0.4 },
+    changement: null,
+    ...(kind === "choix" ? { choix: [{ stepId: "reseau", titre: "Réseau", propose: true }], raison: "", choixMax: 1 } : {}),
+    reestimation: { aucunLibre: false, possible: true },
+  });
+  const reponse = (confirmations: TeamConfirmation[]) => ({
+    estimate: { typique: 0.12, maximum: 0.4, plafond: 0.4, etapesFacturees: 1, depassementUnAppel: 0.02, relais: 0, parEtape: [] },
+    estimateSha256: "d".repeat(64),
+    problems: [],
+    plafond: 0.45,
+    confirmations,
+    blocage: null,
+    expireA: NOW,
+    deja: 0.05,
+  });
+  const montants = "Déjà dépensé : 0,05 $. Suite : ≈ 0,12 $, plafond 0,45 $.";
+  const budget = "La suite peut coûter jusqu'à 0,40 $, plus que ce qui reste sur le budget du mois : en confirmant, vous l'acceptez.";
+  const plafond = "Le plafond d'arrêt de cette équipe (0,45 $) dépasse le plafond maximum d'un lancement : en confirmant, vous l'acceptez.";
+
+  it("pause « garde-fou budgétaire », budget du mois épuisé : la boîte dit le budget AVANT la confirmation, qui vaut l'accord « budget »", () => {
+    const etape = VUE_MODELE.repriseApresEstimation(pause("budget"), reponse(["budget"]));
+    assert.equal(etape.genre, "confirmation");
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.deepEqual(confirmation, { titre: R.confirmationTitre, message: `${montants} ${budget} ${R.confirmationPause}`, empreinte: "d".repeat(64), accords: { budget: true } });
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite && confirmation);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "d".repeat(64), confirmations: { budget: true } });
+    // Refusée, la boîte n'envoie rien : ni accord, ni relance.
+    assert.equal(VUE_MODELE.relanceApresConfirmation(confirmation, false), null);
+  });
+
+  it("budget et plafond (Avancé) : les deux phrases, dans l'ordre de la feuille de lancement, et les deux accords — jamais un autre", () => {
+    const etape = VUE_MODELE.repriseApresEstimation(pause("choix"), reponse(["workspace", "budget", "plafond"]));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.ok(confirmation);
+    assert.equal(confirmation.message, `${montants} ${budget} ${plafond} ${R.confirmationPause}`);
+    assert.deepEqual(confirmation.accords, { budget: true, plafond: true }, "« workspace » vient du lancement, jamais de la reprise");
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "d".repeat(64), confirmations: { budget: true, plafond: true } });
+    // Une estimation refaite après un 409 `estimation-perimee` garde ses accords, écrits dans sa propre boîte.
+    assert.deepEqual(VUE_MODELE.confirmationReestimee(confirmation).accords, { budget: true, plafond: true });
+  });
+
+  it("aucun accord annoncé : ni phrase ni accord, et le corps reste exactement celui de l'itération 4", () => {
+    const etape = VUE_MODELE.repriseApresEstimation(pause("redemarrage-cockpit"), reponse([]));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.ok(confirmation);
+    assert.deepEqual(confirmation, { titre: R.confirmationTitre, message: `${montants} ${R.confirmationReprend}`, empreinte: "d".repeat(64) });
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "d".repeat(64) });
+    // La relance de l'itération 4 n'écrit aucun accord dans sa boîte : sa suite est inchangée.
+    const relance = VUE_MODELE.relanceApresEstimation(reponse(["budget", "plafond"]));
+    assert.equal(relance.genre === "confirmation" && relance.confirmation.accords, undefined);
+  });
+
+  it("les phrases des accords sont vraies et reprennent les mots de la feuille de lancement", () => {
+    assert.match(R.accordBudget, /plus que ce qui reste sur le budget du mois/);
+    assert.match(R.accordPlafond, /dépasse le plafond maximum d'un lancement/);
+    for (const texte of [R.accordBudget, R.accordPlafond]) {
+      assert.match(texte, /en confirmant, vous l'acceptez\.$/, "la confirmation de la boîte vaut l'accord, et elle le dit");
+      assert.doesNotMatch(texte, /est affichée|facturé/, texte);
+    }
   });
 });
 

@@ -524,6 +524,17 @@ export interface TeamContinueBody {
 
 export interface TeamRelaunchBody {
   estimateSha256: string;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1, tour 3) : accords que la boîte « Reprendre avec cette estimation ? » vous a MONTRÉS et que vous avez
+   * confirmés, pour une pause reprise après un redémarrage du cockpit seulement — `budget` (P7, la suite coûte au plus plus que ce
+   * qui reste sur le budget du mois) et `plafond` (P8, Avancé : le plafond d'arrêt dépasse le plafond maximum d'un lancement).
+   * Sans eux, le pré-lancement de la reprise refusait « budget-insuffisant » à chaque fois, sans que la carte puisse rien
+   * confirmer : la pause « garde-fou budgétaire » que crée un budget épuisé n'avait plus que [Arrêter l'équipe]. Ils ne sont
+   * JAMAIS écrits dans le lancement, et une relance de l'itération 4 (lancement arrêté) ne les lit pas.
+   */
+  confirmations?: { budget?: true; plafond?: true };
+  // </c5:reprise-redemarrage>
 }
 
 /** POST /api/teams/examples/:id/install. */

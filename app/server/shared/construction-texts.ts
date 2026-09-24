@@ -418,6 +418,14 @@ export const TEXTES = {
         confirmationTitre: "Reprendre avec cette estimation ?",
         confirmationReprend: "L'équipe reprend dès votre confirmation.",
         confirmationPause: "La pause reste affichée : rien ne part avant votre réponse.",
+        /**
+         * Tour 3 (D-5b-1) : accords que la nouvelle estimation annonce (`confirmations` de POST …/estimate), écrits dans la boîte
+         * AVANT votre confirmation, qui les vaut (comme sur la feuille de lancement). `accordBudget` : P7, la suite peut coûter
+         * au plus plus que ce qui reste sur le budget du mois — c'est le cas d'une pause « garde-fou budgétaire » créée par un
+         * budget épuisé. `accordPlafond` : P8, en mode Avancé.
+         */
+        accordBudget: "La suite peut coûter jusqu'à {maximum} $, plus que ce qui reste sur le budget du mois : en confirmant, vous l'acceptez.",
+        accordPlafond: "Le plafond d'arrêt de cette équipe ({plafond} $) dépasse le plafond maximum d'un lancement : en confirmant, vous l'acceptez.",
       },
       // </c5:reprise-redemarrage>
       // <c5:relance-perimee>
