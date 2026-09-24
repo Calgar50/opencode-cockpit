@@ -312,9 +312,10 @@ export const TEXTES = {
       "choix-invalide": "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau.",
       // </c5:choix-invalide>
       // <c5:reprise-redemarrage>
-      // Clôture 5b (D-5b-1) : le refus arrive avant toute écriture et toute requête, d'où la fin de la phrase.
+      // Clôture 5b (D-5b-1) : le refus arrive avant toute écriture et toute requête, d'où la fin de la phrase. Elle ne dit pas
+      // QUAND le cockpit a redémarré : la pause « Le cockpit a redémarré » est née de ce redémarrage.
       "reestimation-requise":
-        "Le cockpit a redémarré pendant cette pause : refaites l'estimation de la suite avant de continuer. Rien n'a été envoyé ni facturé.",
+        "L'estimation de la suite n'a pas été gardée au redémarrage du cockpit : refaites-la avant de continuer. Rien n'a été envoyé ni facturé.",
       // </c5:reprise-redemarrage>
       "pas-relancable": "La suite de cette équipe ne peut pas être relancée : relancez l'équipe depuis la saisie.",
       "deja-ajoute": "Les résultats de cette équipe sont déjà dans la conversation.",

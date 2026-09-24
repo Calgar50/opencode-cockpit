@@ -624,6 +624,30 @@ describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre
     assert.match(P.erreurs["reestimation-requise"], /Rien n'a été envoyé ni facturé\.$/, "le refus arrive avant toute écriture et toute requête");
   });
 
+  it("pause « Le cockpit a redémarré » : la note ne dit pas que le redémarrage a eu lieu PENDANT la pause, c'est lui qui l'a créée (P3)", () => {
+    // La carte rend le message de la pause (« … pendant l'équipe », team-texts.ts), PUIS la note de la reprise : les deux phrases
+    // sont lues ensemble et doivent être vraies ensemble. La pause « Le cockpit a redémarré » naît du redémarrage (recover de
+    // team-runner.ts) ; les autres pauses ont pu le traverser. Une seule formulation, vraie pour toutes.
+    for (const possible of [true, false]) {
+      const modele = carteDe(pauseDe("redemarrage-cockpit", { aucunLibre: false, possible }));
+      assert.equal(modele.message, P.pauses["redemarrage-cockpit"].message);
+      assert.match(modele.message, /pendant l'équipe/, "le message de la pause dit QUAND le cockpit a redémarré");
+      const note = modele.reprise?.note ?? "";
+      assert.doesNotMatch(note, /pendant cette pause/, `possible=${possible} : « ${note} »`);
+      assert.match(note, /redémarrage du cockpit/, "la note dit ce qui s'est passé");
+    }
+    for (const kind of ["verification", "budget", "modification", "changement", "choix"] as const) {
+      for (const possible of [true, false]) {
+        const note = carteDe(pauseDe(kind, { aucunLibre: kind === "choix", possible })).reprise?.note ?? "";
+        assert.doesNotMatch(note, /pendant cette pause/, `${kind}, possible=${possible} : « ${note} »`);
+        assert.match(note, /redémarrage du cockpit/, `${kind} : la note dit ce qui s'est passé`);
+      }
+    }
+    // Même règle pour la phrase du refus, rendue par la même carte quand une réponse est refusée (409 reestimation-requise).
+    assert.doesNotMatch(P.erreurs["reestimation-requise"], /pendant cette pause/);
+    for (const texte of Object.values(R)) assert.doesNotMatch(texte, /pendant cette pause/, texte);
+  });
+
   it("carte : estimation AVANT la boîte, puis relancer avec l'empreinte ; les réponses qui attendent l'estimation sont désactivées", () => {
     const carte = read(CARD);
     const debut = carte.indexOf("// <c5:reprise-redemarrage>\n  /**");

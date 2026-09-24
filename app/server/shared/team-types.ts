@@ -374,8 +374,8 @@ export interface TeamPauseView {
   choixMax?: number;
   // <c5:reprise-redemarrage>
   /**
-   * Clôture 5b (D-5b-1) : le cockpit a redémarré pendant cette pause, et l'instantané de l'estimation, qui ne vit qu'en
-   * mémoire, n'a pas survécu. Toute réponse qui lancerait un appel facturé passe d'abord par une nouvelle estimation, MONTRÉE
+   * Clôture 5b (D-5b-1) : l'instantané de l'estimation, qui ne vit qu'en mémoire, n'a pas survécu à un redémarrage du cockpit
+   * (pendant la pause, ou pendant l'équipe pour la pause « Le cockpit a redémarré », que ce redémarrage a créée). Toute réponse qui lancerait un appel facturé passe d'abord par une nouvelle estimation, MONTRÉE
    * puis confirmée (POST …/estimate, puis POST …/relancer) ; la pause revient ensuite telle quelle, sauf celle du redémarrage,
    * que la confirmation relance. ABSENT quand l'estimation est à jour ou que rien de facturé ne reste à lancer.
    * `aucunLibre` : pause de choix où « Aucun ne convient » ne lancerait aucun appel — la réponse reste permise sans estimation.
