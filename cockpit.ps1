@@ -731,20 +731,33 @@ try {
                 }
             }
             Write-Host ''
-            Write-Host '--- Acces reseau depuis le conteneur opencode (proxy et certificats du cockpit, sans jeton) ---'
+            # 1.0.6 : opencode n'a qu'une sortie, le relais du cockpit. Un hote hors de sa liste fermee est refuse sur place (403 au
+            # CONNECT) : rien n'est envoye au proxy de l'entreprise, ce test ne peut donc declencher aucune alerte pour ces hotes.
+            Write-Host '--- Acces reseau depuis le conteneur opencode (seule sortie : le relais du cockpit ; certificats du cockpit, sans jeton) ---'
             $hostsToProbe = @('api.githubcopilot.com', 'api.business.githubcopilot.com', 'api.enterprise.githubcopilot.com', 'api.github.com', 'github.com', 'models.opencode.ai', 'registry.npmjs.org')
             foreach ($probeHost in $hostsToProbe) {
-                $probe = Invoke-DockerTimeout 25 exec $oc curl -s -m 15 --cacert /home/node/.cockpit/ca-bundle.pem -o /dev/null -D - -w 'code=%{http_code}' "https://$probeHost/"
+                # En-tetes sur /dev/stdout plutot que "-D -" : un argument "-" isole est refuse par powershell.exe -File (banc de test).
+                $probe = Invoke-DockerTimeout 25 exec $oc curl -s -m 15 --cacert /home/node/.cockpit/ca-bundle.pem -o /dev/null -D /dev/stdout -w 'code=%{http_code} relais=%{http_connect}' "https://$probeHost/"
                 $code = '---'
+                $relayCode = ''
                 if ($probe.Output -match 'code=(\d{3})') { $code = $Matches[1] }
+                if ($probe.Output -match 'relais=(\d{3})') { $relayCode = $Matches[1] }
                 if ($probe.TimedOut) { $verdict = 'pas de reponse (conteneur bloque ?)' }
                 elseif ($code -eq '---') { $verdict = 'test impossible (conteneur arrete ?)' }
-                elseif ($code -eq '000') { $verdict = 'INJOIGNABLE (proxy, pare-feu ou certificat)' }
+                elseif ($code -eq '000' -and $relayCode -eq '403') { $verdict = 'bloque sur place par le relais du cockpit (rien envoye au proxy de l entreprise)' }
+                elseif ($code -eq '000' -and $relayCode -eq '502') { $verdict = 'permis par le relais, mais refuse ou injoignable en amont (proxy de l entreprise)' }
+                elseif ($code -eq '000') { $verdict = 'INJOIGNABLE (relais du cockpit, proxy, pare-feu ou certificat)' }
                 elseif ($probe.Output -match '(?im)^x-github-request-id:') { $verdict = 'joignable' }
                 elseif ($probeHost -like '*github*') { $verdict = 'reponse sans marque GitHub : page de blocage du proxy ?' }
                 else { $verdict = 'joignable' }
                 Write-Host ('{0,-34} {1}  {2}' -f $probeHost, $code, $verdict)
             }
+            # Refus du relais journalises par le cockpit (une ligne par hote et par heure) : hotes seulement, jamais d'adresse complete.
+            $relayJournal = Invoke-DockerTimeout 20 compose logs --no-color --since 24h cockpit
+            $relayRefusals = @(($relayJournal.Output -split "`r?`n") | Where-Object { $_.Contains('"msg":"sortie d' + "'" + 'opencode refus') })
+            $relayHosts = @($relayRefusals | ForEach-Object { if ($_ -cmatch '"hote":"([!-~]{1,253}?)"') { $Matches[1] } } | Sort-Object -Unique)
+            if ($relayRefusals.Count -eq 0) { Write-Host 'Relais (24 h)   : aucun refus journalise' }
+            else { Write-Host ('Relais (24 h)   : {0} ligne(s) de refus, hotes bloques sur place : {1}' -f $relayRefusals.Count, (($relayHosts | Select-Object -First 15) -join ', ')) }
             Write-Host ''
             Write-Host '--- Journal d opencode : lignes d erreur recentes (secrets courants masques ; journal complet : page Diagnostic) ---'
             $journal = Invoke-DockerTimeout 20 logs --tail 300 $oc

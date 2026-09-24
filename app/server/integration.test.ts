@@ -466,6 +466,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let requestTimeout: string | null = null;
   /** Réponse de POST /session/:id/prompt_async retenue jusqu'à la résolution de cette promesse (demande facturée en vol). */
   let promptHold: Promise<void> | null = null;
+  /** Ouvertures de la fenêtre de connexion GitHub du relais d'opencode (1.0.6) demandées par le proxy. */
+  let loginOpens = 0;
   /** Demandes reçues par le faux opencode (« MÉTHODE chemin »), avec l'indicateur d'application du cockpit à la réception. */
   const applyingSeen: Array<[string, boolean]> = [];
   let env: AppEnv;
@@ -590,6 +592,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       tlsDir: path.join(tmp, "tls"),
       opensslPath: "/usr/bin/openssl",
       version: "test",
+      // Relais de sortie d'opencode désactivé (1.0.6) : aucune écoute de plus dans le harnais.
+      relay: null,
     };
     const base = setup();
     db = base.db;
@@ -712,6 +716,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       configQueue,
       // Harnais en HTTP : aucun certificat.
       tls: null,
+      egressLogin: {
+        open: () => {
+          loginOpens++;
+        },
+      },
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));
@@ -951,6 +960,24 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     const enterprise = { inputs: { deploymentType: "enterprise", enterpriseUrl: "https://Entreprise.ghe.com/" } };
     assert.equal(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "entreprise.ghe.com"), undefined);
     assert.notEqual(forbiddenProxyBody("POST", "/provider/github-copilot/oauth/authorize", enterprise, "autre.ghe.com"), undefined);
+  });
+
+  it("relais d'opencode (1.0.6) : github.com ouvert seulement par une demande de connexion Copilot acceptée", async () => {
+    const before = loginOpens;
+    const authorize = (inputs: Record<string, string>) =>
+      call("POST", "/api/oc/provider/github-copilot/oauth/authorize", mutating, JSON.stringify({ method: 0, inputs }));
+    // Connexion refusée (domaine GitHub Enterprise non déclaré) : la fenêtre reste fermée.
+    assert.equal((await authorize({ deploymentType: "enterprise", enterpriseUrl: "github-login.example" })).status, 403);
+    // Lectures et autres écritures relayées : jamais.
+    assert.equal((await call("GET", "/api/oc/provider/auth", authed)).status, 200);
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ title: "x" }))).status, 204);
+    assert.equal((await call("DELETE", "/api/oc/auth/github-copilot", mutating)).status, 200);
+    assert.equal(loginOpens, before);
+    // Demande du code puis attente de l'accord : ouverte (ou prolongée) à chaque fois.
+    assert.equal((await authorize({ deploymentType: "github.com" })).status, 204);
+    assert.equal(loginOpens, before + 1);
+    assert.equal((await call("POST", "/api/oc/provider/github-copilot/oauth/callback", mutating, JSON.stringify({ method: 0 }))).status, 204);
+    assert.equal(loginOpens, before + 2);
   });
 
   it("refuse les pièces jointes hors du workspace", async () => {

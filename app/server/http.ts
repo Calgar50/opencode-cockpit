@@ -16,6 +16,7 @@ import { type BillRefusal, billRefusal, ConfigWriteQueue } from "./config-queue.
 import type { ControlService } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
+import type { LoginWindow } from "./egress-policy.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { applyEdits, modify, parse as parseJsonc, parseTree } from "jsonc-parser";
@@ -152,6 +153,11 @@ export interface AppDeps {
   tls: LocalTls | null;
   /** Tickets de connexion à usage unique émis par /api/health (une instance propre si absente). */
   tickets?: AuthTickets;
+  /**
+   * Fenêtre de connexion à GitHub du relais d'opencode (1.0.6) : ouverte quand l'interface lance ou attend une connexion Copilot,
+   * seul moment où github.com (et le domaine GitHub Enterprise déclaré) peut être joint par opencode. Absente : relais désactivé.
+   */
+  egressLogin?: Pick<LoginWindow, "open">;
 }
 
 // --- Proxy opencode : liste blanche explicite ------------------------------------------
@@ -207,6 +213,9 @@ export const PROXY_RULES: ProxyRule[] = [
 ];
 
 const ALLOWED_QUERY = new Set(["directory", "roots", "limit", "query"]);
+
+/** Connexion à GitHub Copilot relayée (demande du code, puis attente de l'accord) : ouvre la fenêtre de connexion du relais. */
+const OAUTH_ROUTE = /^\/provider\/github-copilot\/oauth\/(authorize|callback)$/;
 
 /** Message du refus (409 redemarrage-en-cours) d'une demande facturée, selon son motif. */
 const BILL_REFUSAL_MESSAGES: Readonly<Record<BillRefusal, string>> = {
@@ -1282,6 +1291,8 @@ export function createApp(deps: AppDeps): Hono {
         }
         const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain);
         if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
+        // Connexion à Copilot demandée (code « device ») ou attendue : github.com ouvert à opencode par le relais pour 20 minutes.
+        if (method === "POST" && OAUTH_ROUTE.test(sub)) deps.egressLogin?.open();
         const replyTo = method === "POST" ? PERMISSION_REPLY_ROUTE.exec(sub)?.[1] : undefined;
         if (replyTo !== undefined) {
           const reply = parsePermissionReply(parsed);

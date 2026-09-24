@@ -214,6 +214,30 @@ try {
     Assert-Test 'diag HTTP : mode date et certificat non utilise' ($diagHttp.Host.Contains('Mode (.env)     : http, confirme le 2026-09-15T10:32:00Z UTC') -and $diagHttp.Host.Contains('Certificat      : non utilise (mode HTTP local)')) (Get-Extract $diagHttp.Host)
     Assert-Test 'diag HTTP : verdict A6b quand Edge semble autoriser HTTPS' ($diagHttp.Host.Contains('le mode HTTPS est probablement utilisable'))
 
+    # 1.0.6 : opencode ne sort que par le relais du cockpit. Code du CONNECT (relais=...) : 403 = refus sur place, 502 = permis mais
+    # refuse en amont. Journal du cockpit : une ligne par hote et par heure (message reel de egress-relay.ts, accents compris).
+    $relayLine = { param([string]$Hote) ('cockpit-1  | {{"t":"2026-09-24T08:00:00.000Z","level":"warn","msg":"sortie d{0}opencode refus{1}e par le relais du cockpit (refus local, rien n{0}est envoy{1} au proxy de l{0}entreprise)","hote":"{2}","port":443,"raison":"hote","refus":1}}' -f "'", [char]0xE9, $Hote) }
+    $relayJournal = ((@((& $relayLine 'registry.npmjs.org'), 'cockpit-1  | {"t":"2026-09-24T08:00:01.000Z","level":"info","msg":"cockpit a l ecoute"}',
+                (& $relayLine 'models.opencode.ai'), (& $relayLine 'models.opencode.ai')) -join "`n") + "`n")
+    $ocCurl = '^exec rg105-l7-opencode-1 curl .* https://{0}/\z'
+    $relayRules = @(
+        (New-Rule ($ocCurl -f 'api\.githubcopilot\.com') "x-github-request-id: A1`ncode=404 relais=200"),
+        (New-Rule ($ocCurl -f 'api\.enterprise\.githubcopilot\.com') 'code=000 relais=502'),
+        (New-Rule ($ocCurl -f 'models\.opencode\.ai') 'code=000 relais=403'),
+        (New-Rule ($ocCurl -f 'registry\.npmjs\.org') 'code=000 relais=403'),
+        (New-Rule '^compose -f \S.* logs --no-color --since 24h cockpit\z' $relayJournal))
+    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA -Extra $relayRules) + @((New-Rule '.*' '' 0)))
+    $diagRelay = Invoke-CockpitScript $HttpsDir @('diag')
+    $relayPart = $diagRelay.Host.Substring([Math]::Max(0, $diagRelay.Host.IndexOf('--- Acces reseau depuis le conteneur opencode')))
+    Assert-Test '1.0.6 diag : titre de la section reseau (seule sortie : le relais du cockpit)' ($diagRelay.Host.Contains('--- Acces reseau depuis le conteneur opencode (seule sortie : le relais du cockpit')) (Get-Extract $relayPart)
+    Assert-Test '1.0.6 diag : hote Copilot relaye et joignable' ($relayPart -cmatch 'api\.githubcopilot\.com +404  joignable') (Get-Extract $relayPart)
+    Assert-Test '1.0.6 diag : hote hors liste bloque sur place, rien envoye au proxy' ($relayPart -cmatch 'models\.opencode\.ai +000  bloque sur place par le relais du cockpit' -and $relayPart -cmatch 'registry\.npmjs\.org +000  bloque sur place') (Get-Extract $relayPart)
+    Assert-Test '1.0.6 diag : hote permis mais refuse en amont' ($relayPart -cmatch 'api\.enterprise\.githubcopilot\.com +000  permis par le relais, mais refuse ou injoignable en amont') (Get-Extract $relayPart)
+    Assert-Test '1.0.6 diag : refus du relais lus dans le journal du cockpit (hotes uniques, tries)' ($relayPart.Contains('Relais (24 h)   : 3 ligne(s) de refus, hotes bloques sur place : models.opencode.ai, registry.npmjs.org')) (Get-Extract $relayPart)
+    Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA) + @((New-Rule '.*' '' 0)))
+    $diagNoRelay = Invoke-CockpitScript $HttpsDir @('diag')
+    Assert-Test '1.0.6 diag : aucun refus du relais journalise' ($diagNoRelay.Host.Contains('Relais (24 h)   : aucun refus journalise'))
+
     Set-DockerScenario ((New-CockpitDockerRules -CrtFile $CrtA -JsonFile $JsonA) + @((New-Rule '.*' '' 0)))
     $diagBlocked = Invoke-CockpitScript $HttpsDir @('diag') { Set-SpyPolicy -Hive HKCU -Browser Edge -Name SSLErrorOverrideAllowed -Value 0 }
     Assert-Test 'J2-10 diag : verdict Edge interdit avec la strategie lue Bloque' ($diagBlocked.Host.Contains('Verdict : Edge interdit de passer l avertissement de certificat pour https://127.0.0.1:' + $Ports.A)) (Get-Extract $diagBlocked.Host)

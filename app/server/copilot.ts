@@ -358,12 +358,28 @@ export class CopilotApi {
   }
 
   /**
+   * Adresses d'API Copilot que le cockpit utilise (1.0.6) : celle de COCKPIT_COPILOT_API_URL si elle est imposée ; sinon l'adresse
+   * d'office, la dernière adresse vérifiée et celle de l'abonnement annoncée par GitHub. Jamais les autres adresses de la liste
+   * officielle : un pare-feu qui les bloque en ferait autant d'alertes, sans rien apprendre de plus.
+   */
+  probeApiHosts(): string[] {
+    const hostOf = (url: string | null | undefined) => (url ? new URL(url).hostname : null);
+    const domain = this.#d.githubEnterpriseDomain;
+    const candidates = this.#d.copilotApiUrl
+      ? [this.#d.copilotApiUrl]
+      : [DEFAULT_COPILOT_API_URL, domain ? `https://copilot-api.${domain}` : null, this.#status.endpoint?.url, this.#discovered?.url];
+    const known = (host: string) => COPILOT_API_HOSTS.includes(host) || (domain !== null && host === `copilot-api.${domain}`);
+    return [...new Set(candidates.map(hostOf).filter((host): host is string => host !== null && known(host)))];
+  }
+
+  /**
    * Joignabilité des adresses GitHub et Copilot à travers le proxy du cockpit, SANS jeton. Une réponse portant l'en-tête
-   * x-github-request-id vient de GitHub ; toute autre réponse est probablement une page de blocage du proxy.
+   * x-github-request-id vient de GitHub ; toute autre réponse est probablement une page de blocage du proxy. Seules les adresses
+   * que le cockpit utilise sont testées (probeApiHosts), plus api.github.com, github.com et le domaine GitHub Enterprise déclaré.
    */
   async probeHosts(): Promise<Reachability[]> {
     const domain = this.#d.githubEnterpriseDomain;
-    const hosts = [...COPILOT_API_HOSTS, "api.github.com", "github.com", ...(domain ? [`copilot-api.${domain}`, `api.${domain}`] : [])];
+    const hosts = [...this.probeApiHosts(), "api.github.com", "github.com", ...(domain ? [`api.${domain}`, domain] : [])];
     return Promise.all(
       hosts.map(async (host): Promise<Reachability> => {
         try {

@@ -62,6 +62,19 @@ RUN set -eu; \
     opencode --version; \
     npm cache clean --force
 
+# Extension @opencode-ai/plugin préinstallée (1.0.6) : sans elle, opencode l'installe lui-même à chaque chargement d'un dossier
+# (appel au registre npm, refusé par un proxy d'entreprise). Versions et empreintes figées par plugin-seed/package-lock.json et
+# vérifiées par npm ci ; aucun script d'installation, aucun paquet optionnel (binaires natifs). Le superviseur la recopie dans le
+# volume de configuration quand opencode la jugerait absente (volume d'une version précédente compris) : plugin-seed.mjs.
+COPY docker/opencode/plugin-seed/package.json docker/opencode/plugin-seed/package-lock.json /usr/local/share/cockpit/oc-plugin-seed/
+RUN set -eu; \
+    if [ "$COCKPIT_TLS_INSECURE" = "1" ]; then export npm_config_strict_ssl=false; fi; \
+    export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt; \
+    cd /usr/local/share/cockpit/oc-plugin-seed; \
+    npm ci --ignore-scripts --omit=optional --omit=dev --no-audit --no-fund --no-update-notifier; \
+    test -f node_modules/@opencode-ai/plugin/package.json; \
+    npm cache clean --force
+
 # Git : les dépôts Windows montés appartiennent à un autre utilisateur et utilisent CRLF.
 RUN git config --system safe.directory '*' \
  && git config --system core.autocrlf true \
@@ -70,6 +83,7 @@ RUN git config --system safe.directory '*' \
 COPY docker/opencode/entrypoint.sh /usr/local/bin/cockpit-opencode-entrypoint
 COPY docker/opencode/healthcheck.sh /usr/local/bin/cockpit-healthcheck
 COPY docker/opencode/opencode.default.jsonc /usr/local/share/cockpit/opencode.default.jsonc
+COPY docker/opencode/plugin-seed.mjs /usr/local/share/cockpit/plugin-seed.mjs
 
 RUN chmod 0755 /usr/local/bin/cockpit-opencode-entrypoint /usr/local/bin/cockpit-healthcheck \
  && mkdir -p /workspace /control /certs \
@@ -79,11 +93,23 @@ RUN chmod 0755 /usr/local/bin/cockpit-opencode-entrypoint /usr/local/bin/cockpit
 
 USER node
 WORKDIR /workspace
+# Aucune sortie hors GitHub Copilot (1.0.6) :
+# - OPENCODE_DISABLE_MODELS_FETCH : plus de téléchargement du catalogue (models.opencode.ai) au démarrage ni toutes les heures ;
+#   le catalogue vient de l'instantané compilé dans le binaire, la liste des IA Copilot de l'API Copilot elle-même ;
+# - OPENCODE_MODELS_URL locale : les rares commandes qui ignorent ce drapeau (auth login, models --refresh) échouent sur place ;
+# - npm hors ligne : aucune installation de paquet ne peut appeler le registre (erreur locale « only-if-cached »).
+# Réglées après toutes les étapes npm de la construction, qui ne les voient donc pas.
 ENV HOME=/home/node \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
     OPENCODE_DISABLE_CLAUDE_CODE=1 \
-    OPENCODE_DISABLE_SHARE=1
+    OPENCODE_DISABLE_SHARE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_MODELS_URL=http://127.0.0.1:9 \
+    npm_config_offline=true \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_update_notifier=false
 
 EXPOSE 4096
 HEALTHCHECK --interval=10s --timeout=6s --start-period=30s --retries=12 CMD ["cockpit-healthcheck"]
