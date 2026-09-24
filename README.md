@@ -9,7 +9,7 @@ Poste de pilotage web pour [opencode](https://opencode.ai), conçu pour travaill
 - **Archives** : chaque conversation est résumée, **classée automatiquement** (débogage, fonctionnalité, SQL, sécurité…), indexée en plein texte et exportée en Markdown dans un dossier rangé par catégorie.
 - **Coûts** : suivi en temps réel de la facturation Copilot au token face à votre budget mensuel, projection de fin de mois, alertes et garde-fou sur les modèles coûteux.
 
-Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles.
+Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles. Depuis la 1.0.6, opencode n'a plus aucun accès direct au réseau : sa seule sortie est le cockpit, qui ne laisse passer que GitHub Copilot et bloque tout le reste sur le poste (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)).
 
 L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers de l'IA : règles d'utilisation à accepter au premier lancement, réglages risqués masqués. Le **mode Avancé** (Paramètres › Affichage) donne accès au Studio et aux réglages fins.
 
@@ -166,6 +166,14 @@ Pour vérifier l'archive avant de la charger : `(Get-FileHash .\opencode-cockpit
 
 Dossier obtenu par ZIP : `update` affiche seulement un avertissement. Remplacez les fichiers par ceux de la nouvelle version, sans toucher à `.env`, `certs\`, `archives\` ni `backups\`, puis lancez `Unblock-File .\install.ps1, .\cockpit.ps1, .\CockpitTls.ps1` et relancez `.\install.ps1`.
 
+**Mise à jour vers la 1.0.6 :** plus aucun appel vers un site autre que GitHub Copilot ne part vers le proxy de l'entreprise (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)).
+
+1. `.\cockpit.ps1 update`, comme d'habitude. Le mode d'accès ne change pas : une installation en HTTP local reste en HTTP, une installation en HTTPS reste en HTTPS. Aucune reconnexion n'est demandée.
+2. Le mot de passe interne d'opencode est remplacé automatiquement, une seule fois : avant la 1.0.6, il pouvait partir en clair vers le proxy de l'entreprise. Ce mot de passe ne sert qu'entre les deux conteneurs : vous n'avez rien à faire.
+3. **Mode Load :** l'archive d'images de la 1.0.6 est obligatoire (`-Mode Load -ImagesArchive <archive>`). Avec les images 1.0.5, opencode n'aurait plus aucune sortie : le script s'arrête avant toute modification.
+4. Votre proxy doit être indiqué en `http://` (c'est presque toujours le cas). Sinon, `install.ps1` affiche un avertissement : corrigez-le avec `.\install.ps1 -Proxy http://<proxy>:<port>`.
+5. Pour vérifier après la mise à jour : `.\cockpit.ps1 diag`, section « Acces reseau depuis le conteneur opencode ».
+
 **Mise à jour vers la 1.0.5 :** c'est la version qui fait passer l'interface en HTTPS local. À lire avant de la lancer.
 
 1. **Poste géré :** extrayez le ZIP de la 1.0.5 **dans un dossier à part**, puis lancez `.\install.ps1 -TlsPreflight` depuis ce dossier. Rien n'est modifié : vous saurez si le HTTPS local passera, avant de toucher à votre installation.
@@ -205,11 +213,34 @@ Les proxys d'entreprise inspectent souvent le HTTPS en re-signant les certificat
 - Pour le changer : `.\install.ps1 -Proxy http://proxy.entreprise.lan:8080`.
 - Pour s'en passer : `.\install.ps1 -Proxy ''`. Ce choix est mémorisé.
 - Le trafic interne entre conteneurs ne passe jamais par le proxy.
+- Depuis la 1.0.6, seul le conteneur du cockpit utilise ce proxy, pour ses propres appels et pour ceux d'opencode qu'il laisse passer. Indiquez-le en `http://` (schéma absent = `http://`) : le cockpit ne sait pas passer par un proxy en `https://` ou `socks`, et `install.ps1` vous le signale.
 - Docker Desktop télécharge les images (image de base en mode Build, images GHCR en `-Mode Pull`) avec son propre réglage de proxy (**Settings › Resources › Proxies**), pas avec celui de `.env`.
 
 **Secours, vérification TLS désactivée :** `.\install.ps1 -InsecureTls`. À réserver au cas où l'export des certificats ne suffit pas. La vérification est alors coupée pour opencode **et** pour tous les appels sortants du serveur du cockpit, jeton Copilot compris. Un bandeau rouge le rappelle en permanence dans l'interface. Le réglage est mémorisé : `.\install.ps1 -SecureTls` réactive la vérification.
 
-> Les proxys qui exigent une authentification **NTLM/Kerberos** ne sont pas pris en charge directement par opencode. Il faut un relais local, à faire valider par la DSI.
+> Les proxys qui exigent une authentification **NTLM/Kerberos** ne sont pas pris en charge, ni par opencode, ni par le cockpit (identifiants `Basic` seulement, dans l'adresse du proxy). Il faut un relais local, à faire valider par la DSI.
+
+### Ce qui sort, ce qui est bloqué
+
+Depuis la 1.0.6, **tout est bloqué sauf ce dont le cockpit a besoin pour GitHub Copilot**, et ce blocage se fait **sur le poste**, avant le proxy de l'entreprise : un site refusé n'apparaît jamais dans les journaux du proxy, et ne peut donc déclencher aucune alerte.
+
+- **opencode n'a plus aucun accès direct au réseau.** Son conteneur est sur un réseau Docker « interne », sans route vers l'extérieur ni résolution de noms externes. Sa seule sortie est un relais du cockpit, qui n'écoute que sur ce réseau.
+- **Le relais ne laisse passer qu'une liste fermée**, en HTTPS (port 443) et par nom, jamais par adresse IP :
+
+| Adresse | Quand | Pourquoi |
+|---|---|---|
+| L'adresse de l'API Copilot **réellement utilisée** : celle de `-CopilotApiUrl` si vous l'avez imposée, sinon celle que le cockpit a vérifiée, sinon `api.githubcopilot.com` (ou `copilot-api.<domaine>` pour GitHub Enterprise) | Toujours | Liste des IA du compte et demandes d'IA |
+| `github.com` | Seulement pendant une connexion à Copilot lancée depuis le cockpit (20 minutes au plus) | Code de connexion, puis attente de votre accord |
+| Le domaine déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN` | Seulement pendant une connexion, s'il est déclaré | Même connexion, pour GitHub Enterprise |
+
+- **Tout le reste est refusé sur place**, sans aucune requête vers le proxy de l'entreprise : `models.opencode.ai`, `registry.npmjs.org`, `api.github.com`, les autres adresses Copilot, toute page web demandée par l'IA, et toute commande de l'IA qui tenterait de sortir (`curl`, `git push`, `npm`, `pip`…).
+- **Journal :** chaque refus est noté dans le journal du cockpit, au plus une fois par hôte et par heure, avec l'hôte, le port et la raison (jamais une adresse complète ni un secret). Pour le lire : `.\cockpit.ps1 diag` (résumé des 24 dernières heures), ou `docker logs opencode-cockpit-cockpit-1 --since 24h 2>&1 | Select-String "sortie d'opencode"`.
+- **Les sources elles-mêmes sont coupées**, pour qu'opencode ne tente même plus ces sorties : plus de téléchargement du catalogue des modèles (`models.opencode.ai`, au démarrage puis toutes les heures jusqu'à la 1.0.5), extension `@opencode-ai/plugin` préinstallée dans l'image au lieu d'être téléchargée depuis `registry.npmjs.org`, et npm hors ligne. La liste des IA Copilot vient toujours de l'API Copilot ; le catalogue embarqué dans opencode ne fournit que les descriptions.
+- **Appels d'opencode à lui-même :** jusqu'à la 1.0.5, avant chaque demande d'IA, opencode s'adressait à son propre serveur par une adresse qui passait par le proxy de l'entreprise, **en clair et avec le mot de passe de ce serveur**. Ces appels restent désormais dans le conteneur, et la mise à jour remplace ce mot de passe.
+- **Le cockpit lui-même** passe par le proxy de l'entreprise pour `api.github.com` (adresse de votre abonnement, solde facultatif) et pour l'adresse de l'API Copilot (liste des IA). Son test **Diagnostic › Tester la connexion Copilot** ne contacte plus que les adresses qu'il utilise.
+- **Le TLS reste vérifié de bout en bout** entre opencode et Copilot : le relais ne voit qu'un tunnel chiffré. Si votre proxy inspecte le TLS, son autorité doit toujours être dans `certs\`.
+
+> **Au travail, sans aucune alerte :** si le proxy n'ouvre que l'adresse de votre abonnement (Business ou Enterprise), imposez-la une fois : `.\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser`. Sans cela, le cockpit essaie d'abord l'adresse générale `api.githubcopilot.com`, à chaque démarrage puis environ une fois par heure, et le proxy verrait ce refus. Faites aussi les mises à jour en mode Load (archive de la release) : les modes Build et Pull téléchargent depuis Docker Hub, Debian, npm et GHCR.
 
 ### Pare-feu qui n'ouvre que l'adresse de votre abonnement Copilot
 
@@ -394,8 +425,9 @@ Le champ « IA » propose un niveau (Rapide, Équilibré, Expert) ou une IA pré
 ```mermaid
 flowchart LR
   B[Navigateur] -- "127.0.0.1:7777 uniquement, HTTPS<br/>(HTTP local si choisi)<br/>cookie __Host- + anti-CSRF" --> C[cockpit<br/>Node, lecture seule]
-  C -- "réseau Docker interne, HTTP<br/>Basic auth, routes en liste blanche" --> O[opencode<br/>non-root, sans capacités]
-  O -- "HTTPS via proxy + CA d'entreprise" --> G[(GitHub Copilot)]
+  C -- "réseau Docker interne, HTTP<br/>Basic auth, routes en liste blanche" --> O[opencode<br/>non-root, sans capacités,<br/>sans route vers l'extérieur]
+  O -- "seule sortie : relais du cockpit<br/>(liste fermée Copilot, tout le reste refusé sur place)" --> C
+  C -- "HTTPS via proxy + CA d'entreprise<br/>(TLS de bout en bout pour opencode)" --> G[(GitHub Copilot)]
   O -. "/workspace uniquement" .- W[(Vos projets)]
 ```
 
@@ -410,6 +442,8 @@ flowchart LR
 - **Proxy vers opencode en liste blanche :**
   - seules les routes utilisées par l'interface sont relayées : partage public, mise à jour à distance, injection d'identifiants, terminal, exécution shell directe et routes de lecture de fichiers (`/file*`) ne sont pas relayés ;
   - les dossiers transmis et les fichiers joints sont bornés au workspace ; seules les images collées font exception ;
+  - un dossier dont le nom contient une séquence `%` suivie de deux chiffres ou lettres de A à F (`%2F`, `%41`…) n'est ni proposé comme projet, ni transmis à opencode (1.0.6) : opencode décoderait ce nom une seconde fois et pourrait ouvrir un autre dossier. Un `%` isolé (`Remise 20%`) reste accepté ;
+  - le cockpit n'envoie jamais à opencode l'en-tête `x-opencode-directory`, qui désignerait un dossier sans ce contrôle ;
   - dans une `/commande`, un texte contenant à la fois « ! » et un accent grave (syntaxe ``!`commande` ``) et les références `@fichier` qui sortiraient du workspace (résolues comme le fait opencode) sont refusés, car opencode les exécuterait ou les lirait sans demander d'autorisation.
 - **Conteneurs :** utilisateurs non-root, `cap_drop: ALL`, `no-new-privileges`, cockpit en système de fichiers en lecture seule, **aucun accès au socket Docker** (le redémarrage d'opencode passe par un fichier de contrôle).
 - **Configuration opencode par défaut (profil « Prudent », installations neuves ; après une mise à jour depuis la 0.1.0, voir [Mettre à jour](#mettre-à-jour)) :**
@@ -432,8 +466,8 @@ flowchart LR
 - **Jeton Copilot confiné :** le cockpit ne l'envoie qu'à `api.github.com` (adresse de l'abonnement, solde facultatif) et aux adresses officielles de l'API Copilot (`api.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com`, `api.individual.githubcopilot.com`), ou au seul domaine GitHub Enterprise déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN`. Une adresse annoncée hors de cette liste est ignorée. Dans la configuration d'opencode, le verrou refuse pour le fournisseur Copilot toute autre adresse (`options.baseURL`, `api`, `models.<id>.provider.api`) et tout remplacement de son module d'accès (`npm`). La connexion GitHub Enterprise n'est acceptée que vers ce domaine.
 - **Sorties réseau (mesurées et vérifiées dans le code d'opencode) :**
   - l'IA ne passe que par GitHub Copilot ; tout modèle d'un autre fournisseur est refusé sans aucune connexion ;
-  - sans IA : le catalogue des modèles (`models.opencode.ai`), le registre npm au premier démarrage (noms de paquets seulement), GitHub pour la connexion, et les pages web que vous autorisez. Bloqués par un proxy, les deux premiers ne gênent pas opencode (mesuré en 1.0.1 : démarrage en 3 secondes, catalogue embarqué) ;
-  - le cockpit lui-même (1.0.1) : `api.github.com` et l'adresse de l'API Copilot, pour l'adresse de l'abonnement et la liste des IA du compte ; le test de connexion de **Diagnostic** contacte en plus ces adresses sans jeton ;
+  - depuis la 1.0.6, opencode ne sort plus que par le relais du cockpit, vers la liste fermée décrite dans [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué) ; tout le reste est refusé sur le poste, sans requête au proxy de l'entreprise. Le catalogue des modèles (`models.opencode.ai`) et le registre npm ne sont plus contactés du tout. Une page web ou une commande autorisées ne peuvent plus joindre qu'une adresse Copilot de cette liste ;
+  - le cockpit lui-même (1.0.1) : `api.github.com` et l'adresse de l'API Copilot, pour l'adresse de l'abonnement et la liste des IA du compte ; le test de connexion de **Diagnostic** ne contacte, sans jeton, que les adresses qu'il utilise (1.0.6) ;
   - aucune télémétrie, pas de partage public ; détail dans `docs/RECAPITULATIF.md`, section « Sécurité ».
 - **Données :**
   - secrets masqués dans les archives (titres compris) et les journaux ; les aperçus de demandes ne sont pas conservés ;
@@ -472,7 +506,11 @@ flowchart LR
 | « Lien de connexion invalide, expiré ou déjà utilisé », ou « Lien d'une ancienne version » | Le lien ne sert qu'une fois, pendant 10 minutes : relancez `.\cockpit.ps1 open`. |
 | Le conteneur cockpit redémarre en boucle, journal « HTTPS local impossible » | Droits du volume du certificat : relancez `.\install.ps1`, ou `.\cockpit.ps1 tls -Renew` pour repartir d'un certificat neuf. |
 | Un changement de `.env` semble ignoré | `.\cockpit.ps1 restart`, puis vérifiez **Diagnostic › Réseau et sécurité**. |
-| `git commit` ou `git push` échoue depuis l'agent | Normal : le conteneur n'a ni votre identité git ni vos identifiants. Commitez et poussez depuis Windows. |
+| `git commit` ou `git push` échoue depuis l'agent | Normal : le conteneur n'a ni votre identité git ni vos identifiants, et depuis la 1.0.6 plus aucun accès au réseau hors Copilot. Commitez et poussez depuis Windows. |
+| `.\cockpit.ps1 diag` : « bloque sur place par le relais du cockpit » | Normal pour tout site autre que Copilot (1.0.6). Pour l'adresse Copilot que vous utilisez : ce n'est pas celle que le cockpit a retenue. **Diagnostic › Tester la connexion Copilot**, ou imposez-la : `.\install.ps1 -CopilotApiUrl https://api.business.githubcopilot.com -NoBrowser`. |
+| `.\cockpit.ps1 diag` : « permis par le relais, mais refuse ou injoignable en amont » | Le proxy de l'entreprise refuse cette adresse Copilot (ou `HTTPS_PROXY` est illisible). Demandez son ouverture, ou imposez l'adresse de votre abonnement avec `-CopilotApiUrl`. |
+| Avertissement « Proxy en https:// » ou « socks5:// » pendant `install.ps1` | Le relais du cockpit ne passe que par un proxy `http://` : `.\install.ps1 -Proxy http://<proxy>:<port>`. |
+| Un dossier de projet n'apparaît pas, ou « Nom de dossier non pris en charge (séquence %XX) » | Son nom contient `%` suivi de deux chiffres ou lettres de A à F (`%2F`, `%41`…), qu'opencode interpréterait (1.0.6). Renommez le dossier. Un `%` isolé reste accepté. |
 | « Action réservée au mode Avancé (Paramètres › Affichage). » | Normal en mode Simple. Passez en mode Avancé dans **Paramètres › Affichage** si vous en avez besoin. |
 | L'IA d'un assistant n'est plus disponible, rien n'a été envoyé | L'IA enregistrée dans l'assistant a disparu de votre compte Copilot : **Paramètres › Niveaux d'IA › Mettre à jour**, ou modifiez l'assistant dans la page **Assistants**. |
 | « Seules les IA GitHub Copilot sont autorisées dans ce cockpit. » | La demande visait un autre fournisseur : choisissez une IA Copilot. |
