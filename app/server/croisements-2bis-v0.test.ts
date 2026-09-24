@@ -547,6 +547,12 @@ describe("croisements 2bis V0 : faux fournisseur (L21a)", () => {
  * L23b (même vague) retire aussi `shared/omo-limits.ts` : il branche l'arrêt de la salle (`omo-stop.ts`), dont la
  * suspension après deux activités hors demande en 10 min lit ces limites fixes (D-2b-29) au lieu de les recopier. Le module est
  * désormais parcouru comme un fichier de production (il n'importe rien).
+ * L23c (même vague) RETIRE deux noms, qu'il branche (détections en service, `omo-detections-service.ts`) : les
+ * règles de détection (`shared/omo-detections.ts`, module pur de L23a, déjà retiré par L22d) et les libellés des outils de
+ * l'extension qui agissent sans demande (`shared/omo-audit-texts.ts`, L20), raison des lignes `par: extension` du Journal du
+ * contrôle (§4.12). Sans ces retraits, le service branché, parcouru comme un fichier de production, serait pris en faute pour
+ * ses propres importations. La salle reste coupée pour autant : `SALLE_OUVERTE` est fausse et le module n'inscrit rien.
+ * Après la vague 4, seuls `egress-proxy.ts` (lancé à part), le superviseur et les trois fichiers de l'image restent ici.
  */
 const MODULES_SALLE_V0 = new Set([
   // V1
@@ -555,7 +561,6 @@ const MODULES_SALLE_V0 = new Set([
   "cockpit-guard.js",
   // V0
   "egress-proxy.ts",
-  "omo-audit-texts.ts",
   "supervisor-lib.mjs",
 ]);
 
