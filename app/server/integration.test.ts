@@ -407,7 +407,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   // Secret de session posé dans la base avant createApp (sinon un secret aléatoire y est créé au démarrage).
   const sessionSecret = "s".repeat(43);
   const cookie = `__Host-cockpit_session=${sessionValue(token, sessionSecret)}`;
-  const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
+  /** Demandes reçues par le faux opencode ; directoryHeader : en-tête x-opencode-directory reçu (jamais envoyé par le cockpit). */
+  const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string; directoryHeader?: string | string[] }> = [];
   const warnings: string[] = [];
   /** Lignes info et warn du journal, avec leurs champs : aucune valeur de configuration ne doit y partir. */
   const logLines: Array<{ level: "info" | "warn"; message: string; fields: Record<string, unknown> | undefined }> = [];
@@ -497,7 +498,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        upstreamRequests.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body });
+        upstreamRequests.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body, directoryHeader: req.headers["x-opencode-directory"] });
         const pathname = new URL(req.url ?? "/", "http://opencode.test").pathname;
         applyingSeen.push([`${req.method ?? ""} ${pathname}`, configQueue.applying]);
         const json = (status: number, data: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
@@ -999,6 +1000,68 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   it("refuse un dossier hors du workspace", async () => {
     assert.equal((await call("GET", "/api/oc/session?directory=%2Fetc", authed)).status, 403);
     assert.equal((await call("GET", "/api/oc/session?directory=%2Fworkspace%2F..%2Fetc", authed)).status, 403);
+  });
+
+  it("dossier dont le nom contient %XX (opencode le décoderait une seconde fois) : 403 sans aucune requête vers opencode", async () => {
+    // Nom créable par une IA, valide sous NTFS : opencode 1.18.30 ouvrirait son propre dossier de données (auth.json).
+    const trap = "a%2F..%2F..%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode";
+    const legit = "Remise 20%";
+    fs.mkdirSync(path.join(tmp, trap));
+    fs.mkdirSync(path.join(tmp, legit));
+    try {
+      const trapped = encodeURIComponent(`/workspace/${trap}`);
+      const prompt = JSON.stringify({ model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: text("x") });
+      const before = upstreamRequests.length;
+      const refused = [
+        await call("GET", `/api/oc/session?directory=${trapped}`, authed),
+        await call("GET", `/api/oc/find/file?query=auth.json&directory=${trapped}`, authed),
+        await call("POST", `/api/oc/session/ses_dd/prompt_async?directory=${trapped}`, confirmedHeaders, prompt),
+        await call("POST", `/api/oc/session/ses_dd/prompt_async?directory=${encodeURIComponent("/workspace/app/sous%2f..%2f..%2f..%2fetc")}`, confirmedHeaders, prompt),
+        await call("POST", "/api/chat/resolve", mutating, JSON.stringify({ directory: `/workspace/${trap}`, agent: "build" })),
+      ];
+      for (const res of refused) {
+        assert.equal(res.status, 403, res.body);
+        assert.equal(JSON.parse(res.body).error, "forbidden-directory", res.body);
+      }
+      assert.deepEqual(upstreamRequests.slice(before).map((r) => `${r.method} ${r.url}`), [], "aucune requête vers opencode");
+      // Liste des projets : le nom piège n'est jamais proposé, le nom légitime l'est.
+      const listed = JSON.parse((await call("GET", "/api/projects", authed)).body) as Array<{ name: string; directory: string }>;
+      assert.equal(listed.some((p) => p.name === trap), false);
+      assert.equal(listed.find((p) => p.name === legit)?.directory, `/workspace/${legit}`);
+      // Nom légitime (« % » isolé, qu'opencode ne décode pas) : relayé tel quel.
+      const session = await call("GET", `/api/oc/session?directory=${encodeURIComponent(`/workspace/${legit}`)}`, authed);
+      assert.equal(session.status, 200, session.body);
+      const relayed = upstreamRequests.at(-1);
+      assert.equal(new URL(relayed?.url ?? "/", "http://opencode.test").searchParams.get("directory"), `/workspace/${legit}`);
+      const resolved = await call("POST", "/api/chat/resolve", mutating, JSON.stringify({ directory: `/workspace/${legit}`, agent: "build" }));
+      assert.equal(resolved.status, 200, resolved.body);
+    } finally {
+      fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
+      fs.rmSync(path.join(tmp, legit), { recursive: true, force: true });
+      lookup.invalidate();
+    }
+  });
+
+  it("invariant : le cockpit n'envoie ni ne relaie jamais l'en-tête x-opencode-directory (opencode le lirait sans le paramètre directory)", async () => {
+    const header = { "x-opencode-directory": "/home/node/.local/share/opencode" };
+    const before = upstreamRequests.length;
+    assert.equal((await call("GET", "/api/oc/session", { ...authed, ...header })).status, 200);
+    assert.equal((await call("GET", `/api/oc/session?directory=${APP}`, { ...authed, ...header })).status, 200);
+    assert.equal((await call("POST", "/api/oc/session", { ...mutating, ...header }, JSON.stringify({ title: "x" }))).status, 204);
+    assert.equal((await call("POST", "/api/chat/resolve", { ...mutating, ...header }, JSON.stringify({ directory: "/workspace/app", agent: "build" }))).status, 200);
+    assert.ok(upstreamRequests.length > before);
+    // Toutes les demandes reçues par le faux opencode depuis le début du harnais, pas seulement celles de ce test.
+    assert.deepEqual(upstreamRequests.filter((r) => r.directoryHeader !== undefined).map((r) => `${r.method} ${r.url}`), []);
+    // Code du serveur et de l'interface : aucune mention de l'en-tête hors des tests.
+    const appDir = path.join(import.meta.dirname, "..");
+    const mentions = ["server", "web"].flatMap((dir) =>
+      fs
+        .readdirSync(path.join(appDir, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.(ts|tsx)$/.test(file) && !file.endsWith(".test.ts"))
+        .filter((file) => /x-opencode-directory/i.test(fs.readFileSync(path.join(appDir, dir, file), "utf8")))
+        .map((file) => `${dir}/${file}`),
+    );
+    assert.deepEqual(mentions, []);
   });
 
   it("applique le garde-fou budgétaire aux prompts, contournable par confirmation", async () => {

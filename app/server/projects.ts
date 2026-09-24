@@ -17,6 +17,13 @@ export interface ProjectInfo {
 
 const IGNORED = new Set(["node_modules", "$recycle.bin", "system volume information", "__pycache__"]);
 const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,255}$/;
+/**
+ * Séquence d'échappement %XX. opencode 1.18.30 décode le paramètre `directory` DEUX fois : URLSearchParams.get, puis
+ * decodeURIComponent (instance-context.ts:15-21). Un dossier nommé « a%2F..%2F..%2Fetc » devient chez lui « a/../../etc »,
+ * hors du workspace, alors que le contrôle du cockpit, textuel, le voit dedans. Sans séquence %XX, aucun décodage, même répété,
+ * ne change le chemin : « Remise 20% » ou « 100 % bio » restent des projets (decodeURIComponent échoue, opencode garde le nom).
+ */
+const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/;
 
 export class ProjectsService {
   readonly #localRoot: string;
@@ -43,7 +50,10 @@ export class ProjectsService {
   toOpencodePath(localPath: string): string {
     const rel = this.#relativeInside(path, this.#localRoot, localPath);
     if (rel === null) throw new PathError("Chemin hors du workspace.");
-    return rel === "" ? this.#ocRoot : this.#ocPath.join(this.#ocRoot, ...rel.split(path.sep));
+    const opencodePath = rel === "" ? this.#ocRoot : this.#ocPath.join(this.#ocRoot, ...rel.split(path.sep));
+    // Écarte aussi ces dossiers de list() (#describe en échec) et du Studio.
+    if (PERCENT_ESCAPE.test(opencodePath)) throw new PathError("Nom de dossier non pris en charge (séquence %XX).");
+    return opencodePath;
   }
 
   toLocalPath(opencodePath: string): string | null {
@@ -52,9 +62,14 @@ export class ProjectsService {
     return rel === "" ? this.#localRoot : path.join(this.#localRoot, ...rel.split(this.#ocPath.sep));
   }
 
-  /** Un répertoire transmis à opencode doit rester dans le workspace. */
+  /** Un répertoire transmis à opencode doit rester dans le workspace, même après son second décodage (PERCENT_ESCAPE). */
   isAllowedDirectory(opencodePath: string): boolean {
-    return opencodePath.length < 4_096 && !opencodePath.includes("\0") && this.toLocalPath(opencodePath) !== null;
+    return (
+      opencodePath.length < 4_096 &&
+      !opencodePath.includes("\0") &&
+      !PERCENT_ESCAPE.test(opencodePath) &&
+      this.toLocalPath(opencodePath) !== null
+    );
   }
 
   /**
