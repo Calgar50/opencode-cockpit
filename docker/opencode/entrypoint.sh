@@ -61,7 +61,14 @@ esac
 # GitHub Copilot et refuse tout le reste sur place. Le trafic interne ne passe jamais par un proxy, 0.0.0.0 compris : l'extension
 # Copilot d'opencode rappelle son propre serveur (http://0.0.0.0:4096, avec son mot de passe) avant chaque appel d'IA.
 internal="localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit"
-NO_PROXY="${NO_PROXY:+${NO_PROXY},}${internal}"
+# Chaque hôte interne absent est ajouté à la fin (docker-compose.yml les pose déjà tous) : la liste n'est jamais amputée, et
+# n'est plus écrite en double.
+for host in $(printf '%s' "$internal" | tr ',' ' '); do
+  case ",${NO_PROXY:-}," in
+    *",${host},"*) ;;
+    *) NO_PROXY="${NO_PROXY:+${NO_PROXY},}${host}" ;;
+  esac
+done
 export NO_PROXY no_proxy="$NO_PROXY"
 if [ -n "${HTTPS_PROXY:-}" ]; then export https_proxy="$HTTPS_PROXY"; fi
 if [ -n "${HTTP_PROXY:-}" ]; then export http_proxy="$HTTP_PROXY"; fi

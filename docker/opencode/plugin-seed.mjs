@@ -1,10 +1,13 @@
-// Amorce de l'extension @opencode-ai/plugin (1.0.6), lancée par le superviseur avant chaque démarrage d'opencode.
+// Amorce de l'extension @opencode-ai/plugin (1.0.6), lancée une fois par le superviseur (entrypoint.sh), au démarrage du
+// conteneur, avant le premier lancement d'opencode. Les relances d'opencode dans le même conteneur (redémarrage demandé par le
+// cockpit, arrêt inattendu) ne la relancent pas.
 // opencode 1.18.30 installe lui-même ce paquet dans son dossier de configuration (appel au registre npm) à chaque chargement d'un
 // dossier, tant que son test d'installation échoue (packages/core/src/npm.ts, Npm.install) :
 //   - node_modules absent ;
 //   - ou un nom déclaré (dépendances de package.json, plus @opencode-ai/plugin) absent de package-lock.json › packages[""].
 // Le volume de configuration d'une installation existante n'est jamais rempli par Docker : l'amorce y recopie la préinstallation de
-// l'image (npm ci à la construction, versions et empreintes figées) chaque fois que ce test échouerait, et seulement dans ce cas.
+// l'image (npm ci à la construction, versions et empreintes figées) au démarrage du conteneur, si ce test échouait, et seulement
+// dans ce cas.
 // Un package.json qui déclare d'autres paquets (ajoutés à la main) n'est jamais touché.
 // Usage : node plugin-seed.mjs <dossier de configuration> <préinstallation>. Une ligne pour le journal ; code 1 si l'amorce échoue.
 import fs from "node:fs";
