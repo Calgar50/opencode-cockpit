@@ -185,6 +185,22 @@ function normaliserProjet(projet: string): string {
 }
 
 /**
+ * La salle a-t-elle préparé ce démarrage sur la liste des projets en vigueur ? Son état porte un constat par projet de la liste
+ * qu'ELLE a lue (`controlerProjetsPrepares` de supervisor-lib.mjs) : mêmes chemins, une fois normalisés, que la liste du cockpit.
+ * Une salle qui n'a lu aucune liste n'a aucun projet dans son état (train de V4 de la 2 ter).
+ */
+export function memesProjets(etat: Pick<OmoSupervisorState, "projets">, prepares: Pick<OmoPreparedProjects, "projets">): boolean {
+  const vus = new Set(etat.projets.map((projet) => normaliserProjet(projet.chemin)));
+  const attendus = new Set(prepares.projets.map((projet) => normaliserProjet(projet.chemin)));
+  return vus.size === attendus.size && [...attendus].every((chemin) => vus.has(chemin));
+}
+
+/** Empreinte d'une liste de projets préparés : une relance à neuf au plus par contenu de liste. */
+function empreinteListe(prepares: OmoPreparedProjects): string {
+  return crypto.createHash("sha256").update(JSON.stringify(prepares), "utf8").digest("hex");
+}
+
+/**
  * Empreinte d'un relevé de projet, écrite dans `precheck-ok` et relue par le cockpit seul : tout ce que le relevé porte y entre,
  * y compris `signalesIncomplet` et `ideCiDynamiques`, pour qu'une référence incomplète ne se confonde jamais avec une complète.
  */
@@ -248,6 +264,8 @@ export function createOmoPrecheckService(deps: OmoPrecheckDeps): OmoPrecheckServ
 
   /** Dernier `startId` vu par la surveillance : sans lui, chaque tour d'horloge redemanderait un pré-contrôle déjà refusé. */
   let dernierVu: string | null = null;
+  /** Empreinte de la liste pour laquelle une relance à neuf a déjà été demandée (une seule par contenu de liste). */
+  let relanceListe: string | null = null;
   let references: OmoPrecheckReferences | null = null;
   let enMarche = false;
   let minuterie: unknown = null;
@@ -372,6 +390,33 @@ export function createOmoPrecheckService(deps: OmoPrecheckDeps): OmoPrecheckServ
     return null;
   };
 
+  /**
+   * Train de V4 (2 ter), mesuré au banc complet : la salle lit la liste des projets préparés à SA préparation, avant d'attendre le
+   * battement, et le cockpit ne la dépose qu'en lançant le battement. Salle et cockpit démarrant ensemble, la salle préparait donc
+   * SANS la liste : ses écritures rouvertes sont refusées (`nonProteges`), et comme ni elle (`pret` exige un dossier de travail
+   * protégé avant de rebalayer) ni ce service (un démarrage n'est contrôlé qu'une fois) ne reviennent sur ce démarrage, la salle
+   * attendait pour toujours. Un démarrage préparé sur une autre liste que celle en vigueur est donc relancé à neuf par un
+   * stop-request de CE démarrage : le superviseur sort, Docker le relance, et la préparation suivante relit la liste que
+   * `requestStop` vient de redéposer. Une seule relance par contenu de liste : si la salle ne la voit toujours pas, le démarrage
+   * est refusé et le journal le dit, jamais une boucle de relances. Rien n'est ouvert : aucun `precheck-ok` ici.
+   */
+  const relancerSurListePerimee = async (control: OmoControlPort, etat: OmoSupervisorState, prepares: OmoPreparedProjects): Promise<OmoActivationRefusalCode> => {
+    const compte = { vus: etat.projets.length, prepares: prepares.projets.length };
+    const liste = empreinteListe(prepares);
+    if (relanceListe === liste) {
+      log.warn("salle : démarrage refusé, la salle ne voit pas la liste des projets en vigueur même après une relance", compte);
+      return "precheck-refuse";
+    }
+    relanceListe = liste;
+    log.warn("salle : démarrage préparé sans la liste des projets en vigueur, relance à neuf demandée", compte);
+    try {
+      await control.requestStop("redemarrage-cockpit");
+    } catch (err) {
+      log.warn("salle : relance à neuf non demandée", { code: codeErreur(err) });
+    }
+    return "salle-en-relance";
+  };
+
   async function precontrolerDemarrage(startId: string): Promise<OmoBeforeStartOutcome> {
     const refus = (code: OmoActivationRefusalCode, resultats: OmoPrecheckProjectResult[] = []): OmoBeforeStartOutcome => ({
       ok: false,
@@ -407,6 +452,11 @@ export function createOmoPrecheckService(deps: OmoPrecheckDeps): OmoPrecheckServ
     if (prepares === null) {
       log.warn("salle : pré-contrôle refusé, liste des projets préparés illisible");
       return refus("precheck-refuse");
+    }
+    if (!memesProjets(etat, prepares)) {
+      marquerTraite(startId);
+      references = null;
+      return refus(await relancerSurListePerimee(control, etat, prepares));
     }
 
     // À partir d'ici le démarrage est contrôlé : une seule fois, quel que soit le résultat, et les références d'avant tombent.

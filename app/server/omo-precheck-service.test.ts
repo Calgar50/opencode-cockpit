@@ -255,8 +255,13 @@ function monter(t: TestContext, options: Options = {}) {
     recus,
     couper: () => void (actif = false),
     ouvrir: (noms: string[]) => void (ouverts = noms),
-    /** Publie `state.json` comme le superviseur (format et validation du protocole). */
-    publierEtat: (etat: OmoSupervisorState) => fs.writeFileSync(path.join(d.stateDir, "state.json"), ecrireEtat(etat), "utf8"),
+    /**
+     * Publie `state.json` comme le superviseur (format et validation du protocole). Comme `controlerProjetsPrepares`, l'état porte
+     * un constat par projet de la liste que la salle a lue, ici celle du test : un démarrage préparé sur une autre liste est
+     * relancé à neuf (train de V4 de la 2 ter, croisement n° 13 de croisements-2bis-v4.test.ts).
+     */
+    publierEtat: (etat: OmoSupervisorState) =>
+      fs.writeFileSync(path.join(d.stateDir, "state.json"), ecrireEtat({ ...etat, projets: projets.map((chemin) => ({ chemin, gitLectureSeule: true })) }), "utf8"),
     /** `precheck-ok` relu par le lecteur du format ; `null` quand le fichier est absent. */
     precheckOk: () => (fs.existsSync(fichierPrecheck) ? analyserPrecheckOk(fs.readFileSync(fichierPrecheck, "utf8")) : null),
     /** Lignes de `omo_room_starts`, dans l'ordre d'insertion. */
@@ -713,7 +718,11 @@ describe("pré-contrôle en service : vecteurs de omo-control-vectors.json", () 
     const vecteurs = FIXTURE.vecteurs.filter((vecteur) => vecteur.format === "etat");
     assert.ok(vecteurs.length >= 3, "vecteurs « etat » absents de omo-control-vectors.json");
     for (const vecteur of vecteurs) {
-      const a = monter(t, { ouverts: ["sain"] });
+      // Liste des projets préparés = celle que l'état du vecteur a relevée (train de V4 : un démarrage préparé sur une autre liste
+      // est relancé à neuf, sans pré-contrôle).
+      const releves = (vecteur.attendu as { projets?: Array<{ chemin: string }> } | null | undefined)?.projets?.map((projet) => projet.chemin);
+      const chemins = releves && releves.length > 0 ? releves : ["sain"];
+      const a = monter(t, { projets: chemins, ouverts: chemins });
       fs.writeFileSync(path.join(a.d.stateDir, "state.json"), vecteur.texte ?? "", "utf8");
       a.service.start();
       a.horloge.avancer(OMO_PRECHECK_SURVEILLANCE_MS);

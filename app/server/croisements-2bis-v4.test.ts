@@ -63,7 +63,7 @@ import { installOmoCaps, type OmoCapsService } from "./omo-caps.ts";
 import type { OmoControlClock, OmoControlService } from "./omo-control.ts";
 import { omoControlModule } from "./omo-control-module.ts";
 import { inscrireDetectionsSalle, OMO_DETECTIONS_BORNE_MS, OMO_OUTILS_SANS_DEMANDE, type OmoDetectionsService, type OmoHorsControleData } from "./omo-detections-service.ts";
-import { createOmoPrecheckService } from "./omo-precheck-service.ts";
+import { createOmoPrecheckService, memesProjets } from "./omo-precheck-service.ts";
 import { installOmoResponder, messageInterdit, type OmoResponderService } from "./omo-responder.ts";
 import { omoRoomModule } from "./omo-room.ts";
 import { creerModuleOmoStop } from "./omo-stop.ts";
@@ -80,6 +80,7 @@ import {
   battementFrais,
   ecrireEtat,
   OMO_FICHIER_ETAT,
+  OMO_FICHIER_PROJETS,
   OMO_FICHIERS_CONTROLE,
   precheckDuDemarrage,
 } from "./shared/omo-control-protocol.ts";
@@ -958,6 +959,53 @@ describe("croisement V4 (2 ter) n° 12 : le banc complet (L21b) reconnaît l'act
     assert.equal(arbre('const omoBodySchema = z.strictObject({ choix: z.literal("omo"), plafondUsd: z.unknown() });\n'), true);
     assert.equal(arbre('const Corps = z.object({ choix: z.enum(["demander", "omo"]) });\n'), true);
     assert.equal(arbre('const Corps = z.object({ choix: z.enum(["demander", "autonome"]) });\n'), false, "tête antérieure à L22c");
+  });
+});
+
+// --- 13. Salle préparée avant que le cockpit dépose la liste des projets ----------------------------------------------------------
+
+describe("croisement V4 (2 ter) n° 13 : salle préparée sans la liste des projets (mesuré au banc complet) → une relance à neuf, puis démarrage", () => {
+  it("démarrage préparé sans liste : refusé « salle-en-relance », liste redéposée puis stop-request de CE démarrage ; la relance démarre ; une seconde salle aveugle sur la même liste est refusée sans nouvelle relance", async (t: TestContext) => {
+    const a = await atelier(t);
+    await within(a.h.cockpit.startup(), "démarrage du cockpit", 10_000);
+    await until(() => a.controle(OMO_FICHIERS_CONTROLE.battement), 5_000);
+    const precheck = a.h.cockpit.c11.ports.omoPrecheck;
+    // Ce que le banc complet a publié : la salle a lu le volume de contrôle AVANT le dépôt du cockpit, elle n'a vu aucun projet, et
+    // ses écritures rouvertes (entrées de premier niveau des projets) sont donc refusées.
+    const aveugle = (startId: string): OmoSupervisorState => ({
+      ...etatDe(startId, "attente"),
+      projets: [],
+      workspaceGit: { verifieLe: Date.now(), limiteAtteinte: false, nonProteges: [`${PROJET}/README.md`, `${PROJET}/src`] },
+    });
+    // La copie du volume de contrôle est retirée : c'est l'état d'une première installation.
+    fs.rmSync(path.join(a.controlDir, OMO_FICHIER_PROJETS), { force: true });
+    a.publier(aveugle(START_1));
+    const premiere = await precheck.beforeStart(START_1);
+    assert.deepEqual([premiere.ok, premiere.ok ? null : premiere.code], [false, "salle-en-relance"]);
+    assert.equal(a.controle(OMO_FICHIERS_CONTROLE.precheck), null, "aucun precheck-ok");
+    const arret = analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret));
+    assert.deepEqual([arret?.startId, arret?.cause], [START_1, "redemarrage-cockpit"]);
+    // requestStop a redéposé la liste en vigueur AVANT le stop-request : la relance la lira à sa préparation.
+    assert.deepEqual(JSON.parse(a.controle(OMO_FICHIER_PROJETS) ?? "null"), projetsPrepares());
+
+    // Relance à neuf : la salle a vu la liste, le démarrage est pré-contrôlé et lancé, la salle s'ouvre.
+    await a.demarrer(START_2);
+    assert.equal((await a.ouvrir()).status, 200);
+
+    // Borne : une salle qui ne verrait toujours pas CETTE liste n'est pas relancée en boucle. Refus, aucun nouveau stop-request.
+    a.publier(aveugle(START_3));
+    const encore = await precheck.beforeStart(START_3);
+    assert.deepEqual([encore.ok, encore.ok ? null : encore.code], [false, "precheck-refuse"]);
+    assert.equal(analyserArret(a.controle(OMO_FICHIERS_CONTROLE.arret))?.startId, START_1);
+  });
+
+  it("memesProjets : chemins normalisés, ensembles égaux ; une salle sans projet ou avec un projet de moins n'a pas vu la liste en vigueur", () => {
+    const liste = { projets: [{ chemin: "app", git: "dossier" as const }, { chemin: "outils/cli", git: "absent" as const }] };
+    assert.equal(memesProjets({ projets: [{ chemin: "./outils/cli/", gitLectureSeule: true }, { chemin: "app", gitLectureSeule: false }] }, liste), true);
+    assert.equal(memesProjets({ projets: [] }, liste), false);
+    assert.equal(memesProjets({ projets: [{ chemin: "app", gitLectureSeule: true }] }, liste), false);
+    assert.equal(memesProjets({ projets: [{ chemin: "app", gitLectureSeule: true }, { chemin: "outils/cli", gitLectureSeule: true }, { chemin: "autre", gitLectureSeule: true }] }, liste), false);
+    assert.equal(memesProjets({ projets: [] }, { projets: [] }), true);
   });
 });
 

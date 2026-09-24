@@ -129,7 +129,8 @@ export interface OmoControlService extends OmoControlPort {
   /**
    * Dépose `omo-projets.json` (format `OmoPreparedProjects`, relu et réécrit normalisé) dans le volume de contrôle. Source absente,
    * illisible, trop grosse ou mal formée : la copie déposée est retirée (la salle ne croit alors que son balayage de /workspace).
-   * Fait aussi, avant le premier battement, à chaque `startHeartbeat` : la salle lit la liste avant d'attendre le battement.
+   * Fait aussi, avant le premier battement, à chaque `startHeartbeat` : la salle lit la liste avant d'attendre le battement. Et
+   * avant chaque `requestStop` (train de V4 de la 2 ter) : la relance qui suit relit la liste en vigueur à sa préparation.
    * Hors du port de T3a : demande de contrat au train (plan §2.3).
    */
   publishProjects(): Promise<OmoProjectsPublication>;
@@ -544,6 +545,12 @@ export function createOmoControl(deps: OmoControlDeps): OmoControlService {
     async requestStop(cause: OmoRecreationRaison) {
       // Démarrage visé lu AVANT la file : l'état est publié par la salle, pas par ce service.
       const etat = await readState();
+      // Train de V4 (2 ter) : la relance qui suit relit la liste des projets préparés À SA PRÉPARATION ; elle est donc redéposée
+      // d'abord, telle qu'elle est en vigueur (install.ps1 a pu la changer depuis le dernier battement lancé). Même file : elle
+      // précède le stop-request. Un échec est dit, jamais bloquant : on ne refuse jamais un arrêt.
+      if (projectsFile !== null) {
+        await publishProjects().catch((err: unknown) => log.warn("salle : liste des projets préparés non redéposée avant la relance", { code: codeErreur(err) }));
+      }
       await enFile(async () => {
         if (!(await conditions())) {
           // Salle coupée : aucun fichier écrit ; sans battement, l'homme mort l'arrête (30 s au plus). On ne refuse jamais un arrêt.
