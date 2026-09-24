@@ -488,7 +488,10 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       // relance, pour qu'une pause déjà reprise ne passe jamais par la relance complète et que rien ne soit relu pour rien.
       const actuel = store.runs.get(run.id);
       if (actuel === null || (!RELAUNCHABLE.includes(actuel.state) && !repriseAttendue(actuel))) {
-        return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+        // Tour 3 : une reprise devancée par une autre réponse (deux onglets) trouve l'équipe encore active — sa pause revenue avec
+        // son estimation, ou la suite repartie. « … relancez l'équipe depuis la saisie » était faux ici : la phrase dit l'état.
+        const devancee = reprise && actuel !== null && ACTIVE_RUN_STATES.includes(actuel.state);
+        return c.json(relaunchRefusal({ status: 409, code: devancee ? "etat-incompatible" : "pas-relancable" }), 409);
       }
       // </c5:reprise-redemarrage>
       const relaunched = await eq.ports.runner.relaunch(run.id, checked.plan);

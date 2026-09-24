@@ -1348,13 +1348,54 @@ describe("Clôture 5b (D-5b-1) : réponse jouée à blanc, reste compté par pas
     liberer();
     const [un, deux] = await Promise.all([envoiUn, envoiDeux]);
     assert.deepEqual([un.status, deux.status].toSorted(), [200, 409], `${un.body} | ${deux.body}`);
-    assert.equal((un.status === 409 ? un : deux).json<{ error: string }>().error, "pas-relancable");
+    // Tour 3 : la perdante trouve la pause revenue avec son estimation. « … relancez l'équipe depuis la saisie » (pas-relancable)
+    // était faux ici ; la phrase dit que l'état a changé, et que rien n'est parti.
+    const perdante = (un.status === 409 ? un : deux).json<{ error: string; message: string }>();
+    assert.deepEqual(perdante, { error: "etat-incompatible", message: `${TEXTES.partout.erreurs["etat-incompatible"]} ${TEXTES.partout.honnetete.rienEnvoye}` });
+    assert.doesNotMatch(perdante.message, /depuis la saisie/);
     await new Promise((resolve) => setTimeout(resolve, 100));
     const vue = ctx.view(runId);
     assert.deepEqual([vue.state, vue.cause, vue.pause?.kind], ["attente-verification", "pause", "verification"], "jamais une relance complète d'une pause");
     const neuves = h.db.prepare("SELECT COUNT(*) AS n FROM team_run_steps WHERE run_id = ? AND tentative > 1").get(runId) as { n: number };
     assert.equal(neuves.n, 0, "aucune tentative neuve");
     assert.equal(envois(h).length, 0, "rien n'est envoyé avant votre réponse");
+    h.assertNoGlobalRestart();
+  });
+
+  it("tour 3 : deux confirmations presque simultanées sur la pause « Le cockpit a redémarré » : la perdante trouve l'équipe repartie et le dit", async (t) => {
+    const ctx = await openTeam(t, { flow: duoFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "eeeeeeee-ffff-0000-1111-222222222222";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: duoFlow(),
+      state: "attente-verification",
+      cause: "redemarrage-cockpit",
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte faite." } },
+    });
+    await h.cockpit.startup();
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.01, stepMs: 5 });
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const corps = { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 };
+    let liberer = (): void => undefined;
+    ctx.retenue = new Promise<void>((resolve) => {
+      liberer = resolve;
+    });
+    const envoiUn = h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps });
+    const envoiDeux = h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps });
+    await until(() => (ctx.verifications.length >= 2 ? true : undefined), 5_000);
+    liberer();
+    const [un, deux] = await Promise.all([envoiUn, envoiDeux]);
+    assert.deepEqual([un.status, deux.status].toSorted(), [200, 409], `${un.body} | ${deux.body}`);
+    const perdante = (un.status === 409 ? un : deux).json<{ error: string; message: string }>();
+    assert.deepEqual(perdante, { error: "etat-incompatible", message: `${TEXTES.partout.erreurs["etat-incompatible"]} ${TEXTES.partout.honnetete.rienEnvoye}` });
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "suite relancée une seule fois");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.equal(envois(h).length, 1, "l'étape restante part une seule fois");
     h.assertNoGlobalRestart();
   });
 
