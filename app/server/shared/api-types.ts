@@ -18,6 +18,9 @@ import type {
   UiMode,
   UseCase,
 } from "./assistant-rules.ts";
+import type { ChoiceCause } from "./autonomy-types.ts";
+import type { OmoLimites } from "./omo-limits.ts";
+import type { OmoActivationRefusalCode, OmoActivationView } from "./omo-types.ts";
 
 export interface IssueLite {
   path: string;
@@ -74,6 +77,16 @@ export interface AutonomieSettings {
   fichiersMax: number;
   controlesIaMax: number;
   controleIa: boolean;
+}
+
+/**
+ * 1.1 (Salle OMO, D-2b-11, Q7) : seul réglage de `budget.omo`. Aucune valeur par défaut : null jusqu'à la première activation
+ * confirmée, qui est la SEULE à l'écrire (jamais PUT /api/settings, jamais la réinitialisation, jamais l'installation). Montant
+ * tel que saisi (chaîne, virgule ou point). Durée, sessions, nouvelles tentatives 429 et tâches de fond sont des constantes du
+ * serveur (omo-limits.ts), affichées dans la vue d'autonomie d'une racine de la salle, jamais réglables.
+ */
+export interface OmoBudgetSettings {
+  dernierPlafondUsd: string | null;
 }
 
 /** 1.1 : équipes d'assistants. `maxCapUsd` null : 5 % du budget mensuel. */
@@ -512,4 +525,58 @@ export interface StatusLocalAccess {
   localHttpConfirmedAt: string | null;
   /** null en HTTP. */
   tls: TlsStatus | null;
+}
+
+// --- Salle OMO : choix « omo » d'une racine de la salle (L22c ; réservations 1 et 2 du plan 2 bis, §4.14.2) ----------------------
+//
+// Une racine de la salle (sessions.instance = « omo ») n'est JAMAIS servie par la vue de l'instance principale
+// (ConversationAutonomyView) : son seul choix est « omo », confirmé et plafonné à chaque demande. GET et PUT
+// /api/conversations/:rootId/autonomie rendent pour elle cette vue-ci, et leurs refus portent un code de la salle.
+
+/** Choix disponible d'une racine de la salle : « omo » seul (réservation 2). */
+export interface OmoAutonomyAvailability {
+  choix: "omo";
+  disponible: boolean;
+  /** Première condition du §4.14.2 qui n'est pas remplie ; null si l'activation est possible. */
+  raison: OmoActivationRefusalCode | null;
+}
+
+/** Demande de la salle en cours sur cette racine (une seule à la fois dans la salle, D-2b-08). */
+export interface OmoRequestView {
+  id: string;
+  startedAt: number;
+  /** Montant d'arrêt saisi et confirmé pour CETTE demande, tel que saisi. */
+  plafondUsd: string;
+}
+
+/** Réponse de GET et PUT /api/conversations/:rootId/autonomie pour une racine de la Salle OMO. */
+export interface OmoAutonomyView {
+  rootId: string;
+  instance: "omo";
+  /** Le choix reste « omo », même après un redémarrage du cockpit : c'est la DEMANDE qui devient « interrompue » (§4.11). */
+  choix: "omo";
+  /** Début de la dernière demande lancée dans cette salle ; null : aucune. */
+  depuis: number | null;
+  /** « interrompue » : la dernière demande a été coupée par un redémarrage du cockpit ; une nouvelle confirmation est exigée. */
+  retourCause: ChoiceCause | null;
+  /** COCKPIT_AUTONOMY : faux coupe aussi la salle (§9.4 n° 3). */
+  interrupteur: boolean;
+  disponibles: OmoAutonomyAvailability[];
+  /** Écran d'activation (champ vide la première fois, dernier montant ensuite) ; null : salle coupée ou racine hors salle. */
+  activation: OmoActivationView | null;
+  /** Constantes du serveur, affichées, jamais réglables (D-2b-11) ; aucune n'est un plafond de coût. */
+  limites: OmoLimites;
+  demande: OmoRequestView | null;
+}
+
+/**
+ * Corps d'un refus des routes d'autonomie pour la salle, et du crochet d'envoi de la salle : 409 « autonomie-indisponible »
+ * (403 « mode-avance » en mode Simple), `message` = phrase de omo-room-texts.ts, gabarits remplis ; `raison` absente seulement
+ * pour « tout autre choix que omo » sur une racine de la salle. `liste` : chemins des historiques git en cause.
+ */
+export interface OmoAutonomyErrorBody {
+  error: "autonomie-indisponible" | "mode-avance";
+  message: string;
+  raison?: OmoActivationRefusalCode;
+  liste?: string[];
 }

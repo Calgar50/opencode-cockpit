@@ -12,8 +12,10 @@ import { openMemoryDb } from "./db.ts";
 import type { OcSession } from "./opencode.ts";
 import type { SessionRow } from "./sessions.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
+import type { OmoAutonomyView } from "./shared/api-types.ts";
 import { descriptionChoix, libelleChoix, raisonIndisponible, TEXTES } from "./shared/autonomy-choice-texts.ts";
 import type { ActivationRefusalCode, AutonomyChoice, ConversationAutonomyView } from "./shared/autonomy-types.ts";
+import { TEXTES as TEXTES_SALLE } from "./shared/omo-room-texts.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { until, within } from "./test-support/helpers.ts";
 
@@ -178,8 +180,8 @@ describe("choix d'autonomie : racines seulement", () => {
     h.assertNoGlobalRestart();
   });
 
-  it("identifiant d'enfant, session interne, conversation supprimée, autre instance, racine inconnue : 404 ; le choix d'un enfant est celui de sa racine", async (t) => {
-    const { h, port, store } = await start(t);
+  it("identifiant d'enfant, session interne, conversation supprimée, racine inconnue : 404 ; racine de la salle aiguillée vers la salle (L22c) ; le choix d'un enfant est celui de sa racine", async (t) => {
+    const { h, port, store, activation } = await start(t);
     const root = await conversation(h);
     const child = await ocSession(h, { parentID: root.id, title: "Enfant" }, root.directory);
     assert.equal(child.root_id, root.id);
@@ -191,7 +193,7 @@ describe("choix d'autonomie : racines seulement", () => {
     const omo = await conversation(h, "Salle");
     h.db.prepare("UPDATE sessions SET instance = 'omo' WHERE id = ?").run(omo.id);
 
-    for (const id of [child.id, classifier.id, controle.id, deleted.id, omo.id, "ses_inconnue"]) {
+    for (const id of [child.id, classifier.id, controle.id, deleted.id, "ses_inconnue"]) {
       const got = await h.call("GET", url(id), { headers: h.headers.authed });
       assert.equal(got.status, 404, `${id} : ${got.body}`);
       assert.deepEqual(got.json(), { error: "not-found", message: TEXTES.partout.erreurs.inconnue });
@@ -199,6 +201,34 @@ describe("choix d'autonomie : racines seulement", () => {
       assert.equal(put.status, 404, `${id} : ${put.body}`);
       assert.equal(store.read(id), null);
     }
+
+    // Réservation 2 (L22c) : une racine de la salle n'est plus « inconnue » ; elle n'est JAMAIS servie par la vue de l'instance
+    // principale. En mode Simple (défaut), la salle n'est pas même décrite : 403 « mode-avance », en lecture comme en écriture.
+    const modeAvance = { error: "mode-avance", message: TEXTES_SALLE.partout.refus["mode-avance"], raison: "mode-avance" };
+    const simpleGet = await h.call("GET", url(omo.id), { headers: h.headers.authed });
+    assert.equal(simpleGet.status, 403, simpleGet.body);
+    assert.deepEqual(simpleGet.json(), modeAvance);
+    const simplePut = await putChoice(h, omo.id, { choix: "autonome" }, h.headers.confirmed);
+    assert.equal(simplePut.status, 403, simplePut.body);
+    assert.deepEqual(simplePut.json(), modeAvance);
+    // Mode Avancé : vue de la salle (« omo » seul, instance « omo ») ; sans salle ouverte (omo_rooms), l'activation est refusée
+    // « racine-hors-salle » ; tout autre choix que « omo » sur une racine de la salle → 409, rien d'écrit.
+    h.settings.update({ ui: { mode: "avance" } });
+    const vue = await h.call("GET", url(omo.id), { headers: h.headers.authed });
+    assert.equal(vue.status, 200, vue.body);
+    const salle = vue.json<OmoAutonomyView>();
+    assert.deepEqual(
+      [salle.instance, salle.choix, salle.disponibles, salle.activation, salle.demande],
+      ["omo", "omo", [{ choix: "omo", disponible: false, raison: "racine-hors-salle" }], null, null],
+    );
+    for (const choix of ["autonome", "modifications", "demander", "plan", "inconnu"]) {
+      const autre = await putChoice(h, omo.id, { choix }, h.headers.confirmed);
+      assert.equal(autre.status, 409, `${choix} : ${autre.body}`);
+      assert.deepEqual(autre.json(), { error: "autonomie-indisponible", message: TEXTES.partout.raisons.autre });
+    }
+    assert.equal(store.read(omo.id), null);
+    assert.equal(activation.calls.length, 0, "le port d'activation de l'instance principale n'est jamais consulté pour la salle");
+    h.settings.update({ ui: { mode: "simple" } });
 
     const set = await putChoice(h, root.id, { choix: "autonome" }, h.headers.confirmed);
     assert.equal(set.status, 200, set.body);
@@ -232,12 +262,33 @@ describe("choix d'autonomie : racines seulement", () => {
     assert.deepEqual(choiceEvents(h), []);
   });
 
-  it("corps refusés (400) : JSON illisible, choix inconnu (« omo » compris), champ en trop, plafond hors bornes ; corps trop long (413)", async (t) => {
+  it("« omo » sur une racine de l'instance principale ou inconnue : 409 « racine-hors-salle », jamais 400 (réservation 1, L22c), dans les deux modes", async (t) => {
+    const { h, store, activation } = await start(t);
+    const root = await conversation(h);
+    const horsSalle = { error: "autonomie-indisponible", message: TEXTES_SALLE.avance.refus["racine-hors-salle"], raison: "racine-hors-salle" };
+    for (const mode of ["simple", "avance"] as const) {
+      h.settings.update({ ui: { mode } });
+      for (const id of [root.id, "ses_inconnue"]) {
+        for (const body of [{ choix: "omo" }, { choix: "omo", plafondUsd: "1" }, { choix: "omo", plafondUsd: 2, inconnu: true }]) {
+          const res = await putChoice(h, id, body, h.headers.confirmed);
+          assert.equal(res.status, 409, `${mode} ${id} ${JSON.stringify(body)} : ${res.body}`);
+          assert.deepEqual(res.json(), horsSalle);
+        }
+      }
+    }
+    assert.equal(store.read(root.id), null);
+    assert.equal(activation.calls.length, 0);
+    assert.deepEqual(choiceEvents(h), []);
+    // Sans l'aiguillage de la salle (port seul, appelants internes) : « omo » n'est pas un choix de l'instance principale.
+    const port = await h.cockpit.c11.ports.conversationAutonomy.put(root.id, { choix: "omo" } as never, { confirmed: true });
+    assert.deepEqual(port, { ok: false, status: 400, error: "invalid", raison: null });
+  });
+
+  it("corps refusés (400) : JSON illisible, choix inconnu, champ en trop, plafond hors bornes ; corps trop long (413)", async (t) => {
     const { h, store, activation } = await start(t);
     const root = await conversation(h);
     const bodies: unknown[] = [
       "pas du json",
-      { choix: "omo" },
       { choix: "tout" },
       {},
       { choix: "demander", plafondUsd: 1 },

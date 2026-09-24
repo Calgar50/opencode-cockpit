@@ -368,6 +368,8 @@ interface ProxyTurn {
   record: boolean;
 }
 
+// « budget » remis à zéro GARDE `budget.omo.dernierPlafondUsd` (D-2b-11, L22c) : SettingsStore.reset le recopie, seule une
+// activation confirmée de la Salle OMO l'écrit.
 const RESET_SECTIONS = ["budget", "pricing", "classifier", "quotaSync", "chat", "ai", "ui"] as const satisfies ReadonlyArray<keyof Settings>;
 
 const archivePatch = z.strictObject({
