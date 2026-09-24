@@ -19,6 +19,9 @@ import { basculer } from "../../../../server/shared/team-choice-view.ts";
 import { Icon } from "../../../components/Icon.tsx";
 import { Button } from "../../../components/ui.tsx";
 import { modeleChoix, type TeamChoixEntree, type TeamPauseModel } from "./team-view-model.ts";
+// <c5:reprise-redemarrage>
+import type { TeamRepriseModel } from "./team-view-model.ts";
+// </c5:reprise-redemarrage>
 import "./team-choice.css";
 
 export interface TeamPauseCardProps {
@@ -30,7 +33,23 @@ export interface TeamPauseCardProps {
   /** `correction` : résumé transmis modifié ; `precision` : précision pour la suite ; `choix`/`aucun` : réponse d'un aiguillage. */
   onContinue: (corps: { precision?: string; correction?: string; choix?: string[]; aucun?: true }, confirme: boolean) => void;
   onStop: () => void;
+  // <c5:reprise-redemarrage>
+  /** Clôture 5b (D-5b-1) : [Refaire l'estimation de la suite] d'une pause reprise après un redémarrage du cockpit. */
+  onReprendre: () => void;
+  // </c5:reprise-redemarrage>
 }
+
+// <c5:reprise-redemarrage>
+/** Note d'une pause reprise après un redémarrage : ce qui s'est passé et ce qu'il reste à faire (D-5b-1), en texte seul. */
+function NoteReprise({ reprise, id }: { reprise: TeamRepriseModel; id: string }) {
+  return (
+    <p id={id} className="team-card-note team-choice-illisible">
+      <Icon name="alert" className="team-icon" />
+      <span>{reprise.note}</span>
+    </p>
+  );
+}
+// </c5:reprise-redemarrage>
 
 /** Cases de la carte de choix : une case par spécialiste, le MOT du titre à côté (jamais la couleur seule). */
 function ChoixCases({
@@ -40,6 +59,10 @@ function ChoixCases({
   onContinue,
   onStop,
   onAucun,
+  // <c5:reprise-redemarrage>
+  reprise,
+  onReprendre,
+  // </c5:reprise-redemarrage>
 }: {
   entree: TeamChoixEntree;
   occupe: boolean;
@@ -48,15 +71,29 @@ function ChoixCases({
   onContinue: (choix: string[]) => void;
   onStop: () => void;
   onAucun: () => void;
+  // <c5:reprise-redemarrage>
+  /** Pause reprise après un redémarrage (D-5b-1) : vos spécialistes attendent la nouvelle estimation ; « aucun » non, s'il ne lance rien. */
+  reprise: TeamRepriseModel | null;
+  onReprendre: () => void;
+  // </c5:reprise-redemarrage>
 }) {
   const baseId = useId();
   const [selection, setSelection] = useState<string[] | null>(null);
   const vue = useMemo(() => modeleChoix(entree, selection), [entree, selection]);
   const retenus = vue.cases.filter((c) => c.coche).map((c) => c.stepId);
+  // <c5:reprise-redemarrage>
+  // Le choix reste le vôtre (spéc. l.772) : la carte revient après la nouvelle estimation, et rien n'est coché à votre place.
+  const continuerActif = reprise === null && vue.continuerActif;
+  const aucunActif = reprise === null || reprise.aucunLibre;
+  const noteId = `${baseId}-reprise`;
+  // </c5:reprise-redemarrage>
   return (
     <div className="team-choice">
       <p className="team-pause-title">{vue.titre}</p>
       {vue.proposition === null ? null : <p className="team-card-note">{vue.proposition}</p>}
+      {/* <c5:reprise-redemarrage> */}
+      {reprise === null ? null : <NoteReprise reprise={reprise} id={noteId} />}
+      {/* </c5:reprise-redemarrage> */}
       {vue.illisible === null ? null : (
         <p className="team-card-note team-choice-illisible">
           <Icon name="alert" className="team-icon" />
@@ -80,12 +117,32 @@ function ChoixCases({
       <p className="team-card-note">{vue.maximum}</p>
       {gratuite === null ? null : <p className="team-card-note">{gratuite}</p>}
       <div className="team-card-actions">
-        <Button variant="primary" disabled={occupe} aria-disabled={!vue.continuerActif} onClick={() => (vue.continuerActif ? onContinue(retenus) : undefined)}>
+        {/* <c5:reprise-redemarrage> */}
+        {reprise === null || reprise.bouton === null ? null : (
+          <Button variant="primary" disabled={occupe} onClick={onReprendre}>
+            {reprise.bouton}
+          </Button>
+        )}
+        <Button
+          variant={reprise === null ? "primary" : "default"}
+          disabled={occupe}
+          aria-disabled={!continuerActif}
+          aria-describedby={reprise === null ? undefined : noteId}
+          title={reprise?.raison ?? undefined}
+          onClick={() => (continuerActif ? onContinue(retenus) : undefined)}
+        >
           {vue.continuer}
         </Button>
-        <Button disabled={occupe} onClick={onAucun}>
+        <Button
+          disabled={occupe}
+          aria-disabled={!aucunActif}
+          aria-describedby={aucunActif ? undefined : noteId}
+          title={aucunActif ? undefined : reprise?.raison}
+          onClick={() => (aucunActif ? onAucun() : undefined)}
+        >
           {vue.aucunConvient}
         </Button>
+        {/* </c5:reprise-redemarrage> */}
         <Button variant="danger" disabled={occupe} onClick={onStop}>
           {vue.arreter}
         </Button>
@@ -94,7 +151,9 @@ function ChoixCases({
   );
 }
 
-export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop }: TeamPauseCardProps) {
+// <c5:reprise-redemarrage>
+export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop, onReprendre }: TeamPauseCardProps) {
+  // </c5:reprise-redemarrage>
   const baseId = useId();
   const [resume, setResume] = useState<string | null>(null);
   const [precision, setPrecision] = useState("");
@@ -111,6 +170,9 @@ export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop }: Tea
     <div className="team-pause" id={blocId}>
       {pause.choix === null ? <p className="team-pause-title">{pause.titre}</p> : null}
       {pause.message === "" ? null : <p className="team-card-note">{pause.message}</p>}
+      {/* <c5:reprise-redemarrage> */}
+      {pause.choix !== null || pause.reprise === null ? null : <NoteReprise reprise={pause.reprise} id={`${baseId}-reprise`} />}
+      {/* </c5:reprise-redemarrage> */}
       {pause.choix === null ? null : (
         <ChoixCases
           entree={pause.choix}
@@ -119,6 +181,10 @@ export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop }: Tea
           onContinue={(choix) => onContinue({ choix }, false)}
           onStop={onStop}
           onAucun={() => onContinue({ aucun: true }, false)}
+          // <c5:reprise-redemarrage>
+          reprise={pause.reprise}
+          onReprendre={onReprendre}
+          // </c5:reprise-redemarrage>
         />
       )}
       {pause.resume === null ? null : (
@@ -161,7 +227,9 @@ export function TeamPauseCard({ pause, blocId, occupe, onContinue, onStop }: Tea
               variant={bouton.allure === "danger" ? "danger" : bouton.allure === "primary" ? "primary" : "default"}
               disabled={occupe || bouton.desactive}
               title={bouton.raison ?? undefined}
-              onClick={bouton.action === "arreter" ? onStop : continuer}
+              // <c5:reprise-redemarrage>
+              onClick={bouton.action === "arreter" ? onStop : bouton.action === "relancer" ? onReprendre : continuer}
+              // </c5:reprise-redemarrage>
             >
               {bouton.libelle}
             </Button>

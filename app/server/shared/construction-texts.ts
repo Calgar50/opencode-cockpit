@@ -398,6 +398,26 @@ export const TEXTES = {
     },
     /** Exécution d'une équipe (5b) : carte de choix d'un aiguillage, journal de relecture, estimations. */
     execution: {
+      // <c5:reprise-redemarrage>
+      /**
+       * Clôture 5b (D-5b-1) : pause reprise après un redémarrage du cockpit, sans l'estimation de la suite (elle ne vivait qu'en
+       * mémoire). Chaque phrase dit ce qui s'est passé et ce qu'il reste à faire. Rien n'est envoyé ni facturé avant votre
+       * confirmation : le serveur refuse toute réponse qui lancerait un appel (`reestimation-requise`) et le dit aussi.
+       * `confirmationReprend` ne vaut que pour la pause « Le cockpit a redémarré », que la confirmation fait repartir ; toute
+       * autre pause revient telle quelle (`confirmationPause`), et c'est votre réponse qui la fait repartir.
+       */
+      reprise: {
+        note: "Le cockpit a redémarré pendant cette pause : l'estimation de la suite n'a pas été gardée. Refaites-la avant de continuer ; rien n'est envoyé ni facturé avant votre confirmation.",
+        aucunLibre: "« Aucun ne convient » reste possible sans nouvelle estimation : il ne lance aucun appel.",
+        impossible: "Le cockpit a redémarré pendant cette pause, et la demande de l'équipe n'est plus disponible : aucune étape ne peut plus partir.",
+        impossibleSuite: "Arrêtez l'équipe, puis relancez-la depuis la saisie.",
+        bouton: "Refaire l'estimation de la suite",
+        raison: "Refaites d'abord l'estimation de la suite.",
+        confirmationTitre: "Reprendre avec cette estimation ?",
+        confirmationReprend: "L'équipe reprend dès votre confirmation.",
+        confirmationPause: "La pause reste affichée : rien ne part avant votre réponse.",
+      },
+      // </c5:reprise-redemarrage>
       choix: {
         titre: "Choisissez le ou les spécialistes",
         proposition: "L'aiguilleur propose « {choix} » : « {raison} ». C'est la proposition d'une IA : vérifiez-la.",

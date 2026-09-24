@@ -32,6 +32,9 @@ import {
   type TeamRunCardModel,
   teamPauseElementId,
 } from "./team-view-model.ts";
+// <c5:reprise-redemarrage>
+import { repriseApresEstimation, repriseDebut } from "./team-view-model.ts";
+// </c5:reprise-redemarrage>
 import "./team-cards.css";
 import "./team-choice.css";
 
@@ -134,6 +137,45 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
     })();
   }, [confirm, lancer, run]);
 
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : [Refaire l'estimation de la suite] d'une pause reprise après un redémarrage du cockpit. Même suite que
+   * la relance (D-eq-17, A4) : POST …/estimate d'abord (seules lectures), la boîte « Reprendre avec cette estimation ? » ensuite,
+   * puis POST …/relancer avec l'EMPREINTE et x-cockpit-confirm: 1. Un refus prévisible (`blocage`) est dit, rien n'est envoyé.
+   * Après la confirmation, la carte relit le lancement : la pause revient sans demande d'estimation, et c'est votre réponse qui
+   * la fait repartir — sauf la pause « Le cockpit a redémarré », que la confirmation relance.
+   */
+  const reprendre = useCallback(() => {
+    const pause = run.pause;
+    if (pause === null || repriseDebut(run) === null || inflight.current) return;
+    inflight.current = true;
+    setOccupe(true);
+    setMessage(null);
+    void (async () => {
+      let confirmation: RelanceConfirmation | null = null;
+      try {
+        const etape = repriseApresEstimation(pause, await teamRunsApi.estimate(run.id));
+        if (etape.genre === "blocage") {
+          if (monte.current) setMessage(etape.raison);
+        } else if (etape.genre === "confirmation") {
+          confirmation = etape.confirmation;
+        }
+      } catch (err: unknown) {
+        const refus = teamError(err);
+        if (monte.current) setMessage(refus === null ? errorText(err) : refus.message);
+      } finally {
+        inflight.current = false;
+        if (monte.current) setOccupe(false);
+      }
+      if (confirmation === null) return;
+      const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
+      const suite = relanceApresConfirmation(confirmation, ok);
+      if (suite === null) return;
+      await lancer(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }));
+    })();
+  }, [confirm, lancer, run]);
+  // </c5:reprise-redemarrage>
+
   const cliquer = useCallback(
     (bouton: TeamButton, desactive: boolean) => {
       if (desactive) return;
@@ -206,9 +248,18 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
           ))}
         </ul>
       )}
+      {/* <c5:reprise-redemarrage> */}
       {modele.pause === null ? null : (
-        <TeamPauseCard pause={modele.pause} blocId={teamPauseElementId(modele.runId)} occupe={occupe} onContinue={continuer} onStop={arreter} />
+        <TeamPauseCard
+          pause={modele.pause}
+          blocId={teamPauseElementId(modele.runId)}
+          occupe={occupe}
+          onContinue={continuer}
+          onStop={arreter}
+          onReprendre={reprendre}
+        />
       )}
+      {/* </c5:reprise-redemarrage> */}
       {modele.boutons.length === 0 ? null : (
         <div className="team-card-actions">
           {modele.boutons.map((bouton) => {

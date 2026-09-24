@@ -184,7 +184,41 @@ export interface TeamPauseModel {
    * chaque case cochée par `modeleChoix(entree, selection)` : c'est la seule chose que le composant fait lui-même.
    */
   choix: TeamChoixEntree | null;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : pause reprise après un redémarrage du cockpit, sans estimation à jour de la suite ; null sinon. Tant
+   * qu'elle est là, [Continuer] n'est pas proposé (le serveur le refuserait) : [Refaire l'estimation de la suite] le remplace.
+   */
+  reprise: TeamRepriseModel | null;
+  // </c5:reprise-redemarrage>
 }
+
+// <c5:reprise-redemarrage>
+/**
+ * Pause reprise après un redémarrage du cockpit (D-5b-1). `note` dit ce qui s'est passé et ce qu'il reste à faire ; `bouton`
+ * est le libellé de [Refaire l'estimation de la suite], absent quand la demande n'est plus reconstituable (aucune étape ne peut
+ * plus partir) ; `raison` est lue à côté des réponses qui attendent la nouvelle estimation ; `aucunLibre` : pause de choix où
+ * « Aucun ne convient » répond sans elle, puisqu'il ne lance rien.
+ */
+export interface TeamRepriseModel {
+  note: string;
+  bouton: string | null;
+  raison: string;
+  aucunLibre: boolean;
+}
+
+const REPRISE = CONSTRUCTION.partout.execution.reprise;
+
+/** Modèle de la reprise d'une pause, lu sur `pause.reestimation` (vue du serveur) ; null quand l'estimation est à jour. */
+export function modeleReprise(pause: TeamPauseView): TeamRepriseModel | null {
+  const attente = pause.reestimation;
+  if (attente === undefined) return null;
+  const aucunLibre = pause.kind === "choix" && attente.aucunLibre;
+  const phrases = attente.possible ? [REPRISE.note] : [REPRISE.impossible, REPRISE.impossibleSuite];
+  if (aucunLibre) phrases.push(REPRISE.aucunLibre);
+  return { note: phrases.join(" "), bouton: attente.possible ? REPRISE.bouton : null, raison: REPRISE.raison, aucunLibre };
+}
+// </c5:reprise-redemarrage>
 
 /** Entrée bornée de la carte de choix : ce que la pause porte, textes d'IA déjà coupés (CHOIX_RAISON_MAX). */
 export interface TeamChoixEntree {
@@ -413,9 +447,21 @@ export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseMo
     pause.kind === "changement"
       ? P.boutons.continuer
       : remplir(P.boutons.continuerMontants, { suite: pause.suite.typique, auPlus: pause.suite.maximum });
+  // <c5:reprise-redemarrage>
+  // Pause reprise après un redémarrage (D-5b-1) : [Refaire l'estimation de la suite] prend la place de [Continuer], que le
+  // serveur refuserait tant que l'estimation n'est pas refaite ; sans demande reconstituable, seul [Arrêter l'équipe] reste.
+  const reprise = modeleReprise(pause);
+  const boutonsReprise: TeamButton[] | null =
+    reprise === null
+      ? null
+      : [...(reprise.bouton === null ? [] : [{ action: "relancer" as const, libelle: reprise.bouton, allure: "primary" as const, desactive: false, raison: null }]), boutonArreter()];
+  // </c5:reprise-redemarrage>
   return {
     kind: pause.kind,
     choix,
+    // <c5:reprise-redemarrage>
+    reprise,
+    // </c5:reprise-redemarrage>
     titre: P.pauses[pause.kind].titre,
     message: messagePause(pause, prochaine === null ? null : texte(prochaine.titre, TITRE_MAX)),
     resume:
@@ -431,7 +477,12 @@ export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseMo
     gratuite: verification || pause.kind === "choix" ? gratuite : null,
     confirme: pause.kind === "budget",
     // 5b : la carte de choix compose ses trois boutons elle-même (le libellé de [Continuer] suit les cases cochées).
-    boutons: choix !== null ? [] : [{ action: "continuer", libelle: libelleContinuer, allure: "primary", desactive: false, raison: null }, boutonArreter()],
+    // <c5:reprise-redemarrage>
+    boutons:
+      choix !== null
+        ? []
+        : (boutonsReprise ?? [{ action: "continuer", libelle: libelleContinuer, allure: "primary", desactive: false, raison: null }, boutonArreter()]),
+    // </c5:reprise-redemarrage>
   };
 }
 
@@ -642,6 +693,30 @@ export function relanceApresConfirmation(confirmation: RelanceConfirmation | nul
   if (!accepte || confirmation === null || confirmation.empreinte === "") return null;
   return { genre: "relancer", empreinte: confirmation.empreinte, confirme: true };
 }
+
+// <c5:reprise-redemarrage>
+/**
+ * Clôture 5b (D-5b-1) : clic sur [Refaire l'estimation de la suite] d'une pause reprise après un redémarrage. Même suite que la
+ * relance (D-eq-17, A4) : une estimation d'abord (POST …/estimate, seules lectures), la boîte ensuite, puis POST …/relancer
+ * avec l'empreinte et x-cockpit-confirm: 1 — jamais l'inverse. Rien quand la pause n'attend pas d'estimation ou que la demande
+ * n'est plus reconstituable (le serveur refuserait).
+ */
+export function repriseDebut(run: TeamRunView): RelanceEtape | null {
+  return run.pause?.reestimation?.possible === true ? { genre: "estimation" } : null;
+}
+
+/**
+ * Réponse de l'estimation d'une reprise : refus prévisible → raison ; sinon la boîte « Reprendre avec cette estimation ? », avec
+ * les montants de la relance et ce qui suivra VRAIMENT votre confirmation. La pause « Le cockpit a redémarré » repart aussitôt ;
+ * toute autre pause revient telle quelle, et rien ne part avant votre réponse (le choix d'un aiguillage reste le vôtre).
+ */
+export function repriseApresEstimation(pause: TeamPauseView, reponse: TeamEstimateResponse): RelanceEtape {
+  const etape = relanceApresEstimation(reponse);
+  if (etape.genre !== "confirmation") return etape;
+  const suite = pause.kind === "redemarrage-cockpit" ? REPRISE.confirmationReprend : REPRISE.confirmationPause;
+  return { genre: "confirmation", confirmation: { ...etape.confirmation, titre: REPRISE.confirmationTitre, message: `${etape.confirmation.message} ${suite}` } };
+}
+// </c5:reprise-redemarrage>
 
 /**
  * Identifiant du bloc de pause d'un lancement : cible que « [Répondre] » du bandeau peut atteindre, comme

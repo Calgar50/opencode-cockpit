@@ -304,6 +304,11 @@ const TEAM_ERROR_CODES = [
   // qui ne correspond plus à la liste proposée est refusé en clair, jamais sous « invalid ».
   "choix-invalide",
   // </c5:choix-invalide>
+  // <c5:reprise-redemarrage>
+  // Code ajouté par la clôture de la 5b (D-5b-1) : sa phrase dit la vérité (le cockpit a redémarré, l'estimation est à refaire)
+  // là où `estimation-perimee` disait « une nouvelle estimation est affichée » sans que rien ne le soit.
+  "reestimation-requise",
+  // </c5:reprise-redemarrage>
   "pas-relancable",
   "deja-ajoute",
   "confirmation-requise",

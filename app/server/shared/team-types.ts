@@ -372,6 +372,17 @@ export interface TeamPauseView {
   raison?: string;
   /** Spécialistes que vous pouvez retenir au plus (aiguillage.choixMax). */
   choixMax?: number;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : le cockpit a redémarré pendant cette pause, et l'instantané de l'estimation, qui ne vit qu'en
+   * mémoire, n'a pas survécu. Toute réponse qui lancerait un appel facturé passe d'abord par une nouvelle estimation, MONTRÉE
+   * puis confirmée (POST …/estimate, puis POST …/relancer) ; la pause revient ensuite telle quelle, sauf celle du redémarrage,
+   * que la confirmation relance. ABSENT quand l'estimation est à jour ou que rien de facturé ne reste à lancer.
+   * `aucunLibre` : pause de choix où « Aucun ne convient » ne lancerait aucun appel — la réponse reste permise sans estimation.
+   * `possible` : la demande est reconstituable en base (D-eq-27) ; faux, la suite ne peut repartir que depuis la saisie.
+   */
+  reestimation?: { aucunLibre: boolean; possible: boolean };
+  // </c5:reprise-redemarrage>
 }
 
 export interface TeamRunView {
@@ -567,6 +578,12 @@ export type TeamErrorCode =
   // d'aiguillage qui ne tient pas sort en clair, au lieu d'un « invalid » avec `details.raison`.
   | "choix-invalide"
   // </c5:choix-invalide>
+  // <c5:reprise-redemarrage>
+  // Clôture 5b (D-5b-1) : réponse à une pause qui lancerait un appel facturé alors que l'instantané de l'estimation a été perdu
+  // au redémarrage du cockpit. Sa phrase dit la vérité et la suite (refaire l'estimation), là où `estimation-perimee` disait
+  // « une nouvelle estimation est affichée » sans que rien ne le soit.
+  | "reestimation-requise"
+  // </c5:reprise-redemarrage>
   | "pas-relancable"
   | "deja-ajoute"
   | "confirmation-requise"

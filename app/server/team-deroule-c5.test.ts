@@ -19,6 +19,9 @@ import type { StepRunView, TeamRunView } from "./shared/team-types.ts";
 import { buildTeamDeroule, ecartsDe, specialistesDuBloc } from "../web/pages/chat/team/deroule-model.ts";
 import { demandeRecopiee } from "../web/pages/chat/team/team-transcript.ts";
 import { buildTeamRunCard, etapesParTour, modelePause, modeleResultat, teamPauseElementId, toursParBloc, toursPrevusParBloc, verdictLigne } from "../web/pages/chat/team/team-view-model.ts";
+// Clôture 5b (D-5b-1) : les fonctions de la reprise sont lues par l'espace de noms, pour qu'un module qui ne les exporte pas
+// fasse tomber leurs seuls tests, et non le fichier entier au chargement.
+import * as VUE_MODELE from "../web/pages/chat/team/team-view-model.ts";
 
 const P = TEXTES.partout;
 const E = CONSTRUCTION.partout.execution;
@@ -517,6 +520,130 @@ describe("Clôture 5b (D-5b-2) : seul le DERNIER bloc de travail, celui qui port
     }
     // Une pause finale ne porte aucun livrable (grammaire) : le dernier bloc de TRAVAIL est celui de la dernière étape.
     assert.equal(modeleResultat(run(steps, { blocs: [{ index: 1, type: "relecture", toursMax: 2 }] }), livrable, true).journal?.titre, E.relecture.journal);
+  });
+});
+
+// --- Clôture de la 5b (D-5b-1, revue d'itération 5b) : la carte d'une pause reprise après un redémarrage du cockpit -----------
+
+describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre son issue et un texte vrai", () => {
+  const R = E.reprise;
+  const pauseDe = (kind: NonNullable<TeamRunView["pause"]>["kind"], reestimation?: { aucunLibre: boolean; possible: boolean }) => ({
+    kind,
+    blocId: kind === "verification" ? "p" : null,
+    message: kind === "redemarrage-cockpit" ? P.pauses["redemarrage-cockpit"].message : "",
+    resultat: kind === "verification" ? { etape: "a", titre: "Collecte", texte: "Collecte faite." } : null,
+    suite: { typique: 0.12, maximum: 0.4 },
+    changement: null,
+    ...(kind === "choix"
+      ? { choix: [{ stepId: "reseau", titre: "Réseau", propose: true }], raison: "Pertes de paquets.", choixMax: 1 }
+      : {}),
+    ...(reestimation === undefined ? {} : { reestimation }),
+  });
+  const lancementEnPause = (pause: ReturnType<typeof pauseDe>) =>
+    run(aiguillage(["reseau"]), { state: pause.kind === "choix" ? "attente-choix" : "attente-verification", pause });
+  const carteDe = (pause: ReturnType<typeof pauseDe>) => {
+    const modele = buildTeamRunCard(lancementEnPause(pause), true).pause;
+    assert.ok(modele, "la carte de pause est rendue");
+    return modele;
+  };
+
+  it("pause « Le cockpit a redémarré » sans estimation : [Refaire l'estimation de la suite] remplace [Continuer], la note dit pourquoi", () => {
+    const modele = carteDe(pauseDe("redemarrage-cockpit", { aucunLibre: false, possible: true }));
+    assert.deepEqual(modele.reprise, { note: R.note, bouton: R.bouton, raison: R.raison, aucunLibre: false });
+    assert.deepEqual(
+      modele.boutons.map((b) => [b.action, b.libelle, b.allure]),
+      [
+        ["relancer", R.bouton, "primary"],
+        ["arreter", P.boutons.arreter, "danger"],
+      ],
+      "aucun [Continuer] que le serveur refuserait",
+    );
+  });
+
+  it("pause « vérifier » sans estimation : même issue, et les champs de votre réponse restent là pour après", () => {
+    const modele = carteDe(pauseDe("verification", { aucunLibre: false, possible: true }));
+    assert.equal(modele.reprise?.note, R.note);
+    assert.deepEqual(modele.boutons.map((b) => b.action), ["relancer", "arreter"]);
+    assert.ok(modele.resume !== null && modele.precision !== null, "résumé et précision gardés : la pause revient après l'estimation");
+  });
+
+  it("pause de choix sans estimation : la carte de choix reste, « Aucun ne convient » est libre s'il ne lance rien", () => {
+    const libre = carteDe(pauseDe("choix", { aucunLibre: true, possible: true }));
+    assert.deepEqual(libre.boutons, [], "la carte de choix compose ses boutons elle-même");
+    assert.equal(libre.reprise?.aucunLibre, true);
+    assert.equal(libre.reprise?.note, `${R.note} ${R.aucunLibre}`);
+    assert.ok(libre.choix, "les cases restent affichées : c'est vous qui choisirez après l'estimation (spéc. l.772)");
+    const lie = carteDe(pauseDe("choix", { aucunLibre: false, possible: true }));
+    assert.equal(lie.reprise?.aucunLibre, false, "un bloc suivant partirait après « aucun » : il attend lui aussi l'estimation");
+    assert.equal(lie.reprise?.note, R.note);
+  });
+
+  it("demande plus reconstituable : aucun bouton qui échouerait, la note dit que la suite ne peut plus partir", () => {
+    const modele = carteDe(pauseDe("verification", { aucunLibre: false, possible: false }));
+    assert.equal(modele.reprise?.bouton, null);
+    assert.equal(modele.reprise?.note, `${R.impossible} ${R.impossibleSuite}`);
+    assert.deepEqual(modele.boutons.map((b) => b.action), ["arreter"]);
+    const choix = carteDe(pauseDe("choix", { aucunLibre: true, possible: false }));
+    assert.equal(choix.reprise?.note, `${R.impossible} ${R.impossibleSuite} ${R.aucunLibre}`, "« aucun » reste possible, et c'est dit");
+  });
+
+  it("non-régression : une pause dont l'estimation est à jour garde exactement ses boutons de l'itération 4", () => {
+    const modele = carteDe(pauseDe("redemarrage-cockpit"));
+    assert.equal(modele.reprise, null);
+    assert.deepEqual(modele.boutons.map((b) => b.action), ["continuer", "arreter"]);
+  });
+
+  it("la boîte de confirmation dit ce qui suivra VRAIMENT : reprise immédiate après un redémarrage, sinon la pause revient", () => {
+    const reponse = {
+      estimate: { typique: 0.12, maximum: 0.4, plafond: 0.4, etapesFacturees: 1, depassementUnAppel: 0.02, relais: 0, parEtape: [] },
+      estimateSha256: "b".repeat(64),
+      problems: [],
+      plafond: 0.45,
+      confirmations: [],
+      blocage: null,
+      expireA: NOW,
+      deja: 0.05,
+    };
+    const montants = "Déjà dépensé : 0,05 $. Suite : ≈ 0,12 $, plafond 0,45 $.";
+    const reprend = VUE_MODELE.repriseApresEstimation(pauseDe("redemarrage-cockpit", { aucunLibre: false, possible: true }), reponse);
+    assert.deepEqual(reprend, { genre: "confirmation", confirmation: { titre: R.confirmationTitre, message: `${montants} ${R.confirmationReprend}`, empreinte: "b".repeat(64) } });
+    const revient = VUE_MODELE.repriseApresEstimation(pauseDe("choix", { aucunLibre: true, possible: true }), reponse);
+    assert.equal(revient.genre === "confirmation" && revient.confirmation.message, `${montants} ${R.confirmationPause}`);
+    // Refus prévisible : rien n'est confirmé, la raison est dite.
+    const bloque = VUE_MODELE.repriseApresEstimation(pauseDe("verification", { aucunLibre: false, possible: true }), { ...reponse, blocage: { status: 409, code: "budget-insuffisant" } });
+    assert.equal(bloque.genre, "blocage");
+    // Aucun clic utile sans estimation à refaire, ni quand la demande n'est plus là.
+    assert.deepEqual(VUE_MODELE.repriseDebut(lancementEnPause(pauseDe("verification", { aucunLibre: false, possible: true }))), { genre: "estimation" });
+    assert.equal(VUE_MODELE.repriseDebut(lancementEnPause(pauseDe("verification", { aucunLibre: false, possible: false }))), null);
+    assert.equal(VUE_MODELE.repriseDebut(lancementEnPause(pauseDe("verification"))), null);
+  });
+
+  it("aucune phrase de la reprise ne promet une estimation « affichée » : c'était la phrase fausse du 409 d'avant (P3)", () => {
+    for (const texte of Object.values(R)) assert.equal(/est affichée/.test(texte), false, texte);
+    assert.equal(/est affichée/.test(P.erreurs["reestimation-requise"]), false);
+    assert.match(P.erreurs["reestimation-requise"], /Rien n'a été envoyé ni facturé\.$/, "le refus arrive avant toute écriture et toute requête");
+  });
+
+  it("carte : estimation AVANT la boîte, puis relancer avec l'empreinte ; les réponses qui attendent l'estimation sont désactivées", () => {
+    const carte = read(CARD);
+    const debut = carte.indexOf("// <c5:reprise-redemarrage>\n  /**");
+    const fin = carte.indexOf("// </c5:reprise-redemarrage>", debut + 1);
+    assert.ok(debut !== -1 && fin > debut, "la reprise de la carte vit dans sa section c5:");
+    const section = withoutComments(carte.slice(debut, fin));
+    const estimate = section.indexOf("teamRunsApi.estimate(run.id)");
+    const boite = section.indexOf("await confirm({ title: confirmation.titre");
+    const relaunch = section.indexOf("teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte })");
+    assert.ok(estimate > 0 && boite > estimate && relaunch > boite, `estimate=${estimate} boite=${boite} relaunch=${relaunch}`);
+    assert.match(section, /repriseApresEstimation\(pause, await teamRunsApi\.estimate\(run\.id\)\)/);
+    assert.match(withoutComments(carte), /onReprendre=\{reprendre\}/);
+
+    const pause = withoutComments(read(PAUSE));
+    assert.match(pause, /bouton\.action === "relancer" \? onReprendre : continuer/, "le bouton de la reprise ne répond jamais à la pause");
+    assert.match(pause, /const continuerActif = reprise === null && vue\.continuerActif;/);
+    assert.match(pause, /const aucunActif = reprise === null \|\| reprise\.aucunLibre;/);
+    assert.match(pause, /aria-disabled=\{!continuerActif\}/);
+    assert.match(pause, /onClick=\{\(\) => \(aucunActif \? onAucun\(\) : undefined\)\}/);
+    assert.doesNotMatch(pause, /autoFocus|\.focus\(\)/, "le focus n'est jamais pris");
   });
 });
 

@@ -15,12 +15,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, it, type TestContext } from "node:test";
-import type { EqModule, PlannedStep, PreflightOutcome, RecheckOutcome, RunPlan, TeamGuardsPort, TeamPreflightPort, TeamRow, TeamsPort } from "./contracts-eq.ts";
+import type {
+  EqModule,
+  PlannedStep,
+  PreflightInput,
+  PreflightOutcome,
+  RecheckOutcome,
+  RunPlan,
+  TeamGuardsPort,
+  TeamPreflightPort,
+  TeamRow,
+  TeamsPort,
+} from "./contracts-eq.ts";
 import type { Logger } from "./log.ts";
 import { METHODS } from "./methods-catalogue.ts";
 import { floorHash } from "./session-floor-service.ts";
 import { type Rule, truncateGlob } from "./shared/assistant-rules.ts";
-import { DELIVERABLE_TEXTS, METHODE_HEADER, STEP_SECTIONS } from "./shared/flow.ts";
+import { DELIVERABLE_TEXTS, METHODE_HEADER, STEP_SECTIONS, stepMessage } from "./shared/flow.ts";
 import { renderMethodBlock } from "./shared/methods.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
 import { TEXTES } from "./shared/team-texts.ts";
@@ -186,6 +197,12 @@ interface Ctx {
   warnings: Array<{ message: string; data: unknown }>;
   /** Corps du fichier d'agent rendu par le Studio (lecture LOCALE du contrôle de fraîcheur des méthodes). */
   corpsAgent: Map<string, string>;
+  /** Clôture 5b (D-5b-1) : appels de `preflight.estimate` (identifiant du lancement ré-estimé, null pour une équipe). */
+  estimations: Array<string | null>;
+  /** Clôture 5b (D-5b-1) : entrées de `preflight.check` (lancement et confirmations de relance). */
+  verifications: PreflightInput[];
+  /** Clôture 5b (D-5b-1) : tant qu'elle n'est pas tenue, `preflight.check` attend (deux confirmations au même moment). */
+  retenue: Promise<void> | null;
   run(body?: Record<string, unknown>): Promise<{ status: number; body: string; json<T>(): T }>;
   continuer(runId: string, body: Record<string, unknown>): Promise<{ status: number; body: string; json<T>(): T }>;
   waitRun(runId: string, predicate: (view: TeamRunView) => boolean, label?: string): Promise<TeamRunView>;
@@ -206,11 +223,36 @@ async function openTeam(t: TestContext, options: OpenOptions): Promise<Ctx> {
   const ctx = {} as Ctx;
   ctx.recheck = [{ ok: true }];
   ctx.corpsAgent = corpsAgent;
+  ctx.estimations = [];
+  ctx.verifications = [];
+  ctx.retenue = null;
 
   const preflight: TeamPreflightPort = {
     assistants: async () => new Map(),
-    estimate: async () => ({ ok: false, status: 409, code: "a-venir" }),
-    check: async (): Promise<PreflightOutcome> => ({ ok: true, plan: ctx.plan }),
+    // Clôture 5b (D-5b-1) : la ré-estimation d'une pause qui a survécu à un redémarrage passe par POST …/estimate. Le faux rend
+    // l'estimation de l'instantané du test, sans aucune lecture, et garde la trace de chaque appel.
+    estimate: async (_team, _body, _mode, relance) => {
+      ctx.estimations.push(relance?.runId ?? null);
+      return {
+        ok: true,
+        response: {
+          estimate: ctx.plan.estimate,
+          estimateSha256: ctx.plan.estimateSha256,
+          problems: [],
+          plafond: ctx.plan.plafond,
+          confirmations: [],
+          blocage: null,
+          expireA: Date.now() + 600_000,
+          deja: relance ? 0 : null,
+        },
+      };
+    },
+    check: async (input): Promise<PreflightOutcome> => {
+      // Clôture 5b (D-5b-1) : trace de chaque pré-lancement, pour lire le reste qu'une confirmation transmet.
+      ctx.verifications.push(input);
+      if (ctx.retenue !== null) await ctx.retenue;
+      return { ok: true, plan: ctx.plan };
+    },
     recheck: async () => (ctx.recheck.length > 1 ? (ctx.recheck.shift() as RecheckOutcome) : (ctx.recheck[0] as RecheckOutcome)),
   };
   const teams: TeamsPort = {
@@ -964,8 +1006,9 @@ describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", (
     h.assertNoGlobalRestart();
   });
 
-  it("redémarrage du cockpit en « attente-choix » : la pause tient, rien n'est lancé, la proposition est rendue", async (t) => {
-    const ctx = await openTeam(t, { flow: aiguillageFlow() });
+  it("redémarrage du cockpit en « attente-choix » : la pause tient, rien n'est lancé, la proposition est rendue — puis VOTRE choix, après une estimation montrée et confirmée", async (t) => {
+    // Clôture 5b (D-5b-1) : les routes d'incident (estimate, relancer) sont celles du module teamGuards, monté ici pour de vrai.
+    const ctx = await openTeam(t, { flow: aiguillageFlow(), guardsReels: true });
     const { h } = ctx;
     const runId = "33333333-4444-5555-6666-777777777777";
     const racine = await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Conversation" } });
@@ -989,9 +1032,371 @@ describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", (
     const apres = h.fake.requests.slice(avant);
     assert.equal(apres.filter((req) => req.method === "POST" && req.pathname === "/session").length, 0, "aucune session créée");
     assert.equal(apres.filter((req) => req.pathname.endsWith("/prompt_async")).length, 0, "aucun envoi");
+
+    // L'instantané de l'estimation n'a pas survécu au redémarrage : la pause le dit, et porte une issue autre que [Arrêter].
+    assert.deepEqual(vue.pause?.reestimation, { aucunLibre: true, possible: true });
+
+    // Un choix de spécialistes lancerait des appels facturés sans estimation à jour : refusé en clair (P3), sans rien écrire.
+    const avantRefus = h.fake.requests.length;
+    const refus = await ctx.continuer(runId, { choix: ["s1"] });
+    assert.equal(refus.status, 409, refus.body);
+    assert.deepEqual(refus.json(), { error: "reestimation-requise", message: TEXTES.partout.erreurs["reestimation-requise"] });
+    assert.ok(!refus.json<{ message: string }>().message.includes("est affichée"), "la phrase fausse « une nouvelle estimation est affichée » n'est plus rendue");
+    assert.equal(h.fake.requests.length, avantRefus, "refus rendu avant toute requête à opencode");
+    assert.equal(ctx.view(runId).state, "attente-choix");
+    assert.equal(h.db.prepare("SELECT choix FROM team_run_steps WHERE run_id = ? AND step_id = 'tri'").get(runId)?.choix ?? null, null, "aucun choix écrit");
+
+    // Issue : l'estimation est MONTRÉE (POST …/estimate), puis confirmée (POST …/relancer, x-cockpit-confirm: 1).
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    assert.deepEqual(ctx.estimations, [runId], "une estimation du reste de CE lancement");
+    const empreinte = estimation.json<{ estimateSha256: string }>().estimateSha256;
+    const avantConfirmation = h.fake.requests.length;
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: empreinte } });
+    assert.equal(confirme.status, 200, confirme.body);
+    const revenue = confirme.json<TeamRunView>();
+    // La carte de choix revient : ni l'autonomie, ni un crochet, ni la relance ne tranchent le choix (spéc. l.772).
+    assert.equal(revenue.state, "attente-choix");
+    assert.equal(revenue.pause?.kind, "choix");
+    assert.equal(revenue.pause?.reestimation, undefined, "l'estimation est à jour : plus de ré-estimation demandée");
+    assert.deepEqual(
+      revenue.pause?.choix?.map((entree) => entree.propose),
+      [true, true, false],
+      "la proposition de l'aiguilleur, déjà payée, est gardée",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const pendantPause = h.fake.requests.slice(avantConfirmation);
+    assert.equal(pendantPause.filter((req) => req.pathname.endsWith("/prompt_async")).length, 0, "la confirmation de l'estimation ne lance rien");
+    assert.equal(creationsDEtape(h).length, 0, "aucune session d'étape créée");
+    assert.equal(ctx.view(runId).state, "attente-choix");
+
+    // VOTRE choix : un spécialiste, et lui seul, part — l'aiguilleur n'est pas refait.
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "s1", { text: "Réseau : la route vers la base a sauté.", cost: 0.01, stepMs: 5 });
+    const reponse = await ctx.continuer(runId, { choix: ["s1"] });
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee", "suite après le choix");
+    assert.deepEqual(
+      fini.steps.map((step) => `${step.stepId}:${step.tentative}:${step.state}`),
+      ["tri:1:terminee", "s1:1:terminee", "s2:1:non-choisi", "s3:1:non-choisi", "syn:1:non-choisi"],
+      "aucune tentative neuve : la reprise garde les lignes de la pause",
+    );
+    assert.deepEqual(
+      creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string } }).metadata?.etape),
+      ["s1"],
+      "seul le spécialiste choisi a une session ; l'aiguilleur, déjà payé, n'est pas refait",
+    );
+    assert.equal(envois(h).length, 1);
+    h.assertNoGlobalRestart();
+  });
+
+  it("redémarrage du cockpit en « attente-choix » : « Aucun ne convient » ne lance rien, il passe donc sans estimation", async (t) => {
+    const ctx = await openTeam(t, { flow: aiguillageFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "44444444-5555-6666-7777-888888888888";
+    const rootId = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Conversation" } })).json<FakeSession>().id;
+    const etapeSession = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Tri" } })).json<FakeSession>().id;
+    seedChoix(h, { runId, rootId, flow: aiguillageFlow(), sessionId: etapeSession });
+    await h.cockpit.startup();
+    assert.deepEqual(ctx.view(runId).pause?.reestimation, { aucunLibre: true, possible: true });
+
+    const avant = h.fake.requests.length;
+    const reponse = await ctx.continuer(runId, { aucun: true });
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee", "chemin « aucun » après le redémarrage");
+    assert.equal(fini.steps.find((step) => step.stepId === "tri")?.choix, "aucun", "VOTRE réponse est écrite");
+    assert.deepEqual(
+      fini.steps.filter((step) => step.stepId !== "tri").map((step) => step.state),
+      ["non-choisi", "non-choisi", "non-choisi", "non-choisi"],
+    );
+    const apres = h.fake.requests.slice(avant);
+    assert.equal(apres.filter((req) => req.pathname.endsWith("/prompt_async")).length, 0, "aucun appel d'IA");
+    assert.equal(apres.filter((req) => req.method === "POST" && req.pathname === "/session").length, 0, "aucune session");
+    assert.deepEqual(ctx.estimations, [], "aucune estimation demandée pour un chemin qui ne coûte rien");
+    assert.equal(fini.cost, 0);
+    h.assertNoGlobalRestart();
+  });
+
+  it("pause vivante (lancée par ce cockpit) : ni estimation ni relance à la place de VOTRE réponse", async (t) => {
+    const ctx = await openTeam(t, { flow: aiguillageFlow(), guardsReels: true });
+    const { h } = ctx;
+    scripterAiguillage(h);
+    const { runId } = (await ctx.run()).json<TeamRunStarted>();
+    const enChoix = await ctx.waitRun(runId, (v) => v.state === "attente-choix", "pause de choix");
+    assert.equal(enChoix.pause?.reestimation, undefined, "l'instantané du lancement est là : rien à ré-estimer");
+    const avant = h.fake.requests.length;
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.deepEqual([estimation.status, estimation.json<{ error: string }>().error], [409, "pas-relancable"]);
+    const relance = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: ctx.plan.estimateSha256 } });
+    assert.deepEqual([relance.status, relance.json<{ error: string }>().error], [409, "pas-relancable"]);
+    assert.equal(h.fake.requests.length, avant, "aucune requête");
+    assert.deepEqual(ctx.estimations, []);
+    assert.equal(ctx.view(runId).state, "attente-choix");
+    h.assertNoGlobalRestart();
+  });
+
+  it("redémarrage du cockpit pendant une pause « vérifier » : message du bloc gardé, ré-estimation, puis VOTRE [Continuer] reprend", async (t) => {
+    const ctx = await openTeam(t, { flow: pauseFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "55555555-6666-7777-8888-999999999999";
+    const rootId = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Conversation" } })).json<FakeSession>().id;
+    const collecte = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Collecte" } })).json<FakeSession>().id;
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: pauseFlow(),
+      state: "attente-verification",
+      cause: "pause",
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte : trois journaux relevés." } },
+    });
+    await h.cockpit.startup();
+    const vue = ctx.view(runId);
+    assert.equal(vue.state, "attente-verification");
+    assert.equal(vue.pause?.kind, "verification");
+    assert.equal(vue.pause?.message, "Vérifiez la collecte avant l'analyse.", "le message du bloc « pause » survit au redémarrage");
+    assert.equal(vue.pause?.blocId, "p");
+    assert.deepEqual(vue.pause?.reestimation, { aucunLibre: false, possible: true });
+
+    const refus = await ctx.continuer(runId, { precision: "Regarde aussi la table des factures." });
+    assert.deepEqual([refus.status, refus.json<{ error: string }>().error], [409, "reestimation-requise"]);
+
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    const revenue = confirme.json<TeamRunView>();
+    assert.deepEqual([revenue.state, revenue.cause, revenue.pause?.kind, revenue.pause?.message], ["attente-verification", "pause", "verification", "Vérifiez la collecte avant l'analyse."]);
+    assert.equal(revenue.pause?.reestimation, undefined);
+    assert.equal(creationsDEtape(h).length, 0, "la confirmation de l'estimation ne lance rien : la pause attend votre réponse");
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse : rien d'anormal.", cost: 0.01, stepMs: 5 });
+    const reponse = await ctx.continuer(runId, { precision: "Regarde aussi la table des factures." });
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee", "suite après la pause");
+    assert.deepEqual(fini.steps.map((step) => `${step.stepId}:${step.tentative}:${step.state}`), ["a:1:terminee", "b:1:terminee"]);
+    assert.deepEqual(creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string } }).metadata?.etape), ["b"], "l'étape déjà faite n'est pas refaite");
+    const corps = texteDe(h.fake.messages(sessionDe(h, "b"))[0]?.parts);
+    assert.ok(corps.includes("Regarde aussi la table des factures."), "votre précision part avec l'étape suivante");
+    assert.ok(corps.includes("Collecte : trois journaux relevés."), "le résultat de l'étape d'avant le redémarrage est bien transmis (relu en base)");
+    h.assertNoGlobalRestart();
+  });
+
+  it("redémarrage du cockpit avec une étape en file (nouvel essai perdu) : la reprise confirmée la relance, sans tentative neuve", async (t) => {
+    const ctx = await openTeam(t, { flow: duoFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    const rootId = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Conversation" } })).json<FakeSession>().id;
+    const collecte = (await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: "Collecte" } })).json<FakeSession>().id;
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: duoFlow(),
+      state: "en-cours",
+      cause: null,
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte faite." }, b: { state: "en-file", sessionId: null, extrait: null } },
+    });
+    await h.cockpit.startup();
+    const vue = await ctx.waitRun(runId, (v) => v.state === "attente-verification", "pause du redémarrage");
+    assert.equal(vue.pause?.kind, "redemarrage-cockpit");
+    assert.deepEqual(vue.pause?.reestimation, { aucunLibre: false, possible: true });
+    assert.deepEqual([(await ctx.continuer(runId, {})).status, ctx.view(runId).state], [409, "attente-verification"]);
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.01, stepMs: 5 });
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    // La pause du redémarrage n'a pas d'autre réponse que « continuer » : votre confirmation relance la suite.
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee", "suite relancée");
+    assert.deepEqual(fini.steps.map((step) => `${step.stepId}:${step.tentative}:${step.state}`), ["a:1:terminee", "b:1:terminee"], "l'étape en file repart sur SA ligne");
+    assert.equal(envois(h).length, 1);
     h.assertNoGlobalRestart();
   });
 });
+
+describe("Clôture 5b (D-5b-1) : réponse jouée à blanc, reste compté par passage, une seule confirmation", () => {
+  it("redémarrage ENTRE deux tours d'une relecture (le tour 2 n'a pas encore de ligne) : ré-estimation demandée, jamais un échec", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const redac = await nouvelleSession(h, "Rédaction");
+    const relec = await nouvelleSession(h, "Relecture");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: relectureFlow(),
+      state: "attente-verification",
+      cause: "redemarrage-cockpit",
+      lignes: {
+        redac: { state: "terminee", sessionId: redac, extrait: "Version 1 du compte rendu." },
+        relec: { state: "terminee", sessionId: relec, extrait: "Les causes ne sont pas étayées.\nVERDICT: À REPRENDRE" },
+      },
+    });
+    h.db.prepare("UPDATE team_run_steps SET verdict = 'a-reprendre' WHERE run_id = ? AND step_id = 'relec'").run(runId);
+    await h.cockpit.startup();
+    const vue = ctx.view(runId);
+    assert.equal(vue.pause?.kind, "redemarrage-cockpit");
+    // Aucune ligne « prevue » ni « en-file » : c'est l'ordonnanceur, joué à blanc, qui sait que le tour 2 partirait.
+    assert.deepEqual(vue.pause?.reestimation, { aucunLibre: false, possible: true });
+
+    const avant = h.fake.requests.length;
+    const refus = await ctx.continuer(runId, {});
+    assert.deepEqual([refus.status, refus.json<{ error: string }>().error], [409, "reestimation-requise"]);
+    assert.equal(h.fake.requests.length, avant, "refus rendu avant toute requête");
+    assert.equal(ctx.view(runId).state, "attente-verification", "la réponse n'a pas fait échouer le tour 2 faute d'instantané");
+
+    // Sessions déjà ouvertes avant le redémarrage : leurs réponses sont posées sur elles directement (scriptWhen ne vaut qu'à la
+    // création d'une session).
+    h.fake.script(redac, { text: "Version 2 du compte rendu.", cost: 0.01, stepMs: 5 });
+    h.fake.script(relec, { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "tour 2 après la reprise");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.equal(creationsDEtape(h).length, 0, "le tour 2 reprend les sessions du tour 1 (D-5-14) : aucune session neuve");
+    assert.deepEqual(
+      fini.steps.map((step) => `${step.stepId}#${step.tour}:${step.state}`).toSorted(),
+      ["redac#1:terminee", "redac#2:terminee", "relec#1:terminee", "relec#2:terminee"],
+    );
+    h.assertNoGlobalRestart();
+  });
+
+  it("redémarrage pendant la pause d'avant la relecture : reste confirmé compté PAR PASSAGE, puis VOTRE [Continuer] lance le relecteur", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow(true), guardsReels: true });
+    const { h } = ctx;
+    const runId = "88888888-9999-aaaa-bbbb-cccccccccccc";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const redac = await nouvelleSession(h, "Rédaction");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: relectureFlow(true),
+      state: "attente-verification",
+      cause: "pause",
+      lignes: { redac: { state: "terminee", sessionId: redac, extrait: "Version 1 du compte rendu." } },
+    });
+    await h.cockpit.startup();
+    const vue = ctx.view(runId);
+    assert.deepEqual([vue.pause?.kind, vue.pause?.blocId], ["verification", "rel"], "la pause d'avant la relecture est rendue telle quelle");
+    assert.deepEqual(vue.pause?.reestimation, { aucunLibre: false, possible: true });
+
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    // Le reste transmis au pré-lancement est celui que l'estimation montrée a compté : le premier jet, fait, est retiré UNE
+    // fois ; les révisions à venir restent. Compté par identifiant, il perdait les révisions et l'empreinte ne tombait plus.
+    assert.deepEqual(ctx.verifications.at(-1)?.relance?.restantes, ["relec", "redac", "relec", "redac"]);
+    assert.deepEqual([confirme.json<TeamRunView>().state, confirme.json<TeamRunView>().pause?.kind], ["attente-verification", "verification"]);
+    assert.equal(creationsDEtape(h).length, 0, "la confirmation de l'estimation ne lance rien : la pause attend votre réponse");
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec", { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const reponse = await ctx.continuer(runId, {});
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "relecture après la pause");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.deepEqual(
+      creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string } }).metadata?.etape),
+      ["relec"],
+      "le premier jet, déjà payé, n'est pas refait",
+    );
+    h.assertNoGlobalRestart();
+  });
+
+  it("deux confirmations presque simultanées sur une pause « vérifier » reprise : une seule passe, et la pause attend VOTRE réponse", async (t) => {
+    const ctx = await openTeam(t, { flow: pauseFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "99999999-aaaa-bbbb-cccc-dddddddddddd";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: pauseFlow(),
+      state: "attente-verification",
+      cause: "pause",
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte : trois journaux relevés." } },
+    });
+    await h.cockpit.startup();
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const corps = { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 };
+    // Les deux confirmations entrent dans le pré-lancement AVANT que l'une n'en sorte : c'est la fenêtre d'un double clic.
+    let liberer = (): void => undefined;
+    ctx.retenue = new Promise<void>((resolve) => {
+      liberer = resolve;
+    });
+    const envoiUn = h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps });
+    const envoiDeux = h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps });
+    await until(() => (ctx.verifications.length >= 2 ? true : undefined), 5_000);
+    liberer();
+    const [un, deux] = await Promise.all([envoiUn, envoiDeux]);
+    assert.deepEqual([un.status, deux.status].toSorted(), [200, 409], `${un.body} | ${deux.body}`);
+    assert.equal((un.status === 409 ? un : deux).json<{ error: string }>().error, "pas-relancable");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const vue = ctx.view(runId);
+    assert.deepEqual([vue.state, vue.cause, vue.pause?.kind], ["attente-verification", "pause", "verification"], "jamais une relance complète d'une pause");
+    const neuves = h.db.prepare("SELECT COUNT(*) AS n FROM team_run_steps WHERE run_id = ? AND tentative > 1").get(runId) as { n: number };
+    assert.equal(neuves.n, 0, "aucune tentative neuve");
+    assert.equal(envois(h).length, 0, "rien n'est envoyé avant votre réponse");
+    h.assertNoGlobalRestart();
+  });
+
+  it("redémarrage avec une étape en file APRÈS une pause déjà franchie : la reprise ne redemande pas la pause", async (t) => {
+    const ctx = await openTeam(t, { flow: pauseFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: pauseFlow(),
+      state: "en-cours",
+      cause: null,
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte faite." }, b: { state: "en-file", sessionId: null, extrait: null } },
+    });
+    await h.cockpit.startup();
+    const vue = await ctx.waitRun(runId, (v) => v.state === "attente-verification", "pause du redémarrage");
+    assert.equal(vue.pause?.kind, "redemarrage-cockpit");
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.01, stepMs: 5 });
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    // L'étape « b » était en file : l'ordonnanceur avait donc déjà passé la pause « p », qui a reçu votre réponse avant le
+    // redémarrage. Seules les étapes TERMINÉES comptaient, et « Vérifiez la collecte… » revenait.
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.pause?.kind === "verification", "suite relancée");
+    assert.equal(fini.state, "terminee", `pause redemandée : ${JSON.stringify(fini.pause?.kind)}`);
+    assert.deepEqual(fini.steps.map((step) => `${step.stepId}:${step.tentative}:${step.state}`), ["a:1:terminee", "b:1:terminee"]);
+    h.assertNoGlobalRestart();
+  });
+});
+
+/** Conversation ou session d'étape déjà créée chez opencode avant le redémarrage (par le proxy, sans marque d'équipe). */
+async function nouvelleSession(h: CockpitHarness, titre: string): Promise<string> {
+  const reponse = await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title: titre } });
+  assert.equal(reponse.status, 200, reponse.body);
+  return reponse.json<FakeSession>().id;
+}
 
 /** Lancement écrit comme avant un redémarrage du cockpit : aiguilleur terminé, choix NON confirmé. */
 function seedChoix(h: CockpitHarness, options: { runId: string; rootId: string; flow: Flow; sessionId: string }): void {
@@ -1005,8 +1410,8 @@ function seedChoix(h: CockpitHarness, options: { runId: string; rootId: string; 
     const premier = step.id === "tri";
     h.db
       .prepare(
-        `INSERT INTO team_run_steps (run_id, step_id, tour, tentative, ordre, bloc_index, titre, agent, state, session_id, result_excerpt, model, cost)
-         VALUES (:run, :step, 1, 1, :ordre, :bloc, :titre, :agent, :state, :session, :extrait, :model, 0)`,
+        `INSERT INTO team_run_steps (run_id, step_id, tour, tentative, ordre, bloc_index, titre, agent, state, session_id, result_excerpt, message_text, model, cost)
+         VALUES (:run, :step, 1, 1, :ordre, :bloc, :titre, :agent, :state, :session, :extrait, :texte, :model, 0)`,
       )
       .run({
         run: options.runId,
@@ -1018,10 +1423,94 @@ function seedChoix(h: CockpitHarness, options: { runId: string; rootId: string; 
         state: premier ? "terminee" : "prevue",
         session: premier ? options.sessionId : null,
         extrait: premier ? "Les indices pointent le réseau et la base.\nCHOIX: Réseau, Base" : null,
+        // Clôture 5b (D-5b-1) : la consigne réellement envoyée à l'aiguilleur, qui porte la demande entre les marqueurs de
+        // D-eq-27. C'est d'elle que la relance reconstitue la demande, sans aucune colonne dédiée.
+        texte: premier ? consigneEnvoyee(options.flow, step.id, options.runId) : null,
         model: MODEL,
       });
   });
   h.db
     .prepare("INSERT INTO team_run_events (run_id, kind, par, data, at) VALUES (?, 'aiguillage-propose', 'cockpit', ?, 1)")
     .run(options.runId, JSON.stringify({ bloc: "aig", ids: "s1,s2" }));
+}
+
+// --- Clôture 5b (D-5b-1) : pauses qui survivent à un redémarrage du cockpit ------------------------------------------------------
+
+/** Deux étapes à la suite, séparées par une pause pour vérifier (message écrit dans le bloc). */
+const pauseFlow = (): Flow => ({
+  version: 1,
+  blocs: [
+    { type: "etape", id: "b1", etape: etape("a", "Collecte", AGENT_SCRIPT, "demande") },
+    { type: "pause", id: "p", message: "Vérifiez la collecte avant l'analyse." },
+    { type: "etape", id: "b2", etape: etape("b", "Analyse", AGENT_SQL, "precedent") },
+  ],
+});
+
+/** Deux étapes à la suite, sans pause. */
+const duoFlow = (): Flow => ({
+  version: 1,
+  blocs: [
+    { type: "etape", id: "b1", etape: etape("a", "Collecte", AGENT_SCRIPT, "demande") },
+    { type: "etape", id: "b2", etape: etape("b", "Analyse", AGENT_SQL, "precedent") },
+  ],
+});
+
+/** Consigne réelle d'une étape qui a reçu la demande : les marqueurs de D-eq-27 bornés par l'identifiant du lancement. */
+function consigneEnvoyee(flow: Flow, stepId: string, runId: string): string {
+  return stepMessage(flow, stepId, {
+    runId,
+    tour: 1,
+    tentative: 1,
+    equipe: "Enquête d'incident",
+    total: etapesDeclarees(flow).length,
+    n: 1,
+    demande: DEMANDE,
+    fichiers: [],
+    precisions: [],
+    resultats: [],
+  });
+}
+
+/**
+ * Lancement écrit comme avant un redémarrage du cockpit, étape par étape. La première étape terminée porte la consigne réelle
+ * (demande reconstituable) ; une étape absente de `lignes` est « prevue ».
+ */
+function seedLancement(
+  h: CockpitHarness,
+  options: {
+    runId: string;
+    rootId: string;
+    flow: Flow;
+    state: string;
+    cause: string | null;
+    lignes: Record<string, { state: string; sessionId: string | null; extrait: string | null }>;
+  },
+): void {
+  h.db
+    .prepare(
+      `INSERT INTO team_runs (id, team_titre, flow, flow_sha256, root_session_id, directory, state, cause, facultatifs, plafond, cost, confirmations, precisions, created_at, started_at)
+       VALUES (:id, 'Enquête d''incident', :flow, 'f0', :root, :dir, :state, :cause, '[]', 1, 0, '{}', '[]', 1, 1)`,
+    )
+    .run({ id: options.runId, flow: JSON.stringify(options.flow), root: options.rootId, dir: h.fake.directory, state: options.state, cause: options.cause });
+  etapesDeclarees(options.flow).forEach(({ step, blocIndex, ordre }, index) => {
+    const ligne = options.lignes[step.id] ?? { state: "prevue", sessionId: null, extrait: null };
+    h.db
+      .prepare(
+        `INSERT INTO team_run_steps (run_id, step_id, tour, tentative, ordre, bloc_index, titre, agent, state, session_id, result_excerpt, message_text, model, cost)
+         VALUES (:run, :step, 1, 1, :ordre, :bloc, :titre, :agent, :state, :session, :extrait, :texte, :model, 0)`,
+      )
+      .run({
+        run: options.runId,
+        step: step.id,
+        ordre,
+        bloc: blocIndex,
+        titre: step.titre,
+        agent: step.assistant,
+        state: ligne.state,
+        session: ligne.sessionId,
+        extrait: ligne.extrait,
+        texte: index === 0 && ligne.sessionId !== null ? consigneEnvoyee(options.flow, step.id, options.runId) : null,
+        model: MODEL,
+      });
+  });
 }

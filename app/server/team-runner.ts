@@ -345,6 +345,14 @@ interface RunMemory {
   stopping: boolean;
   /** Étapes qui occupent une place, y compris entre POST /session et prompt_async (D-eq-06). */
   inflight: Set<string>;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : étapes relues « en-file » après un redémarrage du cockpit. Leur nouvel essai était un minuteur de
+   * l'ancien processus, perdu avec lui : l'ordonnanceur les reprend comme des étapes à lancer, sur LEUR ligne (même tour, même
+   * tentative), qui n'a rien envoyé. Vide pour un lancement suivi par ce processus depuis son départ.
+   */
+  enFileOrphelines: Set<string>;
+  // </c5:reprise-redemarrage>
   billRetries: Map<string, number>;
   timers: Set<NodeJS.Timeout>;
   chain: Promise<void>;
@@ -489,7 +497,13 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const rows = lastRows(run.runId);
     const etapes: Record<string, TeamStepState> = {};
     for (const declaree of etapesDeclarees(run.flow)) {
-      etapes[declaree.stepId] = run.inflight.has(declaree.stepId) ? "en-cours" : (rows.get(declaree.stepId)?.state ?? "prevue");
+      // <c5:reprise-redemarrage>
+      // Une étape « en-file » dont le nouvel essai a été perdu avec l'ancien processus est rendue à l'ordonnanceur « prevue » :
+      // sans cela, elle comptait comme une étape active, et le lancement attendait pour toujours un essai qui ne viendrait pas.
+      const enregistre = rows.get(declaree.stepId)?.state ?? "prevue";
+      const etat: TeamStepState = enregistre === "en-file" && run.enFileOrphelines.has(declaree.stepId) ? "prevue" : enregistre;
+      // </c5:reprise-redemarrage>
+      etapes[declaree.stepId] = run.inflight.has(declaree.stepId) ? "en-cours" : etat;
     }
     const resultats: Record<string, string> = {};
     for (const [cle, texte] of run.resultats) resultats[cle] = texte;
@@ -784,11 +798,17 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       attenteFraicheur: false,
       stopping: false,
       inflight: new Set(),
+      // <c5:reprise-redemarrage>
+      enFileOrphelines: new Set(),
+      // </c5:reprise-redemarrage>
       billRetries: new Map(),
       timers: new Set(),
       chain: Promise.resolve(),
     };
     relirePropositions(run);
+    // <c5:reprise-redemarrage>
+    restaurerApresRedemarrage(run, row.state, row.cause);
+    // </c5:reprise-redemarrage>
     return run;
   };
 
@@ -821,6 +841,93 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       if (typeof extrait === "string" && extrait !== "") run.raisons.set(bloc.id, raisonDeLAiguilleur(extrait));
     }
   };
+
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : ce que la mémoire d'un lancement relit en BASE après un redémarrage du cockpit, pour que la pause rende
+   * la même chose qu'avant et que VOTRE réponse la fasse repartir :
+   * - les pauses déjà franchies : tout bloc « pause » placé avant une étape que l'ordonnanceur a ATTEINTE — une ligne, quelle
+   *   que soit sa tentative, qui n'est ni « prevue » ni « non-lancee » (terminée, mais aussi en cours, en file ou écartée : la
+   *   pause d'avant a donc reçu votre réponse) ; la pause d'avant la première relecture, dès que le relecteur a travaillé une
+   *   fois (lu ici, et non plus dans `reattach` seul, pour que la VUE d'un lancement qu'aucune exécution de ce processus ne suit
+   *   les connaisse aussi). L'itération 4 ne comptait que les étapes TERMINÉES : une étape encore au travail au redémarrage,
+   *   rattachée puis finie, laissait la pause d'avant non franchie, et elle était redemandée ;
+   * - le bloc qui attend (`pauseBloc`) d'une pause « vérifier » : sans lui, la carte perdait le message écrit dans le bloc, et
+   *   [Continuer] ne notait pas la pause franchie — l'ordonnanceur la redemandait aussitôt, sans fin ;
+   * - les étapes restées « en-file » : leur nouvel essai était un minuteur de l'ancien processus (`enFileOrphelines`).
+   * Aucune requête : tout est lu dans la base.
+   */
+  const restaurerApresRedemarrage = (run: RunMemory, state: TeamRunState, cause: TeamRunCause | null): void => {
+    const rows = lastRows(run.runId);
+    const atteintes = new Set(
+      store.steps
+        .ofRun(run.runId)
+        .filter((row) => row.state !== "prevue" && row.state !== "non-lancee")
+        .map((row) => row.step_id),
+    );
+    const franchies = new Set<string>();
+    for (const declaree of etapesDeclarees(run.flow)) {
+      if (!atteintes.has(declaree.stepId)) continue;
+      for (const bloc of run.flow.blocs.slice(0, declaree.blocIndex)) if (bloc.type === "pause") franchies.add(bloc.id);
+    }
+    run.pausesFranchies = [...franchies];
+    const finis = toursTermines(run.runId);
+    run.pausesRelecture = [];
+    for (const bloc of run.flow.blocs) {
+      if (bloc.type !== "relecture") continue;
+      const dejaEnvoye = (rows.get(bloc.relecteur.id)?.session_id ?? null) !== null;
+      if ((finis.get(bloc.relecteur.id) ?? 0) > 0 || dejaEnvoye) run.pausesRelecture.push(bloc.id);
+    }
+    for (const [stepId, row] of rows) if (row.state === "en-file") run.enFileOrphelines.add(stepId);
+    if (state === "attente-verification" && cause === "pause") {
+      const premiere = nextActions(run.flow, flowState(run), { simultanees: concurrentSteps() })[0];
+      if (premiere !== undefined && "pause" in premiere) run.pauseBloc = premiere.pause;
+    }
+  };
+
+  /**
+   * VOTRE réponse à cette pause lancerait-elle un appel facturé ? Elle est JOUÉE à blanc par l'ordonnanceur lui-même
+   * (`nextActions`, sans rien écrire) : la pause « vérifier » est notée franchie, « Aucun ne convient » est posé sur le bloc en
+   * choix, et toute autre pause repart telle quelle, comme le fait `continueRun`. Vrai dès que la première décision de
+   * l'ordonnanceur LANCE une étape. Retenir des spécialistes les lance toujours ; « Aucun ne convient » ne lance rien, sauf
+   * l'étape d'un bloc suivant (D-5-13). Une ligne d'étape ne suffit pas à le dire : le tour suivant d'une relecture n'a pas
+   * encore de ligne tant qu'il n'est pas parti.
+   */
+  const lanceraitUnAppel = (run: RunMemory, state: TeamRunState, cause: string | null, reponse: { aucun: boolean }): boolean => {
+    let etat = flowState(run);
+    if (state === "attente-choix") {
+      const bloc = blocEnChoix(run);
+      if (bloc === null) return false;
+      if (!reponse.aucun) return true;
+      etat = { ...etat, choix: { ...(etat.choix ?? {}), [bloc.id]: "aucun" } };
+    } else if (state === "attente-verification" && cause === "pause" && run.pauseBloc !== null) {
+      const franchie = run.pauseBloc;
+      etat =
+        run.flow.blocs.find((bloc) => bloc.id === franchie)?.type === "relecture"
+          ? { ...etat, pausesRelecture: [...(etat.pausesRelecture ?? []), franchie] }
+          : { ...etat, pausesFranchies: [...(etat.pausesFranchies ?? []), franchie] };
+    }
+    return nextActions(run.flow, etat, { simultanees: concurrentSteps() }).some((action) => "lancer" in action);
+  };
+
+  /**
+   * La pause attend-elle une NOUVELLE estimation ? Oui quand l'instantané du lancement est perdu (il ne vit qu'en mémoire : après
+   * un redémarrage du cockpit, la mémoire est relue en base sans lui) ET que votre réponse lancerait un appel facturé.
+   * `aucunLibre` : pause de choix où « Aucun ne convient » ne lancerait rien. `possible` : la demande est reconstituable en base
+   * (D-eq-27), donc POST …/relancer peut l'accepter.
+   */
+  const repriseDe = (run: RunMemory, state: TeamRunState, cause: string | null): NonNullable<TeamPauseView["reestimation"]> | null => {
+    if (run.plan !== null || !state.startsWith("attente-") || !lanceraitUnAppel(run, state, cause, { aucun: false })) return null;
+    return {
+      aucunLibre: state === "attente-choix" && !lanceraitUnAppel(run, state, cause, { aucun: true }),
+      possible: readRequest(run.runId) !== null,
+    };
+  };
+
+  /** Pause, avec la ré-estimation qu'elle attend ; le champ est ABSENT sinon (la forme de la vue de l'itération 4 est gardée). */
+  const avecReprise = (pause: TeamPauseView | null, reprise: NonNullable<TeamPauseView["reestimation"]> | null): TeamPauseView | null =>
+    pause === null || reprise === null ? pause : { ...pause, reestimation: reprise };
+  // </c5:reprise-redemarrage>
 
   const view = (runId: string): TeamRunView | null => {
     const row = store.runs.get(runId);
@@ -860,7 +967,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
           ...(choix === null ? {} : { choix }),
         };
       }),
-      pause: pauseView(run, row.state, row.cause),
+      // <c5:reprise-redemarrage>
+      pause: avecReprise(pauseView(run, row.state, row.cause), repriseDe(run, row.state, row.cause)),
+      // </c5:reprise-redemarrage>
       suite: row.state === "terminee" || row.state === "arretee" ? null : suiteOf(run),
       // D-eq-27 : un lancement dont la demande n'est plus reconstituable (textes purgés, aucune étape envoyée) n'est pas
       // relançable. Seule la BASE fait foi, comme pour la route de relance : la mémoire du processus n'est qu'un cache de
@@ -1113,6 +1222,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       attenteFraicheur: false,
       stopping: false,
       inflight: new Set(),
+      // <c5:reprise-redemarrage>
+      enFileOrphelines: new Set(),
+      // </c5:reprise-redemarrage>
       billRetries: new Map(),
       timers: new Set(),
       chain: Promise.resolve(),
@@ -1360,6 +1472,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   const runStep = async (run: RunMemory, stepId: string, pass: StepPass): Promise<void> => {
     // 5b : le tour courant de l'étape fait partie de sa clé (une ligne par (étape, tour), D-5-14).
     run.tours.set(stepId, pass.tour);
+    // <c5:reprise-redemarrage>
+    // L'étape en file orpheline repart sur sa ligne : si elle retombe « en-file », c'est un nouvel essai VIVANT (retryLater) qui la
+    // tient, et l'ordonnanceur ne doit plus la relancer lui-même.
+    run.enFileOrphelines.delete(stepId);
+    // </c5:reprise-redemarrage>
     const key = keyOf(run, stepId);
     try {
       await runStepInner(run, stepId, key, pass);
@@ -1892,11 +2009,20 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     if (row.state === "attente-budget" && !confirmed) return refusal(409, "budget-guard");
     const run = runs.get(runId) ?? reattach(runId);
     if (!run) return refusal(404, "not-found");
-    // Instantané perdu (redémarrage du cockpit) : aucune étape ne peut repartir sans lui. La feuille ré-estime, puis relance
-    // (L37c) ; rien n'est envoyé ni facturé en attendant, et aucune étape n'échoue faute d'instantané.
-    if (run.plan === null && [...lastRows(runId).values()].some((step) => step.state === "prevue" || step.state === "en-file")) {
-      return refusal(409, "estimation-perimee");
-    }
+    // Instantané perdu (redémarrage du cockpit) : aucune étape ne peut repartir sans lui, et rien n'est envoyé ni facturé en
+    // attendant. Aucune étape n'échoue faute d'instantané.
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1). Ce contrôle passait AVANT votre réponse et refusait tout, « aucun » compris, en 409
+    // `estimation-perimee` — dont la phrase (« une nouvelle estimation est affichée ») était fausse ici : rien n'était affiché,
+    // et aucune route ne sortait de la pause. Désormais la réponse est jouée à blanc (`lanceraitUnAppel`) :
+    // - une réponse qui ne lance rien passe sans instantané — « Aucun ne convient » sans bloc suivant, une pause suivie d'une autre
+    //   pause, ou la fin de l'équipe ;
+    // - toute réponse qui lancerait un appel facturé est refusée par `reestimation-requise`, AVANT toute écriture et toute
+    //   requête ; sa phrase dit la vérité et la suite : refaire l'estimation (POST …/estimate), puis la confirmer
+    //   (POST …/relancer). La pause revient alors, et c'est encore VOTRE réponse qui la fait repartir (spéc. l.772), avec toutes
+    //   les gardes de facturation d'une étape — sauf la pause « Le cockpit a redémarré », dont la seule réponse est de continuer.
+    if (run.plan === null && lanceraitUnAppel(run, row.state, row.cause, { aucun: body.aucun === true })) return refusal(409, "reestimation-requise");
+    // </c5:reprise-redemarrage>
     if (row.state === "attente-choix") {
       const refus = repondreAuChoix(run, body);
       if (refus !== null) return refus;
@@ -2021,6 +2147,16 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const enBase = readRequest(runId);
     if (enBase === null) return refusal(409, "pas-relancable");
     const request = run.demande === null ? enBase : { demande: run.demande, fichiers: run.fichiers };
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : une PAUSE ne repart jamais par une relance complète. Sans instantané (redémarrage du cockpit), la
+    // confirmation de la nouvelle estimation le lui rend (`reprendreApresRedemarrage`) ; avec son instantané, elle attend VOTRE
+    // réponse par POST …/continue — une seconde confirmation arrivée juste après la première est donc refusée ici, sans rien lire
+    // ni écrire.
+    if (row.state.startsWith("attente-")) {
+      if (run.plan !== null) return refusal(409, "pas-relancable");
+      return reprendreApresRedemarrage(run, row.state, row.cause, plan, request);
+    }
+    // </c5:reprise-redemarrage>
     await hydrateResults(run);
     // Transition d'abord (table de T4 : « terminee » et « arretee » sont finaux) : rien n'est touché en mémoire ni en base
     // quand elle est refusée. Une pause (dont celle d'un redémarrage) et les états en échec admettent une nouvelle tentative ;
@@ -2085,6 +2221,51 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     return view(runId) ?? refusal(404, "not-found");
   };
 
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : POST …/relancer sur une pause qui a survécu à un redémarrage du cockpit. La route n'arrive ici qu'après
+   * l'estimation MONTRÉE (POST …/estimate), votre confirmation (x-cockpit-confirm: 1) et le pré-lancement complet de la relance
+   * (A4 : budget, garde-fou P6, plafond, grammaire, configuration), qui rend l'instantané `plan`.
+   * Ce n'est PAS une relance à tentative neuve : rien de déjà payé n'est refait — ni l'aiguilleur et sa proposition, ni le
+   * premier jet d'une relecture — et aucune ligne n'est recréée. Le lancement retrouve seulement son instantané, et son plafond
+   * celui de la nouvelle estimation (déjà dépensé compris). Ensuite :
+   * - pause « Le cockpit a redémarré » : elle n'a pas d'autre réponse que « continuer », que votre confirmation donne. La suite
+   *   repart par la préparation, donc par le contrôle de fraîcheur, comme une relance ;
+   * - toute autre pause reste telle quelle (choix d'aiguillage, pause pour vérifier, budget, assistant changé, fraîcheur) : c'est
+   *   VOTRE réponse qui la fera repartir, par POST …/continue, avec les gardes de chaque étape (recheckStep, billRefusal, plafond
+   *   avec coût inconnu = refus, beginBilled). Le choix d'un aiguillage n'est jamais tranché ici (spéc. l.772).
+   */
+  const reprendreApresRedemarrage = async (
+    run: RunMemory,
+    state: TeamRunState,
+    cause: TeamRunCause | null,
+    plan: RunPlan,
+    request: { demande: string; fichiers: string[] },
+  ): Promise<TeamRunView | RunnerRefusal> => {
+    // Transition d'abord, comme la relance : refusée, rien n'est touché ni en mémoire ni en base.
+    const continuer = state === "attente-verification" && cause === "redemarrage-cockpit";
+    if (continuer && !store.runs.setState(run.runId, "preparation")) return refusal(409, "pas-relancable");
+    run.demande = request.demande;
+    run.fichiers = request.fichiers;
+    run.plan = plan;
+    run.stopping = false;
+    run.billRetries.clear();
+    store.runs.patch(run.runId, { estimateSha256: plan.estimateSha256, plafond: plan.plafond });
+    audit(run.runId, "reestimation", { estimation: plan.estimateSha256, depuis: state }, "vous");
+    if (continuer) {
+      runs.set(run.runId, run);
+      emitRun(run);
+      void schedule(run, () => startRun(run, { injecter: false }));
+      return view(run.runId) ?? refusal(404, "not-found");
+    }
+    // Pause de fraîcheur (A4) : [Continuer] refera le contrôle, comme avant le redémarrage.
+    if (state === "attente-verification" && cause === "changement") run.attenteFraicheur = true;
+    runs.set(run.runId, run);
+    emitRun(run);
+    return view(run.runId) ?? refusal(404, "not-found");
+  };
+  // </c5:reprise-redemarrage>
+
   // --- Reprise au démarrage ---------------------------------------------------------------------------------------------------
 
   /** Mémoire d'un lancement que ce processus ne suit pas encore (redémarrage, relance, arrêt). */
@@ -2098,21 +2279,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       run.demande = request.demande;
       run.fichiers = request.fichiers;
     }
-    // Pauses déjà franchies : tout bloc « pause » placé avant une étape terminée l'a été.
+    // Pauses déjà franchies (blocs « pause », pause d'avant la première relecture) : relues par `memoryFromRow`
+    // (`restaurerApresRedemarrage`, clôture 5b), pour que la vue d'un lancement non suivi les connaisse aussi.
     const rows = lastRows(runId);
-    const franchies = new Set<string>();
-    for (const declaree of etapesDeclarees(run.flow)) {
-      if (rows.get(declaree.stepId)?.state !== "terminee") continue;
-      for (const bloc of run.flow.blocs.slice(0, declaree.blocIndex)) if (bloc.type === "pause") franchies.add(bloc.id);
-    }
-    run.pausesFranchies = [...franchies];
-    // 5b : la pause d'avant la première relecture a été franchie dès que le relecteur a travaillé une fois.
-    const finis = toursTermines(runId);
-    for (const bloc of run.flow.blocs) {
-      if (bloc.type !== "relecture") continue;
-      const dejaEnvoye = (rows.get(bloc.relecteur.id)?.session_id ?? null) !== null;
-      if ((finis.get(bloc.relecteur.id) ?? 0) > 0 || dejaEnvoye) run.pausesRelecture.push(bloc.id);
-    }
     for (const [stepId, row] of rows) {
       run.tentatives.set(stepId, row.tentative);
       // Tour COURANT de l'étape : celui de sa dernière ligne (une relecture en a une par tour).

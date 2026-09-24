@@ -90,7 +90,7 @@ import type {
   TeamStepState,
 } from "./shared/team-types.ts";
 import { INTERNAL_AGENTS } from "./studio.ts";
-import { createTeamStore, type TeamStore } from "./team-store.ts";
+import { ACTIVE_RUN_STATES, createTeamStore, type TeamStore } from "./team-store.ts";
 
 /** Validité d'un instantané de lectures (D-eq-17) : au-delà, la feuille ré-estime (409 estimation-perimee). */
 export const SNAPSHOT_TTL_MS = 10 * 60_000;
@@ -568,7 +568,12 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       if (actifs.length > 0) return refus(409, "equipe-en-cours");
     }
     // A5 P5 : nombre d'équipes actives, toutes conversations confondues.
-    if (store().runs.activeCount() >= c11.settings.get().teams.maxActiveRuns) return refus(409, "trop-d-equipes");
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : la relance d'un lancement ENCORE ACTIF (pause reprise après un redémarrage du cockpit) ne compte pas
+    // ce lancement lui-même, qui occupe déjà sa place ; la relance d'un lancement fini en prend une de plus, comme avant.
+    const relanceActive = relance !== undefined && ACTIVE_RUN_STATES.includes(store().runs.get(relance.runId)?.state ?? "terminee");
+    if (store().runs.activeCount() - (relanceActive ? 1 : 0) >= c11.settings.get().teams.maxActiveRuns) return refus(409, "trop-d-equipes");
+    // </c5:reprise-redemarrage>
     // A6 P9 : le dossier est la racine du workspace.
     if (body.directory === c11.projects.opencodeRoot && body.confirmations?.workspace !== true) return refus(409, "confirmation-workspace");
     // A7 P10 : secret probable dans la demande (jamais le texte du secret dans la réponse ni dans un journal).

@@ -210,6 +210,9 @@ export const TEAM_ERROR_CODES = membersOf<TeamErrorCode>({
   // <c5:choix-invalide>
   "choix-invalide": true,
   // </c5:choix-invalide>
+  // <c5:reprise-redemarrage>
+  "reestimation-requise": true,
+  // </c5:reprise-redemarrage>
   "pas-relancable": true,
   "deja-ajoute": true,
   "confirmation-requise": true,

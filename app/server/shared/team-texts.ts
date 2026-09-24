@@ -311,6 +311,11 @@ export const TEXTES = {
       // <c5:choix-invalide>
       "choix-invalide": "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau.",
       // </c5:choix-invalide>
+      // <c5:reprise-redemarrage>
+      // Clôture 5b (D-5b-1) : le refus arrive avant toute écriture et toute requête, d'où la fin de la phrase.
+      "reestimation-requise":
+        "Le cockpit a redémarré pendant cette pause : refaites l'estimation de la suite avant de continuer. Rien n'a été envoyé ni facturé.",
+      // </c5:reprise-redemarrage>
       "pas-relancable": "La suite de cette équipe ne peut pas être relancée : relancez l'équipe depuis la saisie.",
       "deja-ajoute": "Les résultats de cette équipe sont déjà dans la conversation.",
       "confirmation-requise": "Confirmez d'abord la relance de la suite.",

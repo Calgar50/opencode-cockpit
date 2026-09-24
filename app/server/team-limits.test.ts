@@ -137,6 +137,10 @@ describe("équipes : listes des unions fermées", () => {
         // <c5:choix-invalide> Ajouté par le train de la vague 2 de la 5b (demande de contrat de L42b).
         "choix-invalide",
         // </c5:choix-invalide>
+        // <c5:reprise-redemarrage>
+        // Ajouté par la clôture de la 5b (D-5b-1) : réponse à une pause dont l'estimation a été perdue au redémarrage du cockpit.
+        "reestimation-requise",
+        // </c5:reprise-redemarrage>
         "pas-relancable",
         "deja-ajoute",
         "confirmation-requise",
