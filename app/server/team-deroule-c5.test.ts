@@ -808,6 +808,79 @@ describe("Clôture 5b, tour 3 (D-5b-1) : la boîte d'une reprise écrit les acco
   });
 });
 
+describe("Clôture 5b, tour 3 : pause reprise en mode Simple quand les équipes y sont fermées (U1) — aucun bouton que le serveur refuserait", () => {
+  const R = E.reprise;
+  const FERMEES = P.erreurs["equipes-simple-fermees"];
+  const pauseReprise = (kind: "verification" | "choix", possible = true) => ({
+    kind,
+    blocId: kind === "verification" ? "p" : null,
+    message: "",
+    resultat: kind === "verification" ? { etape: "a", titre: "Collecte", texte: "Collecte faite." } : null,
+    suite: { typique: 0.12, maximum: 0.4 },
+    changement: null,
+    ...(kind === "choix" ? { choix: [{ stepId: "reseau", titre: "Réseau", propose: true }], raison: "", choixMax: 1 } : {}),
+    reestimation: { aucunLibre: kind === "choix", possible },
+  });
+  const carte = (pause: ReturnType<typeof pauseReprise>, advanced: boolean, equipesOuvertes: boolean) => {
+    const lancement = run(aiguillage(["reseau"]), { state: pause.kind === "choix" ? "attente-choix" : "attente-verification", pause });
+    const modele = buildTeamRunCard(lancement, advanced, equipesOuvertes).pause;
+    assert.ok(modele, "la carte de pause est rendue");
+    return modele;
+  };
+
+  it("fermées : ni [Refaire l'estimation de la suite] ni [Continuer], seul [Arrêter l'équipe] ; la note dit pourquoi et où elles sont ouvertes", () => {
+    const modele = carte(pauseReprise("verification"), false, false);
+    assert.deepEqual(modele.boutons.map((b) => b.action), ["arreter"], "POST …/estimate et …/relancer rendraient 403 equipes-simple-fermees");
+    assert.equal(modele.reprise?.bouton, null);
+    assert.equal(modele.reprise?.note, `${R.note} ${FERMEES}`);
+    assert.equal(modele.reprise?.raison, FERMEES, "les réponses qui attendent l'estimation disent la vraie raison");
+    // Demande plus reconstituable : même règle, la note garde ses deux phrases.
+    assert.equal(carte(pauseReprise("verification", false), false, false).reprise?.note, `${R.impossible} ${R.impossibleSuite} ${FERMEES}`);
+  });
+
+  it("fermées, carte de choix : le bouton de la reprise disparaît, « Aucun ne convient » reste libre (POST …/continue n'est pas fermé)", () => {
+    const modele = carte(pauseReprise("choix"), false, false);
+    assert.deepEqual(modele.boutons, []);
+    assert.equal(modele.reprise?.bouton, null);
+    assert.equal(modele.reprise?.aucunLibre, true);
+    assert.equal(modele.reprise?.note, `${R.note} ${R.aucunLibre} ${FERMEES}`);
+  });
+
+  it("ouvertes (Avancé, ou Simple ouvert en une ligne) : le bouton reste, la note et la raison de la clôture sont inchangées", () => {
+    for (const [advanced, ouvertes] of [
+      [true, true],
+      [false, true],
+    ] as const) {
+      const modele = carte(pauseReprise("verification"), advanced, ouvertes);
+      assert.deepEqual(modele.boutons.map((b) => [b.action, b.desactive]), [
+        ["relancer", false],
+        ["arreter", false],
+      ]);
+      assert.deepEqual(modele.reprise, { note: R.note, bouton: R.bouton, raison: R.raison, aucunLibre: false });
+    }
+    // Défaut de buildTeamRunCard : les équipes suivent le mode (U1) — en Simple, fermées.
+    const lancement = run(aiguillage(["reseau"]), { state: "attente-verification", pause: pauseReprise("verification") });
+    assert.equal(buildTeamRunCard(lancement, false).pause?.reprise?.bouton, null);
+  });
+
+  it("carte : sans bouton au modèle, [Refaire l'estimation de la suite] ne demande aucune estimation, même appelé", () => {
+    const carteCode = withoutComments(read(CARD));
+    assert.match(
+      carteCode,
+      /if \(pause === null \|\| repriseDebut\(run\) === null \|\| \(modele\.pause\?\.reprise\?\.bouton \?\? null\) === null \|\| inflight\.current\) return;/,
+    );
+    assert.match(carteCode, /\}, \[confirm, relancerAvecEmpreinte, run, modele\.pause\?\.reprise\?\.bouton\]\);/, "la garde suit le modèle du rendu courant");
+  });
+
+  it("non-régression : une pause dont l'estimation est à jour garde [Continuer] en Simple fermé, comme dans l'itération 4", () => {
+    const { reestimation: _sans, ...pause } = pauseReprise("verification");
+    const lancement = run(aiguillage(["reseau"]), { state: "attente-verification", pause });
+    const modele = buildTeamRunCard(lancement, false, false).pause;
+    assert.equal(modele?.reprise, null);
+    assert.deepEqual(modele?.boutons.map((b) => b.action), ["continuer", "arreter"]);
+  });
+});
+
 describe("Corrections 5b : [Envoyer à cet assistant] atteint enfin le composeur", () => {
   it("la page du chat écoute le préremplissage, dans une section c5:, et n'envoie rien", () => {
     const chat = read("web/pages/ChatPage.tsx");

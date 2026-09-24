@@ -185,7 +185,8 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
    */
   const reprendreEstimation = useCallback((dejaReestimee: boolean) => {
     const pause = run.pause;
-    if (pause === null || repriseDebut(run) === null || inflight.current) return;
+    // Tour 3 : sans bouton au modèle (équipes fermées dans le mode courant, U1, ou demande perdue), aucune estimation n'est demandée.
+    if (pause === null || repriseDebut(run) === null || (modele.pause?.reprise?.bouton ?? null) === null || inflight.current) return;
     inflight.current = true;
     setOccupe(true);
     setMessage(null);
@@ -213,7 +214,7 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
       const corps = corpsDeReprise(suite, confirmation);
       await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, corps), dejaReestimee, () => reprendreEstimation(true));
     })();
-  }, [confirm, relancerAvecEmpreinte, run]);
+  }, [confirm, relancerAvecEmpreinte, run, modele.pause?.reprise?.bouton]);
   const reprendre = useCallback(() => reprendreEstimation(false), [reprendreEstimation]);
   // </c5:reprise-redemarrage>
 

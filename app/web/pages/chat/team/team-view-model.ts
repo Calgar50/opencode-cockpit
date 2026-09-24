@@ -212,14 +212,26 @@ export interface TeamRepriseModel {
 
 const REPRISE = CONSTRUCTION.partout.execution.reprise;
 
-/** Modèle de la reprise d'une pause, lu sur `pause.reestimation` (vue du serveur) ; null quand l'estimation est à jour. */
-export function modeleReprise(pause: TeamPauseView): TeamRepriseModel | null {
+/**
+ * Modèle de la reprise d'une pause, lu sur `pause.reestimation` (vue du serveur) ; null quand l'estimation est à jour.
+ * Tour 3 : `equipesOuvertes` — équipes ouvertes dans le mode courant (U1), même valeur que pour [Relancer la suite]. Fermées,
+ * POST …/estimate et POST …/relancer rendent 403 `equipes-simple-fermees` : [Refaire l'estimation de la suite] n'est pas
+ * proposé, et la note comme la raison des réponses qui attendent disent pourquoi et où les équipes sont ouvertes.
+ */
+export function modeleReprise(pause: TeamPauseView, equipesOuvertes = true): TeamRepriseModel | null {
   const attente = pause.reestimation;
   if (attente === undefined) return null;
   const aucunLibre = pause.kind === "choix" && attente.aucunLibre;
   const phrases = attente.possible ? [REPRISE.note] : [REPRISE.impossible, REPRISE.impossibleSuite];
   if (aucunLibre) phrases.push(REPRISE.aucunLibre);
-  return { note: phrases.join(" "), bouton: attente.possible ? REPRISE.bouton : null, raison: REPRISE.raison, aucunLibre };
+  const fermees = phraseErreur("equipes-simple-fermees");
+  if (!equipesOuvertes) phrases.push(fermees);
+  return {
+    note: phrases.join(" "),
+    bouton: attente.possible && equipesOuvertes ? REPRISE.bouton : null,
+    raison: equipesOuvertes ? REPRISE.raison : fermees,
+    aucunLibre,
+  };
 }
 // </c5:reprise-redemarrage>
 
@@ -437,8 +449,11 @@ export function modeleChoix(entree: TeamChoixEntree, selection: readonly string[
   return vueChoix({ ...entree, selection: selection ?? selectionInitiale(entree.options, entree.choixMax) });
 }
 
-/** Pause : textes, zones modifiables et deux boutons. Le bouton [Continuer] porte les DEUX montants, sauf pour une fraîcheur. */
-export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseModel {
+/**
+ * Pause : textes, zones modifiables et deux boutons. Le bouton [Continuer] porte les DEUX montants, sauf pour une fraîcheur.
+ * `equipesOuvertes` (clôture 5b, tour 3) : lu seulement par la reprise après un redémarrage (`modeleReprise`) ; défaut vrai.
+ */
+export function modelePause(run: TeamRunView, pause: TeamPauseView, equipesOuvertes = true): TeamPauseModel {
   const prochaine = etapesVisibles(run).find((s) => s.state === "prevue" || s.state === "en-file") ?? null;
   const verification = pause.kind === "verification";
   // 5b : une pause de choix a ses propres boutons, dont le libellé suit le nombre de spécialistes cochés (modeleChoix).
@@ -453,7 +468,7 @@ export function modelePause(run: TeamRunView, pause: TeamPauseView): TeamPauseMo
   // <c5:reprise-redemarrage>
   // Pause reprise après un redémarrage (D-5b-1) : [Refaire l'estimation de la suite] prend la place de [Continuer], que le
   // serveur refuserait tant que l'estimation n'est pas refaite ; sans demande reconstituable, seul [Arrêter l'équipe] reste.
-  const reprise = modeleReprise(pause);
+  const reprise = modeleReprise(pause, equipesOuvertes);
   const boutonsReprise: TeamButton[] | null =
     reprise === null
       ? null
@@ -640,7 +655,7 @@ export function buildTeamRunCard(run: TeamRunView, advanced: boolean, equipesOuv
     lignes,
     message: finale ? messageFinal(run) : null,
     bilan: finale ? remplir(P.cartes.bilan, { k: terminees, total, cout: run.cost }) : null,
-    pause: enPause && run.pause !== null ? modelePause(run, run.pause) : null,
+    pause: enPause && run.pause !== null ? modelePause(run, run.pause, equipesOuvertes) : null,
     boutons: boutonsCarte(run, { enPause, finale, arretable, equipesOuvertes }),
     verrou: ETATS_VERROU.has(run.state) ? P.saisieVerrouillee : null,
     resultat,
