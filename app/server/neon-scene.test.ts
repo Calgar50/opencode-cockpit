@@ -1148,8 +1148,9 @@ describe("Salle OMO : rôles par clé de configuration (T-L25-f)", () => {
     // Sans `roleSalle`, la salle garde les secteurs ordinaires ; une réponse qui n'est pas un secteur vaut « autres ».
     assert.equal(nodeOf(scene(st.facts, null, { zoom: 2, mode: "avance" }), "ses_0")?.secteur, "autres");
     assert.equal(nodeOf(scene(st.facts, null, { ...SALLE, roleSalle: () => "partout" }), "ses_10")?.secteur, "autres");
-    // roleDeAgent (L20) rend ce qu'Object hérite pour « constructor » : la scène ne le prend jamais pour un secteur.
-    assert.equal(NEON_SECTEURS.includes(roleDeAgent("constructor") as NeonSector), false);
+    // roleDeAgent (L20) rendait ce qu'Object hérite pour « constructor » (constat de L25b) ; corrigé au train de V4 : clés propres
+    // de la table seulement. La scène garde sa propre garde (« partout » ci-dessus).
+    for (const cle of ["constructor", "__proto__", "toString", "hasOwnProperty"]) assert.equal(roleDeAgent(cle), "autres", cle);
   });
 });
 

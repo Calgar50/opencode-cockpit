@@ -234,11 +234,20 @@ export type OmoRecreationRaison = OmoStopCause | "fin-de-demande";
 export interface OmoEventMap {
   /** Flux d'événements de l'instance opencode-omo ; opencode.connection reste propre à l'instance principale. */
   "omo.connection": { connected: boolean; error?: string };
-  /** rootId null : activité sans racine attribuable (hors demande). */
-  "omo.hors-controle": { rootId: string | null; cause: OmoDetectionCause };
+  /**
+   * rootId null : activité sans racine attribuable (hors demande). `signales` et `signalesIncomplet` : fichiers signalés et mis
+   * en quarantaine avant l'arrêt (D-2b-37 ; demandes de contrat de L26a et de L23c, reçues au train de V4) ; absents d'un émetteur
+   * qui ne les relève pas, et lus avec prudence par la page (web/pages/omo/salle-journal.ts).
+   */
+  "omo.hors-controle": { rootId: string | null; cause: OmoDetectionCause; signales?: OmoSignale[]; signalesIncomplet?: boolean };
   "omo.recreation": { etat: OmoRecreationEtat; raison: OmoRecreationRaison };
   "omo.precheck": { projet: string; resultat: OmoPrecheckProjectResult };
   "omo.etat": { etatSalle: OmoEtatSalle };
+  /**
+   * Fin de demande : fichiers à relire (§4.14.5 l.850, L23c ; demande de contrat reçue au train de V4). `incomplet` : la descente
+   * des fichiers signalés n'a pas tout vu, et la liste le DIT. Son affichage par la page de la salle reste à faire (L26c).
+   */
+  "omo.signales": { rootId: string | null; signales: OmoSignale[]; incomplet: boolean };
 }
 
 export type OmoEventType = keyof OmoEventMap;

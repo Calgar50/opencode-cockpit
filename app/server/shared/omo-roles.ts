@@ -50,10 +50,13 @@ export const CLES_AGENTS: readonly string[] = [
   "atlas",
 ];
 
-/** Rôle d'un agent d'après sa clé de configuration ; inconnu, vide ou non nommé → « autres ». */
+/**
+ * Rôle d'un agent d'après sa clé de configuration ; inconnu, vide ou non nommé → « autres ». Clés PROPRES de la table seulement
+ * (train de V4, constat de L25b) : une clé venue de la salle comme `constructor` ou `toString` rendait sinon ce qu'Object hérite.
+ */
 export function roleDeAgent(cle: string | null | undefined): OmoRole {
   if (typeof cle !== "string") return "autres";
-  const exact = ROLE_PAR_CLE[cle];
+  const exact = Object.hasOwn(ROLE_PAR_CLE, cle) ? ROLE_PAR_CLE[cle] : undefined;
   if (exact !== undefined) return exact;
   const bas = cle.toLowerCase();
   for (const [connue, role] of Object.entries(ROLE_PAR_CLE)) {

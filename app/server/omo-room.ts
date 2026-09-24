@@ -11,7 +11,9 @@
 //   `instances.omo`, titre seul, puis `sessions.instance = 'omo'` (upsert de T3c) et une ligne `omo_rooms` (migration 6, T3c).
 // - **rien n'est deviné quand la salle est coupée** : `COCKPIT_OMO=off`, `COCKPIT_AUTONOMY=off` (§9.4 n° 3 : il coupe aussi la
 //   salle) ou `SALLE_OUVERTE` faux → 403, avant toute lecture de disque et avant tout appel à la salle.
-// - **la réouverture confirmée d'une salle lève la suspension** (D-2b-29) : `omoControl.resume()`, une fois la salle ouverte.
+// - **la réouverture confirmée d'une salle lève la suspension** (D-2b-29) : `omoControl.resume()`, AVANT la création de la racine
+//   (train de V4 de la 2 ter : une salle suspendue n'a pas d'opencode lancé), puis pré-contrôle du démarrage en attente et
+//   reprise du battement (`relancerPourOuvrir`) ; un serveur de la salle injoignable rend 409 « salle-en-relance ».
 // - **le statut ne porte aucun secret** (§4.12 l.784) : de l'authentification de la salle, il ne dit que la PRÉSENCE du fichier,
 //   jamais son contenu — il ne le lit même pas (`lstat` seul).
 //
@@ -25,11 +27,11 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Cockpit11Deps, Cockpit11Module, Cockpit11Ports } from "./contracts-11.ts";
 import { EGRESS_FENETRE_DIAGNOSTIC_MS, lireSortiesRefusees } from "./egress-journal.ts";
 import { type AppEnv, omoOf } from "./env.ts";
-import type { Logger } from "./log.ts";
+import { errorMessage, type Logger } from "./log.ts";
 import type { InstanceDeps, OmoRoomOpenResult, OmoRoomPort } from "./omo-contracts.ts";
 import { OMO_PRECHECK_REASONS } from "./omo-contracts.ts";
 import { analyserProjetsPrepares, OMO_PROJETS_MAX_OCTETS } from "./omo-control.ts";
-import type { OcSession } from "./opencode.ts";
+import { type OcSession, OpencodeError } from "./opencode.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
@@ -287,18 +289,55 @@ export function createOmoRoom(deps: OmoRoomDeps): OmoRoomService {
     // surtout pas à l'instance principale.
     const instance = deps.instance();
     if (instance === null) return refus(403, "salle-coupee");
+    // Train de V4 (2 ter) : tout ce qui relance la salle est fait AVANT la création de la racine, qui a besoin d'un opencode lancé.
+    await relancerPourOuvrir();
     // Titre seul : le chemin du projet. C'est une donnée, pas une phrase (les phrases de la salle sont dans omo-room-texts.ts).
-    const session = await instance.client.request<OcSession>("POST", "/session", {
-      directory: chemin.local,
-      body: { title: chemin.relatif },
-      timeoutMs: OMO_CREATION_TIMEOUT_MS,
-    });
+    let session: OcSession;
+    try {
+      session = await instance.client.request<OcSession>("POST", "/session", {
+        directory: chemin.local,
+        body: { title: chemin.relatif },
+        timeoutMs: OMO_CREATION_TIMEOUT_MS,
+      });
+    } catch (err) {
+      // Serveur de la salle injoignable (relance à neuf en cours, suspension levée à l'instant) : 409 et sa phrase (« La salle
+      // redémarre à neuf. Réessayez dans quelques secondes. »), jamais un 500. Une réponse HTTP de la salle reste une erreur.
+      if (err instanceof OpencodeError && err.status < 500) throw err;
+      deps.log.warn("salle : racine non créée, serveur de la salle injoignable", { projet: chemin.relatif, error: errorMessage(err) });
+      return refus(409, "salle-en-relance");
+    }
     deps.sessions.upsert(session, undefined, { instance: "omo" });
     inserer.run(session.id, chemin.relatif, now());
-    // D-2b-29 : la réouverture CONFIRMÉE d'une salle lève la suspension, et elle seule.
-    deps.ports().omoControl.resume();
     deps.log.info("salle : salle ouverte", { projet: chemin.relatif });
     return { ok: true, room: { rootId: session.id, projet: chemin.relatif } };
+  };
+
+  /**
+   * Ce qu'une ouverture CONFIRMÉE fait pour que la salle puisse (re)démarrer, avant de créer la racine (train de V4 de la 2 ter) :
+   * 1. D-2b-29 : elle lève la suspension, et elle seule. Levée ICI et non après la création : une salle suspendue n'a pas
+   *    d'opencode lancé (aucun `precheck-ok`), la racine ne pourrait jamais être créée, et la suspension jamais levée ;
+   * 2. le démarrage que le superviseur publie en attente est alors pré-contrôlé : la surveillance de L19b ne revient jamais sur un
+   *    démarrage qu'elle a déjà vu, et elle l'avait vu refusé pour suspension. `beforeStart` refuse toujours un second
+   *    `precheck-ok` sur un démarrage déjà contrôlé : rien n'est ouvert de plus qu'une relance à neuf ne l'aurait fait ;
+   * 3. le battement du cockpit est repris : un arrêt non confirmé l'a coupé (L23b, l'homme mort arrête la salle), et le
+   *    superviseur ne lance rien sans lui. Sans effet s'il tourne déjà, ni salle coupée.
+   * Un échec est journalisé, jamais avalé en silence ; l'ouverture continue : la création de la racine dira si la salle répond.
+   */
+  const relancerPourOuvrir = async (): Promise<void> => {
+    const control = deps.ports().omoControl;
+    if (control.suspended()) {
+      control.resume();
+      try {
+        const etat = await control.readState();
+        if (etat !== null && etat.phase !== "opencode-lance" && etat.phase !== "arret") {
+          const issue = await deps.ports().omoPrecheck.beforeStart(etat.startId);
+          if (!issue.ok) deps.log.warn("salle : démarrage en attente non pré-contrôlé après la levée de la suspension", { code: issue.code });
+        }
+      } catch (err) {
+        deps.log.warn("salle : pré-contrôle après la levée de la suspension en échec", { error: errorMessage(err) });
+      }
+    }
+    control.startHeartbeat();
   };
 
   const stop = async (rootId: string): Promise<OmoRoomStopResult> => {

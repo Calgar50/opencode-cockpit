@@ -145,20 +145,16 @@ const IDENT_MAX = 256;
 // --- Données publiées -------------------------------------------------------------------------------------------------------------
 
 /**
- * `omo.hors-controle` : les données du contrat (T3a) et, en plus, les fichiers signalés et mis en quarantaine (demande de contrat de
- * L26a, lue par web/pages/omo/salle-journal.ts) ; `signalesIncomplet` : la liste n'a pas pu tout voir.
+ * `omo.hors-controle` : les données du contrat (T3a), fichiers signalés et mis en quarantaine TOUJOURS portés par ce service
+ * (demande de contrat de L26a, lue par web/pages/omo/salle-journal.ts) ; `signalesIncomplet` : la liste n'a pas pu tout voir.
  */
-export type OmoHorsControleData = OmoEventMap["omo.hors-controle"] & { signales: OmoSignale[]; signalesIncomplet: boolean };
+export type OmoHorsControleData = Required<OmoEventMap["omo.hors-controle"]>;
 
 /**
  * `omo.signales` : fichiers à relire en fin de demande (§4.14.5 l.850), étiqueté « omo ». `incomplet` : la descente des fichiers
- * signalés n'a pas tout vu (L19a, `signalesIncomplet`), la liste le DIT. Demande de contrat : type à reprendre dans `OmoEventMap`.
+ * signalés n'a pas tout vu (L19a, `signalesIncomplet`), la liste le DIT. Type repris dans `OmoEventMap` au train de V4.
  */
-export interface OmoSignalesData {
-  rootId: string | null;
-  signales: OmoSignale[];
-  incomplet: boolean;
-}
+export type OmoSignalesData = OmoEventMap["omo.signales"];
 
 // --- Port neutre et service ---------------------------------------------------------------------------------------------------
 
@@ -924,10 +920,10 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
   };
 
   /**
-   * Fait `detection` d'un arrêt de la salle : `cas: "hors-controle"` (D-2b-41). `DetectionFactData` (activity-types.ts) ne déclare
-   * encore que `cas: "non-controle"` (L10c) : demande de contrat pour élargir l'union ; aucun lecteur ne discrimine sur `cas`
-   * aujourd'hui (le réducteur d'activité ne lit pas ce fait, la page de la salle lit `omo.hors-controle`). L'arrêt lui-même s'écrit
-   * en fait `statut {cause: hors-controle}`, par `stopTreeOmo` (L23b).
+   * Fait `detection` d'un arrêt de la salle : `cas: "hors-controle"` (D-2b-41), union de `DetectionFactData` (activity-types.ts)
+   * élargie au train de V4 (demande de contrat de ce paquet). Aucun lecteur ne discrimine sur `cas` aujourd'hui (le réducteur
+   * d'activité ne lit pas ce fait, la page de la salle lit `omo.hors-controle`). L'arrêt lui-même s'écrit en fait
+   * `statut {cause: hors-controle}`, par `stopTreeOmo` (L23b).
    */
   const ecrireFaitDetection = (rootId: string | null, sessionId: string | null, data: Record<string, FactValue>): void => {
     const session = sessionId !== null && ID_RE.test(sessionId) ? sessionId : rootId;
@@ -1002,7 +998,10 @@ export function createOmoDetectionsService(deps: OmoDetectionsDeps): OmoDetectio
       log.warn("salle : action sans demande non journalisée", { outil, error: errorMessage(err) });
       return;
     }
-    const data: DecisionFactData = { verdict: "non-controle", regle: OMO_REGLE_SANS_DEMANDE };
+    // `par: "extension"` dans le fait aussi, comme dans la ligne du Journal : c'est la seule marque que le réducteur d'activité et la
+    // scène de la salle (L25b) lisent pour dessiner la boucle orange « par l'extension », jamais un signe du cockpit (train de V4 :
+    // sans elle, ces actions n'étaient ni comptées ni dessinées).
+    const data: DecisionFactData = { verdict: "non-controle", regle: OMO_REGLE_SANS_DEMANDE, par: "extension" };
     try {
       deps.facts().append([assertFact({ rootId, sessionId, kind: "decision", ref: ID_RE.test(callId) ? callId : null, data, at })]);
     } catch (err) {

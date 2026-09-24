@@ -67,11 +67,11 @@ node e2e/omo-banc/run-banc.mjs --id l21 --duree-g1-min 30 \
 # une porte seule, en abrégeant G1
 node e2e/omo-banc/run-banc.mjs --id l21 --scenarios g2,g9 --duree-g1-min 1
 
-# banc COMPLET : cockpit réel bâti depuis HEAD, battement par les pilotes du banc (voir §2.3)
-node e2e/omo-banc/run-banc.mjs --id fumee --complet --battement-banc
+# banc COMPLET : cockpit réel bâti depuis HEAD ; depuis le train de la vague 4, le cockpit bat lui-même (voir §2.3)
+node e2e/omo-banc/run-banc.mjs --id fumee --complet
 
-# banc complet sur une autre tête (par exemple celle du train de la vague 4)
-node e2e/omo-banc/run-banc.mjs --id fumee --complet --battement-banc --ref chantier/1.1-salle
+# banc complet sur une tête ANTÉRIEURE au train de la vague 4 : battement par les pilotes du banc
+node e2e/omo-banc/run-banc.mjs --id fumee --complet --battement-banc --ref <commit>
 ```
 
 | Option | Rôle |
@@ -86,7 +86,7 @@ node e2e/omo-banc/run-banc.mjs --id fumee --complet --battement-banc --ref chant
 | `--complet` | banc COMPLET : cockpit réel jetable au lieu des pilotes (`cockpit/`), réseau du projet fermé (§2.3) |
 | `--ref <commit>` | mode complet : commit d'où bâtir le cockpit réel (défaut `HEAD`) ; branche, étiquette ou SHA, jamais un texte qui commence par `-` |
 | `--image-cockpit <réf>` | mode complet : image du cockpit réel déjà bâtie ; ce qu'elle livre n'est pas lisible, elle est tenue pour « non livrée » (la fumée dit alors « en attente » plutôt qu'un faux vert) |
-| `--battement-banc` | mode complet : les pilotes du banc déposent la liste des projets et écrivent le battement, parce qu'aucun code de production n'appelle encore `startHeartbeat()` (§2.3) ; le bilan le dit |
+| `--battement-banc` | mode complet : les pilotes du banc déposent la liste des projets et écrivent le battement, pour une tête antérieure au train de la vague 4, où aucun code de production n'appelait `startHeartbeat()` (§2.3) ; le bilan le dit |
 | `--projets-test <liste>` | recopie les projets de test `g7`, `g13` (`projets/`) comme projets préparés, pour les portes G7 et G13 (L27a, L27b) ; `g7` est piégé : le pré-contrôle réel refuse alors le démarrage (portée « prepares ») |
 | `--garder` | ne nettoie pas à la fin (diagnostic) ; le verrou est rendu, le projet reste à retirer à la main |
 | `--base <dossier>` | dossier de travail du banc, hors du dépôt |
@@ -158,12 +158,13 @@ Hors ligne **par le réseau** : le réseau `default` du projet est `internal: tr
 un pont sans traduction d'adresse (l'hôte joint le service, le service ne joint rien). `/certs` et `/archives` du produit sont
 remplacés par des dossiers du banc.
 
-**Battement : constat remis à l'intégrateur.** Aucun code de production n'appelle `omoControl.startHeartbeat()` — ni sur la tête
-de la vague 3, ni dans les branches de la vague 4 commitées au 24/09 (L22c, L22d, L23b, L23c, L25b). Un cockpit réel publie
-donc l'authentification et fait le pré-contrôle, mais n'écrit aucun battement et ne dépose pas la liste des projets dans le
-volume de contrôle : la salle ne démarre jamais (homme mort). `--battement-banc` fait faire ces deux gestes aux pilotes du banc,
-pour éprouver tout le reste, et la fumée le dit « EN ATTENTE ». Le jour où le produit bat lui-même, `--a-blanc --complet` le
-voit (« battement déclenché par le cockpit oui ») et l'option n'est plus nécessaire.
+**Battement : constat de L21b, corrigé au train de la vague 4.** Jusqu'à ce train, aucun code de production n'appelait
+`omoControl.startHeartbeat()` : un cockpit réel publiait l'authentification et faisait le pré-contrôle, mais n'écrivait aucun
+battement et ne déposait pas la liste des projets dans le volume de contrôle, et la salle ne démarrait jamais (homme mort).
+Depuis le train, le cockpit bat lui-même (étape de démarrage d'`omoControl`, reprise à la réouverture d'une salle) :
+`--a-blanc --complet` le voit (« battement déclenché par le cockpit oui ») et la fumée va au bout sans pilote. `--battement-banc`
+ne sert plus qu'à rejouer une tête antérieure (`--ref`), où ces deux gestes restent faits par les pilotes du banc et dits
+« EN ATTENTE ».
 
 La **fumée** (`cockpit/fumee.mjs`) suit le chemin de la page : mode Avancé ; `SALLE_OUVERTE` portée par l'image ; authentification
 publiée (entrée `github-copilot` seule, `0600`, relevée sans jamais lire la valeur) ; salle « prête » ; pré-contrôle réel (le

@@ -14,10 +14,13 @@
 // - `omoControlDirs` absent ou null : le port NEUTRE reste en place (aucun fichier touché) et le module n'inscrit rien.
 // - Avec les dossiers, l'inscription de démarrage appelle `publishAuth()` — qui, salle coupée, RETIRE la copie d'`auth.json`
 //   laissée par un cockpit précédent (demande n° 3 de L17b, constats-salle-V1 §2.3) — puis `readState()`, lecture bornée de
-//   l'état publié par le superviseur. Aucune écriture dans les volumes de la salle.
+//   l'état publié par le superviseur, puis `startHeartbeat()` (train de V4 de la 2 ter, constats de L23b et L21b : sans cet
+//   appel, aucun code de production ne lançait le battement, et le superviseur, qui n'ouvre rien sans lui, ne lançait jamais
+//   opencode). Salle coupée, le service ne bat pas (actif() faux) et le dit une fois : aucune écriture dans les volumes de la
+//   salle. Un échec de `publishAuth` arrête l'étape AVANT le battement : sans authentification publiée, rien ne démarre.
 // - Cette inscription de démarrage porte `instances: ["principale"]` : elle tourne côté COCKPIT, pas dans la salle. C'est la
 //   SEULE exception au test de propriété de wiring-11.test.ts (D-2b-40), qui exige `["omo"]` pour toutes les autres
-//   inscriptions des modules `omo*`. Les deux méthodes sont lues sur `c11.ports.omoControl` au moment de l'appel, jamais en
+//   inscriptions des modules `omo*`. Les méthodes sont lues sur `c11.ports.omoControl` au moment de l'appel, jamais en
 //   copie : une surcharge de port (tests) ou un port posé plus tard reste pris en compte.
 import type { Cockpit11Deps, Cockpit11Module, OmoControlDirs } from "./contracts-11.ts";
 import { createOmoControl } from "./omo-control.ts";
@@ -67,6 +70,7 @@ export const omoControlModule: Cockpit11Module = {
       async () => {
         await c11.ports.omoControl.publishAuth();
         await c11.ports.omoControl.readState();
+        c11.ports.omoControl.startHeartbeat();
       },
       { instances: ["principale"] },
     );

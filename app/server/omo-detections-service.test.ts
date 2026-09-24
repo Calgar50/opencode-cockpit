@@ -1189,7 +1189,8 @@ describe("actions de l'extension vues sans demande : autonomy_decisions {par: \"
       },
     ]);
     const fait = a.faits.find((f) => f.kind === "decision");
-    assert.deepEqual([fait?.rootId, fait?.ref, fait?.data], [ROOT, "call_omo_1", { verdict: "non-controle", regle: OMO_REGLE_SANS_DEMANDE }]);
+    // `par: "extension"` : la marque que le réducteur et la scène de L25b lisent (train de V4, croisement L23c → L25b).
+    assert.deepEqual([fait?.rootId, fait?.ref, fait?.data], [ROOT, "call_omo_1", { verdict: "non-controle", regle: OMO_REGLE_SANS_DEMANDE, par: "extension" }]);
     assertRien(a);
   });
 

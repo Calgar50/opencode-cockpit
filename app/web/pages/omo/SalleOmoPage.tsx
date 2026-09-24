@@ -49,7 +49,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Button, Card, EmptyState, Spinner } from "../../components/ui.tsx";
 import { useAnnouncer } from "../../lib/announcer.ts";
 import { errorText } from "../../lib/api.ts";
-import { activerOmo, envoyerOmo, estSalleCoupee, getOmoMessages, getOmoSession, getOmoStatus } from "../../lib/api-omo.ts";
+import { activerOmo, envoyerMessageOmo, estSalleCoupee, getOmoMessages, getOmoSession, getOmoStatus } from "../../lib/api-omo.ts";
 import { cockpitEvent, useEvents } from "../../lib/events.ts";
 import type { OcMessageWithParts, OcTextPart } from "../../lib/types.ts";
 import { ControlJournal, useControlDecisions } from "../chat/autonomy/ControlJournal.tsx";
@@ -388,7 +388,7 @@ function Conversation(props: ConversationProps) {
     setOccupe(true);
     setRefusServeur(null);
     activerOmo(salle.rootId, plafondUsd)
-      .then(() => envoyerOmo(salle.rootId, salle.directory, { parts: [{ type: "text", text: texte }] }))
+      .then(() => envoyerMessageOmo(salle.rootId, salle.directory, texte))
       .then(
         () => {
           setOccupe(false);

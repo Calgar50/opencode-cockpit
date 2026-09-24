@@ -70,9 +70,11 @@ export interface DecisionFactData {
  * Forme de `data` d'un fait « detection » (L10c) : le cockpit a VU quelque chose après coup, sans rien arrêter — « non-controle »,
  * une commande qu'opencode a lancée sans poser de demande d'autorisation (§4.10). `ref` est l'appel d'outil. Un arrêt, lui, s'écrit
  * toujours en fait « statut {cause} » (L1c) : le réducteur d'activité ne lit que celui-là comme un arrêt de la conversation.
+ * « hors-controle » : détection après coup de la Salle OMO, écrite AVANT son arrêt (L23c, D-2b-41 ; demande de contrat reçue au
+ * train de V4 de la 2 ter) ; l'arrêt, lui, reste le fait « statut » de stopTreeOmo.
  */
 export interface DetectionFactData {
-  cas: "non-controle";
+  cas: "non-controle" | "hors-controle";
   [key: string]: FactValue;
 }
 

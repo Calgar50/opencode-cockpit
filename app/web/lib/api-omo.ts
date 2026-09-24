@@ -8,19 +8,20 @@
 // - POST /api/omo/rooms                       (L18c) : ouverture d'une salle sur un projet préparé ;
 // - POST /api/omo/rooms/:rootId/stop          (L18c, D-2b-30) : « Arrêter » de la salle ; jamais /api/conversations/:id/stop ;
 // - PUT  /api/conversations/:rootId/autonomie (L10a, corps `OmoActivationBody`) : activation « omo », à CHAQUE demande ;
-// - GET/POST /api/omo/oc/*                    (L18b) : lecture de la conversation de la salle et envoi d'un message.
+// - GET/POST /api/omo/oc/*                    (L18b) : lecture de la conversation et des assistants de la salle, envoi d'un message.
 //
 // Tant que `SALLE_OUVERTE` est faux, TOUTE requête /api/omo/* reçoit 403 « salle-coupee » : ce n'est pas une panne, c'est l'état
 // livré. `estSalleCoupee` le reconnaît pour que la page montre l'état de la salle (lu dans `Bootstrap.omo`) plutôt qu'une erreur
 // technique (arbitrage A16 point 4 b).
-import { ApiError, http, query } from "./api.ts";
+import { ApiError, assistantModelChanged, http, query } from "./api.ts";
+import type { OmoAutonomyView } from "../../server/shared/api-types.ts";
 import type {
   OmoActivationBody,
   OmoPrecheckProjectResult,
   OmoRoomCreateResponse,
   OmoStatusResponse,
 } from "../../server/shared/omo-types.ts";
-import type { ConversationAutonomyView, OcMessageWithParts, OcSession } from "./types.ts";
+import type { OcAgent, OcMessageWithParts, OcSession } from "./types.ts";
 
 const enc = encodeURIComponent;
 
@@ -50,11 +51,12 @@ export function openOmoRoom(projet: string): Promise<OmoRoomCreateResponse> {
 /**
  * PUT /api/conversations/:rootId/autonomie avec `{ choix: "omo", plafondUsd }` et x-cockpit-confirm: 1, à CHAQUE nouvelle
  * demande (§4.14.2). Le montant part en CHAÎNE saisie, jamais en flottant JSON : le serveur le vérifie (omo-cap.ts) et refuse
- * 409 avec sa phrase, sans rien lancer.
+ * 409 avec sa phrase, sans rien lancer. Réponse : la vue « omo » d'une racine de la salle (`OmoAutonomyView`, L22c ; typée ainsi
+ * au train de V4, elle l'était en `ConversationAutonomyView`, qui ne peut pas porter « omo » sans inventer un plafond).
  */
-export function activerOmo(rootId: string, plafondUsd: string): Promise<ConversationAutonomyView> {
+export function activerOmo(rootId: string, plafondUsd: string): Promise<OmoAutonomyView> {
   const body: OmoActivationBody = { choix: "omo", plafondUsd };
-  return http.put<ConversationAutonomyView>(`/api/conversations/${enc(rootId)}/autonomie`, body, { confirm: true });
+  return http.put<OmoAutonomyView>(`/api/conversations/${enc(rootId)}/autonomie`, body, { confirm: true });
 }
 
 /** GET /api/omo/oc/session/:id : conversation de la salle, en lecture. */
@@ -73,6 +75,40 @@ export function getOmoMessages(rootId: string, signal?: AbortSignal): Promise<Oc
  */
 export function envoyerOmo(rootId: string, directory: string, corps: unknown): Promise<void> {
   return http.post<void>(`/api/omo/oc/session/${enc(rootId)}/prompt_async${query({ directory })}`, corps, { confirm: true });
+}
+
+/**
+ * IA que le serveur retient pour un envoi de la salle sans `agent` : celle de l'assistant « build » s'il est principal, sinon du
+ * premier assistant principal visible — la règle de `defaultAgent` (http.ts), appliquée aux assistants de la SALLE. null : aucune
+ * IA lisible ; l'envoi part alors sans IA et le serveur le refuse avec sa phrase (400 « modele-requis »), rien n'est inventé.
+ */
+export function modeleEnvoiSalle(agents: unknown): { providerID: string; modelID: string } | null {
+  const liste = Array.isArray(agents) ? (agents as Partial<OcAgent>[]) : [];
+  const principal = (agent: Partial<OcAgent>) => typeof agent?.name === "string" && agent.mode !== "subagent";
+  const agent = liste.find((a) => principal(a) && a.name === "build") ?? liste.find((a) => principal(a) && a.hidden !== true);
+  const model = agent?.model;
+  if (typeof model?.providerID !== "string" || model.providerID === "" || typeof model.modelID !== "string" || model.modelID === "") return null;
+  return { providerID: model.providerID, modelID: model.modelID };
+}
+
+/**
+ * Envoi d'un message de la page de la salle, comme la page de conversation (ChatPage) : le proxy passe toute demande facturée par
+ * `enforceTurn`, qui EXIGE l'IA de la demande (400 « modele-requis » sinon). L'IA part donc dans le corps, lue dans les assistants
+ * de la salle (GET /api/omo/oc/agent) ; sur 409 « assistant-model-changed », UN seul renvoi avec l'IA et la réflexion reçues. Ce
+ * refus vient d'`enforceTurn`, AVANT les crochets de la salle : le jeton d'activation n'est pas consommé par le premier envoi.
+ * Train de V4 (2 ter), constat n° 2 de L21b : la page envoyait `{ parts }` seul et ne pouvait envoyer aucun message.
+ */
+export async function envoyerMessageOmo(rootId: string, directory: string, texte: string): Promise<void> {
+  const agents = await http.get<OcAgent[]>(`/api/omo/oc/agent${query({ directory })}`);
+  const model = modeleEnvoiSalle(agents);
+  const parts = [{ type: "text", text: texte }];
+  try {
+    await envoyerOmo(rootId, directory, model === null ? { parts } : { parts, model });
+  } catch (err) {
+    const imposee = assistantModelChanged(err);
+    if (imposee === null) throw err;
+    await envoyerOmo(rootId, directory, { parts, model: imposee.model, ...(imposee.variant ? { variant: imposee.variant } : {}) });
+  }
 }
 
 /** Vrai quand le serveur a répondu « salle coupée » : état livré, jamais une panne à montrer comme telle. */

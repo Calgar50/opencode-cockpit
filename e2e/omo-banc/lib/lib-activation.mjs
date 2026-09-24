@@ -111,10 +111,10 @@ export async function activer(client, rootId, plafondUsd, { confirmer = true } =
 }
 
 /**
- * Envoi d'un message dans la salle, par le proxy de l'instance (L18b), même route que la page (`envoyerOmo`). L'IA est
+ * Envoi d'un message dans la salle, par le proxy de l'instance (L18b), même route que la page (`envoyerMessageOmo`). L'IA est
  * OBLIGATOIRE (`model: {providerID, modelID}`) : le proxy passe toute demande facturée, salle comprise, par `enforceTurn`, qui
- * refuse en 400 « modele-requis » un corps sans IA (mesuré au banc le 24/09 ; la page de la salle envoie `{parts}` seul, constat
- * remis à l'intégrateur). Refusé ici, avant tout appel, plutôt que de laisser croire qu'un envoi a été tenté.
+ * refuse en 400 « modele-requis » un corps sans IA (mesuré au banc le 24/09 ; la page de la salle envoyait `{parts}` seul, constat
+ * corrigé au train de la vague 4). Refusé ici, avant tout appel, plutôt que de laisser croire qu'un envoi a été tenté.
  */
 export async function envoyer(client, rootId, directory, texte, { model, agent, confirmer = true } = {}) {
   if (!modeleValide(model)) throw new TypeError("envoyer : model {providerID, modelID} obligatoire (400 « modele-requis » sinon)");
