@@ -5,6 +5,10 @@
 //   rien, donc ses journaux non plus.
 // - Chaque refus entre dans le journal du cockpit au plus une fois par hôte et par heure (nombre de refus compris), avec l'hôte,
 //   le port et la raison seulement : ni chemin, ni en-tête, ni identifiant.
+// - La liste est relue à chaque CONNECT et, tant qu'un tunnel est ouvert, toutes les `revalidateMs` (5 s) : un tunnel dont l'hôte
+//   n'est plus permis est coupé, même s'il parle encore (fin de la fenêtre de connexion, autre adresse d'API, liste illisible).
+//   Un tunnel vers un hôte de connexion (github.com, domaine GitHub Enterprise) est en plus coupé à l'heure exacte de la fin de la
+//   fenêtre (`tunnelDeadline`) : il ne lui survit jamais.
 // - Écoute sur l'adresse du cockpit dans le réseau interne SEULEMENT (celle qui partage le sous-réseau d'opencode), jamais sur
 //   0.0.0.0 ; toute connexion venue d'ailleurs est coupée. Bornes : taille et délai de l'en-tête, connexions simultanées, délai de
 //   la sortie, inactivité d'un tunnel.
@@ -30,6 +34,8 @@ export interface RelayLimits {
   upstreamHeaderBytes: number;
   /** Tunnel sans aucun octet échangé : fermé. */
   idleTimeoutMs: number;
+  /** Tunnels ouverts revus au moins à ce rythme : ceux dont l'hôte n'est plus permis sont coupés (30 s au plus). */
+  revalidateMs: number;
   /** Connexion refusée gardée au plus, le temps que le client lise la réponse. */
   closeDelayMs: number;
   /** Une ligne au plus par hôte et par fenêtre dans le journal du cockpit. */
@@ -45,6 +51,7 @@ export const RELAY_LIMITS: Readonly<RelayLimits> = Object.freeze({
   upstreamTimeoutMs: 15_000,
   upstreamHeaderBytes: 16 * 1024,
   idleTimeoutMs: 10 * 60_000,
+  revalidateMs: 5_000,
   closeDelayMs: 5_000,
   logWindowMs: 60 * 60_000,
   logHostsMax: 256,
@@ -52,6 +59,9 @@ export const RELAY_LIMITS: Readonly<RelayLimits> = Object.freeze({
 
 /** Nouvel essai de la recherche du réseau interne (opencode pas encore démarré, par exemple). */
 export const RELAY_RETRY_MS = 5_000;
+
+/** Plus long délai qu'accepte setTimeout (au-delà, Node le ramène à 1 ms). */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const RESPONSE_200 = "HTTP/1.1 200 Connection Established\r\n\r\n";
 const RESPONSE_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -241,8 +251,13 @@ function userAgentOf(req: http.IncomingMessage): string | null {
 }
 
 export interface EgressRelayOptions {
-  /** Hôtes permis à l'instant de la demande (egressAllowedHosts), noms canoniques. */
+  /** Hôtes permis à l'instant de la demande (egressAllowedHosts), noms canoniques. Une erreur vaut liste vide : tout est refusé. */
   allowedHosts: () => ReadonlySet<string>;
+  /**
+   * Heure (horloge `now`) à laquelle un tunnel vers cet hôte est coupé au plus tard, null sans échéance (egressTunnelDeadline).
+   * Relue à l'échéance : une fenêtre prolongée entre-temps repousse la coupure. Absente : seule la revue périodique s'applique.
+   */
+  tunnelDeadline?: (host: string) => number | null;
   /** Proxy de l'entreprise ; null : sortie directe ; erreur : configuration illisible, aucune sortie (502). */
   upstream: UpstreamProxy | null | RelayConfigError;
   log: Logger;
@@ -263,6 +278,13 @@ export interface EgressRelay {
   close(): Promise<void>;
 }
 
+/** Tunnel ouvert ou en cours d'ouverture : hôte canonique, coupure, minuteur de son échéance. */
+interface Tunnel {
+  readonly host: string;
+  readonly cut: () => void;
+  deadline: NodeJS.Timeout | undefined;
+}
+
 export function createEgressRelay(options: EgressRelayOptions): EgressRelay {
   const limits: RelayLimits = { ...RELAY_LIMITS, ...options.limits };
   const { log } = options;
@@ -272,22 +294,93 @@ export function createEgressRelay(options: EgressRelayOptions): EgressRelay {
   const journal = new RelayJournal(log, now, limits.logWindowMs, limits.logHostsMax);
   const open = new Set<net.Socket>();
   let lastAllowed = "";
+  let unreadable = false;
 
   const track = (socket: net.Socket) => {
     open.add(socket);
     socket.once("close", () => open.delete(socket));
   };
 
-  /** Hôtes permis ; tout changement de la liste est tracé une fois (audit). */
+  const tunnels = new Set<Tunnel>();
+  let review: NodeJS.Timeout | undefined;
+
+  const forget = (tunnel: Tunnel) => {
+    tunnels.delete(tunnel);
+    clearTimeout(tunnel.deadline);
+    tunnel.deadline = undefined;
+    if (tunnels.size === 0 && review !== undefined) {
+      clearInterval(review);
+      review = undefined;
+    }
+  };
+
+  /** Coupe un tunnel dont l'hôte n'est plus permis (ou dont l'échéance est passée), avec une ligne au journal par tunnel. */
+  const revoke = (tunnel: Tunnel, motive: "liste" | "echeance") => {
+    if (!tunnels.has(tunnel)) return;
+    forget(tunnel);
+    log.info("relais du cockpit : tunnel coupé, hôte plus permis", { hote: tunnel.host, motif: motive });
+    tunnel.cut();
+  };
+
+  /**
+   * Hôtes permis ; tout changement de la liste est tracé une fois (audit), et chaque tunnel ouvert dont l'hôte n'y est plus est
+   * coupé. Liste illisible (exception) : liste vide, donc tout refusé et tout coupé, sans faire tomber le cockpit.
+   */
   const allowed = (): ReadonlySet<string> => {
-    const hosts = options.allowedHosts();
+    let hosts: ReadonlySet<string>;
+    try {
+      hosts = options.allowedHosts();
+      unreadable = false;
+    } catch (err) {
+      if (!unreadable) log.error("relais du cockpit : liste des hôtes permis illisible, tout est refusé", { error: errorMessage(err) });
+      unreadable = true;
+      hosts = new Set();
+    }
     const sorted = [...hosts].sort((a, b) => a.localeCompare(b));
     const signature = sorted.join(",");
     if (signature !== lastAllowed) {
       lastAllowed = signature;
       log.info("relais du cockpit : hôtes permis pour opencode", { hotes: sorted });
     }
+    for (const tunnel of [...tunnels]) if (!hosts.has(tunnel.host)) revoke(tunnel, "liste");
     return hosts;
+  };
+
+  /**
+   * Minuteur de l'échéance du tunnel (tunnelDeadline). À l'échéance, la liste est relue : hôte plus permis, tunnel coupé ;
+   * fenêtre prolongée, nouvelle échéance. Une échéance passée pour un hôte encore permis coupe aussi (règle incohérente : on ferme).
+   */
+  const armDeadline = (tunnel: Tunnel) => {
+    let at: number | null;
+    try {
+      at = options.tunnelDeadline?.(tunnel.host) ?? null;
+    } catch {
+      at = 0;
+    }
+    if (at === null) return;
+    const delay = at - now();
+    if (!(delay > 0)) {
+      revoke(tunnel, "echeance");
+      return;
+    }
+    tunnel.deadline = setTimeout(() => {
+      tunnel.deadline = undefined;
+      allowed();
+      if (tunnels.has(tunnel)) armDeadline(tunnel);
+    }, Math.min(delay, MAX_TIMER_MS));
+    tunnel.deadline.unref();
+  };
+
+  /** Suit un tunnel jusqu'à sa fermeture : revue périodique de la liste tant qu'il en reste un, et son échéance éventuelle. */
+  const watch = (host: string, cut: () => void, sockets: readonly net.Socket[]) => {
+    const tunnel: Tunnel = { host, cut, deadline: undefined };
+    tunnels.add(tunnel);
+    for (const socket of sockets) socket.once("close", () => forget(tunnel));
+    if (review === undefined) {
+      review = setInterval(() => allowed(), limits.revalidateMs);
+      review.unref();
+    }
+    armDeadline(tunnel);
   };
 
   /**
@@ -354,6 +447,16 @@ export function createEgressRelay(options: EgressRelayOptions): EgressRelay {
       remote.destroy();
       client.destroy();
     });
+    // Suivi jusqu'à la fermeture, ouverture comprise : un hôte retiré de la liste avant la réponse du proxy n'obtient jamais 200.
+    watch(
+      host,
+      () => {
+        state = "done";
+        client.destroy();
+        remote.destroy();
+      },
+      [client, remote],
+    );
     if (upstream === null) {
       remote.once("connect", () => link(Buffer.alloc(0)));
       return;
@@ -458,6 +561,7 @@ export function createEgressRelay(options: EgressRelayOptions): EgressRelay {
       }),
     close: () =>
       new Promise<void>((resolve) => {
+        for (const tunnel of [...tunnels]) forget(tunnel);
         if (!server.listening) {
           for (const socket of open) socket.destroy();
           resolve();
@@ -475,6 +579,8 @@ export interface RelayStartOptions {
   /** Nom du pair qui désigne le réseau interne (le service opencode). */
   peer: string;
   allowedHosts: () => ReadonlySet<string>;
+  /** Échéance des tunnels (EgressRelayOptions.tunnelDeadline). */
+  tunnelDeadline?: (host: string) => number | null;
   processEnv: NodeJS.ProcessEnv;
   log: Logger;
   /** Adresses IPv4 du pair (dns.lookup par défaut). */
@@ -549,6 +655,7 @@ export function startEgressRelay(o: RelayStartOptions): RelayHandle {
     const network = found;
     const candidate = createEgressRelay({
       allowedHosts: o.allowedHosts,
+      tunnelDeadline: o.tunnelDeadline,
       upstream,
       log,
       acceptFrom: (remote) => inNetwork(remote, network),

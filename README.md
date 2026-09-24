@@ -230,7 +230,7 @@ Depuis la 1.0.6, **tout est bloqué sauf ce dont le cockpit a besoin pour GitHub
 | Adresse | Quand | Pourquoi |
 |---|---|---|
 | L'adresse de l'API Copilot **réellement utilisée** : celle de `-CopilotApiUrl` si vous l'avez imposée, sinon celle que le cockpit a vérifiée, sinon `api.githubcopilot.com` (ou `copilot-api.<domaine>` pour GitHub Enterprise) | Toujours | Liste des IA du compte et demandes d'IA |
-| `github.com` | Seulement pendant une connexion à Copilot lancée depuis le cockpit (20 minutes au plus) | Code de connexion, puis attente de votre accord |
+| `github.com` | Seulement pendant une connexion à Copilot lancée depuis le cockpit (20 minutes au plus). Un tunnel encore ouvert à la fin de la connexion est coupé, même s'il sert encore | Code de connexion, puis attente de votre accord |
 | Le domaine déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN` | Seulement pendant une connexion, s'il est déclaré | Même connexion, pour GitHub Enterprise |
 
 - **Tout le reste est refusé sur place**, sans aucune requête vers le proxy de l'entreprise : `models.opencode.ai`, `registry.npmjs.org`, `api.github.com`, les autres adresses Copilot, et toute autre adresse demandée par une page web ou par une commande de l'IA (`curl`, `git push`, `npm`, `pip`…).

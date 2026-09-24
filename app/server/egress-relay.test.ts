@@ -10,6 +10,7 @@ import {
   canonicalHostName,
   decideConnect,
   egressAllowedHosts,
+  egressTunnelDeadline,
   isIpLiteral,
   LOGIN_WINDOW_MS,
   LoginWindow,
@@ -59,6 +60,8 @@ async function until(probe: () => boolean, what: string, ms = 3_000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+const TUNNEL_CUT = "relais du cockpit : tunnel coupé, hôte plus permis";
 
 const listenLocal = (server: net.Server): Promise<number> =>
   new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as net.AddressInfo).port)));
@@ -252,6 +255,33 @@ describe("règle de sortie du relais (egress-policy.ts)", () => {
     now += LOGIN_WINDOW_MS - 1;
     assert.equal(window.isOpen(), true);
   });
+
+  it("fin de la fenêtre : connue tant qu'elle est ouverte (prolongation comprise), null ensuite", () => {
+    let now = T0;
+    const window = new LoginWindow(() => now);
+    assert.equal(window.closesAt(), null);
+    window.open();
+    assert.equal(window.closesAt(), T0 + LOGIN_WINDOW_MS);
+    now += 60_000;
+    window.open();
+    assert.equal(window.closesAt(), T0 + 60_000 + LOGIN_WINDOW_MS);
+    now = T0 + 60_000 + LOGIN_WINDOW_MS;
+    assert.equal(window.closesAt(), null);
+  });
+
+  it("échéance d'un tunnel : aucune pour l'adresse de l'API, la fin de la fenêtre pour github.com et le domaine GitHub Enterprise", () => {
+    const base = { copilotApiUrl: null, endpointUrl: null, enterpriseDomain: "acme.ghe.com" };
+    const end = T0 + LOGIN_WINDOW_MS;
+    assert.equal(egressTunnelDeadline(COPILOT, base, end), null);
+    assert.equal(egressTunnelDeadline("copilot-api.acme.ghe.com", base, end), null);
+    assert.equal(egressTunnelDeadline("github.com", base, end), end);
+    assert.equal(egressTunnelDeadline("acme.ghe.com", base, end), end);
+    // Fenêtre fermée : échéance déjà passée, le tunnel est coupé tout de suite.
+    assert.equal(egressTunnelDeadline("github.com", base, null), 0);
+    // Adresse d'API qui n'est plus la bonne (adresse imposée) : bornée comme un hôte de connexion, jamais sans échéance.
+    assert.equal(egressTunnelDeadline(COPILOT, { ...base, copilotApiUrl: "https://api.business.githubcopilot.com" }, end), end);
+    assert.equal(egressTunnelDeadline(COPILOT, { ...base, copilotApiUrl: "https://api.business.githubcopilot.com" }, null), 0);
+  });
 });
 
 // --- Relais réel ---------------------------------------------------------------------------------------------------------------------
@@ -423,6 +453,127 @@ describe("relais de sortie (egress-relay.ts)", () => {
     assert.equal(b.outbound.length, 1);
   });
 
+  it("fin de la fenêtre de connexion : tunnel github.com coupé même s'il parle, nouveau CONNECT refusé, tunnel de l'API intact", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    const clock = { now: T0 };
+    const window = new LoginWindow(() => clock.now);
+    const b = await bench(
+      t,
+      {
+        now: () => clock.now,
+        allowedHosts: () => egressAllowedHosts({ copilotApiUrl: null, endpointUrl: null, enterpriseDomain: null, loginOpen: window.isOpen() }),
+        limits: { revalidateMs: 50 },
+      },
+      echo,
+    );
+    window.open();
+    const login = rawClient(t, b.port, connectRequest("github.com:443"));
+    assert.match(await statusLine(login), /^HTTP\/1\.1 200 /);
+    const api = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    assert.match(await statusLine(api), /^HTTP\/1\.1 200 /);
+    // Fenêtre fermée (horloge du cockpit) : le tunnel github.com, qui parle toutes les 20 ms, est coupé par la revue périodique.
+    clock.now += LOGIN_WINDOW_MS;
+    let n = 0;
+    const chatter = setInterval(() => {
+      if (!login.closed()) login.socket.write(`ping-${n++}`);
+    }, 20);
+    t.after(() => clearInterval(chatter));
+    await until(() => login.closed(), "tunnel github.com coupé après la fin de la fenêtre", 2_000);
+    clearInterval(chatter);
+    const late = rawClient(t, b.port, connectRequest("github.com:443"));
+    assert.match(await statusLine(late), /^HTTP\/1\.1 403 /);
+    api.socket.write("api-encore");
+    await until(() => api.text().includes("api-encore"), "tunnel de l'API toujours relayé");
+    assert.equal(api.closed(), false);
+    assert.deepEqual(b.outbound, [
+      ["github.com", 443],
+      [COPILOT, 443],
+    ]);
+    assert.deepEqual(
+      b.lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => l.hote),
+      ["github.com"],
+    );
+    // Rythme réel de la revue : 30 s au plus.
+    assert.ok(RELAY_LIMITS.revalidateMs > 0 && RELAY_LIMITS.revalidateMs <= 30_000);
+  });
+
+  it("échéance absolue : tunnel github.com coupé à la fin de la fenêtre, prolongation suivie, sans attendre la revue périodique", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    const window = new LoginWindow(Date.now, 2_000);
+    const input = { copilotApiUrl: null, endpointUrl: null, enterpriseDomain: null };
+    const b = await bench(
+      t,
+      {
+        now: Date.now,
+        allowedHosts: () => egressAllowedHosts({ ...input, loginOpen: window.isOpen() }),
+        tunnelDeadline: (host) => egressTunnelDeadline(host, input, window.closesAt()),
+        // Revue périodique hors d'atteinte : seule l'échéance du tunnel peut le couper pendant le test.
+        limits: { revalidateMs: 60_000 },
+      },
+      echo,
+    );
+    window.open();
+    const first = window.closesAt() ?? 0;
+    const login = rawClient(t, b.port, connectRequest("github.com:443"));
+    assert.match(await statusLine(login), /^HTTP\/1\.1 200 /);
+    const api = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    assert.match(await statusLine(api), /^HTTP\/1\.1 200 /);
+    // Nouvelle demande de connexion à mi-parcours : la fenêtre, donc l'échéance, recule d'une seconde.
+    await until(() => Date.now() >= first - 1_000, "mi-parcours de la fenêtre");
+    window.open();
+    const end = window.closesAt() ?? 0;
+    assert.ok(end >= first + 900, "fenêtre prolongée");
+    await until(() => Date.now() >= first + 300, "première échéance passée");
+    assert.equal(login.closed(), false, "fenêtre prolongée : tunnel gardé");
+    await until(() => login.closed(), "tunnel github.com coupé à la fin de la fenêtre", 4_000);
+    const late = Date.now() - end;
+    assert.ok(late >= 0, `tunnel coupé ${-late} ms avant la fin de la fenêtre`);
+    assert.ok(late < 1_000, `tunnel coupé ${late} ms après la fin de la fenêtre`);
+    api.socket.write("api-encore");
+    await until(() => api.text().includes("api-encore"), "tunnel de l'API toujours relayé");
+    assert.equal(api.closed(), false);
+    assert.deepEqual(
+      b.lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => l.hote),
+      ["github.com"],
+    );
+  });
+
+  it("échéance déjà passée pour un hôte encore permis (règle incohérente) : tunnel coupé aussitôt, jamais de 200", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    const b = await bench(t, { tunnelDeadline: () => 0, limits: { revalidateMs: 60_000 } }, echo);
+    const c = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    await until(() => c.closed(), "tunnel coupé à l'ouverture", 2_000);
+    assert.equal(c.text(), "");
+    assert.deepEqual(
+      b.lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => [l.hote, l.motif]),
+      [[COPILOT, "echeance"]],
+    );
+  });
+
+  it("liste des hôtes illisible : tunnels ouverts coupés, nouveaux CONNECT refusés, le cockpit ne tombe pas", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    let broken = false;
+    const b = await bench(
+      t,
+      {
+        allowedHosts: () => {
+          if (broken) throw new Error("état illisible");
+          return ALLOWED;
+        },
+        limits: { revalidateMs: 50 },
+      },
+      echo,
+    );
+    const c = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    assert.match(await statusLine(c), /^HTTP\/1\.1 200 /);
+    broken = true;
+    await until(() => c.closed(), "tunnel coupé quand la liste devient illisible", 2_000);
+    const d = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    assert.match(await statusLine(d), /^HTTP\/1\.1 403 /);
+    assert.deepEqual(b.outbound, [[COPILOT, 443]]);
+    assert.ok(b.lines.some((l) => l.level === "error" && l.msg === "relais du cockpit : liste des hôtes permis illisible, tout est refusé"));
+  });
+
   it("écoute : jamais sur toutes les interfaces", async () => {
     const { log } = testLog();
     const relay = createEgressRelay({ allowedHosts: () => ALLOWED, upstream: null, log });
@@ -499,5 +650,30 @@ describe("configuration du relais", () => {
       await handle.stop();
     }
     assert.equal(handle.listening(), null);
+  });
+
+  it("démarrage : l'échéance des tunnels est transmise au relais", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    const { log, lines } = testLog();
+    const handle = startEgressRelay({
+      port: 0,
+      peer: "opencode",
+      allowedHosts: () => ALLOWED,
+      tunnelDeadline: () => 0,
+      processEnv: {},
+      log,
+      lookup: async () => ["127.0.0.1"],
+      interfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "", internal: true, cidr: "127.0.0.1/8" }] }),
+      connect: () => net.connect({ host: "127.0.0.1", port: echo.port }),
+    });
+    t.after(() => handle.stop());
+    await until(() => handle.listening() !== null, "écoute du relais");
+    const c = rawClient(t, handle.listening()?.port ?? 0, connectRequest(`${COPILOT}:443`));
+    await until(() => c.closed(), "tunnel coupé à l'ouverture", 2_000);
+    assert.equal(c.text(), "");
+    assert.deepEqual(
+      lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => l.motif),
+      ["echeance"],
+    );
   });
 });

@@ -154,6 +154,16 @@ export function egressAllowedHosts(input: EgressHostsInput): Set<string> {
   return hosts;
 }
 
+/**
+ * Échéance d'un tunnel vers `host`, en heure du cockpit : null pour un hôte permis hors de toute connexion (l'adresse de l'API) ;
+ * sinon la fin de la fenêtre de connexion (`loginClosesAt`, LoginWindow.closesAt), et 0 si elle est fermée. Le relais coupe le
+ * tunnel à cette heure même s'il parle encore : github.com ne reste jamais ouvert au-delà de la connexion qui l'a permis.
+ */
+export function egressTunnelDeadline(host: string, input: Omit<EgressHostsInput, "loginOpen">, loginClosesAt: number | null): number | null {
+  if (egressAllowedHosts({ ...input, loginOpen: false }).has(host)) return null;
+  return loginClosesAt ?? 0;
+}
+
 /** Fenêtre de connexion à GitHub : ouverte par le cockpit quand il relaie une demande de connexion Copilot, fermée seule. */
 export class LoginWindow {
   readonly #now: () => number;
@@ -172,5 +182,10 @@ export class LoginWindow {
 
   isOpen(): boolean {
     return this.#now() < this.#until;
+  }
+
+  /** Fin de la fenêtre (prolongations comprises) tant qu'elle est ouverte, null sinon : échéance des tunnels qu'elle a permis. */
+  closesAt(): number | null {
+    return this.isOpen() ? this.#until : null;
   }
 }

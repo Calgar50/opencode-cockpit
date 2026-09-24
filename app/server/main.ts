@@ -6,7 +6,7 @@ import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
-import { egressAllowedHosts, LoginWindow } from "./egress-policy.ts";
+import { egressAllowedHosts, egressTunnelDeadline, LoginWindow } from "./egress-policy.ts";
 import { type RelayHandle, startEgressRelay } from "./egress-relay.ts";
 import { createApp } from "./http.ts";
 import { EventHub } from "./hub.ts";
@@ -211,20 +211,21 @@ tls?.refusals.start();
 
 // Seule sortie d'opencode (1.0.6) : relais CONNECT sur le réseau interne, vers la liste fermée des hôtes Copilot (adresse de l'API
 // effective, connexion à GitHub pendant une connexion). Tout le reste est refusé ici, sans rien envoyer au proxy de l'entreprise.
+// Un tunnel vers github.com ouvert pendant la connexion est coupé à la fin de la fenêtre, même s'il sert encore.
 let relay: RelayHandle | null = null;
 if (env.relay !== null) {
+  const egressInput = () => ({
+    copilotApiUrl: env.copilotApiUrl,
+    endpointUrl: copilot.status.endpoint?.url ?? null,
+    enterpriseDomain: env.githubEnterpriseDomain,
+  });
   relay = startEgressRelay({
     port: env.relay.port,
     peer: env.relay.peer,
     processEnv: process.env,
     log,
-    allowedHosts: () =>
-      egressAllowedHosts({
-        copilotApiUrl: env.copilotApiUrl,
-        endpointUrl: copilot.status.endpoint?.url ?? null,
-        enterpriseDomain: env.githubEnterpriseDomain,
-        loginOpen: egressLogin.isOpen(),
-      }),
+    allowedHosts: () => egressAllowedHosts({ ...egressInput(), loginOpen: egressLogin.isOpen() }),
+    tunnelDeadline: (host) => egressTunnelDeadline(host, egressInput(), egressLogin.closesAt()),
   });
 }
 
