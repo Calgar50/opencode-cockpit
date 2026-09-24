@@ -420,6 +420,18 @@ export const TEXTES = {
         confirmationPause: "La pause reste affichée : rien ne part avant votre réponse.",
       },
       // </c5:reprise-redemarrage>
+      // <c5:relance-perimee>
+      /**
+       * Clôture 5b (contre-vérification) : POST …/relancer refusé 409 `estimation-perimee` depuis la carte d'une équipe (boîte de
+       * confirmation restée ouverte plus longtemps que la validité de l'instantané, ou lectures changées). La carte refait alors
+       * l'estimation et la MONTRE dans une nouvelle boîte, qui commence par la phrase de la feuille de lancement (« L'estimation
+       * n'était plus à jour : voici la nouvelle. », team-texts.ts). `encore` : cette nouvelle estimation est refusée à son tour ;
+       * une seule ré-estimation par clic, rien n'est affiché de plus, d'où la phrase.
+       */
+      relancePerimee: {
+        encore: "L'estimation n'est plus à jour : refaites-la, puis confirmez de nouveau. Rien n'a été envoyé ni facturé.",
+      },
+      // </c5:relance-perimee>
       choix: {
         titre: "Choisissez le ou les spécialistes",
         proposition: "L'aiguilleur propose « {choix} » : « {raison} ». C'est la proposition d'une IA : vérifiez-la.",

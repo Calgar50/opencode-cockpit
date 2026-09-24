@@ -35,6 +35,9 @@ import {
 // <c5:reprise-redemarrage>
 import { repriseApresEstimation, repriseDebut } from "./team-view-model.ts";
 // </c5:reprise-redemarrage>
+// <c5:relance-perimee>
+import { confirmationReestimee, relancePerimee } from "./team-view-model.ts";
+// </c5:relance-perimee>
 import "./team-cards.css";
 import "./team-choice.css";
 
@@ -106,8 +109,39 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
     })();
   }, [confirm, lancer, run.id]);
 
+  // <c5:relance-perimee>
+  /**
+   * Clôture 5b (contre-vérification) : POST …/relancer après la boîte de confirmation, pour [Relancer la suite] comme pour
+   * [Refaire l'estimation de la suite]. `relaunch` est l'appel du bouton, fait avec l'EMPREINTE confirmée. Un 409
+   * `estimation-perimee` (boîte restée ouverte plus longtemps que la validité de l'instantané, ou lectures changées) n'affiche
+   * plus la phrase du code, fausse ici (« une nouvelle estimation est affichée » : la carte n'affichait rien) : `reestimer` refait
+   * l'estimation et la MONTRE dans une nouvelle boîte, une fois par clic (`dejaReestimee`) ; refusée de nouveau, la carte le dit
+   * par une phrase vraie (`relancePerimee`). Rien ne part sans votre nouvelle confirmation. Tout autre refus suit le chemin
+   * commun de `lancer`, avec sa phrase.
+   */
+  const relancerAvecEmpreinte = useCallback(
+    async (relaunch: () => Promise<unknown>, dejaReestimee: boolean, reestimer: () => void) => {
+      let perimee: string | null = null;
+      await lancer(async () => {
+        try {
+          await relaunch();
+        } catch (err: unknown) {
+          const code = teamError(err)?.error ?? null;
+          if (relancePerimee(code, dejaReestimee) === null) throw err;
+          perimee = code;
+        }
+      });
+      const suite = relancePerimee(perimee, dejaReestimee);
+      if (suite === null || !monte.current) return;
+      if (suite.genre === "reestimer") reestimer();
+      else setMessage(suite.texte);
+    },
+    [lancer],
+  );
+  // </c5:relance-perimee>
+
   /** D-eq-17 : estimation d'abord (seules lectures), confirmation ensuite, puis `relancer` avec l'empreinte. */
-  const relancer = useCallback(() => {
+  const relancer = useCallback((dejaReestimee: boolean = false) => {
     if (relanceDebut(run) === null || inflight.current) return;
     inflight.current = true;
     setOccupe(true);
@@ -120,7 +154,7 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
         if (etape.genre === "blocage") {
           if (monte.current) setBlocage(etape.raison);
         } else if (etape.genre === "confirmation") {
-          confirmation = etape.confirmation;
+          confirmation = dejaReestimee ? confirmationReestimee(etape.confirmation) : etape.confirmation;
         }
       } catch (err: unknown) {
         const refus = teamError(err);
@@ -133,9 +167,9 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
       const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
       const suite = relanceApresConfirmation(confirmation, ok);
       if (suite === null) return;
-      await lancer(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }));
+      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }), dejaReestimee, () => relancer(true));
     })();
-  }, [confirm, lancer, run]);
+  }, [confirm, relancerAvecEmpreinte, run]);
 
   // <c5:reprise-redemarrage>
   /**
@@ -144,8 +178,10 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
    * puis POST …/relancer avec l'EMPREINTE et x-cockpit-confirm: 1. Un refus prévisible (`blocage`) est dit, rien n'est envoyé.
    * Après la confirmation, la carte relit le lancement : la pause revient sans demande d'estimation, et c'est votre réponse qui
    * la fait repartir — sauf la pause « Le cockpit a redémarré », que la confirmation relance.
+   * `dejaReestimee` : estimation refaite après un 409 `estimation-perimee` (relancerAvecEmpreinte) ; le bouton passe toujours
+   * `false` par `reprendre`, jamais l'événement du clic.
    */
-  const reprendre = useCallback(() => {
+  const reprendreEstimation = useCallback((dejaReestimee: boolean) => {
     const pause = run.pause;
     if (pause === null || repriseDebut(run) === null || inflight.current) return;
     inflight.current = true;
@@ -158,7 +194,7 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
         if (etape.genre === "blocage") {
           if (monte.current) setMessage(etape.raison);
         } else if (etape.genre === "confirmation") {
-          confirmation = etape.confirmation;
+          confirmation = dejaReestimee ? confirmationReestimee(etape.confirmation) : etape.confirmation;
         }
       } catch (err: unknown) {
         const refus = teamError(err);
@@ -171,9 +207,10 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
       const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
       const suite = relanceApresConfirmation(confirmation, ok);
       if (suite === null) return;
-      await lancer(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }));
+      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }), dejaReestimee, () => reprendreEstimation(true));
     })();
-  }, [confirm, lancer, run]);
+  }, [confirm, relancerAvecEmpreinte, run]);
+  const reprendre = useCallback(() => reprendreEstimation(false), [reprendreEstimation]);
   // </c5:reprise-redemarrage>
 
   const cliquer = useCallback(

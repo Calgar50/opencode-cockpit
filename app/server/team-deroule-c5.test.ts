@@ -671,6 +671,65 @@ describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre
   });
 });
 
+// --- Clôture de la 5b (contre-vérification) : …/relancer refusé « estimation-perimee » depuis la carte -----------------------------
+
+describe("Clôture 5b : …/relancer refusé « estimation-perimee » depuis la carte — l'estimation est refaite et MONTRÉE (P3)", () => {
+  // La boîte « Relancer la suite ? » ou « Reprendre avec cette estimation ? » est restée ouverte plus longtemps que la validité de
+  // l'instantané (SNAPSHOT_TTL_MS de team-preflight.ts), ou les lectures ont changé : POST …/relancer rend 409
+  // `estimation-perimee`, dont la phrase (« une nouvelle estimation est affichée ») n'est vraie que pour la feuille de lancement,
+  // qui ré-estime. La carte l'affichait telle quelle, sans rien ré-estimer (défaut hérité de l'itération 4).
+  const confirmation = { titre: P.relance.titre, message: "Déjà dépensé : 0,05 $. Suite : ≈ 0,12 $, plafond 0,45 $.", empreinte: "c".repeat(64) };
+
+  it("premier refus : l'estimation est refaite et montrée dans une nouvelle boîte, qui dit pourquoi elle revient ; rien n'est envoyé", () => {
+    assert.deepEqual(VUE_MODELE.relancePerimee("estimation-perimee", false), { genre: "reestimer" });
+    const boite = VUE_MODELE.confirmationReestimee(confirmation);
+    assert.deepEqual(boite, { titre: confirmation.titre, message: `${P.feuille.perimee} ${confirmation.message}`, empreinte: confirmation.empreinte });
+    assert.match(P.feuille.perimee, /voici la nouvelle/, "vrai : la boîte MONTRE la nouvelle estimation");
+    // La relance ne part qu'après VOTRE nouvelle confirmation, avec l'empreinte de la nouvelle estimation.
+    assert.equal(VUE_MODELE.relanceApresConfirmation(boite, false), null);
+    assert.deepEqual(VUE_MODELE.relanceApresConfirmation(boite, true), { genre: "relancer", empreinte: confirmation.empreinte, confirme: true });
+  });
+
+  it("refus de la nouvelle estimation : une phrase vraie, sans autre estimation automatique (une par clic, jamais de boucle)", () => {
+    const encore = E.relancePerimee.encore;
+    assert.deepEqual(VUE_MODELE.relancePerimee("estimation-perimee", true), { genre: "phrase", texte: encore });
+    assert.doesNotMatch(encore, /est affichée|voici/, "rien n'est affiché à ce moment-là");
+    assert.match(encore, /refaites-la/, "ce qu'il reste à faire");
+    assert.match(encore, /Rien n'a été envoyé ni facturé\.$/, "le refus arrive avant tout envoi (A4)");
+  });
+
+  it("tout autre refus garde sa phrase", () => {
+    for (const code of ["pas-relancable", "budget-guard", "trop-d-equipes", "confirmation-requise", null]) {
+      assert.equal(VUE_MODELE.relancePerimee(code, false), null, String(code));
+      assert.equal(VUE_MODELE.relancePerimee(code, true), null, String(code));
+    }
+  });
+
+  it("carte : la relance et la reprise passent toutes deux par relancerAvecEmpreinte, qui n'affiche jamais la phrase du 409", () => {
+    const carte = read(CARD);
+    const code = withoutComments(carte);
+    const debut = carte.indexOf("// <c5:relance-perimee>\n  /**");
+    const fin = carte.indexOf("// </c5:relance-perimee>", debut + 1);
+    assert.ok(debut !== -1 && fin > debut, "l'aide vit dans sa section c5: (TeamRunCard.tsx est un fichier de l'itération 4)");
+    const aide = withoutComments(carte.slice(debut, fin));
+    assert.match(aide, /const relancerAvecEmpreinte = useCallback\(/);
+    assert.match(aide, /relancePerimee\(code, dejaReestimee\) === null\) throw err;/, "les autres refus gardent le chemin commun (leur phrase)");
+    assert.match(aide, /if \(suite\.genre === "reestimer"\) reestimer\(\);\s*else setMessage\(suite\.texte\);/);
+    assert.doesNotMatch(aide, /\.message\b/, "la phrase du serveur n'est jamais lue ici");
+    assert.doesNotMatch(aide, /teamRunsApi\./, "l'aide n'envoie rien d'elle-même : elle reçoit l'appel de chaque bouton");
+    // Aucun chemin ne relance plus par `lancer` seul, qui afficherait la phrase du serveur.
+    assert.doesNotMatch(code, /lancer\(\(\) => teamRunsApi\.relaunch/);
+    // [Relancer la suite] (itération 4) : même suite qu'avant, estimation refaite une fois et montrée.
+    assert.match(code, /const relancer = useCallback\(\(dejaReestimee: boolean = false\) => \{/, "[Relancer la suite] est appelé sans argument : `false` par défaut");
+    assert.match(code, /confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;/);
+    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, \{ estimateSha256: suite\.empreinte \}\), dejaReestimee, \(\) => relancer\(true\)\);/);
+    // [Refaire l'estimation de la suite] (clôture 5b) : le bouton passe `false` explicitement, jamais l'événement du clic.
+    assert.match(code, /const reprendre = useCallback\(\(\) => reprendreEstimation\(false\), \[reprendreEstimation\]\);/);
+    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, \{ estimateSha256: suite\.empreinte \}\), dejaReestimee, \(\) => reprendreEstimation\(true\)\);/);
+    assert.match(code, /confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;[\s\S]*confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;/, "les deux boîtes le disent");
+  });
+});
+
 describe("Corrections 5b : [Envoyer à cet assistant] atteint enfin le composeur", () => {
   it("la page du chat écoute le préremplissage, dans une section c5:, et n'envoie rien", () => {
     const chat = read("web/pages/ChatPage.tsx");

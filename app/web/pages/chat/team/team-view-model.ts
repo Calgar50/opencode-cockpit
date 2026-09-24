@@ -718,6 +718,32 @@ export function repriseApresEstimation(pause: TeamPauseView, reponse: TeamEstima
 }
 // </c5:reprise-redemarrage>
 
+// <c5:relance-perimee>
+/**
+ * Clôture 5b (contre-vérification) : POST …/relancer refusé 409 `estimation-perimee`, depuis [Relancer la suite] (itération 4)
+ * comme depuis [Refaire l'estimation de la suite] (D-5b-1). La boîte de confirmation est restée ouverte plus longtemps que la
+ * validité de l'instantané (SNAPSHOT_TTL_MS de team-preflight.ts, 10 minutes), ou les lectures ont changé. La phrase du code
+ * (« une nouvelle estimation est affichée ») n'est vraie que pour la feuille de lancement, qui ré-estime : la carte l'affichait
+ * telle quelle, sans rien ré-estimer. Désormais :
+ * - premier refus (`reestimer`) : la carte refait l'estimation (POST …/estimate, seules lectures) et la MONTRE dans une nouvelle
+ *   boîte (`confirmationReestimee`) ; rien ne part sans votre nouvelle confirmation, avec l'empreinte de la nouvelle estimation ;
+ * - refus de cette nouvelle estimation (`phrase`) : une phrase vraie, sans autre estimation automatique — une par clic, jamais
+ *   de boucle.
+ * null : la relance n'a pas été refusée pour cette raison ; tout autre refus garde sa phrase.
+ */
+export type RelancePerimee = { genre: "reestimer" } | { genre: "phrase"; texte: string };
+
+export function relancePerimee(code: string | null, dejaReestimee: boolean): RelancePerimee | null {
+  if (code !== "estimation-perimee") return null;
+  return dejaReestimee ? { genre: "phrase", texte: C5.relancePerimee.encore } : { genre: "reestimer" };
+}
+
+/** Boîte de la nouvelle estimation : elle dit d'abord pourquoi elle revient (phrase de la feuille de lancement, D-eq-17). */
+export function confirmationReestimee(confirmation: RelanceConfirmation): RelanceConfirmation {
+  return { ...confirmation, message: `${P.feuille.perimee} ${confirmation.message}` };
+}
+// </c5:relance-perimee>
+
 /**
  * Identifiant du bloc de pause d'un lancement : cible que « [Répondre] » du bandeau peut atteindre, comme
  * `permissionElementId` pour une demande d'autorisation. LE FOCUS N'EST JAMAIS PRIS par la carte elle-même : seul un clic de
