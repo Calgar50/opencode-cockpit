@@ -36,7 +36,7 @@ import { type Rule, truncateGlob } from "./shared/assistant-rules.ts";
 import { DELIVERABLE_TEXTS, METHODE_HEADER, STEP_SECTIONS, stepMessage } from "./shared/flow.ts";
 import { renderMethodBlock } from "./shared/methods.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
-import { TEXTES } from "./shared/team-texts.ts";
+import { remplir, TEXTES } from "./shared/team-texts.ts";
 import type { Flow, FlowBlock, FlowEstimate, FlowStep, TeamEstimateResponse, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent, FakeSession } from "./test-support/fake-opencode.ts";
@@ -1663,5 +1663,35 @@ describe("Clôture 5b, tour 3 (D-5b-1) : les accords montrés par la boîte de l
     assert.equal(envois(h).length, 0, "rien ne part avant votre réponse");
     assert.deepEqual(confirmationsDe(h, runId), {}, "l'accord de la reprise n'est jamais écrit dans le lancement");
     h.assertNoGlobalRestart();
+  });
+});
+
+describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
+  it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {
+    // Sonde K2b de la contre-vérification : « L'étape « Supervision et seuils » attend votre confirmation… » alors que seul le
+    // spécialiste « reseau » était retenu. `prochaineEtape` rendait la première étape non « terminee », « non-choisi » compris.
+    const ctx = await openTeam(t, { flow: aiguillageFlow() });
+    const { h } = ctx;
+    const runId = "dddddddd-eeee-ffff-0000-111111111111";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const tri = await nouvelleSession(h, "Tri");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: aiguillageFlow(),
+      state: "attente-budget",
+      cause: "budget",
+      lignes: {
+        tri: { state: "terminee", sessionId: tri, extrait: "Le code applicatif d'abord.\nCHOIX: Applicatif" },
+        s1: { state: "non-choisi", sessionId: null, extrait: null },
+        s2: { state: "non-choisi", sessionId: null, extrait: null },
+        syn: { state: "non-choisi", sessionId: null, extrait: null },
+      },
+    });
+    h.db.prepare("UPDATE team_run_steps SET choix = ? WHERE run_id = ? AND step_id = 'tri'").run(JSON.stringify(["s3"]), runId);
+    const vue = ctx.view(runId);
+    assert.equal(vue.pause?.kind, "budget");
+    assert.equal(vue.pause?.message, remplir(TEXTES.partout.pauses.budget.message, { titre: "Applicatif" }));
+    assert.doesNotMatch(vue.pause?.message ?? "", /Réseau|Base|Synthèse/, "aucun spécialiste écarté ni la synthèse écartée");
   });
 });

@@ -603,6 +603,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     for (const declaree of etapesDeclarees(run.flow)) {
       const row = rows.get(declaree.stepId);
       if (row?.state === "terminee") continue;
+      // <c5:prochaine-etape>
+      // Clôture 5b, tour 3 : un spécialiste (ou une synthèse) écarté par votre choix est « Non choisi », état final — il ne
+      // partira jamais. Sans ce saut, la pause « garde-fou budgétaire » nommait une étape que vous n'aviez pas retenue (P3).
+      if (row?.state === "non-choisi") continue;
+      // </c5:prochaine-etape>
       return { stepId: declaree.stepId, titre: row?.titre ?? declaree.stepId };
     }
     return null;
