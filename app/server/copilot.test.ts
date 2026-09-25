@@ -310,15 +310,20 @@ describe("API GitHub Copilot", () => {
       return new Response("Accès bloqué par la politique de sécurité", { status: 403 });
     });
     const byHost = Object.fromEntries((await client.probeHosts()).map((h) => [h.host, h]));
-    assert.equal(byHost["api.business.githubcopilot.com"]?.reachable, true);
     assert.equal(byHost["api.githubcopilot.com"]?.reachable, false);
     assert.match(byHost["api.githubcopilot.com"]?.detail ?? "", /injoignable/);
-    assert.equal(byHost["api.enterprise.githubcopilot.com"]?.reachable, false);
-    assert.match(byHost["api.enterprise.githubcopilot.com"]?.detail ?? "", /page de blocage/);
+    assert.equal(byHost["api.github.com"]?.reachable, false);
+    assert.match(byHost["api.github.com"]?.detail ?? "", /page de blocage/);
     assert.equal(
       seen.some((h) => "authorization" in h),
       false,
     );
+    // 1.0.6 : seules les adresses que le cockpit utilise sont testées ; les autres adresses Copilot ne font aucune alerte au proxy.
+    assert.deepEqual(Object.keys(byHost).sort(), ["api.github.com", "api.githubcopilot.com", "github.com"]);
+    const imposed = api(async (url) => (url === "https://api.business.githubcopilot.com/" ? json(404, {}, { "x-github-request-id": "D" }) : json(404, {})), "https://api.business.githubcopilot.com");
+    const imposedHosts = Object.fromEntries((await imposed.probeHosts()).map((h) => [h.host, h]));
+    assert.deepEqual(Object.keys(imposedHosts).sort(), ["api.business.githubcopilot.com", "api.github.com", "github.com"]);
+    assert.equal(imposedHosts["api.business.githubcopilot.com"]?.reachable, true);
   });
 });
 

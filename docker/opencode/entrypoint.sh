@@ -56,13 +56,27 @@ case "${COCKPIT_TLS_INSECURE:-0}" in
     ;;
 esac
 
-# --- Proxy : le trafic interne ne doit jamais passer par le proxy -----------------
-internal="localhost,127.0.0.1,::1,opencode,cockpit"
-NO_PROXY="${NO_PROXY:+${NO_PROXY},}${internal}"
+# --- Sortie : le relais du cockpit, et lui seul (1.0.6) -----------------------------
+# opencode est sur un réseau Docker interne, sans route : HTTP(S)_PROXY désigne le relais du cockpit, qui ne laisse passer que
+# GitHub Copilot et refuse tout le reste sur place. Le trafic interne ne passe jamais par un proxy, 0.0.0.0 compris : l'extension
+# Copilot d'opencode rappelle son propre serveur (http://0.0.0.0:4096, avec son mot de passe) avant chaque appel d'IA.
+internal="localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit"
+# Chaque hôte interne absent est ajouté à la fin (docker-compose.yml les pose déjà tous) : la liste n'est jamais amputée, et
+# n'est plus écrite en double.
+for host in $(printf '%s' "$internal" | tr ',' ' '); do
+  case ",${NO_PROXY:-}," in
+    *",${host},"*) ;;
+    *) NO_PROXY="${NO_PROXY:+${NO_PROXY},}${host}" ;;
+  esac
+done
 export NO_PROXY no_proxy="$NO_PROXY"
 if [ -n "${HTTPS_PROXY:-}" ]; then export https_proxy="$HTTPS_PROXY"; fi
 if [ -n "${HTTP_PROXY:-}" ]; then export http_proxy="$HTTP_PROXY"; fi
-if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}" ]; then log "proxy sortant configuré"; fi
+if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}" ]; then log "sortie par le relais du cockpit (proxy sortant configuré)"; fi
+# Jamais ces variables : recherche web (Exa, Parallel), fonctions expérimentales, espaces distants, télémétrie OTLP, interface
+# web en ligne. Le relais les refuserait de toute façon ; elles ne doivent pas même être tentées.
+unset OPENCODE_ENABLE_EXA OPENCODE_EXPERIMENTAL OPENCODE_EXPERIMENTAL_EXA OPENCODE_ENABLE_PARALLEL OPENCODE_EXPERIMENTAL_PARALLEL \
+  OPENCODE_EXPERIMENTAL_WORKSPACES OPENCODE_DISABLE_EMBEDDED_WEB_UI OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
 
 # --- Configuration par projet -------------------------------------------------------
 # Désactivée par défaut : un dépôt pourrait livrer dans .opencode/ des plugins exécutés
@@ -83,6 +97,12 @@ if [ ! -f "$CONFIG_DIR/opencode.json" ] && [ ! -f "$CONFIG_DIR/opencode.jsonc" ]
   log "configuration par défaut installée ($CONFIG_DIR/opencode.jsonc)"
 fi
 mkdir -p "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills"
+
+# --- Extension @opencode-ai/plugin (1.0.6) ------------------------------------------
+# Préinstallée dans l'image, recopiée dans le volume de configuration quand opencode la jugerait absente : sinon il appellerait le
+# registre npm à chaque chargement d'un dossier. Volume d'une version précédente compris.
+seed="$(node /usr/local/share/cockpit/plugin-seed.mjs "$CONFIG_DIR" /usr/local/share/cockpit/oc-plugin-seed 2>&1)" || true
+log "$seed"
 
 # --- Supervision ------------------------------------------------------------------
 child=0
@@ -105,7 +125,7 @@ while [ "$stopping" -eq 0 ]; do
   if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt 5000000 ]; then mv -f "$LOG_FILE" "$LOG_FILE.1"; fi
   rm -f "$CONTROL_DIR/restart-request"
   log "démarrage d'opencode $(opencode --version 2>/dev/null || echo '?') sur le port $PORT"
-  opencode serve --hostname 0.0.0.0 --port "$PORT" --print-logs --log-level INFO >> "$LOG_FILE" 2>&1 &
+  opencode serve --hostname 0.0.0.0 --port "$PORT" --no-mdns --print-logs --log-level INFO >> "$LOG_FILE" 2>&1 &
   child=$!
   date +%s > "$CONTROL_DIR/opencode.started"
   while kill -0 "$child" 2>/dev/null && [ "$stopping" -eq 0 ]; do

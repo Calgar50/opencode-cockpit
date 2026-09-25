@@ -502,6 +502,24 @@ describe("sécurité et utilitaires", () => {
     assert.notDeepEqual(settingsPathsOutsideSimple(store.get(), { teams: { concurrentSteps: 2 } }), []);
   });
 
+  it("relais d'opencode (1.0.6) : désactivé sans port ; port et pair contrôlés ; domaine GitHub Enterprise validé", () => {
+    const base = { COCKPIT_TOKEN: "t".repeat(32), OPENCODE_SERVER_PASSWORD: "p".repeat(16) };
+    assert.equal(loadEnv(base).relay, null);
+    assert.deepEqual(loadEnv({ ...base, COCKPIT_RELAY_PORT: "3128" }).relay, { port: 3128, peer: "opencode" });
+    assert.deepEqual(loadEnv({ ...base, COCKPIT_RELAY_PORT: " 3128 ", COCKPIT_RELAY_PEER: "OpenCode" }).relay, { port: 3128, peer: "opencode" });
+    for (const port of ["0", "65536", "7777", "abc", "31 28", "-1"]) assert.throws(() => loadEnv({ ...base, COCKPIT_RELAY_PORT: port }), EnvError, port);
+    for (const peer of ["opencode;rm", "a b", "../x", "-opencode"]) assert.throws(() => loadEnv({ ...base, COCKPIT_RELAY_PORT: "3128", COCKPIT_RELAY_PEER: peer }), EnvError, peer);
+    assert.equal(loadEnv(base).githubEnterpriseDomain, null);
+    assert.equal(loadEnv({ ...base, COCKPIT_GITHUB_ENTERPRISE_DOMAIN: " https://Acme.GHE.com/ " }).githubEnterpriseDomain, "acme.ghe.com");
+    for (const domain of ["acme", "10.1.2.3", "acme.ghe.com/x", "*.ghe.com", "acme.ghe.com:443"]) {
+      assert.throws(
+        () => loadEnv({ ...base, COCKPIT_GITHUB_ENTERPRISE_DOMAIN: domain }),
+        (err: Error) => err instanceof EnvError && !err.message.includes(domain),
+        domain,
+      );
+    }
+  });
+
   describe("accès local HTTPS ou HTTP : vecteurs communs (tests/vectors/local-access.json)", () => {
     const HEX64 = /^[0-9a-f]{64}$/;
     const raw = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "tests", "vectors", "local-access.json"));

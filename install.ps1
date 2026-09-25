@@ -102,8 +102,11 @@ $EnvFile = Join-Path $Root '.env'
 $Version = 'dev'
 $VersionFile = Join-Path $Root 'VERSION'
 if (Test-Path -LiteralPath $VersionFile) { $Version = (Get-Content -LiteralPath $VersionFile -TotalCount 1).Trim() }
-# Version minimale d'image capable de servir le mode choisi et la preuve du jeton.
+# Version minimale d'image capable de servir le mode choisi et la preuve du jeton : une installation plus ancienne est une
+# migration (passage au HTTPS local). Ne change pas avec les versions suivantes : une installation 1.0.5 garde son mode d'acces.
 $MinimumImageVersion = [version]'1.0.5'
+# Version minimale des images pour ce docker-compose.yml (1.0.6) : opencode n'y a plus d'autre sortie que le relais du cockpit.
+$RequiredImageVersion = [version]'1.0.6'
 
 # Mode de langage restreint (AppLocker, WDAC) : le chargement de CockpitTls.ps1 et les appels .NET echoueraient
 # plus loin, avec un message incomprehensible. Meme texte que Assert-CockpitFullLanguage, avant tout chargement.
@@ -390,7 +393,7 @@ if ($Mode -ceq 'Load' -and -not $ImagesArchive) {
     else {
         $appVersion = Get-CockpitImageVersion $previousApp
         if ($null -eq $appVersion) { $loadProblem = 'image {0} de version inconnue, version {1} requise' -f $previousApp, $Version }
-        elseif ($appVersion -lt $MinimumImageVersion) { $loadProblem = 'image {0} en version {1}, version {2} requise' -f $previousApp, $appVersion, $Version }
+        elseif ($appVersion -lt $RequiredImageVersion) { $loadProblem = 'image {0} en version {1}, version {2} requise' -f $previousApp, $appVersion, $Version }
     }
 }
 
@@ -413,7 +416,7 @@ if ($transition -ceq 'EntreeHttp') { Confirm-CockpitHttpMode $guardPort $policy 
 # Valeurs a remettre dans .env si la construction ou le telechargement echoue : sinon .env designerait un mode
 # et un jeton differents des conteneurs encore en marche, et plus personne ne pourrait ouvrir le cockpit.
 $restoreKeys = @('COCKPIT_OPENCODE_IMAGE', 'COCKPIT_APP_IMAGE', 'COCKPIT_INSTALL_MODE', 'COCKPIT_LOCAL_SCHEME',
-    'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_VERSION', 'COCKPIT_TOKEN')
+    'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_VERSION', 'COCKPIT_TOKEN', 'OPENCODE_SERVER_PASSWORD')
 $previousValues = @{}
 foreach ($key in $restoreKeys) { if ($config.Contains($key)) { $previousValues[$key] = $config[$key] } }
 
@@ -480,6 +483,13 @@ if (-not $config.Contains('COCKPIT_TOKEN') -or $config['COCKPIT_TOKEN'].Length -
 if (-not $config.Contains('OPENCODE_SERVER_PASSWORD') -or $config['OPENCODE_SERVER_PASSWORD'].Length -lt 16) {
     $config['OPENCODE_SERVER_PASSWORD'] = New-Secret 32
 }
+# 1.0.6 : avant cette version, opencode envoyait au proxy d'entreprise, en clair, des appels a son propre serveur portant ce mot
+# de passe (http://0.0.0.0:4096). Il est donc remplace une fois, a la mise a jour. Secret interne : aucune reconnexion.
+$rotateServerPassword = (-not $isNew) -and (($null -eq $previousVersionValue) -or ($previousVersionValue -lt $RequiredImageVersion))
+if ($rotateServerPassword) {
+    $config['OPENCODE_SERVER_PASSWORD'] = New-Secret 32
+    Write-Info ("Mot de passe interne d'opencode renouvele (passage a la {0} : il a pu circuler en clair vers le proxy)." -f $Version)
+}
 Write-Good 'Secrets presents (generes aleatoirement si absents)'
 
 # Proxy d'entreprise. -Proxy '' est memorise (COCKPIT_PROXY_MODE=direct) : plus de detection aux relances.
@@ -502,6 +512,11 @@ if ($detectedProxy) {
     $shownProxy = $detectedProxy -replace '^((?:[A-Za-z][A-Za-z0-9+.-]*://)?)[^/]*@', '$1****@'
     Write-Good "Proxy : $shownProxy"
     if ($detectedProxy -match '@') { Write-Attention "L'URL du proxy contient des identifiants : ils sont stockes dans .env (acces restreint)." }
+    # 1.0.6 : le relais du cockpit, seule sortie d'opencode, ne passe que par un proxy http:// (schema absent = http://). Avec
+    # un autre schema, il refuse tout sur place (rien ne part en direct) : les demandes d'IA d'opencode echoueraient.
+    if ($detectedProxy -match '^([A-Za-z][A-Za-z0-9+.-]*)://' -and $Matches[1] -ne 'http') {
+        Write-Attention ("Proxy en {0}:// : le relais d'opencode ne sait passer que par un proxy http:// ; les demandes d'IA d'opencode echoueront. Indiquez l'adresse http:// du proxy : .\install.ps1 -Proxy http://<proxy>:<port>" -f $Matches[1].ToLowerInvariant())
+    }
 } elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') {
     $config['HTTP_PROXY'] = ''
     $config['HTTPS_PROXY'] = ''
@@ -525,6 +540,18 @@ if (-not $config.Contains('TZ')) { $config['TZ'] = 'Europe/Paris' }
 # Dossier .opencode/ des depots ignore par defaut (un depot pourrait y executer du code sans confirmation).
 if (-not $config.Contains('COCKPIT_PROJECT_CONFIG')) { $config['COCKPIT_PROJECT_CONFIG'] = '0' }
 if (-not $config.Contains('COCKPIT_GITHUB_ENTERPRISE_DOMAIN')) { $config['COCKPIT_GITHUB_ENTERPRISE_DOMAIN'] = '' }
+# Domaine GitHub Enterprise : meme regle que le cockpit 1.0.6, qui refuserait sinon de demarrer (schema et barre finale retires,
+# nom DNS d'au moins deux etiquettes, jamais une adresse IP). C'est le seul domaine que le relais ouvre a opencode, pendant une
+# connexion a Copilot.
+$gheValue = ([string]$config['COCKPIT_GITHUB_ENTERPRISE_DOMAIN']).Trim()
+if ($gheValue) {
+    $gheValue = ($gheValue -ireplace '^https?://', '' -replace '/\z', '' -replace '\.\z', '').ToLowerInvariant()
+    $gheLabel = '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+    if ($gheValue.Length -gt 253 -or $gheValue -cnotmatch ('^{0}(\.{0})+\z' -f $gheLabel) -or $gheValue -cmatch '\.([0-9]+|0x[0-9a-f]*)\z') {
+        throw 'COCKPIT_GITHUB_ENTERPRISE_DOMAIN refuse : nom de domaine attendu (par exemple entreprise.ghe.com), sans adresse IP, port ni chemin. Corrigez .env puis relancez (.env n a pas ete modifie).'
+    }
+    $config['COCKPIT_GITHUB_ENTERPRISE_DOMAIN'] = $gheValue
+}
 
 # Adresse d'API Copilot imposee (memorisee ; vide = automatique). Meme controle que le cockpit au demarrage :
 # une erreur ici evite un conteneur qui refuse de demarrer.
@@ -591,7 +618,7 @@ try {
         # Controle avant toute ecriture de .env : une archive trop ancienne ne sait ni servir le mode choisi,
         # ni prouver qu'elle connait le jeton.
         $loadedVersion = Get-CockpitImageVersion $config['COCKPIT_APP_IMAGE']
-        if ($null -eq $loadedVersion -or $loadedVersion -lt $MinimumImageVersion) {
+        if ($null -eq $loadedVersion -or $loadedVersion -lt $RequiredImageVersion) {
             $seen = 'de version inconnue'
             if ($null -ne $loadedVersion) { $seen = 'en version {0}' -f $loadedVersion }
             throw ("Archive refusee : l'image {0} est {1}, version {2} requise. Telechargez opencode-cockpit-images-{2}.tar.gz (page Releases), puis relancez avec -Mode Load -ImagesArchive <fichier>. Aucun fichier modifie." -f $config['COCKPIT_APP_IMAGE'], $seen, $Version)
@@ -623,7 +650,7 @@ try {
         }
         if ($Mode -eq 'Build' -or $Mode -eq 'Pull') {
             $builtVersion = Get-CockpitImageVersion $config['COCKPIT_APP_IMAGE']
-            if ($null -eq $builtVersion -or $builtVersion -lt $MinimumImageVersion) {
+            if ($null -eq $builtVersion -or $builtVersion -lt $RequiredImageVersion) {
                 $seen = 'de version inconnue'
                 if ($null -ne $builtVersion) { $seen = 'en version {0}' -f $builtVersion }
                 throw ("L'image {0} est {1}, version {2} requise. Relancez .\install.ps1 apres avoir mis a jour les fichiers du cockpit (git pull ou nouvelle archive)." -f $config['COCKPIT_APP_IMAGE'], $seen, $Version)

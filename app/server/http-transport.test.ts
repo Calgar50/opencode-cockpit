@@ -473,7 +473,7 @@ describe("démarrage extrait (server-start.ts) : configuration et certificat ava
     }
   });
 
-  it("une seule fonction d'écoute (server-start.ts), appelée une fois par main.ts", () => {
+  it("une seule fonction d'écoute de l'interface (server-start.ts), appelée une fois par main.ts ; le relais d'opencode à part", () => {
     assert.deepEqual(Object.keys(serverStart).sort(), ["logHttpsFailure", "prepareStartup", "startLocalServer"]);
     const sources = fs
       .readdirSync(SERVER_DIR, { recursive: true, encoding: "utf8" })
@@ -484,11 +484,15 @@ describe("démarrage extrait (server-start.ts) : configuration et certificat ava
     const listeners = sources.filter((file) =>
       /from "@hono\/node-server"|\bcreateServer\b|createSecureServer|\.listen\(/.test(fs.readFileSync(path.join(SERVER_DIR, file), "utf8")),
     );
-    assert.deepEqual(listeners, ["server-start.ts"]);
+    // 1.0.6 : le relais de sortie d'opencode écoute aussi, seulement sur le réseau interne (egress-relay.test.ts), et seul main.ts le lance.
+    assert.deepEqual(listeners.sort(), ["egress-relay.ts", "server-start.ts"]);
+    const importers = sources.filter((file) => file !== "main.ts" && fs.readFileSync(path.join(SERVER_DIR, file), "utf8").includes('from "./egress-relay.ts"'));
+    assert.deepEqual(importers, []);
     const main = fs.readFileSync(path.join(SERVER_DIR, "main.ts"), "utf8");
     assert.equal(main.match(/\bstartLocalServer\(/g)?.length, 1);
-    // Certificat préparé avant la base, base ouverte avant l'écoute.
-    const order = ["prepareStartup(", "openDb(", "startLocalServer("].map((marker) => main.indexOf(marker));
+    assert.equal(main.match(/\bstartEgressRelay\(/g)?.length, 1);
+    // Certificat préparé avant la base, base ouverte avant l'écoute, relais d'opencode après l'interface.
+    const order = ["prepareStartup(", "openDb(", "startLocalServer(", "startEgressRelay("].map((marker) => main.indexOf(marker));
     assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > (order[i - 1] ?? 0))), JSON.stringify(order));
   });
 });
@@ -778,6 +782,68 @@ describe("mode HTTP de bout en bout (main.ts réel)", () => {
   it("healthcheck du serveur réel : 0", async () => {
     const result = await healthcheck({ ...HTTP_ENV, COCKPIT_PORT: String(port) });
     assert.equal(result.code, 0, result.stderr);
+  });
+});
+
+// --- Relais de sortie d'opencode (1.0.6) dans main.ts réel -----------------------------------------------------------------
+
+/** Demande CONNECT brute ; rend la ligne de statut (ou "" si la connexion est coupée sans réponse). */
+function connectThrough(port: number, target: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: "127.0.0.1", port });
+    let data = "";
+    socket.setEncoding("latin1");
+    socket.on("data", (chunk: string) => {
+      data += chunk;
+      if (data.includes("\r\n")) {
+        socket.destroy();
+        resolve(data.split("\r\n")[0] ?? "");
+      }
+    });
+    socket.on("error", () => undefined);
+    socket.once("close", () => resolve(data.split("\r\n")[0] ?? ""));
+    socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+  });
+}
+
+describe("relais de sortie d'opencode dans main.ts réel (1.0.6)", () => {
+  let run: NodeRun | undefined;
+  let relayPort = 0;
+
+  before(async () => {
+    // Proxy de l'entreprise simulé par un port fermé : une sortie permise échoue sur place (502), rien ne part vers Internet.
+    const [relay, deadProxy] = await freePorts(2);
+    relayPort = relay ?? 0;
+    const cockpit = await cockpitSetup({ ...HTTP_ENV, COCKPIT_RELAY_PORT: String(relayPort), COCKPIT_RELAY_PEER: "localhost", HTTPS_PROXY: `http://127.0.0.1:${deadProxy}` });
+    run = startMain(cockpit);
+    await waitListening(run);
+    await waitFor(() => run?.logs.find((line) => line.msg === "relais du cockpit à l'écoute pour opencode (réseau interne seulement)"), 30_000, "relais à l'écoute");
+  });
+
+  after(async () => {
+    if (run) await stop(run);
+  });
+
+  it("deux écoutes : l'interface et le relais, sur l'adresse du réseau du pair seulement (ici la boucle locale)", () => {
+    assert.ok(run);
+    assert.equal(listenCalls(run), 2, run.stderr());
+    const line = run.logs.find((l) => l.msg === "relais du cockpit à l'écoute pour opencode (réseau interne seulement)");
+    assert.equal(line?.adresse, "127.0.0.1");
+    assert.equal(line?.port, relayPort);
+  });
+
+  it("models.opencode.ai refusé sur place (403) et journalisé une fois ; hôte Copilot relayé vers le proxy de l'entreprise (502 ici)", async () => {
+    assert.ok(run);
+    assert.match(await connectThrough(relayPort, "models.opencode.ai:443"), /^HTTP\/1\.1 403 /);
+    assert.match(await connectThrough(relayPort, "models.opencode.ai:443"), /^HTTP\/1\.1 403 /);
+    assert.match(await connectThrough(relayPort, "api.githubcopilot.com:443"), /^HTTP\/1\.1 502 /);
+    const current = run;
+    await waitFor(() => current.logs.find((l) => l.msg === "sortie d'opencode permise, en échec en amont"), 10_000, "échec en amont journalisé");
+    const refused = current.logs.filter((l) => typeof l.msg === "string" && l.msg.startsWith("sortie d'opencode refusée par le relais du cockpit"));
+    assert.deepEqual(
+      refused.map((l) => [l.hote, l.raison]),
+      [["models.opencode.ai", "hote"]],
+    );
   });
 });
 

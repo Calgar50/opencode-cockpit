@@ -515,6 +515,90 @@ try {
     $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoStart = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
     Assert-Test '-NoStart HTTP : message propre au mode' ($result.Host.Contains('.\cockpit.ps1 open (verification : preuve du jeton)') -and -not $result.Host.Contains('verification HTTPS')) $result.Host
     Assert-Test '-NoStart HTTP : A6 affiche' ($result.Host.Contains('MODE HTTP LOCAL (confirme le'))
+
+    # --- 1.0.6 : mise a jour depuis la 1.0.5 (chemin de cockpit.ps1 update), contrat ResteHttp ------------------------------------
+    Write-Section '1.0.6 : mise a jour depuis la 1.0.5 en HTTP (ResteHttp) et en HTTPS'
+    $env105Http = New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.5'
+    Assert-Test '1.0.6 ResteHttp : transition calculee pour une 1.0.5 en HTTP sans -Http' ((Get-CockpitTransition -Mode (Get-CockpitLocalMode $env105Http) -IsNew $false -IsMigration $false) -ceq 'ResteHttp')
+    Reset-Root $env105Http
+    $envBefore = Read-TestEnvFile $Root
+    $tokenBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'COCKPIT_TOKEN')
+    $passwordBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'OPENCODE_SERVER_PASSWORD')
+    $journal = Set-InstallDockerScenario $Work 'maj-105-http' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test '1.0.6 ResteHttp : aucune exception' ($null -eq $result.Error) ([string]$result.Error)
+    Assert-Test '1.0.6 ResteHttp : aucune question (jamais le passage force en HTTPS)' ($result.ReadHostCalls.Count -eq 0) ($result.ReadHostCalls -join ' | ')
+    Assert-Test '1.0.6 ResteHttp : mode http et date de confirmation conserves' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'http' -and (Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_HTTP_CONFIRMED') -ceq $ConfirmedAt)
+    Assert-Test '1.0.6 ResteHttp : jeton de connexion inchange (aucune reconnexion)' ((Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore)
+    Assert-Test '1.0.6 ResteHttp : cockpit annonce en http, sans migration' ($result.Host.Contains('Cockpit disponible sur ' + $HttpUrl + ' (mode HTTP local') -and -not $result.Host.Contains('Passage a la ') -and -not $result.Host.Contains('Empreinte SHA-256')) $result.Host
+    Assert-Test '1.0.6 ResteHttp : aucune cle COCKPIT_PREVIOUS_* ecrite' (-not (@($envAfter.Keys) -join ',').Contains('COCKPIT_PREVIOUS_'))
+    Assert-Test '1.0.6 : version 1.0.6 inscrite' ((Get-TestEnvValue $envAfter 'COCKPIT_VERSION') -ceq $Version -and $Version -ceq '1.0.6') $Version
+    Assert-Test '1.0.6 : mot de passe interne d opencode renouvele une fois' ((Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')) -cne $passwordBefore -and (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD') -cmatch '^[0-9a-f]{64}\z')
+    Assert-Test '1.0.6 : renouvellement annonce sans la valeur' ($result.Host.Contains("Mot de passe interne d'opencode renouvele") -and -not $result.Host.Contains((Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')))
+
+    $passwordKept = Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-relance' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test '1.0.6 relance : mot de passe interne garde' ((Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')) -ceq $passwordKept)
+    Assert-Test '1.0.6 relance : toujours en http' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'http' -and $result.ReadHostCalls.Count -eq 0)
+
+    Reset-Root (New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) '1.0.5')
+    $tokenBefore = Get-TextDigest (Get-TestEnvValue (Read-TestEnvFile $Root) 'COCKPIT_TOKEN')
+    $journal = Set-InstallDockerScenario $Work 'maj-105-https' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test '1.0.6 ResteHttps : aucune exception, adresse https annoncee' ($null -eq $result.Error -and $result.Host.Contains('Cockpit disponible sur ' + $HttpsUrl)) ([string]$result.Error)
+    Assert-Test '1.0.6 ResteHttps : mode et jeton inchanges, sans migration' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'https' -and (Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore -and -not $result.Host.Contains('Passage a la '))
+
+    Write-Section '1.0.6 : mode Load sans archive avec des images 1.0.5 (relais absent)'
+    $loadHttp = New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.5' 'Load'
+    Reset-Root $loadHttp
+    $before = Get-EnvFingerprint $Root
+    $journal = Set-InstallDockerScenario $Work 'maj-105-load' (New-InstallDockerRules $CertFile $JsonFile '1.0.5')
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    Assert-Test '1.0.6 Load : arret avant toute modification, archive 1.0.6 demandee' ($result.Error -ceq $CockpitA19 -and $result.Host.Contains('Mode Load : image opencode-cockpit/app:local en version 1.0.5, version ' + $Version + ' requise') -and $result.Host.Contains('opencode-cockpit-images-' + $Version + '.tar.gz')) $result.Host
+    Assert-Test '1.0.6 Load : .env identique, toujours en HTTP, aucune question' ((Get-EnvFingerprint $Root) -ceq $before -and $result.ReadHostCalls.Count -eq 0 -and -not $result.Host.Contains("Edge interdit de passer l'avertissement"))
+    Assert-Test '1.0.6 Load : aucun demarrage' (@(Get-DockerCalls $journal | Where-Object { (@($_.args) -join ' ') -cmatch ' up ' }).Count -eq 0)
+
+    Write-Section '1.0.6 : domaine GitHub Enterprise (seul domaine ouvert par le relais)'
+    $gheEnv = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) $Version
+    foreach ($bad in @('10.1.2.3', 'acme', 'acme.ghe.com/x', 'acme.ghe.com:8443', '*.ghe.com')) {
+        $gheEnv['COCKPIT_GITHUB_ENTERPRISE_DOMAIN'] = $bad
+        Reset-Root $gheEnv
+        $before = Get-EnvFingerprint $Root
+        $journal = Set-InstallDockerScenario $Work 'ghe-refus' (New-InstallDockerRules $CertFile $JsonFile)
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+        Assert-Test ('domaine GitHub Enterprise refuse : {0}' -f $bad) ($null -ne $result.Error -and $result.Error.Contains('COCKPIT_GITHUB_ENTERPRISE_DOMAIN refuse') -and (Get-EnvFingerprint $Root) -ceq $before) ([string]$result.Error)
+    }
+    $gheEnv['COCKPIT_GITHUB_ENTERPRISE_DOMAIN'] = 'https://Acme.GHE.com/'
+    Reset-Root $gheEnv
+    $journal = Set-InstallDockerScenario $Work 'ghe-normalise' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    Assert-Test 'domaine GitHub Enterprise normalise comme le cockpit' ($null -eq $result.Error -and (Get-TestEnvValue (Read-TestEnvFile $Root) 'COCKPIT_GITHUB_ENTERPRISE_DOMAIN') -ceq 'acme.ghe.com') ([string]$result.Error)
+
+    Write-Section '1.0.6 : proxy d entreprise que le relais sait chainer (http:// seulement)'
+    $proxyEnv = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) $Version
+    $proxyCases = @(
+        @{ Proxy = 'https://agent:MOTDEPASSE-PROXY@proxy.example:8443'; Scheme = 'https' },
+        @{ Proxy = 'SOCKS5://proxy.example:1080'; Scheme = 'socks5' },
+        @{ Proxy = 'http://agent:MOTDEPASSE-PROXY@proxy.example:8080'; Scheme = '' },
+        @{ Proxy = 'HTTP://proxy.example:8080'; Scheme = '' },
+        @{ Proxy = 'proxy.example:8080'; Scheme = '' })
+    foreach ($case in $proxyCases) {
+        Reset-Root $proxyEnv
+        $journal = Set-InstallDockerScenario $Work 'proxy-schema' (New-InstallDockerRules $CertFile $JsonFile)
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Proxy = $case.Proxy }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+        $warned = $result.Host.Contains("le relais d'opencode ne sait passer que par un proxy http://")
+        $label = ($case.Proxy -replace 'MOTDEPASSE-PROXY', '****')
+        if ($case.Scheme) {
+            Assert-Test ('proxy {0} : avertissement du relais, schema cite' -f $label) ($null -eq $result.Error -and $warned -and $result.Host.Contains(('Proxy en {0}://' -f $case.Scheme))) ([string]$result.Error)
+        } else {
+            Assert-Test ('proxy {0} : aucun avertissement du relais' -f $label) ($null -eq $result.Error -and -not $warned) ([string]$result.Error)
+        }
+        Assert-Test ('proxy {0} : identifiants jamais affiches' -f $label) (-not $result.Host.Contains('MOTDEPASSE-PROXY'))
+    }
 } finally {
     foreach ($server in $Servers) {
         try { $server.StandardInput.Close(); [void]$server.WaitForExit(5000) } catch { }

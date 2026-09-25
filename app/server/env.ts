@@ -1,4 +1,5 @@
 import path from "node:path";
+import { canonicalHostName, parseEnterpriseDomain } from "./egress-policy.ts";
 import { isFetchBlockedPort } from "./fetch-ports.ts";
 import { DEFAULT_ALLOWED_PROVIDERS, normalizeCopilotApiUrl } from "./shared/assistant-rules.ts";
 
@@ -30,7 +31,10 @@ export interface AppEnv {
   tlsInsecure: boolean;
   /** Configuration par projet (.opencode/ des dépôts) autorisée — désactivée par défaut. */
   projectConfig: boolean;
-  /** Seul domaine GitHub Enterprise vers lequel le jeton Copilot peut être envoyé (synchro du solde). */
+  /**
+   * Seul domaine GitHub Enterprise vers lequel le jeton Copilot peut être envoyé (synchro du solde) et que le relais d'opencode peut
+   * ouvrir : nom DNS canonique d'au moins deux étiquettes (1.0.6), schéma et barre finale retirés.
+   */
   githubEnterpriseDomain: string | null;
   /**
    * Fournisseurs d'IA acceptés par le proxy, l'éditeur de niveaux et le Studio (COCKPIT_ALLOWED_PROVIDERS).
@@ -56,6 +60,11 @@ export interface AppEnv {
   /** Binaire openssl lancé par execFile pour générer le certificat (COCKPIT_OPENSSL, chemin absolu). */
   opensslPath: string;
   version: string;
+  /**
+   * Relais de sortie d'opencode (1.0.6) : port d'écoute sur le réseau interne (COCKPIT_RELAY_PORT) et nom du service qui désigne ce
+   * réseau (COCKPIT_RELAY_PEER, « opencode » par défaut). null : relais désactivé (développement, tests).
+   */
+  relay: { port: number; peer: string } | null;
 }
 
 export class EnvError extends Error {
@@ -101,6 +110,33 @@ export function parseAutonomy(value: string | undefined): boolean {
   if (raw === "" || raw === "on") return true;
   if (raw === "off") return false;
   throw new EnvError("COCKPIT_AUTONOMY : valeur refusée (on ou off).");
+}
+
+/** Domaine GitHub Enterprise déclaré : vide = aucun ; valeur refusée = refus de démarrer (le relais l'ouvrirait à opencode). */
+export function parseGithubEnterpriseDomain(value: string | undefined): string | null {
+  const domain = parseEnterpriseDomain(value);
+  if (domain === undefined) {
+    throw new EnvError("COCKPIT_GITHUB_ENTERPRISE_DOMAIN : nom de domaine attendu (par exemple entreprise.ghe.com), sans adresse IP ni chemin.");
+  }
+  return domain;
+}
+
+/**
+ * Relais de sortie d'opencode : COCKPIT_RELAY_PORT vide = désactivé ; sinon port 1-65535 différent du port de l'interface, et pair
+ * (COCKPIT_RELAY_PEER) écrit comme un nom de service Docker ou un nom DNS. Toute autre valeur refuse le démarrage.
+ */
+export function parseRelay(env: NodeJS.ProcessEnv, interfacePort: number): { port: number; peer: string } | null {
+  const raw = (env.COCKPIT_RELAY_PORT ?? "").trim();
+  if (raw === "") return null;
+  const port = /^\d{1,5}$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || port === interfacePort) {
+    throw new EnvError("COCKPIT_RELAY_PORT : port du relais invalide (1-65535, différent de COCKPIT_PORT).");
+  }
+  const peer = (env.COCKPIT_RELAY_PEER ?? "").trim().toLowerCase() || "opencode";
+  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62})$/.test(peer) && canonicalHostName(peer) === null) {
+    throw new EnvError("COCKPIT_RELAY_PEER : nom de service attendu (par exemple opencode).");
+  }
+  return { port, peer };
 }
 
 export type LocalScheme = "https" | "http";
@@ -171,7 +207,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
   }
 
   const workspaceDir = path.resolve(env.COCKPIT_WORKSPACE_DIR ?? "/workspace");
-  const githubEnterpriseDomain = env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN?.trim().toLowerCase() || null;
+  const githubEnterpriseDomain = parseGithubEnterpriseDomain(env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN);
   return {
     host: env.COCKPIT_HOST?.trim() || "127.0.0.1",
     port,
@@ -203,5 +239,6 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     tlsDir: absolutePath(env, "COCKPIT_TLS_DIR", "/tls"),
     opensslPath: absolutePath(env, "COCKPIT_OPENSSL", "/usr/bin/openssl"),
     version: env.COCKPIT_VERSION?.trim() || "dev",
+    relay: parseRelay(env, port),
   };
 }

@@ -17,6 +17,7 @@ import type { EmittedReply, InternalAgentsPort, PermissionGate, ProxyContext } f
 import type { ControlService, RestartResult } from "./control.ts";
 import type { CopilotApi } from "./copilot.ts";
 import { transaction } from "./db.ts";
+import type { LoginWindow } from "./egress-policy.ts";
 import type { AppEnv } from "./env.ts";
 import { assertInside, PathError, readIfExists, readInside, writeFileAtomic } from "./fsutil.ts";
 import { applyEdits, modify, parse as parseJsonc, parseTree } from "jsonc-parser";
@@ -40,7 +41,7 @@ import { type OpencodeClient, OpencodeError } from "./opencode.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { COPILOT_PRICES, type ModelPrice, PRICING_AS_OF, PRICING_SOURCE_URL, USD_PER_CREDIT } from "./pricing.ts";
 import type { EventProcessor } from "./processor.ts";
-import type { ProjectsService } from "./projects.ts";
+import { ForbiddenDirectoryError, type ProjectsService } from "./projects.ts";
 import type { QuotaSync } from "./quota.ts";
 import {
   AuthTickets,
@@ -177,6 +178,11 @@ export interface AppDeps {
   tls: LocalTls | null;
   /** 1.0.5 : tickets de connexion à usage unique émis par /api/health (une instance propre si absente). */
   tickets?: AuthTickets;
+  /**
+   * Fenêtre de connexion à GitHub du relais d'opencode (1.0.6) : ouverte quand l'interface lance ou attend une connexion Copilot,
+   * seul moment où github.com (et le domaine GitHub Enterprise déclaré) peut être joint par opencode. Absente : relais désactivé.
+   */
+  egressLogin?: Pick<LoginWindow, "open">;
 }
 
 /** Crochets du proxy /api/oc/* : listes par étape et exécution dans l'ordre (la première Response l'emporte). */
@@ -233,6 +239,9 @@ export const PROXY_RULES: ProxyRule[] = [
 ];
 
 const ALLOWED_QUERY = new Set(["directory", "roots", "limit", "query"]);
+
+/** Connexion à GitHub Copilot relayée (demande du code, puis attente de l'accord) : ouvre la fenêtre de connexion du relais. */
+const OAUTH_ROUTE = /^\/provider\/github-copilot\/oauth\/(authorize|callback)$/;
 
 /** Message du refus (409 redemarrage-en-cours) d'une demande facturée, selon son motif. */
 const BILL_REFUSAL_MESSAGES: Readonly<Record<BillRefusal, string>> = {
@@ -696,6 +705,8 @@ export function createApp(deps: AppDeps): Hono {
         issues: err.issues.map((i) => ({ path: i.path.map(String).join("."), message: i.message })),
       });
     }
+    // Dossier qu'opencode ouvrirait ailleurs (séquence %XX, Studio) : même refus que le proxy, 403 et non 400.
+    if (err instanceof ForbiddenDirectoryError) return fail(c, 403, "forbidden-directory", err.message);
     if (err instanceof PathError || err instanceof RangeError) return fail(c, 400, "invalid", err.message);
     if (err instanceof OpencodeError) {
       return fail(c, err.status >= 500 ? 502 : err.status === 404 ? 404 : 400, "opencode", err.message, { detail: err.body });
@@ -1129,6 +1140,8 @@ export function createApp(deps: AppDeps): Hono {
             : undefined;
         const refusedBody = forbiddenProxyBody(method, sub, parsed, env.githubEnterpriseDomain, agentNames);
         if (refusedBody !== undefined) return fail(c, 403, "forbidden-body", refusedBody);
+        // Connexion à Copilot demandée (code « device ») ou attendue : github.com ouvert à opencode par le relais pour 20 minutes.
+        if (method === "POST" && OAUTH_ROUTE.test(sub)) deps.egressLogin?.open();
         if (method === "POST" && sub === "/session" && proxyHooks && proxyHooks.hooks.createSession.length > 0) {
           // Création d'une conversation : un crochet peut compléter le corps (plancher) ; le proxy envoie le corps après les crochets.
           const context = hookContext({ ...record });

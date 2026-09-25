@@ -26,7 +26,7 @@ import type { SyncDueReason } from "./oc-copilot-config.ts";
 import { OcLookup } from "./oc-lookup.ts";
 import { type OcAssistantMessage, type OcSession, OpencodeClient, type OcUserMessage } from "./opencode.ts";
 import type { EventProcessor } from "./processor.ts";
-import { ProjectsService } from "./projects.ts";
+import { ForbiddenDirectoryError, ProjectsService } from "./projects.ts";
 import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
 import { purposeOf, SessionTracker } from "./sessions.ts";
@@ -459,6 +459,64 @@ describe("studio : confinement des chemins (régression revue de sécurité)", (
     }
   });
 
+  it("portée projet au nom %XX (opencode l'ouvrirait ailleurs) : refusée avant toute lecture ou écriture, sans requête à opencode", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-studio-pct-"));
+    try {
+      const workspace = path.join(tmp, "workspace");
+      const trap = "st%2F..%2F..%2Fetc";
+      const legit = "Remise 20%";
+      const dir = path.join(workspace, trap);
+      fs.mkdirSync(path.join(dir, ".opencode", "agents"), { recursive: true });
+      fs.mkdirSync(path.join(dir, ".opencode", "skills", "fiche"), { recursive: true });
+      fs.mkdirSync(path.join(workspace, legit));
+      fs.writeFileSync(path.join(dir, "AGENTS.md"), "consignes du projet");
+      fs.writeFileSync(path.join(dir, ".opencode", "agents", "espion.md"), "---\ndescription: x\n---\ncorps\n");
+      fs.writeFileSync(path.join(dir, ".opencode", "skills", "fiche", "SKILL.md"), "---\nname: fiche\ndescription: x\n---\ncorps\n");
+      fs.writeFileSync(path.join(dir, ".opencode", "skills", "fiche", "notes.md"), "notes");
+      /** Arborescence du dossier refusé, contenu des fichiers compris : rien ne doit y être écrit, modifié ni supprimé. */
+      const snapshot = () =>
+        fs
+          .readdirSync(dir, { recursive: true, encoding: "utf8" })
+          .sort()
+          .map((rel) => (fs.statSync(path.join(dir, rel)).isFile() ? `${rel}=${fs.readFileSync(path.join(dir, rel), "utf8")}` : rel));
+      const untouched = snapshot();
+      const requests: string[] = [];
+      const client = {
+        request: async (method: string, route: string, options?: { directory?: string }) => {
+          requests.push(`${method} ${route} ${options?.directory ?? "(aucun)"}`);
+          return {};
+        },
+      } as unknown as OpencodeClient;
+      const env = { opencodeConfigDir: path.join(tmp, "oc-config"), workspaceDir: workspace, opencodeWorkspaceDir: "/workspace", projectConfig: true } as AppEnv;
+      const studio = new StudioService({ env, client, projects: new ProjectsService(env), control: {} as ControlService, log: createLogger("error") });
+      const scope = { type: "project", project: trap } as const;
+      const refused = (err: unknown) => err instanceof ForbiddenDirectoryError && err.message === "Nom de dossier non pris en charge (séquence %XX).";
+
+      // Lectures : jamais servies.
+      await assert.rejects(studio.getInstructions(scope), refused);
+      await assert.rejects(studio.list("agents", scope), refused);
+      await assert.rejects(studio.list("skills", scope), refused);
+      await assert.rejects(studio.get("agents", "espion", scope), refused);
+      await assert.rejects(studio.readSkillFile("fiche", "notes.md", scope), refused);
+      // Écritures : refusées avant d'écrire.
+      await assert.rejects(studio.saveInstructions(scope, "consignes remplacées"), refused);
+      await assert.rejects(studio.save("agents", scope, { name: "nouvel-agent", frontmatter: { description: "x" }, body: "y" }), refused);
+      await assert.rejects(studio.remove("agents", "espion", scope), refused);
+      await assert.rejects(studio.writeSkillFile("fiche", "notes.md", "remplacé", scope), refused);
+      await assert.rejects(studio.deleteSkillFile("fiche", "notes.md", scope), refused);
+      assert.deepEqual(snapshot(), untouched);
+      assert.deepEqual(requests, []);
+
+      // Témoin : « % » isolé, qu'opencode ne décode pas. Écriture faite, puis libération de l'instance de ce dossier.
+      await studio.saveInstructions({ type: "project", project: legit }, "consignes");
+      assert.equal(fs.readFileSync(path.join(workspace, legit, "AGENTS.md"), "utf8"), "consignes");
+      assert.deepEqual(requests, ["POST /global/dispose (aucun)", `POST /instance/dispose /workspace/${legit}`]);
+      assert.deepEqual(await studio.getInstructions({ type: "project", project: legit }), { content: "consignes", exists: true });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("n'envoie le jeton Copilot qu'au domaine GitHub Enterprise déclaré", () => {
     assert.equal(apiHostFor(undefined, null), "api.github.com");
     assert.equal(apiHostFor("https://entreprise.ghe.com", "entreprise.ghe.com"), "api.entreprise.ghe.com");
@@ -536,7 +594,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   // Secret de session posé dans la base avant createApp (sinon un secret aléatoire y est créé au démarrage).
   const sessionSecret = "s".repeat(43);
   const cookie = `__Host-cockpit_session=${sessionValue(token, sessionSecret)}`;
-  const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string }> = [];
+  /** Demandes reçues par le faux opencode ; directoryHeader : en-tête x-opencode-directory reçu (jamais envoyé par le cockpit). */
+  const upstreamRequests: Array<{ method: string; url: string; auth: string | undefined; body: string; directoryHeader?: string | string[] }> = [];
   const warnings: string[] = [];
   /** Lignes info et warn du journal, avec leurs champs : aucune valeur de configuration ne doit y partir. */
   const logLines: Array<{ level: "info" | "warn"; message: string; fields: Record<string, unknown> | undefined }> = [];
@@ -599,6 +658,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let requestTimeout: string | null = null;
   /** Réponse de POST /session/:id/prompt_async retenue jusqu'à la résolution de cette promesse (demande facturée en vol). */
   let promptHold: Promise<void> | null = null;
+  /** Ouvertures de la fenêtre de connexion GitHub du relais d'opencode (1.0.6) demandées par le proxy. */
+  let loginOpens = 0;
   /** Demandes reçues par le faux opencode (« MÉTHODE chemin »), avec l'indicateur d'application du cockpit à la réception. */
   const applyingSeen: Array<[string, boolean]> = [];
   let env: AppEnv;
@@ -628,7 +689,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        upstreamRequests.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body });
+        upstreamRequests.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body, directoryHeader: req.headers["x-opencode-directory"] });
         const pathname = new URL(req.url ?? "/", "http://opencode.test").pathname;
         applyingSeen.push([`${req.method ?? ""} ${pathname}`, configQueue.applying]);
         const json = (status: number, data: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
@@ -732,6 +793,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       tlsDir: path.join(tmp, "tls"),
       opensslPath: "/usr/bin/openssl",
       version: "test",
+      // Relais de sortie d'opencode désactivé (1.0.6) : aucune écoute de plus dans le harnais.
+      relay: null,
     };
     const base = setup();
     db = base.db;
@@ -767,8 +830,16 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     };
     hub = new EventHub();
     lookup = new OcLookup({ client, env, hub, log });
+    const projects = new ProjectsService(env);
+    // Studio réel pour les lectures et les instructions (AGENTS.md) : portée projet refusée avant tout accès (1.0.6).
+    const realStudio = new StudioService({ env, client, projects, control: {} as ControlService, log });
     // Studio simulé : les écritures réelles sont couvertes par les tests du lot assistants.
     const studio = {
+      list: realStudio.list.bind(realStudio),
+      get: realStudio.get.bind(realStudio),
+      getInstructions: realStudio.getInstructions.bind(realStudio),
+      saveInstructions: realStudio.saveInstructions.bind(realStudio),
+      readSkillFile: realStudio.readSkillFile.bind(realStudio),
       save: async (kind: string, _scope: unknown, input: { name: string; frontmatter: Record<string, unknown>; body: string }) => ({
         kind,
         name: input.name,
@@ -784,7 +855,6 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       remove: async () => true,
       ensureClassifierAgent: async () => undefined,
     } as unknown as StudioService;
-    const projects = new ProjectsService(env);
     // Services réels (même implémentation que main.ts) : niveaux d'IA et métadonnées d'assistants.
     const tiers = new TierService({ settings, catalog, ledger, env });
     const assistants = new AssistantService({ db, env, client, studio, lookup, tiers, ledger, settings, catalog, projects, hub, log });
@@ -854,6 +924,11 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       configQueue,
       // Harnais en HTTP : aucun certificat.
       tls: null,
+      egressLogin: {
+        open: () => {
+          loginOpens++;
+        },
+      },
     });
     cockpit = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve) => cockpit.once("listening", resolve));
@@ -1114,6 +1189,24 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.equal((await call("PATCH", "/api/oc/session/ses_1", mutating, JSON.stringify({ title: "Notes cockpit" }))).status, 200);
   });
 
+  it("relais d'opencode (1.0.6) : github.com ouvert seulement par une demande de connexion Copilot acceptée", async () => {
+    const before = loginOpens;
+    const authorize = (inputs: Record<string, string>) =>
+      call("POST", "/api/oc/provider/github-copilot/oauth/authorize", mutating, JSON.stringify({ method: 0, inputs }));
+    // Connexion refusée (domaine GitHub Enterprise non déclaré) : la fenêtre reste fermée.
+    assert.equal((await authorize({ deploymentType: "enterprise", enterpriseUrl: "github-login.example" })).status, 403);
+    // Lectures et autres écritures relayées : jamais.
+    assert.equal((await call("GET", "/api/oc/provider/auth", authed)).status, 200);
+    assert.equal((await call("POST", "/api/oc/session", mutating, JSON.stringify({ title: "x" }))).status, 204);
+    assert.equal((await call("DELETE", "/api/oc/auth/github-copilot", mutating)).status, 200);
+    assert.equal(loginOpens, before);
+    // Demande du code puis attente de l'accord : ouverte (ou prolongée) à chaque fois.
+    assert.equal((await authorize({ deploymentType: "github.com" })).status, 204);
+    assert.equal(loginOpens, before + 1);
+    assert.equal((await call("POST", "/api/oc/provider/github-copilot/oauth/callback", mutating, JSON.stringify({ method: 0 }))).status, 204);
+    assert.equal(loginOpens, before + 2);
+  });
+
   it("refuse les pièces jointes hors du workspace", async () => {
     const body = (url: string) =>
       JSON.stringify({ model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: [{ type: "file", mime: "text/plain", url }] });
@@ -1133,6 +1226,100 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   it("refuse un dossier hors du workspace", async () => {
     assert.equal((await call("GET", "/api/oc/session?directory=%2Fetc", authed)).status, 403);
     assert.equal((await call("GET", "/api/oc/session?directory=%2Fworkspace%2F..%2Fetc", authed)).status, 403);
+  });
+
+  it("dossier dont le nom contient %XX (opencode le décoderait une seconde fois) : 403 sans aucune requête vers opencode", async () => {
+    // Nom créable par une IA, valide sous NTFS : opencode 1.18.30 ouvrirait son propre dossier de données (auth.json).
+    const trap = "a%2F..%2F..%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode";
+    const legit = "Remise 20%";
+    fs.mkdirSync(path.join(tmp, trap));
+    fs.mkdirSync(path.join(tmp, legit));
+    try {
+      const trapped = encodeURIComponent(`/workspace/${trap}`);
+      const prompt = JSON.stringify({ model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: text("x") });
+      const before = upstreamRequests.length;
+      const refused = [
+        await call("GET", `/api/oc/session?directory=${trapped}`, authed),
+        await call("GET", `/api/oc/find/file?query=auth.json&directory=${trapped}`, authed),
+        await call("POST", `/api/oc/session/ses_dd/prompt_async?directory=${trapped}`, confirmedHeaders, prompt),
+        await call("POST", `/api/oc/session/ses_dd/prompt_async?directory=${encodeURIComponent("/workspace/app/sous%2f..%2f..%2f..%2fetc")}`, confirmedHeaders, prompt),
+        await call("POST", "/api/chat/resolve", mutating, JSON.stringify({ directory: `/workspace/${trap}`, agent: "build" })),
+      ];
+      for (const res of refused) {
+        assert.equal(res.status, 403, res.body);
+        assert.equal(JSON.parse(res.body).error, "forbidden-directory", res.body);
+      }
+      assert.deepEqual(upstreamRequests.slice(before).map((r) => `${r.method} ${r.url}`), [], "aucune requête vers opencode");
+      // Liste des projets : le nom piège n'est jamais proposé, le nom légitime l'est.
+      const listed = JSON.parse((await call("GET", "/api/projects", authed)).body) as Array<{ name: string; directory: string }>;
+      assert.equal(listed.some((p) => p.name === trap), false);
+      assert.equal(listed.find((p) => p.name === legit)?.directory, `/workspace/${legit}`);
+      // Nom légitime (« % » isolé, qu'opencode ne décode pas) : relayé tel quel.
+      const session = await call("GET", `/api/oc/session?directory=${encodeURIComponent(`/workspace/${legit}`)}`, authed);
+      assert.equal(session.status, 200, session.body);
+      const relayed = upstreamRequests.at(-1);
+      assert.equal(new URL(relayed?.url ?? "/", "http://opencode.test").searchParams.get("directory"), `/workspace/${legit}`);
+      const resolved = await call("POST", "/api/chat/resolve", mutating, JSON.stringify({ directory: `/workspace/${legit}`, agent: "build" }));
+      assert.equal(resolved.status, 200, resolved.body);
+    } finally {
+      fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
+      fs.rmSync(path.join(tmp, legit), { recursive: true, force: true });
+      lookup.invalidate();
+    }
+  });
+
+  it("Studio, projet au nom %XX : 403 forbidden-directory comme le proxy, en lecture comme en écriture, sans fichier écrit ni requête vers opencode", async () => {
+    const trap = "st%2F..%2F..%2Fetc";
+    fs.mkdirSync(path.join(tmp, trap));
+    fs.mkdirSync(path.join(tmp, "Remise 20%"));
+    settings.update({ ui: { mode: "avance" } });
+    try {
+      const scope = `?project=${encodeURIComponent(trap)}`;
+      const before = upstreamRequests.length;
+      const refused = [
+        await call("GET", `/api/studio/instructions${scope}`, authed),
+        await call("PUT", `/api/studio/instructions${scope}`, mutating, JSON.stringify({ content: "consignes" })),
+        await call("GET", `/api/studio/agents${scope}`, authed),
+        await call("GET", `/api/studio/agents/espion${scope}`, authed),
+        await call("GET", `/api/studio/skills/fiche/file${scope}&file=notes.md`, authed),
+      ];
+      for (const res of refused) {
+        assert.equal(res.status, 403, res.body);
+        assert.deepEqual(JSON.parse(res.body), { error: "forbidden-directory", message: "Nom de dossier non pris en charge (séquence %XX)." });
+      }
+      assert.deepEqual(fs.readdirSync(path.join(tmp, trap)), [], "aucun fichier écrit");
+      assert.deepEqual(upstreamRequests.slice(before).map((r) => `${r.method} ${r.url}`), [], "aucune requête vers opencode");
+      // Témoin : « % » isolé, qu'opencode ne décode pas, servi normalement.
+      const legit = await call("GET", `/api/studio/instructions?project=${encodeURIComponent("Remise 20%")}`, authed);
+      assert.equal(legit.status, 200, legit.body);
+      assert.deepEqual(JSON.parse(legit.body), { content: "", exists: false });
+    } finally {
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
+      fs.rmSync(path.join(tmp, "Remise 20%"), { recursive: true, force: true });
+    }
+  });
+
+  it("invariant : le cockpit n'envoie ni ne relaie jamais l'en-tête x-opencode-directory (opencode le lirait sans le paramètre directory)", async () => {
+    const header = { "x-opencode-directory": "/home/node/.local/share/opencode" };
+    const before = upstreamRequests.length;
+    assert.equal((await call("GET", "/api/oc/session", { ...authed, ...header })).status, 200);
+    assert.equal((await call("GET", `/api/oc/session?directory=${APP}`, { ...authed, ...header })).status, 200);
+    assert.equal((await call("POST", "/api/oc/session", { ...mutating, ...header }, JSON.stringify({ title: "x" }))).status, 204);
+    assert.equal((await call("POST", "/api/chat/resolve", { ...mutating, ...header }, JSON.stringify({ directory: "/workspace/app", agent: "build" }))).status, 200);
+    assert.ok(upstreamRequests.length > before);
+    // Toutes les demandes reçues par le faux opencode depuis le début du harnais, pas seulement celles de ce test.
+    assert.deepEqual(upstreamRequests.filter((r) => r.directoryHeader !== undefined).map((r) => `${r.method} ${r.url}`), []);
+    // Code du serveur et de l'interface : aucune mention de l'en-tête hors des tests.
+    const appDir = path.join(import.meta.dirname, "..");
+    const mentions = ["server", "web"].flatMap((dir) =>
+      fs
+        .readdirSync(path.join(appDir, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.(ts|tsx)$/.test(file) && !file.endsWith(".test.ts"))
+        .filter((file) => /x-opencode-directory/i.test(fs.readFileSync(path.join(appDir, dir, file), "utf8")))
+        .map((file) => `${dir}/${file}`),
+    );
+    assert.deepEqual(mentions, []);
   });
 
   it("applique le garde-fou budgétaire aux prompts, contournable par confirmation", async () => {

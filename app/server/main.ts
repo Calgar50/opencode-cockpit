@@ -7,6 +7,8 @@ import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
+import { egressAllowedHosts, egressTunnelDeadline, LoginWindow } from "./egress-policy.ts";
+import { type RelayHandle, startEgressRelay } from "./egress-relay.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
@@ -167,6 +169,8 @@ resyncOnIdle(hub, copilotConfig);
 
 // Tickets de connexion à usage unique (/api/health puis /auth?k=) : en mémoire, invalidés par un redémarrage.
 const tickets = new AuthTickets();
+// Relais de sortie d'opencode (1.0.6) : github.com ne lui est ouvert que pendant une connexion à Copilot lancée depuis l'interface.
+const egressLogin = new LoginWindow();
 const routeDeps = { assistants, tiers, settings, hub, log };
 // Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
 const cockpit = createCockpitApp({
@@ -194,6 +198,7 @@ const cockpit = createCockpitApp({
   sessions,
   tls,
   tickets,
+  egressLogin,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 reloadBusy = () => cockpit.c11.reloadBusy();
@@ -224,6 +229,26 @@ try {
   process.exit(1);
 }
 tls?.refusals.start();
+
+// Seule sortie d'opencode (1.0.6) : relais CONNECT sur le réseau interne, vers la liste fermée des hôtes Copilot (adresse de l'API
+// effective, connexion à GitHub pendant une connexion). Tout le reste est refusé ici, sans rien envoyer au proxy de l'entreprise.
+// Un tunnel vers github.com ouvert pendant la connexion est coupé à la fin de la fenêtre, même s'il sert encore.
+let relay: RelayHandle | null = null;
+if (env.relay !== null) {
+  const egressInput = () => ({
+    copilotApiUrl: env.copilotApiUrl,
+    endpointUrl: copilot.status.endpoint?.url ?? null,
+    enterpriseDomain: env.githubEnterpriseDomain,
+  });
+  relay = startEgressRelay({
+    port: env.relay.port,
+    peer: env.relay.peer,
+    processEnv: process.env,
+    log,
+    allowedHosts: () => egressAllowedHosts({ ...egressInput(), loginOpen: egressLogin.isOpen() }),
+    tunnelDeadline: (host) => egressTunnelDeadline(host, egressInput(), egressLogin.closesAt()),
+  });
+}
 
 // Rappel quotidien, sans jamais recharger le certificat à chaud (un flux SSE en cours serait coupé) : échéance proche en HTTPS,
 // mode HTTP en HTTP.
@@ -277,6 +302,7 @@ const shutdown = (signal: string) => {
   lookup.close();
   quota.stop();
   tls?.refusals.stop();
+  void relay?.stop();
   // Filet de sécurité : sortie forcée après 5 s.
   setTimeout(() => process.exit(0), 5_000).unref();
   // Les flux SSE ouverts retiendraient close() jusqu'à leur fin : connexions fermées d'abord (sortie en quelques millisecondes).

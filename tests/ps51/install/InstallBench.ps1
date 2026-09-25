@@ -67,7 +67,7 @@ function New-DockerRule([string]$Match, [string]$Stdout = '', [int]$Code = 0, [s
 # Jeu de regles d'une execution complete d'install.ps1. Les chemins des fichiers compose contiennent le dossier du
 # cockpit : les motifs acceptent n'importe quel chemin apres -f.
 function New-InstallDockerRules {
-    param([string]$CertFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.0.5', [string]$ContainerHealth = 'healthy',
+    param([string]$CertFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.0.6', [string]$ContainerHealth = 'healthy',
         [switch]$ImagesMissing, [switch]$FailPull, [string]$Logs = '')
     $rules = New-Object System.Collections.Generic.List[object]
     $rules.Add((New-DockerRule '^version ' "28.0.1`n"))
