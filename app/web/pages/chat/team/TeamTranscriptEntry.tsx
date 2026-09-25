@@ -69,7 +69,7 @@ function ConversationEntry({ message, advanced, fallback }: VueProps & { advance
           {puceInjection(injection)}
         </span>
       ) : null}
-      <TeamResultCard run={injection.run} texte={injection.texte} advanced={advanced} />
+      <TeamResultCard run={injection.run} texte={injection.texte} genre={injection.kind} advanced={advanced} />
     </div>
   );
 }

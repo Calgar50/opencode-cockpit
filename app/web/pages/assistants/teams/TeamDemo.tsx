@@ -55,7 +55,7 @@ function DemoCarte({ run, advanced }: { run: TeamRunView; advanced: boolean }) {
   const modele = buildTeamRunCard(run, advanced);
   // La démonstration montre le résultat même quand le lancement l'a déjà déposé dans la conversation : la carte de résultat de
   // l'itération 4 ne se rend qu'avant le dépôt (un seul exemplaire), et l'enregistrement va jusqu'au dépôt.
-  const resultat = modele.resultat ?? (run.state === "terminee" ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced) : null);
+  const resultat = modele.resultat ?? (run.state === "terminee" ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced, "resultat") : null);
   return (
     <article className="team-card">
       <div className="team-card-head">

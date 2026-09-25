@@ -34,6 +34,7 @@ import type { TeamRelaunchBody } from "../../../../server/shared/team-types.ts";
 // </c5:reprise-redemarrage>
 import { formatDuration } from "../../../lib/format.ts";
 import { boundedAiText } from "../turn.ts";
+import type { TeamInjectionKind } from "./team-transcript.ts";
 
 const P = TEXTES.partout;
 /** Phrases de la construction (5b) : relecture, aiguillage, « Non choisi », « ×{n} » et les écarts Prévu / Réel. */
@@ -560,21 +561,72 @@ export function etapeResultat(run: TeamRunView): StepRunView | null {
 }
 
 /**
- * Le livrable est-il celui d'une RELECTURE ? Même règle que `deliverable()` (flow.ts, `dernierBlocDeTravail`) : seul le DERNIER
- * bloc de travail porte le livrable, et le journal et les notes n'y sont écrits par le cockpit que si ce bloc est une relecture.
- * Lu sur l'état ENREGISTRÉ : le dernier bloc de travail est celui de la dernière ligne d'étape (un bloc « pause » n'en a
- * aucune) ; son genre vient des bornes déclarées du déroulé (`run.blocs`) et, à défaut, de ses lignes — un verdict enregistré
- * ou un tour au-delà du premier ne viennent que d'un bloc « relecture ».
- * Jamais sur le texte du livrable : sans cette porte, une IA qui écrit « ## Journal de relecture » replierait tout ce qui suit
- * dans un `<details>` fermé et signerait une note d'honnêteté à la place du cockpit (P3, §13.2). Clôture 5b (D-5b-2) : la
- * porte regardait la PRÉSENCE d'une relecture dans le déroulé ; une relecture suivie d'une autre étape suffisait alors à
- * rendre le texte de cette étape comme notes du cockpit.
+ * Genre du texte montré par la carte de résultat (clôture 5b, tour 4) : le livrable COMPLET (`deliverable`, flow.ts ; message
+ * injecté « resultat ») ou les RÉSULTATS PARTIELS d'une équipe arrêtée, en échec, au plafond ou interrompue
+ * (`partialDeliverable` ; D-eq-22). Chaque appelant le DIT : la transcription le lit sur l'en-tête que le cockpit a écrit dans
+ * le message injecté (team-transcript.ts, message reconnu par son identifiant) ; la carte seule et la démonstration ne montrent
+ * qu'une équipe terminée.
  */
-function aRelecture(run: TeamRunView): boolean {
-  if (run.steps.length === 0) return false;
+export type GenreResultat = Exclude<TeamInjectionKind, "demande">;
+
+/**
+ * Tours TERMINÉS du relecteur dans le bloc `blocIndex`, dans l'ordre, comptés comme l'exécuteur compte les verdicts qu'il met
+ * dans le livrable (`verdictsDesBlocs`, team-runner.ts) : la dernière tentative de chaque tour, du tour 1 jusqu'au premier tour
+ * qui n'est pas terminé. Le relecteur est la SECONDE étape déclarée du bloc : l'exécuteur crée au lancement une ligne par étape
+ * déclarée, l'auteur puis le relecteur (`etapesDeclarees`), et chaque tour garde ce rang. Un bloc qui n'a pas exactement ces
+ * deux étapes n'a aucun tour relu.
+ */
+function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
+  const lignes = run.steps.filter((step) => step.blocIndex === blocIndex);
+  const rangs = new Map<string, number>();
+  for (const ligne of lignes) rangs.set(ligne.stepId, Math.min(rangs.get(ligne.stepId) ?? ligne.ordre, ligne.ordre));
+  const [auteur, relecteur] = [...rangs.entries()].sort((a, b) => a[1] - b[1]);
+  if (rangs.size !== 2 || auteur === undefined || relecteur === undefined || auteur[1] === relecteur[1]) return [];
+  const parTour = new Map<number, StepRunView>();
+  for (const ligne of lignes) {
+    if (ligne.stepId !== relecteur[0]) continue;
+    const vue = parTour.get(ligne.tour);
+    if (!vue || ligne.tentative >= vue.tentative) parTour.set(ligne.tour, ligne);
+  }
+  const tours: StepRunView[] = [];
+  for (let tour = 1; parTour.get(tour)?.state === "terminee"; tour++) tours.push(parTour.get(tour) as StepRunView);
+  return tours;
+}
+
+/**
+ * Ce que le COCKPIT a écrit sous le texte montré, relu sur l'état ENREGISTRÉ du lancement, jamais sur le texte : sans ces portes,
+ * une IA qui écrit « ## Journal de relecture » replierait tout ce qui suit dans un `<details>` fermé et signerait une note
+ * d'honnêteté à la place du cockpit (P3, §13.2). Trois portes, chacune nécessaire :
+ * 1. le GENRE (clôture 5b, tour 4) : des résultats partiels (`partialDeliverable`) ne portent JAMAIS ni journal ni note — le
+ *    cockpit n'y écrit que « Étape « {titre} » : » devant le texte de chaque étape terminée ;
+ * 2. le DERNIER bloc de travail (D-5b-2) : seul lui porte le livrable (`deliverable`, `dernierBlocDeTravail`), et le cockpit
+ *    n'y écrit journal et notes que si c'est une relecture. C'est le bloc de la dernière ligne d'étape (un bloc « pause » n'en a
+ *    aucune) ; son genre vient des bornes déclarées du déroulé (`run.blocs`) et, à défaut, de ses lignes — un verdict enregistré
+ *    ou un tour au-delà du premier ne viennent que d'un bloc « relecture ». Avant D-5b-2, la porte regardait la PRÉSENCE d'une
+ *    relecture dans le déroulé : une étape placée après une relecture pouvait faire passer son texte pour des notes du cockpit ;
+ * 3. les TOURS du relecteur terminés dans ce bloc (clôture 5b, tour 4), mêmes conditions que `relectureDeliverable` :
+ *    - le journal n'est écrit que si au moins un tour est terminé. Une relecture arrêtée ou interrompue après le premier jet rend
+ *      un livrable COMPLET (message « resultat ») qui n'est que ce premier jet, sans journal ni note ;
+ *    - les deux notes ne sont écrites que si tous les tours déclarés sont faits et que le dernier verdict n'est pas « rien à
+ *      reprendre » (un verdict illisible n'est jamais concluant) ; elles valent alors, à l'octet, « Non relue après la dernière
+ *      correction. » et « Relecture non conclue après {toursMax} tours… ». Sans bornes déclarées (vue qui ne les connaît pas),
+ *      le nombre de tours déclarés n'est connu que d'une équipe TERMINÉE, qui n'a pu finir sur « à reprendre » qu'au dernier
+ *      tour : ailleurs, aucune note n'est signée.
+ */
+function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: boolean; notes: string[] } {
+  const rien = { journal: false, notes: [] };
+  if (genre !== "resultat" || run.steps.length === 0) return rien;
   const dernierBloc = Math.max(...run.steps.map((step) => step.blocIndex));
-  if (run.blocs !== undefined) return run.blocs.some((bloc) => bloc.type === "relecture" && bloc.index === dernierBloc);
-  return run.steps.some((step) => step.blocIndex === dernierBloc && (step.tour > 1 || step.verdict !== undefined));
+  const bornes = run.blocs?.find((bloc) => bloc.index === dernierBloc);
+  const relecture =
+    run.blocs === undefined ? run.steps.some((step) => step.blocIndex === dernierBloc && (step.tour > 1 || step.verdict !== undefined)) : bornes?.type === "relecture";
+  if (!relecture) return rien;
+  const tours = toursRelus(run, dernierBloc);
+  if (tours.length === 0) return rien;
+  const toursMax = bornes?.toursMax ?? (run.blocs === undefined && run.state === "terminee" ? tours.length : undefined);
+  const comptes = toursMax === undefined ? [] : tours.slice(0, toursMax);
+  const nonConclue = toursMax !== undefined && comptes.length > 0 && comptes.length >= toursMax && comptes.at(-1)?.verdict !== "rien-a-reprendre";
+  return { journal: true, notes: nonConclue ? [C5.relecture.nonRelue, remplir(C5.relecture.nonConclue, { n: String(toursMax) })] : [] };
 }
 
 /**
@@ -584,17 +636,21 @@ function aRelecture(run: TeamRunView): boolean {
  */
 const estAucun = (run: TeamRunView): boolean => run.steps.some((step) => step.choix === "aucun");
 
-/** Carte de résultat (C §9.6) ; `texte` est passé par l'appelant (TeamRunCards ou la transcription, L38c). */
-export function modeleResultat(run: TeamRunView, texteResultat: string, advanced: boolean): TeamResultModel {
+/**
+ * Carte de résultat (C §9.6) ; `texte` est passé par l'appelant (TeamRunCards ou la transcription, L38c), avec son `genre`
+ * (clôture 5b, tour 4) : des résultats partiels ne sont jamais découpés.
+ */
+export function modeleResultat(run: TeamRunView, texteResultat: string, advanced: boolean, genre: GenreResultat): TeamResultModel {
   const source = etapeResultat(run);
   const { total, terminees } = progression(run);
   const duree = run.endedAt === null || run.startedAt === null ? 0 : Math.max(0, run.endedAt - run.startedAt);
   const nomIa = source === null ? "" : texte(source.ia.label ?? source.ia.model ?? "", TITRE_MAX);
   // 5b : le livrable d'une relecture porte son journal et ses notes ; ils sont DÉCOUPÉS, jamais réécrits, pour que le journal
-  // soit replié sous le résultat (C §9.6). Le découpage n'a lieu QUE si le lancement porte une relecture : ailleurs, le
-  // livrable est rendu entier, sans repli ni note du cockpit.
+  // soit replié sous le résultat (C §9.6). Le découpage n'a lieu QUE là où l'état enregistré dit que le cockpit les a écrits
+  // (`ecritParLeCockpit`) : ailleurs, le texte est rendu entier, sans repli ni note du cockpit.
   const livrable = texte(texteResultat, FLOW_LIMITS.relaisCaracteres);
-  const journal = aRelecture(run) ? journalRelecture(livrable) : { resultat: livrable, titre: null, texte: "", notes: [] };
+  const ecrit = ecritParLeCockpit(run, genre);
+  const journal = ecrit.journal ? journalRelecture(livrable, ecrit.notes) : { resultat: livrable, titre: null, texte: "", notes: [] };
   return {
     titre: remplir(P.resultat.titre, { equipe: texte(run.titre, TITRE_MAX) }),
     redige: remplir(P.resultat.redige, {
@@ -645,7 +701,7 @@ export function buildTeamRunCard(run: TeamRunView, advanced: boolean, equipesOuv
     lignes.push({ cle: `pause-${run.id}`, kind: "pause", titre: P.execution.pause, detail: "", icone: "pause", mot: P.execution.pause, sessionId: null, voirTravail: null, tentative: null, tour: null, verdict: null, repetition: null, tronquee: null, cause: null });
   }
   // Une seule carte de résultat (risque 19 : reconnaissance par IDENTIFIANT) : rendue ici seulement quand rien n'a été injecté.
-  const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced) : null;
+  const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced, "resultat") : null;
   return {
     runId: run.id,
     genre: genreCarte(run, enPause, finale),

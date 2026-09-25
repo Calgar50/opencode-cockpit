@@ -26,7 +26,7 @@ import { teamsApi } from "../../../lib/api-teams.ts";
 import { errorText } from "../../../lib/api.ts";
 import { SecondReadingButton } from "../methods/SecondReadingButton.tsx";
 import { boundedAiText } from "../turn.ts";
-import { type ComposeurPrerempli, EVENEMENT_COMPOSEUR, modeleResultat, verrouDe } from "./team-view-model.ts";
+import { type ComposeurPrerempli, EVENEMENT_COMPOSEUR, type GenreResultat, modeleResultat, verrouDe } from "./team-view-model.ts";
 import { useTeamRuns } from "./useTeamRuns.ts";
 import "./team-cards.css";
 import "./team-choice.css";
@@ -58,13 +58,18 @@ export interface TeamResultCardProps {
   run: TeamRunView;
   /** Texte du résultat (extrait gardé par le cockpit, ou texte du message injecté relu par la transcription). */
   texte: string;
+  /**
+   * Clôture 5b, tour 4 : livrable complet (« resultat ») ou résultats partiels (« resultats-partiels »), dit par l'appelant.
+   * Des résultats partiels ne portent jamais ni journal ni note du cockpit : la carte les rend entiers.
+   */
+  genre: GenreResultat;
   advanced: boolean;
   /** Présent : [Ajouter à la conversation] (mode carte seule ou injection refusée) ; absent : rien à ajouter. */
   onAdd?: () => void;
 }
 
-export function TeamResultCard({ run, texte, advanced, onAdd }: TeamResultCardProps) {
-  const modele = useMemo(() => modeleResultat(run, texte, advanced), [run, texte, advanced]);
+export function TeamResultCard({ run, texte, genre, advanced, onAdd }: TeamResultCardProps) {
+  const modele = useMemo(() => modeleResultat(run, texte, advanced, genre), [run, texte, advanced, genre]);
   // L44f : lancements DÉJÀ chargés par la carte (une seule requête par racine, partagée) ; le même `verrouDe` que le verrou de
   // la saisie dit qu'une équipe travaille ou attend dans cette conversation — une seule règle pour les deux.
   const { runs } = useTeamRuns(run.rootId);

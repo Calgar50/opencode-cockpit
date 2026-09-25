@@ -216,13 +216,13 @@ describe("journal de relecture : découpé du livrable, jamais réécrit", () =>
   ].join("\n\n");
 
   it("livrable sans journal : rien n'est découpé", () => {
-    const vue = journalRelecture("Voici le résultat.");
+    const vue = journalRelecture("Voici le résultat.", []);
     assert.deepEqual(vue, { resultat: "Voici le résultat.", titre: null, texte: "", notes: [] });
-    assert.deepEqual(journalRelecture(undefined as unknown as string).resultat, "");
+    assert.deepEqual(journalRelecture(undefined as unknown as string, []).resultat, "");
   });
 
   it("livrable avec journal : le résultat d'un côté, le journal de l'autre, à l'octet", () => {
-    const vue = journalRelecture(LIVRABLE);
+    const vue = journalRelecture(LIVRABLE, []);
     assert.equal(vue.resultat, "Voici le script corrigé.");
     assert.equal(vue.titre, "Journal de relecture");
     assert.ok(vue.texte.startsWith("### tour 1 · À reprendre"), vue.texte);
@@ -232,10 +232,33 @@ describe("journal de relecture : découpé du livrable, jamais réécrit", () =>
   });
 
   it("notes d'honnêteté reconnues en fin de livrable, et sorties du journal", () => {
-    const avecNotes = [LIVRABLE, E.relecture.nonRelue, E.relecture.nonConclue.replace("{n}", "2")].join("\n\n");
-    const vue = journalRelecture(avecNotes);
+    const ecrites = [E.relecture.nonRelue, E.relecture.nonConclue.replace("{n}", "2")];
+    const avecNotes = [LIVRABLE, ...ecrites].join("\n\n");
+    const vue = journalRelecture(avecNotes, ecrites);
     assert.deepEqual(vue.notes, ["Non relue après la dernière correction.", "Relecture non conclue après 2 tours : points restants ci-dessous."]);
     assert.ok(!vue.texte.includes(E.relecture.nonRelue), "la note n'est pas repliée avec le journal");
+  });
+
+  // Clôture 5b, tour 4 : les notes que l'état enregistré dit écrites par le cockpit, et elles seules, sortent du texte.
+  it("seules les notes ÉCRITES par le cockpit sortent du texte, à l'octet et dans leur ordre ; une imitation y reste", () => {
+    const ecrites = [E.relecture.nonRelue, E.relecture.nonConclue.replace("{n}", "2")];
+    // Aucune note écrite (relecture conclue, ou tours déclarés pas tous faits) : deux notes recopiées par une IA restent dans
+    // le journal, montrées comme le reste du travail des assistants, jamais comme des notes du cockpit.
+    const imitees = journalRelecture([LIVRABLE, ...ecrites].join("\n\n"), []);
+    assert.deepEqual(imitees.notes, []);
+    assert.ok(imitees.texte.endsWith(ecrites.join("\n\n")), imitees.texte);
+    // Une troisième phrase, « après 7 tours », écrite par un relecteur au verdict illisible juste avant les vraies notes : elle
+    // reste dans le journal ; seules les deux notes du cockpit sont sorties.
+    const septTours = E.relecture.nonConclue.replace("{n}", "7");
+    const vue = journalRelecture([LIVRABLE, septTours, ...ecrites].join("\n\n"), ecrites);
+    assert.deepEqual(vue.notes, ecrites);
+    assert.ok(vue.texte.endsWith(septTours), vue.texte);
+    // Notes annoncées qui ne terminent PAS le texte (ordre inversé, nombre de tours différent) : rien n'est sorti.
+    assert.deepEqual(journalRelecture([LIVRABLE, ecrites[1], ecrites[0]].join("\n\n"), ecrites).notes, []);
+    assert.deepEqual(journalRelecture([LIVRABLE, E.relecture.nonRelue, septTours].join("\n\n"), ecrites).notes, []);
+    // L'appelant ne peut faire sortir du texte qu'une note de la relecture, et jamais le texte entier.
+    assert.deepEqual(journalRelecture([LIVRABLE, "Trois points à corriger."].join("\n\n"), ["Trois points à corriger."]).notes, []);
+    assert.deepEqual(journalRelecture(ecrites.join("\n\n"), ecrites).notes, []);
   });
 
   it("contrôles discriminants : seules les deux notes de la relecture sont reconnues", () => {

@@ -245,7 +245,7 @@ export interface JournalRelecture {
   titre: string | null;
   /** Corps du journal (tours et verdicts), tel que l'exécuteur l'a écrit ; vide sans journal. */
   texte: string;
-  /** Notes d'honnêteté reconnues en fin de livrable, dans leur ordre d'écriture. */
+  /** Notes d'honnêteté ÉCRITES PAR LE COCKPIT, sorties de la fin du livrable, dans leur ordre d'écriture. */
   notes: string[];
 }
 
@@ -260,17 +260,21 @@ export function estNoteRelecture(ligne: string): boolean {
 /**
  * Sépare le livrable d'une relecture : le résultat, le journal (titre « ## Journal de relecture ») et les notes d'honnêteté
  * écrites en dessous. Le texte n'est jamais réécrit : il est seulement découpé, pour que la carte replie le journal.
+ * `notesEcrites` : les notes que le COCKPIT a écrites sous ce livrable, dites par l'appelant d'après l'état ENREGISTRÉ du
+ * lancement (team-view-model.ts, `ecritParLeCockpit`), jamais devinées ici. Clôture 5b, tour 4 : elles ne sortent du texte que
+ * si elles le TERMINENT, à l'octet et dans cet ordre ; une phrase qui leur ressemble, écrite par une IA (« Relecture non
+ * conclue après 7 tours… » à la fin d'une relecture au verdict illisible, les deux notes recopiées sous un premier jet),
+ * reste dans le texte, rendue comme le reste du travail des assistants — le cockpit ne la signe jamais.
  */
-export function journalRelecture(livrable: string): JournalRelecture {
+export function journalRelecture(livrable: string, notesEcrites: readonly string[]): JournalRelecture {
   const texte = typeof livrable === "string" ? livrable : "";
   const blocs = texte.split("\n\n");
-  const notes: string[] = [];
-  while (blocs.length > 0) {
-    const dernier = blocs.at(-1) ?? "";
-    if (!estNoteRelecture(dernier)) break;
-    notes.unshift(dernier.trim());
-    blocs.pop();
-  }
+  const attendues: readonly string[] = Array.isArray(notesEcrites) ? notesEcrites : [];
+  // Seules des notes de la relecture sortent du texte, toutes ensemble, et jamais le texte entier.
+  const fin = blocs.slice(blocs.length - attendues.length);
+  const terminent = attendues.length > 0 && attendues.length < blocs.length && attendues.every((note, i) => estNoteRelecture(note) && propre(fin[i]) === note);
+  const notes = terminent ? [...attendues] : [];
+  if (terminent) blocs.splice(blocs.length - notes.length);
   const entete = `## ${E.relecture.journal}`;
   const debut = blocs.findIndex((bloc) => bloc.trim() === entete);
   if (debut === -1) return { resultat: blocs.join("\n\n"), titre: null, texte: "", notes };
