@@ -657,6 +657,16 @@ export function createApp(deps: AppDeps): Hono {
     return project ? { type: "project", project } : { type: "global" };
   };
 
+  /**
+   * Écritures du Studio (1.1 × 1.0.6) : portée projet contrôlée AVANT la garde « réponse en cours » (guardReload), qui interroge
+   * opencode. Un dossier %XX est refusé en 403 forbidden-directory sans aucune requête vers opencode, comme en 1.0.6.
+   */
+  const studioScopeFirst: MiddlewareHandler = async (c, next) => {
+    const scope = scopeOf(c);
+    if (scope.type === "project") await studio.checkScope(scope);
+    await next();
+  };
+
   const kindOf = (c: Context): StudioKind => {
     const kind = c.req.param("kind") as StudioKind;
     if (!KINDS.has(kind)) throw new PathError("Type inconnu (agents, commands ou skills).");
@@ -1467,7 +1477,7 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/studio/instructions", async (c) => c.json(await studio.getInstructions(scopeOf(c))));
 
-  app.put("/api/studio/instructions", advanced, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/instructions", advanced, studioScopeFirst, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const { content } = z.object({ content: z.string().max(256 * 1024) }).parse(await c.req.json());
     await studio.saveInstructions(scopeOf(c), content);
     return c.json({ ok: true });
@@ -1498,7 +1508,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(item);
   });
 
-  app.put("/api/studio/:kind/:name", advanced, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
+  app.put("/api/studio/:kind/:name", advanced, studioScopeFirst, guardReload, bodyLimit({ maxSize: 300 * 1024 }), async (c) => {
     const input = studioBody.parse(await c.req.json());
     const kind = kindOf(c);
     const scope = scopeOf(c);
@@ -1532,7 +1542,7 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(item);
   });
 
-  app.delete("/api/studio/:kind/:name", advanced, guardReload, async (c) => {
+  app.delete("/api/studio/:kind/:name", advanced, studioScopeFirst, guardReload, async (c) => {
     const kind = kindOf(c);
     const scope = scopeOf(c);
     const name = c.req.param("name");

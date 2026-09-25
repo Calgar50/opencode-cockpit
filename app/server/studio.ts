@@ -203,6 +203,15 @@ export class StudioService {
     return dir;
   }
 
+  /**
+   * Portée contrôlée seule, par la règle de #projectDir, sans rien lire ni écrire dans le projet. Les écritures du Studio
+   * l'appellent AVANT la garde « réponse en cours » de la 1.1, qui interroge opencode : un dossier %XX est refusé (403) sans
+   * aucune requête vers opencode, comme en 1.0.6.
+   */
+  async checkScope(scope: StudioScope): Promise<void> {
+    if (scope.type === "project") await this.#projectDir(scope.project);
+  }
+
   async #base(scope: StudioScope): Promise<string> {
     if (scope.type === "global") return this.#d.env.opencodeConfigDir;
     return path.join(await this.#projectDir(scope.project), ".opencode");

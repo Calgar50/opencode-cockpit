@@ -160,6 +160,8 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     tlsDir: path.join(tmp, "tls"),
     opensslPath: "/usr/bin/openssl",
     version: "test",
+    // 1.0.6 : aucun relais de sortie d'opencode dans le harnais (le faux opencode ne sort jamais).
+    relay: null,
     ...options.env,
   };
 

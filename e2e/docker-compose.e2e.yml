@@ -32,12 +32,19 @@ services:
       default: {}
       e2e-front: {}
 
+  # 1.0.6 : opencode reste sur le seul réseau « interne » de docker-compose.yml (aucune route vers l'extérieur), sa seule sortie
+  # est le relais du cockpit (liste fermée Copilot). Banc seulement : le faux fournisseur, qui tient lieu de Copilot en
+  # --reel-hors-ligne, est joint EN DIRECT sur ce réseau (NO_PROXY), jamais par le relais, qui le refuserait. Rien de tout
+  # cela n'existe dans une installation : la surcharge du banc n'est jamais utilisée seule.
   opencode:
     image: ${E2E_IMAGE_OPENCODE:?lancez scripts/run-e2e.sh}
     build:
       context: ${E2E_CONTEXTE:?lancez scripts/run-e2e.sh}
     pull_policy: never
     restart: "no"
+    environment:
+      NO_PROXY: localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit,faux-fournisseur
+      no_proxy: localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit,faux-fournisseur
 
   # --faux : faux opencode 1.18.30 (app/server/test-support/fake-opencode.ts) servi par e2e/fake-opencode-server.ts, dans l'image
   # du cockpit (Node 24, TypeScript exécuté nativement). API d'opencode sur le réseau interne (4096) ; pilotage des scénarios sur
@@ -90,6 +97,8 @@ services:
     networks:
       default: {}
       e2e-front: {}
+      # 1.0.6 : réseau d'opencode (interne, sans Internet), pour que le vrai opencode joigne le faux fournisseur sans relais.
+      interne: {}
 
   # --reel-hors-ligne : configuration d'opencode posée dans le volume jetable avant son premier démarrage (levier de la mesure
   # M-B1 : enabled_providers réduit au faux fournisseur, aucun auth.json, donc aucun appel facturable possible).

@@ -63,6 +63,8 @@ function testEnv(autonomy: boolean): AppEnv {
     tlsDir: "/tls",
     opensslPath: "/usr/bin/openssl",
     version: "test",
+    // 1.0.6 : aucun relais de sortie d'opencode dans ce montage.
+    relay: null,
   };
 }
 

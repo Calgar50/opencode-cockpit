@@ -62,7 +62,11 @@ docker compose -p <préfixe>-<id> -f docker-compose.yml -f e2e/docker-compose.e2
   tout (processus tué) est signalé au démarrage suivant et fait tomber `--gardes`.
 - **Réseau** : `internal` (sans Internet) en `--faux` et en `--reel-hors-ligne`. Un conteneur relié au seul réseau
   interne ne reçoit rien de l'hôte, même sur un port publié (mesuré en MX1 §8) : le cockpit est donc aussi relié à un
-  pont sans traduction d'adresse, le temps de l'exécution.
+  pont sans traduction d'adresse, le temps de l'exécution. Depuis la 1.0.6, le vrai opencode reste, comme dans une
+  installation, sur le seul réseau `interne` de `docker-compose.yml`, derrière le relais du cockpit (liste fermée
+  Copilot) ; en `--reel-hors-ligne`, le faux fournisseur rejoint ce réseau et figure dans le `NO_PROXY` d'opencode,
+  dans la surcharge du banc seulement : opencode le joint en direct, jamais par le relais. En `--faux`, le service
+  `opencode` n'existe pas : le relais du cockpit attend son pair (un avertissement au démarrage) et n'écoute jamais.
 - **Secrets** : jeton du cockpit, mot de passe d'opencode et jeton de pilotage sont fabriqués par
   `crypto.randomBytes` à chaque exécution, écrits dans le seul fichier d'environnement (0600), supprimés à la fin
   (interruption comprise), et **jamais affichés** — ni dans les commandes montrées par `--dry-run`, ni dans un

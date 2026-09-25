@@ -840,6 +840,8 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       getInstructions: realStudio.getInstructions.bind(realStudio),
       saveInstructions: realStudio.saveInstructions.bind(realStudio),
       readSkillFile: realStudio.readSkillFile.bind(realStudio),
+      // Portée contrôlée avant la garde « réponse en cours » de la 1.1 (écritures du Studio) : règle réelle.
+      checkScope: realStudio.checkScope.bind(realStudio),
       save: async (kind: string, _scope: unknown, input: { name: string; frontmatter: Record<string, unknown>; body: string }) => ({
         kind,
         name: input.name,
@@ -1300,6 +1302,29 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     }
   });
 
+  it("Studio × garde « réponse en cours » (1.1 × 1.0.6) : écriture et suppression d'un élément d'un projet %XX refusées avant la garde, sans requête vers opencode", async () => {
+    const trap = "st%2F..%2F..%2Fetc";
+    fs.mkdirSync(path.join(tmp, trap));
+    settings.update({ ui: { mode: "avance" } });
+    try {
+      const scope = `?project=${encodeURIComponent(trap)}`;
+      const before = upstreamRequests.length;
+      const refused = [
+        await call("PUT", `/api/studio/agents/espion${scope}`, mutating, JSON.stringify({ frontmatter: { description: "x" }, body: "x" })),
+        await call("DELETE", `/api/studio/agents/espion${scope}`, mutating),
+      ];
+      for (const res of refused) {
+        assert.equal(res.status, 403, res.body);
+        assert.deepEqual(JSON.parse(res.body), { error: "forbidden-directory", message: "Nom de dossier non pris en charge (séquence %XX)." });
+      }
+      assert.deepEqual(fs.readdirSync(path.join(tmp, trap)), [], "aucun fichier écrit");
+      assert.deepEqual(upstreamRequests.slice(before).map((r) => `${r.method} ${r.url}`), [], "aucune requête vers opencode, garde comprise");
+    } finally {
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(path.join(tmp, trap), { recursive: true, force: true });
+    }
+  });
+
   it("invariant : le cockpit n'envoie ni ne relaie jamais l'en-tête x-opencode-directory (opencode le lirait sans le paramètre directory)", async () => {
     const header = { "x-opencode-directory": "/home/node/.local/share/opencode" };
     const before = upstreamRequests.length;
@@ -1310,12 +1335,14 @@ describe("serveur HTTP (sécurité et proxy)", () => {
     assert.ok(upstreamRequests.length > before);
     // Toutes les demandes reçues par le faux opencode depuis le début du harnais, pas seulement celles de ce test.
     assert.deepEqual(upstreamRequests.filter((r) => r.directoryHeader !== undefined).map((r) => `${r.method} ${r.url}`), []);
-    // Code du serveur et de l'interface : aucune mention de l'en-tête hors des tests.
+    // Code du serveur et de l'interface : aucune mention de l'en-tête hors des tests. Outillage de test 1.1 (test-support/ : le faux
+    // opencode lit l'en-tête comme opencode) écarté, comme dans la garde « une seule écoute » : retiré de l'image par app/Dockerfile.
     const appDir = path.join(import.meta.dirname, "..");
     const mentions = ["server", "web"].flatMap((dir) =>
       fs
         .readdirSync(path.join(appDir, dir), { recursive: true, encoding: "utf8" })
         .filter((file) => /\.(ts|tsx)$/.test(file) && !file.endsWith(".test.ts"))
+        .filter((file) => !(dir === "server" && file.replaceAll("\\", "/").startsWith("test-support/")))
         .filter((file) => /x-opencode-directory/i.test(fs.readFileSync(path.join(appDir, dir, file), "utf8")))
         .map((file) => `${dir}/${file}`),
     );
