@@ -161,7 +161,7 @@ sortie est le nombre d'échecs.
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
-| `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable |
+| `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable ; avec `--salle`, aussi la salle factice, le faux catalogue Copilot et la préparation de leur pile |
 | `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
 | `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même ; `010-reprise-apres-coupure.mjs` vérifie que l'interface se rétablit seule après un rechargement de l'amorçage en échec (coupure réseau, retour de l'onglet, focus sur « Réessayer », onglet caché, redémarrage réel du conteneur, amorçage lent puis deux changements rapprochés, 401) |
 
@@ -178,6 +178,7 @@ ni le faux.
 | `E2E_MESURES_DIR` | dossier où lire `MX1.md` pour `--reel-hors-ligne` |
 | `E2E_ACCORD_FACTURE` | accord écrit pour une recette facturée : `it1-ui-m1-noreply.mjs` ne joue la mesure M1 qu'en `--reel` et si la valeur contient `M1` |
 | `E2E_M1_IA` | IA de la recette M1, séparées par des virgules (sinon la première IA Claude et la première IA GPT du catalogue) |
+| `E2E_OMO_ETAPES` | étapes de `omo-ui-salle.mjs` à rejouer seules, séparées par des virgules (voir la [Salle OMO](#scénario-de-linterface-de-la-salle-omo-chantier-11-l26c)) |
 
 Ces chemins sont lus par Node : sous Git Bash, écrivez-les à la mode Windows (`C:/…`) et non `/c/…`.
 
@@ -292,6 +293,50 @@ console muette :
 | `it2-ui-plan-autonome.mjs` | plan exécuté en autonome : carte à quatre boutons, 428 puis confirmation, nouvelle conversation créée en « Autonome avec contrôle » avec un brouillon prérempli et rien d'envoyé |
 | `it2-ui-bandeau-journal.mjs` | bandeau d'autonomie (compteurs, dépense, plafond, [Arrêter], [Journal]), Journal du contrôle ligne à ligne, puis fin de demande avec [Voir les modifications de cette demande] ; les douze captures des vues de L12 |
 | `it2-ui-onglet-ferme.mjs` | onglet fermé pendant une demande autonome : les décisions automatiques continuent et l'attente est retrouvée à la réouverture, bandeau et carte compris |
+
+## Scénario de l'interface de la Salle OMO (chantier 1.1, L26c)
+
+La Salle Oh My OpenAgent est livrée **coupée** (`SALLE_OUVERTE` fausse dans le dépôt). Son interface s'éprouve sur une pile
+à part, la **pile de la salle**, en `--faux` seulement :
+
+```sh
+scripts/run-e2e.sh --faux --salle --project-prefix sal11-e2e --image-tag sal11
+```
+
+- **Salle factice, jamais l'extension.** `e2e/fake-opencode-server.ts` y tourne en trois rôles de plus, tous dans l'image du
+  banc (`<préfixe>/app-salle:<étiquette>`, `pull_policy: never`) : `--instance omo`, la salle (le faux opencode avec les
+  assistants de l'extension, et un superviseur factice qui parle au cockpit par les fichiers du contrat : état publié,
+  battement et `precheck-ok` attendus, `stop-request` et homme mort honorés, relance à neuf) ; `--copilot`, le catalogue du
+  compte GitHub Copilot, factice, servi en TLS sous `api.githubcopilot.com` sur le réseau interne ; `--preparer-salle`, joué
+  une fois avant le démarrage, sans réseau (certificat du faux catalogue par une autorité jetable de deux jours, gardé dans des
+  volumes de la pile et jamais sur l'hôte ; `auth.json` factice ; volume d'état donné à `node`). Les services `opencode-omo`,
+  `egress` et `omo-init` du produit changent de profil dans la surcharge : la vraie salle ne peut pas démarrer dans le banc.
+- **`SALLE_OUVERTE` basculée dans la copie du banc seulement** (le contexte de construction, hors du dépôt), une seule
+  déclaration exigée ; le dépôt la garde fausse, et le scénario le vérifie. `COCKPIT_OMO=on`, un **nom** d'image factice
+  (`<préfixe>/salle-factice:<étiquette>`, jamais une image qui existe) et un mot de passe de salle fabriqué à chaque exécution
+  sont écrits dans le fichier d'environnement du banc, et nulle part ailleurs.
+- **Partage des scénarios.** Avec `--salle`, seuls les scénarios `omo-ui-*` tournent (la pile de la salle n'est pas celle du
+  produit) ; sans `--salle`, ils sont écartés et le banc le dit.
+- **Gardes.** `--gardes` joue aussi, à part, les gardes de la pile de la salle (bascule dans la copie seule et une seule fois,
+  image distincte, `--faux` seul, partage des scénarios, fichier d'environnement, reconfiguration bornée, vraie salle jamais
+  démarrée) et en imprime le total sur sa propre ligne.
+
+Dans les scénarios, `ctx.salle` donne `pilote` (relevés de la salle factice, `superviseur()`, `regler({…})` de sa sonde,
+`racineEtrangere()`), `workspace` (dossier de travail du banc, hors du dépôt), `projets` et `reconfigurer({ COCKPIT_OMO,
+COCKPIT_OMO_IMAGE })`, qui redémarre le cockpit de la pile avec l'un de ces deux interrupteurs changés, et rien d'autre ; il
+vaut `null` hors de la pile de la salle. `superviseur()` dit aussi si le cockpit écoute la salle depuis son dernier lancement
+(`fluxDepuisLancement`, `fluxApresMs`) : « Salle prête » se lit dans l'état publié, alors que le flux d'événements du cockpit
+revient avec un délai croissant (500 ms à 10 s). Chaque étape attend ce rebranchement avant d'agir, et le bilan en donne les
+délais relevés.
+
+`omo-ui-salle.mjs` est **un seul fichier**, découpé en étapes : `croisements-it1-v5` n'admet qu'un scénario hors du relevé des
+noms `itN-…` et `NNN-…`. Une étape en échec est notée et capturée, la salle est remise en état et les suivantes sont jouées ;
+le scénario échoue à la fin en les nommant toutes. `E2E_OMO_ETAPES=<étape>[,<étape>…]` rejoue des étapes seules (les
+préalables le sont toujours), par exemple sur une machine chargée.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `omo-ui-salle.mjs` | par étapes, au clavier seul là où la fiche le demande, captures 1440, 1024 et 400 dans les deux thèmes : **préalables** (salle factice prête, catalogue du compte vérifié, `SALLE_OUVERTE` fausse dans le dépôt) ; **simple** : en mode Simple, entrée absente, page inaccessible, aucune requête `/api/omo/*`, et aucun événement de la salle reçu par le flux pendant une relance, alors que la même relance en Avancé en fait arriver ; **entree** : entrée « Salle OMO » atteinte et ouverte au clavier ; **projet-piege** : pré-contrôle refusé, liste masquée (nom du fichier de clés jamais montré), ouverture impossible ; **activation** : champ vide → erreur annoncée et rien d'envoyé, 409 du serveur affiché avec sa phrase et rien d'envoyé, confirmation → bandeau, [Arrêter] → `POST /api/omo/rooms/:rootId/stop`, « Salle en relance » puis « Salle prête », variante Prometheus de l'écran et du tableau « sans demande » ; **fin-de-demande** : [Journal] au clavier, puis relance à neuf et « Salle prête » ; **signales** (§4.14.5, « signalé sans arrêt ») : un `*.ps1` écrit pendant une demande, `omo.signales` reçu par le flux du cockpit en fin de demande, puis le fichier et « à relire avant de lancer sur votre poste » sur la page de la salle, atteints au clavier ; **suspendue** : deux racines créées hors du cockpit → « Salle suspendue », activation refusée avec sa phrase (écran et 409), levée par la réouverture d'une salle, battement repris ; **detection** : `.git` créé pendant une demande → arrêt, quarantaine sur le disque, liste et Journal atteints au clavier à 1440 et 400 px ; **git-attente** (décision A16 point 4) : un `.git` non protégé fait attendre la salle, raison écrite sur la page de la salle et dans le Diagnostic, atteinte au clavier, 409 `git-inscriptible` ; **focus-ecran** (§5.5, « focus jamais volé ») : écran d'activation ouvert, focus sur [Lancer comme Oh My OpenAgent], la page relit l'état de la salle sur un événement du flux, le focus doit rester en place ; **sans-salle** : `COCKPIT_OMO` coupé puis image absente → entrée absente, puis rétablie ; sur tout le scénario, console muette (seule tolérance : le 409 d'activation provoqué exprès), aucune violation de CSP, P6 et P11 (l'instance principale ne reçoit rien de la salle) et P4 dans la salle |
 
 ## Contrôle des types
 
