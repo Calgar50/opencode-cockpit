@@ -7,7 +7,7 @@ import { canBill, ConfigWriteQueue } from "./config-queue.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
-import { egressAllowedHosts, egressTunnelDeadline, LoginWindow } from "./egress-policy.ts";
+import { LoginWindow, relayRules } from "./egress-policy.ts";
 import { type RelayHandle, startEgressRelay } from "./egress-relay.ts";
 import { EventHub } from "./hub.ts";
 import { Ledger } from "./ledger.ts";
@@ -235,18 +235,13 @@ tls?.refusals.start();
 // Un tunnel vers github.com ouvert pendant la connexion est coupé à la fin de la fenêtre, même s'il sert encore.
 let relay: RelayHandle | null = null;
 if (env.relay !== null) {
-  const egressInput = () => ({
-    copilotApiUrl: env.copilotApiUrl,
-    endpointUrl: copilot.status.endpoint?.url ?? null,
-    enterpriseDomain: env.githubEnterpriseDomain,
-  });
   relay = startEgressRelay({
     port: env.relay.port,
     peer: env.relay.peer,
     processEnv: process.env,
     log,
-    allowedHosts: () => egressAllowedHosts({ ...egressInput(), loginOpen: egressLogin.isOpen() }),
-    tunnelDeadline: (host) => egressTunnelDeadline(host, egressInput(), egressLogin.closesAt()),
+    // Hôtes permis et échéance des tunnels (egress-policy.ts, RR-1) ; egressLogin est la fenêtre qu'ouvre le proxy du cockpit.
+    ...relayRules({ env, endpointUrl: () => copilot.status.endpoint?.url ?? null, login: egressLogin }),
   });
 }
 

@@ -164,6 +164,39 @@ export function egressTunnelDeadline(host: string, input: Omit<EgressHostsInput,
   return loginClosesAt ?? 0;
 }
 
+/** Ce que main.ts donne au relais pour décider (relayRules). */
+export interface RelayRulesInput {
+  /** COCKPIT_COPILOT_API_URL et COCKPIT_GITHUB_ENTERPRISE_DOMAIN déjà validés (AppEnv). */
+  env: { copilotApiUrl: string | null; githubEnterpriseDomain: string | null };
+  /** Dernière adresse vérifiée par le cockpit (CopilotApi.status.endpoint?.url), relue à chaque décision. */
+  endpointUrl: () => string | null;
+  /** Fenêtre de connexion à GitHub : la MÊME que celle qu'ouvre le proxy du cockpit (egressLogin de main.ts). */
+  login: Pick<LoginWindow, "isOpen" | "closesAt">;
+}
+
+/** Règles du relais : hôtes permis maintenant, échéance d'un tunnel (EgressRelayOptions). */
+export interface RelayRules {
+  allowedHosts: () => Set<string>;
+  tunnelDeadline: (host: string) => number | null;
+}
+
+/**
+ * Règles du relais telles que main.ts les branche (RR-1, décision D10) : hôtes permis (egressAllowedHosts, fenêtre de connexion lue
+ * à chaque appel) et échéance des tunnels (egressTunnelDeadline, fin de la fenêtre). Tout est relu à chaque appel. Extraites de
+ * main.ts pour que leur câblage se teste sans attendre la fin d'une fenêtre de 20 minutes.
+ */
+export function relayRules(input: RelayRulesInput): RelayRules {
+  const hosts = (): Omit<EgressHostsInput, "loginOpen"> => ({
+    copilotApiUrl: input.env.copilotApiUrl,
+    endpointUrl: input.endpointUrl(),
+    enterpriseDomain: input.env.githubEnterpriseDomain,
+  });
+  return {
+    allowedHosts: () => egressAllowedHosts({ ...hosts(), loginOpen: input.login.isOpen() }),
+    tunnelDeadline: (host) => egressTunnelDeadline(host, hosts(), input.login.closesAt()),
+  };
+}
+
 /** Fenêtre de connexion à GitHub : ouverte par le cockpit quand il relaie une demande de connexion Copilot, fermée seule. */
 export class LoginWindow {
   readonly #now: () => number;

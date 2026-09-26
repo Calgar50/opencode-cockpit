@@ -2,9 +2,11 @@
 // http.request, jamais fetch). Aucune connexion vers Internet : chaque sortie passe par le connecteur injecté, qui la note et la
 // dirige vers un serveur local (écho, ou faux proxy d'entreprise). Attentes sur événement, bornées ; horloge injectée.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import type os from "node:os";
+import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import {
   canonicalHostName,
@@ -15,6 +17,7 @@ import {
   LOGIN_WINDOW_MS,
   LoginWindow,
   parseEnterpriseDomain,
+  relayRules,
   splitConnectTarget,
 } from "./egress-policy.ts";
 import {
@@ -282,6 +285,37 @@ describe("règle de sortie du relais (egress-policy.ts)", () => {
     // Adresse d'API qui n'est plus la bonne (adresse imposée) : bornée comme un hôte de connexion, jamais sans échéance.
     assert.equal(egressTunnelDeadline(COPILOT, { ...base, copilotApiUrl: "https://api.business.githubcopilot.com" }, end), end);
     assert.equal(egressTunnelDeadline(COPILOT, { ...base, copilotApiUrl: "https://api.business.githubcopilot.com" }, null), 0);
+  });
+
+  it("relayRules (câblage de main.ts, RR-1) : hôtes permis relus à chaque appel, connexion ouverte par la fenêtre seule, échéance = fin de la fenêtre, fermée à l'instant exact", () => {
+    let now = T0;
+    const login = new LoginWindow(() => now);
+    let endpoint: string | null = null;
+    const rules = relayRules({ env: { copilotApiUrl: null, githubEnterpriseDomain: "acme.ghe.com" }, endpointUrl: () => endpoint, login });
+    // Fenêtre fermée : l'API seule, sans échéance ; github.com et le domaine GitHub Enterprise refusés, échéance déjà passée.
+    assert.deepEqual([...rules.allowedHosts()].sort(), [COPILOT, "copilot-api.acme.ghe.com"]);
+    assert.equal(rules.tunnelDeadline(COPILOT), null);
+    assert.equal(rules.tunnelDeadline("github.com"), 0);
+    login.open();
+    const end = T0 + LOGIN_WINDOW_MS;
+    assert.deepEqual([...rules.allowedHosts()].sort(), ["acme.ghe.com", COPILOT, "copilot-api.acme.ghe.com", "github.com"]);
+    assert.equal(rules.tunnelDeadline("github.com"), end);
+    assert.equal(rules.tunnelDeadline("acme.ghe.com"), end);
+    assert.equal(rules.tunnelDeadline(COPILOT), null);
+    // Adresse vérifiée par le cockpit, relue à chaque appel : l'ancienne adresse d'office n'est plus qu'un hôte borné par la fenêtre.
+    endpoint = "https://api.business.githubcopilot.com";
+    assert.equal(rules.allowedHosts().has("api.business.githubcopilot.com"), true);
+    assert.equal(rules.allowedHosts().has(COPILOT), false);
+    assert.equal(rules.tunnelDeadline(COPILOT), end);
+    // Échéance égale à maintenant : la fenêtre est fermée à cet instant exact.
+    now = end - 1;
+    assert.equal(rules.allowedHosts().has("github.com"), true);
+    now = end;
+    assert.equal(rules.allowedHosts().has("github.com"), false);
+    assert.equal(rules.tunnelDeadline("github.com"), 0);
+    // Adresse imposée par .env : seule relayée, quelle que soit l'adresse vérifiée.
+    const imposed = relayRules({ env: { copilotApiUrl: "https://api.business.githubcopilot.com", githubEnterpriseDomain: null }, endpointUrl: () => `https://${COPILOT}`, login });
+    assert.deepEqual([...imposed.allowedHosts()], ["api.business.githubcopilot.com"]);
   });
 });
 
@@ -585,6 +619,44 @@ describe("relais de sortie (egress-relay.ts)", () => {
     );
   });
 
+  it("échéance égale à maintenant (horloge injectée) : tunnel coupé aussitôt, jamais de 200 (RR-1)", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    // L'horloge du banc reste à T0 : l'échéance rendue est exactement « maintenant ».
+    const b = await bench(t, { tunnelDeadline: () => T0, limits: { revalidateMs: 60_000 } }, echo);
+    const c = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    await until(() => c.closed(), "tunnel coupé à l'ouverture", 2_000);
+    assert.equal(c.text(), "");
+    assert.equal(b.clock.now, T0);
+    assert.deepEqual(
+      b.lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => [l.hote, l.motif]),
+      [[COPILOT, "echeance"]],
+    );
+  });
+
+  it("relayRules branché au relais : github.com refusé avant la fenêtre, relayé pendant, coupé à sa fin sans la revue périodique, refusé ensuite", async (t) => {
+    const echo = await tcpServer(t, (socket) => socket.pipe(socket));
+    const login = new LoginWindow(Date.now, 400);
+    const b = await bench(
+      t,
+      { now: Date.now, ...relayRules({ env: { copilotApiUrl: null, githubEnterpriseDomain: null }, endpointUrl: () => null, login }), limits: { revalidateMs: 60_000 } },
+      echo,
+    );
+    assert.match(await statusLine(rawClient(t, b.port, connectRequest("github.com:443"))), /^HTTP\/1\.1 403 /, "avant la fenêtre");
+    login.open();
+    const end = login.closesAt() ?? 0;
+    const c = rawClient(t, b.port, connectRequest("github.com:443"));
+    assert.match(await statusLine(c), /^HTTP\/1\.1 200 /, "pendant la fenêtre");
+    await until(() => c.closed(), "tunnel github.com coupé à la fin de la fenêtre", 3_000);
+    const late = Date.now() - end;
+    assert.ok(late >= 0 && late < 1_000, `coupé ${late} ms après la fin de la fenêtre`);
+    assert.match(await statusLine(rawClient(t, b.port, connectRequest("github.com:443"))), /^HTTP\/1\.1 403 /, "après la fenêtre");
+    // À l'échéance, le relais relit la liste (motif « liste ») : c'est le minuteur de l'échéance qui l'a déclenché, la revue est à 60 s.
+    assert.deepEqual(
+      b.lines.filter((l) => l.msg === TUNNEL_CUT).map((l) => l.hote),
+      ["github.com"],
+    );
+  });
+
   it("échéance déjà passée pour un hôte encore permis (règle incohérente) : tunnel coupé aussitôt, jamais de 200", async (t) => {
     const echo = await tcpServer(t, (socket) => socket.pipe(socket));
     const b = await bench(t, { tunnelDeadline: () => 0, limits: { revalidateMs: 60_000 } }, echo);
@@ -697,6 +769,23 @@ describe("configuration du relais", () => {
       await handle.stop();
     }
     assert.equal(handle.listening(), null);
+  });
+
+  it("main.ts : règles du relais par relayRules seule, avec la fenêtre de connexion transmise à l'application (garde statique, RR-1)", () => {
+    const main = fs.readFileSync(path.join(import.meta.dirname, "main.ts"), "utf8");
+    const callOf = (marker: string): string => {
+      const at = main.indexOf(marker);
+      assert.ok(at > 0, `${marker} absent de main.ts`);
+      return main.slice(at, main.indexOf("});", at));
+    };
+    const relayCall = callOf("startEgressRelay({");
+    assert.equal(main.match(/\brelayRules\(/g)?.length, 1, "relayRules appelée une seule fois");
+    assert.match(relayCall, /^\s*\.\.\.relayRules\(\{[^}]*\blogin: egressLogin\b/m, "hôtes permis et échéance des tunnels : relayRules, fenêtre egressLogin");
+    assert.doesNotMatch(relayCall, /\ballowedHosts\s*:|\btunnelDeadline\s*:/, "aucune règle écrite à côté de relayRules");
+    assert.doesNotMatch(main, /\begressAllowedHosts\b|\begressTunnelDeadline\b/, "règles jamais recomposées dans main.ts");
+    // Une seule fenêtre : celle que le proxy du cockpit ouvre (createCockpitApp → createApp) est celle que lit le relais.
+    assert.equal(main.match(/\bnew LoginWindow\(/g)?.length, 1);
+    assert.match(callOf("createCockpitApp({"), /^\s*egressLogin,\s*$/m);
   });
 
   it("démarrage : l'échéance des tunnels est transmise au relais", async (t) => {
