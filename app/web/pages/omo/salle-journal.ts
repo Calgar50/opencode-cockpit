@@ -1,4 +1,4 @@
-// Propriétaire : L26a (relecture 2ter-vague-2).
+// Propriétaire : L26a (relecture 2ter-vague-2 ; `lireSignales` : train de V5 de la 2 ter).
 // Données du Journal du contrôle de la Salle OMO, rendu par la page de la salle (spécification §4.12 l.784 : bandeau permanent
 // « Salle OMO · extension active · … » [Arrêter] [Journal] ; « Le journal montre aussi `refus-interdit`, les actions
 // `par: extension` et les détections »). Module pur, sans React ni réseau : la page lui passe ce que le flux lui apporte, il rend
@@ -49,6 +49,39 @@ export function lireDetection(data: unknown): DetectionLue | null {
     }
   }
   return { rootId: typeof data.rootId === "string" ? data.rootId : null, cause: data.cause, signales };
+}
+
+/** Fichiers à relire gardés pour l'affichage d'une fin de demande : au-delà, la liste est dite incomplète. */
+export const SIGNALES_MAX = 200;
+
+/** Fichiers à relire d'une fin de demande (`omo.signales`, §4.14.5 l.850), lus dans le flux. */
+export interface SignalesLus {
+  rootId: string | null;
+  signales: OmoSignale[];
+  /** La descente du cockpit n'a pas tout vu, ou la liste a été bornée ici : la page le DIT. */
+  incomplet: boolean;
+}
+
+/**
+ * Fichiers à relire lus dans les données d'un événement `omo.signales` (train de V5 de la 2 ter, constat D-L26c-2 : la page ne
+ * les lisait pas). Lus avec prudence : un genre qu'aucun texte de T3a ne nomme, ou un chemin illisible, est écarté ; null si les
+ * données ne sont pas un objet.
+ */
+export function lireSignales(data: unknown): SignalesLus | null {
+  if (!estObjet(data)) return null;
+  const signales: OmoSignale[] = [];
+  let ecartes = false;
+  if (Array.isArray(data.signales)) {
+    for (const entree of data.signales as unknown[]) {
+      if (!estObjet(entree) || typeof entree.chemin !== "string" || entree.chemin === "" || !estGenre(entree.genre)) continue;
+      if (signales.length >= SIGNALES_MAX) {
+        ecartes = true;
+        break;
+      }
+      signales.push({ chemin: entree.chemin, genre: entree.genre });
+    }
+  }
+  return { rootId: typeof data.rootId === "string" ? data.rootId : null, signales, incomplet: data.incomplet === true || ecartes };
 }
 
 /** Ajoute une détection reçue à la liste de la visite, bornée à `DETECTIONS_MAX`. */

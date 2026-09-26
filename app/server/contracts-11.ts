@@ -82,8 +82,12 @@ export interface PermissionGate {
   rejectOrphans(requests: PendingPermission[], directory: string | null, context: Record<string, unknown>): Promise<void>;
   /** Comportement 1.0 de rejectAbortedPermissions. */
   rejectAborted(sessionId: string, directory: string | null, release: () => void): Promise<void>;
-  /** L1b : file → vérification « once » → inscription au registre → relais. */
-  relayOnce(requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome>;
+  /**
+   * L1b : file → vérification « once » → inscription au registre → relais. `stillAllowed` (Salle OMO, train de V5 de la 2 ter) :
+   * condition du service appelant, relue APRÈS la file et la vérification, juste avant l'inscription ; fausse (ou en erreur) →
+   * « expiree », rien n'est inscrit ni envoyé. Absente : comportement L1b inchangé.
+   */
+  relayOnce(requestId: string, directory: string | null, by: RepliedBy, stillAllowed?: () => boolean): Promise<RelayOutcome>;
   /**
    * L1b : refus retenu tant qu'une autre demande de la même session attend (F-c) ou qu'un appel d'outil voisin du même message est
    * encore en préparation ou en cours (sa demande arriverait après la lecture), puis vérifié et envoyé une fois seul. Borne de 45 s :

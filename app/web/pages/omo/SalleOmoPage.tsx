@@ -19,7 +19,12 @@
 // - le Journal du contrôle de la conversation de la salle (§4.12 l.784), que [Journal] amène à l'écran : décisions lues par
 //   GET …/activity (mode Avancé), `refus-interdit` et `par: extension` compris, détections et fichiers mis de côté venus du flux
 //   (salle-journal.ts ; relecture 2ter-vague-2) ;
-// - après une détection : la cause, le rappel qu'elle est après coup, et les fichiers signalés avec leur phrase (D-2b-37).
+// - après une détection : la cause, le rappel qu'elle est après coup, et les fichiers signalés avec leur phrase (D-2b-37) ;
+// - en fin de demande, SANS arrêt : les fichiers à relire (`omo.signales`, §4.14.5 l.850 : `package.json`, `Makefile`, `*.ps1`
+//   modifiés), avec la mention d'une liste incomplète (train de V5 de la 2 ter, constat D-L26c-2 : la page ne les lisait pas).
+//
+// Focus (§5.5 « jamais volé », P7 ; train de V5, constat D-L26c-1) : `Modal` refocalise son premier champ à chaque changement de
+// `onClose` ; l'écran d'activation reçoit donc une fonction STABLE, sinon chaque relecture de l'état ramène le focus sur le champ.
 //
 // Toute décision d'affichage est dans les modèles purs server/shared/omo-activation-view.ts et salle-journal.ts ; cette page lit,
 // appelle et rend.
@@ -56,7 +61,16 @@ import { ControlJournal, useControlDecisions } from "../chat/autonomy/ControlJou
 import { OmoActivationDialog } from "./OmoActivationDialog.tsx";
 import { OmoBanner } from "./OmoBanner.tsx";
 import { ProjectChooser } from "./ProjectChooser.tsx";
-import { ajouterDetection, type DetectionLue, type DetectionRecue, journalDeLaSalle, lireDetection, relireJournalApres } from "./salle-journal.ts";
+import {
+  ajouterDetection,
+  type DetectionLue,
+  type DetectionRecue,
+  journalDeLaSalle,
+  lireDetection,
+  lireSignales,
+  relireJournalApres,
+  type SignalesLus,
+} from "./salle-journal.ts";
 import { SansDemandeTable } from "./SansDemandeTable.tsx";
 import "./omo.css";
 
@@ -86,6 +100,8 @@ export function SalleOmoPage() {
   const [salle, setSalle] = useState<Salle | null>(null);
   const [messages, setMessages] = useState<OcMessageWithParts[]>([]);
   const [detection, setDetection] = useState<DetectionLue | null>(null);
+  /** Fichiers à relire de la dernière fin de demande reçue pendant la visite (`omo.signales`) ; null : aucune. */
+  const [signalesFin, setSignalesFin] = useState<SignalesLus | null>(null);
   /** Détections reçues pendant la visite, pour le Journal de la salle (bornées par salle-journal.ts). */
   const [detectionsRecues, setDetectionsRecues] = useState<DetectionRecue[]>([]);
   const numeroDetection = useRef(0);
@@ -139,6 +155,13 @@ export function SalleOmoPage() {
         setLecturesJournal((n) => n + 1);
       }
       relire();
+      return;
+    }
+    const finDeDemande = cockpitEvent(event, "omo.signales");
+    if (finDeDemande !== null) {
+      // Fichiers d'une autre racine que celle de la salle ouverte : pas les siens (une salle à la fois ; rootId null = la salle).
+      const lus = lireSignales(finDeDemande.data);
+      if (lus !== null && (lus.rootId === null || salle === null || lus.rootId === salle.rootId)) setSignalesFin(lus);
       return;
     }
     if (salle !== null && event.kind === "cockpit" && relireJournalApres(event.type, event.data, salle.rootId)) {
@@ -220,6 +243,8 @@ export function SalleOmoPage() {
       </Card>
 
       {detection !== null ? <BlocDetection detection={detection} /> : null}
+
+      {signalesFin !== null ? <BlocSignalesFin lus={signalesFin} /> : null}
 
       {salle === null ? (
         <ProjectChooser
@@ -335,6 +360,31 @@ function BlocDetection({ detection }: { detection: DetectionLue }) {
   );
 }
 
+/**
+ * Fichiers à relire d'une fin de demande (`omo.signales`, §4.14.5 l.850), signalés SANS arrêt : chaque genre avec sa phrase, puis
+ * ses chemins ; une liste incomplète le dit. Chemins venus du flux : rendus comme texte, jamais comme HTML.
+ */
+function BlocSignalesFin({ lus }: { lus: SignalesLus }) {
+  const groupes = vueSignales(lus.signales);
+  return (
+    <Card title={TEXTES.avance.signalesFin.titre}>
+      {groupes.map((groupe) => (
+        <div key={groupe.genre}>
+          <p className="small">{groupe.phrase}</p>
+          <ul className="omo-chemins">
+            {groupe.chemins.map((chemin) => (
+              <li key={chemin}>
+                <code>{chemin}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {lus.incomplet ? <p className="small muted">{TEXTES.avance.signalesFin.incomplet}</p> : null}
+    </Card>
+  );
+}
+
 interface ConversationProps {
   salle: Salle;
   statut: OmoStatusResponse | null;
@@ -359,6 +409,8 @@ function Conversation(props: ConversationProps) {
   const [ouvert, setOuvert] = useState(false);
   const [occupe, setOccupe] = useState(false);
   const [refusServeur, setRefusServeur] = useState<string | null>(null);
+  // Stable : `Modal` refocalise son premier champ à chaque nouvel `onClose` (constat D-L26c-1, focus jamais volé).
+  const fermer = useCallback(() => setOuvert(false), []);
 
   useEffect(() => {
     let annule = false;
@@ -445,7 +497,7 @@ function Conversation(props: ConversationProps) {
         dateAudit={dateAudit}
         refusServeur={refusServeur}
         occupe={occupe}
-        onClose={() => setOuvert(false)}
+        onClose={fermer}
         onLancer={lancer}
         valeurs={{ liste }}
       />

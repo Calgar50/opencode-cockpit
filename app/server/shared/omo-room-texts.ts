@@ -227,6 +227,11 @@ export const TEXTES = {
       "git-quarantaine":
         "Un historique git créé pendant la demande a été mis de côté ({chemin}). Relisez ces fichiers avant de rouvrir ce projet dans votre éditeur.",
     } satisfies Record<OmoSignale["genre"], string>,
+    /** Fin de demande (`omo.signales`, §4.14.5 l.850) : titre de la liste, et mention d'une liste incomplète (train de V5, 2 ter). */
+    signalesFin: {
+      titre: "Fichiers à relire",
+      incomplet: "Liste incomplète : le cockpit n'a pas pu examiner tous les fichiers de la salle.",
+    },
     /** Diagnostic de la salle : présence seulement, jamais un contenu. */
     diagnostic: {
       authPresente: "Authentification de la salle : présente",

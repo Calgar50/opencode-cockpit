@@ -14,7 +14,11 @@
 // 4. VERDICT : `classifyOmoPermission` (L22b, module pur) avec le projet ouvert (dossier de travail + projet d'`omo_rooms`) et
 //    les cibles de la configuration git relevées au pré-contrôle (`references()` de L19b, quand le port la porte).
 // 5. RÉPONSE, par le portillon de la salle :
-//    - rien d'interdit → `relayOnce(id, dossier, "cockpit")` ;
+//    - rien d'interdit → `relayOnce(id, dossier, "cockpit", toujoursActive)` : la demande active (même racine, même
+//      `requestId`) est RELUE par le portillon après sa file et sa vérification, juste avant l'envoi (train de V5 de la 2 ter,
+//      constat de L27b sur G7 [competence-course] : des « once » décidés avant un arrêt hors-contrôle attendaient leur tour dans
+//      la file, puis partaient APRÈS la clôture de la demande, et leurs commandes s'exécutaient). Demande close pendant
+//      l'attente : rien n'est envoyé ni journalisé comme autorisé (l'arrêt refuse la demande) ;
 //    - interdit absolu → `rejectWhenAlone(id, session, dossier, message, "cockpit")`, avec « Interdit absolu du cockpit :
 //      {catégorie}. N'essayez pas de le contourner. » (TEXTES.avance.interdits de omo-room-texts.ts, catégorie en clair). Le refus
 //      est RETENU tant qu'une autre demande de la session attend ou qu'un appel d'outil voisin peut encore en poser une (F-c) :
@@ -271,10 +275,27 @@ export function createOmoResponder(c11: Cockpit11, options: OmoResponderOptions 
     journaliser({ asked, rootId: racine.rootId, requestId, askedAt, verdict: "refus-interdit", regle: refus.categorie, raison: "", relais: sort === "retenu" ? null : sort });
   };
 
+  /** La demande `requestId` de `rootId` est-elle encore LA demande active ? Illisible : non (fermé en cas de doute). */
+  const toujoursActive = (rootId: string, requestId: string): boolean => {
+    try {
+      const active = c11.ports.omoActivation.activeRequest();
+      return active !== null && active.rootId === rootId && active.requestId === requestId;
+    } catch (err) {
+      log.warn("salle : demande active illisible, « once » non relayé", { rootId, error: errorMessage(err) });
+      return false;
+    }
+  };
+
   const autoriser = async (asked: AskedPermission, racine: RacineSalle, requestId: string, askedAt: number): Promise<void> => {
     const gate = c11.instances?.omo?.gate;
     if (!gate) return;
-    const sort = await gate.relayOnce(asked.permissionId, asked.directory, PAR_COCKPIT);
+    const sort = await gate.relayOnce(asked.permissionId, asked.directory, PAR_COCKPIT, () => toujoursActive(racine.rootId, requestId));
+    if (sort !== "ok" && !toujoursActive(racine.rootId, requestId)) {
+      // Demande close pendant l'attente de la file (arrêt, fin de demande) : aucune autorisation n'a été donnée, aucune n'est
+      // journalisée. C'est l'arrêt qui répond à cette demande (refus de toutes les attentes de l'instance, stopTreeOmo).
+      log.info("salle : demande close avant l'envoi, aucune autorisation donnée", { rootId: racine.rootId, permissionId: asked.permissionId, relais: sort });
+      return;
+    }
     if (sort === "ok") markWait(asked, racine.rootId, "once");
     const raison = TEXTES.avance.activation.autorise.replace("{projet}", racine.projet);
     journaliser({ asked, rootId: racine.rootId, requestId, askedAt, verdict: "auto", regle: OMO_REGLE_AUCUN_INTERDIT, raison, relais: sort });

@@ -370,13 +370,27 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
     }
   };
 
+  /** Condition d'un service relue avant un « once » : une condition qui lève vaut « ne tient plus » (fermé en cas de doute). */
+  const conditionHolds = (condition: () => boolean): boolean => {
+    try {
+      return condition() === true;
+    } catch (err) {
+      log.warn("condition du service illisible : « once » non relayé", { error: errorMessage(err) });
+      return false;
+    }
+  };
+
   /**
    * « once » envoyé par un service (autonomie, garde des délégations) : file → vérification « once » → inscription au registre →
    * relais, la file gardée jusqu'à la réponse d'opencode (aucun arrêt ne s'intercale, comme pour le proxy). Réponse déjà inscrite
    * (navigateur, autre service) : « deja-repondu », sans rien envoyer. Demande qui n'est plus active : « expiree », sans « once ».
    * Vérification impossible : « echec ». Ne lève jamais. Jamais appelé en tenant une place de la file (attente jusqu'à sa borne).
+   * `stillAllowed` (Salle OMO, train de V5 de la 2 ter ; constat de L27b, G7 [competence-course]) : condition du service, relue
+   * au plus près de l'envoi, APRÈS la file et la vérification. Le répondeur de la salle décide avant de prendre la file ; un arrêt
+   * hors-contrôle qui clôt la demande pendant cette attente l'emporte : fausse, ou en erreur (fermé en cas de doute) →
+   * « expiree », rien n'est inscrit ni envoyé.
    */
-  const relayOnce = async (requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome> => {
+  const relayOnce = async (requestId: string, directory: string | null, by: RepliedBy, stillAllowed?: () => boolean): Promise<RelayOutcome> => {
     if (!ID_RE.test(requestId)) {
       log.warn("« once » du cockpit non relayé : identifiant de demande illisible", { by });
       return "echec";
@@ -390,6 +404,10 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
       if (!verdict.ok) {
         if (verdict.status === 503) return "echec";
         log.info("demande d'autorisation qui n'est plus active : « once » du cockpit non relayé", { requestId, by, found: verdict.request !== null });
+        return "expiree";
+      }
+      if (stillAllowed !== undefined && !conditionHolds(stillAllowed)) {
+        log.info("« once » du cockpit non relayé : la condition du service ne tient plus (demande close pendant l'attente)", { requestId, by });
         return "expiree";
       }
       // P9 : inscrite au registre avant l'envoi.
