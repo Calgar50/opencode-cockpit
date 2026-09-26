@@ -33,6 +33,9 @@ import { neutralPlans, plansModule } from "./plans.ts";
 import { floorsModule, neutralFloors } from "./session-floor-service.ts";
 import { neutralStopTree, stopTreeModule } from "./stop-tree.ts";
 import { neutralTaskGuard, taskGuardModule } from "./task-once-guard.ts";
+// <nav:import>
+import { fichiersModule } from "./routes-fichiers.ts";
+// </nav:import>
 
 /**
  * Porte I1 tenue par le code (plan §2.6). Tant qu'elle valait false, le port activation réel répondait comme le port neutre
@@ -63,6 +66,7 @@ export const MODULE_ORDER = [
   "capWatch",
   "internalAgents",
   "diagnostics",
+  "fichiers", // nav
 ] as const satisfies readonly ModuleName[];
 
 export interface StepOrder {
@@ -101,6 +105,7 @@ export const STEP_ORDER = {
     ["autonomy", "conversationAutonomy"],
     ["plans", "plans"],
     ["diagnostic-11", "diagnostics"],
+    ["fichiers", "fichiers"], // nav
   ],
 } as const satisfies StepOrder;
 
@@ -130,6 +135,7 @@ export const MODULES: { readonly [N in ModuleName]: Cockpit11Module } = {
   capWatch: capWatchModule,
   internalAgents: internalAgentsModule,
   diagnostics: diagnosticsModule,
+  fichiers: fichiersModule, // nav
 };
 
 /** Ports neutres (= comportement 1.0.4) : ceux de tout module non installé, même quand son code réel est fusionné. */
