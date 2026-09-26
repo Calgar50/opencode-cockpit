@@ -226,7 +226,11 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["SETUID", "SETGID"]
     # Ajustés d'après la mesure M22 du banc hors ligne, extension 4.19.4 chargée, prise PENDANT la charge de la porte G1 (30 min,
-    # 180 passes, 180 envois ; 40 relevés `docker stats`) : 516,7 Mio de mémoire au maximum, 504,6 Mio en moyenne, 29 processus.
+    # 58 relevés `docker stats`). Plus hauts relevés : 583,2 Mio de mémoire au maximum (rejeu de la correction de la répétition
+    # générale 2 ter, 172 passes, 527,8 Mio en moyenne, pic au premier relevé) et 30 processus (répétition générale 2 ter,
+    # 171 passes) ; 2g en vaut 3,5 fois et 256, 8,5 fois. Ce relevé dérive d'une exécution à l'autre (516,7, 547,2, 563,3 puis
+    # 583,2 Mio pour la même charge) : son historique et la garde des marges sont dans app/server/omo-compose.test.ts, que le
+    # banc relit après G1 (lien M22).
     # Le premier ajustement (train de la vague 3 : 128 / 2 / 1g) s'appuyait sur un relevé pris au REPOS — 347,8 Mio et 11
     # processus — et ne tenait donc pas les marges qu'il annonçait : 1g ne valait que 1,98 fois le maximum réel, et 128 que 4,4
     # fois. Marges voulues, et tenues ici : deux fois la mémoire mesurée, cinq fois les processus mesurés.

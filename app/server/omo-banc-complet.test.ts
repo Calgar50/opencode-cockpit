@@ -749,6 +749,18 @@ describe("L21b, R-2 : le relevé M22 du banc est relié AUTOMATIQUEMENT aux cons
     assert.equal(lienM22.jugerLienM22({ memoireMioMax: 1, pidsMax: 1 }, null).ok, false);
   });
 
+  it("les relevés de la répétition générale 2 ter et de son rejeu sont verts sur le vrai fichier", () => {
+    // Bancs hors ligne, G1 de 30 min, 58 relevés chacun : `rghl` (563,3 Mio, 30 processus) était ROUGE contre 547,2 Mio et
+    // 29 processus ; le rejeu de la correction (583,2 Mio, 26 processus) était ROUGE contre 563,3 Mio.
+    const c = lienM22.constantesM22(source);
+    assert.ok(c !== null);
+    for (const releve of [{ memoireMioMax: 563.3, pidsMax: 30 }, { memoireMioMax: 583.2, pidsMax: 26 }]) {
+      const lien = lienM22.jugerLienM22(releve, c);
+      assert.equal(lien.ok, true, `${JSON.stringify(releve)} : ${JSON.stringify(lien.points)}`);
+    }
+    assert.ok(c.releveMaxPublie >= 583.2, "le plus haut relevé publié suit le rejeu de la répétition générale 2 ter");
+  });
+
   it("le banc applique le lien après G1 et écrit g1-stats.json", () => {
     const banc = fs.readFileSync(path.join(BANC, "run-banc.mjs"), "utf8");
     assert.match(banc, /jugerLienM22\(bilan\.mesures\.M22, constantesM22\(source\)\)/);

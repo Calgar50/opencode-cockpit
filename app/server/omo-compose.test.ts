@@ -225,24 +225,30 @@ describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7
   const salle = service(SALLE);
   /**
    * ÉCHANTILLON, PAS UNE BORNE. Plus haut relevé de la mesure M22 du banc hors ligne (L21), extension 4.19.4 chargée, PENDANT
-   * la charge de la porte G1 : 547,2 Mio au maximum (moyenne 520), 29 processus, sur 58 relevés `docker stats` pendant les
-   * 171 passes des 30 minutes du rejeu de la revue d'itération 2 bis.
+   * la charge de la porte G1, sur 58 relevés `docker stats` pendant les 30 minutes : 583,2 Mio au maximum (moyenne 527,8), au
+   * PREMIER relevé (pic de démarrage, CPU à 146,7 % ; ensuite 554,4 Mio au plus), pendant les 172 passes du rejeu de la
+   * correction de la répétition générale 2 ter ; 30 processus au maximum pendant les 171 passes de la répétition générale 2 ter
+   * elle-même (563,3 Mio, moyenne 520,2). Le lien M22 du banc avait rendu ROUGE la répétition générale (563,3 > 547,2 et
+   * 30 > 29), puis son rejeu (583,2 > 563,3).
    *
    * Ce n'est PAS un plafond que le produit tiendrait : rien ne l'impose au conteneur, et la mesure DÉRIVE d'une exécution à
    * l'autre. La preuve est dans l'histoire de cette même ligne : 347,8 Mio (relevé au repos, qui sous-mesurait d'un tiers),
-   * puis 516,7 Mio (40 relevés, répétition générale), puis 547,2 Mio (58 relevés, rejeu) — soit + 5,9 % pour la même charge.
+   * puis 516,7 Mio (40 relevés, répétition générale 2 bis), puis 547,2 Mio (58 relevés, rejeu de la revue 2 bis) — soit
+   * + 5,9 % pour la même charge —, puis 563,3 Mio (58 relevés, répétition générale 2 ter) — + 2,9 % —, puis 583,2 Mio
+   * (58 relevés, rejeu de la correction 2 ter) — + 3,5 %. Les relevés font des dents de scie (environ 500 à 555 Mio) sans
+   * croissance continue : le maximum dépend du relevé qui tombe sur un sommet.
    * La valeur ne sert donc qu'à une chose : refuser un plafond du compose qui descendrait sous deux fois ce qu'on a DÉJÀ vu
    * passer. Une remesure plus haute remonte cette ligne (et, s'il le faut, les plafonds du compose) ; jamais les facteurs de
    * marge, qui sont, eux, la règle.
    */
-  const MEM_MAX_MIO = 547.2;
-  const PIDS_MAX = 29;
+  const MEM_MAX_MIO = 583.2;
+  const PIDS_MAX = 30;
 
   /**
    * Plus haut relevé PUBLIÉ par un banc, gardé à part de la constante pour que la garde ci-dessous ne puisse pas être satisfaite
    * en baissant les deux ensemble. À remonter avec MEM_MAX_MIO quand un banc publie plus haut, jamais à baisser.
    */
-  const M22_MEM_RELEVE_MAX_PUBLIE = 547.2;
+  const M22_MEM_RELEVE_MAX_PUBLIE = 583.2;
 
   /** `mem_limit` du compose en mébioctets : suffixe k/m/g, ou des octets sans suffixe. */
   const memLimitMio = (valeur: unknown): number => {
@@ -294,6 +300,18 @@ describe("L16b §2 : durcissement d'opencode-omo (contrat `securite`, MO-4, MO-7
     );
     const source = fs.readFileSync(path.join(import.meta.dirname, "omo-compose.test.ts"), "utf8");
     assert.match(source, /ÉCHANTILLON, PAS UNE BORNE\./, "le commentaire de MEM_MAX_MIO doit dire que c'est un échantillon, pas une borne");
+  });
+
+  it("le commentaire des plafonds du compose cite le dernier relevé publié, jamais un relevé périmé", () => {
+    // Constat BAS de la répétition générale 2 ter : la constante avait été remontée à 547,2 Mio, et le commentaire du service
+    // opencode-omo citait encore 516,7 Mio (un relevé plus tôt). Le lien M22 du banc relit les constantes, jamais ce
+    // commentaire : cette garde tient les deux ensemble.
+    const debut = TEXTE_COMPOSE.indexOf("# Ajustés d'après la mesure M22");
+    assert.ok(debut >= 0, "commentaire des plafonds M22 introuvable dans le compose");
+    const bloc = TEXTE_COMPOSE.slice(debut, TEXTE_COMPOSE.indexOf("pids_limit:", debut)).replace(/\s*#\s*/g, " ");
+    const francais = (n: number): string => String(n).replace(".", ",");
+    assert.ok(bloc.includes(`${francais(M22_MEM_RELEVE_MAX_PUBLIE)} Mio de mémoire au maximum`), `le compose doit citer ${francais(M22_MEM_RELEVE_MAX_PUBLIE)} Mio : ${bloc}`);
+    assert.ok(bloc.includes(`${PIDS_MAX} processus`), `le compose doit citer ${PIDS_MAX} processus : ${bloc}`);
   });
 
   it("la mesure M22 est prise sous charge, jamais au repos : c'est la porte G1 qui la relève", () => {
