@@ -131,7 +131,7 @@ export interface FakeOpencodeOptions {
   syncTwins?: boolean;
   /** Configuration globale (GET /global/config) ; sa clé « permission » donne les règles des agents natifs. Défaut : profil Prudent. */
   config?: Record<string, unknown>;
-  /** GET /permission rejeté comme par opencode 1.18.30 quand une demande sans délai attend (voir `permissionListeRejetee`). */
+  /** GET /permission rejeté comme par opencode 1.18.30 quand un argument facultatif manque à une demande (voir `permissionListeRejetee`). */
   permissionListeRejetee?: boolean;
 }
 
@@ -224,12 +224,31 @@ export function dossierDInstance(demande: string): string {
 }
 
 /**
- * Demandes qui font échouer GET /permission sur opencode 1.18.30 (A23, fiche-fusion-v106 §10.3) : leurs métadonnées portent une clé
- * `timeout` sans valeur JSON quand l'outil est appelé sans délai. webfetch : lu dans la source (tool/webfetch.ts:43-47,
- * `timeout: params.timeout`). bash : d'après A23 ; tool/shell.ts:283-290 de la 1.18.30 ne met pourtant que `command` dans les
- * métadonnées. À confirmer par la mesure au banc réel hors ligne (décision D11), qui recalera cette liste.
+ * Arguments facultatifs qu'opencode 1.18.30 recopie dans les métadonnées d'une demande (tool/*.ts, appels à ctx.ask) : un argument
+ * omis y laisse une clé `undefined`, que l'encodage JSON de GET /permission refuse (400 « Expected JSON value »). Mesure D11 du
+ * 26/09 au banc réel hors ligne, décision A31 b. Ordre = ordre d'écriture dans l'outil : la clé citée est la PREMIÈRE absente
+ * (grep sans rien : « path »). bash n'y figure pas : ses métadonnées valent {command} seul, délai donné ou non (mesures T1 et T2,
+ * tool/shell.ts:283-290). websearch : lu dans le code (tool/websearch.ts:119-131), non mesuré.
  */
-export const PERMISSIONS_SANS_TIMEOUT: ReadonlySet<string> = new Set(["webfetch", "bash"]);
+export const METADONNEES_FACULTATIVES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  webfetch: ["timeout"],
+  glob: ["path"],
+  grep: ["path", "include"],
+  websearch: ["numResults", "livecrawl", "type", "contextMaxCharacters"],
+});
+
+/**
+ * Première demande de la liste d'une instance qu'opencode 1.18.30 ne sait pas encoder (indice dans la liste, ordre d'insertion), et
+ * sa première clé facultative absente ou à `undefined` ; null : liste encodable.
+ */
+function demandeIllisible(list: readonly FakePermissionRequest[]): { index: number; key: string } | null {
+  for (const [index, info] of list.entries()) {
+    const keys = (Object.hasOwn(METADONNEES_FACULTATIVES, info.permission) ? METADONNEES_FACULTATIVES[info.permission] : undefined) ?? [];
+    const key = keys.find((k) => info.metadata[k] === undefined);
+    if (key !== undefined) return { index, key };
+  }
+  return null;
+}
 
 let lastMs = 0;
 let counter = 0;
@@ -668,10 +687,11 @@ export class FakeOpencode {
   /** Toutes les instances ouvertes depuis le démarrage, jamais retirées : relevé de la sentinelle (instancesHors). */
   readonly #ouvertes = new Set<string>();
   /**
-   * GET /permission rejeté (A23, fiche-fusion-v106 §10.3) tant qu'une demande de l'instance est de PERMISSIONS_SANS_TIMEOUT sans
-   * `timeout` numérique dans ses métadonnées : 400 BadRequest de la couche de schéma d'opencode (schema-error.ts:25-40, route hors
-   * /api/), raison relevée dans le journal d'opencode du banc h106 (« Expected JSON value, got undefined at [i].metadata.timeout »).
-   * Faux par défaut : liste servie.
+   * GET /permission rejeté (mesure D11, A31 b) tant qu'une demande de l'instance a une clé de METADONNEES_FACULTATIVES absente ou à
+   * `undefined` : 400 BadRequest de la couche de schéma d'opencode (schema-error.ts:25-40, route hors /api/), corps mesuré
+   * {name:"BadRequest", data:{message:"Expected JSON value, got undefined\n  at [i][\"metadata\"][\"<clé>\"]", kind:"Body"}}, i =
+   * indice de la première demande fautive dans la liste de l'instance. Les autres instances sont servies ; POST
+   * /permission/:id/reply n'est pas touché. Faux par défaut (liste servie), alors qu'opencode 1.18.30 réel rejette toujours.
    */
   permissionListeRejetee: boolean;
   /** Configuration globale (GET /global/config), fusionnée par PATCH. */
@@ -1106,9 +1126,12 @@ export class FakeOpencode {
     // Demandes et états sont propres à l'instance du répertoire demandé (InstanceState).
     if (is("GET", "permission")) {
       const list = [...this.#pending.values()].filter((e) => e.directory === directory).map((e) => e.info);
-      const rejected = this.permissionListeRejetee ? list.findIndex((info) => PERMISSIONS_SANS_TIMEOUT.has(info.permission) && typeof info.metadata.timeout !== "number") : -1;
-      if (rejected !== -1) {
-        return json(400, { name: "BadRequest", data: { message: `Expected JSON value, got undefined\n  at [${rejected}]["metadata"]["timeout"]`, kind: "Body" } });
+      const rejected = this.permissionListeRejetee ? demandeIllisible(list) : null;
+      if (rejected) {
+        return json(400, {
+          name: "BadRequest",
+          data: { message: `Expected JSON value, got undefined\n  at [${rejected.index}]["metadata"]["${rejected.key}"]`, kind: "Body" },
+        });
       }
       return json(200, list);
     }

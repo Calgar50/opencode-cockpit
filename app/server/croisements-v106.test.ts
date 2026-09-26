@@ -504,9 +504,10 @@ describe("croisements v106 : autonomie (relecture de GET /permission, faits edit
 });
 
 // --- GET /permission rejeté par opencode 1.18.30 (fiche §10.3, A23) : état actuel figé ---------------------------------------------
-// Option `permissionListeRejetee` du faux : GET /permission répond 400 (« schema rejection » metadata.timeout) tant qu'une demande
-// webfetch ou bash sans délai attend dans l'instance. Ces tests FIGENT ce que fait le cockpit aujourd'hui ; la correction est renvoyée
-// à GF5 par la décision D11 (mesure au banc réel hors ligne d'abord, puis repli sur les événements permission.asked/replied). Un
+// Option `permissionListeRejetee` du faux : GET /permission répond 400 (« schema rejection ») tant qu'une demande de l'instance a un
+// argument facultatif omis recopié dans ses métadonnées (METADONNEES_FACULTATIVES : webfetch sans timeout, glob ou grep sans path,
+// etc. ; jamais bash), comme opencode 1.18.30 réel (mesure D11, A31). Ces tests FIGENT ce que fait le cockpit aujourd'hui avec un
+// webfetch sans délai ; GF5 les RETOURNE (repli sur la table des attentes alimentée par permission.asked/replied, A31 a). Un
 // changement de comportement doit les modifier ici, en le disant.
 
 describe("croisements v106 : GET /permission rejeté par opencode (option permissionListeRejetee) — état actuel, correction à GF5 (D11)", () => {

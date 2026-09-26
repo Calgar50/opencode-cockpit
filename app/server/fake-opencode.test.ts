@@ -281,7 +281,7 @@ describe("faux opencode : dossier de l'instance décodé deux fois, comme openco
   });
 });
 
-describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (option permissionListeRejetee, A23, R106-a)", () => {
+describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (option permissionListeRejetee, mesure D11, A31 b, R106-a)", () => {
   const URL_DOC = "https://exemple.test/doc";
   const webfetch = (metadata: Record<string, unknown> = { url: URL_DOC, format: "markdown" }): FakeToolScript => ({
     tool: "webfetch",
@@ -289,10 +289,32 @@ describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (op
     ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata },
     output: "contenu",
   });
-  const SCHEMA_REJECTION = { name: "BadRequest", data: { message: 'Expected JSON value, got undefined\n  at [0]["metadata"]["timeout"]', kind: "Body" } };
-  const rejectedWith400 = (err: unknown) => err instanceof OpencodeError && err.status === 400 && JSON.stringify(err.body) === JSON.stringify(SCHEMA_REJECTION);
+  /** Outil dont la demande porte ces métadonnées (clé à `undefined` = argument facultatif omis, recopié tel quel par opencode). */
+  const asking = (tool: string, metadata: Record<string, unknown>): FakeToolScript => ({
+    tool,
+    input: { pattern: "TODO" },
+    ask: { permission: tool, patterns: ["*"], always: ["*"], metadata },
+    output: "rien",
+  });
+  /** Corps exact mesuré sur opencode 1.18.30 (D11 §2, S1). */
+  const schemaRejection = (index: number, key: string) => ({
+    name: "BadRequest",
+    data: { message: `Expected JSON value, got undefined\n  at [${index}]["metadata"]["${key}"]`, kind: "Body" },
+  });
+  const rejectedWith = (index: number, key: string) => (err: unknown) =>
+    err instanceof OpencodeError && err.status === 400 && JSON.stringify(err.body) === JSON.stringify(schemaRejection(index, key));
+  const rejectedWith400 = rejectedWith(0, "timeout");
+  /** Une conversation par demande, posées l'une après l'autre dans `directory` : l'ordre de la liste de l'instance est connu. */
+  async function waitingIn(fake: FakeOpencode, oc: OpencodeClient, directory: string, ...tools: FakeToolScript[]): Promise<void> {
+    for (const tool of tools) {
+      const session = await newSession(oc, {}, directory);
+      fake.script(session.id, { tools: [tool], followUp: { text: "Fini." } });
+      await promptAsync(oc, session.id, "Travaille");
+      await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+    }
+  }
 
-  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch ou bash sans timeout attend dans l'instance ; réponses toujours acceptées", async (t) => {
+  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch sans timeout attend dans l'instance ; autre instance servie ; réponses toujours acceptées", async (t) => {
     const { fake, oc } = await startFake(t);
     assert.equal(fake.permissionListeRejetee, false);
     const session = await newSession(oc);
@@ -309,18 +331,47 @@ describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (op
     await fake.settled(session.id);
   });
 
-  it("webfetch avec un timeout numérique ou demande edit : liste servie ; bash sans timeout : rejetée ; option passée au constructeur", async (t) => {
+  it("bash : servi (métadonnées {command} seules, délai ou non : mesures T1 et T2) ; webfetch avec timeout, glob avec path, grep avec path et include, websearch complet, edit : servis ; option passée au constructeur", async (t) => {
     const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
-    const first = await newSession(oc);
-    fake.script(first.id, { tools: [webfetch({ url: URL_DOC, format: "markdown", timeout: 30 }), editTool("/workspace/a.txt", "a", "b")], followUp: { text: "Fini." } });
-    await promptAsync(oc, first.id, "Deux demandes");
-    await until(() => fake.pendingPermissions().length === 2);
-    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 2);
-    const second = await newSession(oc);
-    fake.script(second.id, { tools: [bash("ls")], followUp: { text: "Fini." } });
-    await promptAsync(oc, second.id, "Liste");
-    await until(() => fake.pendingPermissions().length === 3);
-    await assert.rejects(oc.request("GET", "/permission"), (err: unknown) => err instanceof OpencodeError && err.status === 400 && String((err.body as { data?: { message?: string } })?.data?.message).includes('at [2]["metadata"]["timeout"]'));
+    await waitingIn(
+      fake,
+      oc,
+      "/workspace",
+      bash("ls"),
+      bash("sleep 1", { input: { command: "sleep 1", description: "Attendre", timeout: 5000 } }),
+      webfetch({ url: URL_DOC, format: "markdown", timeout: 30 }),
+      asking("glob", { pattern: "**/*.md", path: "/workspace/p1" }),
+      asking("grep", { pattern: "TODO", path: "/workspace", include: "*.ts" }),
+      asking("websearch", { query: "opencode", numResults: 8, livecrawl: "fallback", type: "auto", contextMaxCharacters: 10_000, provider: "exa" }),
+      editTool("/workspace/a.txt", "a", "b"),
+    );
+    const served = await oc.request<FakePermissionRequest[]>("GET", "/permission");
+    assert.deepEqual(
+      served.map((p) => p.permission),
+      ["bash", "bash", "webfetch", "glob", "grep", "websearch", "edit"],
+    );
+  });
+
+  it("indice réel et PREMIÈRE clé facultative absente (ordre d'écriture de l'outil) : demande saine en [0], poison en [1] ; clé absente ou présente à undefined ; autres instances servies", async (t) => {
+    const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
+    const cases: Array<[string, FakeToolScript, string]> = [
+      ["/workspace/webfetch", webfetch(), "timeout"],
+      ["/workspace/glob", asking("glob", { pattern: "**/*.md" }), "path"],
+      ["/workspace/grep", asking("grep", { pattern: "TODO", path: undefined, include: undefined }), "path"],
+      ["/workspace/grep-include", asking("grep", { pattern: "TODO", path: "/workspace", include: undefined }), "include"],
+      ["/workspace/websearch", asking("websearch", { query: "q", numResults: 8, livecrawl: "fallback", type: "auto", contextMaxCharacters: undefined, provider: "exa" }), "contextMaxCharacters"],
+      ["/workspace/websearch-vide", asking("websearch", { query: "q" }), "numResults"],
+    ];
+    for (const [directory, poison, key] of cases) {
+      await waitingIn(fake, oc, directory, bash("ls"), poison);
+      await assert.rejects(oc.request("GET", "/permission", { directory }), rejectedWith(1, key), directory);
+    }
+    // Poison en [0], demande saine après : l'indice suit la position dans la liste de l'instance.
+    await waitingIn(fake, oc, "/workspace/tete", asking("glob", { pattern: "*" }), bash("pwd"));
+    await assert.rejects(oc.request("GET", "/permission", { directory: "/workspace/tete" }), rejectedWith(0, "path"));
+    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 0, "instance /workspace : rien en attente, servie");
+    await waitingIn(fake, oc, "/workspace/saine", bash("ls"));
+    assert.equal((await oc.request<unknown[]>("GET", "/permission", { directory: "/workspace/saine" })).length, 1, "autre instance : servie");
   });
 });
 
