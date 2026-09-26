@@ -72,9 +72,15 @@ describe("croisements it2 V4 : gardes d'isolation du banc (L13, DOC2)", () => {
 
   it("le chiffre des gardes HTTPS reste rattaché à ce qui les apporte (R105b, la 1.0.5)", () => {
     const recap = aplati(RECAP);
-    // Depuis l'intégration de la 1.0.5, les 51 gardes sont jouées ici ; la phrase doit toujours dire d'où viennent
-    // celles qui se sont ajoutées aux 30 de l'itération 2, sans quoi le chiffre change sans explication.
-    for (const m of recap.matchAll(/51 gardes[^.]*\./g)) assert.match(m[0], /R105b|1\.0\.5/, `« ${m[0]} » sans sa condition`);
+    // Depuis l'intégration de la 1.0.5, puis R106-b (réglage de mouvement), les 55 gardes sont jouées ici ; la phrase doit
+    // toujours dire d'où viennent celles qui se sont ajoutées aux 30 de l'itération 2, sans quoi le chiffre change sans
+    // explication. Au moins une phrase porte ce chiffre : sans elle, le contrôle ne vérifierait plus rien.
+    const phrases = [...recap.matchAll(/55 gardes[^.]*\./g)].map((m) => m[0]);
+    assert.ok(phrases.length >= 1, "aucune phrase « 55 gardes » dans le RECAPITULATIF");
+    for (const phrase of phrases) {
+      assert.match(phrase, /R105b|1\.0\.5/, `« ${phrase} » sans sa condition`);
+      assert.match(phrase, /R106-b/, `« ${phrase} » sans les gardes du réglage de mouvement`);
+    }
   });
 });
 

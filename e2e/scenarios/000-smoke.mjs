@@ -14,6 +14,8 @@ const ECARTS_DU_FAUX = [];
 /** Contexte remis par le banc : voir le tableau de e2e/README.md. */
 export async function run(ctx) {
   const { navigateur: page } = ctx;
+  // Réglage de mouvement fixé avant toute action sur la page, jamais celui du poste (garde du banc, R106-b).
+  await page.mouvement("no-preference");
 
   // 1. Le cockpit répond et parle bien de la pile jetable.
   const sante = await ctx.api.get("/api/health");

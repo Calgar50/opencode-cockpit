@@ -91,6 +91,8 @@ async function amorcagesPendant(page, ms) {
 export async function run(ctx) {
   const { navigateur: page } = ctx;
   const bilan = [];
+  // Réglage de mouvement fixé avant toute action sur la page, jamais celui du poste (garde du banc, R106-b).
+  await page.mouvement("no-preference");
   await page.attendreQue("document.querySelector('nav.rail')", { libelle: "barre de navigation du cockpit" });
   await attendreCondition(() => page.evenementsFlux().some((t) => t.evenement === "hello"), 10_000);
 

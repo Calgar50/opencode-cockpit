@@ -10,6 +10,7 @@ scripts/run-e2e.sh --http                 # même chose dans le mode HTTP explic
 scripts/run-e2e.sh --scenarios 000-smoke  # un seul scénario
 scripts/run-e2e.sh --gardes               # vérifie les refus d'isolation et d'épinglage, sans Docker
 scripts/run-e2e.sh --reel --dry-run       # montre les commandes docker sans les exécuter
+scripts/run-e2e.sh --poste-mouvement reduce  # poste simulé en animations réduites (voir « Réglage de mouvement »)
 ```
 
 Le **code de sortie est le nombre de scénarios en échec** ; 1 quand le banc refuse de démarrer.
@@ -118,6 +119,29 @@ de confirmation au format strict dans le fichier d'environnement, requêtes par 
 reste par ticket (`POST /api/login` est refusé en HTTP) et le cookie garde son nom `__Host-`, que les navigateurs
 acceptent sur `http://127.0.0.1`, origine sûre.
 
+## Réglage de mouvement : jamais celui du poste
+
+Le navigateur du banc rapporte `prefers-reduced-motion` d'après le réglage d'animations du poste, et Windows passe en
+animations réduites avec les sessions RDP. Sous `reduce`, le cockpit fait ce que la spécification demande : aucune
+transition WAAPI sur la carte des agents, transitions CSS ramenées à 0,01 ms. Des scénarios qui vérifient ces
+transitions tombaient donc selon l'état du poste (`it1-ui-arreter`, `it1-ui-delegation`, `it1-ui-m25` ; cause établie
+par la répétition générale de la 5b, contre-épreuve à trois endroits). Depuis R106-b :
+
+- **chaque scénario qui agit sur la page fixe son réglage** avant sa première action : `preparerPage` (outils
+  `it1-ui-commun.mjs`, repris par `it2-ui-commun.mjs`) pose `no-preference`, et un scénario qui teste justement le
+  mouvement réduit le demande, par `preparerPage(ctx, taille, { mouvement: "reduce" })` ou `ctx.navigateur.mouvement("reduce")` ;
+  `000-smoke.mjs` et `010-reprise-apres-coupure.mjs` le posent eux-mêmes ;
+- `theme()` et la fin de `screenshot` / `captureSuite` envoient le réglage de mouvement **avec** le thème : le protocole
+  remplace toute la liste des médias émulés à chaque envoi, et ces deux envois rendaient la page au réglage du poste ;
+- **garde du banc** : pendant chaque scénario, le banc relève tout ce qui est envoyé à la page. Une action faite avant
+  que le réglage soit fixé, une émulation de média qui le perd, ou une page qui rapporte, à la fin, autre chose que le
+  réglage fixé font **échouer le scénario**, avec la raison. Un scénario qui n'agit pas sur la page (scénarios d'API)
+  n'est pas concerné. La ligne « ok » donne le réglage lu dans la page (`mouvement no-preference`) ;
+- chaque exécution écrit, avant les scénarios, ce que le navigateur rapporte **sans** émulation ;
+- `--poste-mouvement reduce` (ou `no-preference`) **simule** le réglage du poste pour le navigateur du banc
+  (`--force-prefers-reduced-motion` ou `--force-prefers-no-reduced-motion` de Chromium, recouverts par l'émulation
+  comme le vrai réglage de Windows), sans toucher au poste : c'est la contre-épreuve de l'indépendance.
+
 ## Écrire un scénario
 
 Un fichier `e2e/scenarios/<nom>.mjs` qui exporte `run(ctx)` :
@@ -125,6 +149,7 @@ Un fichier `e2e/scenarios/<nom>.mjs` qui exporte `run(ctx)` :
 ```js
 export async function run(ctx) {
   const reponse = await ctx.api.get("/api/bootstrap");
+  await ctx.navigateur.mouvement("no-preference"); // avant toute action sur la page (garde de R106-b)
   await ctx.navigateur.attendreQue("document.querySelector('nav.rail')");
   await ctx.screenshot("accueil");
   ctx.expectNoConsoleErrors();
@@ -135,7 +160,7 @@ Le contexte `ctx` :
 
 | Champ | Ce qu'il donne |
 |---|---|
-| `navigateur` | l'onglet piloté : `aller`, `evaluer`, `attendreQue`, `texte`, `cliquer`, `taper`, `touche`, `focus`, `taille`, `theme`, `capture`, `journalReseau`, `evenementsFlux` (trames du flux d'événements reçues par la page : nom, adresse, instant ; jamais les données), `horsLigne` (coupure réseau émulée : requêtes nouvelles en échec, « offline » puis « online » ; un flux déjà ouvert n'est pas coupé), `bloquer` (requêtes dont l'adresse correspond à un motif en échec), `retenirReponses` (réponses des requêtes dont l'adresse correspond à un motif retenues avant la page : requête lente dont la réponse date d'avant ce qui suit ; `relacher()` les rend telles quelles), `effacerCookie` (session du navigateur retirée, celle du client d'API reste). `journalReseau` donne aussi l'instant d'envoi de chaque requête (`envoyeeA`, en ms) |
+| `navigateur` | l'onglet piloté : `aller`, `evaluer`, `attendreQue`, `texte`, `cliquer`, `taper`, `touche`, `focus`, `taille`, `theme` (le réglage de mouvement part avec lui), `mouvement` (`prefers-reduced-motion` fixé : `no-preference` ou `reduce`, à poser avant toute action sur la page, voir « Réglage de mouvement »), `capture`, `journalReseau`, `evenementsFlux` (trames du flux d'événements reçues par la page : nom, adresse, instant ; jamais les données), `horsLigne` (coupure réseau émulée : requêtes nouvelles en échec, « offline » puis « online » ; un flux déjà ouvert n'est pas coupé), `bloquer` (requêtes dont l'adresse correspond à un motif en échec), `retenirReponses` (réponses des requêtes dont l'adresse correspond à un motif retenues avant la page : requête lente dont la réponse date d'avant ce qui suit ; `relacher()` les rend telles quelles), `effacerCookie` (session du navigateur retirée, celle du client d'API reste). `journalReseau` donne aussi l'instant d'envoi de chaque requête (`envoyeeA`, en ms) |
 | `url` | adresse du cockpit de la pile jetable (`https://127.0.0.1:<port>`, ou `http://` avec `--http`) |
 | `schema` | `https` (défaut) ou `http` (`--http`) |
 | `epinglage` | en HTTPS, empreinte SHA-256 du certificat (`sha256`) et condensé de sa clé publique (`spki`) épinglés, lus sur le volume ; `null` en HTTP. Jamais la clé |
@@ -161,7 +186,7 @@ sortie est le nombre d'échecs.
 |---|---|
 | `scripts/run-e2e.sh` | point d'entrée, aide, vérifications de base (Node 24, Docker), `MSYS_NO_PATHCONV` |
 | `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, lecture de l'épinglage sur le volume et contre-épreuves, déroulé, et leurs propres vérifications (`--gardes`) |
-| `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux |
+| `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux ; médias émulés (thème et mouvement toujours ensemble) et relevé du réglage de mouvement pour la garde de R106-b |
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |

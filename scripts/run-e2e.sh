@@ -23,6 +23,7 @@
 #   --fichier-env <chemin>   fichier d'environnement de la pile jetable (défaut : sous le dossier temporaire du banc)
 #   --dry-run                affiche les commandes docker sans les exécuter
 #   --garder-pile            laisse la pile debout après l'exécution (pour regarder un échec)
+#   --poste-mouvement <v>    simule le réglage d'animations du poste pour le navigateur (reduce ou no-preference)
 #   --gardes                 vérifie les refus d'isolation, sans Docker ni navigateur
 #   --help                   cette aide
 #
@@ -41,7 +42,7 @@ cd "$racine"
 export MSYS_NO_PATHCONV=1
 
 aide() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 gardes_seules=0

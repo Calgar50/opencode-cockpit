@@ -105,11 +105,14 @@ export async function attendreTexte(page, attendu, { selecteur = "body", delaiMs
 }
 
 /**
- * Prépare l'onglet d'un scénario : grande fenêtre, cockpit chargé, règles d'utilisation acceptées au clic si la fenêtre bloquante
- * est ouverte (première visite de la pile jetable), notice de la 1.0 fermée par [Compris], relevés installés.
+ * Prépare l'onglet d'un scénario : réglage de mouvement fixé AVANT toute action (R106-b : « no-preference » par défaut, jamais
+ * celui du poste, qui passe en animations réduites avec les sessions RDP ; « reduce » pour un scénario qui teste justement le
+ * mouvement réduit), grande fenêtre, cockpit chargé, règles d'utilisation acceptées au clic si la fenêtre bloquante est ouverte
+ * (première visite de la pile jetable), notice de la 1.0 fermée par [Compris], relevés installés.
  */
-export async function preparerPage(ctx, taille = LARGE) {
+export async function preparerPage(ctx, taille = LARGE, { mouvement = "no-preference" } = {}) {
   const page = ctx.navigateur;
+  await page.mouvement(mouvement);
   await page.taille(taille);
   await page.attendreQue("document.querySelector('nav.rail')", { libelle: "barre de navigation du cockpit" });
   if (await page.evaluer("Boolean(document.querySelector('.rules-modal'))")) {

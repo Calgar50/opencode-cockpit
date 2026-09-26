@@ -16,7 +16,17 @@ import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { FETCH_BLOCKED_PORTS } from "../../app/server/fetch-ports.ts";
-import { argumentsNavigateur, ouvrirNavigateur } from "./cdp.mjs";
+import {
+  argumentsNavigateur,
+  creerOnglet,
+  DRAPEAUX_POSTE_MOUVEMENT,
+  EXPR_MOUVEMENT,
+  MOUVEMENTS,
+  noterEnvoi,
+  nouveauSuivi,
+  ouvrirNavigateur,
+  verdictMouvement,
+} from "./cdp.mjs";
 import {
   attendreOpencode,
   attendreSante,
@@ -384,6 +394,8 @@ export async function preparerPlan(options) {
   if (!MODES.includes(mode)) refuser(`mode inconnu : « ${mode} ».`);
   const schema = options.schema ?? "https";
   if (!SCHEMAS.includes(schema)) refuser(`schéma inconnu : « ${schema} ».`);
+  const posteMouvement = options.posteMouvement ?? null;
+  if (posteMouvement !== null && !MOUVEMENTS.includes(posteMouvement)) refuser(`réglage de mouvement du poste inconnu : « ${posteMouvement} » (${MOUVEMENTS.join(", ")}).`);
   const id = options.id ?? identifiantExecution();
   const projet = verifierProjet(`${options.prefixe}-${id}`);
   const imageApp = verifierImage(`${options.prefixe}/app:${options.tag}`);
@@ -394,6 +406,8 @@ export async function preparerPlan(options) {
   return {
     mode,
     schema,
+    // Réglage d'animations du poste SIMULÉ pour le navigateur (« --poste-mouvement ») ; null : le vrai réglage du poste.
+    posteMouvement,
     id,
     projet,
     profils: PROFILS[mode],
@@ -747,7 +761,19 @@ export async function executer(options) {
     const fournisseur = plan.mode === "reel-hors-ligne" ? relevesDuBanc(`http://127.0.0.1:${plan.portFournisseur}`, secrets.jetonControle) : null;
     if (faux) await faux.attendre();
     if (fournisseur) await fournisseur.attendre();
-    etat.navigateur = await ouvrirNavigateur({ dossierProfil: path.join(plan.dossier, "profil-navigateur"), spkiEpingle: epinglage?.spki ?? null });
+    etat.navigateur = await ouvrirNavigateur({
+      dossierProfil: path.join(plan.dossier, "profil-navigateur"),
+      spkiEpingle: epinglage?.spki ?? null,
+      posteMouvement: plan.posteMouvement,
+    });
+    // Réglage d'animations que le navigateur rapporte SANS émulation (R106-b) : écrit à chaque exécution, pour qu'un journal
+    // dise toujours dans quel état du poste les scénarios ont tourné.
+    const poste = await etat.navigateur.mouvementDuPoste();
+    console.log(
+      `Navigateur ${etat.navigateur.version} : sans émulation, prefers-reduced-motion: ${poste} ` +
+        `(${plan.posteMouvement === null ? "réglage du poste" : `simulé par --poste-mouvement ${plan.posteMouvement}`}) ; ` +
+        "chaque scénario qui agit sur la page fixe le sien.",
+    );
 
     for (const scenario of scenarios) {
       const debut = Date.now();
@@ -757,10 +783,17 @@ export async function executer(options) {
         const ctx = await construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, secrets, scenario, prefixe });
         const module = await import(pathToFileURL(scenario.chemin).href);
         if (typeof module.run !== "function") refuser(`le scénario « ${scenario.nom} » n'exporte pas run(ctx).`);
+        // Garde de R106-b : toute action du scénario sur la page est relevée ; elle doit suivre un réglage de mouvement fixé.
+        onglet.suivreMouvement();
         await module.run(ctx);
-        console.log(`  ok    ${scenario.nom} (${Date.now() - debut} ms)`);
+        const suivi = onglet.finSuiviMouvement();
+        const pageDit = suivi.actions > 0 ? await onglet.evaluer(EXPR_MOUVEMENT) : null;
+        const refus = verdictMouvement(suivi, pageDit);
+        if (refus !== null) refuser(refus);
+        console.log(`  ok    ${scenario.nom} (${Date.now() - debut} ms${pageDit === null ? "" : `, mouvement ${pageDit}`})`);
       } catch (err) {
         echecs++;
+        onglet.finSuiviMouvement();
         console.error(`  ÉCHEC ${scenario.nom} : ${err?.message ?? err}`);
         if (err?.stack && !(err instanceof ErreurBanc)) console.error(String(err.stack).split("\n").slice(1, 4).join("\n"));
         await onglet.capture(`${prefixe}-echec.png`).catch(() => {});
@@ -1017,6 +1050,34 @@ export async function verifierGardes() {
     if (!correspond("000-smoke.mjs", "smoke")) throw new Error("sous-chaîne non reconnue");
   });
 
+  // Réglage de mouvement (R106-b) : aucun scénario ne dépend du réglage d'animations du poste.
+  await verifier("réglage de mouvement : action sur la page avant de l'avoir fixé, ou réglage rendu au poste, refusés (R106-b)", () => verifierGardeMouvement());
+  await verifier("réglage de mouvement : theme(), fin de captureSuite et preparerPage le gardent fixé (R106-b)", () => avecDossierEssai((essai) => verifierMediasOnglet(essai)));
+  await verifier("--poste-mouvement : drapeau du navigateur qui simule le réglage du poste (R106-b)", () => {
+    if (analyserArguments([]).posteMouvement !== null) throw new Error("réglage du poste simulé sans l'option");
+    if (analyserArguments(["--poste-mouvement", "reduce"]).posteMouvement !== "reduce") throw new Error("option sans effet");
+    const drapeaux = Object.values(DRAPEAUX_POSTE_MOUVEMENT);
+    if (argumentsNavigateur("profil").some((arg) => drapeaux.includes(arg))) throw new Error("drapeau posé sans l'option");
+    for (const valeur of MOUVEMENTS) {
+      const args = argumentsNavigateur("profil", { posteMouvement: valeur });
+      const poses = args.filter((arg) => drapeaux.includes(arg));
+      if (poses.length !== 1 || poses[0] !== DRAPEAUX_POSTE_MOUVEMENT[valeur]) throw new Error(`${valeur} : ${poses.join(" ") || "aucun drapeau"}`);
+      if (args.at(-1) !== "about:blank") throw new Error("about:blank n'est plus le dernier argument");
+    }
+    let refus = null;
+    try {
+      argumentsNavigateur("profil", { posteMouvement: "rapide" });
+    } catch (err) {
+      refus = err;
+    }
+    if (!refus) throw new Error("valeur inconnue acceptée par le navigateur");
+  });
+  await refuse(
+    "--poste-mouvement : valeur inconnue refusée avant tout démarrage",
+    () => preparerPlan({ mode: "faux", schema: "https", prefixe: "it11-e2e", tag: "essai", posteMouvement: "rapide" }),
+    "réglage de mouvement du poste inconnu",
+  );
+
   await verifier("verrou tenu : le message donne le processus et la marche à suivre", () => {
     rendreVerrou(verrouEssai);
     prendreVerrou(verrouEssai);
@@ -1142,6 +1203,87 @@ export async function verifierGardes() {
 
   console.log(echecs.length === 0 ? "Gardes du banc : aucune n'est tombée." : `Gardes du banc : ${echecs.length} vérification(s) en échec.`);
   return echecs.length;
+}
+
+/**
+ * Garde de R106-b sur des relevés joués à blanc : un scénario d'API passe ; un scénario qui fixe son réglage de mouvement
+ * avant d'agir passe, « reduce » compris ; une action avant le réglage, un réglage jamais fixé, un réglage rendu au poste
+ * (thème seul ou liste vide) et une page qui dit autre chose que le réglage fixé sont refusés.
+ */
+function verifierGardeMouvement() {
+  const jouer = (envois, pageDit) => {
+    const suivi = nouveauSuivi();
+    for (const [methode, params] of envois) noterEnvoi(suivi, methode, params);
+    return verdictMouvement(suivi, pageDit);
+  };
+  const fixe = (valeur) => ["Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: valeur }] }];
+  const themeSeul = ["Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] }];
+  const listeVide = ["Emulation.setEmulatedMedia", { features: [] }];
+  const action = ["Runtime.evaluate", { expression: "1" }];
+  const cas = [
+    ["scénario d'API, aucune action sur la page", [], null, null],
+    ["réglage fixé avant la première action", [fixe("no-preference"), action, action], "no-preference", null],
+    ["mouvement réduit demandé explicitement", [fixe("reduce"), action], "reduce", null],
+    ["action avant le réglage", [action, fixe("no-preference"), action], "no-preference", "réglage de mouvement du poste"],
+    ["réglage jamais fixé", [action], "no-preference", "réglage de mouvement du poste"],
+    ["réglage rendu au poste par un thème seul", [fixe("no-preference"), action, themeSeul], "no-preference", "rendu au poste"],
+    ["réglage rendu au poste par une liste vide, puis une action", [fixe("reduce"), listeVide, action], "reduce", "réglage de mouvement du poste"],
+    ["page qui dit autre chose que le réglage fixé", [fixe("no-preference"), action], "reduce", "la page rapporte"],
+  ];
+  for (const [nom, envois, pageDit, attendu] of cas) {
+    const refus = jouer(envois, pageDit);
+    if (attendu === null && refus !== null) throw new Error(`${nom} : refusé à tort (${refus})`);
+    if (attendu !== null && !String(refus).includes(attendu)) throw new Error(`${nom} : ${refus ?? "accepté"}`);
+  }
+}
+
+/**
+ * Les trois endroits mesurés par la contre-épreuve de la 5b (A29), sur un onglet monté sur un client factice (aucun navigateur) :
+ * theme() envoie le mouvement avec le thème, la fin de captureSuite garde le mouvement du scénario (« reduce » compris) et ne
+ * laisse plus aucun thème, preparerPage fixe « no-preference » AVANT toute action sur la page.
+ */
+async function verifierMediasOnglet(essai) {
+  const envois = [];
+  const client = {
+    envoyer: async (methode, params = {}) => {
+      envois.push({ methode, params });
+      if (methode === "Page.captureScreenshot") return { data: "" };
+      if (methode === "Runtime.evaluate") return { result: { value: true } };
+      return {};
+    },
+    ecouter: () => () => {},
+  };
+  const medias = () =>
+    envois.filter((e) => e.methode === "Emulation.setEmulatedMedia").map((e) => Object.fromEntries(e.params.features.map((f) => [f.name, f.value])));
+  const onglet = await creerOnglet(client, "session-essai", "cible-essai");
+
+  await onglet.theme("sombre");
+  const apresTheme = medias().at(-1);
+  if (apresTheme?.["prefers-reduced-motion"] !== "no-preference" || apresTheme?.["prefers-color-scheme"] !== "dark") {
+    throw new Error(`theme() seul : ${JSON.stringify(apresTheme)}`);
+  }
+  await onglet.mouvement("reduce");
+  await onglet.theme("clair");
+  const avant = medias().length;
+  await onglet.captureSuite(path.join(essai, "capture"));
+  const pendant = medias().slice(avant);
+  if (pendant.length < 3 || pendant.some((m) => m["prefers-reduced-motion"] !== "reduce")) throw new Error(`captureSuite : ${JSON.stringify(pendant)}`);
+  if ("prefers-color-scheme" in pendant.at(-1)) throw new Error(`thème laissé après captureSuite : ${JSON.stringify(pendant.at(-1))}`);
+  let refus = null;
+  try {
+    await onglet.mouvement("rapide");
+  } catch (err) {
+    refus = err;
+  }
+  if (!refus) throw new Error("réglage de mouvement inconnu accepté");
+
+  const { preparerPage } = await import(pathToFileURL(path.join(RACINE, "e2e", "scenarios", "it1-ui-commun.mjs")).href);
+  const page = await creerOnglet(client, "session-essai-2", "cible-essai-2");
+  page.suivreMouvement();
+  await preparerPage({ navigateur: page });
+  const suivi = page.finSuiviMouvement();
+  const verdict = verdictMouvement(suivi, "no-preference");
+  if (verdict !== null || suivi.mouvement !== "no-preference" || suivi.actions === 0) throw new Error(`preparerPage : ${verdict ?? JSON.stringify(suivi)}`);
 }
 
 /**
@@ -1279,7 +1421,7 @@ async function verifierGardesHttps(verifier, refuse) {
 // --- Arguments --------------------------------------------------------------------------------
 
 export function analyserArguments(argv) {
-  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null };
+  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const suivant = () => {
@@ -1300,6 +1442,8 @@ export function analyserArguments(argv) {
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--gardes") options.gardes = true;
     else if (arg === "--garder-pile") options.garderPile = true;
+    // Réglage d'animations du poste simulé pour le navigateur (R106-b) : « reduce » ou « no-preference ».
+    else if (arg === "--poste-mouvement") options.posteMouvement = suivant();
     else refuser(`option inconnue : « ${arg} ».`);
   }
   if (!options.tag) options.tag = "local";
