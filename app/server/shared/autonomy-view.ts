@@ -336,3 +336,59 @@ export function demandeApresEvenement(demande: AutonomyRequestView | null, evene
 export function relirePourEvenement(demande: AutonomyRequestView | null, evenement: DemandeEvenementLu): boolean {
   return demande === null || demande.id !== evenement.requestId;
 }
+
+// --- Fin de demande gardée à travers les relectures (R106-b) ----------------------------------------------------------------------
+//
+// GET …/autonomie ne rend que la demande EN COURS (contrat ConversationAutonomyView : « en cours, sinon null »). La fin d'une
+// demande n'arrive donc que par l'événement `autonomie.demande` qui porte `fin`, et toute relecture faite APRÈS la clôture
+// rend null. Avant R106-b, le bandeau prenait cette relecture telle quelle : la fin de demande (« Demande terminée. »,
+// « Plafond … atteint », [Voir les modifications de cette demande]) disparaissait aussitôt. C'était systématique au plafond et
+// au redémarrage d'opencode (la surveillance ferme la demande PUIS remet le choix à « Demander », dont l'événement
+// `autonomie.choix` fait relire), et aléatoire quand un envoi suivait de près un changement de choix (it2-ui-bandeau-journal).
+
+/** Demande suivie par le bandeau : celle qu'il affiche, et la dernière qu'il a vue (gardée quand une relecture la retire). */
+export interface SuiviBandeau {
+  affichee: AutonomyRequestView | null;
+  connue: AutonomyRequestView | null;
+}
+
+/** Aucune demande vue (conversation ouverte, ou changée). */
+export const SUIVI_VIDE: SuiviBandeau = { affichee: null, connue: null };
+
+const estClose = (demande: AutonomyRequestView | null): demande is AutonomyRequestView => demande !== null && demande.fin !== null;
+
+/**
+ * Suivi après une relecture de GET …/autonomie (`lue` : la demande en cours, ou null). Une demande close ne se rouvre jamais :
+ * - rien en cours : une fin de demande affichée reste affichée ; une demande affichée encore ouverte est retirée (sa fin
+ *   n'est pas connue : l'événement qui la porte la rendra, depuis `connue`) ;
+ * - la demande en cours est celle que le bandeau sait déjà close (relecture calculée AVANT la clôture et arrivée après son
+ *   événement) : la fin reste affichée ;
+ * - une autre demande en cours : elle remplace la précédente.
+ */
+export function suiviApresRelecture(suivi: SuiviBandeau, lue: AutonomyRequestView | null): SuiviBandeau {
+  const vue = suivi.affichee ?? suivi.connue;
+  if (lue === null) {
+    if (estClose(suivi.affichee)) return { affichee: suivi.affichee, connue: suivi.affichee };
+    return { affichee: null, connue: vue };
+  }
+  if (estClose(vue) && vue.id === lue.id) return { affichee: vue, connue: vue };
+  return { affichee: lue, connue: lue };
+}
+
+/**
+ * Suivi après un événement `autonomie.demande` lu du flux. `relire` : l'interface doit relire la route (événement d'une autre
+ * demande, ou d'une demande que le bandeau ne connaît pas). La fin d'une demande que la relecture venait de retirer est
+ * reprise sur `connue`, sans relecture : la route ne la rendrait plus.
+ */
+export function suiviApresEvenement(suivi: SuiviBandeau, evenement: DemandeEvenementLu): { suivi: SuiviBandeau; relire: boolean } {
+  if (suivi.affichee !== null) {
+    if (relirePourEvenement(suivi.affichee, evenement)) return { suivi, relire: true };
+    const suite = demandeApresEvenement(suivi.affichee, evenement);
+    return { suivi: { affichee: suite, connue: suite }, relire: false };
+  }
+  if (suivi.connue !== null && suivi.connue.id === evenement.requestId && evenement.fin !== undefined) {
+    const suite = demandeApresEvenement(suivi.connue, evenement);
+    return { suivi: { affichee: suite, connue: suite }, relire: false };
+  }
+  return { suivi, relire: true };
+}

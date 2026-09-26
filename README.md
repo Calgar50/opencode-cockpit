@@ -486,7 +486,7 @@ Le plafond de coût est une borne appliquée par un arrêt, pas une garantie de 
 
 ### Bandeau, Journal du contrôle et Diagnostic
 
-- **Bandeau**, sous l'en-tête du chat pendant une demande autonome : « Autonome avec contrôle · 12 automatiques · 1 en attente · 0,08 $ sur 1,00 $ », avec **Arrêter** et **Journal**. À 400 px, il tient sur une ligne. En fin de demande, **Voir les modifications de cette demande** montre le diff.
+- **Bandeau**, sous l'en-tête du chat pendant une demande autonome : « Autonome avec contrôle · 12 automatiques · 1 en attente · 0,08 $ sur 1,00 $ », avec **Arrêter** et **Journal**. À 400 px, il tient sur une ligne. En fin de demande (fin normale, plafond atteint, arrêt), **Voir les modifications de cette demande** montre le diff, jusqu'au rechargement de la page.
 - **Carte de la demande** : « Contrôle de sécurité en cours… » pendant l'examen (seul **Refuser…** est proposé la première minute), puis « En attente de votre accord » avec la règle en toutes lettres (« Règle : Fichier protégé (configuration, CI/CD, infrastructure ou consignes d'IA) »), **Autoriser une fois**, **Refuser…** et **Arrêter**.
 - **Journal du contrôle** (depuis le bandeau ou le Déroulé) : une ligne par décision — Heure · Qui · Action (résumée à 120 caractères, secrets masqués) · Décision (Autorisé automatiquement, En attente de votre accord, Refusé automatiquement, Passé sans contrôle) · Par (règles, IA de contrôle, vous, cockpit) · Règle · Raison · Coût du contrôle. Il est enregistré avec la version des règles, relu à la réouverture de la conversation, et supprimé avec elle.
 - **Diagnostic › Travail délégué et autonomie** : état de l'interrupteur `COCKPIT_AUTONOMY`, de l'IA de contrôle et de l'installation de l'assistant de contrôle du cockpit.

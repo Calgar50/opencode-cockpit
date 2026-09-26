@@ -20,16 +20,22 @@ import {
   carteVue,
   type DecisionEvenement,
   demandeApresEvenement,
+  type DemandeEvenementLu,
   type EtatDemande,
   ETATS_MAX,
   ETATS_VIDES,
   EXAMEN_BOUTONS_MS,
   examenEnCours,
   ICONES_VERDICT,
+  phraseFinDemande,
   prochaineBascule,
   relirePourEvenement,
   sansDemande,
   SEPARATEUR,
+  SUIVI_VIDE,
+  type SuiviBandeau,
+  suiviApresEvenement,
+  suiviApresRelecture,
   TEXTE_IA_MAX,
   texteAffichable,
   vueEtats,
@@ -397,6 +403,106 @@ describe("L12b : demande tenue à jour par le flux", () => {
     assert.equal(relirePourEvenement(demande, evenement), false);
     assert.equal(relirePourEvenement(null, evenement), true);
     assert.equal(demandeApresEvenement(null, evenement), null);
+  });
+});
+
+// --- Fin de demande gardée à travers les relectures (R106-b) ------------------------------------------------------------------
+
+/**
+ * Suite d'arrivées vue par le bandeau : réponse d'une relecture de GET …/autonomie (la demande EN COURS, ou null) ou événement
+ * `autonomie.demande` du flux. Un événement qui demande une relecture est compté : la relecture elle-même est le pas suivant.
+ */
+type Arrivee = { relecture: AutonomyRequestView | null } | { evenement: DemandeEvenementLu };
+
+function jouer(arrivees: Arrivee[]): { suivi: SuiviBandeau; relectures: number; vue: BandeauVue | null } {
+  let suivi = SUIVI_VIDE;
+  let relectures = 0;
+  for (const arrivee of arrivees) {
+    if ("relecture" in arrivee) {
+      suivi = suiviApresRelecture(suivi, arrivee.relecture);
+      continue;
+    }
+    const suite = suiviApresEvenement(suivi, arrivee.evenement);
+    if (suite.relire) relectures++;
+    else suivi = suite.suivi;
+  }
+  return { suivi, relectures, vue: bandeauVue({ demande: suivi.affichee, etroit: false }) };
+}
+
+describe("R106-b : la fin de demande reste affichée quand la route ne rend plus la demande", () => {
+  // Demande X ouverte telle que la route la rend, puis l'événement de sa fin : compteurs de it2-ui-bandeau-journal.
+  const ouverte = demandeOf({ id: "req_x", auto: 2, attentes: 1, fichiers: 1 });
+  const fin = (motif: RequestEnd): DemandeEvenementLu => ({ requestId: "req_x", compteurs: { auto: 2, attentes: 1, fichiers: 1 }, spent: 0.004, fin: motif });
+  const exigerFin = (vue: BandeauVue | null, phrase: string, ou: string) => {
+    assert.ok(vue !== null, `${ou} : bandeau disparu`);
+    assert.equal(vue.terminee, true, `${ou} : demande affichée en cours`);
+    assert.equal(vue.fin, phrase, `${ou} : phrase de fin`);
+    assert.equal(vue.boutons.modifications, true, `${ou} : [Voir les modifications de cette demande] absent`);
+    assert.equal(vue.boutons.arreter, false, `${ou} : [Arrêter] encore proposé`);
+  };
+
+  it("relecture APRÈS l'événement de fin (changement de choix juste avant l'envoi) : la fin reste", () => {
+    const { vue, relectures } = jouer([{ relecture: ouverte }, { evenement: fin("terminee") }, { relecture: null }]);
+    exigerFin(vue, TEXTES.partout.fins.terminee, "relecture après la fin");
+    assert.equal(relectures, 0);
+  });
+
+  it("relecture calculée après la clôture mais arrivée AVANT l'événement de fin : la fin revient par l'événement, sans relecture", () => {
+    const retiree = jouer([{ relecture: ouverte }, { relecture: null }]);
+    // Sa fin n'est pas encore connue : rien n'est inventé, le bandeau se retire en attendant.
+    assert.equal(retiree.vue, null);
+    assert.equal(retiree.suivi.connue?.id, "req_x");
+    const { vue, relectures } = jouer([{ relecture: ouverte }, { relecture: null }, { evenement: fin("terminee") }]);
+    exigerFin(vue, TEXTES.partout.fins.terminee, "relecture avant la fin");
+    assert.equal(relectures, 0, "la route ne rendrait plus la demande : aucune relecture");
+  });
+
+  it("relecture calculée AVANT la clôture et arrivée après l'événement de fin : une demande close ne se rouvre pas", () => {
+    const { vue } = jouer([{ relecture: ouverte }, { evenement: fin("terminee") }, { relecture: ouverte }]);
+    exigerFin(vue, TEXTES.partout.fins.terminee, "relecture ancienne");
+  });
+
+  it("plafond de coût : fin « plafond-cout » PUIS retour à « Demander » (autonomie.choix → relecture) : la phrase du plafond reste", () => {
+    const plafond = phraseFinDemande({ ...ouverte, spent: 0.004, fin: "plafond-cout" });
+    assert.ok(plafond !== null && plafond !== "");
+    const { vue } = jouer([{ relecture: ouverte }, { evenement: fin("plafond-cout") }, { relecture: null }]);
+    exigerFin(vue, plafond, "plafond de coût");
+  });
+
+  it("redémarrage d'opencode : fin « interrompue » puis relecture : la fin reste", () => {
+    const { vue } = jouer([{ relecture: ouverte }, { evenement: fin("interrompue") }, { relecture: null }]);
+    exigerFin(vue, TEXTES.partout.fins.interrompue, "demande interrompue");
+  });
+
+  it("une demande suivante remplace la fin de la précédente (relecture de la route, jamais un mélange)", () => {
+    const suivante = demandeOf({ id: "req_y" });
+    const { vue, relectures, suivi } = jouer([
+      { relecture: ouverte },
+      { evenement: fin("terminee") },
+      { relecture: null },
+      { evenement: { requestId: "req_y", compteurs: { auto: 0 }, spent: 0 } },
+      { relecture: suivante },
+    ]);
+    assert.equal(relectures, 1);
+    assert.equal(suivi.affichee?.id, "req_y");
+    assert.equal(vue?.terminee, false);
+    assert.equal(vue?.boutons.arreter, true);
+  });
+
+  it("demande retirée sans événement de fin (flux coupé) : rien n'est inventé, un événement sans fin fait relire", () => {
+    const { vue, relectures } = jouer([{ relecture: ouverte }, { relecture: null }, { evenement: { requestId: "req_x", compteurs: { auto: 3 }, spent: 0.01 } }]);
+    assert.equal(vue, null);
+    assert.equal(relectures, 1);
+    // Aucune demande jamais vue : un événement fait relire, comme avant.
+    assert.equal(suiviApresEvenement(SUIVI_VIDE, fin("terminee")).relire, true);
+  });
+
+  it("le bandeau passe par ce suivi : une relecture n'est jamais appliquée telle quelle", () => {
+    const source = code(BANNER_FILE);
+    assert.ok(source.includes("suiviApresRelecture("), "relectures composées par suiviApresRelecture");
+    assert.ok(source.includes("suiviApresEvenement("), "événements composés par suiviApresEvenement");
+    assert.doesNotMatch(source, /set\w+\(\s*vue\.demande\s*\)/, "réponse de la route appliquée telle quelle");
+    assert.ok(source.includes("demande: suivi.affichee"), "le bandeau rend la demande affichée du suivi");
   });
 });
 

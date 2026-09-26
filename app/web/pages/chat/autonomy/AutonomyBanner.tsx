@@ -4,7 +4,8 @@
 // - toute la logique (segments, compteurs, montants, état vide, bouton de fin de demande, annonces) est dans le modèle pur
 //   server/shared/autonomy-view.ts : ce composant ne fait que la rendre, sans texte ni condition à lui ;
 // - la demande vient de GET /api/conversations/:rootId/autonomie, tenue à jour par l'événement `autonomie.demande` ; le flux
-//   rétabli et un changement de choix relancent une lecture. Aucun appel nouveau : la route existe depuis L10a ;
+//   rétabli et un changement de choix relancent une lecture. Aucun appel nouveau : la route existe depuis L10a. La route ne
+//   rend que la demande EN COURS : une relecture ne retire jamais une fin de demande affichée (suiviApresRelecture, R106-b) ;
 // - annonces POLIES par l'annonceur de la page (L5b) : UNE région `aria-live` pour tout le cockpit, au plus une annonce toutes
 //   les 2 s, coupée par `ui.activityAnnouncements`. Ce composant ne crée aucune région ;
 // - [Voir les modifications de cette demande] en fin de demande : GET /session/:id/diff, déjà relayé par le proxy (oc.diff) ;
@@ -12,15 +13,16 @@
 // - aucune animation.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TEXTES } from "../../../../server/shared/autonomy-texts.ts";
-import type { AutonomyRequestView } from "../../../../server/shared/autonomy-types.ts";
 import {
   annonceBandeau,
   type BandeauVue,
   bandeauVue,
   type DemandeEvenementLu,
-  demandeApresEvenement,
-  relirePourEvenement,
   SEPARATEUR,
+  SUIVI_VIDE,
+  type SuiviBandeau,
+  suiviApresEvenement,
+  suiviApresRelecture,
 } from "../../../../server/shared/autonomy-view.ts";
 import { ID_RE } from "../../../../server/shared/ids.ts";
 import { useApp } from "../../../app/AppContext.tsx";
@@ -84,7 +86,8 @@ function Banner({ rootId, directory, onStop, onOpenJournal }: AutonomyBannerProp
   const { ui } = useApp();
   const say = useAnnouncer(ui.activityAnnouncements);
   const narrow = useSyncExternalStore(subscribeNarrow, isNarrow, isNarrow);
-  const [demande, setDemande] = useState<AutonomyRequestView | null>(null);
+  /** Demande affichée et dernière demande vue : une relecture ne fait jamais disparaître une fin de demande (R106-b). */
+  const [suivi, setSuivi] = useState<SuiviBandeau>(SUIVI_VIDE);
   const [modifications, setModifications] = useState<FileDiff[] | null>(null);
   const [ouvert, setOuvert] = useState(false);
   /** Dernière lecture lancée : seule sa réponse est appliquée (une réponse plus ancienne arrivée après est ignorée). */
@@ -92,11 +95,14 @@ function Banner({ rootId, directory, onStop, onOpenJournal }: AutonomyBannerProp
   const abortRef = useRef<AbortController | null>(null);
   /** Dernier bandeau rendu : les annonces disent les TRANSITIONS, jamais ce qu'une première lecture révèle. */
   const precedentRef = useRef<BandeauVue | null>(null);
-  /** Demande connue, lue par les écouteurs du flux : la décision de relire se prend hors d'une mise à jour d'état. */
-  const demandeRef = useRef<AutonomyRequestView | null>(null);
-  demandeRef.current = demande;
+  /** Suivi connu, lu par les écouteurs du flux : la décision de relire se prend hors d'une mise à jour d'état. */
+  const suiviRef = useRef<SuiviBandeau>(SUIVI_VIDE);
+  suiviRef.current = suivi;
 
-  /** Relit la demande en cours ; un échec laisse le bandeau tel quel plutôt que d'inventer une demande. */
+  /**
+   * Relit la demande en cours ; un échec laisse le bandeau tel quel plutôt que d'inventer une demande. La route ne rend que
+   * la demande EN COURS : la réponse passe par suiviApresRelecture, qui garde une fin de demande déjà affichée.
+   */
   const refresh = useCallback((id: string) => {
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -104,7 +110,7 @@ function Banner({ rootId, directory, onStop, onOpenJournal }: AutonomyBannerProp
     const seq = ++seqRef.current;
     autonomyApi.get(id, controller.signal).then(
       (vue) => {
-        if (seq === seqRef.current) setDemande(vue.demande);
+        if (seq === seqRef.current) setSuivi((courant) => suiviApresRelecture(courant, vue.demande));
       },
       (err: unknown) => {
         if (controller.signal.aborted || seq !== seqRef.current) return;
@@ -114,7 +120,7 @@ function Banner({ rootId, directory, onStop, onOpenJournal }: AutonomyBannerProp
   }, []);
 
   useEffect(() => {
-    setDemande(null);
+    setSuivi(SUIVI_VIDE);
     setModifications(null);
     setOuvert(false);
     precedentRef.current = null;
@@ -139,12 +145,13 @@ function Banner({ rootId, directory, onStop, onOpenJournal }: AutonomyBannerProp
     if (brut === null || champ(brut.data, "rootId") !== rootId) return;
     const lu = demandeDe(brut.data);
     if (lu === null) return;
-    // Une autre demande que celle du bandeau (la suivante a commencé) : relecture de la route, jamais un mélange des deux.
-    if (relirePourEvenement(demandeRef.current, lu)) refresh(rootId);
-    else setDemande((current) => demandeApresEvenement(current, lu));
+    // Une autre demande que celle du bandeau (la suivante a commencé) : relecture de la route, jamais un mélange des deux. La fin
+    // d'une demande qu'une relecture venait de retirer est reprise sans relire (la route ne la rendrait plus).
+    if (suiviApresEvenement(suiviRef.current, lu).relire) refresh(rootId);
+    else setSuivi((courant) => suiviApresEvenement(courant, lu).suivi);
   });
 
-  const vue = bandeauVue({ demande, etroit: narrow });
+  const vue = bandeauVue({ demande: suivi.affichee, etroit: narrow });
 
   // Annonces polies des transitions (attente de votre accord, fin de demande) ; l'annonceur en dit au plus une toutes les 2 s.
   useEffect(() => {
