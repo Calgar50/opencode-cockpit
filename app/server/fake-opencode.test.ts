@@ -1962,3 +1962,46 @@ describe("faux opencode : dossier de l'instance décodé deux fois, comme openco
     assert.deepEqual(fake.instancesChargees(), ["/workspace"], "sans paramètre : le dossier du serveur");
   });
 });
+
+describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (option permissionListeRejetee, A23, R106-a)", () => {
+  const URL_DOC = "https://exemple.test/doc";
+  const webfetch = (metadata: Record<string, unknown> = { url: URL_DOC, format: "markdown" }): FakeToolScript => ({
+    tool: "webfetch",
+    input: { url: URL_DOC, format: "markdown" },
+    ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata },
+    output: "contenu",
+  });
+  const SCHEMA_REJECTION = { name: "BadRequest", data: { message: 'Expected JSON value, got undefined\n  at [0]["metadata"]["timeout"]', kind: "Body" } };
+  const rejectedWith400 = (err: unknown) => err instanceof OpencodeError && err.status === 400 && JSON.stringify(err.body) === JSON.stringify(SCHEMA_REJECTION);
+
+  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch ou bash sans timeout attend dans l'instance ; réponses toujours acceptées", async (t) => {
+    const { fake, oc } = await startFake(t);
+    assert.equal(fake.permissionListeRejetee, false);
+    const session = await newSession(oc);
+    fake.script(session.id, { tools: [webfetch()], followUp: { text: "Fini." } });
+    await promptAsync(oc, session.id, "Lis la page");
+    const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 1, "option coupée : liste servie");
+    fake.permissionListeRejetee = true;
+    await assert.rejects(oc.request("GET", "/permission"), rejectedWith400);
+    assert.deepEqual(await oc.request("GET", "/permission", { directory: "/workspace/autre" }), [], "autre instance : liste servie");
+    // Seule la liste échoue : la réponse à la demande est acceptée, et la liste revient avec elle.
+    assert.equal(await reply(oc, String(asked.properties.id), { reply: "reject" }), true);
+    assert.deepEqual(await oc.request("GET", "/permission"), []);
+    await fake.settled(session.id);
+  });
+
+  it("webfetch avec un timeout numérique ou demande edit : liste servie ; bash sans timeout : rejetée ; option passée au constructeur", async (t) => {
+    const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
+    const first = await newSession(oc);
+    fake.script(first.id, { tools: [webfetch({ url: URL_DOC, format: "markdown", timeout: 30 }), editTool("/workspace/a.txt", "a", "b")], followUp: { text: "Fini." } });
+    await promptAsync(oc, first.id, "Deux demandes");
+    await until(() => fake.pendingPermissions().length === 2);
+    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 2);
+    const second = await newSession(oc);
+    fake.script(second.id, { tools: [bash("ls")], followUp: { text: "Fini." } });
+    await promptAsync(oc, second.id, "Liste");
+    await until(() => fake.pendingPermissions().length === 3);
+    await assert.rejects(oc.request("GET", "/permission"), (err: unknown) => err instanceof OpencodeError && err.status === 400 && String((err.body as { data?: { message?: string } })?.data?.message).includes('at [2]["metadata"]["timeout"]'));
+  });
+});

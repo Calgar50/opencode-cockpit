@@ -17,6 +17,7 @@ import { requestPendingRescan } from "./autonomy-requests.ts";
 import type { ActivationPort, ControlAiInput, ConversationAutonomyPort, RequestsPort } from "./contracts-11.ts";
 import { CONTROL_AGENT_PROMPT, createControlAiModule } from "./control-ai.ts";
 import { collectEditFacts } from "./edit-facts.ts";
+import { PERMISSION_MESSAGES } from "./http.ts";
 import { ProjectsService } from "./projects.ts";
 import type { AutonomyChoice, AutonomyRequestView } from "./shared/autonomy-types.ts";
 import { CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
@@ -24,7 +25,7 @@ import { classifyCommand } from "./shared/shell-gate.ts";
 import { collectShellContext } from "./shell-facts.ts";
 import { StudioService } from "./studio.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
-import type { FakeAgent, FakePermissionRequest, FakeSession } from "./test-support/fake-opencode.ts";
+import type { FakeAgent, FakePermissionRequest, FakeSession, FakeToolScript } from "./test-support/fake-opencode.ts";
 import { bash, until, within } from "./test-support/helpers.ts";
 
 const OC = "/workspace";
@@ -442,5 +443,143 @@ describe("croisements v106 : autonomie (relecture de GET /permission, faits edit
       const verdict = await shellVerdict(dirOf(name));
       assert.deepEqual([verdict.verdict, verdict.regle], ["auto", "A-grep"], name);
     }
+  });
+});
+
+// --- GET /permission rejeté par opencode 1.18.30 (fiche §10.3, A23) : état actuel figé ---------------------------------------------
+// Option `permissionListeRejetee` du faux : GET /permission répond 400 (« schema rejection » metadata.timeout) tant qu'une demande
+// webfetch ou bash sans délai attend dans l'instance. Ces tests FIGENT ce que fait le cockpit aujourd'hui ; la correction est renvoyée
+// à GF5 par la décision D11 (mesure au banc réel hors ligne d'abord, puis repli sur les événements permission.asked/replied). Un
+// changement de comportement doit les modifier ici, en le disant.
+
+describe("croisements v106 : GET /permission rejeté par opencode (option permissionListeRejetee) — état actuel, correction à GF5 (D11)", () => {
+  const URL_DOC = "https://exemple.test/doc";
+  /** Demande webfetch sans délai : ses métadonnées n'ont pas de `timeout` (tool/webfetch.ts:43-47). */
+  const webfetch: FakeToolScript = {
+    tool: "webfetch",
+    input: { url: URL_DOC, format: "markdown" },
+    ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata: { url: URL_DOC, format: "markdown" } },
+    output: "contenu",
+  };
+  const PERMIS: ActivationPort = { check: async () => ({ ok: true }) };
+  const replies = (h: CockpitHarness) => h.fake.requests.filter((r) => r.method === "POST" && r.pathname.startsWith("/permission/"));
+
+  /** Conversation dans `directory` dont la réponse attend un accord ; rend la demande. */
+  async function waitingFor(h: CockpitHarness, directory: string, title: string, tool: FakeToolScript): Promise<{ session: FakeSession; asked: FakePermissionRequest }> {
+    const session = await conversation(h, directory, title);
+    const since = h.fake.emitted.length;
+    h.fake.script(session.id, { tools: [tool], followUp: { text: "Fini." } });
+    const sent = await h.call("POST", `/api/oc/session/${session.id}/prompt_async?directory=${q(directory)}`, {
+      headers: h.headers.mutating,
+      body: { agent: "build", model: MODEL, parts: [{ type: "text", text: "Travaille." }] },
+    });
+    assert.equal(sent.status, 204, sent.body);
+    const event = await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id, { since });
+    return { session, asked: event.properties as unknown as FakePermissionRequest };
+  }
+
+  it("portillon et liste des approbations : liste relayée en 400 ; « once » refusé en 503 sans rien relayer (la demande reste ouverte) ; « reject » relayé ; témoin sans l'option : « once » relayé", async (t) => {
+    const { h } = await start(t);
+    const dir = dirOf("proj");
+    const { session, asked } = await waitingFor(h, dir, "Web", webfetch);
+    h.fake.permissionListeRejetee = true;
+
+    // Liste des approbations de l'interface (ChatPage : oc.permissions) : 400 d'opencode relayé tel quel.
+    const list = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(list.status, 400, list.body);
+    assert.match(list.json<{ data: { message: string } }>().data.message, /\["metadata"\]\["timeout"\]/);
+
+    const answer = (reply: string) => h.call("POST", `/api/oc/permission/${asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply } });
+    const once = await answer("once");
+    assert.equal(once.status, 503, once.body);
+    assert.deepEqual(once.json(), { error: "verification-impossible", message: PERMISSION_MESSAGES.verificationImpossible });
+    assert.deepEqual(replies(h), [], "« once » jamais relayé");
+    assert.deepEqual(
+      h.fake.pendingPermissions().map((p) => p.id),
+      [asked.id],
+      "la demande reste ouverte",
+    );
+
+    // Le refus n'autorise rien : relayé sans vérification.
+    const reject = await answer("reject");
+    assert.equal(reject.status, 200, reject.body);
+    assert.deepEqual(
+      replies(h).map((r) => r.body),
+      [{ reply: "reject" }],
+    );
+    await within(h.fake.settled(session.id), "réponse close par le refus");
+
+    // Témoin : liste lisible, « once » relayé.
+    h.fake.permissionListeRejetee = false;
+    const other = await waitingFor(h, dir, "Témoin", webfetch);
+    const relayed = await h.call("POST", `/api/oc/permission/${other.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
+    assert.equal(relayed.status, 200, relayed.body);
+    assert.deepEqual(replies(h).at(-1)?.body, { reply: "once" });
+    await within(h.fake.settled(other.session.id), "réponse du témoin terminée");
+  });
+
+  it("autonomie : décision automatique (grep) impossible à relayer, journal « attente » avec relais « echec », la demande reste à l'utilisateur", async (t) => {
+    const choices = new Map<string, AutonomyChoice>();
+    const { h } = await start(t, {
+      modules: ["autonomy", "requests", "facts", "floors"],
+      settings: { budget: { autonomie: { controleIa: false } } },
+      ports: {
+        conversationAutonomy: {
+          get: async () => null,
+          choiceOf: (id) => choices.get(id) ?? "demander",
+          put: async () => ({ ok: false, status: 409, error: "autonomie-indisponible", raison: "a-venir" }),
+        },
+        activation: PERMIS,
+      },
+    });
+    const dir = dirOf("proj");
+    // Une demande webfetch sans délai attend dans le même dossier (conversation en « Demander ») : la liste de l'instance est rejetée.
+    await waitingFor(h, dir, "Demander", webfetch);
+    h.fake.permissionListeRejetee = true;
+    const auto = await conversation(h, dir, "Autonome");
+    choices.set(auto.id, "autonome");
+    const since = h.fake.emitted.length;
+    h.fake.script(auto.id, { tools: [bash("grep -rn 'TODO' a.txt")], followUp: { text: "Fini." } });
+    const sent = await h.call("POST", `/api/oc/session/${auto.id}/prompt_async?directory=${q(dir)}`, {
+      headers: h.headers.mutating,
+      body: { agent: "build", model: MODEL, parts: [{ type: "text", text: "Cherche." }] },
+    });
+    assert.equal(sent.status, 204, sent.body);
+    const asked = (await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === auto.id, { since })).properties as unknown as FakePermissionRequest;
+    const decision = await until(
+      () =>
+        h.db.prepare("SELECT verdict, regle, par, relais FROM autonomy_decisions WHERE permission_id = ?").get(asked.id) as
+          | { verdict: string; regle: string; par: string; relais: string | null }
+          | undefined,
+    );
+    assert.deepEqual({ ...decision }, { verdict: "attente", regle: "A-grep", par: "regles", relais: "echec" });
+    assert.deepEqual(
+      replies(h).filter((r) => r.pathname.includes(asked.id)),
+      [],
+      "aucun « once » envoyé",
+    );
+    assert.ok(
+      h.fake.pendingPermissions().some((p) => p.id === asked.id),
+      "la demande reste à l'utilisateur",
+    );
+  });
+
+  it("arrêt par le proxy : la conversation s'arrête, mais les demandes en attente ne sont pas refusées (liste illisible) et restent ouvertes", async (t) => {
+    const { h } = await start(t);
+    const dir = dirOf("proj");
+    const { session, asked } = await waitingFor(h, dir, "Web", webfetch);
+    h.fake.permissionListeRejetee = true;
+    const before = h.fake.requests.length;
+    const stopped = await h.call("POST", `/api/oc/session/${session.id}/abort?directory=${q(dir)}`, { headers: h.headers.mutating });
+    assert.equal(stopped.status, 200, stopped.body);
+    // Nettoyage de l'arrêt tenté : sa lecture de GET /permission est partie, puis rien.
+    await until(() => h.fake.requests.slice(before).some((r) => r.method === "GET" && r.pathname === "/permission"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(replies(h), [], "aucun refus envoyé");
+    assert.deepEqual(
+      h.fake.pendingPermissions().map((p) => p.id),
+      [asked.id],
+      "la demande reste ouverte jusqu'à une réponse ou un redémarrage",
+    );
   });
 });

@@ -131,6 +131,8 @@ export interface FakeOpencodeOptions {
   syncTwins?: boolean;
   /** Configuration globale (GET /global/config) ; sa clé « permission » donne les règles des agents natifs. Défaut : profil Prudent. */
   config?: Record<string, unknown>;
+  /** GET /permission rejeté comme par opencode 1.18.30 quand une demande sans délai attend (voir `permissionListeRejetee`). */
+  permissionListeRejetee?: boolean;
 }
 
 type Outcome = { reply: PermissionReply; message?: string };
@@ -220,6 +222,14 @@ export function dossierDInstance(demande: string): string {
   }
   return decode === demande ? demande : path.posix.resolve("/", decode);
 }
+
+/**
+ * Demandes qui font échouer GET /permission sur opencode 1.18.30 (A23, fiche-fusion-v106 §10.3) : leurs métadonnées portent une clé
+ * `timeout` sans valeur JSON quand l'outil est appelé sans délai. webfetch : lu dans la source (tool/webfetch.ts:43-47,
+ * `timeout: params.timeout`). bash : d'après A23 ; tool/shell.ts:283-290 de la 1.18.30 ne met pourtant que `command` dans les
+ * métadonnées. À confirmer par la mesure au banc réel hors ligne (décision D11), qui recalera cette liste.
+ */
+export const PERMISSIONS_SANS_TIMEOUT: ReadonlySet<string> = new Set(["webfetch", "bash"]);
 
 let lastMs = 0;
 let counter = 0;
@@ -657,6 +667,13 @@ export class FakeOpencode {
   readonly #instances = new Set<string>();
   /** Toutes les instances ouvertes depuis le démarrage, jamais retirées : relevé de la sentinelle (instancesHors). */
   readonly #ouvertes = new Set<string>();
+  /**
+   * GET /permission rejeté (A23, fiche-fusion-v106 §10.3) tant qu'une demande de l'instance est de PERMISSIONS_SANS_TIMEOUT sans
+   * `timeout` numérique dans ses métadonnées : 400 BadRequest de la couche de schéma d'opencode (schema-error.ts:25-40, route hors
+   * /api/), raison relevée dans le journal d'opencode du banc h106 (« Expected JSON value, got undefined at [i].metadata.timeout »).
+   * Faux par défaut : liste servie.
+   */
+  permissionListeRejetee: boolean;
   /** Configuration globale (GET /global/config), fusionnée par PATCH. */
   globalConfig: Record<string, unknown>;
   /** PATCH /global/config reçus, dans l'ordre : corps, et changement effectif (qui libère toutes les instances en tâche de fond). */
@@ -701,6 +718,7 @@ export class FakeOpencode {
     this.#heartbeatMs = options.heartbeatMs ?? 10_000;
     this.syncTwins = options.syncTwins ?? true;
     this.globalConfig = jsonClone(options.config ?? DEFAULT_CONFIG);
+    this.permissionListeRejetee = options.permissionListeRejetee ?? false;
   }
 
   get url(): string {
@@ -1086,7 +1104,14 @@ export class FakeOpencode {
       return json(200, true);
     }
     // Demandes et états sont propres à l'instance du répertoire demandé (InstanceState).
-    if (is("GET", "permission")) return json(200, [...this.#pending.values()].filter((e) => e.directory === directory).map((e) => e.info));
+    if (is("GET", "permission")) {
+      const list = [...this.#pending.values()].filter((e) => e.directory === directory).map((e) => e.info);
+      const rejected = this.permissionListeRejetee ? list.findIndex((info) => PERMISSIONS_SANS_TIMEOUT.has(info.permission) && typeof info.metadata.timeout !== "number") : -1;
+      if (rejected !== -1) {
+        return json(400, { name: "BadRequest", data: { message: `Expected JSON value, got undefined\n  at [${rejected}]["metadata"]["timeout"]`, kind: "Body" } });
+      }
+      return json(200, list);
+    }
     if (is("POST", "permission", "*", "reply")) {
       if (typeof input.reply !== "string" || !REPLIES.has(input.reply)) return bad();
       if (input.message !== undefined && typeof input.message !== "string") return bad();
