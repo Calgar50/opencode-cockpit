@@ -1267,6 +1267,70 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 - **Mises à jour d'opencode :** version épinglée (1.18.30). La changer se fait volontairement dans `docker/opencode/Dockerfile`, puis se valide.
 - **Architecture :** images publiées pour processeurs x86-64 uniquement.
 
+<!-- nav:fichiers -->
+### 1.1 : onglet « Fichiers » (non publié)
+
+Relire en lecture seule les fichiers des projets (décisions A19 point 2, A21, A29 D14) : paquets NAV-1 à NAV-4, réalisés sur la branche locale `chantier/1.1-nav` (décision A30, exécution anticipée) et fusionnés dans `chantier/1.1` à leur rang de la grande fusion, après GF5 et avant L51, où le banc est rejoué. Description pour l'utilisateur et pour l'IT-Sec : `README.md`, « Fichiers (lecture seule) ».
+
+**Tableau d'honnêteté de l'onglet.** Chaque phrase affichée a son application et son test.
+
+| Phrase affichée | Application | Test |
+|---|---|---|
+| « Lecture seule : ici, rien n'est modifié et rien n'est envoyé à une IA. » | montage `:ro` ; aucune fonction d'écriture ; module sans client d'opencode ni suivi des coûts | M-NAV-6 (`ro` dans `mountinfo`) ; tests statiques de `workspace-files.test.ts` ; `croisements-nav.test.ts` (aucune requête reçue par le faux, aucune ligne `usage`) ; banc : `nav-fichiers.mjs` (`billedCalls` inchangé, aucune requête `/file*` ni `/find*` reçue par opencode) |
+| « {n} éléments protégés ne sont pas montrés : clés, mots de passe, historique git. » | `estProtege` avant tout accès au disque | `fichiers-regles.test.ts` ; `routes-fichiers.test.ts` (même 403, que l'élément existe ou non) ; banc : `.env`, `.git`, `cle.pfx` et `credentials.json` absents, « 4 éléments protégés », `.env` par adresse directe → phrase « protégé » |
+| « C'est un raccourci vers un autre endroit : par sécurité, il n'est pas ouvert. » | `lstat`, `O_NOFOLLOW`, chemin réel du descripteur | passe Linux (courses 1, 2 et 5) ; banc : lien vers `/proc/self/environ` posé dans le conteneur → 403 `lien`, aucune variable d'environnement ; M-NAV-2, M-NAV-3 |
+| « Ce fichier porte plusieurs noms sur le disque : par sécurité, il n'est pas affiché. » | `nlink` au `lstat` et au `fstat` | unitaire (Windows et Linux) ; M-NAV-1, tenue sur Docker Desktop : lien physique posé dans le conteneur → 403 `plusieurs-noms` |
+| « Des passages qui ressemblent à des mots de passe ou à des clés sont remplacés par \*\*\*\* » | blocs de clé privée PEM ligne par ligne, puis `redactSecrets` ligne par ligne ; masquage « au mieux » : une copie d'un `.env` sous un autre nom n'est pas reconnue par son nom | unitaire ; banc : `Get-Rapport.ps1` (UTF-16LE) → `$password = "****"` et bandeau |
+| « Ce fichier est long ({taille}) : seul le début est affiché. » | borne de 256 Kio, 10 000 lignes, 2 000 caractères par ligne | unitaire ; banc : `gros.log` (1 Mio), bandeau en tête et en fin |
+| « Ce fichier a changé pendant la lecture. » | dev et ino, taille et date, chemin réel | passe Linux (courses 2, 3 et 5) ; M-NAV-5 |
+
+**Mesures sur ce poste** (Windows 11, Docker Desktop : le dossier de travail est monté dans les conteneurs par 9p ; protocole et journaux hors dépôt, `execution/mesures/NAV.md`) :
+
+- **M-NAV-1**, liens physiques : un lien physique posé par un conteneur Linux est vu avec `nlink` = 2 sur `/projets-lecture` ; refus 403 `plusieurs-noms`. La phrase est tenue sur ce poste.
+- **M-NAV-2**, liens symboliques : un lien posé dans un conteneur est vu comme lien dans un autre ; refus 403 `lien`, sans aucune variable d'environnement dans la réponse.
+- **M-NAV-3**, jonction Windows créée sur le poste dans le dossier de travail : le conteneur la voit comme **lien symbolique**, refusée (403 `lien`) ; elle n'apparaît pas comme un vrai dossier.
+- **M-NAV-4**, alias : le montage résout `.ENV`, `ENV~1` (nom court) et `SCRIPTS` vers les vrais fichiers, pas `.env.`. Le cockpit les refuse tous (403 `protege`, 400 `invalide`, 404 `introuvable`), jamais 200.
+- **M-NAV-5** : `dev` et `ino` stables entre `lstat` et `fstat` (300 essais). Le chemin réel du descripteur rend le nom **tel que demandé**, casse comprise : sur Docker Desktop, seule la preuve du nom exact arrête un alias de casse, et elle l'arrête.
+- **M-NAV-6** : `/projets-lecture` est monté `ro` dans le cockpit, `/workspace` reste `rw`.
+- **M-NAV-7**, durées par l'API : liste de 1 000 fichiers en 223 ms (médiane), lecture de 256 Kio en 26 ms, parcours « récents » arrêté à 5 000 éléments en 1,3 s (borne de 2 s). Bornes inchangées.
+- **M-NAV-8**, relais 1.0.6 pendant un parcours : un `CONNECT` vers un hôte hors liste est refusé sur place en 1 ms au plus, parcours ou non ; vers l'hôte permis, réponse en moins de 100 ms pendant les parcours comme sans eux. Cette seconde variante a été jouée sur une pile qui, contrairement à ce que le banc annonce, **avait une sortie vers Internet** (constat n° 3 ci-dessous) : elle reste une recette en attente.
+
+**Passe Linux** (tests du lecteur et des règles dans un conteneur jetable, image du banc) : sur `/tmp`, 105 tests, 0 échec, aucun cas « exige Linux » sauté. Sur le montage réel du banc, deux échecs, toujours les mêmes (constat n° 4).
+
+**Banc** (26/09, `--faux`, HTTPS épinglé) : `nav-fichiers.mjs` vert, seul et dans le banc complet ; banc complet 30 scénarios sur 31, le seul rouge étant `it2-ui-bandeau-journal.mjs`, rouge aussi rejoué seul, déjà relevé sur des têtes de `chantier/1.1` sans l'onglet (reporté à la grande fusion) ; vérifications d'isolation du banc (`--gardes`) toutes vertes.
+
+**Risques résiduels** (fiche NAV §11, tels quels) :
+
+1. **Copies non reconnues** : une copie d'un secret sous un nom ordinaire (`cp .env notes.txt`) n'est reconnue que par son contenu, au mieux (`redactSecrets`).
+   - Faux négatifs possibles.
+   - Faux positifs possibles : `password = input()` devient `password = ****`, et le bandeau le dit.
+2. **Liste pendant une course** : Node n'expose ni `openat` ni `fdopendir`. Sous Linux, en production, la liste d'un dossier et chaque dossier d'un parcours sont ouverts sans suivre de lien (`O_DIRECTORY | O_NOFOLLOW`), vérifiés sur leur descripteur (mêmes `dev` et `ino` qu'au contrôle, chemin réel égal au chemin demandé), puis lus par `/proc/self/fd/<fd>`, qui mène au dossier déjà ouvert. Une course, même aller-retour (dossier remplacé par un lien puis remis), ne fait donc apparaître que des noms du dossier demandé, ou un refus. Sans `/proc` (cockpit de développement sous Windows, voir n° 8), la lecture se fait par le chemin après ces contrôles : une course aller-retour placée entre l'ouverture et la lecture peut y montrer un instant des NOMS, des tailles et des dates de n'importe quel dossier que voit le cockpit. La revérification par chemin ne jette une liste que si l'écart est encore en place.
+3. **Jonctions Windows** créées par l'utilisateur sur son poste : selon M-NAV-3, elles peuvent apparaître comme de vrais dossiers. L'IA, depuis son conteneur Linux, ne peut pas en créer.
+4. **Liens physiques** : si M-NAV-1 montre que `nlink` vaut toujours 1 sur le montage, ils ne sont pas détectables. Un lien physique ne peut pas relier deux montages (EXDEV, mesuré par A16).
+5. **Faux positifs de nom** : `tokenizer/`, `password-policy.txt` et un projet nommé `api-token` sont masqués. Seul leur nombre est dit, avec « Pourquoi ? » en Avancé.
+6. **Encodages** : un UTF-16 sans BOM peut être pris pour un binaire ; windows-1252 est supposé plutôt que Latin-1. L'encodage est affiché en Avancé.
+7. **Un seul parcours à la fois** dans le cockpit : un second onglet reçoit « Une autre lecture est en cours ».
+8. **Cockpit de développement sous Windows** : sans `/proc`, l'étape 11 est sautée. La production tourne dans le conteneur Linux.
+9. **Glissement de périmètre** : les demandes à venir (modifier, télécharger, chercher dans le contenu, « expliquer ce fichier avec l'IA ») contredisent A19 (lecture seule, aucune requête facturée). Elles sont à décider par l'utilisateur. Un bouton « demander à l'IA » ferait sortir le contenu vers Copilot.
+
+Ce que les mesures de ce poste en disent : n° 3, une jonction est vue comme un lien et refusée (M-NAV-3) ; n° 4, `nlink` est bien rapporté, les liens physiques sont détectés (M-NAV-1) ; ces deux restes demeurent écrits pour d'autres versions de Docker Desktop et d'autres montages. N° 7 vaut aussi dans un seul onglet (constat n° 5).
+
+**Constats hors périmètre** (fiche NAV §12.2, mis à jour ; aucun n'est corrigé dans NAV) :
+
+1. **Double décodage de `directory` : CLOS par la 1.0.6**, avec la règle `%XX` et non « tout `%` » : un dossier dont le nom contient `%` suivi de deux chiffres hexadécimaux n'est ni proposé comme projet, ni transmis à opencode, ni ouvert par le Studio ; « Remise 20% » reste un projet. NAV ne décode rien et n'appelle jamais opencode : il **montre** ces dossiers en lecture sous « Tout le workspace », jamais pour une conversation (D14 (b) ; banc : le dossier `a%2F..%2F..%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode` de la faille mesurée est listé et lu, absent des projets). Un tel dossier dont le nom contient `secret` reste protégé par son nom.
+2. **BAS, encore ouvert** : le proxy `/api/oc/find/file` (mentions `@` du composeur) rend les noms des fichiers protégés sans filtre, alors que l'onglet les masque. À harmoniser au rang de fusion, dans `oc-proxy.ts` après GF1 (fichier chaud), avec `estProtege`.
+3. **MOYEN, banc e2e** (M-NAV-8) : en `--faux`, le cockpit de la pile jetable **sort vers Internet** par le réseau `e2e-front` (route par défaut `172.24.0.1`) : sur Docker Desktop, `enable_ip_masquerade=false` ne coupe pas la sortie. Le relais a ainsi établi 24 connexions TCP vers `api.githubcopilot.com:443` pendant la mesure, fermées aussitôt, sans aucun octet applicatif ni jeton. La phrase d'`e2e/README.md` « `internal` (sans Internet) » ne vaut donc pas pour le cockpit. À corriger par les propriétaires du banc (surcharge Compose et garde d'isolation).
+4. **BAS, sûreté tenue** (passe Linux sur le montage) : sur un montage 9p de Docker Desktop, un dossier déplacé après son ouverture ne se relit plus par `/proc/self/fd/<fd>` (ENOENT). Le lecteur refuse alors (`illisible`) ou saute le dossier, sans montrer aucun nom extérieur ; deux tests de `workspace-files.test.ts`, qui attendent les vrais noms, échouent sur ce montage. Reproduction hors dépôt ; à trancher par l'intégrateur de la vague 6 (attendre « vrais noms ou refus » sur un montage), sans toucher au lecteur.
+5. **BAS, interface** (banc complet) : changer de projet pendant le parcours « Modifiés récemment » du projet précédent donne « Une autre lecture est en cours » : la requête du projet quitté est annulée dans la page, mais son parcours continue sur le serveur et garde la place unique. Une fois ce parcours fini (2 s au plus), **Réessayer** relance la liste. Pistes pour l'intégrateur : libérer la place à l'annulation de la requête, ou attendre la place comme pour les lectures. Le scénario `nav-fichiers.mjs` attend donc la fin de chaque chargement avant de changer de projet.
+
+**Recettes en attente** (elles bloquent la publication, pas la suite du chantier) :
+
+- un passage au lecteur d'écran NVDA sur l'onglet (listes imbriquées, boutons de dossier, fichier courant, bandeaux) ;
+- les captures en contraste élevé réel de Windows : le banc prend 18 captures par vue (normal, contraste forcé et niveaux de gris avec mouvement réduit émulés par le navigateur, 3 tailles, 2 thèmes) et la vue à 400 px avec « Retour aux fichiers » ; les captures d'accessibilité du banc de la construction (`captureAccessibilite`) sont reprises au rang de fusion ;
+- M-NAV-8, variante « hôte permis », sur une pile réellement sans sortie ;
+- au travail : relire dans l'onglet un script PowerShell écrit par l'IA, sur le Docker Desktop et le dossier de travail du poste de l'entreprise.
+<!-- /nav:fichiers -->
+
 ---
 
 ## 12. Dépannage
