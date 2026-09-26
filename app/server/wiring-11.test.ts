@@ -288,6 +288,9 @@ describe("câblage 1.1 : ordre figé", () => {
       "capWatch",
       "internalAgents",
       "diagnostics",
+      // <nav:ordre>
+      "fichiers",
+      // </nav:ordre>
     ]);
     assert.deepEqual(STEP_ORDER, {
       hooks: {
@@ -311,6 +314,9 @@ describe("câblage 1.1 : ordre figé", () => {
         ["autonomy", "conversationAutonomy"],
         ["plans", "plans"],
         ["diagnostic-11", "diagnostics"],
+        // <nav:ordre>
+        ["fichiers", "fichiers"],
+        // </nav:ordre>
       ],
     });
   });
@@ -318,7 +324,10 @@ describe("câblage 1.1 : ordre figé", () => {
   it("MODULES et NEUTRAL_PORTS : un module réel par nom, un port neutre par module sauf gate", () => {
     assert.deepEqual(Object.keys(MODULES), [...MODULE_ORDER]);
     for (const name of MODULE_ORDER) assert.equal(MODULES[name].name, name);
-    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => name !== "gate").sort());
+    // <nav:ordre>
+    // « fichiers » (NAV-2) : module sans port, comme « gate ».
+    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => name !== "gate" && name !== "fichiers").sort());
+    // </nav:ordre>
   });
 
   it("modules factices : crochets, dérivations, abonnements, démarrage et routes rangés par STEP_ORDER", async () => {
@@ -403,6 +412,9 @@ describe("câblage 1.1 : ordre figé", () => {
       },
       { name: "internalAgents", install: (reg) => reg.startup(async () => void trace.push("internalAgents")) },
       { name: "diagnostics", install: (reg) => reg.routes("diagnostic-11", () => void trace.push("diagnostic-11")) },
+      // <nav:ordre>
+      { name: "fichiers", install: (reg) => reg.routes("fichiers", () => void trace.push("fichiers")) },
+      // </nav:ordre>
     ];
     const wiring = buildCockpit11(s.deps, { modules: [...factices].reverse() });
     assert.deepEqual(wiring.modules, [...MODULE_ORDER]);
@@ -432,7 +444,17 @@ describe("câblage 1.1 : ordre figé", () => {
     );
     assert.deepEqual(
       await run(() => wiring.routes.forEach((register) => register(stub<Hono>()))),
-      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11"],
+      [
+        "conversations",
+        "delegations",
+        "activity",
+        "autonomy",
+        "plans",
+        "diagnostic-11",
+        // <nav:ordre>
+        "fichiers",
+        // </nav:ordre>
+      ],
     );
     assert.deepEqual(
       wiring.registrations.filter((r) => r.kind === "hook").map((r) => `${r.key}/${r.module}`),
@@ -533,6 +555,10 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <nav:ordre>
+      // NAV-2 : onglet « Fichiers », quatre routes POST de lecture seule, en dernier (aucun crochet, aucune dérivation).
+      { kind: "routes", key: "fichiers", module: "fichiers" },
+      // </nav:ordre>
     ]);
     assert.deepEqual(
       [
@@ -548,7 +574,9 @@ describe("câblage 1.1 : ports neutres", () => {
     assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
     assert.equal(wiring.derivations.length, 5);
     assert.equal(wiring.startup.length, 2);
-    assert.equal(wiring.routes.length, 6);
+    // <nav:ordre>
+    assert.equal(wiring.routes.length, 7);
+    // </nav:ordre>
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts.
     assert.deepEqual(await wiring.c11.ports.conversationAutonomy.put(ROOT, { choix: "omo" } as never, { confirmed: true }), {

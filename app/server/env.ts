@@ -65,6 +65,18 @@ export interface AppEnv {
    * réseau (COCKPIT_RELAY_PEER, « opencode » par défaut). null : relais désactivé (développement, tests).
    */
   relay: { port: number; peer: string } | null;
+  // <nav:env>
+  /**
+   * COCKPIT_FICHIERS (1.1, onglet « Fichiers ») : false coupe les quatre routes de lecture (403 « fichiers-coupes »). Facultatif :
+   * absent, l'onglet est actif (comme « on »).
+   */
+  fichiers?: boolean;
+  /**
+   * COCKPIT_FICHIERS_DIR : dossier lu par l'onglet « Fichiers » (/projets-lecture, second montage du dossier de travail en lecture
+   * seule), accepté seulement s'il est égal à /projets-lecture ou au dossier de travail (D14 (a)). Absent : workspaceDir.
+   */
+  fichiersDir?: string;
+  // </nav:env>
 }
 
 export class EnvError extends Error {
@@ -111,6 +123,31 @@ export function parseAutonomy(value: string | undefined): boolean {
   if (raw === "off") return false;
   throw new EnvError("COCKPIT_AUTONOMY : valeur refusée (on ou off).");
 }
+
+// <nav:env>
+/** Second montage du dossier de travail, en lecture seule (docker-compose.yml) : le seul dossier que l'onglet « Fichiers » lit. */
+export const FICHIERS_DIR_MONTAGE = "/projets-lecture";
+
+/** COCKPIT_FICHIERS : vide ou « on » = onglet « Fichiers » actif, « off » = coupé ; autre valeur = refus de démarrer. */
+export function parseFichiers(value: string | undefined): boolean {
+  const raw = value?.trim().toLowerCase() ?? "";
+  if (raw === "" || raw === "on") return true;
+  if (raw === "off") return false;
+  throw new EnvError("COCKPIT_FICHIERS : valeur refusée (on ou off).");
+}
+
+/**
+ * COCKPIT_FICHIERS_DIR, liste d'autorisation (décision D14 (a), qui remplace la liste de refus A8) : absent ou vide = dossier de
+ * travail (undefined) ; sinon chemin absolu ÉGAL, à la lettre et sans normalisation, à /projets-lecture ou au dossier de travail.
+ * Toute autre valeur (relative, /, /proc, /data, un montage de la salle, /certs, un sous-dossier, « .. ») refuse le démarrage :
+ * le cockpit ne lit jamais ses propres dossiers, même après l'ajout d'un montage. Le message ne recopie pas la valeur lue.
+ */
+export function parseFichiersDir(value: string | undefined, workspaceDir: string): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  if (path.isAbsolute(value) && (value === FICHIERS_DIR_MONTAGE || value === workspaceDir)) return value;
+  throw new EnvError("COCKPIT_FICHIERS_DIR : dossier refusé.");
+}
+// </nav:env>
 
 /** Domaine GitHub Enterprise déclaré : vide = aucun ; valeur refusée = refus de démarrer (le relais l'ouvrirait à opencode). */
 export function parseGithubEnterpriseDomain(value: string | undefined): string | null {
@@ -208,6 +245,9 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
 
   const workspaceDir = path.resolve(env.COCKPIT_WORKSPACE_DIR ?? "/workspace");
   const githubEnterpriseDomain = parseGithubEnterpriseDomain(env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN);
+  // <nav:env>
+  const fichiersDir = parseFichiersDir(env.COCKPIT_FICHIERS_DIR, workspaceDir);
+  // </nav:env>
   return {
     host: env.COCKPIT_HOST?.trim() || "127.0.0.1",
     port,
@@ -240,5 +280,9 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     opensslPath: absolutePath(env, "COCKPIT_OPENSSL", "/usr/bin/openssl"),
     version: env.COCKPIT_VERSION?.trim() || "dev",
     relay: parseRelay(env, port),
+    // <nav:env>
+    fichiers: parseFichiers(env.COCKPIT_FICHIERS),
+    ...(fichiersDir === undefined ? {} : { fichiersDir }),
+    // </nav:env>
   };
 }

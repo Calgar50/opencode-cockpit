@@ -53,11 +53,14 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     // délégations (L1d, dont le crochet laisse passer le « once » d'une autre demande qu'une délégation) et plans (L6b, crochet
     // d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0 inchangé
     // ci-dessous.
+    // <nav:ordre>
+    // NAV-2 : plus le groupe « fichiers » (onglet « Fichiers », lecture seule).
     assert.equal(
       h.cockpit.wiring.routes.length,
-      6,
-      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic",
+      7,
+      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, Fichiers",
     );
+    // </nav:ordre>
 
     const { session, asked } = await pendingAsk(h, "Croisement V1");
     const always = await h.call("POST", `/api/oc/permission/${asked.id}/reply`, { headers: h.headers.mutating, body: { reply: "always" } });

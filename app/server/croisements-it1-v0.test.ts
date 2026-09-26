@@ -307,6 +307,10 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <nav:ordre>
+      // NAV-2 : onglet « Fichiers », routes de lecture seule, dernier groupe (aucun crochet, aucune dérivation).
+      { kind: "routes", key: "fichiers", module: "fichiers" },
+      // </nav:ordre>
     ]);
     for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked[step] ?? 0, step);
     assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [5, 3, 2]);
