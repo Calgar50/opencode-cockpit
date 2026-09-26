@@ -234,7 +234,7 @@ Par l'API du cockpit :
 
 | Scénario | Ce qu'il établit |
 |---|---|
-| `it1-api-commun.mjs` | préalables : mode Simple par défaut, opencode joint, IA du banc au catalogue, agents internes installés, témoin P6, outils du faux conformes à la mesure M2 |
+| `it1-api-commun.mjs` | préalables : mode Simple par défaut, opencode joint, IA du banc au catalogue, agents internes installés, témoin P6, outils du faux conformes à la mesure M2, prise pour la configuration que sert la pile (depuis R106-a, le profil livré que sert le faux refuse webfetch et websearch, que la configuration de M2 laissait sur « ask » : ils sortent des listes attendues en `--faux`, et seulement là) |
 | `it1-api-arret.mjs` | « Arrêter » : demande en attente refusée, racine arrêtée la première, plus aucune session de l'arbre occupée ; « Autoriser une fois » tardif refusé |
 | `it1-api-m16.mjs` | mesure M16 : le plancher posé à la création ne change ni le titre ni l'archive |
 | `it1-api-pfx-explore.mjs` | un enfant `explore` hérite du plancher : `cle.pfx` refusé sans demande, `notes.txt` lu |

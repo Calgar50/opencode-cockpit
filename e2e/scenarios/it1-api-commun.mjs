@@ -14,7 +14,8 @@
 // l'assistant et de la session ; ce calcul est vérifié contre la mesure M2 (fixture m2-tools.json, fake-opencode.test.ts). Le banc
 // n'expose pas toolsFor : on applique donc les mêmes fonctions du faux (builtinTools, disabledTools) aux règles lues par le proxy
 // du cockpit (GET /session/:id, GET /agent). En « --reel-hors-ligne », aucun oracle : la liste est celle que le vrai opencode a
-// envoyée au faux fournisseur.
+// envoyée au faux fournisseur. Les listes de M2 sont prises pour la configuration que sert la pile (casM2) : depuis R106-a, le
+// profil livré, que sert le faux, refuse webfetch et websearch, que la configuration de M2 laissait sur « ask ».
 //
 // Limite du mode « --reel-hors-ligne » : le faux fournisseur (e2e/lib/faux-fournisseur.mjs) ne sait répondre que du texte, jamais
 // un appel d'outil. Ce qui demande qu'une IA appelle un outil (lecture d'un fichier, délégation) n'y est donc pas joué ; chaque
@@ -457,12 +458,64 @@ export function exigerPlancherHerite(permission, plancher, libelle) {
 
 let m2 = null;
 
-/** Cas de la mesure M2 (opencode 1.18.30 réel, fixture m2-tools.json) : liste d'outils mesurée, et IA de la mesure. */
-export function casM2(nom) {
+/**
+ * Configuration d'opencode que sert la pile, par mode du banc, lue dans le DÉPÔT (jamais dans la pile : l'oracle ne se nourrit
+ * pas de ce qu'il vérifie). « --faux » : le faux opencode sert son DEFAULT_CONFIG, le profil livré depuis R106-a
+ * (docker/opencode/opencode.default.jsonc). « --reel-hors-ligne » : la configuration de la mesure M-B1, posée dans le volume.
+ */
+const CONFIGURATION_DE_LA_PILE = {
+  faux: ["docker", "opencode", "opencode.default.jsonc"],
+  "reel-hors-ligne": ["e2e", "lib", "opencode-hors-ligne.jsonc"],
+  reel: ["docker", "opencode", "opencode.default.jsonc"],
+};
+
+/** Texte JSONC sans ses commentaires de ligne et de bloc (hors des chaînes), prêt pour JSON.parse. */
+export function sansCommentairesJsonc(texte) {
+  let sortie = "";
+  for (let i = 0; i < texte.length; i++) {
+    const c = texte[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < texte.length && texte[j] !== '"') j += texte[j] === "\\" ? 2 : 1;
+      sortie += texte.slice(i, j + 1);
+      i = j;
+    } else if (c === "/" && texte[i + 1] === "/") {
+      while (i < texte.length && texte[i] !== "\n") i++;
+      sortie += "\n";
+    } else if (c === "/" && texte[i + 1] === "*") {
+      const fin = texte.indexOf("*/", i + 2);
+      i = fin === -1 ? texte.length : fin + 1;
+    } else {
+      sortie += c;
+    }
+  }
+  return sortie;
+}
+
+/** Outils qu'une permission de configuration refuse entièrement (valeur simple « deny »). */
+function refusesParLaConfiguration(permission) {
+  return new Set(Object.entries(permission ?? {}).filter(([, action]) => action === "deny").map(([outil]) => outil));
+}
+
+/**
+ * Cas de la mesure M2 (opencode 1.18.30 réel, fixture m2-tools.json) : liste d'outils mesurée, et IA de la mesure, pour la
+ * configuration que sert la pile dans `mode`. M2 a été mesurée sous `configPermission` de la fixture (web sur « ask ») ; la règle
+ * qu'elle établit (un outil dont la dernière règle est « * deny » n'est pas proposé à l'IA) retire aussi un outil que la
+ * configuration de la pile refuse et que celle de M2 ne refusait pas. Depuis R106-a (A31 c), le profil livré refuse webfetch et
+ * websearch : en « --faux », ils sortent donc des listes attendues ; en « --reel-hors-ligne » (web sur « ask »), rien ne change.
+ * `retiresParLaPile` dit ce qui a été retiré, pour que le relevé le montre.
+ */
+export function casM2(nom, mode = "faux") {
   m2 ??= JSON.parse(fs.readFileSync(path.join(RACINE, "app", "server", "test-support", "fixtures", "m2-tools.json"), "utf8"));
   const cas = m2.cases.find((c) => c.name === nom);
   exiger(cas, `cas M2 inconnu : ${nom}`);
-  return { ...cas, modelID: m2.model.modelID };
+  const fichier = CONFIGURATION_DE_LA_PILE[mode];
+  exiger(fichier, `mode du banc inconnu pour la mesure M2 : ${mode}`);
+  const permission = JSON.parse(sansCommentairesJsonc(fs.readFileSync(path.join(RACINE, ...fichier), "utf8"))).permission;
+  exiger(permission && typeof permission === "object", `${fichier.join("/")} : aucune permission lisible.`);
+  const deM2 = refusesParLaConfiguration(m2.configPermission);
+  const retiresParLaPile = [...refusesParLaConfiguration(permission)].filter((outil) => !deM2.has(outil)).sort();
+  return { ...cas, tools: cas.tools.filter((outil) => !retiresParLaPile.includes(outil)), modelID: m2.model.modelID, retiresParLaPile };
 }
 
 /**
@@ -515,16 +568,18 @@ export async function run(ctx) {
 
   // Oracle des outils du faux, sur les agents que sert la pile : il rend les listes mesurées par M2 (racine, enfant general).
   if (ctx.mode === "faux") {
+    // Seul écart entre la configuration de M2 et celle que sert le faux : le web refusé par le profil livré (R106-a, A31 c).
+    exigerListe(casM2("sans-regle", ctx.mode).retiresParLaPile, ["webfetch", "websearch"], "outils refusés par le profil livré et pas par la configuration de M2");
     const agents = await oc(ctx).agents();
     for (const nom of ["sans-regle", "racine-edit-bash-refuses", "tout-refuse-sauf-lecture", "patch-bash-refuse"]) {
-      const cas = casM2(nom);
+      const cas = casM2(nom, ctx.mode);
       const obtenus = outilsDuFaux({ agent: cas.agent, permission: cas.sessionPermission ?? [] }, agents, { modelID: cas.modelID });
       exigerListe(obtenus, cas.tools, `oracle des outils, cas M2 « ${nom} »`);
     }
-    const enfant = casM2("enfant-general");
+    const enfant = casM2("enfant-general", ctx.mode);
     const general = agents.find((a) => a.name === "general");
     exiger(general, "assistant « general » absent du faux.");
-    const regles = deriveChildRules(casM2(enfant.parent).sessionPermission ?? [], general.permission);
+    const regles = deriveChildRules(casM2(enfant.parent, ctx.mode).sessionPermission ?? [], general.permission);
     exigerListe(outilsDuFaux({ agent: "general", permission: regles }, agents, { modelID: enfant.modelID }), enfant.tools, "oracle des outils, cas M2 « enfant-general »");
   } else {
     nonJoue(ctx, "oracle des outils du faux", "aucun faux opencode : les listes viennent du vrai opencode");

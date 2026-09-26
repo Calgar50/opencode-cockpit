@@ -58,7 +58,7 @@ export async function run(ctx) {
     exiger(autonomie?.choix === "plan", `choix « ${resume(autonomie?.choix)} » au lieu de « plan ».`);
 
     // 2. Outils de la racine.
-    const casRacine = casM2("racine-edit-bash-refuses");
+    const casRacine = casM2("racine-edit-bash-refuses", ctx.mode);
     const agents = await client.agents();
     if (ctx.mode === "faux") {
       exigerListe(outilsDuFaux(racine, agents, { agent: "build", modelID: casRacine.modelID }), casRacine.tools, "outils de la racine, IA de la mesure M2");
@@ -95,7 +95,7 @@ async function delegationDansLePlan(ctx, client, temoin, rootId, agents, ia) {
   exiger(Array.isArray(enfants) && enfants.length === 1, `un enfant attendu, ${resume(enfants?.map?.((e) => e.id))}`);
   const enfant = await client.session(enfants[0].id);
   exigerPlancherHerite(enfant.permission, PLANCHER_PLAN, "enfant du plan");
-  const casEnfant = casM2("enfant-general");
+  const casEnfant = casM2("enfant-general", ctx.mode);
   exigerListe(outilsDuFaux(enfant, agents, { agent: "general", modelID: casEnfant.modelID }), casEnfant.tools, "outils de l'enfant, IA de la mesure M2");
   exigerSansEcrivain(outilsDuFaux(enfant, agents, { agent: "general", modelID: ia.modelID }), `enfant, IA ${ia.modelID}`);
 
