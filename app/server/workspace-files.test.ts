@@ -100,6 +100,57 @@ function espion(t: TestContext, methode: "lstat" | "opendir" | "open"): string[]
   return vus;
 }
 
+/** Espion de fsp.open : chemin et drapeaux de chaque ouverture. */
+function espionOuvertures(t: TestContext): Array<{ chemin: string; drapeaux: number }> {
+  const vues: Array<{ chemin: string; drapeaux: number }> = [];
+  const cible = fsp as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = cible.open;
+  if (original === undefined) throw new Error("open");
+  t.mock.method(cible, "open", function (this: unknown, ...args: unknown[]) {
+    vues.push({ chemin: String(args[0]), drapeaux: Number(args[1] ?? 0) });
+    return original.apply(this, args);
+  });
+  return vues;
+}
+
+/**
+ * Aller-retour d'une course (relecture F2-vague-5) sur le dossier `dossier` (chemin réel) : `versLien(dehors)` le remplace par un
+ * lien vers `dehors`, `versDossier(autre)` par le vrai dossier `autre` du même disque ; le vrai dossier, avec les mêmes dev et
+ * ino, est remis juste avant le lstat suivant de `dossier` lui-même, qui est la revérification du parcours.
+ */
+function remiseAvantReverification(t: TestContext, dossier: string): { versLien: (dehors: string) => void; versDossier: (autre: string) => void } {
+  let remise: (() => void) | null = null;
+  const cible = fsp as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = cible.lstat;
+  if (original === undefined) throw new Error("lstat");
+  t.mock.method(cible, "lstat", function (this: unknown, ...args: unknown[]) {
+    if (remise !== null && args[0] === dossier) {
+      const remettre = remise;
+      remise = null;
+      remettre();
+    }
+    return original.apply(this, args);
+  });
+  return {
+    versLien: (dehors) => {
+      fs.renameSync(dossier, `${dossier}-ancien`);
+      fs.symlinkSync(dehors, dossier);
+      remise = () => {
+        fs.unlinkSync(dossier);
+        fs.renameSync(`${dossier}-ancien`, dossier);
+      };
+    },
+    versDossier: (autre) => {
+      fs.renameSync(dossier, `${dossier}-ancien`);
+      fs.renameSync(autre, dossier);
+      remise = () => {
+        fs.renameSync(dossier, autre);
+        fs.renameSync(`${dossier}-ancien`, dossier);
+      };
+    },
+  };
+}
+
 /** Nombre de liens rapporté pour un lien physique tout juste créé (M-NAV-1) ; 1 : non rapporté, le cas est sauté. */
 function lienPhysique(t: TestContext, source: string, cible: string): boolean {
   fs.linkSync(source, cible);
@@ -485,6 +536,102 @@ describe("lecteur : courses (crochet pendant)", () => {
     assert.deepEqual(await lecteur.dossier({ projet: "proj", chemin: "a" }), { ok: false, code: "a-change" });
   });
 
+  it("(6) [L] aller-retour pendant la liste : dossier remplacé par un lien vers un dossier extérieur, puis remis → a-change, aucun nom extérieur", L, async () => {
+    // Relecture F2-vague-5 : les mêmes dev et ino reviennent avec le vrai dossier, la revérification seule ne voit rien.
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    const dehors = nouvelleRacine();
+    ecrire(dehors, "cockpit.db", "0123456789");
+    ecrire(dehors, "session-7f3a.json", "{}");
+    const d = path.join(racine, "proj", "d");
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment === "apres-controle") {
+          fs.renameSync(d, `${d}.bak`);
+          fs.symlinkSync(dehors, d);
+        } else if (moment === "apres-liste") {
+          fs.unlinkSync(d);
+          fs.renameSync(`${d}.bak`, d);
+        }
+      },
+    });
+    const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
+    const json = JSON.stringify(res);
+    for (const nom of ["cockpit.db", "session-7f3a"]) assert.equal(json.includes(nom), false, json);
+    assert.deepEqual(res, { ok: false, code: "a-change" });
+  });
+
+  it("(7) [L] aller-retour après l'ouverture du dossier : il est lu par son descripteur (/proc/self/fd), seulement ses vrais noms", L, async () => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    const dehors = nouvelleRacine();
+    ecrire(dehors, "cockpit.db", "0123456789");
+    const d = path.join(racine, "proj", "d");
+    let pose = false;
+    const moments: MomentLecteur[] = [];
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        moments.push(moment);
+        if (moment === "apres-ouverture") {
+          fs.renameSync(d, `${d}.bak`);
+          fs.symlinkSync(dehors, d);
+          pose = true;
+        } else if (moment === "apres-liste" && pose) {
+          fs.unlinkSync(d);
+          fs.renameSync(`${d}.bak`, d);
+          pose = false;
+        }
+      },
+    });
+    const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.deepEqual(res.valeur.entrees.map((e) => [e.nom, e.type, e.taille]), [["vrai.txt", "fichier", 1]]);
+    assert.deepEqual(moments, ["apres-controle", "apres-ouverture", "apres-liste"]);
+  });
+
+  it("(8) aller-retour pendant la liste avec un autre vrai dossier (.git mis à la place, puis remis) → a-change, aucun de ses noms (dev et ino au fstat)", async () => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    ecrire(racine, "proj/.git/HEAD", "ref: refs/heads/main\n");
+    ecrire(racine, "proj/.git/config", "[core]\n");
+    const d = path.join(racine, "proj", "d");
+    const git = path.join(racine, "proj", ".git");
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment === "apres-controle") {
+          fs.renameSync(d, `${d}.bak`);
+          fs.renameSync(git, d);
+        } else if (moment === "apres-liste") {
+          fs.renameSync(d, git);
+          fs.renameSync(`${d}.bak`, d);
+        }
+      },
+    });
+    const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
+    const json = JSON.stringify(res);
+    for (const nom of ["HEAD", "config"]) assert.equal(json.includes(nom), false, json);
+    assert.deepEqual(res, { ok: false, code: "a-change" });
+  });
+
+  it("(9) [L] aller-retour du dossier parent, déplacé sous un nom protégé et remplacé par un lien, puis remis → a-change (A1, chemin réel du descripteur)", L, async () => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/sous/note.txt", "x");
+    const a = path.join(racine, "proj", "a");
+    const secrets = path.join(racine, "proj", "secrets");
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment === "apres-controle") {
+          fs.renameSync(a, secrets);
+          fs.symlinkSync("secrets", a);
+        } else if (moment === "apres-liste") {
+          fs.unlinkSync(a);
+          fs.renameSync(secrets, a);
+        }
+      },
+    });
+    assert.deepEqual(await lecteur.dossier({ projet: "proj", chemin: "a/sous" }), { ok: false, code: "a-change" });
+  });
+
   it("après le contrôle, la feuille est remplacée par un autre fichier ordinaire → a-change (dev et ino)", async () => {
     const racine = nouvelleRacine();
     const feuille = ecrire(racine, "proj/f.txt", "vrai");
@@ -642,7 +789,7 @@ describe("lecteur : parcours (récents, recherche)", () => {
     ecrire(racine, "proj/Résumé.md", "profond");
     ecrire(racine, "proj/sous/profond/Profond.ps1", "x");
     ecrire(racine, "proj/notes.txt", "le mot profond est ici, dans le contenu");
-    const ouvertures = espion(t, "open");
+    const ouvertures = espionOuvertures(t);
     const { lecteur } = nouveauLecteur(racine);
     const res = await lecteur.recherche({ projet: "proj", texte: "PROFOND" });
     assert.ok(res.ok, JSON.stringify(res));
@@ -654,7 +801,17 @@ describe("lecteur : parcours (récents, recherche)", () => {
     assert.ok(accents.ok, JSON.stringify(accents));
     assert.deepEqual(accents.valeur.resultats, [{ chemin: "Résumé.md", type: "fichier" }]);
     assert.equal(accents.valeur.texte, "resume");
-    assert.deepEqual(ouvertures, []);
+    // Aucun fichier ouvert : seuls les dossiers parcourus le sont, pour être lus par leur descripteur (relecture F2-vague-5) ;
+    // sous Linux, O_DIRECTORY fait refuser au noyau tout ce qui n'est pas un dossier, O_NOFOLLOW tout lien.
+    for (const { chemin, drapeaux } of ouvertures) {
+      assert.equal(fs.lstatSync(chemin).isDirectory(), true, chemin);
+      assert.equal(["Résumé.md", "Profond.ps1", "notes.txt"].includes(path.basename(chemin)), false, chemin);
+      if (LINUX) {
+        assert.equal(drapeaux & fs.constants.O_DIRECTORY, fs.constants.O_DIRECTORY, chemin);
+        assert.equal(drapeaux & fs.constants.O_NOFOLLOW, fs.constants.O_NOFOLLOW, chemin);
+        assert.equal(drapeaux & (fs.constants.O_WRONLY | fs.constants.O_RDWR), 0, chemin);
+      }
+    }
   });
 
   it("borne de 5 000 entrées → incomplet", async () => {
@@ -752,6 +909,74 @@ describe("lecteur : parcours (récents, recherche)", () => {
     assert.ok(res.ok, JSON.stringify(res));
     assert.equal(JSON.stringify(res).includes("nom-exterieur"), false);
     assert.equal(res.valeur.incomplet, true);
+  });
+
+  it("[L] aller-retour pendant le parcours : dossier remplacé par un lien vers un dossier extérieur, remis juste avant sa revérification → aucun nom extérieur", L, async (t) => {
+    // Relecture F2-vague-5 : la revérification par lstat retrouve les mêmes dev et ino, elle seule ne voit rien.
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/dedans.txt", "x");
+    const dehors = nouvelleRacine();
+    ecrire(dehors, "nom-exterieur.txt", "0123456789");
+    const a = path.join(fs.realpathSync.native(racine), "proj", "a");
+    const course = remiseAvantReverification(t, a);
+    let dossiers = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment !== "parcours-dossier") return;
+        dossiers++;
+        // Deuxième dossier lu : « a », remplacé avant sa lecture.
+        if (dossiers === 2) course.versLien(dehors);
+      },
+    });
+    const res = await lecteur.recents({ projet: "proj" });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(JSON.stringify(res).includes("nom-exterieur"), false, JSON.stringify(res));
+    assert.equal(res.valeur.incomplet, true);
+  });
+
+  it("aller-retour pendant le parcours avec un autre vrai dossier (.git mis à la place, remis avant la revérification) → ses noms jamais montrés (dev et ino au fstat)", async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/dedans.txt", "x");
+    ecrire(racine, "proj/.git/HEAD", "ref: refs/heads/main\n");
+    ecrire(racine, "proj/.git/config", "[core]\n");
+    const reelle = fs.realpathSync.native(racine);
+    const course = remiseAvantReverification(t, path.join(reelle, "proj", "a"));
+    let dossiers = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment !== "parcours-dossier") return;
+        dossiers++;
+        if (dossiers === 2) course.versDossier(path.join(reelle, "proj", ".git"));
+      },
+    });
+    const res = await lecteur.recents({ projet: "proj" });
+    assert.ok(res.ok, JSON.stringify(res));
+    for (const nom of ["HEAD", "config"]) assert.equal(JSON.stringify(res).includes(nom), false, JSON.stringify(res));
+    assert.equal(res.valeur.incomplet, true);
+  });
+
+  it("[L] aller-retour après l'ouverture d'un dossier parcouru : il est lu par son descripteur, seulement ses vrais noms", L, async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/dedans.txt", "x");
+    const dehors = nouvelleRacine();
+    ecrire(dehors, "nom-exterieur.txt", "0123456789");
+    const a = path.join(fs.realpathSync.native(racine), "proj", "a");
+    const course = remiseAvantReverification(t, a);
+    let ouverts = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment !== "apres-ouverture") return;
+        ouverts++;
+        // Deuxième dossier ouvert : « a », remplacé entre son ouverture et sa lecture.
+        if (ouverts === 2) course.versLien(dehors);
+      },
+    });
+    const res = await lecteur.recents({ projet: "proj" });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(ouverts, 2);
+    assert.equal(JSON.stringify(res).includes("nom-exterieur"), false, JSON.stringify(res));
+    assert.deepEqual(res.valeur.fichiers.map((f) => f.chemin), ["a/dedans.txt"]);
+    assert.equal(res.valeur.incomplet, false);
   });
 });
 
