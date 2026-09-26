@@ -203,6 +203,24 @@ const asError = (err: unknown): Error => (err instanceof Error ? err : new Error
 
 export const isSync = (payload: OcEvent | SyncPayload): payload is SyncPayload => payload.type === "sync" && "syncEvent" in payload;
 
+/**
+ * Dossier de l'instance qu'ouvre opencode 1.18.30 pour une valeur demandée (A22, fiche-fusion-v106 §9.2). Le paramètre `directory`
+ * arrive déjà décodé une fois (URLSearchParams.get, workspace-routing.ts:86-88 ; l'en-tête x-opencode-directory, lui, arrive brut),
+ * puis instance-context.ts:15-21 le décode ENCORE par decodeURIComponent (valeur gardée telle quelle si ce décodage échoue :
+ * « Remise 20% »). Un dossier nommé « a%2F..%2F..%2Fsecret » ouvre donc l'instance « /secret ». Le chemin n'est normalisé que si
+ * le second décodage l'a changé : les dossiers des tests restent à l'octet près. Non reproduit : sur /session/:id/*, opencode prend
+ * session.directory (workspace-routing.ts:182).
+ */
+export function dossierDInstance(demande: string): string {
+  let decode: string;
+  try {
+    decode = decodeURIComponent(demande);
+  } catch {
+    return demande;
+  }
+  return decode === demande ? demande : path.posix.resolve("/", decode);
+}
+
 let lastMs = 0;
 let counter = 0;
 
@@ -637,6 +655,8 @@ export class FakeOpencode {
   readonly #waiters = new Set<Waiter>();
   /** Instances chargées (instance-store.ts) : dossiers des requêtes d'instance et des sessions, retirés à leur libération. */
   readonly #instances = new Set<string>();
+  /** Toutes les instances ouvertes depuis le démarrage, jamais retirées : relevé de la sentinelle (instancesHors). */
+  readonly #ouvertes = new Set<string>();
   /** Configuration globale (GET /global/config), fusionnée par PATCH. */
   globalConfig: Record<string, unknown>;
   /** PATCH /global/config reçus, dans l'ordre : corps, et changement effectif (qui libère toutes les instances en tâche de fond). */
@@ -728,6 +748,19 @@ export class FakeOpencode {
 
   pendingPermissions(): FakePermissionRequest[] {
     return [...this.#pending.values()].map((entry) => entry.info);
+  }
+
+  /** Instances chargées en ce moment (dossiers après le double décodage d'opencode), dans l'ordre de chargement. */
+  instancesChargees(): string[] {
+    return [...this.#instances];
+  }
+
+  /**
+   * Sentinelle d'instance (fiche-fusion-v106 §9.3) : dossiers des instances ouvertes depuis le démarrage hors de `racine` (le dossier
+   * du faux par défaut), libérées ou non. Vide tant qu'aucune requête n'a fait sortir opencode du workspace.
+   */
+  instancesHors(racine: string = this.directory): string[] {
+    return [...this.#ouvertes].filter((d) => d !== racine && !d.startsWith(racine === "/" ? "/" : `${racine}/`));
   }
 
   statusOf(sessionID: string): { type: string } {
@@ -974,8 +1007,9 @@ export class FakeOpencode {
     const notFound = (message: string) => json(404, { name: "NotFoundError", data: { message } });
     if (raw === null) return json(413, { _tag: "PayloadTooLarge" });
     if (!readable || (raw && !isRecord(body))) return bad();
+    // Dossier de l'instance : second décodage d'opencode 1.18.30 compris (dossierDInstance). `this.requests` garde la valeur reçue.
     const header = req.headers["x-opencode-directory"];
-    const directory = url.searchParams.get("directory") || (typeof header === "string" ? header : "") || this.directory;
+    const directory = dossierDInstance(url.searchParams.get("directory") || (typeof header === "string" ? header : "") || this.directory);
     let seg: string[];
     try {
       seg = url.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
@@ -986,7 +1020,7 @@ export class FakeOpencode {
     const id = seg[1] ?? "";
     const input = isRecord(body) ? body : {};
     // Toute route hors /global/* charge l'instance du dossier demandé.
-    if (seg[0] !== "global") this.#instances.add(directory);
+    if (seg[0] !== "global") this.#load(directory);
 
     if (is("GET", "global", "health")) return json(200, { healthy: true, version: this.version });
     if (is("GET", "global", "event")) return this.#openStream(res);
@@ -1149,6 +1183,12 @@ export class FakeOpencode {
     return this.#directories.get(sessionID) ?? this.directory;
   }
 
+  /** Charge l'instance du dossier (instance-store.ts) et la relève pour la sentinelle. */
+  #load(directory: string): void {
+    this.#instances.add(directory);
+    this.#ouvertes.add(directory);
+  }
+
   #approvedIn(directory: string): PermissionRule[] {
     let rules = this.#approved.get(directory);
     if (!rules) {
@@ -1204,7 +1244,7 @@ export class FakeOpencode {
     };
     this.#sessions.set(session.id, session);
     this.#directories.set(session.id, session.directory);
-    this.#instances.add(session.directory);
+    this.#load(session.directory);
     this.#messages.set(session.id, []);
     this.#emitSessionInfo("session.created", session);
     return session;

@@ -839,9 +839,11 @@ describe("Plan d'abord : POST /api/plans/:id/execution", () => {
     store.setPlan(internal.id, null, Date.now());
     const omo = await newPlan(h);
     h.db.prepare("UPDATE sessions SET instance = 'omo' WHERE id = ?").run(omo.rootId);
-    // Conversation de plan dont le dossier n'est plus dans le workspace monté.
-    const outside = await h.deps.client.request<FakeSession>("POST", "/session", { directory: "/ailleurs", body: { title: "Hors workspace" } });
+    // Conversation de plan dont le dossier n'est plus dans le workspace monté, telle que le cockpit la suit. Écrite dans sa base :
+    // la créer dans le faux à « /ailleurs » y ouvrirait une instance hors de /workspace (sentinelle du harnais, R106-a).
+    const outside = await h.deps.client.request<FakeSession>("POST", "/session", { body: { title: "Hors workspace" } });
     await until(() => h.sessions.get(outside.id));
+    h.db.prepare("UPDATE sessions SET directory = '/ailleurs' WHERE id = ?").run(outside.id);
     store.setPlan(outside.id, null, Date.now());
     const before = creations(h);
 

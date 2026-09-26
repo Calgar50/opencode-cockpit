@@ -91,7 +91,10 @@ export interface CockpitHarness {
    * /instance/dispose, ou si un redémarrage a été demandé à la doublure du contrôle.
    */
   assertNoGlobalRestart(): void;
-  /** Arrêt et nettoyage (aussi fait par t.after) ; idempotent. */
+  /**
+   * Arrêt et nettoyage (aussi fait par t.after) ; idempotent. Échoue si le faux opencode a ouvert une instance hors de son dossier
+   * (sentinelle d'instance, R106-a).
+   */
   close(): Promise<void>;
 }
 
@@ -120,6 +123,12 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
   const password = randomBytes(18).toString("base64url");
   const fake = new FakeOpencode({ password });
   cleanups.push(() => fake.close());
+  // Sentinelle d'instance (R106-a, fiche-fusion-v106 §9.3) : le faux décode `directory` deux fois comme opencode 1.18.30 ; une
+  // requête qui lui a fait ouvrir une instance hors de son dossier (/workspace) fait échouer le test qui l'a provoquée.
+  cleanups.push(() => {
+    const outside = fake.instancesHors();
+    assert.deepEqual(outside, [], `instance d'opencode ouverte hors de ${fake.directory} : ${outside.join(", ")}`);
+  });
   await fake.start();
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-harnais-"));
