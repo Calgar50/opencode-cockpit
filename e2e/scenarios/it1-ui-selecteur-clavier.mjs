@@ -39,6 +39,8 @@ const TABULATIONS_MAX = 120;
 
 export async function run(ctx) {
   const page = ctx.navigateur;
+  // Réglage de mouvement fixé avant toute action (garde du banc, R106-b) : les règles sont acceptées au clavier AVANT preparerPage.
+  await page.mouvement("no-preference");
   await accepterReglesAuClavier(page);
   await preparerPage(ctx);
   await avecTemoinP6(ctx, async () => {
