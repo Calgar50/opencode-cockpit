@@ -741,7 +741,8 @@ async function suspendue(s) {
  * dans une entrée ouverte en écriture, est listé par le cockpit à la fin de la demande (`omo.signales`), sans arrêt. Contre-épreuve
  * par le flux du cockpit (l'événement part bien, pour cette racine), puis l'écran : la phrase et le chemin doivent être sur la page
  * de la salle, atteints au clavier. Constat du train de V4 (constats-salle-V4.md §3 et §7 n° 3) : l'affichage d'`omo.signales` par
- * la page revient à L26c, qui n'écrit pas dans app/ ; un échec ici est REMIS, jamais tu.
+ * la page revenait à L26c, qui n'écrit pas dans app/ ; l'étape l'a trouvé absent (D-L26c-2), le train de V5 l'a corrigé (carte
+ * « Fichiers à relire » de SalleOmoPage). Un échec ici est REMIS, jamais tu.
  */
 async function signales(s) {
   const { ctx, page } = s;
@@ -775,7 +776,7 @@ async function signales(s) {
         texte.includes(relatif) && texte.includes(phrase),
         `fin de demande : « omo.signales » reçu par le flux du cockpit (${relatif}, « programme ») mais la page de la salle ne l'affiche pas ` +
           `(chemin ${texte.includes(relatif) ? "présent" : "absent"}, phrase « ${phrase} » ${texte.includes(phrase) ? "présente" : "absente"}) : ` +
-          "SalleOmoPage (L26a) n'écoute que « omo.hors-controle » ; §4.14.5 l.850 veut ces fichiers listés en fin de demande.",
+          "SalleOmoPage (L26a) doit lire « omo.signales » et le rendre (carte des fichiers à relire, train de V5) ; §4.14.5 l.850 veut ces fichiers listés en fin de demande.",
       );
       const cible = `[...document.querySelectorAll(".omo-page code")].find((c) => c.textContent.trim() === ${JSON.stringify(relatif)}) ?? null`;
       const tabulations = await atteintAuClavier(page, cible, "fichier à relire de fin de demande");
