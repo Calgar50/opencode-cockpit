@@ -748,6 +748,12 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
     const root = c11.sessions.get(rootId);
     if (!root || root.instance !== "principale") return;
     const directory = root.directory === "" ? null : root.directory;
+    // Dossier hors du workspace ou qu'opencode ouvrirait ailleurs (%XX, décodé deux fois : A22, R106-a) : aucune relecture, aucune
+    // instance ouverte hors de /workspace. Les demandes de cette conversation restent à l'utilisateur.
+    if (directory !== null && !c11.projects.isAllowedDirectory(directory)) {
+      log.warn("autonomie : demandes en attente non relues, dossier de la conversation refusé", { rootId });
+      return;
+    }
     const list = await c11.client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: AUTONOMY_READ_TIMEOUT_MS });
     if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
     for (const item of list.slice(0, RESCAN_MAX)) {

@@ -38,8 +38,11 @@ import path from "node:path";
 import type { ProjectsService } from "./projects.ts";
 import { classifyCommand, type ShellContext, type ShellGitFacts, type ShellPathFacts, sensitivePath } from "./shared/shell-gate.ts";
 
-/** Ce que le cockpit sait du workspace : racine d'opencode et correspondance avec le montage local. */
-export type ShellFactsProjects = Pick<ProjectsService, "opencodeRoot" | "toLocalPath" | "toOpencodePath">;
+/**
+ * Ce que le cockpit sait du workspace : racine d'opencode, correspondance avec le montage local, et la règle des dossiers transmis à
+ * opencode (isAllowedDirectory : séquence %XX refusée, A22).
+ */
+export type ShellFactsProjects = Pick<ProjectsService, "opencodeRoot" | "toLocalPath" | "toOpencodePath" | "isAllowedDirectory">;
 
 /**
  * Faits du disque d'une commande. L'appelant ajoute ce qu'il lit dans la demande et le choix de la conversation :
@@ -117,7 +120,9 @@ class DiskReader {
     this.#projects = projects;
     this.#root = normalizeAbsolute(projects.opencodeRoot);
     const dir = normalizeAbsolute(conversationDir);
-    this.#dir = dir !== null && this.#root !== null && within(this.#root, dir) ? dir : null;
+    // Dossier qu'opencode ouvrirait ailleurs (séquence %XX, décodée une seconde fois : R106-a) : les faits lus ici décriraient un
+    // autre dossier que celui où la commande s'exécute. Aucun fait, comme E6 pour les modifications.
+    this.#dir = dir !== null && this.#root !== null && within(this.#root, dir) && projects.isAllowedDirectory(dir) ? dir : null;
     this.#walkMax = limits.walkMaxEntries ?? SHELL_WALK_MAX_ENTRIES;
     this.#scanMax = limits.dirScanMaxEntries ?? SHELL_DIR_SCAN_MAX_ENTRIES;
   }
