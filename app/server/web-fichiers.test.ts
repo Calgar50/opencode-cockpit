@@ -564,6 +564,11 @@ describe("contrôles statiques : pages/fichiers/** et lib/api-fichiers.ts", () =
     const page = sansCommentaires(lire("pages/fichiers/FichiersPage.tsx"));
     assert.match(page, /const dire = useAnnouncer\(ui\.activityAnnouncements\);/);
     for (const cle of ["annonceDossier", "annonceFichier", "annonceResultats"]) assert.match(page, new RegExp(`TEXTES\\.partout\\.${cle}\\b`), cle);
+    // Train V5 : chaque annonce passe par l'accord (singulier pour 0 et 1), jamais par un gabarit au pluriel seul.
+    for (const cle of ["annonceDossier", "annonceFichier", "annonceResultats"]) {
+      assert.match(page, new RegExp(`remplirAccorde\\(TEXTES\\.partout\\.${cle}Un, TEXTES\\.partout\\.${cle}, `), cle);
+    }
+    assert.equal(/\bremplir\(/.test(page), false, "aucune annonce par remplir seul");
   });
 
   it("seuls href : adresseFichiers ou routeHref", () => {
@@ -611,7 +616,10 @@ describe("contrôles statiques : pages/fichiers/** et lib/api-fichiers.ts", () =
 
   it("vue d'un fichier : un seul nœud de texte, gouttière aria-hidden, titre focalisable, fil d'Ariane, retour à la ligne", () => {
     const vue = sansCommentaires(lire("pages/fichiers/VueFichier.tsx"));
-    assert.match(vue, /<pre className="fichiers-texte" tabIndex=\{0\} aria-label=\{remplir\(TEXTES\.partout\.contenuDe, \{ nom, n: reponse\.lignes \}\)\}>\{texte\}<\/pre>/);
+    assert.match(
+      vue,
+      /<pre className="fichiers-texte" tabIndex=\{0\} aria-label=\{remplirAccorde\(TEXTES\.partout\.contenuDeUn, TEXTES\.partout\.contenuDe, \{ nom, n: reponse\.lignes \}\)\}>\{texte\}<\/pre>/,
+    );
     assert.match(vue, /<pre className="fichiers-gouttiere" aria-hidden="true">\s*\{numeros\}\s*<\/pre>/);
     assert.match(vue, /\{retourALaLigne \? null : \(\s*<pre className="fichiers-gouttiere"/, "gouttière masquée avec le retour à la ligne");
     assert.match(vue, /<h2 className="fichiers-titre" tabIndex=\{-1\} ref=\{titre\}>\s*<bdi>\{nom\}<\/bdi>/);

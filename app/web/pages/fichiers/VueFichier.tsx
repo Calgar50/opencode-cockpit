@@ -14,7 +14,7 @@
 //   erreur (« Réessayer ») ; détails (encodage, octets, date complète) en mode Avancé seulement.
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { emplacementSurLePoste, rendreVisible, tailleLisible } from "../../../server/shared/fichiers-regles.ts";
-import { phraseErreur, phraseInvisibles, phraseLignesCoupees, remplir, TEXTES } from "../../../server/shared/fichiers-texts.ts";
+import { phraseErreur, phraseInvisibles, phraseLignesCoupees, remplir, remplirAccorde, TEXTES } from "../../../server/shared/fichiers-texts.ts";
 import type { ContenuReponse } from "../../../server/shared/fichiers-types.ts";
 import { Icon, type IconName } from "../../components/Icon.tsx";
 import { Button } from "../../components/ui.tsx";
@@ -153,7 +153,7 @@ export function VueFichier(props: VueFichierProps) {
                   {numeros}
                 </pre>
               )}
-              <pre className="fichiers-texte" tabIndex={0} aria-label={remplir(TEXTES.partout.contenuDe, { nom, n: reponse.lignes })}>{texte}</pre>
+              <pre className="fichiers-texte" tabIndex={0} aria-label={remplirAccorde(TEXTES.partout.contenuDeUn, TEXTES.partout.contenuDe, { nom, n: reponse.lignes })}>{texte}</pre>
             </div>
             {reponse.tronque ? <Bandeau icone="alert">{TEXTES.partout.finTronquee}</Bandeau> : null}
           </>

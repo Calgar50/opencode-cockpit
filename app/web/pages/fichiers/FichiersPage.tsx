@@ -13,7 +13,7 @@
 // - 400 px (rupture à 720 px) : une colonne ; un fichier ouvert remplace les colonnes, « Retour aux fichiers » en tête.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { adresseFichiers, lireAdresse, projetNavigable, rendreVisible } from "../../../server/shared/fichiers-regles.ts";
-import { remplir, TEXTES } from "../../../server/shared/fichiers-texts.ts";
+import { remplirAccorde, TEXTES } from "../../../server/shared/fichiers-texts.ts";
 import type { ContenuReponse, DossierReponse, RechercheReponse, RecentsReponse } from "../../../server/shared/fichiers-types.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -105,7 +105,7 @@ export function FichiersPage() {
     if (annonceDossier.current !== chemin) return;
     annonceDossier.current = null;
     const n = reponse.entrees.filter((entree) => montrerCachesRef.current || !(entree.cache || entree.genere)).length;
-    dire(remplir(TEXTES.partout.annonceDossier, { nom: rendreVisible(chemin.split("/").at(-1) ?? ""), n }));
+    dire(remplirAccorde(TEXTES.partout.annonceDossierUn, TEXTES.partout.annonceDossier, { nom: rendreVisible(chemin.split("/").at(-1) ?? ""), n }));
   };
 
   // Listes demandées : une requête par dossier, à sa première ouverture (ou après « Actualiser »).
@@ -153,7 +153,9 @@ export function FichiersPage() {
   const annoncerFichier = (cle: string, reponse: ContenuReponse) => {
     if (annonceFichier.current !== cle) return;
     annonceFichier.current = null;
-    if (reponse.etat === "texte") dire(remplir(TEXTES.partout.annonceFichier, { nom: rendreVisible(segments.at(-1) ?? ""), n: reponse.lignes }));
+    if (reponse.etat === "texte") {
+      dire(remplirAccorde(TEXTES.partout.annonceFichierUn, TEXTES.partout.annonceFichier, { nom: rendreVisible(segments.at(-1) ?? ""), n: reponse.lignes }));
+    }
   };
   useEffect(() => {
     if (cleFichier === null || fichier === null) return;
@@ -208,7 +210,7 @@ export function FichiersPage() {
     fichiersApi.recherche(projetCherche, texte, controleur.signal).then(
       (reponse) => {
         poser({ phase: "pret", reponse });
-        dire(remplir(TEXTES.partout.annonceResultats, { n: reponse.resultats.length }));
+        dire(remplirAccorde(TEXTES.partout.annonceResultatsUn, TEXTES.partout.annonceResultats, { n: reponse.resultats.length }));
       },
       (erreur: unknown) => {
         if (!estAnnule(erreur)) poser({ phase: "echec", code: codeFichiers(erreur) ?? "erreur" });

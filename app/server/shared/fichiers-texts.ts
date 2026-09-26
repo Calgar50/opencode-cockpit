@@ -72,6 +72,11 @@ export const TEXTES = {
     annonceDossier: "Dossier ouvert : {nom}, {n} éléments",
     annonceFichier: "{nom} ouvert, {n} lignes",
     annonceResultats: "{n} résultats",
+    // Singuliers (train V5, demande de NAV-3) : 0 et 1 s'accordent au singulier ; choisis par remplirAccorde.
+    contenuDeUn: "Contenu de {nom}, {n} ligne",
+    annonceDossierUn: "Dossier ouvert : {nom}, {n} élément",
+    annonceFichierUn: "{nom} ouvert, {n} ligne",
+    annonceResultatsUn: "{n} résultat",
   },
   simple: {
     lien: "raccourci, non ouvert",
@@ -98,6 +103,14 @@ export const TEXTES = {
 /** Remplit un gabarit « {nom} » ; une clé absente de `valeurs` laisse son gabarit tel quel. */
 export function remplir(gabarit: string, valeurs: Readonly<Record<string, string | number>>): string {
   return gabarit.replace(/\{(\w+)\}/g, (tout: string, cle: string) => (Object.hasOwn(valeurs, cle) ? String(valeurs[cle]) : tout));
+}
+
+/**
+ * Gabarit accordé au nombre `n` : `singulier` pour 0 et 1 (usage français : « 0 élément », « 1 ligne »), `pluriel` au-delà.
+ * Sert aux annonces et au nom du contenu, dont le nombre vient d'une réponse.
+ */
+export function remplirAccorde(singulier: string, pluriel: string, valeurs: Readonly<Record<string, string | number>> & { readonly n: number }): string {
+  return remplir(Math.abs(valeurs.n) < 2 ? singulier : pluriel, valeurs);
 }
 
 /**

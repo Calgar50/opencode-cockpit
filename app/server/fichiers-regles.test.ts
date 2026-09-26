@@ -35,7 +35,7 @@ import {
   segmentSur,
   tailleLisible,
 } from "./shared/fichiers-regles.ts";
-import { phraseErreur, phraseInvisibles, phraseLignesCoupees, phraseMasques, remplir, TEXTES } from "./shared/fichiers-texts.ts";
+import { phraseErreur, phraseInvisibles, phraseLignesCoupees, phraseMasques, remplir, remplirAccorde, TEXTES } from "./shared/fichiers-texts.ts";
 import type { FichiersCode } from "./shared/fichiers-types.ts";
 import { sensitivePath } from "./shared/shell-gate.ts";
 
@@ -982,5 +982,23 @@ describe("fichiers : textes (§8) et leurs fonctions", () => {
     assert.equal(phraseLignesCoupees(0), null);
     assert.equal(phraseLignesCoupees(1), "1 ligne trop longue est coupée.");
     assert.equal(phraseLignesCoupees(2), "2 lignes trop longues sont coupées.");
+  });
+
+  it("remplirAccorde (train V5) : singulier pour 0 et 1, pluriel au-delà ; annonces et nom du contenu", () => {
+    const t = TEXTES.partout;
+    assert.equal(remplirAccorde(t.annonceResultatsUn, t.annonceResultats, { n: 0 }), "0 résultat");
+    assert.equal(remplirAccorde(t.annonceResultatsUn, t.annonceResultats, { n: 1 }), "1 résultat");
+    assert.equal(remplirAccorde(t.annonceResultatsUn, t.annonceResultats, { n: 2 }), "2 résultats");
+    assert.equal(remplirAccorde(t.annonceDossierUn, t.annonceDossier, { nom: "scripts", n: 1 }), "Dossier ouvert : scripts, 1 élément");
+    assert.equal(remplirAccorde(t.annonceDossierUn, t.annonceDossier, { nom: "scripts", n: 12 }), "Dossier ouvert : scripts, 12 éléments");
+    assert.equal(remplirAccorde(t.annonceFichierUn, t.annonceFichier, { nom: "a.ps1", n: 1 }), "a.ps1 ouvert, 1 ligne");
+    assert.equal(remplirAccorde(t.annonceFichierUn, t.annonceFichier, { nom: "a.ps1", n: 3 }), "a.ps1 ouvert, 3 lignes");
+    assert.equal(remplirAccorde(t.contenuDeUn, t.contenuDe, { nom: "a.ps1", n: 1 }), "Contenu de a.ps1, 1 ligne");
+    assert.equal(remplirAccorde(t.contenuDeUn, t.contenuDe, { nom: "a.ps1", n: 2 }), "Contenu de a.ps1, 2 lignes");
+    // Chaque singulier garde les gabarits de son pluriel.
+    for (const cle of ["annonceResultats", "annonceDossier", "annonceFichier", "contenuDe"] as const) {
+      const gabarits = (texte: string) => [...texte.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+      assert.deepEqual(gabarits(t[`${cle}Un` as const]), gabarits(t[cle]), cle);
+    }
   });
 });
