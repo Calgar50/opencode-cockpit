@@ -209,18 +209,20 @@ export const isSync = (payload: OcEvent | SyncPayload): payload is SyncPayload =
  * Dossier de l'instance qu'ouvre opencode 1.18.30 pour une valeur demandée (A22, fiche-fusion-v106 §9.2). Le paramètre `directory`
  * arrive déjà décodé une fois (URLSearchParams.get, workspace-routing.ts:86-88 ; l'en-tête x-opencode-directory, lui, arrive brut),
  * puis instance-context.ts:15-21 le décode ENCORE par decodeURIComponent (valeur gardée telle quelle si ce décodage échoue :
- * « Remise 20% »). Un dossier nommé « a%2F..%2F..%2Fsecret » ouvre donc l'instance « /secret ». Le chemin n'est normalisé que si
- * le second décodage l'a changé : les dossiers des tests restent à l'octet près. Non reproduit : sur /session/:id/*, opencode prend
- * session.directory (workspace-routing.ts:182).
+ * « Remise 20% »). Un dossier nommé « a%2F..%2F..%2Fsecret » ouvre donc l'instance « /secret ». Le chemin est ensuite TOUJOURS
+ * normalisé, comme par instance-store.ts (FSUtil.resolve, core/src/fs-util.ts:247-255 : path.resolve puis realpath) : un « .. »
+ * littéral (« /workspace/../secret ») sort aussi de la racine, et « /workspace/./p1/ » vaut « /workspace/p1 ». Non reproduits :
+ * realpath (aucun fichier réel), la résolution d'un chemin relatif depuis le dossier courant d'opencode (ici depuis « / », donc hors
+ * de /workspace : la sentinelle le relève) et, sur /session/:id/*, session.directory (workspace-routing.ts:182).
  */
 export function dossierDInstance(demande: string): string {
   let decode: string;
   try {
     decode = decodeURIComponent(demande);
   } catch {
-    return demande;
+    decode = demande;
   }
-  return decode === demande ? demande : path.posix.resolve("/", decode);
+  return path.posix.resolve("/", decode);
 }
 
 /**
@@ -795,10 +797,13 @@ export class FakeOpencode {
 
   /**
    * Sentinelle d'instance (fiche-fusion-v106 §9.3) : dossiers des instances ouvertes depuis le démarrage hors de `racine` (le dossier
-   * du faux par défaut), libérées ou non. Vide tant qu'aucune requête n'a fait sortir opencode du workspace.
+   * du faux par défaut), libérées ou non. Vide tant qu'aucune requête n'a fait sortir opencode du workspace. Comparaison entre
+   * chemins normalisés (« .. » et « . » résolus, « / » final retiré), jamais par simple préfixe d'un chemin brut : les dossiers
+   * relevés le sont déjà (dossierDInstance), la racine l'est ici.
    */
   instancesHors(racine: string = this.directory): string[] {
-    return [...this.#ouvertes].filter((d) => d !== racine && !d.startsWith(racine === "/" ? "/" : `${racine}/`));
+    const dedans = path.posix.resolve("/", racine);
+    return [...this.#ouvertes].filter((d) => d !== dedans && !d.startsWith(dedans === "/" ? "/" : `${dedans}/`));
   }
 
   statusOf(sessionID: string): { type: string } {

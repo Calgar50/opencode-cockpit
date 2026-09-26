@@ -87,7 +87,7 @@ describe("harnais du cockpit", () => {
     await assert.rejects(fetch(`${h.fake.url}/global/health`));
   });
 
-  it("sentinelle d'instance (R106-a) : le nettoyage échoue si le test a ouvert une instance hors de /workspace ; témoin resté dans /workspace : nettoyage vert", async (t) => {
+  it("sentinelle d'instance (R106-a) : le nettoyage échoue si le test a ouvert une instance hors de /workspace (« /ailleurs », « .. » littéral) ; témoin resté dans /workspace : nettoyage vert", async (t) => {
     // Faux TestContext : ce que startCockpit enregistre par t.after est rejoué ici, comme node:test le ferait en fin de test.
     const contexte = () => {
       const after: Array<() => unknown> = [];
@@ -97,13 +97,16 @@ describe("harnais du cockpit", () => {
       t.after(() => nettoyer().catch(() => undefined));
       return { t: { after: (fn: () => unknown) => void after.push(fn) } as unknown as TestContext, nettoyer };
     };
-    const fautif = contexte();
-    const h = await startCockpit(fautif.t);
-    await h.deps.client.request("GET", "/session/status", { directory: "/ailleurs" });
-    await assert.rejects(fautif.nettoyer(), (err: unknown) => err instanceof AggregateError && /hors de \/workspace : \/ailleurs\b/.test(String(err.errors[0]?.message)));
+    for (const [dehors, releve] of [["/ailleurs", "/ailleurs"], ["/workspace/../secret", "/secret"]] as const) {
+      const fautif = contexte();
+      const h = await startCockpit(fautif.t);
+      await h.deps.client.request("GET", "/session/status", { directory: dehors });
+      await assert.rejects(fautif.nettoyer(), (err: unknown) => err instanceof AggregateError && new RegExp(`hors de /workspace : ${releve}\\b`).test(String(err.errors[0]?.message)));
+    }
     const temoin = contexte();
     const w = await startCockpit(temoin.t);
     await w.deps.client.request("GET", "/session/status", { directory: "/workspace/projet" });
+    await w.deps.client.request("GET", "/session/status", { directory: "/workspace/a/../b" });
     await temoin.nettoyer();
   });
 });

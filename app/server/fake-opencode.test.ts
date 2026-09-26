@@ -269,6 +269,23 @@ describe("faux opencode : dossier de l'instance décodé deux fois, comme openco
     assert.deepEqual(fake.instancesHors(), ["/secret", "/autre"], "variante V3 : %25252F ne sort pas (deux décodages, pas trois)");
   });
 
+  it("« .. » littéral (« /workspace/../secret ») : chemin TOUJOURS normalisé (FSUtil.resolve), instance « /secret » hors racine ; « /workspace/p1/../p2 » et « /workspace/./p3/ » restent dedans ; racine de la sentinelle normalisée aussi", async (t) => {
+    const { fake, oc } = await startFake(t);
+    await oc.request("GET", "/session/status", { directory: "/workspace/p1/../p2" });
+    await oc.request("GET", "/session/status", { directory: "/workspace/./p3/" });
+    assert.deepEqual(fake.instancesChargees(), ["/workspace/p2", "/workspace/p3"]);
+    assert.deepEqual(fake.instancesHors(), []);
+    const session = await newSession(oc, { title: "Point point" }, "/workspace/../secret");
+    assert.equal(session.directory, "/secret");
+    assert.deepEqual(fake.requests.at(-1)?.query, { directory: "/workspace/../secret" }, "journal : valeur reçue");
+    assert.deepEqual(fake.instancesHors(), ["/secret"]);
+    for (const racine of ["/workspace/", "/workspace/p2/..", "/workspace/./"]) assert.deepEqual(fake.instancesHors(racine), ["/secret"], racine);
+    // Second décodage en échec (« 20% ») : valeur gardée, mais normalisée quand même.
+    await oc.request("GET", "/session/status", { directory: "/workspace/../Remise 20%" });
+    assert.deepEqual(fake.instancesChargees(), ["/workspace/p2", "/workspace/p3", "/secret", "/Remise 20%"]);
+    assert.deepEqual(fake.instancesHors(), ["/secret", "/Remise 20%"]);
+  });
+
   it("sentinelle : une instance ouverte hors de la racine reste relevée après sa libération ; /global/* n'ouvre aucune instance", async (t) => {
     const { fake, oc } = await startFake(t);
     await oc.request("GET", "/global/config");
