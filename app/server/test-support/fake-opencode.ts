@@ -189,10 +189,10 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const ACTIONS = new Set<string>(["allow", "deny", "ask"]);
 const REPLIES = new Set<string>(["once", "always", "reject"]);
 const FIXTURE_NAME = /^[a-z0-9][a-z0-9-]*\.jsonl$/;
-/** Configuration livrée (profil Prudent), comme le repli de GET /global/config dans integration.test.ts. */
+/** Configuration livrée (profil Prudent, web refusé : A31 c), comme le repli de GET /global/config dans integration.test.ts. */
 const DEFAULT_CONFIG = {
   enabled_providers: ["github-copilot"],
-  permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+  permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "deny", websearch: "deny" },
 };
 /** Tour de résumé (POST /session/:id/summarize) quand aucun script n'attend. */
 const SUMMARY_TURN: FakeTurnScript = { text: "Résumé de la conversation par le faux opencode.", cost: 0.001, tokens: { input: 40, output: 12 } };

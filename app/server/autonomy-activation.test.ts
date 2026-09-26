@@ -393,6 +393,9 @@ describe("activation : verdicts réels (porte ouverte)", () => {
     const res = await putChoice(h, root.id, { choix: "autonome" });
     assert.equal(res.status, 409, res.body);
     assert.deepEqual(res.json(), refus("profil-sans-confirmation"));
+    // Profil de la 1.0.x (web sur « allow », avant A31 c) : toujours reconnu, l'activation reste refusée.
+    globalPermission(h, { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" });
+    assert.deepEqual(await check(h, root), { ok: false, raison: "profil-sans-confirmation" }, "profil Sans confirmation de la 1.0.x");
 
     globalPermission(h, PRUDENT);
     assert.deepEqual(await check(h, root), { ok: true }, "profil revenu au profil livré");

@@ -586,7 +586,8 @@ const FIXTURE_SKILLS = [
   { name: "checklist-cab", description: "Checklist CAB", location: "/oc-config/skills/checklist-cab/SKILL.md", content: "x" },
 ];
 
-const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" };
+/** Profil Prudent livré (docker/opencode/opencode.default.jsonc), web refusé depuis A31 c. */
+const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "deny", websearch: "deny" };
 
 describe("serveur HTTP (sécurité et proxy)", () => {
   // Jeton de test public au format généré par install.ps1 (64 hexadécimaux) : preuve et ticket servis (1.0.5).

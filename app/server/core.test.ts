@@ -875,7 +875,7 @@ const cat = (key: string, variants: string[] = [], extra: Partial<CatalogLite> =
   ...extra,
 });
 const CATALOG: CatalogLite[] = [cat(SONNET, ["low", "medium", "high"]), cat(OPUS, ["low", "medium", "high", "max"]), cat(MINI, ["low", "medium", "high", "xhigh"])];
-/** Profil Prudent livré (docker/opencode/opencode.default.jsonc). */
+/** Profil Prudent livré jusqu'à la 1.0.x (web sur « ask ») ; depuis A31 c, la configuration livrée refuse le web (PERMISSION_PRESETS). */
 const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" };
 const FICHES = ["standards-scripts", "anonymisation-donnees"];
 const relire: AgentLite = {
@@ -1643,8 +1643,21 @@ describe("profils de droits et catalogue partagés", () => {
     const shipped = parseJsonc(fs.readFileSync(shippedFile, "utf8")) as { permission: unknown };
     assert.deepEqual(presetPermission("prudent"), shipped.permission);
     assert.equal(detectPermissionPreset(shipped.permission), "prudent");
-    assert.equal(detectPermissionPreset({ websearch: "ask", webfetch: "ask", task: "ask", bash: { pwd: "allow", "*": "ask" }, edit: "ask" }), "prudent");
+    assert.equal(detectPermissionPreset({ websearch: "deny", webfetch: "deny", task: "ask", bash: { pwd: "allow", "*": "ask" }, edit: "ask" }), "prudent");
     assert.equal(detectPermissionPreset({ ...PRUDENT, edit: "allow" }), null);
+    // A31 c : web refusé dans les trois profils et dans la configuration livrée (le relais refuse toute sortie hors Copilot).
+    for (const id of PERMISSION_PRESET_IDS) {
+      const { webfetch, websearch } = PERMISSION_PRESETS[id].permission;
+      assert.deepEqual([webfetch, websearch], ["deny", "deny"], id);
+    }
+    assert.deepEqual([(shipped.permission as Record<string, unknown>).webfetch, (shipped.permission as Record<string, unknown>).websearch], ["deny", "deny"]);
+    // Profils de la 1.0.x (web sur « ask », « allow » pour Sans confirmation) toujours reconnus : affichage et contrôle d'activation
+    // inchangés pour une installation existante. Un mélange des deux versions reste « Personnalisé ».
+    assert.equal(detectPermissionPreset(PRUDENT), "prudent");
+    assert.equal(detectPermissionPreset({ edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" }), "equilibre");
+    assert.equal(detectPermissionPreset({ edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" }), "autonome");
+    assert.equal(detectPermissionPreset({ ...PRUDENT, webfetch: "deny" }), null);
+    assert.equal(detectPermissionPreset({ edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "deny" }), null);
     assert.equal(detectPermissionPreset(PERMISSION_PRESETS.autonome.permission), "autonome");
     const copy = presetPermission("prudent");
     (copy.bash as Record<string, string>).pwd = "deny";

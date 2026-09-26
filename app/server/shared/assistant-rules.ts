@@ -1538,14 +1538,29 @@ export type PermissionPresetId = (typeof PERMISSION_PRESET_IDS)[number];
  * Permission globale de chaque profil. « prudent » = docker/opencode/opencode.default.jsonc (configuration livrée). Le profil
  * `autonome` s'affiche « Sans confirmation (déconseillé) » (1.1, D1, §2.2) : « Autonome » nomme le choix d'autonomie d'une
  * conversation (« Autonome avec contrôle »), jamais ce profil global.
+ *
+ * webfetch et websearch sont REFUSÉS dans les trois profils (A31 c) : depuis la 1.0.6, le relais de sortie d'opencode refuse toute
+ * sortie hors Copilot, donc toute consultation du web échouerait de toute façon. Refusés par la règle, ils ne posent plus de demande :
+ * une demande webfetch sans délai en attente rendait GET /permission illisible pour tout son dossier (mesure D11).
  */
 export const PERMISSION_PRESETS: Readonly<Record<PermissionPresetId, { label: string; permission: Readonly<Record<string, unknown>> }>> = Object.freeze({
-  prudent: { label: "Prudent", permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" } },
-  equilibre: { label: "Équilibré", permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" } },
+  prudent: { label: "Prudent", permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "deny", websearch: "deny" } },
+  equilibre: { label: "Équilibré", permission: { edit: "allow", bash: "ask", task: "ask", webfetch: "deny", websearch: "deny" } },
   autonome: {
     label: "Sans confirmation (déconseillé)",
-    permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
+    permission: { edit: "allow", bash: "allow", task: "allow", webfetch: "deny", websearch: "deny" },
   },
+});
+
+/**
+ * Profils livrés jusqu'à la 1.0.x (webfetch et websearch sur « ask », ou « allow » pour « Sans confirmation »), toujours reconnus
+ * par detectPermissionPreset : une installation existante garde son profil affiché, et le contrôle d'activation de l'autonomie voit
+ * toujours « Sans confirmation » actif. Aucune migration : appliquer un profil écrit sa version courante.
+ */
+const PERMISSION_PRESETS_1_0: Readonly<Record<PermissionPresetId, Readonly<Record<string, unknown>>>> = Object.freeze({
+  prudent: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+  equilibre: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" },
+  autonome: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
 });
 
 /**
@@ -1623,9 +1638,11 @@ export function presetPermission(id: PermissionPresetId): Record<string, unknown
   return structuredClone(PERMISSION_PRESETS[id].permission) as Record<string, unknown>;
 }
 
-/** Profil identique (ordre des clés ignoré) à une permission globale, sinon null (« Personnalisé »). */
+/** Profil identique (ordre des clés ignoré) à une permission globale, version courante ou 1.0.x, sinon null (« Personnalisé »). */
 export function detectPermissionPreset(permission: unknown): PermissionPresetId | null {
-  return PERMISSION_PRESET_IDS.find((id) => deepEqual(PERMISSION_PRESETS[id].permission, permission)) ?? null;
+  return (
+    PERMISSION_PRESET_IDS.find((id) => deepEqual(PERMISSION_PRESETS[id].permission, permission) || deepEqual(PERMISSION_PRESETS_1_0[id], permission)) ?? null
+  );
 }
 
 export const SECURITY_TEXTS = Object.freeze({

@@ -1650,8 +1650,8 @@ describe("faux opencode : routes lues par le cockpit", () => {
       { permission: "bash", pattern: "*", action: "ask" },
       { permission: "bash", pattern: "pwd", action: "allow" },
       { permission: "task", pattern: "*", action: "ask" },
-      { permission: "webfetch", pattern: "*", action: "ask" },
-      { permission: "websearch", pattern: "*", action: "ask" },
+      { permission: "webfetch", pattern: "*", action: "deny" },
+      { permission: "websearch", pattern: "*", action: "deny" },
     ]);
     const own = [{ name: "relire", mode: "primary" as const, options: {}, permission: [] }];
     fake.setAgents(own, "/workspace/projet");
@@ -1690,7 +1690,7 @@ describe("faux opencode : routes lues par le cockpit", () => {
     const { fake, oc } = await startFake(t);
     assert.deepEqual(await oc.request("GET", "/global/config"), {
       enabled_providers: ["github-copilot"],
-      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "deny", websearch: "deny" },
     });
     const loaded = await newSession(oc, {}, "/workspace/a");
     fake.script(loaded.id, { tools: [bash("ls")] });
@@ -1701,7 +1701,7 @@ describe("faux opencode : routes lues par le cockpit", () => {
     const merged = await oc.request<Record<string, unknown>>("PATCH", "/global/config", { body });
     assert.deepEqual(merged, {
       enabled_providers: ["opencode"],
-      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow", "git *": "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
+      permission: { edit: "ask", bash: { "*": "ask", pwd: "allow", "git *": "allow" }, task: "ask", webfetch: "deny", websearch: "deny" },
     });
     assert.deepEqual(await oc.request("GET", "/global/config"), merged);
     await fake.waitForEvent("global.disposed", () => true, { since });

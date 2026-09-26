@@ -1,7 +1,8 @@
 // Banc e2e (L7a), mode « --reel-hors-ligne » : configuration d'un vrai opencode 1.18.30 sans aucune IA réelle.
 // Posée dans le volume jetable par le service « preparation » avant le premier démarrage d'opencode.
 // Levier mesuré par M-B1 (MX1 §8) : enabled_providers réduit au faux fournisseur du banc, aucun auth.json, donc
-// aucun appel facturable possible. Les permissions reprennent le profil Prudent livré avec le cockpit.
+// aucun appel facturable possible. Les permissions reprennent le profil Prudent de la 1.0.x, web sur « ask » : le
+// profil livré le refuse depuis A31 c, ce banc garde la demande web pour rejouer la mesure D11 (GF5).
 {
   "$schema": "https://opencode.ai/config.json",
   "enabled_providers": ["banc"],
