@@ -345,6 +345,9 @@ export function relirePourEvenement(demande: AutonomyRequestView | null, eveneme
 // « Plafond … atteint », [Voir les modifications de cette demande]) disparaissait aussitôt. C'était systématique au plafond et
 // au redémarrage d'opencode (la surveillance ferme la demande PUIS remet le choix à « Demander », dont l'événement
 // `autonomie.choix` fait relire), et aléatoire quand un envoi suivait de près un changement de choix (it2-ui-bandeau-journal).
+// Limite : une demande ouverte PUIS close avant que le bandeau l'ait lue une seule fois (mesuré au banc avec un tour du faux dont
+// le coût dépasse le plafond dès la première milliseconde) n'est pas montrée : l'événement ne porte ni le choix ni les plafonds,
+// et la route ne la rend plus. Avec une IA réelle, la demande reste ouverte le temps d'au moins une réponse, et le bandeau l'a lue.
 
 /** Demande suivie par le bandeau : celle qu'il affiche, et la dernière qu'il a vue (gardée quand une relecture la retire). */
 export interface SuiviBandeau {
