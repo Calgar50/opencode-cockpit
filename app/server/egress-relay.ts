@@ -244,10 +244,23 @@ function requestTarget(url: string): { host: string; port: number } {
   }
 }
 
-/** User-Agent du client, repris vers le proxy de l'entreprise s'il est court et en ASCII visible (comportement de la 1.0.5). */
+/**
+ * Seule forme de User-Agent qu'opencode envoie au relais (runtime Bun ; l'espion de la 1.0.6 voit « Bun/1.3 ») : « Bun/x.y » ou
+ * « Bun/x.y.z », 1 à 3 chiffres par nombre.
+ */
+const OPENCODE_USER_AGENT = /^Bun\/\d{1,3}\.\d{1,3}(?:\.\d{1,3})?$/;
+
+/**
+ * User-Agent recopié dans le CONNECT envoyé au proxy de l'entreprise (RR-2, décision D9) : celui d'opencode tel quel, pour que ce
+ * proxy voie ce qu'il voyait depuis la 1.0.5 ; toute autre valeur, jamais (aucun en-tête) : une commande fabriquée ne peut rien
+ * écrire dans ses journaux.
+ */
+export function relayedUserAgent(value: string | undefined): string | null {
+  return typeof value === "string" && OPENCODE_USER_AGENT.test(value) ? value : null;
+}
+
 function userAgentOf(req: http.IncomingMessage): string | null {
-  const value = req.headers["user-agent"];
-  return typeof value === "string" && /^[\x20-\x7e]{1,256}$/.test(value) ? value : null;
+  return relayedUserAgent(req.headers["user-agent"]);
 }
 
 export interface EgressRelayOptions {

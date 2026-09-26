@@ -26,6 +26,7 @@ import {
   RELAY_LIMITS,
   RelayConfigError,
   readUpstreamProxy,
+  relayedUserAgent,
   startEgressRelay,
 } from "./egress-relay.ts";
 import type { Logger } from "./log.ts";
@@ -417,6 +418,52 @@ describe("relais de sortie (egress-relay.ts)", () => {
     c.socket.write("hello");
     await until(() => c.text().endsWith("hello"), "octets relayés par le proxy de l'entreprise");
     assert.equal(JSON.stringify(b.lines).includes("mot-de-passe"), false);
+  });
+
+  it("User-Agent vers le proxy de l'entreprise : « Bun/x.y » ou « Bun/x.y.z » d'opencode recopié, tout autre jamais (RR-2, D9)", async (t) => {
+    // En-tête de chaque CONNECT reçu par le faux proxy de l'entreprise, une entrée par connexion.
+    const heads: string[] = [];
+    const upstream = await tcpServer(t, (socket) => {
+      let data = "";
+      const onData = (chunk: Buffer) => {
+        data += chunk.toString("latin1");
+        const end = data.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        socket.off("data", onData);
+        heads.push(data.slice(0, end));
+        socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+      };
+      socket.on("data", onData);
+    });
+    const b = await bench(t, { upstream: { host: "proxy.banque.example", port: 3128, authorization: null } }, upstream);
+    const cases: Array<[string, string | null]> = [
+      ["Bun/1.3", "Bun/1.3"],
+      ["Bun/1.3.5", "Bun/1.3.5"],
+      ["curl/8.5.0 x=exfil", null],
+      ["Bun/1.3 x=exfil", null],
+      ["Mozilla/5.0 Bun/1.3", null],
+      ["Bun/1", null],
+      ["Bun/1.3.5.6", null],
+      ["bun/1.3", null],
+      ["Bun/1234.5", null],
+      ["Bun/1.3/../x", null],
+    ];
+    for (const [sent, relayed] of cases) {
+      const c = rawClient(t, b.port, connectRequest(`${COPILOT}:443`, [`Host: ${COPILOT}:443`, `User-Agent: ${sent}`]));
+      assert.match(await statusLine(c), /^HTTP\/1\.1 200 /, sent);
+      const head = heads.at(-1) ?? "";
+      const agents = head.split("\r\n").filter((line) => /^user-agent:/i.test(line));
+      assert.deepEqual(agents, relayed === null ? [] : [`User-Agent: ${relayed}`], `${sent} → ${JSON.stringify(head)}`);
+      c.socket.destroy();
+    }
+    assert.equal(heads.length, cases.length);
+    // Sans User-Agent : aucun en-tête non plus.
+    const bare = rawClient(t, b.port, connectRequest(`${COPILOT}:443`));
+    assert.match(await statusLine(bare), /^HTTP\/1\.1 200 /);
+    assert.equal(/user-agent/i.test(heads.at(-1) ?? "x"), false);
+    // Forme pure : la valeur telle que Node la rend.
+    assert.equal(relayedUserAgent("Bun/1.3"), "Bun/1.3");
+    for (const value of [undefined, "", " Bun/1.3", "Bun/1.3 ", "Bun/1.3\n", "Bun/1.3\r\nX-Trace: 1"]) assert.equal(relayedUserAgent(value), null, JSON.stringify(value));
   });
 
   it("proxy de l'entreprise qui refuse (503) ou ne répond pas : 502 au client, une ligne « en échec en amont »", async (t) => {
