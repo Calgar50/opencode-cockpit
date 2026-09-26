@@ -1,0 +1,362 @@
+/* Propriétaire : NAV-3. Onglet « Fichiers » (fiche NAV §5, instructions 8 et 9 ; spécification §5.5, §5.6).
+   Jetons de thème existants seulement ; aucun mouvement (ni défilement fluide, ni effet au survol qui bouge) : périmètre du
+   test du mouvement de l'interface. Deux colonnes ; sous 720 px, une seule, et un fichier ouvert remplace les colonnes (« Retour aux
+   fichiers » en tête). Mode contrasté (forced-colors) : bordures CanvasText, élément courant en Highlight, contour de focus de
+   2 px, icônes en currentColor. L'état d'une entrée est toujours dit par un mot, jamais par la couleur seule. */
+
+.fichiers-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.fichiers-entete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+.fichiers-titres {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.fichiers-badge .icon {
+  color: currentColor;
+}
+.fichiers-projet {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.fichiers-projet label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.fichiers-projet .select {
+  max-width: 280px;
+}
+
+.fichiers-colonnes {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.fichiers-gauche,
+.fichiers-droite {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.fichiers-bloc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.fichiers-bloc h2 {
+  font-size: 15px;
+}
+.fichiers-recherche label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.fichiers-recherche .input {
+  flex: 1;
+  min-width: 0;
+}
+.fichiers-caches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+/* --- Listes : arborescence, récents, résultats --------------------------------------------------------------------------- */
+
+.fichiers-arbre {
+  min-width: 0;
+}
+.fichiers-liste {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.fichiers-liste .fichiers-liste {
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.fichiers-ligne {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+button.fichiers-ligne {
+  cursor: pointer;
+}
+a.fichiers-ligne:hover,
+button.fichiers-ligne:hover {
+  background: var(--surface-2);
+}
+a.fichiers-ligne[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.fichiers-ligne .icon {
+  color: var(--text-3);
+}
+.fichiers-special {
+  color: var(--text-2);
+  cursor: default;
+}
+.fichiers-etat {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-2);
+}
+.fichiers-meta {
+  flex-basis: 100%;
+  padding-left: 21px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.fichiers-plate .fichiers-meta {
+  padding-left: 21px;
+}
+.fichiers-note {
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 2px 6px;
+}
+.fichiers-note p,
+.fichiers-refus p {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.fichiers-refus {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.fichiers-pourquoi summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.fichiers-pourquoi p {
+  margin-top: 4px;
+}
+
+/* --- Vue d'un fichier ------------------------------------------------------------------------------------------------------- */
+
+.fichiers-choix {
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  text-align: center;
+}
+.fichiers-vue {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.fichiers-fil ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.fichiers-fil li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fichiers-fil li + li::before {
+  content: "/";
+  color: var(--text-3);
+  padding: 0 4px;
+}
+.fichiers-fil-lien {
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.fichiers-fil [aria-current="location"] {
+  font-weight: 600;
+  padding: 2px 4px;
+}
+.fichiers-titre {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.fichiers-emplacement {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.fichiers-emplacement bdi {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+.fichiers-bandeau {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.fichiers-bandeau .icon {
+  margin-top: 1px;
+}
+.fichiers-outils {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fichiers-contenu {
+  display: flex;
+  align-items: flex-start;
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+}
+.fichiers-gouttiere,
+.fichiers-texte {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+.fichiers-gouttiere {
+  position: sticky;
+  left: 0;
+  flex: none;
+  text-align: right;
+  color: var(--text-3);
+  background: var(--code-bg);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+.fichiers-texte {
+  flex: 1;
+  min-width: 0;
+  white-space: pre;
+  color: var(--text-1);
+}
+.fichiers-contenu--retour .fichiers-texte {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- 400 px (rupture à 720 px) ---------------------------------------------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .fichiers-colonnes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fichiers-page--fichier .fichiers-gauche {
+    display: none;
+  }
+  .fichiers-page:not(.fichiers-page--fichier) .fichiers-droite {
+    display: none;
+  }
+  .fichiers-projet .select {
+    max-width: 100%;
+    flex: 1;
+  }
+  .fichiers-contenu {
+    max-height: none;
+  }
+}
+
+/* --- Mode contrasté ------------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .fichiers-ligne,
+  .fichiers-fil-lien,
+  .fichiers-badge,
+  .fichiers-bandeau,
+  .fichiers-contenu,
+  .fichiers-choix {
+    border: 1px solid CanvasText;
+  }
+  .fichiers-liste .fichiers-liste,
+  .fichiers-gouttiere {
+    border-color: CanvasText;
+  }
+  a.fichiers-ligne[aria-current="page"],
+  .fichiers-fil [aria-current="location"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+  }
+  .fichiers-page :focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+  .fichiers-page .icon,
+  .fichiers-ligne .icon,
+  .fichiers-badge .icon {
+    color: currentColor;
+    stroke: currentColor;
+  }
+}
+
+/* --- Lien « Ouvrir dans Fichiers » d'une carte d'outil du chat (ToolCard.tsx), hors du bouton de la carte ------------------ */
+
+.tool-open-files {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px 32px;
+  color: var(--accent);
+}

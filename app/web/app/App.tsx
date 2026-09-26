@@ -18,6 +18,10 @@ import { CostsPage } from "../pages/CostsPage.tsx";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage.tsx";
 import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
+// <nav:import>
+import { TEXTES as TEXTES_FICHIERS } from "../../server/shared/fichiers-texts.ts";
+import { FichiersPage } from "../pages/fichiers/FichiersPage.tsx";
+// </nav:import>
 import { AppProvider, type ThemeChoice, useApp } from "./AppContext.tsx";
 import { BootErrorScreen, RecoveryBanner } from "./BootRecovery.tsx";
 import { FirstRunRules, needsRules, UPGRADE_NOTICE_VERSION, UpgradeNotice } from "./FirstRunRules.tsx";
@@ -26,6 +30,7 @@ import { useBootRecovery } from "./useBootRecovery.ts";
 
 const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean }> = [
   { id: "chat", label: "Chat", icon: "chat" },
+  { id: "fichiers", label: TEXTES_FICHIERS.partout.rail, icon: "folder" }, // nav
   { id: "assistants", label: "Assistants", icon: "sparkle" },
   { id: "couts", label: "Coûts", icon: "coins" },
   { id: "archives", label: "Archives", icon: "archive" },
@@ -391,7 +396,9 @@ function Shell({ recovery, onRetry }: { recovery: BootView<Bootstrap>; onRetry: 
             <CostsPage />
           ) : section === "archives" ? (
             <ArchivesPage />
-          ) : section === "assistants" ? (
+          ) : /* <nav:section> */ section === "fichiers" ? (
+            <FichiersPage />
+          ) : /* </nav:section> */ section === "assistants" ? (
             <AssistantsPage />
           ) : section === "studio" ? (
             advanced ? (
