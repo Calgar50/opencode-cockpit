@@ -22,12 +22,18 @@
 //      poste » de fin de demande (§4.14.5 l.850) n'étaient jamais affichés (croisement 6) ;
 //   C. L26c, D-L26c-1, MOYEN : `onClose` recréé à chaque rendu → `Modal` refocalisait le champ du montant à chaque relecture de
 //      l'état : le focus était volé (§5.5, P7) (croisement 6).
+// Défaut du BANC remis par L27a (n° 1) et L27b (n° 4.1), corrigé ici (le banc hors `portes/` appartient à l'intégrateur en V5) :
+//   D. l'espion (L21b) gardait ouvert, muet, le flux relayé au cockpit quand opencode était relancé : le cockpit restait aveugle
+//      jusqu'à son chien de garde de 35 s (croisement 7).
 // Le scénario e2e de L26c (étapes « signales » et « focus-ecran ») et la porte G7 de L27b ([competence-course]) sont les preuves
 // de bout en bout ; ils se jouent hors de `npm test` (Docker), au train.
 // Aucun conteneur, aucun appel Copilot, aucun réseau.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import type { Cockpit11 } from "./contracts-11.ts";
@@ -388,6 +394,74 @@ describe("croisement 5 : portillon de la salle, aucun « once » après la clôt
       assert.equal(a.envois.length, attendu === "ok" ? 1 : 0);
       assert.equal(a.gate.emitted.has("per_1"), attendu === "ok");
     }
+  });
+});
+
+// --- 7. Espion du banc : un flux amont coupé coupe le relais aval (constat n° 1 de L27a, n° 4.1 de L27b) ----------------------------
+
+/** Port libre de la boucle locale, rendu aussitôt (le programme l'écoute ensuite). */
+async function portLibre(): Promise<number> {
+  const s = http.createServer();
+  s.listen(0, "127.0.0.1");
+  await once(s, "listening");
+  const adresse = s.address();
+  s.close();
+  assert.ok(adresse !== null && typeof adresse === "object");
+  return adresse.port;
+}
+
+describe("croisement 7 : espion du banc (L21b) × portes de la vague (L27a, L27b)", () => {
+  it("opencode relancé (flux amont coupé sans fin) → le flux relayé au cockpit est coupé aussitôt, jamais laissé muet", async (t) => {
+    let socketAmont: import("node:net").Socket | null = null;
+    const amont = http.createServer((req, res) => {
+      if (req.url?.startsWith("/global/event")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"payload":{"type":"server.connected"}}\n\n');
+        socketAmont = req.socket;
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    amont.listen(0, "127.0.0.1");
+    await once(amont, "listening");
+    t.after(() => amont.close());
+    const adresse = amont.address();
+    assert.ok(adresse !== null && typeof adresse === "object");
+    const sortie = fs.mkdtempSync(path.join(os.tmpdir(), "sal11-v5-espion-"));
+    t.after(() => fs.rmSync(sortie, { recursive: true, force: true }));
+    const port = await portLibre();
+    const enfant = spawn(process.execPath, [path.join(RACINE, "e2e", "omo-banc", "lib", "espion.mjs"), "--port", String(port), "--amont", "127.0.0.1", "--port-amont", String(adresse.port), "--sortie", sortie], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let annonce = "";
+    enfant.stdout.on("data", (b: Buffer) => {
+      annonce += String(b);
+    });
+    t.after(async () => {
+      enfant.kill();
+      await once(enfant, "close").catch(() => undefined);
+    });
+    await until(() => annonce.includes('"pret":true'), 10_000);
+
+    const recu: string[] = [];
+    let coupe = false;
+    const requete = http.get({ host: "127.0.0.1", port, path: "/global/event" }, (res) => {
+      res.on("data", (b: Buffer) => recu.push(String(b)));
+      res.on("close", () => {
+        coupe = true;
+      });
+    });
+    requete.on("error", () => {
+      coupe = true;
+    });
+    t.after(() => requete.destroy());
+    await until(() => recu.join("").includes("server.connected"), 5_000);
+    // Témoin : tant que l'amont vit, le relais reste ouvert.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(coupe, false, "flux ouvert tant que l'amont vit");
+    // opencode relancé : sa connexion tombe, sans fin de flux.
+    (socketAmont as import("node:net").Socket | null)?.destroy();
+    await until(() => coupe, 3_000);
   });
 });
 

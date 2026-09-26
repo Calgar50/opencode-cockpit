@@ -205,6 +205,13 @@ function demarrer() {
           if (suivi) suivi.fermer();
         };
         reponse.on("close", clore);
+        // Amont coupé SANS fin (opencode relancé : fin de demande, arrêt, détection) : le relais aval est coupé aussi, jamais
+        // laissé ouvert et muet. Sinon le cockpit ne voit la coupure qu'à son chien de garde de 35 s, et une demande envoyée
+        // entre-temps perd ses `permission.asked` (constat n° 1 de L27a, train de V5 de la 2 ter). Après une fin normale, `pipe`
+        // a déjà clos l'aval : rien n'est coupé.
+        reponse.on("close", () => {
+          if (!res.writableEnded) res.destroy();
+        });
         reponse.on("end", () => {
           clore();
           noter({
