@@ -201,6 +201,45 @@ describe("croisements v106 : Studio (portée projet)", () => {
     }
     assertSentinel(h, "Studio noms légitimes");
   });
+
+  it("mode Simple : écritures du Studio refusées par « mode Avancé » AVANT le contrôle de portée (advanced puis studioScopeFirst), sans lire la portée, projet %XX compris ; en Avancé, la portée d'abord", async (t) => {
+    const scopes: string[] = [];
+    const { h } = await start(t, {
+      deps: (base) => {
+        const studio = new StudioService({ env: base.env, client: base.client, projects: base.projects, control: base.control, log: base.log });
+        const checkScope = studio.checkScope.bind(studio);
+        studio.checkScope = async (scope) => {
+          scopes.push(scope.type === "project" ? scope.project : "(global)");
+          return checkScope(scope);
+        };
+        return { studio };
+      },
+    });
+    const writes = (project: string) => {
+      const scope = `?project=${q(project)}`;
+      return [
+        ["PUT instructions", () => h.call("PUT", `/api/studio/instructions${scope}`, { headers: h.headers.mutating, body: { content: "consignes" } })],
+        ["PUT agents/espion", () => h.call("PUT", `/api/studio/agents/espion${scope}`, { headers: h.headers.mutating, body: { frontmatter: { description: "x" }, body: "x" } })],
+        ["DELETE agents/espion", () => h.call("DELETE", `/api/studio/agents/espion${scope}`, { headers: h.headers.mutating })],
+      ] as const;
+    };
+    const before = h.fake.requests.length;
+    for (const project of [TRAP, LEGIT[0]]) {
+      for (const [label, write] of writes(project)) {
+        const res = await write();
+        assert.equal(res.status, 403, `${project}, ${label} : ${res.body}`);
+        assert.equal(res.json<{ error: string }>().error, "mode-avance", `${project}, ${label} : le mode d'abord`);
+      }
+    }
+    assert.deepEqual(scopes, [], "portée jamais lue en mode Simple");
+    assert.equal(h.fake.requests.length, before, "aucune requête vers opencode");
+
+    // Témoin : en mode Avancé, la portée %XX est refusée par studioScopeFirst, avant la garde.
+    h.settings.update({ ui: { mode: "avance" } });
+    for (const [label, write] of writes(TRAP)) assertForbidden(await write(), label, "Nom de dossier non pris en charge (séquence %XX).");
+    assert.deepEqual(scopes, [TRAP, TRAP, TRAP]);
+    assertSentinel(h, "Studio, mode Simple");
+  });
 });
 
 // --- Dossiers connus (assistants, garde de rechargement) --------------------------------------------------------------------------
