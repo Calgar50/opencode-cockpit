@@ -11,7 +11,7 @@
 //   l'octet du plan §4.1.3 ; errata consigné par DOC-OMO. Accents graves : nom de fichier ou de commande, rendu en code.
 // - Honnêteté (P3) : « au plus » seulement pour l'homme mort (30 secondes, D-2b-25) et la borne {plafondMaxUsd} vérifiée par le
 //   serveur ; le coût n'est jamais promis (« un appel en cours par assistant peut le dépasser ») ; une détection est après coup.
-// - Gabarits : {projet}, {date}, {x}, {montant}, {plafondMaxUsd}, {categorie}, {liste}, {chemin} (omo-room-texts.test.ts).
+// - Gabarits : {projet}, {date}, {x}, {montant}, {plafondMaxUsd}, {categorie}, {liste}, {chemin}, {n} (omo-room-texts.test.ts).
 import type {
   EgressRefusalReason,
   OmoActivationRefusalCode,
@@ -227,10 +227,15 @@ export const TEXTES = {
       "git-quarantaine":
         "Un historique git créé pendant la demande a été mis de côté ({chemin}). Relisez ces fichiers avant de rouvrir ce projet dans votre éditeur.",
     } satisfies Record<OmoSignale["genre"], string>,
-    /** Fin de demande (`omo.signales`, §4.14.5 l.850) : titre de la liste, et mention d'une liste incomplète (train de V5, 2 ter). */
+    /**
+     * Fin de demande (`omo.signales`, §4.14.5 l.850) : titre de la liste, mention d'une descente incomplète du cockpit (train de
+     * V5, 2 ter), et, à part, nombre de fichiers relevés que la page n'affiche pas au-delà de sa borne (relecture 2ter-vague-5 :
+     * ce n'est pas le cockpit qui n'a pas tout examiné). {n} : forme sans accord, juste pour 1 comme pour 50.
+     */
     signalesFin: {
       titre: "Fichiers à relire",
       incomplet: "Liste incomplète : le cockpit n'a pas pu examiner tous les fichiers de la salle.",
+      masques: "Liste abrégée pour l'affichage. Fichiers relevés non affichés ici : {n}.",
     },
     /** Diagnostic de la salle : présence seulement, jamais un contenu. */
     diagnostic: {

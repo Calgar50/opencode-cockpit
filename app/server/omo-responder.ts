@@ -17,7 +17,9 @@
 //    - rien d'interdit → `relayOnce(id, dossier, "cockpit", toujoursActive)` : la demande active (même racine, même
 //      `requestId`) est RELUE par le portillon après sa file et sa vérification, juste avant l'envoi (train de V5 de la 2 ter,
 //      constat de L27b sur G7 [competence-course] : des « once » décidés avant un arrêt hors-contrôle attendaient leur tour dans
-//      la file, puis partaient APRÈS la clôture de la demande, et leurs commandes s'exécutaient). Demande close pendant
+//      la file, puis partaient APRÈS la clôture de la demande, et leurs commandes s'exécutaient). La relecture exige aussi
+//      qu'AUCUN arrêt de la salle ne soit en cours (`omoStop.enCours`, relecture 2ter-vague-5) : l'arrêt lit state.json avant de
+//      clore la demande, et un « once » vérifié pendant cette lecture partait encore. Demande close ou arrêt en cours pendant
 //      l'attente : rien n'est envoyé ni journalisé comme autorisé (l'arrêt refuse la demande) ;
 //    - interdit absolu → `rejectWhenAlone(id, session, dossier, message, "cockpit")`, avec « Interdit absolu du cockpit :
 //      {catégorie}. N'essayez pas de le contourner. » (TEXTES.avance.interdits de omo-room-texts.ts, catégorie en clair). Le refus
@@ -275,9 +277,15 @@ export function createOmoResponder(c11: Cockpit11, options: OmoResponderOptions 
     journaliser({ asked, rootId: racine.rootId, requestId, askedAt, verdict: "refus-interdit", regle: refus.categorie, raison: "", relais: sort === "retenu" ? null : sort });
   };
 
-  /** La demande `requestId` de `rootId` est-elle encore LA demande active ? Illisible : non (fermé en cas de doute). */
+  /**
+   * La demande `requestId` de `rootId` est-elle encore LA demande active, sans arrêt de la salle en cours ? Illisible : non (fermé
+   * en cas de doute). Relecture 2ter-vague-5 : un arrêt (`omoStop.run`, détection, plafond, [Arrêter]) lit state.json AVANT de
+   * clore la demande ; pendant cette lecture, la demande est encore active. `enCours`, posé de façon SYNCHRONE dès l'appel de
+   * `run` (et de `relaunchAfterRequest`, qui suit une demande déjà close), ferme le portillon dès le départ de l'arrêt.
+   */
   const toujoursActive = (rootId: string, requestId: string): boolean => {
     try {
+      if (c11.ports.omoStop?.enCours?.() === true) return false;
       const active = c11.ports.omoActivation.activeRequest();
       return active !== null && active.rootId === rootId && active.requestId === requestId;
     } catch (err) {

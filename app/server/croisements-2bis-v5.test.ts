@@ -25,6 +25,14 @@
 // Défaut du BANC remis par L27a (n° 1) et L27b (n° 4.1), corrigé ici (le banc hors `portes/` appartient à l'intégrateur en V5) :
 //   D. l'espion (L21b) gardait ouvert, muet, le flux relayé au cockpit quand opencode était relancé : le cockpit restait aveugle
 //      jusqu'à son chien de garde de 35 s (croisement 7).
+// Constats de la relecture 2ter-vague-5, corrigés ensuite (chacun tombe ici sans sa correction) :
+//   E. MOYEN : fenêtre résiduelle de A. L'arrêt réel (stopTreeOmo) lit state.json AVANT de clore la demande ; un « once » vérifié
+//      pendant cette lecture passait la relecture du répondeur et partait après la détection. Correction : le répondeur tient
+//      aussi un arrêt EN COURS (`omoStop.enCours`, posé de façon synchrone par `run`) pour une demande close (croisement 5, avec
+//      le vrai createOmoStop et une lecture de state.json retenue) ;
+//   F. BAS : une liste de fichiers à relire bornée par la PAGE (200) était dite « incomplète : le cockpit n'a pas pu examiner… »,
+//      ce qui est faux (le cockpit a tout examiné) ; deux causes, deux phrases : `incomplet` (descente du serveur) et `masques`
+//      (nombre de fichiers relevés non affichés) (croisement 6).
 // Le scénario e2e de L26c (étapes « signales » et « focus-ecran ») et la porte G7 de L27b ([competence-course]) sont les preuves
 // de bout en bout ; ils se jouent hors de `npm test` (Docker), au train.
 // Aucun conteneur, aucun appel Copilot, aucun réseau.
@@ -40,16 +48,18 @@ import type { Cockpit11 } from "./contracts-11.ts";
 import { openMemoryDb } from "./db.ts";
 import { EventHub } from "./hub.ts";
 import { createLogger } from "./log.ts";
-import type { OmoActiveRequest, OmoActivationPort } from "./omo-contracts.ts";
+import type { OmoActiveRequest, OmoActivationPort, OmoControlPort, OmoRoomPort, OmoStopPort } from "./omo-contracts.ts";
 import { createOmoResponder } from "./omo-responder.ts";
+import { createOmoStop } from "./omo-stop.ts";
 import type { OpencodeClient } from "./opencode.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
 import { TEXTES } from "./shared/omo-room-texts.ts";
+import type { OmoSupervisorPhase, OmoSupervisorState } from "./shared/omo-types.ts";
 import { until } from "./test-support/helpers.ts";
 import { SALLE_OUVERTE } from "./wiring-11.ts";
-import { lireSignales, SIGNALES_MAX } from "../web/pages/omo/salle-journal.ts";
+import { lireSignales, phraseSignalesMasques, SIGNALES_MAX } from "../web/pages/omo/salle-journal.ts";
 
 const RACINE = path.join(import.meta.dirname, "..", "..");
 const lire = (...segments: string[]): string => fs.readFileSync(path.join(RACINE, ...segments), "utf8");
@@ -249,6 +259,8 @@ function atelierPortillon(n: number) {
         enAttente.delete(id);
         return true;
       }
+      // Arrêt réel de la salle (stopTreeOmo) : abandon des sessions occupées ; la sonde, elle, conclut sur state.json.
+      if (method === "POST" && /^\/session\/[^/]+\/abort$/.test(pathname)) return true;
       throw new Error(`requête inattendue : ${method} ${pathname}`);
     },
   } as unknown as OpencodeClient;
@@ -305,6 +317,12 @@ function atelierPortillon(n: number) {
   };
   const decisions = () => db.prepare("SELECT permission_id, verdict, relais FROM autonomy_decisions ORDER BY id").all() as Array<{ permission_id: string; verdict: string; relais: string | null }>;
   return {
+    c11,
+    client,
+    db,
+    sessions,
+    hub,
+    log,
     gate,
     etat,
     envois,
@@ -322,6 +340,69 @@ function atelierPortillon(n: number) {
       etat.demande = { rootId: "ses_racine", requestId, startedAt: 1, plafondUsd: "1.00" };
     },
   };
+}
+
+/** state.json tel que le superviseur le publie (démarrage `dem_1`). */
+function etatSuperviseur(phase: OmoSupervisorPhase): OmoSupervisorState {
+  return {
+    startId: "dem_1",
+    phase,
+    imageId: "",
+    manifestSha256: "",
+    manifesteReference: "ok",
+    validation: "ok",
+    dossiersConfig: [],
+    projets: [{ chemin: PROJET, gitLectureSeule: true }],
+    workspaceGit: { verifieLe: 1, limiteAtteinte: false, nonProteges: [] },
+    startedAt: 1,
+  };
+}
+
+/**
+ * Arrêt RÉEL de la salle (createOmoStop, L23b) posé comme port `omoStop` de l'atelier, sur le même faux opencode et le même
+ * portillon : la demande n'est close qu'à son étape 1, APRÈS la lecture de state.json (étape 0), qui peut être RETENUE (lecture
+ * lente du volume omo-state). Le superviseur obéit au stop-request (phase « arret »).
+ */
+function arretReel(a: ReturnType<typeof atelierPortillon>, options: { etatRetenu?: boolean } = {}) {
+  let rendre: () => void = () => undefined;
+  const retenue = new Promise<void>((resolve) => {
+    rendre = resolve;
+  });
+  let lectures = 0;
+  let arrete = false;
+  const omoControl = {
+    readState: async () => {
+      lectures++;
+      if (options.etatRetenu === true && lectures === 1) await retenue;
+      return etatSuperviseur(arrete ? "arret" : "opencode-lance");
+    },
+    requestStop: async () => {
+      arrete = true;
+    },
+    stopHeartbeat: () => undefined,
+    suspend: () => undefined,
+  } as unknown as OmoControlPort;
+  const omoActivation = {
+    activeRequest: () => a.etat.demande,
+    endRequest: () => {
+      a.etat.demande = null;
+    },
+  } as unknown as OmoActivationPort;
+  const omoRoom = { openProjects: () => [], isRoomRoot: (id: string) => id === "ses_racine" } as unknown as OmoRoomPort;
+  const stop = createOmoStop(
+    {
+      instance: () => ({ client: a.client, gate: a.gate }),
+      db: a.db,
+      sessions: a.sessions,
+      hub: a.hub,
+      log: a.log,
+      workspace: WORKSPACE,
+      ports: () => ({ omoControl, omoRoom, omoActivation, facts: a.c11.ports.facts }),
+    },
+    { sondeFenetreMs: 0, sleep: async () => undefined },
+  );
+  (a.c11.ports as { omoStop?: OmoStopPort }).omoStop = stop;
+  return { stop, rendreEtat: () => rendre(), lecturesEtat: () => lectures };
 }
 
 describe("croisement 5 : portillon de la salle, aucun « once » après la clôture de la demande (L22d × L23b, G7 de L27b)", () => {
@@ -371,6 +452,63 @@ describe("croisement 5 : portillon de la salle, aucun « once » après la clôt
     a.liberer();
     await a.service.settled();
     assert.deepEqual(a.envois, []);
+  });
+
+  it("témoin : arrêt RÉEL (createOmoStop) posé mais au repos → les « once » d'une demande active partent", async () => {
+    const a = atelierPortillon(3);
+    const arret = arretReel(a);
+    a.activer();
+    a.demander();
+    await a.service.settled();
+    assert.equal(arret.stop.enCours?.(), false);
+    assert.deepEqual(
+      a.envois.map((e) => e.reply),
+      ["once", "once", "once"],
+    );
+  });
+
+  it("arrêt RÉEL dont la lecture de state.json est lente : une vérification rendue pendant cette lecture ne fait partir AUCUN « once » (relecture 2ter-vague-5)", async () => {
+    const a = atelierPortillon(3);
+    const arret = arretReel(a, { etatRetenu: true });
+    a.activer();
+    a.retenir();
+    a.demander();
+    // Le premier « once » tient la file (vérification GET /permission en cours) ; les deux autres attendent derrière lui.
+    await until(() => a.lecturesEnAttente() >= 1);
+    // Détection hors-contrôle : omo-detections-service.agir appelle omoStop.run, qui lit D'ABORD state.json (étape 0), lentement.
+    const resultat = arret.stop.run("ses_racine", "hors-controle");
+    // La vérification est rendue PENDANT cette lecture : l'arrêt est parti, la demande n'est pas encore close (étape 1).
+    a.liberer();
+    await a.service.settled();
+    assert.equal(arret.lecturesEtat(), 1, "témoin : l'arrêt est encore dans sa lecture de state.json");
+    assert.notEqual(a.etat.demande, null, "témoin : la demande n'est pas encore close par l'arrêt");
+    assert.deepEqual(
+      a.envois.filter((e) => e.reply === "once"),
+      [],
+      "aucun « once » après le départ de l'arrêt : leurs commandes s'exécuteraient après la détection",
+    );
+    for (const id of ["per_1", "per_2", "per_3"]) assert.equal(a.gate.emitted.has(id), false, `${id} : rien d'inscrit pour une réponse qui ne part pas`);
+    // L'arrêt se termine : il clôt la demande et refuse TOUTES les attentes de l'instance.
+    arret.rendreEtat();
+    const fin = await resultat;
+    assert.equal(a.etat.demande, null);
+    assert.equal(fin.rejected, 3);
+    assert.deepEqual(
+      a.envois.map((e) => [e.id, e.reply]).sort(),
+      [
+        ["per_1", "reject"],
+        ["per_2", "reject"],
+        ["per_3", "reject"],
+      ],
+      "les trois demandes sont refusées par l'arrêt, aucune n'a reçu « once »",
+    );
+    assert.deepEqual(a.decisions(), [], "aucune autorisation journalisée : aucune n'a été donnée");
+    assert.deepEqual(
+      a.evenements.filter((e) => e.type === "autonomie.decision"),
+      [],
+      "aucun autonomie.decision « auto » après la détection",
+    );
+    assert.equal(arret.stop.enCours?.(), false, "arrêt fini : plus rien n'est retenu par lui");
   });
 
   it("portillon seul : condition fausse ou qui lève → « expiree », rien d'inscrit ni d'envoyé ; absente → comportement L1b", async () => {
@@ -479,7 +617,14 @@ describe("croisement 6 : page de la salle, fichiers à relire de fin de demande 
     assert.doesNotMatch(page, /dangerouslySetInnerHTML/);
   });
 
-  it("lireSignales : données du flux non fiables — genre inconnu, chemin illisible écartés ; liste bornée et dite incomplète", () => {
+  it("deux causes, deux phrases (relecture 2ter-vague-5) : « incomplet » seulement pour la descente du cockpit, la borne de la page dite à part", () => {
+    const bloc = /function BlocSignalesFin[\s\S]*?\n\}/.exec(page)?.[0] ?? "";
+    // La phrase d'une descente incomplète ne suit que `incomplet` ; la borne de la page a sa propre phrase, avec son nombre.
+    assert.match(bloc, /\{lus\.incomplet \? <p className="small muted">\{TEXTES\.avance\.signalesFin\.incomplet\}<\/p> : null\}/);
+    assert.match(bloc, /\{lus\.masques > 0 \? <p className="small muted">\{phraseSignalesMasques\(lus\.masques\)\}<\/p> : null\}/);
+  });
+
+  it("lireSignales : données du flux non fiables — genre inconnu, chemin illisible écartés ; liste bornée, nombre des fichiers non affichés dit", () => {
     assert.equal(lireSignales(null), null);
     assert.equal(lireSignales("omo.signales"), null);
     const lus = lireSignales({
@@ -497,23 +642,42 @@ describe("croisement 6 : page de la salle, fichiers à relire de fin de demande 
     assert.deepEqual(lus, {
       rootId: "ses_racine",
       incomplet: false,
+      masques: 0,
       signales: [
         { chemin: "projet-a/src/outil.ps1", genre: "programme" },
         { chemin: "projet-a/.vscode/tasks.json", genre: "ide-ci" },
       ],
     });
-    assert.deepEqual(lireSignales({ rootId: 7, signales: "x", incomplet: "oui" }), { rootId: null, signales: [], incomplet: false });
+    assert.deepEqual(lireSignales({ rootId: 7, signales: "x", incomplet: "oui" }), { rootId: null, signales: [], incomplet: false, masques: 0 });
     assert.equal(lireSignales({ signales: [], incomplet: true })?.incomplet, true, "la descente incomplète du cockpit est dite");
+    // Le cockpit a tout examiné (incomplet: false) et en relève plus que la page n'en montre (250 `*.ps1` d'une fin de demande) :
+    // la liste est bornée ici, le nombre des fichiers non affichés est dit, et la descente n'est PAS dite incomplète (ce serait faux).
     const beaucoup = Array.from({ length: SIGNALES_MAX + 5 }, (_, i) => ({ chemin: `projet-a/f${i}.ps1`, genre: "programme" }));
     const bornes = lireSignales({ rootId: null, signales: beaucoup, incomplet: false });
     assert.equal(bornes?.signales.length, SIGNALES_MAX);
-    assert.equal(bornes?.incomplet, true, "une liste bornée ici est dite incomplète, jamais tue");
+    assert.equal(bornes?.masques, 5, "une liste bornée ici dit combien de fichiers relevés ne sont pas affichés, jamais tue");
+    assert.equal(bornes?.incomplet, false, "la borne de la page n'est pas une descente incomplète du cockpit");
+    // Au-delà de la borne, seules les entrées lisibles sont comptées : une entrée écartée n'est pas un fichier relevé.
+    const melange = [...beaucoup, { chemin: "projet-a/x.ps1", genre: "inconnu" }, { chemin: "", genre: "programme" }, 42];
+    assert.equal(lireSignales({ signales: melange, incomplet: false })?.masques, 5);
+    // Les deux causes à la fois : chacune est dite.
+    const lesDeux = lireSignales({ signales: beaucoup, incomplet: true });
+    assert.equal(lesDeux?.incomplet, true);
+    assert.equal(lesDeux?.masques, 5);
+    // Juste à la borne : rien de masqué.
+    assert.equal(lireSignales({ signales: beaucoup.slice(0, SIGNALES_MAX), incomplet: false })?.masques, 0);
   });
 
-  it("les phrases de la carte sont celles de T3a : « à relire avant de lancer sur votre poste », titre et liste incomplète", () => {
+  it("les phrases de la carte sont celles de T3a : « à relire avant de lancer sur votre poste », titre, liste incomplète et liste abrégée", () => {
     assert.equal(TEXTES.avance.signales.programme, "à relire avant de lancer sur votre poste");
     assert.equal(TEXTES.avance.signalesFin.titre, "Fichiers à relire");
     assert.match(TEXTES.avance.signalesFin.incomplet, /^Liste incomplète/);
+    // La phrase de la borne de la page ne prétend pas que le cockpit n'a pas tout examiné : elle dit ce qui n'est pas affiché.
+    assert.doesNotMatch(TEXTES.avance.signalesFin.masques, /incomplète|examiner/);
+    assert.match(TEXTES.avance.signalesFin.masques, /non affichés/);
+    assert.equal(phraseSignalesMasques(5), TEXTES.avance.signalesFin.masques.replace("{n}", "5"));
+    assert.doesNotMatch(phraseSignalesMasques(1), /\{n\}/);
+    assert.match(phraseSignalesMasques(1), /\b1\b/);
   });
 
   it("focus jamais volé : aucun `onClose` écrit en ligne dans les pages de la salle ; l'écran d'activation reçoit une fonction stable", () => {

@@ -68,6 +68,7 @@ import {
   journalDeLaSalle,
   lireDetection,
   lireSignales,
+  phraseSignalesMasques,
   relireJournalApres,
   type SignalesLus,
 } from "./salle-journal.ts";
@@ -362,7 +363,8 @@ function BlocDetection({ detection }: { detection: DetectionLue }) {
 
 /**
  * Fichiers à relire d'une fin de demande (`omo.signales`, §4.14.5 l.850), signalés SANS arrêt : chaque genre avec sa phrase, puis
- * ses chemins ; une liste incomplète le dit. Chemins venus du flux : rendus comme texte, jamais comme HTML.
+ * ses chemins. Deux mentions distinctes (relecture 2ter-vague-5) : une descente incomplète du cockpit le dit, et la borne de la
+ * page dit combien de fichiers relevés ne sont pas affichés. Chemins venus du flux : rendus comme texte, jamais comme HTML.
  */
 function BlocSignalesFin({ lus }: { lus: SignalesLus }) {
   const groupes = vueSignales(lus.signales);
@@ -381,6 +383,7 @@ function BlocSignalesFin({ lus }: { lus: SignalesLus }) {
         </div>
       ))}
       {lus.incomplet ? <p className="small muted">{TEXTES.avance.signalesFin.incomplet}</p> : null}
+      {lus.masques > 0 ? <p className="small muted">{phraseSignalesMasques(lus.masques)}</p> : null}
     </Card>
   );
 }

@@ -1,4 +1,4 @@
-// Propriétaire : L26a (relecture 2ter-vague-2 ; `lireSignales` : train de V5 de la 2 ter).
+// Propriétaire : L26a (relecture 2ter-vague-2 ; `lireSignales` : train de V5 de la 2 ter ; `masques` : relecture 2ter-vague-5).
 // Données du Journal du contrôle de la Salle OMO, rendu par la page de la salle (spécification §4.12 l.784 : bandeau permanent
 // « Salle OMO · extension active · … » [Arrêter] [Journal] ; « Le journal montre aussi `refus-interdit`, les actions
 // `par: extension` et les détections »). Module pur, sans React ni réseau : la page lui passe ce que le flux lui apporte, il rend
@@ -51,37 +51,52 @@ export function lireDetection(data: unknown): DetectionLue | null {
   return { rootId: typeof data.rootId === "string" ? data.rootId : null, cause: data.cause, signales };
 }
 
-/** Fichiers à relire gardés pour l'affichage d'une fin de demande : au-delà, la liste est dite incomplète. */
+/**
+ * Fichiers à relire gardés pour l'affichage d'une fin de demande : au-delà, les fichiers relevés non affichés sont COMPTÉS et leur
+ * nombre est dit (`masques`). La borne du serveur vaut par relevé (`signalesMaxFichiers`, par dossier contrôlé) et la liste d'une
+ * fin de demande réunit plusieurs projets et genres : aligner cette borne sur celle du serveur ne suffirait pas.
+ */
 export const SIGNALES_MAX = 200;
 
 /** Fichiers à relire d'une fin de demande (`omo.signales`, §4.14.5 l.850), lus dans le flux. */
 export interface SignalesLus {
   rootId: string | null;
   signales: OmoSignale[];
-  /** La descente du cockpit n'a pas tout vu, ou la liste a été bornée ici : la page le DIT. */
+  /** La descente du COCKPIT n'a pas tout vu (`incomplet` du flux, seule source) : la page le DIT. */
   incomplet: boolean;
+  /**
+   * Fichiers relevés par le cockpit mais non affichés ici, au-delà de `SIGNALES_MAX` (relecture 2ter-vague-5) : la page DIT leur
+   * nombre, sans prétendre que le cockpit ne les a pas examinés. 0 : tout ce qui a été relevé est affiché.
+   */
+  masques: number;
 }
 
 /**
  * Fichiers à relire lus dans les données d'un événement `omo.signales` (train de V5 de la 2 ter, constat D-L26c-2 : la page ne
- * les lisait pas). Lus avec prudence : un genre qu'aucun texte de T3a ne nomme, ou un chemin illisible, est écarté ; null si les
- * données ne sont pas un objet.
+ * les lisait pas). Lus avec prudence : un genre qu'aucun texte de T3a ne nomme, ou un chemin illisible, est écarté (et n'est pas
+ * compté parmi les fichiers non affichés) ; null si les données ne sont pas un objet. Deux causes, deux champs (relecture
+ * 2ter-vague-5) : `incomplet` ne vient que de la descente du serveur ; la borne de la page se dit par `masques`.
  */
 export function lireSignales(data: unknown): SignalesLus | null {
   if (!estObjet(data)) return null;
   const signales: OmoSignale[] = [];
-  let ecartes = false;
+  let masques = 0;
   if (Array.isArray(data.signales)) {
     for (const entree of data.signales as unknown[]) {
       if (!estObjet(entree) || typeof entree.chemin !== "string" || entree.chemin === "" || !estGenre(entree.genre)) continue;
       if (signales.length >= SIGNALES_MAX) {
-        ecartes = true;
-        break;
+        masques++;
+        continue;
       }
       signales.push({ chemin: entree.chemin, genre: entree.genre });
     }
   }
-  return { rootId: typeof data.rootId === "string" ? data.rootId : null, signales, incomplet: data.incomplet === true || ecartes };
+  return { rootId: typeof data.rootId === "string" ? data.rootId : null, signales, incomplet: data.incomplet === true, masques };
+}
+
+/** Phrase des fichiers relevés non affichés (`SignalesLus.masques`), gabarit {n} rempli. */
+export function phraseSignalesMasques(masques: number): string {
+  return TEXTES.avance.signalesFin.masques.replace("{n}", String(masques));
 }
 
 /** Ajoute une détection reçue à la liste de la visite, bornée à `DETECTIONS_MAX`. */
