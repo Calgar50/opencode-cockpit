@@ -444,17 +444,7 @@ describe("câblage 1.1 : ordre figé", () => {
     );
     assert.deepEqual(
       await run(() => wiring.routes.forEach((register) => register(stub<Hono>()))),
-      [
-        "conversations",
-        "delegations",
-        "activity",
-        "autonomy",
-        "plans",
-        "diagnostic-11",
-        // <nav:ordre>
-        "fichiers",
-        // </nav:ordre>
-      ],
+      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11", "fichiers"], // nav
     );
     assert.deepEqual(
       wiring.registrations.filter((r) => r.kind === "hook").map((r) => `${r.key}/${r.module}`),
