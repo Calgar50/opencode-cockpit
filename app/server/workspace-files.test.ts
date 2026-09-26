@@ -20,6 +20,13 @@ const EXIGE_LINUX = "exige Linux (liens symboliques, tubes, /proc)";
 /** Options des cas [L]. */
 const L = LINUX ? {} : { skip: EXIGE_LINUX };
 const BASE = process.env.NAV_TEST_DIR ?? os.tmpdir();
+/**
+ * Montage réel (passe du §4.4 sur Docker Desktop, NAV_TEST_DIR posé ; train de la vague 6) : sur ce montage (9p), un dossier
+ * déplacé après son ouverture ne se relit plus par /proc/self/fd/<fd> (ENOENT, mesuré par NAV-4). Le lecteur le refuse alors
+ * (illisible) ou le saute (parcours incomplet). Les deux cas « aller-retour après l'ouverture » y admettent ce refus, jamais un
+ * nom extérieur ; sur un dossier local (tmpfs, disque), seuls les vrais noms sont admis.
+ */
+const MONTAGE = process.env.NAV_TEST_DIR !== undefined;
 
 interface Ligne {
   message: string;
@@ -584,6 +591,12 @@ describe("lecteur : courses (crochet pendant)", () => {
       },
     });
     const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
+    assert.equal(JSON.stringify(res).includes("cockpit.db"), false, JSON.stringify(res));
+    if (MONTAGE && !res.ok) {
+      // Montage 9p : le descripteur du dossier déplacé ne se relit plus → refus, aucun nom extérieur.
+      assert.deepEqual(res, { ok: false, code: "illisible" });
+      return;
+    }
     assert.ok(res.ok, JSON.stringify(res));
     assert.deepEqual(res.valeur.entrees.map((e) => [e.nom, e.type, e.taille]), [["vrai.txt", "fichier", 1]]);
     assert.deepEqual(moments, ["apres-controle", "apres-ouverture", "apres-liste"]);
@@ -975,6 +988,11 @@ describe("lecteur : parcours (récents, recherche)", () => {
     assert.ok(res.ok, JSON.stringify(res));
     assert.equal(ouverts, 2);
     assert.equal(JSON.stringify(res).includes("nom-exterieur"), false, JSON.stringify(res));
+    if (MONTAGE && res.valeur.fichiers.length === 0) {
+      // Montage 9p : le dossier déplacé ne se relit plus par son descripteur → sauté, parcours dit incomplet.
+      assert.equal(res.valeur.incomplet, true);
+      return;
+    }
     assert.deepEqual(res.valeur.fichiers.map((f) => f.chemin), ["a/dedans.txt"]);
     assert.equal(res.valeur.incomplet, false);
   });
