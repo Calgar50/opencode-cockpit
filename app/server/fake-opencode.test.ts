@@ -221,6 +221,109 @@ describe("faux opencode : transport", () => {
   });
 });
 
+describe("faux opencode : dossier de l'instance décodé deux fois, comme opencode 1.18.30 (A22, R106-a)", () => {
+  /** GET avec un chemin et des en-têtes bruts (jamais par OpencodeClient, qui n'envoie pas x-opencode-directory). */
+  const rawGet = (fake: FakeOpencode, pathAndQuery: string, headers: Record<string, string> = {}) =>
+    fetch(`${fake.url}${pathAndQuery}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString("base64")}`, ...headers } });
+
+  it("?directory= encodé une fois « /workspace/a%2F..%2F..%2Fsecret » : instance « /secret » (hors racine), session créée dans « /secret », requête reçue gardée telle quelle", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const trap = "/workspace/a%2F..%2F..%2Fsecret";
+    assert.deepEqual(await oc.request("GET", "/agent", { directory: trap }), fake.agents("/secret"));
+    assert.deepEqual(fake.requests.at(-1)?.query, { directory: trap }, "journal : valeur après le seul premier décodage");
+    const session = await newSession(oc, { title: "Piège" }, trap);
+    assert.equal(session.directory, "/secret", "mesuré sur opencode réel : session créée dans le dossier décodé");
+    assert.deepEqual(fake.instancesChargees(), ["/secret"]);
+    assert.deepEqual(fake.instancesHors(), ["/secret"]);
+    assert.deepEqual(fake.instancesHors("/"), [], "racine explicite");
+    // Minuscules et points encodés : même sortie (variantes V1 et V2 de la mesure).
+    await oc.request("GET", "/session/status", { directory: "/workspace/b%2f..%2f..%2fautre" });
+    await oc.request("GET", "/session/status", { directory: "/workspace/%2e%2e/c" });
+    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre", "/c"]);
+  });
+
+  it("« Remise 20% », « 100 % bio », accents, & et + : dossier inchangé à l'octet ; « taux%41 » devient « /workspace/tauxA » (déjà cassé chez opencode)", async (t) => {
+    const { fake, oc } = await startFake(t);
+    const legit = ["/workspace/Remise 20%", "/workspace/100 % bio", "/workspace/Données & co", "/workspace/R+D équipe", "/workspace/l'équipe + moi"];
+    for (const directory of legit) {
+      await oc.request("GET", "/session/status", { directory });
+      assert.deepEqual(fake.requests.at(-1)?.query, { directory }, directory);
+    }
+    const session = await newSession(oc, { title: "Remise" }, "/workspace/Remise 20%");
+    assert.equal(session.directory, "/workspace/Remise 20%");
+    await oc.request("GET", "/session/status", { directory: "/workspace/taux%41" });
+    assert.deepEqual(fake.instancesChargees(), [...legit, "/workspace/tauxA"]);
+    assert.deepEqual(fake.instancesHors(), []);
+  });
+
+  it("en-tête x-opencode-directory (sans paramètre) : UN seul décodage ; le même texte en paramètre brut est décodé deux fois", async (t) => {
+    const { fake } = await startFake(t);
+    assert.equal((await rawGet(fake, "/session/status", { "x-opencode-directory": "/workspace/b%252F..%252F..%252Fsecret" })).status, 200);
+    assert.deepEqual(fake.instancesChargees(), ["/workspace/b%2F..%2F..%2Fsecret"], "en-tête : un décodage, reste dans la racine");
+    assert.deepEqual(fake.instancesHors(), []);
+    assert.equal((await rawGet(fake, "/session/status", { "x-opencode-directory": "/workspace/a%2F..%2F..%2Fsecret" })).status, 200);
+    assert.deepEqual(fake.instancesHors(), ["/secret"], "en-tête : un décodage suffit à « %2F »");
+    assert.equal((await rawGet(fake, "/session/status?directory=/workspace/b%252F..%252F..%252Fautre")).status, 200);
+    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre"], "paramètre brut : décodé deux fois (%252F → %2F → /)");
+    assert.equal((await rawGet(fake, "/session/status?directory=%2Fworkspace%2Fa%25252F..%25252Fx")).status, 200);
+    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre"], "variante V3 : %25252F ne sort pas (deux décodages, pas trois)");
+  });
+
+  it("sentinelle : une instance ouverte hors de la racine reste relevée après sa libération ; /global/* n'ouvre aucune instance", async (t) => {
+    const { fake, oc } = await startFake(t);
+    await oc.request("GET", "/global/config");
+    assert.deepEqual(fake.instancesChargees(), []);
+    await oc.request("POST", "/instance/dispose", { directory: "/workspace/a%2F..%2F..%2Fsecret" });
+    await until(() => fake.instancesChargees().length === 0);
+    assert.deepEqual(fake.instancesHors(), ["/secret"]);
+    await oc.request("GET", "/session/status");
+    assert.deepEqual(fake.instancesChargees(), ["/workspace"], "sans paramètre : le dossier du serveur");
+  });
+});
+
+describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (option permissionListeRejetee, A23, R106-a)", () => {
+  const URL_DOC = "https://exemple.test/doc";
+  const webfetch = (metadata: Record<string, unknown> = { url: URL_DOC, format: "markdown" }): FakeToolScript => ({
+    tool: "webfetch",
+    input: { url: URL_DOC, format: "markdown" },
+    ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata },
+    output: "contenu",
+  });
+  const SCHEMA_REJECTION = { name: "BadRequest", data: { message: 'Expected JSON value, got undefined\n  at [0]["metadata"]["timeout"]', kind: "Body" } };
+  const rejectedWith400 = (err: unknown) => err instanceof OpencodeError && err.status === 400 && JSON.stringify(err.body) === JSON.stringify(SCHEMA_REJECTION);
+
+  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch ou bash sans timeout attend dans l'instance ; réponses toujours acceptées", async (t) => {
+    const { fake, oc } = await startFake(t);
+    assert.equal(fake.permissionListeRejetee, false);
+    const session = await newSession(oc);
+    fake.script(session.id, { tools: [webfetch()], followUp: { text: "Fini." } });
+    await promptAsync(oc, session.id, "Lis la page");
+    const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 1, "option coupée : liste servie");
+    fake.permissionListeRejetee = true;
+    await assert.rejects(oc.request("GET", "/permission"), rejectedWith400);
+    assert.deepEqual(await oc.request("GET", "/permission", { directory: "/workspace/autre" }), [], "autre instance : liste servie");
+    // Seule la liste échoue : la réponse à la demande est acceptée, et la liste revient avec elle.
+    assert.equal(await reply(oc, String(asked.properties.id), { reply: "reject" }), true);
+    assert.deepEqual(await oc.request("GET", "/permission"), []);
+    await fake.settled(session.id);
+  });
+
+  it("webfetch avec un timeout numérique ou demande edit : liste servie ; bash sans timeout : rejetée ; option passée au constructeur", async (t) => {
+    const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
+    const first = await newSession(oc);
+    fake.script(first.id, { tools: [webfetch({ url: URL_DOC, format: "markdown", timeout: 30 }), editTool("/workspace/a.txt", "a", "b")], followUp: { text: "Fini." } });
+    await promptAsync(oc, first.id, "Deux demandes");
+    await until(() => fake.pendingPermissions().length === 2);
+    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 2);
+    const second = await newSession(oc);
+    fake.script(second.id, { tools: [bash("ls")], followUp: { text: "Fini." } });
+    await promptAsync(oc, second.id, "Liste");
+    await until(() => fake.pendingPermissions().length === 3);
+    await assert.rejects(oc.request("GET", "/permission"), (err: unknown) => err instanceof OpencodeError && err.status === 400 && String((err.body as { data?: { message?: string } })?.data?.message).includes('at [2]["metadata"]["timeout"]'));
+  });
+});
+
 describe("faux opencode : sessions", () => {
   it("POST /session stocke parentID, title, permission, metadata, directory et émet session.created", async (t) => {
     const { fake, oc } = await startFake(t);
@@ -1900,108 +2003,5 @@ describe("faux opencode : métadonnées des demandes de modification", () => {
     fake.script(session.id, { tools: [{ tool: "apply_patch", input: { patchText: "pas un patch" }, ask: { permission: "edit", patterns: ["x"] } }] });
     await promptAsync(oc, session.id, "Patch");
     assert.deepEqual((await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id)).properties.metadata, {});
-  });
-});
-
-describe("faux opencode : dossier de l'instance décodé deux fois, comme opencode 1.18.30 (A22, R106-a)", () => {
-  /** GET avec un chemin et des en-têtes bruts (jamais par OpencodeClient, qui n'envoie pas x-opencode-directory). */
-  const rawGet = (fake: FakeOpencode, pathAndQuery: string, headers: Record<string, string> = {}) =>
-    fetch(`${fake.url}${pathAndQuery}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString("base64")}`, ...headers } });
-
-  it("?directory= encodé une fois « /workspace/a%2F..%2F..%2Fsecret » : instance « /secret » (hors racine), session créée dans « /secret », requête reçue gardée telle quelle", async (t) => {
-    const { fake, oc } = await startFake(t);
-    const trap = "/workspace/a%2F..%2F..%2Fsecret";
-    assert.deepEqual(await oc.request("GET", "/agent", { directory: trap }), fake.agents("/secret"));
-    assert.deepEqual(fake.requests.at(-1)?.query, { directory: trap }, "journal : valeur après le seul premier décodage");
-    const session = await newSession(oc, { title: "Piège" }, trap);
-    assert.equal(session.directory, "/secret", "mesuré sur opencode réel : session créée dans le dossier décodé");
-    assert.deepEqual(fake.instancesChargees(), ["/secret"]);
-    assert.deepEqual(fake.instancesHors(), ["/secret"]);
-    assert.deepEqual(fake.instancesHors("/"), [], "racine explicite");
-    // Minuscules et points encodés : même sortie (variantes V1 et V2 de la mesure).
-    await oc.request("GET", "/session/status", { directory: "/workspace/b%2f..%2f..%2fautre" });
-    await oc.request("GET", "/session/status", { directory: "/workspace/%2e%2e/c" });
-    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre", "/c"]);
-  });
-
-  it("« Remise 20% », « 100 % bio », accents, & et + : dossier inchangé à l'octet ; « taux%41 » devient « /workspace/tauxA » (déjà cassé chez opencode)", async (t) => {
-    const { fake, oc } = await startFake(t);
-    const legit = ["/workspace/Remise 20%", "/workspace/100 % bio", "/workspace/Données & co", "/workspace/R+D équipe", "/workspace/l'équipe + moi"];
-    for (const directory of legit) {
-      await oc.request("GET", "/session/status", { directory });
-      assert.deepEqual(fake.requests.at(-1)?.query, { directory }, directory);
-    }
-    const session = await newSession(oc, { title: "Remise" }, "/workspace/Remise 20%");
-    assert.equal(session.directory, "/workspace/Remise 20%");
-    await oc.request("GET", "/session/status", { directory: "/workspace/taux%41" });
-    assert.deepEqual(fake.instancesChargees(), [...legit, "/workspace/tauxA"]);
-    assert.deepEqual(fake.instancesHors(), []);
-  });
-
-  it("en-tête x-opencode-directory (sans paramètre) : UN seul décodage ; le même texte en paramètre brut est décodé deux fois", async (t) => {
-    const { fake } = await startFake(t);
-    assert.equal((await rawGet(fake, "/session/status", { "x-opencode-directory": "/workspace/b%252F..%252F..%252Fsecret" })).status, 200);
-    assert.deepEqual(fake.instancesChargees(), ["/workspace/b%2F..%2F..%2Fsecret"], "en-tête : un décodage, reste dans la racine");
-    assert.deepEqual(fake.instancesHors(), []);
-    assert.equal((await rawGet(fake, "/session/status", { "x-opencode-directory": "/workspace/a%2F..%2F..%2Fsecret" })).status, 200);
-    assert.deepEqual(fake.instancesHors(), ["/secret"], "en-tête : un décodage suffit à « %2F »");
-    assert.equal((await rawGet(fake, "/session/status?directory=/workspace/b%252F..%252F..%252Fautre")).status, 200);
-    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre"], "paramètre brut : décodé deux fois (%252F → %2F → /)");
-    assert.equal((await rawGet(fake, "/session/status?directory=%2Fworkspace%2Fa%25252F..%25252Fx")).status, 200);
-    assert.deepEqual(fake.instancesHors(), ["/secret", "/autre"], "variante V3 : %25252F ne sort pas (deux décodages, pas trois)");
-  });
-
-  it("sentinelle : une instance ouverte hors de la racine reste relevée après sa libération ; /global/* n'ouvre aucune instance", async (t) => {
-    const { fake, oc } = await startFake(t);
-    await oc.request("GET", "/global/config");
-    assert.deepEqual(fake.instancesChargees(), []);
-    await oc.request("POST", "/instance/dispose", { directory: "/workspace/a%2F..%2F..%2Fsecret" });
-    await until(() => fake.instancesChargees().length === 0);
-    assert.deepEqual(fake.instancesHors(), ["/secret"]);
-    await oc.request("GET", "/session/status");
-    assert.deepEqual(fake.instancesChargees(), ["/workspace"], "sans paramètre : le dossier du serveur");
-  });
-});
-
-describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (option permissionListeRejetee, A23, R106-a)", () => {
-  const URL_DOC = "https://exemple.test/doc";
-  const webfetch = (metadata: Record<string, unknown> = { url: URL_DOC, format: "markdown" }): FakeToolScript => ({
-    tool: "webfetch",
-    input: { url: URL_DOC, format: "markdown" },
-    ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata },
-    output: "contenu",
-  });
-  const SCHEMA_REJECTION = { name: "BadRequest", data: { message: 'Expected JSON value, got undefined\n  at [0]["metadata"]["timeout"]', kind: "Body" } };
-  const rejectedWith400 = (err: unknown) => err instanceof OpencodeError && err.status === 400 && JSON.stringify(err.body) === JSON.stringify(SCHEMA_REJECTION);
-
-  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch ou bash sans timeout attend dans l'instance ; réponses toujours acceptées", async (t) => {
-    const { fake, oc } = await startFake(t);
-    assert.equal(fake.permissionListeRejetee, false);
-    const session = await newSession(oc);
-    fake.script(session.id, { tools: [webfetch()], followUp: { text: "Fini." } });
-    await promptAsync(oc, session.id, "Lis la page");
-    const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
-    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 1, "option coupée : liste servie");
-    fake.permissionListeRejetee = true;
-    await assert.rejects(oc.request("GET", "/permission"), rejectedWith400);
-    assert.deepEqual(await oc.request("GET", "/permission", { directory: "/workspace/autre" }), [], "autre instance : liste servie");
-    // Seule la liste échoue : la réponse à la demande est acceptée, et la liste revient avec elle.
-    assert.equal(await reply(oc, String(asked.properties.id), { reply: "reject" }), true);
-    assert.deepEqual(await oc.request("GET", "/permission"), []);
-    await fake.settled(session.id);
-  });
-
-  it("webfetch avec un timeout numérique ou demande edit : liste servie ; bash sans timeout : rejetée ; option passée au constructeur", async (t) => {
-    const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
-    const first = await newSession(oc);
-    fake.script(first.id, { tools: [webfetch({ url: URL_DOC, format: "markdown", timeout: 30 }), editTool("/workspace/a.txt", "a", "b")], followUp: { text: "Fini." } });
-    await promptAsync(oc, first.id, "Deux demandes");
-    await until(() => fake.pendingPermissions().length === 2);
-    assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 2);
-    const second = await newSession(oc);
-    fake.script(second.id, { tools: [bash("ls")], followUp: { text: "Fini." } });
-    await promptAsync(oc, second.id, "Liste");
-    await until(() => fake.pendingPermissions().length === 3);
-    await assert.rejects(oc.request("GET", "/permission"), (err: unknown) => err instanceof OpencodeError && err.status === 400 && String((err.body as { data?: { message?: string } })?.data?.message).includes('at [2]["metadata"]["timeout"]'));
   });
 });
