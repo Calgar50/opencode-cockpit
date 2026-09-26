@@ -6,17 +6,23 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { createAdaptorServer } from "@hono/node-server";
+import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
 import type { Cockpit11, Registrar } from "./contracts-11.ts";
 import { EnvError, FICHIERS_DIR_MONTAGE, loadEnv, parseFichiers, parseFichiersDir } from "./env.ts";
-import { fichiersModule, STATUTS_FICHIERS } from "./routes-fichiers.ts";
+import { fichiersModule, registerFichiersRoutes, STATUTS_FICHIERS } from "./routes-fichiers.ts";
 import { API_CONTENT_SECURITY_POLICY, CSRF_HEADER } from "./security.ts";
 import { FICHIERS_ROUTES, NAV_BORNES } from "./shared/fichiers-regles.ts";
 import { phraseErreur, TEXTES } from "./shared/fichiers-texts.ts";
 import type { FichiersCode } from "./shared/fichiers-types.ts";
 import { type CallResult, type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
+import { creerLecteurFichiers, type DemandeProjet, type LecteurFichiers } from "./workspace-files.ts";
 
 type Route = keyof typeof FICHIERS_ROUTES;
 
@@ -239,6 +245,91 @@ describe("routes « fichiers » : interrupteur, modes, aucun appel", () => {
     assert.equal((await post(h, "contenu", { projet: "", chemin: "a%2F..%2F..%2Fdonnees/note.txt" })).status, 200);
     assert.equal(h.fake.requests.length, avant);
     assert.equal(usage(), lignes);
+  });
+});
+
+describe("routes « fichiers » : parcours abandonné par la page (relecture F2-vague-6, constat n° 5)", () => {
+  /** Attend qu'une condition devienne vraie. */
+  async function jusqua(condition: () => boolean, ms = 5_000): Promise<void> {
+    const limite = performance.now() + ms;
+    while (!condition()) {
+      if (performance.now() > limite) throw new Error("délai dépassé");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  it("« recents » annulé pendant son parcours (connexion fermée) : le signal de la requête atteint le lecteur, un second « recents » immédiat → 200", async (t) => {
+    const travail = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-nav-abandon-"));
+    t.after(() => fs.rmSync(travail, { recursive: true, force: true }));
+    ecrire(travail, "proj/a.txt", "x");
+    let ouvrir = (): void => undefined;
+    const tenue = new Promise<void>((resolve) => {
+      ouvrir = () => resolve();
+    });
+    t.after(() => ouvrir());
+    let atteint = false;
+    let premier = true;
+    const log = { warn: () => undefined };
+    // Crochet de test sur un lecteur créé ici : routes-fichiers.ts n'en passe jamais (test statique de workspace-files.test.ts).
+    const lecteur = creerLecteurFichiers({
+      racine: travail,
+      log,
+      pendant: async (moment) => {
+        if (moment !== "parcours-dossier" || !premier) return;
+        premier = false;
+        atteint = true;
+        await tenue;
+      },
+    });
+    const signaux: Array<AbortSignal | undefined> = [];
+    const espionne: LecteurFichiers = {
+      ...lecteur,
+      recents: (demande: DemandeProjet) => {
+        signaux.push(demande.signal);
+        return lecteur.recents(demande);
+      },
+    };
+    const app = new Hono();
+    registerFichiersRoutes(app, { actif: true, lecteur: espionne, log });
+    const serveur = createAdaptorServer({ fetch: app.fetch }) as http.Server;
+    await new Promise<void>((resolve) => serveur.listen(0, "127.0.0.1", resolve));
+    t.after(
+      () =>
+        new Promise<void>((resolve) => {
+          serveur.closeAllConnections();
+          serveur.close(() => resolve());
+        }),
+    );
+    const { port } = serveur.address() as AddressInfo;
+    const corps = JSON.stringify({ projet: "proj" });
+    const envoyer = () =>
+      http.request({
+        host: "127.0.0.1",
+        port,
+        method: "POST",
+        path: FICHIERS_ROUTES.recents,
+        headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(corps)) },
+      });
+    const abandonnee = envoyer();
+    abandonnee.on("error", () => undefined);
+    abandonnee.end(corps);
+    await jusqua(() => atteint);
+    // La page annule sa requête (AbortController) : le navigateur ferme la connexion.
+    abandonnee.destroy();
+    await jusqua(() => signaux[0]?.aborted === true);
+    const second = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const requete = envoyer();
+      requete.on("error", reject);
+      requete.on("response", (res) => {
+        const morceaux: Buffer[] = [];
+        res.on("data", (morceau: Buffer) => morceaux.push(morceau));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(morceaux).toString("utf8") }));
+      });
+      requete.end(corps);
+    });
+    assert.equal(second.status, 200, second.body);
+    assert.deepEqual(JSON.parse(second.body).fichiers.map((f: { chemin: string }) => f.chemin), ["a.txt"]);
+    ouvrir();
   });
 });
 

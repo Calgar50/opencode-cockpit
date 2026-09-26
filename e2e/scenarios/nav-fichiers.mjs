@@ -166,10 +166,10 @@ async function choisirProjet(page, projet) {
 }
 
 /**
- * Attend la fin du chargement de « Modifiés récemment ». Un seul parcours tourne à la fois dans le cockpit, et celui d'un projet
- * quitté continue sur le serveur après l'annulation de sa requête : changer de projet avant la fin du parcours en cours donne
- * « Une autre lecture est en cours » (constat transmis, voir le RECAPITULATIF). Le scénario attend donc, comme un utilisateur qui
- * laisse la page se charger, avant de changer de projet ou d'adresse.
+ * Attend la fin du chargement de « Modifiés récemment ». Un seul parcours tourne à la fois dans le cockpit ; celui d'un projet
+ * quitté rend sa place dès l'annulation de sa requête (constat n° 5 du RECAPITULATIF, corrigé par la relecture F2-vague-6) : les
+ * changements de projet du scénario se font donc PENDANT le chargement, sans attendre, et « Une autre lecture est en cours » ne
+ * doit jamais s'afficher. Cette attente ne sert qu'avant de lire la liste ou de changer d'adresse.
  */
 async function attendreRecentsCharges(page) {
   await page.attendreQue(`(() => { const b = document.querySelector(${JSON.stringify(`${SECTION} .fichiers-bloc`)}); return b && !b.innerText.includes("Chargement"); })()`, {
@@ -338,8 +338,8 @@ async function verifierPourcent(ctx, page) {
   const secret = await contenu(ctx, "", `${DOSSIER_PCT_SECRET}/lisez-moi.txt`);
   exiger(secret.code === 403 && secret.corps?.error === "protege", `dossier %XX « secret » : ${secret.code} ${resume(secret.brut)}`);
 
-  // Par la page : « Tout le workspace », dossier %XX déplié, fichier ouvert ; aucune action de conversation proposée.
-  await attendreRecentsCharges(page);
+  // Par la page : « Tout le workspace », dossier %XX déplié, fichier ouvert ; aucune action de conversation proposée. Projet
+  // changé sans attendre la fin des récents en cours (constat n° 5).
   await choisirProjet(page, "");
   await attendreRecentsCharges(page);
   await deplier(page, DOSSIER_PCT);
@@ -427,7 +427,8 @@ export async function run(ctx) {
   await page.attendreQue(`document.querySelector(${JSON.stringify(`${SECTION} h1`)})?.textContent === ${JSON.stringify(PHRASES.titre)}`, { libelle: "titre de l'onglet Fichiers" });
   const entete = await texte(page, `${SECTION} .fichiers-entete`);
   exiger(entete.includes(PHRASES.sousTitre) && entete.includes(PHRASES.badge), `en-tête sans sous-titre ou badge : ${resume(entete)}`);
-  await attendreRecentsCharges(page);
+  // Changement de projet PENDANT le chargement des récents du projet par défaut (constat n° 5) : jamais « Une autre lecture
+  // est en cours ».
   await choisirProjet(page, PROJET);
   await attendreRecentsCharges(page);
   exiger(!(await texte(page, `${SECTION} .fichiers-bloc`)).includes(PHRASES.occupe), `« ${PHRASES.recents} » : « ${PHRASES.occupe} » après le changement de projet.`);

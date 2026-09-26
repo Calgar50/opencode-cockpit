@@ -62,8 +62,12 @@ export interface FichiersRoutesDeps {
   log: Pick<Logger, "warn">;
 }
 
-/** Appel du lecteur pour une route ; le lecteur ne lève jamais, une exception ici serait un défaut du cockpit (409 illisible). */
-async function lire(deps: FichiersRoutesDeps, route: FichiersRoute, corps: Record<string, string>): Promise<Resultat<unknown>> {
+/**
+ * Appel du lecteur pour une route ; le lecteur ne lève jamais, une exception ici serait un défaut du cockpit (409 illisible).
+ * `signal` : annulation de la requête (connexion fermée par la page), transmise aux parcours : un parcours abandonné rend la place
+ * unique (relecture F2-vague-6, constat n° 5).
+ */
+async function lire(deps: FichiersRoutesDeps, route: FichiersRoute, corps: Record<string, string>, signal: AbortSignal): Promise<Resultat<unknown>> {
   try {
     const projet = corps.projet ?? "";
     switch (route) {
@@ -72,9 +76,9 @@ async function lire(deps: FichiersRoutesDeps, route: FichiersRoute, corps: Recor
       case "contenu":
         return await deps.lecteur.contenu({ projet, chemin: corps.chemin ?? "" });
       case "recents":
-        return await deps.lecteur.recents({ projet });
+        return await deps.lecteur.recents({ projet, signal });
       case "recherche":
-        return await deps.lecteur.recherche({ projet, texte: corps.texte ?? "" });
+        return await deps.lecteur.recherche({ projet, texte: corps.texte ?? "", signal });
     }
   } catch (err) {
     // Nature seulement : un message d'erreur peut contenir un chemin.
@@ -102,7 +106,7 @@ export function registerFichiersRoutes(app: Hono, deps: FichiersRoutesDeps): voi
         if (!lu.success) return refus(c, "invalide", route);
         const regles = reglesDemande(route, lu.data);
         if (!regles.ok) return refus(c, regles.code, route);
-        const resultat = await lire(deps, route, lu.data as Record<string, string>);
+        const resultat = await lire(deps, route, lu.data as Record<string, string>, c.req.raw.signal);
         return resultat.ok ? c.json(resultat.valeur as object, 200) : refus(c, resultat.code, route);
       },
     );

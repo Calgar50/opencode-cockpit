@@ -11,14 +11,21 @@
 // réel du descripteur comparé au chemin DEMANDÉ (A1 : dossier parent remplacé par un lien vers un autre dossier du même projet) ;
 // lecture bornée par morceaux ; fstat final (taille et date inchangées).
 //
-// Liste d'un dossier et chaque dossier d'un parcours (§2.8 ; relecture F2-vague-5) : le dossier est ouvert O_RDONLY |
-// O_DIRECTORY | O_NOFOLLOW (un lien, un fichier ou un tube mis à sa place est refusé par le noyau), son fstat doit rendre le dev
-// et l'ino du contrôle et le chemin réel de son descripteur le chemin demandé ; il est ensuite lu par le lien magique
-// /proc/self/fd/<fd>, qui mène au dossier déjà ouvert sans refaire le chemin (Node n'expose ni openat ni fdopendir), et chaque
-// entrée y est examinée par lstat. Une course aller-retour (dossier remplacé par un lien, puis remis avec les mêmes dev et ino)
-// ne peut donc plus faire lister un autre dossier : la revérification par chemin, qui la laisse passer, reste en plus. Sans
-// /proc (cockpit de développement sous Windows), le dossier est encore ouvert et comparé (dev, ino), mais lu par son chemin : un
-// aller-retour entre l'ouverture et la lecture peut y montrer les noms d'un autre dossier (reste n° 2 de la fiche).
+// Liste d'un dossier et chaque dossier d'un parcours (§2.8 ; relectures F2-vague-5 et F2-vague-6) : le dossier est ouvert
+// O_RDONLY | O_DIRECTORY | O_NOFOLLOW (un lien, un fichier ou un tube mis à sa place est refusé par le noyau), son fstat doit
+// rendre le dev et l'ino du contrôle et le chemin réel de son descripteur le chemin demandé ; il est ensuite lu par le lien
+// magique /proc/self/fd/<fd> (Node n'expose ni openat ni fdopendir), et chaque entrée y est examinée par lstat. Sous Linux, sur
+// un système de fichiers local, ce lien mène au dossier déjà ouvert sans refaire le chemin : une course aller-retour ne peut pas
+// y faire lister un autre dossier. Sur le montage 9p de Docker Desktop (production sous Windows), le serveur rouvre ce lien PAR
+// SON CHEMIN (mesuré, relecture F2-vague-6), comme la lecture par le chemin sans /proc (cockpit de développement) : un autre vrai
+// dossier du dossier de travail, mis à la place entre l'ouverture et la lecture puis remis, y serait listé. D'où, pour une
+// liste, après la revérification par chemin, une SECONDE RÉSOLUTION au chemin demandé (confirmerListe) : chaque entrée examinée y
+// est relue par lstat et doit rendre les mêmes dev et ino, chaque nom lu sans lstat (protégé, douteux) doit y figurer ; puis une
+// dernière revérification. Pour un parcours, borné en durée, le dossier est revérifié par chemin AVANT l'examen de ses entrées
+// (qui suit, au même chemin de lecture), puis une dernière fois après : même effet, sans lstat de plus. Les deux RÉTRÉCISSENT la
+// course sans la fermer : un second aller-retour, placé entre la revérification et la relecture puis défait avant la dernière
+// revérification, la déjoue encore (reste n° 2 du RECAPITULATIF). Jamais un contenu : un fichier est lu par son descripteur,
+// lié au fichier ouvert, sur ce montage aussi (mesuré).
 //
 // A5 : aucune exception ne sort du lecteur, aucun message de Node n'est journalisé ni renvoyé (il contient le chemin). Les refus
 // qui trahissent une manœuvre (lien, plusieurs-noms, a-change) sont journalisés au plus une fois par minute et par code, avec le
@@ -84,11 +91,18 @@ export interface DemandeChemin {
 
 export interface DemandeProjet {
   projet: string;
+  /**
+   * Annulation de la requête (routes : c.req.raw.signal ; relecture F2-vague-6, constat n° 5) : un parcours abandonné rend la
+   * place unique dès l'annulation et s'arrête à son prochain contrôle, comme à sa borne de durée.
+   */
+  signal?: AbortSignal;
 }
 
 export interface DemandeRecherche {
   projet: string;
   texte: string;
+  /** Comme DemandeProjet.signal. */
+  signal?: AbortSignal;
 }
 
 export interface LecteurFichiers {
@@ -230,6 +244,10 @@ interface Controle {
   feuille: BigIntStats | null;
 }
 
+/** Même élément que celui lu plus tôt (lstat : un lien montré dans une liste est comparé à lui-même) : présent, mêmes dev et ino. */
+const memeIdentite = (info: BigIntStats | null | undefined, attendu: { dev: bigint; ino: bigint }): info is BigIntStats =>
+  info !== null && info !== undefined && info.dev === attendu.dev && info.ino === attendu.ino;
+
 /** lstat en bigint (dev et ino exacts) ; un élément disparu entre deux lectures rend null. */
 async function lstatOuAbsent(chemin: string): Promise<BigIntStats | null> {
   try {
@@ -285,31 +303,36 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       else places++;
     };
   };
-  const prendrePlace = (): Promise<(() => void) | null> => {
+  /** Une place, ou null après ATTENTE_PLACE_MS ; une requête annulée pendant l'attente la quitte tout de suite (null). */
+  const prendrePlace = (signal?: AbortSignal): Promise<(() => void) | null> => {
     if (places > 0) {
       places--;
       return Promise.resolve(liberation());
     }
+    if (signal?.aborted) return Promise.resolve(null);
     return new Promise((resolve) => {
       let servie = false;
-      const servir = (liberer: () => void) => {
-        servie = true;
-        resolve(liberer);
-      };
-      enAttente.push(servir);
       const abandon = () => {
+        signal?.removeEventListener("abort", abandon);
         if (servie) return;
         const rang = enAttente.indexOf(servir);
         if (rang >= 0) enAttente.splice(rang, 1);
         resolve(null);
       };
+      const servir = (liberer: () => void) => {
+        servie = true;
+        signal?.removeEventListener("abort", abandon);
+        resolve(liberer);
+      };
+      enAttente.push(servir);
+      signal?.addEventListener("abort", abandon, { once: true });
       attendre(NAV_BORNES.ATTENTE_PLACE_MS).then(abandon, abandon);
     });
   };
 
   /** Étape 3 puis `travail` ; la place est toujours rendue ; aucune exception ne sort. */
-  const avecPlace = async <T>(projet: string, travail: () => Promise<T>): Promise<Resultat<T>> => {
-    const liberer = await prendrePlace();
+  const avecPlace = async <T>(projet: string, travail: () => Promise<T>, signal?: AbortSignal): Promise<Resultat<T>> => {
+    const liberer = await prendrePlace(signal);
     if (liberer === null) return { ok: false, code: "occupe" };
     try {
       return { ok: true, valeur: await travail() };
@@ -397,8 +420,9 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
    * §2.8 (relecture F2-vague-5) : ouvre le dossier `chemin` (OUVERTURE_DOSSIER), exige par fstat un dossier avec le dev et l'ino
    * `attendu` (ceux du contrôle, ou du lstat qui l'a découvert), puis le chemin réel de son descripteur égal à `segments` (étape
    * 11), et passe à `lire` le chemin par lequel le lire : le lien magique /proc/self/fd/<fd>, qui mène au dossier ouvert sans
-   * refaire le chemin ; sans /proc, `chemin` lui-même. Un dossier devenu lien, fichier ou tube depuis le contrôle (ENOTDIR, ELOOP)
-   * → a-change. Le descripteur est toujours refermé, après la lecture.
+   * refaire le chemin sur un système de fichiers local, mais que le montage 9p de Docker Desktop rouvre par son chemin ; sans /proc,
+   * `chemin` lui-même. Un dossier devenu lien, fichier ou tube depuis le contrôle (ENOTDIR, ELOOP) → a-change. Le descripteur est
+   * toujours refermé, après la lecture.
    */
   const avecDossierOuvert = async <T>(
     chemin: string,
@@ -457,7 +481,8 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
   /**
    * §2.8, étape 5 : chaque composant toujours un dossier, mêmes dev et ino ; chemin réel de la cible égal au chemin demandé. Par
    * chemin, elle ne voit qu'un écart encore en place : un aller-retour achevé (lien posé puis retiré, vrai dossier remis avec les
-   * mêmes dev et ino) lui échappe ; c'est la lecture par le descripteur (avecDossierOuvert) qui le ferme, sous Linux.
+   * mêmes dev et ino) lui échappe ; c'est la lecture par le descripteur (avecDossierOuvert) qui le ferme, sous Linux sur un système
+   * de fichiers local, et la seconde résolution (confirmerListe) qui le rétrécit ailleurs.
    */
   const reverifier = async (controle: Controle, S: readonly string[]): Promise<void> => {
     try {
@@ -473,13 +498,24 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
     }
   };
 
+  /** Liste lue (lister) : `examinees`, dev et ino de chaque entrée montrée après lstat ; `sansLstat`, noms protégés et douteux. */
+  interface ListeLue {
+    entrees: EntreeVue[];
+    masques: number;
+    tronque: boolean;
+    examinees: Array<{ nom: string; dev: bigint; ino: bigint }>;
+    sansLstat: string[];
+  }
+
   /**
    * §2.8, points 2 et 3 : lecture en flux, protégés comptés sans lstat ni nom, douteux sans lstat, lstat par lots. `lu` est le
    * chemin de lecture rendu par avecDossierOuvert (descripteur sous Linux) ; S, le chemin demandé, sert seul à la protection.
    */
-  const lister = async (lu: string, S: readonly string[]): Promise<{ entrees: EntreeVue[]; masques: number; tronque: boolean }> => {
+  const lister = async (lu: string, S: readonly string[]): Promise<ListeLue> => {
     const entrees: EntreeVue[] = [];
     const aExaminer: string[] = [];
+    const examinees: ListeLue["examinees"] = [];
+    const sansLstat: string[] = [];
     let masques = 0;
     let tronque = false;
     let lues = 0;
@@ -492,8 +528,10 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       const nom = entree.name;
       if (estProtege([...S, nom])) {
         masques++;
+        sansLstat.push(nom);
       } else if (!segmentSur(nom)) {
         entrees.push(vueDe(nom, "douteux", null));
+        sansLstat.push(nom);
       } else {
         aExaminer.push(nom);
       }
@@ -504,10 +542,35 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       lot.forEach((nom, i) => {
         const info = infos[i];
         // Disparue entre la lecture du dossier et son lstat : elle n'est pas montrée.
-        if (info) entrees.push(vueDe(nom, typeDe(info), info));
+        if (!info) return;
+        entrees.push(vueDe(nom, typeDe(info), info));
+        examinees.push({ nom, dev: info.dev, ino: info.ino });
       });
     }
-    return { entrees, masques, tronque };
+    return { entrees, masques, tronque, examinees, sansLstat };
+  };
+
+  /**
+   * Seconde résolution d'une liste (relecture F2-vague-6), après la revérification du dossier, au chemin DEMANDÉ `cible` : chaque
+   * entrée examinée y est relue par lstat et doit rendre les dev et ino lus pendant la liste ; chaque nom lu sans lstat (protégé,
+   * douteux : jamais examinés, G1) doit figurer, casse comprise, parmi les noms relus dans `cible` (NOM_EXACT_MAX au plus). Sinon
+   * a-change : sur le montage 9p et sans /proc, la liste peut avoir été lue dans un autre vrai dossier mis à la place entre
+   * l'ouverture et la lecture, puis remis. Rétrécit la course sans la fermer (voir l'en-tête).
+   */
+  const confirmerListe = async (cible: string, liste: ListeLue): Promise<void> => {
+    if (liste.sansLstat.length > 0) {
+      const relus = new Set<string>();
+      for await (const entree of await fs.opendir(cible)) {
+        relus.add(entree.name);
+        if (relus.size >= NAV_BORNES.NOM_EXACT_MAX) break;
+      }
+      if (!liste.sansLstat.every((nom) => relus.has(nom))) throw new Refus("a-change");
+    }
+    for (let debut = 0; debut < liste.examinees.length; debut += NAV_BORNES.LOT_LSTAT) {
+      const lot = liste.examinees.slice(debut, debut + NAV_BORNES.LOT_LSTAT);
+      const infos = await Promise.all(lot.map((examinee) => lstatOuAbsent(path.join(cible, examinee.nom))));
+      if (!lot.every((examinee, i) => memeIdentite(infos[i], examinee))) throw new Refus("a-change");
+    }
   };
 
   interface Trouve {
@@ -522,11 +585,22 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
    * true pour arrêter (borne de résultats). Chaque dossier est lu par avecDossierOuvert (relecture F2-vague-5) : il doit être
    * encore celui découvert (dev et ino du lstat de son parent, ou du contrôle) et au chemin attendu, puis il est lu par son
    * descripteur sous Linux. Un dossier illisible, disparu ou remplacé (lien, autre dossier, autre chemin réel) est sauté
-   * (incomplet).
+   * (incomplet). Relecture F2-vague-6 : le dossier lu est revérifié par chemin AVANT l'examen de ses entrées, puis une dernière
+   * fois après ; sur le montage 9p et sans /proc, où l'examen se fait au chemin demandé, une entrée lue dans un autre vrai dossier
+   * mis à la place puis remis n'y est plus : sautée, parcours incomplet (voir l'en-tête : rétrécit la course sans lstat de plus ;
+   * sous Linux, sur un système de fichiers local, l'examen reste lié au dossier ouvert). Une requête annulée (`signal`) arrête le
+   * parcours comme sa borne de durée.
    */
-  const parcourir = async (controle: Controle, S: readonly string[], surTrouve: (trouve: Trouve) => boolean): Promise<{ parcourus: number; incomplet: boolean }> => {
+  const parcourir = async (
+    controle: Controle,
+    S: readonly string[],
+    surTrouve: (trouve: Trouve) => boolean,
+    signal?: AbortSignal,
+  ): Promise<{ parcourus: number; incomplet: boolean }> => {
     const debut = maintenant();
-    const horsDelai = () => maintenant() - debut >= NAV_BORNES.PARCOURS_DUREE_MS;
+    const abandonne = () => signal?.aborted === true;
+    /** Borne de durée atteinte, ou requête annulée. */
+    const horsDelai = () => abandonne() || maintenant() - debut >= NAV_BORNES.PARCOURS_DUREE_MS;
     const racineInfo = await identiteDe(controle);
     const file: Array<{ chemin: string; segments: string[]; niveau: number; dev: bigint; ino: bigint }> = [
       { chemin: controle.cible, segments: [], niveau: 0, dev: racineInfo.dev, ino: racineInfo.ino },
@@ -534,8 +608,18 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
     let parcourus = 0;
     let incomplet = false;
 
-    /** Noms d'un dossier ouvert (`lu` : son descripteur sous Linux), puis lstat par lots au même endroit ; aucun fichier ouvert. */
-    const lireDossier = async (lu: string, segments: readonly string[]): Promise<{ borne: boolean; trouves: Trouve[] }> => {
+    /** Revérification par chemin d'un dossier lu : toujours un dossier, avec les dev et ino découverts. */
+    const encoreLeDossier = async (dossier: { chemin: string; dev: bigint; ino: bigint }): Promise<boolean> => {
+      const info = await lstatOuAbsent(dossier.chemin).catch(() => null);
+      return memeIdentite(info, dossier) && info.isDirectory();
+    };
+
+    /**
+     * Noms d'un dossier ouvert (`lu` : son descripteur sous Linux), revérification du dossier par chemin (relecture F2-vague-6),
+     * puis lstat par lots au même endroit que la lecture ; aucun fichier ouvert.
+     */
+    const lireDossier = async (lu: string, dossier: { chemin: string; segments: readonly string[]; dev: bigint; ino: bigint }): Promise<{ borne: boolean; trouves: Trouve[] }> => {
+      const { segments } = dossier;
       const noms: string[] = [];
       let borne = false;
       for await (const entree of await fs.opendir(lu)) {
@@ -547,8 +631,18 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
         const nom = entree.name;
         if (segmentSur(nom) && !estProtege([...S, ...segments, nom])) noms.push(nom);
       }
+      // Requête annulée pendant la lecture : aucune entrée examinée.
+      if (abandonne()) return { borne: true, trouves: [] };
+      // Avant l'examen des entrées : le dossier doit être encore celui découvert, à son chemin (remplacé par un lien ou un autre
+      // vrai dossier encore en place : sauté). Sur le montage 9p et sans /proc, l'examen qui suit se fait au chemin demandé, dans
+      // le vrai dossier : un nom lu dans un remplaçant déjà remis y est absent (sauté, incomplet).
+      if (!(await encoreLeDossier(dossier))) throw new Refus("a-change");
       const trouves: Trouve[] = [];
       for (let premier = 0; premier < noms.length; premier += NAV_BORNES.LOT_LSTAT) {
+        if (horsDelai()) {
+          borne = true;
+          break;
+        }
         const lot = noms.slice(premier, premier + NAV_BORNES.LOT_LSTAT);
         const infos = await Promise.all(
           lot.map((nom) =>
@@ -561,7 +655,12 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
         );
         lot.forEach((nom, i) => {
           const info = infos[i];
-          if (!info || info.isSymbolicLink()) return;
+          if (info === null || info === undefined) {
+            // Disparue entre la lecture du dossier et son examen (ou lue dans un remplaçant déjà remis) : sautée, incomplet.
+            incomplet = true;
+            return;
+          }
+          if (info.isSymbolicLink()) return;
           if (info.isDirectory()) trouves.push({ segments: [...segments, nom], type: "dossier", info });
           else if (info.isFile()) trouves.push({ segments: [...segments, nom], type: "fichier", info });
         });
@@ -576,16 +675,18 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       await pendant("parcours-dossier");
       let lecture: { borne: boolean; trouves: Trouve[] };
       try {
-        lecture = await avecDossierOuvert(dossier.chemin, dossier, controle.racineReelle, [...S, ...dossier.segments], (lu) => lireDossier(lu, dossier.segments));
+        lecture = await avecDossierOuvert(dossier.chemin, dossier, controle.racineReelle, [...S, ...dossier.segments], (lu) => lireDossier(lu, dossier));
       } catch {
         // Dossier illisible, disparu, ou qui n'est plus celui découvert (lien, autre dossier, autre chemin réel) : sauté.
         incomplet = true;
         continue;
       }
+      // Requête annulée pendant la lecture : rien de plus n'est lu ni rendu.
+      if (abandonne()) return { parcourus, incomplet: true };
       const { borne, trouves } = lecture;
-      // Revérification par chemin du dossier lu, en plus : remplacé par un lien encore en place, ses noms sont jetés.
-      const apres = await lstatOuAbsent(dossier.chemin).catch(() => null);
-      if (!apres || apres.isSymbolicLink() || !apres.isDirectory() || apres.dev !== dossier.dev || apres.ino !== dossier.ino) {
+      // Dernière revérification par chemin du dossier lu : remplacé (lien, autre vrai dossier) encore en place pendant l'examen de
+      // ses entrées, ses noms sont jetés.
+      if (!(await encoreLeDossier(dossier))) {
         incomplet = true;
         continue;
       }
@@ -610,14 +711,25 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
   };
 
   // --- Parcours : un seul à la fois dans tout le cockpit, sinon « occupe » tout de suite. ------------------------------------
-  let parcoursEnCours = false;
-  const avecParcours = async <T>(projet: string, travail: () => Promise<T>): Promise<Resultat<T>> => {
-    if (parcoursEnCours) return { ok: false, code: "occupe" };
-    parcoursEnCours = true;
+  // Relecture F2-vague-6 (constat n° 5) : un parcours abandonné (requête annulée par la page) n'est plus un parcours « réel » ; il
+  // rend la place dès l'annulation et s'arrête à son prochain contrôle (parcourir). Le jeton empêche sa fin tardive de libérer la
+  // place d'un parcours suivant.
+  let parcoursEnCours: object | null = null;
+  const avecParcours = async <T>(projet: string, signal: AbortSignal | undefined, travail: () => Promise<T>): Promise<Resultat<T>> => {
+    // Requête déjà annulée : aucune place prise, aucun accès au disque ; cette réponse n'est lue par personne.
+    if (signal?.aborted) return { ok: false, code: "occupe" };
+    if (parcoursEnCours !== null) return { ok: false, code: "occupe" };
+    const jeton = {};
+    parcoursEnCours = jeton;
+    const rendre = () => {
+      if (parcoursEnCours === jeton) parcoursEnCours = null;
+    };
+    signal?.addEventListener("abort", rendre, { once: true });
     try {
-      return await avecPlace(projet, travail);
+      return await avecPlace(projet, travail, signal);
     } finally {
-      parcoursEnCours = false;
+      signal?.removeEventListener("abort", rendre);
+      rendre();
     }
   };
 
@@ -679,9 +791,13 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       const resultat = await avecPlace(projet, async () => {
         const controle = await controler(S, avecProjet, "dossier");
         await pendant("apres-controle");
-        // Lu par son descripteur sous Linux (relecture F2-vague-5) : un aller-retour ne fait plus lister un autre dossier.
+        // Lu par son descripteur sous Linux (relecture F2-vague-5) : un aller-retour ne fait plus lister un autre dossier, sur un
+        // système de fichiers local ; sur le montage 9p et sans /proc, la seconde résolution au chemin demandé rétrécit la course
+        // (relecture F2-vague-6), puis une dernière revérification.
         const liste = await avecDossierOuvert(controle.cible, await identiteDe(controle), controle.racineReelle, S, (lu) => lister(lu, S));
         await pendant("apres-liste");
+        await reverifier(controle, S);
+        await confirmerListe(controle.cible, liste);
         await reverifier(controle, S);
         liste.entrees.sort(comparerEntrees);
         return { projet: demande.projet, chemin: demande.chemin, entrees: liste.entrees, masques: liste.masques, tronque: liste.tronque };
@@ -698,14 +814,19 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       const regles = reglesDemande("recents", demande);
       if (!regles.ok) return regles;
       const { S, avecProjet } = regles;
-      return await avecParcours(projet, async () => {
+      return await avecParcours(projet, demande.signal, async () => {
         const controle = await controler(S, avecProjet, "dossier");
         await pendant("apres-controle");
         const fichiers: RecentsReponse["fichiers"] = [];
-        const bilan = await parcourir(controle, S, (trouve) => {
-          if (trouve.type === "fichier") fichiers.push({ chemin: trouve.segments.join("/"), taille: Number(trouve.info.size), modifieA: Number(trouve.info.mtimeMs) });
-          return false;
-        });
+        const bilan = await parcourir(
+          controle,
+          S,
+          (trouve) => {
+            if (trouve.type === "fichier") fichiers.push({ chemin: trouve.segments.join("/"), taille: Number(trouve.info.size), modifieA: Number(trouve.info.mtimeMs) });
+            return false;
+          },
+          demande.signal,
+        );
         fichiers.sort((a, b) => b.modifieA - a.modifieA || (a.chemin < b.chemin ? -1 : a.chemin > b.chemin ? 1 : 0));
         return { projet: demande.projet, fichiers: fichiers.slice(0, NAV_BORNES.RECENTS_MAX), parcourus: bilan.parcourus, incomplet: bilan.incomplet };
       });
@@ -721,17 +842,22 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
       if (!regles.ok) return regles;
       const { S, avecProjet } = regles;
       const cherche = normaliserRecherche(demande.texte);
-      return await avecParcours(projet, async () => {
+      return await avecParcours(projet, demande.signal, async () => {
         const controle = await controler(S, avecProjet, "dossier");
         await pendant("apres-controle");
         const resultats: RechercheReponse["resultats"] = [];
-        const bilan = await parcourir(controle, S, (trouve) => {
-          // Sur le NOM seulement, jamais le contenu.
-          if (!normaliserRecherche(trouve.segments.at(-1) ?? "").includes(cherche)) return false;
-          if (resultats.length >= NAV_BORNES.RESULTATS_MAX) return true;
-          resultats.push({ chemin: trouve.segments.join("/"), type: trouve.type });
-          return false;
-        });
+        const bilan = await parcourir(
+          controle,
+          S,
+          (trouve) => {
+            // Sur le NOM seulement, jamais le contenu.
+            if (!normaliserRecherche(trouve.segments.at(-1) ?? "").includes(cherche)) return false;
+            if (resultats.length >= NAV_BORNES.RESULTATS_MAX) return true;
+            resultats.push({ chemin: trouve.segments.join("/"), type: trouve.type });
+            return false;
+          },
+          demande.signal,
+        );
         return { projet: demande.projet, texte: demande.texte, resultats, parcourus: bilan.parcourus, incomplet: bilan.incomplet };
       });
     } catch (err) {

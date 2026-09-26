@@ -21,12 +21,20 @@ const EXIGE_LINUX = "exige Linux (liens symboliques, tubes, /proc)";
 const L = LINUX ? {} : { skip: EXIGE_LINUX };
 const BASE = process.env.NAV_TEST_DIR ?? os.tmpdir();
 /**
- * Montage réel (passe du §4.4 sur Docker Desktop, NAV_TEST_DIR posé ; train de la vague 6) : sur ce montage (9p), un dossier
- * déplacé après son ouverture ne se relit plus par /proc/self/fd/<fd> (ENOENT, mesuré par NAV-4). Le lecteur le refuse alors
- * (illisible) ou le saute (parcours incomplet). Les deux cas « aller-retour après l'ouverture » y admettent ce refus, jamais un
- * nom extérieur ; sur un dossier local (tmpfs, disque), seuls les vrais noms sont admis.
+ * Montage réel (passe du §4.4 sur Docker Desktop, NAV_TEST_DIR posé ; trains des vagues 6) : sur ce montage (9p), le serveur
+ * rouvre /proc/self/fd/<fd> par le CHEMIN du dossier ouvert (relecture F2-vague-6). Un LIEN mis à sa place n'y est pas suivi
+ * (ENOENT, mesuré par NAV-4) : le lecteur refuse alors (illisible) ou saute le dossier (parcours incomplet) ; les deux cas
+ * « aller-retour après l'ouverture » par un lien y admettent ce refus, jamais un nom extérieur ; sur un dossier local (tmpfs,
+ * disque), seuls les vrais noms sont admis. Un autre VRAI dossier mis à sa place y est lu : voir PAR_DESCRIPTEUR.
  */
 const MONTAGE = process.env.NAV_TEST_DIR !== undefined;
+/**
+ * Lecture d'un dossier liée au dossier OUVERT (relecture F2-vague-6) : sous Linux, sur un dossier local seulement. Sur le montage
+ * 9p de Docker Desktop, le serveur rouvre /proc/self/fd/<fd> par son CHEMIN (mesuré : un autre vrai dossier mis à la place après
+ * l'ouverture y est listé) ; sans /proc (Windows), le dossier est lu par son chemin. Là, une substitution par un autre vrai dossier,
+ * remis avant la revérification, est arrêtée par la seconde résolution au chemin demandé (a-change, ou dossier sauté).
+ */
+const PAR_DESCRIPTEUR = LINUX && !MONTAGE;
 
 interface Ligne {
   message: string;
@@ -154,6 +162,42 @@ function remiseAvantReverification(t: TestContext, dossier: string): { versLien:
         fs.renameSync(dossier, autre);
         fs.renameSync(`${dossier}-ancien`, dossier);
       };
+    },
+  };
+}
+
+/**
+ * Double aller-retour (relecture F2-vague-6) sur le dossier `dossier` (chemin réel) avec le vrai dossier `autre` : `poser()` met
+ * `autre` à sa place ; il est remis au premier lstat de `dossier` lui-même (la revérification), puis `autre` est remis à sa place
+ * au premier lstat d'une de ses entrées qui suit (la seconde résolution au chemin demandé), et y reste : seule la dernière
+ * revérification peut encore le voir.
+ */
+function doubleAllerRetour(t: TestContext, dossier: string, autre: string): { poser: () => void } {
+  let etape: "attente" | "pose" | "remis" | "fini" = "attente";
+  const substituer = () => {
+    fs.renameSync(dossier, `${dossier}-ancien`);
+    fs.renameSync(autre, dossier);
+  };
+  const cible = fsp as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = cible.lstat;
+  if (original === undefined) throw new Error("lstat");
+  t.mock.method(cible, "lstat", function (this: unknown, ...args: unknown[]) {
+    const vu = String(args[0]);
+    if (etape === "pose" && vu === dossier) {
+      fs.renameSync(dossier, autre);
+      fs.renameSync(`${dossier}-ancien`, dossier);
+      etape = "remis";
+    } else if (etape === "remis" && vu.startsWith(`${dossier}${path.sep}`)) {
+      substituer();
+      etape = "fini";
+    }
+    return original.apply(this, args);
+  });
+  return {
+    poser: () => {
+      if (etape !== "attente") return;
+      substituer();
+      etape = "pose";
     },
   };
 }
@@ -593,7 +637,7 @@ describe("lecteur : courses (crochet pendant)", () => {
     const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
     assert.equal(JSON.stringify(res).includes("cockpit.db"), false, JSON.stringify(res));
     if (MONTAGE && !res.ok) {
-      // Montage 9p : le descripteur du dossier déplacé ne se relit plus → refus, aucun nom extérieur.
+      // Montage 9p : le lien magique est rouvert par le chemin, où se trouve le lien, non suivi → refus, aucun nom extérieur.
       assert.deepEqual(res, { ok: false, code: "illisible" });
       return;
     }
@@ -643,6 +687,78 @@ describe("lecteur : courses (crochet pendant)", () => {
       },
     });
     assert.deepEqual(await lecteur.dossier({ projet: "proj", chemin: "a/sous" }), { ok: false, code: "a-change" });
+  });
+
+  /**
+   * Relecture F2-vague-6 : `autre` (vrai dossier du même projet) mis à la place de proj/d juste APRÈS l'ouverture de d, remis juste
+   * après la liste, donc avant la revérification (mêmes dev et ino revenus). Rend la réponse du lecteur.
+   */
+  async function substitutionApresOuverture(racine: string, autre: string): Promise<Awaited<ReturnType<LecteurFichiers["dossier"]>>> {
+    const d = path.join(racine, "proj", "d");
+    const remplacant = path.join(racine, "proj", autre);
+    let pose = false;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment === "apres-ouverture") {
+          fs.renameSync(d, `${d}.bak`);
+          fs.renameSync(remplacant, d);
+          pose = true;
+        } else if (moment === "apres-liste" && pose) {
+          fs.renameSync(d, remplacant);
+          fs.renameSync(`${d}.bak`, d);
+          pose = false;
+        }
+      },
+    });
+    return lecteur.dossier({ projet: "proj", chemin: "d" });
+  }
+
+  it("(10) substitution par un autre vrai dossier protégé (secrets/) après l'ouverture, remis après la liste → jamais ses noms : vrais noms (descripteur), sinon a-change", async () => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    ecrire(racine, "proj/secrets/releve-bancaire-2026.txt", "0123456789");
+    const res = await substitutionApresOuverture(racine, "secrets");
+    const json = JSON.stringify(res);
+    assert.equal(json.includes("releve-bancaire"), false, json);
+    if (PAR_DESCRIPTEUR) {
+      assert.ok(res.ok, json);
+      assert.deepEqual(res.valeur.entrees.map((e) => [e.nom, e.type, e.taille]), [["vrai.txt", "fichier", 1]]);
+      return;
+    }
+    // Montage 9p ou sans /proc : la liste a été lue dans secrets/ ; la seconde résolution au chemin demandé la jette.
+    assert.deepEqual(res, { ok: false, code: "a-change" });
+  });
+
+  it("(10 bis) même substitution par un dossier aux seuls noms douteux et protégés (jamais examinés par lstat) → ni ces noms ni leur nombre", async () => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    ecrire(racine, "proj/.ssh/RELEVE~1.TXT", "x");
+    ecrire(racine, "proj/.ssh/id_rsa", "x");
+    const res = await substitutionApresOuverture(racine, ".ssh");
+    const json = JSON.stringify(res);
+    for (const nom of ["RELEVE", "id_rsa"]) assert.equal(json.includes(nom), false, json);
+    if (PAR_DESCRIPTEUR) {
+      assert.ok(res.ok, json);
+      assert.deepEqual([res.valeur.entrees.map((e) => e.nom), res.valeur.masques], [["vrai.txt"], 0]);
+      return;
+    }
+    assert.deepEqual(res, { ok: false, code: "a-change" });
+  });
+
+  it("(10 ter) second aller-retour : secrets/ remis en place pendant la seconde résolution, et laissé → dernière revérification, a-change", async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/d/vrai.txt", "V");
+    ecrire(racine, "proj/secrets/releve-bancaire-2026.txt", "0123456789");
+    const reelle = fs.realpathSync.native(racine);
+    const course = doubleAllerRetour(t, path.join(reelle, "proj", "d"), path.join(reelle, "proj", "secrets"));
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment === "apres-ouverture") course.poser();
+      },
+    });
+    const res = await lecteur.dossier({ projet: "proj", chemin: "d" });
+    assert.equal(JSON.stringify(res).includes("releve-bancaire"), false, JSON.stringify(res));
+    assert.deepEqual(res, { ok: false, code: "a-change" });
   });
 
   it("après le contrôle, la feuille est remplacée par un autre fichier ordinaire → a-change (dev et ino)", async () => {
@@ -989,12 +1105,120 @@ describe("lecteur : parcours (récents, recherche)", () => {
     assert.equal(ouverts, 2);
     assert.equal(JSON.stringify(res).includes("nom-exterieur"), false, JSON.stringify(res));
     if (MONTAGE && res.valeur.fichiers.length === 0) {
-      // Montage 9p : le dossier déplacé ne se relit plus par son descripteur → sauté, parcours dit incomplet.
+      // Montage 9p : le lien magique est rouvert par le chemin, où se trouve le lien, non suivi → sauté, parcours dit incomplet.
       assert.equal(res.valeur.incomplet, true);
       return;
     }
     assert.deepEqual(res.valeur.fichiers.map((f) => f.chemin), ["a/dedans.txt"]);
     assert.equal(res.valeur.incomplet, false);
+  });
+
+  it("substitution par un autre vrai dossier protégé (secrets/) après l'ouverture d'un dossier parcouru, remis avant sa revérification → jamais ses noms (relecture F2-vague-6)", async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/dedans.txt", "x");
+    ecrire(racine, "proj/secrets/releve-bancaire-2026.txt", "0123456789");
+    const reelle = fs.realpathSync.native(racine);
+    const course = remiseAvantReverification(t, path.join(reelle, "proj", "a"));
+    let ouverts = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment !== "apres-ouverture") return;
+        ouverts++;
+        // Deuxième dossier ouvert : « a », remplacé entre son ouverture et sa lecture.
+        if (ouverts === 2) course.versDossier(path.join(reelle, "proj", "secrets"));
+      },
+    });
+    const res = await lecteur.recents({ projet: "proj" });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(ouverts, 2);
+    assert.equal(JSON.stringify(res).includes("releve-bancaire"), false, JSON.stringify(res));
+    if (PAR_DESCRIPTEUR) {
+      assert.deepEqual(res.valeur.fichiers.map((f) => f.chemin), ["a/dedans.txt"]);
+      assert.equal(res.valeur.incomplet, false);
+      return;
+    }
+    // Montage 9p ou sans /proc : « a » a été lu dans secrets/ ; la seconde résolution au chemin demandé le fait sauter.
+    assert.deepEqual(res.valeur.fichiers, []);
+    assert.equal(res.valeur.incomplet, true);
+  });
+
+  it("second aller-retour pendant un parcours : secrets/ remis à la place de « a » pendant l'examen de ses entrées, et laissé → dossier sauté (dernière revérification)", async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a/dedans.txt", "x");
+    ecrire(racine, "proj/secrets/releve-bancaire-2026.txt", "0123456789");
+    const reelle = fs.realpathSync.native(racine);
+    const course = doubleAllerRetour(t, path.join(reelle, "proj", "a"), path.join(reelle, "proj", "secrets"));
+    let ouverts = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: (moment) => {
+        if (moment !== "apres-ouverture") return;
+        ouverts++;
+        if (ouverts === 2) course.poser();
+      },
+    });
+    const res = await lecteur.recents({ projet: "proj" });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(JSON.stringify(res).includes("releve-bancaire"), false, JSON.stringify(res));
+    if (PAR_DESCRIPTEUR) {
+      // Examen lié au dossier ouvert : aucune entrée n'est relue par le chemin, la course ne s'enclenche pas.
+      assert.deepEqual([res.valeur.fichiers.map((f) => f.chemin), res.valeur.incomplet], [["a/dedans.txt"], false]);
+      return;
+    }
+    assert.deepEqual([res.valeur.fichiers, res.valeur.incomplet], [[], true]);
+  });
+
+  it("parcours abandonné (requête annulée) : la place unique est rendue à l'annulation ; sans annulation, toujours occupe (relecture F2-vague-6, constat n° 5)", async (t) => {
+    const racine = nouvelleRacine();
+    const lstats = espion(t, "lstat");
+    ecrire(racine, "proj/a.txt", "x");
+    ecrire(racine, "proj/sous/b.txt", "x");
+    // Premier parcours (abandonné) tenu au premier dossier, second parcours tenu au sien ; les suivants passent.
+    const tenues = [barriere(), barriere()];
+    let atteints = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      pendant: async (moment) => {
+        if (moment !== "parcours-dossier" || atteints >= tenues.length) return;
+        const tenue = tenues[atteints];
+        atteints++;
+        await tenue?.ouverte;
+      },
+    });
+    const controleur = new AbortController();
+    const abandonne = lecteur.recents({ projet: "proj", signal: controleur.signal });
+    await jusqua(() => atteints === 1);
+    // Contrat inchangé : un parcours concurrent réel reçoit « occupe » tout de suite.
+    assert.deepEqual(await lecteur.recents({ projet: "proj" }), { ok: false, code: "occupe" });
+    assert.deepEqual(await lecteur.recherche({ projet: "proj", texte: "a" }), { ok: false, code: "occupe" });
+    controleur.abort();
+    // La page change de projet : le parcours suivant prend la place tout de suite.
+    const second = lecteur.recents({ projet: "proj" });
+    await jusqua(() => atteints === 2);
+    // Le parcours abandonné s'arrête à son prochain contrôle, dès la première entrée lue : aucune comptée, aucun lstat sous la
+    // racine, aucun fichier, dit incomplet ; sa fin ne libère pas la place du second.
+    const lstatsAvant = lstats.length;
+    tenues[0]?.ouvrir();
+    const fin = await abandonne;
+    assert.ok(fin.ok, JSON.stringify(fin));
+    assert.deepEqual([fin.valeur.fichiers, fin.valeur.incomplet, fin.valeur.parcourus], [[], true, 0]);
+    assert.deepEqual(lstats.slice(lstatsAvant).filter((vu) => !vu.startsWith("/proc")), []);
+    assert.deepEqual(await lecteur.recherche({ projet: "proj", texte: "b" }), { ok: false, code: "occupe" });
+    tenues[1]?.ouvrir();
+    const servi = await second;
+    assert.ok(servi.ok, JSON.stringify(servi));
+    assert.deepEqual(servi.valeur.fichiers.map((f) => f.chemin).sort(), ["a.txt", "sous/b.txt"]);
+    assert.equal(servi.valeur.incomplet, false);
+    assert.ok((await lecteur.recherche({ projet: "proj", texte: "b" })).ok);
+  });
+
+  it("requête déjà annulée : aucune place prise, aucun accès au disque ; recherche comprise", async (t) => {
+    const racine = nouvelleRacine();
+    ecrire(racine, "proj/a.txt", "x");
+    const espions = [espion(t, "opendir"), espion(t, "lstat"), espion(t, "open")];
+    const { lecteur } = nouveauLecteur(racine);
+    assert.deepEqual(await lecteur.recents({ projet: "proj", signal: AbortSignal.abort() }), { ok: false, code: "occupe" });
+    assert.deepEqual(await lecteur.recherche({ projet: "proj", texte: "a", signal: AbortSignal.abort() }), { ok: false, code: "occupe" });
+    assert.equal(espions.reduce((n, liste) => n + liste.length, 0), 0);
+    assert.ok((await lecteur.recents({ projet: "proj" })).ok);
   });
 });
 
@@ -1050,6 +1274,41 @@ describe("lecteur : sémaphore (G6)", () => {
     tenue.ouvrir();
     assert.ok((await troisieme).ok);
     for (const lecture of tenus) assert.ok((await lecture).ok);
+    delai.ouvrir();
+  });
+
+  it("parcours annulé pendant qu'il attend une place : il quitte l'attente tout de suite (occupe) et rend la place unique (relecture F2-vague-6)", async () => {
+    const racine = nouvelleRacine();
+    for (const nom of ["f1.txt", "f2.txt"]) ecrire(racine, `proj/${nom}`, "x");
+    const tenue = barriere();
+    const delai = barriere();
+    let tenues = 0;
+    let attentes = 0;
+    const { lecteur } = nouveauLecteur(racine, {
+      attendre: async () => {
+        attentes++;
+        await delai.ouverte;
+      },
+      pendant: async (moment) => {
+        if (moment !== "apres-controle" || tenues >= 2) return;
+        tenues++;
+        await tenue.ouverte;
+      },
+    });
+    const tenus = [lecteur.contenu({ projet: "proj", chemin: "f1.txt" }), lecteur.contenu({ projet: "proj", chemin: "f2.txt" })];
+    await jusqua(() => tenues === 2);
+    const controleur = new AbortController();
+    const enAttente = lecteur.recents({ projet: "proj", signal: controleur.signal });
+    await jusqua(() => attentes === 1);
+    controleur.abort();
+    // L'attente injectée n'est jamais finie ici : seule l'annulation peut rendre la réponse.
+    const issue = await Promise.race([enAttente, new Promise<"bloque">((resolve) => setTimeout(() => resolve("bloque"), 1_000))]);
+    assert.deepEqual(issue, { ok: false, code: "occupe" });
+    tenue.ouvrir();
+    for (const lecture of tenus) assert.ok((await lecture).ok);
+    // Places et parcours libres : servi sans attente.
+    assert.ok((await lecteur.recents({ projet: "proj" })).ok);
+    assert.equal(attentes, 1);
     delai.ouvrir();
   });
 });
