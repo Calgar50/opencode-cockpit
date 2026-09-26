@@ -109,6 +109,14 @@ export const NAV_PROTEGES = Object.freeze({
     "$recycle.bin",
     "system volume information",
   ]) as readonly string[],
+  // Terraform, motifs du .gitignore standard (*.tfvars.json, *.tfstate.*), ajout de la relecture F2-vague-4 : sensitivePath,
+  // ancré sur la fin du nom (\.tfstate$, \.tfvars$), ne voit ni les copies de l'état que Terraform écrit lui-même
+  // (terraform.tfstate.backup, terraform.tfstate.<horodatage>.backup, dossier terraform.tfstate.d), ni les variables en JSON
+  // qu'il charge d'office (terraform.tfvars.json, *.auto.tfvars.json).
+  /** Fin du nom. */
+  suffixes: Object.freeze([".tfvars.json"]) as readonly string[],
+  /** Morceau du nom, à toute place. */
+  morceaux: Object.freeze([".tfstate."]) as readonly string[],
 });
 
 const GENERES_SET: ReadonlySet<string> = new Set(GENERES);
@@ -116,6 +124,16 @@ const BINAIRES_SET: ReadonlySet<string> = new Set(EXTENSIONS_BINAIRES);
 const CODE_SET: ReadonlySet<string> = new Set(EXTENSIONS_CODE);
 const NAV_EXTENSIONS_SET: ReadonlySet<string> = new Set(NAV_PROTEGES.extensions);
 const NAV_NOMS_SET: ReadonlySet<string> = new Set(NAV_PROTEGES.noms);
+
+/** Règle 3 (NAV_PROTEGES) sur un segment déjà en minuscules. */
+function protegeParNav(segment: string): boolean {
+  return (
+    NAV_NOMS_SET.has(segment) ||
+    NAV_EXTENSIONS_SET.has(extensionDe(segment)) ||
+    NAV_PROTEGES.suffixes.some((suffixe) => segment.endsWith(suffixe)) ||
+    NAV_PROTEGES.morceaux.some((morceau) => segment.includes(morceau))
+  );
+}
 
 /** Extension en minuscules, sans le point : texte après le dernier « . » qui n'est ni en tête ni en fin ; sinon "". */
 export function extensionDe(nom: string): string {
@@ -286,7 +304,7 @@ function protegeMinuscules(segments: readonly string[]): boolean {
     if (GLOBS_SEGMENT.some((glob) => correspondMotifCle(segment, glob))) return true;
     if (GLOBS_PREFIXE.some((glob) => correspondMotifCle(prefixe, glob))) return true;
     // 3. NAV_PROTEGES.
-    if (NAV_NOMS_SET.has(segment) || NAV_EXTENSIONS_SET.has(extensionDe(segment))) return true;
+    if (protegeParNav(segment)) return true;
   }
   return false;
 }
@@ -467,23 +485,35 @@ function couper(ligne: string, max: number): string {
   return ligne.slice(0, estSurrogatHaut(ligne.charCodeAt(max - 1)) ? max - 1 : max);
 }
 
-const ouvreBlocCle = (ligne: string): boolean => ligne.includes("-----BEGIN") && ligne.includes("PRIVATE KEY");
+const DEBUT_PEM = "-----BEGIN";
+const FIN_PEM = "-----END";
+
+const ouvreBlocCle = (ligne: string): boolean => ligne.includes(DEBUT_PEM) && ligne.includes("PRIVATE KEY");
+
+/**
+ * Vrai si le bloc de clé privée reste ouvert après une ligne masquée (celle qui l'ouvre ou une ligne du bloc) : aucun
+ * « -----END » sur la ligne, ou, après le DERNIER, un « -----BEGIN » suivi de « PRIVATE KEY » (clés concaténées sans saut de
+ * ligne final, « cat a.pem b.pem » ; ajout de la relecture F2-vague-4). Un bloc écrit sur une seule ligne se ferme ainsi.
+ */
+function blocResteOuvert(ligne: string): boolean {
+  const fin = ligne.lastIndexOf(FIN_PEM);
+  if (fin === -1) return true;
+  const debut = ligne.indexOf(DEBUT_PEM, fin + FIN_PEM.length);
+  return debut !== -1 && ligne.includes("PRIVATE KEY", debut + DEBUT_PEM.length);
+}
 
 /**
  * Masqueur ligne à ligne (A2) : une ligne qui contient « -----BEGIN » et « PRIVATE KEY » ouvre un bloc, fermé par la ligne qui
- * contient « -----END » ou par la fin du texte ; chaque ligne du bloc devient « **** » (même nombre de lignes). Toute autre
- * ligne passe par redactSecrets.
+ * contient « -----END » (voir blocResteOuvert) ou par la fin du texte ; chaque ligne du bloc devient « **** » (même nombre de
+ * lignes). Toute autre ligne passe par redactSecrets. Début et fin se décident sur la ligne ENTIÈRE (`entiere`, CR final
+ * retiré), jamais sur la ligne coupée à LIGNE_MAX_CARACTERES (`coupee`, seule passée à redactSecrets) : un « -----BEGIN » à
+ * cheval sur la borne, ou au-delà, ouvre le bloc (relecture F2-vague-4). Coût linéaire en la longueur de la ligne.
  */
-function masqueurLignes(): (ligne: string) => string {
+function masqueurLignes(): (entiere: string, coupee: string) => string {
   let dansBloc = false;
-  return (ligne) => {
-    if (dansBloc) {
-      dansBloc = !ligne.includes("-----END");
-      return MASQUE;
-    }
-    if (!ouvreBlocCle(ligne)) return redactSecrets(ligne);
-    // Bloc écrit sur une seule ligne : la fin suit le début sur la même ligne.
-    dansBloc = !ligne.slice(ligne.indexOf("-----BEGIN") + 1).includes("-----END");
+  return (entiere, coupee) => {
+    if (!dansBloc && !ouvreBlocCle(entiere)) return redactSecrets(coupee);
+    dansBloc = blocResteOuvert(entiere);
     return MASQUE;
   };
 }
@@ -491,8 +521,8 @@ function masqueurLignes(): (ligne: string) => string {
 /**
  * Préparation (§2.9) : coupe au dernier saut de ligne si tronqué ; découpage sur LF, CR final retiré, LIGNES_MAX lignes au plus ;
  * lignes coupées à LIGNE_MAX_CARACTERES (borne aussi le coût des expressions de redact.ts) ; blocs de clé privée PEM masqués
- * ligne par ligne, sans changer le nombre de lignes (A2), puis redactSecrets sur chaque autre ligne ; invisibles marqués. Un
- * saut de ligne final (fichier entier) ne crée pas de ligne vide de plus.
+ * ligne par ligne, sans changer le nombre de lignes (A2), début et fin lus sur la ligne entière, puis redactSecrets sur chaque
+ * autre ligne coupée ; invisibles marqués. Un saut de ligne final (fichier entier) ne crée pas de ligne vide de plus.
  */
 export function preparerTexte(texte: string, tronque: boolean): TextePrepare {
   let source = texte;
@@ -513,12 +543,13 @@ export function preparerTexte(texte: string, tronque: boolean): TextePrepare {
   const masquer = masqueurLignes();
   const sortie: string[] = [];
   for (const brute of brutes) {
-    let ligne = brute.endsWith("\r") ? brute.slice(0, -1) : brute;
+    const entiere = brute.endsWith("\r") ? brute.slice(0, -1) : brute;
+    let ligne = entiere;
     if (ligne.length > NAV_BORNES.LIGNE_MAX_CARACTERES) {
       ligne = couper(ligne, NAV_BORNES.LIGNE_MAX_CARACTERES);
       lignesCoupees++;
     }
-    const masquee = masquer(ligne);
+    const masquee = masquer(entiere, ligne);
     if (masquee !== ligne) secretsMasques = true;
     const visible = marquerInvisibles(masquee);
     invisibles += visible.compte;

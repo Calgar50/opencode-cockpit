@@ -115,7 +115,11 @@ describe("fichiers : routes, bornes et listes fermées (§2.1, §2.4)", () => {
       "$recycle.bin",
       "system volume information",
     ]);
-    for (const liste of [GENERES, EXTENSIONS_BINAIRES, EXTENSIONS_CODE, NAV_PROTEGES.extensions, NAV_PROTEGES.noms]) assert.ok(Object.isFrozen(liste));
+    assert.deepEqual(NAV_PROTEGES.suffixes, [".tfvars.json"]);
+    assert.deepEqual(NAV_PROTEGES.morceaux, [".tfstate."]);
+    for (const liste of [GENERES, EXTENSIONS_BINAIRES, EXTENSIONS_CODE, NAV_PROTEGES.extensions, NAV_PROTEGES.noms, NAV_PROTEGES.suffixes, NAV_PROTEGES.morceaux]) {
+      assert.ok(Object.isFrozen(liste));
+    }
   });
 
   it("extensionDe, estGenere, estBinaireParExtension : casse ignorée, point de tête ou de fin sans extension", () => {
@@ -407,13 +411,44 @@ describe("fichiers : estProtege (§2.6, A6)", () => {
       ...NAV_PROTEGES.extensions.map((extension) => `fichier.${extension.toUpperCase()}`),
       ...NAV_PROTEGES.noms,
       ...NAV_PROTEGES.noms.map((nom) => nom.toUpperCase()),
+      ...NAV_PROTEGES.suffixes.flatMap((suffixe) => [`prod${suffixe}`, `PROD${suffixe.toUpperCase()}`]),
+      ...NAV_PROTEGES.morceaux.flatMap((morceau) => [`terraform${morceau}backup`, `TERRAFORM${morceau.toUpperCase()}BACKUP`]),
     ];
-    assert.equal(cas.length, 4 + 14 * 2);
+    assert.equal(cas.length, 4 + 14 * 2 + 1 * 2 + 1 * 2);
     const couvertsAilleurs = cas.filter((nom) => sensitivePath(nom) !== null || KEY_FILE_GLOBS.some((glob) => wildcardMatch(nom, glob, true)));
     assert.deepEqual(couvertsAilleurs, [".htpasswd", ".HTPASSWD"]);
     for (const nom of cas) {
       assert.equal(estProtege([nom]), true, nom);
       assert.equal(estProtege(["projet", "sous", nom, "enfant.txt"]), true, `${nom} protège tout ce qu'il contient`);
+    }
+  });
+
+  it("Terraform (.gitignore standard : *.tfstate.*, *.tfvars.json) : copies de l'état et variables JSON, que seule la règle 3 voit", () => {
+    // Écrits ou lus par Terraform lui-même à côté de terraform.tfstate et de *.tfvars (protégés par la règle 1, ancrée sur la
+    // fin du nom) : l'état précédent (mêmes secrets en clair), les sauvegardes horodatées de « terraform state », les variables
+    // en JSON chargées d'office.
+    const cas = [
+      "terraform.tfstate.backup",
+      "TERRAFORM.TFSTATE.BACKUP",
+      "terraform.tfstate.1695000000.backup",
+      `terraform.tf${ch(0x17f)}tate.backup`,
+      "terraform.tfvars.json",
+      "prod.auto.tfvars.json",
+      "Prod.Auto.TFVARS.JSON",
+    ];
+    for (const nom of cas) {
+      assert.equal(sensitivePath(nom.toLowerCase()), null, `${nom} : la règle 1 ne le voit pas`);
+      assert.ok(!KEY_FILE_GLOBS.some((glob) => wildcardMatch(nom.toLowerCase(), glob, true)), `${nom} : la règle 2 ne le voit pas`);
+      assert.equal(estProtege([nom]), true, nom);
+      assert.equal(estProtege(["infra", "prod", nom]), true, `${nom} dans un projet`);
+    }
+    // Dossier des états par espace de travail (backend local) : protégé avec tout ce qu'il contient.
+    assert.equal(estProtege(["infra", "terraform.tfstate.d", "prod", "terraform.tfstate.backup"]), true);
+    assert.equal(estProtege(["infra", "terraform.tfstate.d", "prod", "notes.txt"]), true);
+    assert.equal(estProtege(["infra", "terraform.tfstate.d"]), true);
+    // Témoins visibles : sources et modèles de Terraform.
+    for (const nom of ["main.tf", "variables.tf", "terraform.tfvars.example", "tfvars.json", "tfstate.md", "backup.json"]) {
+      assert.equal(estProtege(["infra", nom]), false, nom);
     }
   });
 
@@ -688,6 +723,42 @@ describe("fichiers : preparerTexte, masquage PEM ligne par ligne (A2), invisible
     // Un certificat (clé publique) n'est pas un bloc de clé privée.
     const certificat = preparerTexte(["-----BEGIN CERTIFICATE-----", "MIIB", "-----END CERTIFICATE-----"].join("\n"), false);
     assert.equal(certificat.texte.split("\n")[1], "MIIB");
+  });
+
+  describe("bloc de clé privée : début et fin lus sur la ligne entière, avant la coupe à 2 000 caractères (relecture F2-vague-4)", () => {
+    const corps = ["MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx", "H2Mo4lgOEePzNm0tRgeLezV6ffAt0gun"];
+    const masque = (n: number) => Array.from({ length: n }, () => "****");
+    const verifier = (lignes: readonly string[], attendu: readonly string[], cas: string) => {
+      const prepare = preparerTexte(lignes.join("\n"), false);
+      assert.deepEqual(prepare.texte.split("\n"), attendu, cas);
+      assert.equal(prepare.lignes, lignes.length, `${cas} : même nombre de lignes`);
+      assert.equal(prepare.secretsMasques, true, cas);
+      return prepare;
+    };
+
+    it("cas 1 : « -----BEGIN » à cheval sur la borne (la ligne coupée finit par « -----BEGIN RSA »)", () => {
+      const cheval = verifier([`${"x".repeat(1_985)}${PEM_DEBUT}`, ...corps, PEM_FIN, "après"], [...masque(4), "après"], "début à cheval");
+      assert.equal(cheval.lignesCoupees, 1);
+    });
+
+    it("cas 2 : « -----BEGIN » entier au-delà du 2 000e caractère", () => {
+      verifier([`${"x".repeat(2_100)}${PEM_DEBUT}`, ...corps, PEM_FIN, "après"], [...masque(4), "après"], "début au-delà de la borne");
+    });
+
+    it("cas 3 : deux clés concaténées sans saut de ligne final (cat a.pem b.pem) : la fin de la première rouvre la seconde", () => {
+      verifier([PEM_DEBUT, ...corps, `${PEM_FIN}${PEM_DEBUT}`, ...corps, PEM_FIN, "après"], [...masque(7), "après"], "cat a.pem b.pem");
+      verifier([`${PEM_DEBUT}MIIE${PEM_FIN}${PEM_DEBUT}`, ...corps, PEM_FIN, "après"], [...masque(4), "après"], "une ligne puis une autre clé");
+      verifier([PEM_DEBUT, ...corps, `${PEM_FIN}${"x".repeat(2_000)}${PEM_DEBUT}`, ...corps, PEM_FIN, "après"], [...masque(7), "après"], "réouverture loin");
+    });
+
+    it("fin au-delà du 2 000e caractère : le bloc se ferme, la suite n'est pas masquée à tort", () => {
+      verifier([PEM_DEBUT, ...corps, `${"A".repeat(2_100)}${PEM_FIN}`, "après"], [...masque(4), "après"], "fin au-delà de la borne");
+    });
+
+    it("témoin : un certificat (clé publique) qui suit la fin d'une clé sur la même ligne ne rouvre pas de bloc", () => {
+      const lignes = [PEM_DEBUT, ...corps, `${PEM_FIN}-----BEGIN CERTIFICATE-----`, "MIIB", "-----END CERTIFICATE-----"];
+      verifier(lignes, [...masque(4), "MIIB", "-----END CERTIFICATE-----"], "certificat");
+    });
   });
 
   it("redactSecrets ligne par ligne : password = hunter22 → password = **** et secretsMasques", () => {
