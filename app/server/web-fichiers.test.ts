@@ -3,7 +3,8 @@
 // - arbre-etat.ts (pur) : ouvrir, fermer, cache, liste plus récente, refus puis nouvel essai, filtre des cachés et générés (G5),
 //   révélation d'une adresse profonde ;
 // - api-fichiers.ts : quatre routes POST tirées de FICHIERS_ROUTES, en-tête anti-CSRF, signal d'annulation transmis, codes de
-//   refus, files d'attente (deux lectures, un parcours) ;
+//   refus, files d'attente (deux lectures, un parcours), rejeu unique d'un « occupe » reçu juste après l'annulation de son propre
+//   parcours (répétition générale F2) ;
 // - contrôles statiques de pages/fichiers/** et de lib/api-fichiers.ts : texte seul (XSS), aucun texte JSX littéral, aucune
 //   région live ni gestion de touche propre, seuls href permis, motif de divulgation, forced-colors et aucun mouvement ;
 // - fichiers partagés balisés : App.tsx (entrée du rail juste après « Chat », sans advancedOnly), ToolCard.tsx (lien par
@@ -17,7 +18,7 @@ import { describe, it, type TestContext } from "node:test";
 import { FICHIERS_ROUTES, NAV_BORNES } from "./shared/fichiers-regles.ts";
 import { TEXTES } from "./shared/fichiers-texts.ts";
 import type { DossierReponse, EntreeVue } from "./shared/fichiers-types.ts";
-import { codeFichiers, estAnnule, fileDAttente, fichiersApi } from "../web/lib/api-fichiers.ts";
+import { codeFichiers, estAnnule, fileDAttente, fileDesParcours, fichiersApi, pauseAnnulable, REJEU_OCCUPE_MS } from "../web/lib/api-fichiers.ts";
 import { ApiError } from "../web/lib/api.ts";
 import { ancetres, cheminDe, echouer, fermer, lignesVisibles, ouvrir, recevoir, reveler, vider } from "../web/pages/fichiers/arbre-etat.ts";
 
@@ -434,11 +435,141 @@ describe("api-fichiers : client mince", () => {
     assert.equal(lancees, 2, "la tâche annulée n'a jamais tourné, la suivante a eu sa place");
   });
 
+  // Répétition générale F2 : la page annule le parcours du projet quitté et lance aussitôt celui du nouveau ; si la nouvelle requête
+  // arrive au serveur avant la fermeture de l'ancienne connexion, elle reçoit 429 « occupe » (nav-fichiers.mjs rouge au banc complet).
+  it("parcours : un « occupe » reçu juste après l'annulation de son propre parcours est rejoué une fois, et une seule", { timeout: 10_000 }, async () => {
+    const pauses: number[] = [];
+    let pendantPause: () => void = () => undefined;
+    const file = fileDesParcours(async (ms, signal) => {
+      pauses.push(ms);
+      pendantPause();
+      signal.throwIfAborted();
+    });
+    const libre = () => new AbortController().signal;
+    /** Réponses successives du serveur : un code de refus, ou le résultat rendu. */
+    const serveur = (...reponses: string[]) => {
+      let appels = 0;
+      const tache = async (): Promise<string> => {
+        const reponse = reponses[appels++] ?? "liste";
+        if (reponse === "occupe") throw new ApiError(429, "occupe", "x");
+        if (reponse === "protege") throw new ApiError(403, "protege", "x");
+        return reponse;
+      };
+      return { tache, appels: () => appels };
+    };
+    /** Un parcours parti puis annulé en vol, comme fetch (projet quitté, « Actualiser »). */
+    const abandonner = async () => {
+      const quitte = new AbortController();
+      const enVol = file(() => new Promise<string>((_resolve, reject) => quitte.signal.addEventListener("abort", () => reject(quitte.signal.reason), { once: true })), quitte.signal);
+      await tour();
+      quitte.abort();
+      await assert.rejects(enVol, (erreur: unknown) => estAnnule(erreur));
+    };
+
+    // 1. Projet quitté pendant son parcours, puis « occupe » pour le nouveau : rejoué une fois après REJEU_OCCUPE_MS.
+    await abandonner();
+    const nouveau = serveur("occupe", "liste");
+    assert.equal(await file(nouveau.tache, libre()), "liste");
+    assert.equal(nouveau.appels(), 2);
+    assert.deepEqual(pauses, [REJEU_OCCUPE_MS]);
+    assert.ok(REJEU_OCCUPE_MS >= 100 && REJEU_OCCUPE_MS <= 1_000, "0 « occupe » sur 12 mesuré avec 100 ms d'attente");
+
+    // 2. Sans annulation juste avant (second onglet) : « occupe » rendu tel quel, jamais rejoué (fiche §2.3 inchangée).
+    const secondOnglet = serveur("occupe", "liste");
+    await assert.rejects(file(secondOnglet.tache, libre()), (erreur: unknown) => codeFichiers(erreur) === "occupe");
+    assert.equal(secondOnglet.appels(), 1);
+
+    // 3. Un seul rejeu : encore « occupe » après la pause → rendu.
+    await abandonner();
+    const tenu = serveur("occupe", "occupe", "liste");
+    await assert.rejects(file(tenu.tache, libre()), (erreur: unknown) => codeFichiers(erreur) === "occupe");
+    assert.equal(tenu.appels(), 2);
+
+    // 4. Un autre refus après une annulation n'est pas rejoué.
+    await abandonner();
+    const refuse = serveur("protege", "liste");
+    await assert.rejects(file(refuse.tache, libre()), (erreur: unknown) => codeFichiers(erreur) === "protege");
+    assert.equal(refuse.appels(), 1);
+    // …et l'annulation est consommée : l'« occupe » suivant n'est plus rejoué.
+    const ensuite = serveur("occupe", "liste");
+    await assert.rejects(file(ensuite.tache, libre()), (erreur: unknown) => codeFichiers(erreur) === "occupe");
+    assert.equal(ensuite.appels(), 1);
+
+    // 5. Annulé pendant la pause (projet changé encore) : aucun second envoi.
+    await abandonner();
+    const encoreQuitte = new AbortController();
+    pendantPause = () => encoreQuitte.abort();
+    const abandonne = serveur("occupe", "liste");
+    await assert.rejects(file(abandonne.tache, encoreQuitte.signal), (erreur: unknown) => estAnnule(erreur));
+    assert.equal(abandonne.appels(), 1);
+    pendantPause = () => undefined;
+
+    // 6. Un parcours annulé AVANT son départ (encore en file) n'a rien tenu sur le serveur : l'« occupe » suivant est rendu.
+    let finir: () => void = () => undefined;
+    const enCours = file(() => new Promise<string>((resolve) => (finir = () => resolve("liste"))), libre());
+    const enFile = new AbortController();
+    let partis = 0;
+    const jamaisParti = file(async () => String((partis += 1)), enFile.signal);
+    await tour();
+    enFile.abort();
+    await assert.rejects(jamaisParti, (erreur: unknown) => estAnnule(erreur));
+    finir();
+    assert.equal(await enCours, "liste");
+    const apresFile = serveur("occupe", "liste");
+    await assert.rejects(file(apresFile.tache, libre()), (erreur: unknown) => codeFichiers(erreur) === "occupe");
+    assert.deepEqual([partis, apresFile.appels(), pauses.length], [0, 1, 3]);
+  });
+
+  it("pauseAnnulable : attend, et cède tout de suite à une annulation (déjà faite ou pendant l'attente)", { timeout: 10_000 }, async () => {
+    await pauseAnnulable(1, new AbortController().signal);
+    const deja = new AbortController();
+    deja.abort();
+    await assert.rejects(pauseAnnulable(60_000, deja.signal), (erreur: unknown) => estAnnule(erreur));
+    const pendant = new AbortController();
+    const longue = pauseAnnulable(2_000, pendant.signal);
+    await tour();
+    pendant.abort();
+    const issue = await Promise.race([
+      longue.then(
+        () => "finie",
+        (erreur: unknown) => (estAnnule(erreur) ? "annulee" : "autre"),
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("encore en attente"), 200)),
+    ]);
+    assert.equal(issue, "annulee");
+  });
+
+  it("fichiersApi.recents : projet quitté pendant son parcours, puis 429 « occupe » → rejoué, la liste du nouveau projet arrive", { timeout: 10_000 }, async (t) => {
+    const projets: string[] = [];
+    const statuts = [429, 200];
+    const liste = { projet: "nouveau", fichiers: [], parcourus: 0, incomplet: false };
+    t.mock.method(globalThis, "fetch", async (_adresse: string | URL | Request, init?: RequestInit) => {
+      const { projet } = JSON.parse(String(init?.body)) as { projet: string };
+      projets.push(projet);
+      const signal = init?.signal;
+      if (projet === "quitte") return new Promise<Response>((_resolve, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      const status = statuts.shift() ?? 200;
+      return new Response(JSON.stringify(status === 429 ? { error: "occupe", message: TEXTES.partout.occupe } : liste), { status });
+    });
+    const quitte = new AbortController();
+    const avant = fichiersApi.recents("quitte", quitte.signal);
+    for (let i = 0; i < 20 && projets.length === 0; i++) await tour();
+    assert.deepEqual(projets, ["quitte"]);
+    const depart = performance.now();
+    quitte.abort();
+    const apres = fichiersApi.recents("nouveau", new AbortController().signal);
+    await assert.rejects(avant, (erreur: unknown) => estAnnule(erreur));
+    assert.deepEqual(await apres, liste);
+    assert.deepEqual(projets, ["quitte", "nouveau", "nouveau"]);
+    assert.ok(performance.now() - depart >= REJEU_OCCUPE_MS - 10, "rejoué après la pause, pas tout de suite");
+  });
+
   it("bornes des files : celles du serveur (deux lectures, un parcours)", () => {
     const source = sansCommentaires(lire("lib/api-fichiers.ts"));
     assert.equal(NAV_BORNES.LECTURES_SIMULTANEES, 2);
     assert.match(source, /const lectures = fileDAttente\(NAV_BORNES\.LECTURES_SIMULTANEES\);/);
-    assert.match(source, /const parcours = fileDAttente\(1\);/);
+    assert.match(source, /const parcours = fileDesParcours\(\);/);
+    assert.match(source, /export function fileDesParcours\([^\n]*\n\s*const file = fileDAttente\(1\);/);
     assert.match(source, /dossier: [^\n]*\n\s*lectures\(/);
     assert.match(source, /contenu: [^\n]*\n\s*lectures\(/);
     assert.match(source, /recents: [^\n]*\n\s*parcours\(/);

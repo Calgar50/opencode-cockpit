@@ -713,7 +713,8 @@ export function creerLecteurFichiers(options: LecteurOptions): LecteurFichiers {
   // --- Parcours : un seul à la fois dans tout le cockpit, sinon « occupe » tout de suite. ------------------------------------
   // Relecture F2-vague-6 (constat n° 5) : un parcours abandonné (requête annulée par la page) n'est plus un parcours « réel » ; il
   // rend la place dès l'annulation et s'arrête à son prochain contrôle (parcourir). Le jeton empêche sa fin tardive de libérer la
-  // place d'un parcours suivant.
+  // place d'un parcours suivant. L'annulation n'arrive ici qu'à la fermeture de la connexion : la requête suivante de la page peut
+  // la devancer et recevoir « occupe » ; la page la rejoue alors une fois (répétition générale F2, fileDesParcours d'api-fichiers.ts).
   let parcoursEnCours: object | null = null;
   const avecParcours = async <T>(projet: string, signal: AbortSignal | undefined, travail: () => Promise<T>): Promise<Resultat<T>> => {
     // Requête déjà annulée : aucune place prise, aucun accès au disque ; cette réponse n'est lue par personne.

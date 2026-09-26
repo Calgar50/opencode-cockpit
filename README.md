@@ -514,7 +514,7 @@ L'onglet **Fichiers** sert à relire les fichiers de vos projets sans quitter le
 - **Arborescence :** un clic sur un dossier le déplie, un clic sur un fichier l'ouvre. Au clavier : **Tab** pour avancer, **Entrée** pour déplier ou ouvrir ; **Retour aux fichiers** ferme le fichier et rend le focus à son lien. Le retour arrière du navigateur revient au fichier précédent.
 - **Depuis le chat :** la carte d'un outil qui a lu, écrit ou modifié un fichier du dossier de travail porte le lien **Ouvrir dans Fichiers**, une fois l'outil terminé.
 - **Sur votre poste :** l'emplacement du fichier sur votre PC est affiché, avec **Copier l'emplacement**, pour l'ouvrir dans votre éditeur.
-- **Mode Simple :** tailles arrondies, dates relatives (« il y a 5 min »), fichiers cachés et générés (`.editorconfig`, `node_modules`…) masqués, avec une case pour les afficher. **Mode Avancé :** encodage, taille exacte, date complète, fichiers cachés affichés, et **Pourquoi ?** sous la liste des éléments protégés.
+- **Mode Simple :** tailles arrondies, dates relatives (« il y a 5 min ») ; dans l'arborescence, fichiers cachés et générés (`.editorconfig`, `node_modules`…) masqués, avec une case pour les afficher. Cette case ne filtre que l'arborescence : **Modifiés récemment** et les résultats de la recherche montrent aussi les fichiers cachés, comme `.editorconfig` (jamais un élément protégé). **Mode Avancé :** encodage, taille exacte, date complète, fichiers cachés affichés, et **Pourquoi ?** sous la liste des éléments protégés.
 
 Ce que l'onglet peut vous dire :
 
@@ -528,7 +528,7 @@ Ce que l'onglet peut vous dire :
 | « Ce fichier contient 1 caractère invisible, montré ainsi : ⟦U+202E⟧. » | un caractère qui peut faire lire autre chose que ce que l'ordinateur exécute est montré par son code |
 | « Fichier enregistré dans un ancien format Windows… » | texte en windows-1252 : quelques caractères peuvent s'afficher mal. Les scripts PowerShell 5.1 enregistrés en UTF-16 avec leur marque d'encodage s'affichent normalement |
 | « Ce fichier porte plusieurs noms sur le disque… » | un fichier qui a un second nom (lien physique) n'est pas affiché : il pourrait être la copie d'un fichier protégé |
-| « Une autre lecture est en cours. Réessayez dans un instant. » | le cockpit fait deux lectures à la fois au plus, et un seul parcours (récents, recherche) |
+| « Une autre lecture est en cours. Réessayez dans un instant. » | le cockpit fait deux lectures à la fois au plus, et un seul parcours (récents, recherche) pour tout le cockpit : **Fichiers** ouvert dans un second onglet du navigateur peut tenir cette place |
 
 Un dossier dont le nom contient `%` suivi de deux chiffres ou lettres de A à F (`%2F`…) n'est plus proposé pour une conversation depuis la 1.0.6 : c'est ici, sous **Tout le workspace**, que vous le retrouvez pour le renommer. Il n'y est que lu.
 

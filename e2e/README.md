@@ -317,7 +317,7 @@ scripts/run-e2e.sh --faux --scenarios nav- --project-prefix nav11-e2e --image-ta
 | Captures | 18 : 1440, 1024 et 400, clair et sombre, en mode normal, en contraste forcé et en niveaux de gris avec mouvement réduit ; plus la vue à 400 px avec « Retour aux fichiers », qui rend le focus au lien d'origine. En contraste forcé, focus clavier visible ; en mouvement réduit, aucune animation en cours |
 | Aucun appel | aucune requête facturable et aucune requête `/file*` ni `/find*` reçue par opencode pendant les étapes de l'onglet |
 | Chat | un outil `write` terminé sur `/workspace/nav-banc/scripts/nouveau.ps1` (joué par le faux) porte « Ouvrir dans Fichiers », qui ouvre ce fichier ; sous le témoin P6 et P4 |
-| Console | muette, sauf le 403 voulu de l'adresse directe de `.env`, que le journal réseau vérifie seul refus |
+| Console | muette, sauf le 403 voulu de l'adresse directe de `.env`, que le journal réseau vérifie seul refus, et le 429 « occupe » d'un parcours que la page rejoue après un changement de projet (constat n° 5 du RECAPITULATIF) : admis seulement sur une route de parcours, suivi d'un rejeu qui rend 200 sur la même route au moins 250 ms plus tard ; « Une autre lecture est en cours » ne doit jamais s'afficher |
 
 **`ctx.travail`**, ajouté au contexte par le banc (section `nav:travail` de `e2e/lib/docker-e2e.mjs`) pour ce scénario :
 

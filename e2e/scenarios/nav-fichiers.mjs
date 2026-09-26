@@ -24,8 +24,9 @@
 //   7. aucun appel : aucune requête facturable, aucune requête /file* ni /find* reçue par opencode pendant les étapes de l'onglet ;
 //   8. chat (« --faux ») : un outil `write` terminé sur /workspace/nav-banc/scripts/nouveau.ps1 porte « Ouvrir dans Fichiers », qui
 //      ouvre ce fichier (sous le témoin P6 et P4) ;
-//   9. console muette, sauf le refus voulu de l'adresse du fichier protégé (403 de la route contenu, vérifié au journal réseau), et
-//      aucune violation de la CSP.
+//   9. console muette, sauf le refus voulu de l'adresse du fichier protégé (403 de la route contenu, vérifié au journal réseau) et les
+//      « occupe » d'un parcours que la page a rejoués avec succès (répétition générale F2, vérifiés au journal réseau), et aucune
+//      violation de la CSP.
 // Les phrases attendues sont écrites ici en clair : c'est la spécification (fiche NAV §8) qu'on vérifie, pas ce que le code déclare.
 import path from "node:path";
 import {
@@ -97,6 +98,10 @@ const adresse = (projet, chemin) => `#/fichiers?${new URLSearchParams(chemin ===
  * écrit tout refus HTTP d'une requête dans la console ; le journal réseau vérifie ensuite qu'il n'y a eu que ce refus-là.
  */
 const CONSOLE_REFUS_VOULU = [/\/api\/fichiers\/contenu$/];
+/** Routes de parcours (récents, recherche) : les seules où la page rejoue un « occupe » (répétition générale F2, constat n° 5). */
+const ROUTE_PARCOURS = /\/api\/fichiers\/(?:recents|recherche)$/;
+/** Attente de la page avant ce rejeu (REJEU_OCCUPE_MS d'app/web/lib/api-fichiers.ts), écrite ici en clair comme les phrases. */
+const REJEU_MS = 300;
 
 // --- Page ------------------------------------------------------------------------------------------------------------------------
 
@@ -167,9 +172,9 @@ async function choisirProjet(page, projet) {
 
 /**
  * Attend la fin du chargement de « Modifiés récemment ». Un seul parcours tourne à la fois dans le cockpit ; celui d'un projet
- * quitté rend sa place dès l'annulation de sa requête (constat n° 5 du RECAPITULATIF, corrigé par la relecture F2-vague-6) : les
- * changements de projet du scénario se font donc PENDANT le chargement, sans attendre, et « Une autre lecture est en cours » ne
- * doit jamais s'afficher. Cette attente ne sert qu'avant de lire la liste ou de changer d'adresse.
+ * quitté rend sa place dès que le serveur voit sa requête annulée, et la page rejoue une fois un « occupe » reçu juste après
+ * (constat n° 5 du RECAPITULATIF : relecture F2-vague-6, puis répétition générale F2) : les changements de projet du scénario se
+ * font donc PENDANT le chargement, sans attendre, et « Une autre lecture est en cours » ne doit jamais s'afficher. Cette attente ne sert qu'avant de lire la liste ou de changer d'adresse.
  */
 async function attendreRecentsCharges(page) {
   await page.attendreQue(`(() => { const b = document.querySelector(${JSON.stringify(`${SECTION} .fichiers-bloc`)}); return b && !b.innerText.includes("Chargement"); })()`, {
@@ -551,9 +556,20 @@ export async function run(ctx) {
     nonJoue(ctx, "relevé des requêtes reçues par opencode", "observable en « --faux » seulement");
   }
 
-  // Journal réseau : réponses des routes de l'onglet, toutes 200 sauf le refus voulu de .env.
-  const refus = page.journalReseau().filter((l) => /\/api\/fichiers\//.test(l.url ?? "") && typeof l.code === "number" && l.code !== 200);
-  exiger(refus.length === 1 && refus[0].code === 403 && /\/api\/fichiers\/contenu$/.test(refus[0].url), `réponses des routes de l'onglet hors 200 : ${resume(refus.map((l) => `${l.code} ${l.url}`))}`);
+  // Journal réseau : réponses des routes de l'onglet, toutes 200 sauf le refus voulu de .env et les « occupe » rejoués. Répétition
+  // générale F2 (constat n° 5) : la requête du nouveau projet peut devancer la fermeture de celle du projet quitté et recevoir 429 ;
+  // la page la rejoue une fois, REJEU_MS plus tard. Un 429 n'est admis que sur une route de parcours, suivi, sur la même route, d'une
+  // requête envoyée au moins REJEU_MS - 50 ms plus tard qui rend 200 ; « Une autre lecture est en cours » n'a jamais été affiché
+  // (vérifié à chaque changement de projet).
+  const journal = page.journalReseau().filter((l) => /\/api\/fichiers\//.test(l.url ?? "") && typeof l.code === "number");
+  const rejoues = journal.filter((l, i) => {
+    if (l.code !== 429 || !ROUTE_PARCOURS.test(l.url)) return false;
+    const suivante = journal.slice(i + 1).find((s) => s.url === l.url);
+    return suivante !== undefined && suivante.code === 200 && suivante.envoyeeA - l.envoyeeA >= REJEU_MS - 50;
+  });
+  const refus = journal.filter((l) => l.code !== 200 && !rejoues.includes(l));
+  exiger(refus.length === 1 && refus[0].code === 403 && /\/api\/fichiers\/contenu$/.test(refus[0].url), `réponses des routes de l'onglet hors 200 (hors « occupe » rejoués) : ${resume(refus.map((l) => `${l.code} ${l.url}`))}`);
+  if (rejoues.length > 0) releve(ctx, `« occupe » rejoué(s) par la page puis 200 : ${rejoues.length} (répétition générale F2, constat n° 5)`);
 
   // 8. Chat : « Ouvrir dans Fichiers » sur un outil write terminé.
   if (faux) {
@@ -582,7 +598,8 @@ export async function run(ctx) {
     nonJoue(ctx, "« Ouvrir dans Fichiers » depuis un outil write joué par le faux opencode", "le faux fournisseur ne répond que du texte");
   }
 
-  // 9. Console et CSP.
+  // 9. Console et CSP. Le navigateur écrit aussi dans la console chaque 429 d'un parcours rejoué : admis seulement si le journal
+  // réseau les a tous reconnus comme rejoués (étape 7).
   await exigerAucuneViolationCsp(page);
-  ctx.expectNoConsoleErrors(CONSOLE_REFUS_VOULU);
+  ctx.expectNoConsoleErrors(rejoues.length > 0 ? [...CONSOLE_REFUS_VOULU, ROUTE_PARCOURS] : CONSOLE_REFUS_VOULU);
 }

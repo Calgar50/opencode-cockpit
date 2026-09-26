@@ -8,6 +8,8 @@
 // (LECTURES_SIMULTANEES, au-delà le serveur attend puis rend 429 « occupe ») et un seul parcours à la fois (récents ou recherche,
 // sinon 429 « occupe » tout de suite). Elles évitent qu'« Actualiser » ou une recherche lancée pendant le chargement des récents
 // ne se heurtent à leurs propres limites ; un second onglet peut toujours recevoir « occupe » (fiche §11, reste n° 7).
+// Répétition générale F2 : la file des parcours rejoue UNE fois, après REJEU_OCCUPE_MS, un « occupe » reçu juste après que cette
+// page a annulé son propre parcours (fileDesParcours) ; le contrat du serveur ne change pas.
 import { FICHIERS_ROUTES, NAV_BORNES } from "../../server/shared/fichiers-regles.ts";
 import type { ContenuReponse, DossierReponse, FichiersCode, RechercheReponse, RecentsReponse } from "../../server/shared/fichiers-types.ts";
 import { ApiError, http } from "./api.ts";
@@ -54,8 +56,65 @@ export function fileDAttente(limite: number): Tache {
   };
 }
 
+/** Attente avant de rejouer un « occupe » reçu juste après l'annulation, par cette page, de son propre parcours. */
+export const REJEU_OCCUPE_MS = 300;
+
+/** Attente de `ms`, rejetée par la raison du signal (AbortError) dès son annulation. */
+export function pauseAnnulable(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const annuler = () => {
+      clearTimeout(minuterie);
+      reject(signal.reason);
+    };
+    const minuterie = setTimeout(() => {
+      signal.removeEventListener("abort", annuler);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", annuler, { once: true });
+  });
+}
+
+/**
+ * File des parcours : un à la fois, comme le serveur (fileDAttente(1)), avec un rejeu unique (répétition générale F2). Changer de
+ * projet annule le parcours du projet quitté et lance aussitôt celui du nouveau ; le serveur ne rend sa place unique qu'en voyant
+ * la connexion fermée, et la nouvelle requête peut arriver avant elle (429 « occupe » : 2 fois sur 12 sans attente, 0 sur 12 avec
+ * 100 ms, mesuré). Un « occupe » reçu par le parcours qui suit l'annulation d'un parcours DÉJÀ PARTI de cette file est donc rejoué
+ * une fois, après REJEU_OCCUPE_MS. Tout autre « occupe » (second onglet, ou parcours encore tenu après le rejeu) est rendu tel
+ * quel : le serveur garde son contrat (fiche §2.3 : 429 tout de suite).
+ */
+export function fileDesParcours(pause: (ms: number, signal: AbortSignal) => Promise<void> = pauseAnnulable): Tache {
+  const file = fileDAttente(1);
+  // Vrai quand le dernier parcours lancé par cette file a été annulé après son départ : le serveur peut encore tenir sa place.
+  let abandonEnVol = false;
+  return async <T>(tache: () => Promise<T>, signal: AbortSignal): Promise<T> => {
+    let apresAbandon = false;
+    const lancer = async (): Promise<T> => {
+      apresAbandon = abandonEnVol;
+      abandonEnVol = false;
+      const parti = !signal.aborted;
+      try {
+        return await tache();
+      } catch (err) {
+        if (parti && signal.aborted) abandonEnVol = true;
+        throw err;
+      }
+    };
+    try {
+      return await file(lancer, signal);
+    } catch (err) {
+      if (!apresAbandon || codeFichiers(err) !== "occupe") throw err;
+    }
+    await pause(REJEU_OCCUPE_MS, signal);
+    return file(lancer, signal);
+  };
+}
+
 const lectures = fileDAttente(NAV_BORNES.LECTURES_SIMULTANEES);
-const parcours = fileDAttente(1);
+const parcours = fileDesParcours();
 
 export const fichiersApi = {
   /** Liste d'un dossier ; `chemin` relatif au projet, "" pour le projet lui-même ; projet "" = tout le dossier de travail. */
