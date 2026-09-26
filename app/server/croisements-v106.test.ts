@@ -144,6 +144,24 @@ describe("croisements v106 : proxy /api/oc/* et /api/chat/resolve", () => {
   });
 });
 
+// --- Câblage de la fenêtre de connexion (egressLogin) dans l'application 1.1 ------------------------------------------------------
+
+describe("croisements v106 : fenêtre de connexion du relais (egressLogin) à travers createCockpitApp", () => {
+  it("createCockpitApp transmet egressLogin à createApp : ouverte par …/oauth/authorize et …/callback du proxy, jamais par un corps refusé ni par une autre route", async (t) => {
+    let opens = 0;
+    const { h } = await start(t, { deps: () => ({ egressLogin: { open: () => void opens++ } }) });
+    const post = (route: string, body: unknown) => h.call("POST", `/api/oc${route}`, { headers: h.headers.mutating, body });
+    // Domaine GitHub Enterprise non déclaré : corps refusé, fenêtre fermée.
+    assert.equal((await post("/provider/github-copilot/oauth/authorize", { method: 0, inputs: { deploymentType: "enterprise", enterpriseUrl: "github-login.example" } })).status, 403);
+    assert.equal((await post("/session", { title: "x" })).status, 200);
+    assert.equal(opens, 0);
+    await post("/provider/github-copilot/oauth/authorize", { method: 0, inputs: { deploymentType: "github.com" } });
+    assert.equal(opens, 1, "demande du code : fenêtre ouverte");
+    await post("/provider/github-copilot/oauth/callback", { method: 0 });
+    assert.equal(opens, 2, "attente de l'accord : fenêtre prolongée");
+  });
+});
+
 // --- Studio, portée projet -----------------------------------------------------------------------------------------------------
 
 describe("croisements v106 : Studio (portée projet)", () => {

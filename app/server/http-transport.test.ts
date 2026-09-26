@@ -809,12 +809,14 @@ function connectThrough(port: number, target: string): Promise<string> {
 describe("relais de sortie d'opencode dans main.ts réel (1.0.6)", () => {
   let run: NodeRun | undefined;
   let relayPort = 0;
+  let port = 0;
 
   before(async () => {
     // Proxy de l'entreprise simulé par un port fermé : une sortie permise échoue sur place (502), rien ne part vers Internet.
     const [relay, deadProxy] = await freePorts(2);
     relayPort = relay ?? 0;
     const cockpit = await cockpitSetup({ ...HTTP_ENV, COCKPIT_RELAY_PORT: String(relayPort), COCKPIT_RELAY_PEER: "localhost", HTTPS_PROXY: `http://127.0.0.1:${deadProxy}` });
+    port = cockpit.port;
     run = startMain(cockpit);
     await waitListening(run);
     await waitFor(() => run?.logs.find((line) => line.msg === "relais du cockpit à l'écoute pour opencode (réseau interne seulement)"), 30_000, "relais à l'écoute");
@@ -844,6 +846,25 @@ describe("relais de sortie d'opencode dans main.ts réel (1.0.6)", () => {
       refused.map((l) => [l.hote, l.raison]),
       [["models.opencode.ai", "hote"]],
     );
+  });
+
+  // Après le test précédent (qui compte les refus journalisés) : câblage de production de la fenêtre de connexion (R106-a, A29).
+  it("github.com : refusé tant qu'aucune connexion n'est demandée, relayé après POST …/oauth/authorize par le proxy (egressLogin : main.ts → createCockpitApp → createApp, relayRules)", async () => {
+    assert.ok(run);
+    assert.match(await connectThrough(relayPort, "github.com:443"), /^HTTP\/1\.1 403 /, "avant toute demande de connexion");
+    const opened = await request(port, "GET", await ticketLink(port));
+    const cookie = (setCookiesOf(opened)[0] ?? "").split(";")[0] ?? "";
+    const authorize = await request(
+      port,
+      "POST",
+      "/api/oc/provider/github-copilot/oauth/authorize",
+      { cookie, "x-cockpit-csrf": "1", "content-type": "application/json" },
+      JSON.stringify({ method: 0, inputs: { deploymentType: "github.com" } }),
+    );
+    // opencode est injoignable ici : la demande échoue en amont, mais la fenêtre s'ouvre avant son relais, après le refus du corps.
+    assert.notEqual(authorize.status, 403, authorize.body);
+    assert.notEqual(authorize.status, 401, authorize.body);
+    assert.match(await connectThrough(relayPort, "github.com:443"), /^HTTP\/1\.1 502 /, "fenêtre ouverte : relayé (proxy de l'entreprise fermé ici)");
   });
 });
 
