@@ -18,6 +18,10 @@ const WEB_DIR = path.join(import.meta.dirname, "..", "web");
 
 /** Dossiers de l'interface 1.1 soumis aux règles de mouvement (relatifs à web/). */
 const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics"];
+// <nav:perimetre>
+// Onglet « Fichiers » (NAV-3) : aucune animation du tout (fiche NAV §5, instruction 9) ; web-fichiers.test.ts le vérifie aussi.
+SCOPES.push("pages/fichiers");
+// </nav:perimetre>
 
 /** Fichiers sans aucune boucle (nom de fichier, où qu'il soit sous web/). */
 const NO_LOOP_FILES = new Set(["NeonBand.tsx", "neon.css", "DemoPlayer.tsx"]);
