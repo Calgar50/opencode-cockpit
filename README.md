@@ -500,6 +500,51 @@ Le plafond de coût est une borne appliquée par un arrêt, pas une garantie de 
 
 **Onglet fermé :** le travail continue dans les plafonds, et les actions qui attendent votre accord vous attendent. En rouvrant la conversation, vous retrouvez le bandeau, la demande en attente et le Journal.
 
+<!-- nav:fichiers -->
+## Fichiers (lecture seule) (1.1)
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit l'onglet **Fichiers**, tel que son code le contient déjà.
+
+L'onglet **Fichiers** sert à relire les fichiers de vos projets sans quitter le cockpit : le script que l'IA vient d'écrire, un journal, un fichier de configuration. **Rien n'y est modifié, rien n'y est envoyé à une IA, et rien n'y est facturé.**
+
+- **Où le trouver :** dans la barre de gauche, juste sous **Chat**, en mode Simple comme en mode Avancé.
+- **Projet :** l'onglet s'ouvre sur le projet de la conversation en cours. **Tout le workspace** montre le dossier de travail entier.
+- **Modifiés récemment :** les fichiers modifiés le plus récemment, 10 d'abord, jusqu'à 30 avec **Voir plus**. C'est le plus rapide pour retrouver ce que l'IA vient d'écrire.
+- **Chercher un nom de fichier :** la recherche porte sur le **nom** des fichiers et des dossiers, jamais sur leur contenu (100 résultats au plus).
+- **Arborescence :** un clic sur un dossier le déplie, un clic sur un fichier l'ouvre. Au clavier : **Tab** pour avancer, **Entrée** pour déplier ou ouvrir ; **Retour aux fichiers** ferme le fichier et rend le focus à son lien. Le retour arrière du navigateur revient au fichier précédent.
+- **Depuis le chat :** la carte d'un outil qui a lu, écrit ou modifié un fichier du dossier de travail porte le lien **Ouvrir dans Fichiers**, une fois l'outil terminé.
+- **Sur votre poste :** l'emplacement du fichier sur votre PC est affiché, avec **Copier l'emplacement**, pour l'ouvrir dans votre éditeur.
+- **Mode Simple :** tailles arrondies, dates relatives (« il y a 5 min »), fichiers cachés et générés (`.editorconfig`, `node_modules`…) masqués, avec une case pour les afficher. **Mode Avancé :** encodage, taille exacte, date complète, fichiers cachés affichés, et **Pourquoi ?** sous la liste des éléments protégés.
+
+Ce que l'onglet peut vous dire :
+
+| Message | Ce que cela veut dire |
+|---|---|
+| « 3 éléments protégés ne sont pas montrés : clés, mots de passe, historique git. » | fichiers d'environnement (`.env`…), clés et certificats, fichiers d'identifiants, historique git : ni listés, ni lus ; seul leur nombre est donné |
+| « raccourci, non ouvert » (Avancé : « lien symbolique, non suivi ») | un lien vers un autre endroit n'est jamais suivi, même vers le même projet |
+| « Des passages qui ressemblent à des mots de passe ou à des clés sont remplacés par \*\*\*\*. » | masquage au mieux, à l'affichage seulement ; le fichier n'est pas modifié |
+| « Ce fichier est long (1 Mo) : seul le début est affiché. » | seuls les 256 premiers Kio (10 000 lignes au plus) sont montrés ; une ligne de plus de 2 000 caractères est coupée |
+| « Ce fichier n'est pas du texte (image, archive, programme…) » | rien n'est affiché |
+| « Ce fichier contient 1 caractère invisible, montré ainsi : ⟦U+202E⟧. » | un caractère qui peut faire lire autre chose que ce que l'ordinateur exécute est montré par son code |
+| « Fichier enregistré dans un ancien format Windows… » | texte en windows-1252 : quelques caractères peuvent s'afficher mal. Les scripts PowerShell 5.1 enregistrés en UTF-16 avec leur marque d'encodage s'affichent normalement |
+| « Ce fichier porte plusieurs noms sur le disque… » | un fichier qui a un second nom (lien physique) n'est pas affiché : il pourrait être la copie d'un fichier protégé |
+| « Une autre lecture est en cours. Réessayez dans un instant. » | le cockpit fait deux lectures à la fois au plus, et un seul parcours (récents, recherche) |
+
+Un dossier dont le nom contient `%` suivi de deux chiffres ou lettres de A à F (`%2F`…) n'est plus proposé pour une conversation depuis la 1.0.6 : c'est ici, sous **Tout le workspace**, que vous le retrouvez pour le renommer. Il n'y est que lu.
+
+**Pour l'équipe IT-Sec.**
+
+- **Interrupteur :** `COCKPIT_FICHIERS=off` dans `.env`, puis `.\cockpit.ps1 restart`, coupe l'onglet : les quatre routes de lecture répondent 403 et l'onglet affiche « La lecture des fichiers est coupée sur ce poste. ». Il est actif par défaut ; une autre valeur que `on` ou `off` refuse le démarrage.
+- **Dossier lu :** `COCKPIT_FICHIERS_DIR` est une liste d'autorisation : `/projets-lecture` (la valeur de `docker-compose.yml`) ou le dossier de travail, rien d'autre. Toute autre valeur (`/`, `/data`, `/tls`, un sous-dossier, un montage ajouté plus tard…) refuse le démarrage.
+- **Montage en lecture seule :** l'onglet ne lit qu'un **second montage** du dossier de travail, `/projets-lecture`, en `:ro`, donné au seul service `cockpit` (mesuré : `ro` dans `/proc/self/mountinfo` du conteneur). Le montage d'opencode ne change pas.
+- **Aucune sortie, aucune IA :** le lecteur n'importe ni client réseau, ni client d'opencode, ni le suivi des coûts, et ne contient aucune fonction d'écriture (tests statiques). Les quatre routes sont des `POST` protégées comme les autres (session, anti-CSRF, contrôle de l'origine), et le chemin demandé n'apparaît donc ni dans l'adresse de la requête ni dans le journal. Le banc de bout en bout vérifie qu'aucune requête `/file*` ni `/find*` n'atteint opencode et qu'aucun appel facturable ne part pendant l'onglet. Le proxy vers opencode garde `/file*` exclu.
+- **Journal sans chemin :** un refus qui trahit une manœuvre (lien, fichier à plusieurs noms, fichier changé pendant la lecture) est journalisé au plus une fois par minute, avec le projet et le code du refus seulement : jamais un chemin, un nom de fichier ni un contenu. Une lecture impossible (droits, disque) n'est journalisée que par la nature de l'erreur ; le message du système, qui contient le chemin, n'est ni journalisé ni renvoyé.
+- **Protections :** décidées sur le nom, **avant tout accès au disque**, avec la même réponse que l'élément existe ou non : dossiers `.git`, `.ssh`, `.kube`, `.gnupg`, `.aws`, `.azure`, `.docker`, `secrets`, `.secrets`, `.terraform`, `.opencode`, `.agents`, `.claude` et tout leur contenu ; `.env*` (dont `.env.example`) et `*.env` ; `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.git-credentials`, `auth.json`, `.envrc`, `settings.xml`, `.htpasswd`, `_netrc`, `.mcp.json`, `opencode.json(c)` ; clés SSH et privées (`id_rsa`, `id_ed25519`…, `privkey`), `kubeconfig`, clés et certificats (`pfx`, `p12`, `key`, `pem`, `crt`, `cer`, `der`, `jks`, `keystore`, `kdbx`, `kdb`, `ppk`, `keytab`, `rdp`, `gpg`, `asc`, `ovpn`…) ; état et variables Terraform (`*.tfstate*`, `*.tfvars`, `*.tfvars.json`) ; historiques de commandes (bash, zsh, Python, psql, MySQL, Node, PSReadLine) ; et les fichiers de données ou dossiers dont le nom contient `credential`, `secret`, `passw` ou `token`. Un **script** (`.ps1`, `.py`, `.sh`…) qui contient `secret`, `passw` ou `token` dans son nom reste lisible, son contenu masqué au mieux ; `credential` reste protégé même pour un script.
+- **Lecture sûre :** nom exact exigé, casse comprise (un alias `SCRIPTS`, `ENV~1` ou `.env.` est refusé) ; aucun composant ne peut être un lien ; ouverture sans suivre de lien et sans bloquer ; fichier à un seul nom ; même fichier au contrôle et à l'ouverture, et chemin réel du fichier ouvert égal au chemin demandé ; taille et date revérifiées après la lecture. Les dossiers sont lus par leur descripteur ouvert. Les jonctions Windows et les liens posés depuis un conteneur Linux sont vus comme des liens, donc refusés (mesuré sur Docker Desktop).
+- **Bornes :** 256 Kio lus par fichier, 10 000 lignes, 2 000 caractères par ligne, 1 000 éléments par dossier, parcours de 5 000 éléments, 12 niveaux et 2 secondes au plus, deux lectures simultanées et un seul parcours, corps de requête de 8 Kio. Aucun téléchargement, aucune écriture, aucune recherche dans le contenu.
+- **Limites** (copies de secrets sous un nom ordinaire, encodages, cockpit de développement sous Windows…) : voir `docs/RECAPITULATIF.md`, onglet « Fichiers ».
+<!-- /nav:fichiers -->
+
 ## Ce qui échappe au contrôle : limites propres à opencode
 
 Ces limites viennent d'opencode 1.18.30, pas du cockpit, et la configuration ne peut pas les corriger. Elles sont mesurées sur un opencode réel piloté hors ligne (aucun appel facturé), et la confirmation d'« Autonome avec contrôle » les rappelle.

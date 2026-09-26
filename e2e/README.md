@@ -297,6 +297,43 @@ console muette :
 | `it2-ui-bandeau-journal.mjs` | bandeau d'autonomie (compteurs, dépense, plafond, [Arrêter], [Journal]), Journal du contrôle ligne à ligne, puis fin de demande avec [Voir les modifications de cette demande] ; les douze captures des vues de L12 |
 | `it2-ui-onglet-ferme.mjs` | onglet fermé pendant une demande autonome : les décisions automatiques continuent et l'attente est retrouvée à la réouverture, bandeau et carte compris |
 
+<!-- nav:scenario -->
+## Scénario de l'onglet « Fichiers » (chantier 1.1)
+
+```sh
+scripts/run-e2e.sh --faux --scenarios nav- --project-prefix nav11-e2e --image-tag nav11
+```
+
+`nav-fichiers.mjs` éprouve l'onglet **Fichiers** (lecture seule des projets) par la page et par l'API, en `--faux` :
+
+| Étape | Ce qu'elle établit |
+|---|---|
+| Préparation | projet `nav-banc` écrit depuis l'hôte par `ctx.travail.ecrire` : script PowerShell 5.1 en UTF-16LE avec BOM et un faux mot de passe, texte cp1252, page HTML piégée, caractère bidirectionnel (U+202E), journal de 1 Mio, image avec octets NUL, faux secrets factices protégés par leur nom (`.env`, `.git/config`, `cle.pfx`, `credentials.json`) ; puis, DANS le conteneur du cockpit, un lien vers `/proc/self/environ`, un lien vers `.env`, un lien physique de `.env` et un tube ; deux dossiers de premier niveau au nom `%XX` ; enfin `scripts/nouveau.ps1`, le plus récent |
+| Mode Simple | entrée « Fichiers » du rail, titre, sous-titre et badge ; `nouveau.ps1` en tête de « Modifiés récemment » ; arborescence au **clavier seul** (Tab jusqu'au dossier, Entrée le déplie, Tab jusqu'au fichier, Entrée l'ouvre : focus sur le titre, `aria-current`) ; texte UTF-16 décodé, mot de passe masqué et bandeau ; éléments protégés absents et comptés ; lien montré « raccourci, non ouvert » ; page HTML rendue en texte (aucun script exécuté, aucun élément ajouté) ; caractère invisible montré ; bandeaux d'un fichier long en tête et en fin ; image « binaire » ; recherche sur le nom |
+| Adresses directes | `.env` → phrase « protégé » ; `..%2Fx` → « adresse non prise en charge » ; retour arrière du navigateur → fichier précédent |
+| API (HTTPS épinglé) | lien vers `/proc/self/environ` → 403 `lien`, sans aucune variable d'environnement ; lien vers `.env` → 403 ; lien physique → 403 `plusieurs-noms` (mesure M-NAV-1) ; tube → 409 en moins de 2 s ; `.ENV`, `ENV~1`, `.env.`, `SCRIPTS/…` → 400, 403 ou 404, jamais 200 |
+| Dossiers `%XX` (D14 (b)) | listés et lus sous « Tout le workspace », absents des projets de conversation et du sélecteur ; un nom `%XX` qui contient `secret` reste protégé |
+| Mode Avancé | ligne de détails (`utf-16le`), « lien symbolique », fichiers cachés affichés |
+| Captures | 18 : 1440, 1024 et 400, clair et sombre, en mode normal, en contraste forcé et en niveaux de gris avec mouvement réduit ; plus la vue à 400 px avec « Retour aux fichiers », qui rend le focus au lien d'origine. En contraste forcé, focus clavier visible ; en mouvement réduit, aucune animation en cours |
+| Aucun appel | aucune requête facturable et aucune requête `/file*` ni `/find*` reçue par opencode pendant les étapes de l'onglet |
+| Chat | un outil `write` terminé sur `/workspace/nav-banc/scripts/nouveau.ps1` (joué par le faux) porte « Ouvrir dans Fichiers », qui ouvre ce fichier ; sous le témoin P6 et P4 |
+| Console | muette, sauf le 403 voulu de l'adresse directe de `.env`, que le journal réseau vérifie seul refus |
+
+**`ctx.travail`**, ajouté au contexte par le banc (section `nav:travail` de `e2e/lib/docker-e2e.mjs`) pour ce scénario :
+
+| Champ | Ce qu'il donne |
+|---|---|
+| `dossier` | dossier de travail de la pile jetable, sur l'hôte (`<dossier du banc>/workspace`) |
+| `ecrire(cheminRelatif, contenu)` | écrit un fichier **neuf** sous ce dossier. Refusés : chemin vide, absolu (POSIX, lecteur, UNC), segment `.` ou `..`, NUL ; chemin résolu, puis chemin réel du dossier parent, hors du dossier ; fichier déjà présent (création exclusive : jamais d'écriture à travers un lien) |
+| `dansLeConteneur(argv)` | `docker compose -p <projet du banc> exec -T cockpit …`, projet revérifié juste avant comme toute commande Compose du banc. Liste **fermée** : `ln -s <cible> <lien>`, `ln <cible> <lien>`, `mkfifo <chemin>` ; lien, chemin et cible d'un lien physique sous `/workspace` seulement ; aucune option de l'appelant, `--` ajouté avant les opérandes. Rend `{ code, sortie }` sans lever : un montage qui refuse un lien ou un tube est une mesure |
+| `emulation` | `appliquer({ theme, contraste, gris, mouvementReduit })` et `retirer()` : `forced-colors: active`, `prefers-reduced-motion: reduce` et achromatopsie, par le protocole CDP sur la session de l'onglet. À utiliser dans l'option `avant` de `ctx.screenshot`, qui repose le thème à chaque capture |
+| `verifierGardes()` | les vérifications des gardes ci-dessus, sans Docker ni navigateur, jouées au début du scénario ; elles ne comptent pas parmi celles de `--gardes` |
+
+Les échecs connus de `it1-ui-arreter.mjs`, `it1-ui-delegation.mjs` et `it1-ui-m25.mjs` quand le navigateur du banc voit `prefers-reduced-motion: reduce` (poste passé en animations réduites, par exemple avec les sessions RDP) ne viennent pas de l'onglet : ils sont traités au rang de fusion par les propriétaires de `e2e/lib/cdp.mjs` et `e2e/scenarios/it1-ui-commun.mjs`.
+
+**Réseau du banc, mesuré par NAV-4** : sur Docker Desktop, le cockpit de la pile `--faux` a une route vers Internet par `e2e-front` (la désactivation de la traduction d'adresse n'y coupe pas la sortie). Ce qui est écrit plus haut, « `internal` (sans Internet) », ne vaut que pour les services reliés au seul réseau interne. Constat transmis (RECAPITULATIF, onglet « Fichiers », constat n° 3).
+<!-- /nav:scenario -->
+
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`
