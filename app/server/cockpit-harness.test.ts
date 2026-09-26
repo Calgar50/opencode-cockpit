@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import type { Classifier } from "./classifier.ts";
 import { startCockpit } from "./test-support/cockpit-harness.ts";
 import { until } from "./test-support/helpers.ts";
@@ -85,5 +85,25 @@ describe("harnais du cockpit", () => {
     await h.close();
     await h.close();
     await assert.rejects(fetch(`${h.fake.url}/global/health`));
+  });
+
+  it("sentinelle d'instance (R106-a) : le nettoyage échoue si le test a ouvert une instance hors de /workspace ; témoin resté dans /workspace : nettoyage vert", async (t) => {
+    // Faux TestContext : ce que startCockpit enregistre par t.after est rejoué ici, comme node:test le ferait en fin de test.
+    const contexte = () => {
+      const after: Array<() => unknown> = [];
+      const nettoyer = async () => {
+        for (const fn of after) await fn();
+      };
+      t.after(() => nettoyer().catch(() => undefined));
+      return { t: { after: (fn: () => unknown) => void after.push(fn) } as unknown as TestContext, nettoyer };
+    };
+    const fautif = contexte();
+    const h = await startCockpit(fautif.t);
+    await h.deps.client.request("GET", "/session/status", { directory: "/ailleurs" });
+    await assert.rejects(fautif.nettoyer(), (err: unknown) => err instanceof AggregateError && /hors de \/workspace : \/ailleurs\b/.test(String(err.errors[0]?.message)));
+    const temoin = contexte();
+    const w = await startCockpit(temoin.t);
+    await w.deps.client.request("GET", "/session/status", { directory: "/workspace/projet" });
+    await temoin.nettoyer();
   });
 });
