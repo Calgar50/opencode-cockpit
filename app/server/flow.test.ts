@@ -657,7 +657,18 @@ describe("L36a pureté : planSteps et receivedFrom viennent de T4", () => {
 
   it("module partagé : imports permis, ni « node: », ni process, ni horloge, ni aléa", () => {
     const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual([...new Set(imports)].sort(), ["./assistant-rules.ts", "./team-limits.ts", "./team-types.ts"]);
+    // <c5:titre-du-cockpit>
+    // F2 (reste c7) : texte-ia.ts (nettoyerTexteIa, le nettoyage que la carte applique avant de découper le livrable) rejoint la
+    // liste. Il est tenu aux mêmes règles que flow.ts, vérifiées sur son propre source : aucun import, ni « node: », ni process,
+    // ni horloge, ni aléa — la pureté de flow.ts reste entière.
+    assert.deepEqual([...new Set(imports)].sort(), ["./assistant-rules.ts", "./team-limits.ts", "./team-types.ts", "./texte-ia.ts"]);
+    const nettoyage = fs.readFileSync(path.join(import.meta.dirname, "shared", "texte-ia.ts"), "utf8");
+    assert.deepEqual([...nettoyage.matchAll(/\b(?:from|import)\s*\(?\s*["'][^"']*["']/g)].map((m) => m[0]), [], "texte-ia.ts n'importe rien");
+    assert.equal(nettoyage.includes('"node:'), false);
+    assert.equal(/\bprocess\./.test(nettoyage), false);
+    assert.equal(/\bDate\.now\(|new Date\(|Math\.random\(/.test(nettoyage), false);
+    assert.match(nettoyage, /export function nettoyerTexteIa\(/);
+    // </c5:titre-du-cockpit>
     assert.equal(source.includes('"node:'), false);
     assert.equal(/\bprocess\./.test(source), false);
     assert.equal(/\bDate\.now\(|new Date\(|Math\.random\(/.test(source), false);

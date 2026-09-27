@@ -3,8 +3,9 @@
 // d'exécution it5, fiche L49 ; D-5-15) : l'EXÉCUTEUR RÉEL des équipes (team-runner.ts, itération 4) est lancé par le harnais du
 // cockpit et le FAUX opencode sur un déroulé « Avis indépendants » (3 avis en même temps, puis une synthèse) dont les titres,
 // les consignes et les réponses sont FICTIFS. Aucune IA n'est appelée, aucune requête ne sort : le faux répond seul.
-// Le fichier produit, `web/pages/assistants/teams/demo-equipe.json`, est rejoué par TeamDemo.tsx dans le lecteur de l'itération 1
-// (DemoPlayer, propriété `demo`) : la bande néon vient des FAITS, la carte d'exécution et le Déroulé de la VUE du lancement.
+// Le fichier produit, `web/pages/assistants/teams/demo-equipe.json`, est rejoué par TeamDemo.tsx dans le lecteur pas à pas de la
+// démonstration passée (DemoPlayer, propriété `demo` ; depuis GF4, avec les mots de « Revoir ») : la bande néon vient des FAITS,
+// la carte d'exécution et le Déroulé de la VUE du lancement.
 //
 // Déterminisme (demo-equipe.test.ts régénère le fichier et le compare à l'octet) : rien de l'horloge ni des identifiants réels
 // n'entre dans le fichier.

@@ -901,7 +901,7 @@ Dans le panneau **Déroulé**, une bascule « Déroulé » / « Chronologie » o
 
 - L'étiquette est permanente : « Démonstration enregistrée : aucune IA n'est appelée », avec « Déroulé enregistré avec des données fictives. »
 - **Aucune requête** n'est émise vers opencode pendant la démonstration : elle lit un fichier du dépôt, pas votre historique.
-- Elle ne se lance **jamais toute seule** : c'est vous qui avancez, moment par moment (« Moment {n} / {total} », le lecteur de l'itération 1). Les courtes transitions de la bande, au passage d'un moment à l'autre, sont coupées si votre système demande un mouvement réduit.
+- Elle ne se lance **jamais toute seule** : c'est vous qui avancez, moment par moment (« {n} / {total} », [Moment précédent], [Moment suivant], les mots de « Revoir »). Elle s'ouvre sur son premier moment, et [Moment suivant] se désactive au dernier. Les courtes transitions de la bande, au passage d'un moment à l'autre, sont coupées si votre système demande un mouvement réduit.
 
 ### Limites à connaître
 

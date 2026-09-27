@@ -1135,6 +1135,35 @@ describe("GF4 (A28 §6.2 d) : le journal replié commence au titre écrit par le
     const premierJet = deliverable(flow, { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: `A.\n\n${TITRE}` }, tours: { redac: 1 } });
     assert.equal(premierJet?.titresAvant, undefined, "aucun journal écrit, aucun nombre");
   });
+
+  it("F2 (reste c7) : le nombre figé est compté sur le texte que la carte découpe — retour chariot, CRLF, séquence de terminal — et, par le vrai chemin du message déposé, le texte de l'auteur reste entier", () => {
+    // La carte ne découpe pas le texte brut de l'auteur : la transcription et la carte le nettoient d'abord (nettoyerTexteIa :
+    // retours chariot, séquences de terminal et caractères de commande retirés). Un titre que la carte voit doit être compté.
+    const CR = String.fromCharCode(13);
+    const ESC = String.fromCharCode(27);
+    const montre = ["Intro.", TITRE, "Section de l'auteur."].join("\n\n");
+    for (const [cas, auteur] of [
+      ["retour chariot isolé avant le titre", `Intro.\n${CR}\n${TITRE}\n\nSection de l'auteur.`],
+      ["texte entier en CRLF", montre.replaceAll("\n", `${CR}\n`)],
+      ["séquence de terminal devant le titre", `Intro.\n\n${ESC}[0m${TITRE}\n\nSection de l'auteur.`],
+    ] as const) {
+      const livrable = livrableDe(auteur);
+      assert.equal(livrable.titresAvant, 1, `${cas} : le titre de l'auteur, tel que la carte le lit, est compté`);
+      // Le vrai chemin : deliverable → injectionText → teamInjectionOf → modeleResultat, dépôt figé avec le nombre.
+      const vue = vueDe(depose(livrable.titresAvant));
+      const message = injectionText("resultat", { runId: vue.id, equipe: vue.titre, texte: livrable.texte });
+      const injection = teamInjectionOf({ info: { id: "msg_depose", sessionID: vue.rootId, role: "user" }, parts: [{ type: "text", text: message }] }, [vue]);
+      assert.ok(injection !== null && injection.kind === "resultat", `${cas} : message du cockpit reconnu par son identifiant`);
+      const modele = modeleResultat(injection.run, injection.texte, true, injection.kind);
+      assert.equal(modele.texte, montre, `${cas} : la dernière version de l'auteur, nettoyée et ENTIÈRE, section « Journal de relecture » comprise`);
+      assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, cas);
+      assert.ok(modele.journal?.texte.startsWith(TOUR_1), `${cas} : le journal replié est celui du cockpit, jamais la section de l'auteur`);
+      assert.deepEqual(modele.notes, [], cas);
+    }
+    // Témoin sans caractère retiré : rien ne change.
+    assert.equal(livrableDe(montre).titresAvant, 1);
+    assert.equal(FLOW.titresDuJournal(`${ESC}[0m${TITRE}`), 1, "le comptage lit la forme montrée");
+  });
 });
 // </c5:titre-du-cockpit>
 

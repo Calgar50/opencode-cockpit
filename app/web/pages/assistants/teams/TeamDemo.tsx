@@ -1,14 +1,16 @@
 // Propriétaire : L49.
 // Démonstration d'équipe enregistrée (spécification §5.3 l.896, §5.4 l.909, §5.9 l.1013-1017, §6 l.1064, JP-9 ; D-5-15) :
 // le déroulé « Avis indépendants » joué à l'avance par l'exécuteur de l'itération 4 sur le faux opencode
-// (server/test-support/gen-demo-equipe.ts) est rejoué moment par moment dans le lecteur de l'itération 1 (DemoPlayer, propriété
-// `demo`), qui dessine la bande néon ; sous la bande, ce composant dessine la carte d'exécution et le Déroulé de l'itération 4.
+// (server/test-support/gen-demo-equipe.ts) est rejoué moment par moment dans le lecteur pas à pas de la démonstration passée
+// (DemoPlayer, propriété `demo` ; depuis la grande fusion GF4, avec les mots de « Revoir », le lecteur de l'itération 1 ayant
+// été remplacé par la 3D), qui dessine la bande néon ; sous la bande, ce composant dessine la carte d'exécution et le Déroulé
+// de l'itération 4.
 // - AUCUNE IA appelée, AUCUNE requête : tout vient de `demo-equipe.json`, livré avec l'interface. Ce module n'importe ni le
 //   client de l'API (web/lib/api*.ts), ni le proxy, ni fetch : seulement des modèles PURS (team-view-model.ts, deroule-model.ts)
 //   et les textes de la construction (demo-equipe.test.ts le vérifie par un examen statique des imports).
 // - Données FICTIVES : l'équipe, ses étapes, ses assistants et leurs réponses sont inventés, et les heures sont celles des
 //   moments, pas celles d'un enregistrement réel. La ligne « Déroulé enregistré avec des données fictives. » le dit.
-// - Pas à pas : le curseur, [Moment précédent] et [Moment suivant] du lecteur, en « Moment n / N » — jamais le mot « étape »,
+// - Pas à pas : le curseur, [Moment précédent] et [Moment suivant] du lecteur, en « n / N » — jamais le mot « étape »,
 //   réservé aux étapes de l'équipe. AUCUNE lecture automatique. Les transitions de la bande sont celles de NeonCarte (NeonBand,
 //   `useTransitions`, environ 900 ms à chaque signe qui apparaît ou change d'un moment à l'autre) : le mouvement réduit les coupe.
 // - Mode Simple : ce composant n'est monté que par l'onglet Équipes, qui suit `ouvertesEnSimple` (U1, D-5-24). Il ne lit
@@ -138,7 +140,7 @@ export interface TeamDemoProps {
   onClose: () => void;
 }
 
-/** Démonstration d'équipe : le lecteur de l'itération 1, nourri par la fixture, avec la carte et le Déroulé sous la bande. */
+/** Démonstration d'équipe : le lecteur de la démonstration passée, nourri par la fixture, avec la carte et le Déroulé sous la bande. */
 export function TeamDemo({ advanced, onClose }: TeamDemoProps) {
   return (
     <DemoPlayer

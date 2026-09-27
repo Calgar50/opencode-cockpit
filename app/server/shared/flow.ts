@@ -40,6 +40,10 @@ import {
   TEAM_TEXT_LIMITS,
   toursDe,
 } from "./team-limits.ts";
+// <c5:titre-du-cockpit>
+// F2 (reste c7) : le nombre de titres figé au dépôt est compté sur le texte nettoyé, celui que la carte découpe.
+import { nettoyerTexteIa } from "./texte-ia.ts";
+// </c5:titre-du-cockpit>
 import type {
   Flow,
   FlowBlock,
@@ -865,10 +869,16 @@ export interface FlowDeliverable {
 }
 
 // <c5:titre-du-cockpit>
-/** GF4 (A28, §6.2 d) : blocs d'un texte qui sont, à eux seuls, le titre « ## Journal de relecture » (comme la carte les lit). */
+/**
+ * GF4 (A28, §6.2 d) : blocs d'un texte qui sont, à eux seuls, le titre « ## Journal de relecture » (comme la carte les lit).
+ * F2 (reste c7) : compté sur la forme que la carte DÉCOUPE, jamais sur le texte brut de l'auteur — la transcription et la carte
+ * le nettoient d'abord (nettoyerTexteIa : retours chariot, séquences de terminal et caractères de commande retirés). Sans cela,
+ * un « \r » isolé, un texte en CRLF ou une séquence de terminal devant le titre de l'auteur le laissaient hors du compte, et la
+ * carte repliait à partir de lui.
+ */
 export function titresDuJournal(texte: string): number {
   const entete = `## ${DELIVERABLE_TEXTS.journal}`;
-  return (typeof texte === "string" ? texte : "").split("\n\n").filter((bloc) => bloc.trim() === entete).length;
+  return nettoyerTexteIa(texte).split("\n\n").filter((bloc) => bloc.trim() === entete).length;
 }
 // </c5:titre-du-cockpit>
 

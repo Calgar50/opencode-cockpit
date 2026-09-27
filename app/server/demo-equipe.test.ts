@@ -26,6 +26,9 @@ import { factProblem } from "./shared/activity-facts.ts";
 import type { ActivityFact } from "./shared/activity-types.ts";
 import { TEXTES as TEXTES_CONSTRUCTION } from "./shared/construction-texts.ts";
 import { TEXTES as TEXTES_NEON } from "./shared/neon-texts.ts";
+// <c5:lecteur-de-la-demonstration>
+import { TEXTES as TEXTES_REVOIR } from "./shared/revoir-texts.ts";
+// </c5:lecteur-de-la-demonstration>
 import type { TeamRunView, TeamsListResponse } from "./shared/team-types.ts";
 import {
   canoniserDemoEquipe,
@@ -505,3 +508,55 @@ describe("démonstration d'équipe : mouvement et textes (§5.5, §4.3)", () => 
     assert.match(source, /TEXTES\.partout\.demonstration/);
   });
 });
+
+// <c5:lecteur-de-la-demonstration>
+// --- F2 (vague 1) : le lecteur réel de la démonstration d'équipe, et la documentation qui le décrit ----------------------------
+// Depuis GF4, la démonstration d'équipe passe par le lecteur pas à pas de la démonstration passée (DemonstrationPassee,
+// DemoPlayer.tsx), avec les mots de « Revoir » : le lecteur de l'itération 1, que L34 a remplacé, n'existe plus. La
+// documentation doit dire ce lecteur-là : un lecteur qui chercherait « Moment 1 / N » ne le trouverait pas.
+
+describe("démonstration d'équipe : le lecteur réel, et la documentation qui le décrit (F2, après GF4)", () => {
+  const R = TEXTES_REVOIR.partout;
+  const DEPOT = path.join(APP_DIR, "..");
+  const document = (...relatif: string[]) => lire(path.join(DEPOT, ...relatif)).replaceAll("\r\n", "\n");
+  /** Sous-section « ### {titre} » d'un document Markdown, jusqu'au titre suivant de niveau 1 à 3. */
+  const sousSection = (texte: string, titre: string): string => {
+    const debut = texte.indexOf(`\n### ${titre}\n`);
+    assert.ok(debut >= 0, `sous-section « ${titre} » introuvable`);
+    const suite = texte.slice(debut + 1);
+    const fin = suite.slice(1).search(/\n#{1,3} /);
+    return fin === -1 ? suite : suite.slice(0, fin + 1);
+  };
+
+  it("le lecteur de la démonstration passée lit les libellés de « Revoir » (« {n} / {total} », [Moment précédent], [Moment suivant]), jamais le mot « étape »", () => {
+    assert.equal(R.moments, "{n} / {total}");
+    for (const texte of [R.moments, R.momentsAria, R.precedent, R.suivant]) assert.doesNotMatch(texte, /[ÉéEe]tape/, texte);
+    const lecteur = lire(DEMO_PLAYER);
+    assert.match(lecteur, /\nconst T = REVOIR\.partout;\n/, "T désigne les textes de « Revoir » (revoir-texts.ts)");
+    const debut = lecteur.indexOf("function DemonstrationPassee(");
+    assert.ok(debut >= 0, "lecteur de la démonstration passée introuvable dans DemoPlayer.tsx");
+    const passee = lecteur.slice(debut);
+    for (const cle of ["moments", "momentsAria", "precedent", "suivant"]) assert.match(passee, new RegExp(`\\bT\\.${cle}\\b`), `T.${cle} lu par le lecteur`);
+    assert.doesNotMatch(passee, /\blecteur\.(?:moment|recommencer)\b/, "aucun libellé du lecteur de l'itération 1");
+  });
+
+  it("README, « Démonstration d'équipe » : le lecteur réel est décrit, jamais « le lecteur de l'itération 1 » ni « Moment {n} / {total} »", () => {
+    const section = sousSection(document("README.md"), "Démonstration d'équipe");
+    assert.match(section, /Elle ne se lance \*\*jamais toute seule\*\*/, "la bonne sous-section est lue");
+    assert.ok(section.includes(`« ${R.moments} »`), "compteur des moments de « Revoir » cité");
+    assert.ok(section.includes(`[${R.precedent}]`) && section.includes(`[${R.suivant}]`), "commandes du lecteur citées");
+    assert.ok(!section.includes("lecteur de l'itération 1"), "le lecteur de l'itération 1 n'existe plus");
+    assert.ok(!section.includes(TEXTES_NEON.partout.lecteur.moment), "« Moment {n} / {total} » n'est affiché nulle part dans la démonstration d'équipe");
+  });
+
+  it("RECAPITULATIF : la démonstration d'équipe ne tourne plus « sur le lecteur de l'itération 1 », et le paragraphe GF4 nomme ce que la fusion a réécrit", () => {
+    const recap = document("docs", "RECAPITULATIF.md");
+    assert.doesNotMatch(recap, /démonstration d'équipe tourne sur le lecteur de l'itération 1/);
+    assert.doesNotMatch(recap, /les libellés du lecteur de l'itération 1, qui parlent de moments/);
+    const gf4 = recap.split("\n").find((ligne) => ligne.startsWith("**Grande fusion, construction (GF4"));
+    assert.ok(gf4, "paragraphe GF4 introuvable");
+    assert.doesNotMatch(gf4, /Aucune ligne n'est perdue\s*:/, "affirmation sans réserve, démentie par la réécriture du lecteur de la démonstration passée");
+    for (const nomme of ["DemoPlayer.tsx", "team-runner.ts"]) assert.ok(gf4.includes(nomme), `${nomme} nommé parmi ce que la fusion n'a pas repris tel quel`);
+  });
+});
+// </c5:lecteur-de-la-demonstration>
