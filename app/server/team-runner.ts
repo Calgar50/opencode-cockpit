@@ -311,11 +311,14 @@ function ecritAuDepot(genre: "resultat" | "resultats-partiels", livrable: FlowDe
   const notes = genre === "resultat" ? (livrable?.notes ?? []) : [];
   const conclue = notes.find((note) => note.startsWith(NON_CONCLUE_AVANT) && note.endsWith(NON_CONCLUE_APRES));
   const tours = conclue === undefined ? Number.NaN : Number(conclue.slice(NON_CONCLUE_AVANT.length, conclue.length - NON_CONCLUE_APRES.length));
+  const journal = genre === "resultat" && livrable?.journal === true;
   return {
     genre,
-    journal: genre === "resultat" && livrable?.journal === true,
+    journal,
     nonRelue: notes.includes(DELIVERABLE_TEXTS.nonRelue),
     nonConclue: Number.isSafeInteger(tours) && tours > 0 ? tours : null,
+    // GF4 (A28, §6.2 d, reste c7) : titres « Journal de relecture » de l'auteur avant celui du cockpit — un nombre, jamais un texte.
+    ...(journal ? { titresAvant: livrable?.titresAvant ?? 0 } : {}),
   };
 }
 
@@ -334,7 +337,9 @@ function depotDesEvenements(events: readonly { kind: string; data: string }[], m
     const genre = data.genre === "resultat" || data.genre === "resultats-partiels" ? data.genre : null;
     if (genre === null || typeof data.journal !== "boolean" || typeof data.nonRelue !== "boolean") return null;
     const tours = typeof data.nonConclue === "number" && Number.isSafeInteger(data.nonConclue) && data.nonConclue > 0 ? data.nonConclue : null;
-    return { messageId, genre, journal: data.journal, nonRelue: data.nonRelue, nonConclue: tours };
+    // Reste c7 : absent ou illisible → la carte repère le titre du cockpit par sa place.
+    const titres = typeof data.titresAvant === "number" && Number.isSafeInteger(data.titresAvant) && data.titresAvant >= 0 ? data.titresAvant : null;
+    return { messageId, genre, journal: data.journal, nonRelue: data.nonRelue, nonConclue: tours, ...(titres === null ? {} : { titresAvant: titres }) };
   }
   return null;
 }

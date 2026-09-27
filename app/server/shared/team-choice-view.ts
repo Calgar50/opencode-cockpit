@@ -268,8 +268,15 @@ export function estNoteRelecture(ligne: string): boolean {
  * Grande fusion (GF4, A27, §6.2 c) : `options.journal` à false dit que le cockpit n'a écrit AUCUN journal sous ce livrable (premier
  * jet jamais relu, seule la note « Non relue… » en dessous) : les notes sortent de la fin, et rien d'autre n'est découpé — un
  * titre « ## Journal de relecture » écrit par l'IA reste dans le texte. Absent : comportement d'avant (journal écrit).
+ * Reste c7 (GF4, A28, §6.2 d) : le repli commence au titre que le COCKPIT a écrit, jamais au premier titre venu — une dernière
+ * version de l'auteur qui porte elle-même un titre « ## Journal de relecture » n'est plus repliée avec le journal.
+ * `options.titresAvant` (figé au dépôt) : titres de l'auteur avant celui du cockpit, qui est le suivant. Inconnu : le titre du
+ * cockpit est repéré par sa PLACE, le premier titre suivi de l'en-tête de son premier tour (« ### tour 1 · À reprendre » ou
+ * « … · Rien à reprendre »), que le cockpit écrit toujours juste après lui. Limite dite : un auteur qui recopie ce titre ET
+ * cet en-tête, dans un message déposé sans le nombre figé, fait encore replier la suite de son texte (aucune note n'en est
+ * signée à tort : elles ne sortent qu'à l'octet, en fin de texte).
  */
-export function journalRelecture(livrable: string, notesEcrites: readonly string[], options: { journal?: boolean } = {}): JournalRelecture {
+export function journalRelecture(livrable: string, notesEcrites: readonly string[], options: { journal?: boolean; titresAvant?: number } = {}): JournalRelecture {
   const texte = typeof livrable === "string" ? livrable : "";
   const blocs = texte.split("\n\n");
   const attendues: readonly string[] = Array.isArray(notesEcrites) ? notesEcrites : [];
@@ -280,7 +287,16 @@ export function journalRelecture(livrable: string, notesEcrites: readonly string
   if (terminent) blocs.splice(blocs.length - notes.length);
   if (options.journal === false) return { resultat: blocs.join("\n\n"), titre: null, texte: "", notes };
   const entete = `## ${E.relecture.journal}`;
-  const debut = blocs.findIndex((bloc) => bloc.trim() === entete);
+  // <c5:titre-du-cockpit>
+  const titres = blocs.flatMap((bloc, index) => (bloc.trim() === entete ? [index] : []));
+  const premierTour = `### ${remplir(E.relecture.tour, { n: "1" })} · `;
+  const suiviDuPremierTour = (index: number): boolean => {
+    const suivant = (blocs[index + 1] ?? "").trim();
+    return suivant === `${premierTour}${E.relecture.aReprendre}` || suivant === `${premierTour}${E.relecture.rienAReprendre}`;
+  };
+  const avant = options.titresAvant;
+  const debut = typeof avant === "number" && Number.isSafeInteger(avant) && avant >= 0 ? (titres[avant] ?? -1) : (titres.find(suiviDuPremierTour) ?? -1);
+  // </c5:titre-du-cockpit>
   if (debut === -1) return { resultat: blocs.join("\n\n"), titre: null, texte: "", notes };
   return {
     resultat: blocs.slice(0, debut).join("\n\n"),

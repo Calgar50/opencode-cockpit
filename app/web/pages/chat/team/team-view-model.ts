@@ -628,7 +628,7 @@ function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
  *      n'est connu que d'une équipe TERMINÉE, qui n'a pu finir sur « à reprendre » qu'au dernier tour : ailleurs, « Relecture
  *      non conclue… » n'est jamais signée.
  */
-function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: boolean; notes: string[] } {
+function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: boolean; notes: string[]; titresAvant?: number } {
   const rien = { journal: false, notes: [] };
   // <c5:depot-fige>
   // Grande fusion (GF4, A28 C6) : pour le message DÉPOSÉ (`resultMessageId`), ce que le cockpit y a écrit a été figé au dépôt.
@@ -641,7 +641,8 @@ function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: b
       ...(depot.nonRelue ? [C5.relecture.nonRelue] : []),
       ...(depot.nonConclue === null ? [] : [remplir(C5.relecture.nonConclue, { n: String(depot.nonConclue) })]),
     ];
-    return { journal: depot.journal, notes };
+    // Reste c7 (A28, §6.2 d) : le titre du journal du cockpit, repéré par le nombre de titres de l'auteur figé au dépôt.
+    return { journal: depot.journal, notes, ...(depot.titresAvant === undefined ? {} : { titresAvant: depot.titresAvant }) };
   }
   // </c5:depot-fige>
   if (genre !== "resultat" || run.steps.length === 0) return rien;
@@ -710,7 +711,7 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
   const livrable = texte(texteResultat, FLOW_LIMITS.relaisCaracteres);
   const ecrit = ecritParLeCockpit(run, genre);
   // GF4 (A27, §6.2 c) : des notes SANS journal (premier jet jamais relu) sortent aussi de la fin du texte, sans rien replier.
-  const journal = ecrit.journal || ecrit.notes.length > 0 ? journalRelecture(livrable, ecrit.notes, { journal: ecrit.journal }) : { resultat: livrable, titre: null, texte: "", notes: [] };
+  const journal = ecrit.journal || ecrit.notes.length > 0 ? journalRelecture(livrable, ecrit.notes, { journal: ecrit.journal, titresAvant: ecrit.titresAvant }) : { resultat: livrable, titre: null, texte: "", notes: [] };
   return {
     titre: remplir(P.resultat.titre, { equipe: texte(run.titre, TITRE_MAX) }),
     redige: remplir(P.resultat.redige, {

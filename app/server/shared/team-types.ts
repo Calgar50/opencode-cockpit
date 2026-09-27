@@ -437,6 +437,11 @@ export interface TeamRunView {
     nonRelue: boolean;
     /** Tours de la note « Relecture non conclue après {n} tours… », null quand elle n'est pas écrite. */
     nonConclue: number | null;
+    /**
+     * Reste c7 (A28, §6.2 d) : titres « ## Journal de relecture » écrits par l'AUTEUR avant celui du cockpit, quand le journal
+     * est écrit ; absent sinon (la carte repère alors le titre du cockpit par sa place).
+     */
+    titresAvant?: number;
   };
   // </c5:depot-fige>
   createdAt: number;

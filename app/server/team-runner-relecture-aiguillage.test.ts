@@ -846,9 +846,9 @@ describe("GF4 (A28 C6) : l'exécuteur fige au dépôt ce qu'il a écrit dans le 
     const { runId } = started.json<TeamRunStarted>();
     const vue = await ctx.waitRun(runId, (v) => v.state === "terminee", "relecture au plafond");
     assert.ok(vue.resultMessageId !== null, "livrable injecté");
-    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultat", journal: true, nonRelue: true, nonConclue: 2 });
+    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultat", journal: true, nonRelue: true, nonConclue: 2, titresAvant: 0 });
     const data = donneesDuDepot(h, runId, "livraison");
-    assert.deepEqual(Object.keys(data).toSorted(), ["etape", "genre", "journal", "messageId", "nonConclue", "nonRelue"]);
+    assert.deepEqual(Object.keys(data).toSorted(), ["etape", "genre", "journal", "messageId", "nonConclue", "nonRelue", "titresAvant"]);
     for (const valeur of Object.values(data)) assert.ok(typeof valeur !== "string" || !/Version|Faux|relecture/i.test(valeur), `texte dans l'événement : ${String(valeur)}`);
   });
 
@@ -1913,7 +1913,7 @@ describe("GF4 (A27/A28), « C2 après une relance » : la relecture relancée ne
     assert.equal(texte.includes("Révision de trop."), false);
     assert.equal(texte.includes(`${DELIVERABLE_TEXTS.tour.replace("{n}", "2")} ·`), false, "le journal ne porte que le tour de la tentative courante");
     assert.equal(texte.includes(DELIVERABLE_TEXTS.nonRelue), false, "aucune note : la tentative courante a conclu");
-    assert.deepEqual(ctx.view(runId).depot, { messageId: ctx.view(runId).resultMessageId, genre: "resultat", journal: true, nonRelue: false, nonConclue: null });
+    assert.deepEqual(ctx.view(runId).depot, { messageId: ctx.view(runId).resultMessageId, genre: "resultat", journal: true, nonRelue: false, nonConclue: null, titresAvant: 0 });
     h.assertNoGlobalRestart();
   });
 });
@@ -2100,6 +2100,29 @@ describe("GF4 (A27 §6.2 c) : sur l'exécuteur réel, [Ajouter les résultats] d
   });
 });
 // </c5:non-relue>
+
+// <c5:titre-du-cockpit>
+// --- Grande fusion (GF4, A28, constats-5b §6.2 d) : le dépôt fige combien de titres « Journal de relecture » l'auteur a écrits ----
+
+describe("GF4 (A28 §6.2 d) : sur l'exécuteur réel, le dépôt fige les titres « Journal de relecture » de l'auteur", () => {
+  it("dernière version de l'auteur avec sa propre section « Journal de relecture », relecture conclue : titresAvant = 1, un nombre, jamais le texte", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow() });
+    const { h } = ctx;
+    const auteur = ["# Procédure", `## ${DELIVERABLE_TEXTS.journal}`, "Chaque intervention est notée ici."].join("\n\n");
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "redac", { text: auteur, cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec", { text: "Bien.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const started = await ctx.run();
+    const { runId, rootId } = started.json<TeamRunStarted>();
+    const vue = await ctx.waitRun(runId, (v) => v.state === "terminee", "relecture conclue");
+    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultat", journal: true, nonRelue: false, nonConclue: null, titresAvant: 1 });
+    const texte = livraison(h, rootId);
+    assert.equal(texte.split(`## ${DELIVERABLE_TEXTS.journal}`).length - 1, 2, "deux titres dans le message : celui de l'auteur, puis celui du cockpit");
+    const row = h.db.prepare("SELECT data FROM team_run_events WHERE run_id = ? AND kind = 'livraison'").get(runId) as { data: string };
+    assert.equal(JSON.parse(row.data).titresAvant, 1);
+    assert.doesNotMatch(row.data, /Procédure|intervention/, "aucun texte de message dans l'événement");
+  });
+});
+// </c5:titre-du-cockpit>
 
 describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
   it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {

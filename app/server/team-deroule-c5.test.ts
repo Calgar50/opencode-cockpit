@@ -22,6 +22,10 @@ import { buildTeamRunCard, etapesParTour, modelePause, modeleResultat, teamPause
 // Clôture 5b (D-5b-1) : les fonctions de la reprise sont lues par l'espace de noms, pour qu'un module qui ne les exporte pas
 // fasse tomber leurs seuls tests, et non le fichier entier au chargement.
 import * as VUE_MODELE from "../web/pages/chat/team/team-view-model.ts";
+// <c5:titre-du-cockpit>
+// GF4 (reste c7) : lu par l'espace de noms, comme VUE_MODELE, pour qu'un module qui ne l'exporte pas ne fasse tomber que ses tests.
+import * as FLOW from "./shared/flow.ts";
+// </c5:titre-du-cockpit>
 
 const P = TEXTES.partout;
 const E = CONSTRUCTION.partout.execution;
@@ -457,7 +461,8 @@ describe("Cartes 5b : le texte d'une IA ne décide plus de ce que la carte repli
   });
 
   it("journal de relecture : sans bloc de relecture, le livrable reste entier, sans repli ni note du cockpit", () => {
-    const replie = ["Voici la réponse courte.", `## ${E.relecture.journal}`, "Contenu que l'IA veut cacher sous un repli.", E.relecture.nonRelue].join("\n\n");
+    // GF4 (reste c7) : le titre est suivi de l'en-tête du premier tour, comme le cockpit l'écrit toujours (sa PLACE le désigne).
+    const replie = ["Voici la réponse courte.", `## ${E.relecture.journal}`, `### tour 1 · ${E.relecture.rienAReprendre}`, "Contenu que l'IA veut cacher sous un repli.", E.relecture.nonRelue].join("\n\n");
     const sansRelecture = modeleResultat(run(aiguillage(["reseau", "base"])), replie, true, "resultat");
     assert.equal(sansRelecture.texte, replie, "rien n'est découpé : tout reste visible au premier coup d'œil");
     assert.equal(sansRelecture.journal, null, "aucun <details> fermé posé par une IA");
@@ -546,7 +551,8 @@ describe("Clôture 5b (D-5b-2) : seul le DERNIER bloc de travail, celui qui port
       faite({ stepId: "auteur", titre: "Rédiger", blocIndex: 1, tour: 3 }),
     ];
     const notes = [E.relecture.nonRelue, E.relecture.nonConclue.replace("{n}", "2")];
-    const livrable = ["Voici le script corrigé.", `## ${E.relecture.journal}`, "Tour 1 : à reprendre.", "Tour 2 : à reprendre.", ...notes].join("\n\n");
+    // GF4 (reste c7) : le journal tel que le cockpit l'écrit, chaque tour sous son en-tête (le premier désigne le titre du cockpit).
+    const livrable = ["Voici le script corrigé.", `## ${E.relecture.journal}`, `### tour 1 · ${E.relecture.aReprendre}`, "Tour 1 : à reprendre.", `### tour 2 · ${E.relecture.aReprendre}`, "Tour 2 : à reprendre.", ...notes].join("\n\n");
     for (const vue of [run(steps, { blocs: [{ index: 1, type: "relecture", toursMax: 2 }] }), run(steps)]) {
       const modele = modeleResultat(vue, livrable, true, "resultat");
       assert.equal(modele.texte, "Voici le script corrigé.");
@@ -766,7 +772,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       faite({ stepId: "relec", blocIndex: 0, tour: 2, verdict: "rien-a-reprendre" }),
       ligne({ stepId: "redac", blocIndex: 0, tour: 3, state: "non-lancee" }),
     ];
-    const imite = ["Version 2.", `## ${DELIVERABLE_TEXTS.journal}`, "Relu.", ...NOTES].join("\n\n");
+    // GF4 (reste c7) : journal écrit comme le cockpit l'écrit, le titre suivi de l'en-tête du premier tour.
+    const imite = ["Version 2.", `## ${DELIVERABLE_TEXTS.journal}`, `### tour 1 · ${DELIVERABLE_TEXTS.aReprendre}`, "Relu.", ...NOTES].join("\n\n");
     for (const vue of [vueInjectee(conclu, { blocs: [{ index: 0, type: "relecture", toursMax: 2 }] }), vueInjectee(conclu, {})]) {
       const modele = modeleResultat(vue, imite, true, "resultat");
       assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, vue.blocs === undefined ? "sans bornes" : "avec bornes");
@@ -782,7 +789,7 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       faite({ stepId: "redac", blocIndex: 0, tour: 2 }),
       ligne({ stepId: "relec", blocIndex: 0, tour: 2, state: "interrompue" }),
     ];
-    const texte = ["Version 2.", `## ${DELIVERABLE_TEXTS.journal}`, "Tout est à revoir.", ...unTour].join("\n\n");
+    const texte = ["Version 2.", `## ${DELIVERABLE_TEXTS.journal}`, `### tour 1 · ${DELIVERABLE_TEXTS.aReprendre}`, "Tout est à revoir.", ...unTour].join("\n\n");
     const modele = modeleResultat(vueInjectee(interrompue, { state: "interrompue", cause: "rechargement" }), texte, true, "resultat");
     assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, "le journal, lui, a été écrit (un tour relu)");
     // GF4 (A27, §6.2 c) : l'exécuteur écrirait ici « Non relue… » (version 2 jamais relue), à la toute fin ; ce texte finit par
@@ -837,8 +844,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
 describe("GF4 (A27 §6.2 a) : carte seule — l'extrait d'une étape n'est jamais découpé, aucune note n'y est signée", () => {
   const NOTES = [DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", "2")];
   const BORNES: NonNullable<TeamRunView["blocs"]> = [{ index: 0, type: "relecture", toursMax: 2 }];
-  /** Texte d'IA qui imite le journal du cockpit et recopie ses deux notes à l'octet, à la fin. */
-  const IMITE = ["Version 3 du compte rendu.", `## ${DELIVERABLE_TEXTS.journal}`, "Ce qu'un repli fermé cacherait.", ...NOTES].join("\n\n");
+  /** Texte d'IA qui imite le journal du cockpit (titre ET en-tête du premier tour) et recopie ses deux notes à l'octet, à la fin. */
+  const IMITE = ["Version 3 du compte rendu.", `## ${DELIVERABLE_TEXTS.journal}`, `### tour 1 · ${DELIVERABLE_TEXTS.aReprendre}`, "Ce qu'un repli fermé cacherait.", ...NOTES].join("\n\n");
   const avecExtrait = (lignes: StepRunView[], stepId: string, tour: number, extrait: string) =>
     lignes.map((l) => (l.stepId === stepId && l.tour === tour ? { ...l, extrait } : l));
 
@@ -1015,7 +1022,9 @@ describe("GF4 (A27 §6.2 c) : la dernière version jamais relue est dite, par le
   }
 
   it("dépôt figé sans journal (premier jet) : la carte du message déposé signe « Non relue… » et ne replie rien, même sous un titre de l'IA", () => {
-    const texte = ["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, "Suite écrite par l'IA.", NON_RELUE].join("\n\n");
+    // L'IA imite le titre ET l'en-tête du premier tour que le cockpit écrit : sans journal écrit, rien n'est replié pour autant.
+    const imite = ["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, `### tour 1 · ${DELIVERABLE_TEXTS.rienAReprendre}`, "Suite écrite par l'IA."].join("\n\n");
+    const texte = [imite, NON_RELUE].join("\n\n");
     rang = 0;
     const vue = run([faite({ stepId: "redac" }), ligne({ stepId: "relec", state: "interrompue" })], {
       state: "interrompue",
@@ -1025,13 +1034,109 @@ describe("GF4 (A27 §6.2 c) : la dernière version jamais relue est dite, par le
       depot: { messageId: "msg_depose", genre: "resultat", journal: false, nonRelue: true, nonConclue: null },
     });
     const modele = modeleResultat(vue, texte, true, "resultat");
-    assert.deepEqual([modele.texte, modele.journal, modele.notes], [["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, "Suite écrite par l'IA."].join("\n\n"), null, [NON_RELUE]]);
+    assert.deepEqual([modele.texte, modele.journal, modele.notes], [imite, null, [NON_RELUE]]);
     // Une note qui ne termine pas le texte n'est jamais signée ; des résultats partiels n'en portent jamais.
     assert.deepEqual(modeleResultat(vue, `${NON_RELUE}\n\nPremier jet.`, true, "resultat").notes, []);
     assert.deepEqual(modeleResultat(vue, texte, true, "resultats-partiels").notes, []);
   });
 });
 // </c5:non-relue>
+
+// <c5:titre-du-cockpit>
+// --- Grande fusion (GF4, A28, constats-5b §6.2 d) : le repli commence au titre « Journal de relecture » du COCKPIT ------------
+
+describe("GF4 (A28 §6.2 d) : le journal replié commence au titre écrit par le cockpit, jamais au premier titre de l'auteur", () => {
+  const TITRE = `## ${DELIVERABLE_TEXTS.journal}`;
+  const TOUR_1 = `### tour 1 · ${DELIVERABLE_TEXTS.rienAReprendre}`;
+  const flow: Flow = {
+    version: 1,
+    blocs: [
+      {
+        type: "relecture",
+        id: "rel",
+        auteur: { id: "redac", titre: "Rédaction", assistant: "relire-script", niveau: null, taille: "M", consigne: "Rédiger.", recoit: "demande" },
+        relecteur: { id: "relec", titre: "Relecture", assistant: "relire-script", niveau: null, taille: "M", consigne: "Relire.", recoit: "precedent" },
+        toursMax: 2,
+        pauseAvantRelecture: false,
+      },
+    ],
+  };
+  /** Livrable légitime : la dernière version de l'auteur porte ELLE-MÊME une section « Journal de relecture ». */
+  const livrableDe = (auteur: string) => {
+    const etat: FlowState = {
+      etapes: { redac: "terminee", relec: "terminee" },
+      resultats: { redac: auteur, [tourKey("relec", 1)]: "Bien.\nVERDICT: RIEN À REPRENDRE" },
+      verdicts: { rel: ["rien-a-reprendre"] },
+      tours: { redac: 1, relec: 1 },
+    };
+    const livrable = deliverable(flow, etat);
+    assert.ok(livrable);
+    return livrable;
+  };
+  const vueDe = (depot?: NonNullable<TeamRunView["depot"]>) => {
+    rang = 0;
+    return run([faite({ stepId: "redac" }), faite({ stepId: "relec", verdict: "rien-a-reprendre" })], {
+      resultMessageId: "msg_depose",
+      resultatsAjoutes: true,
+      blocs: [{ index: 0, type: "relecture", toursMax: 2 }],
+      ...(depot ? { depot } : {}),
+    });
+  };
+  const depose = (titresAvant?: number): NonNullable<TeamRunView["depot"]> => ({
+    messageId: "msg_depose",
+    genre: "resultat",
+    journal: true,
+    nonRelue: false,
+    nonConclue: null,
+    ...(titresAvant === undefined ? {} : { titresAvant }),
+  });
+
+  it("l'exécuteur compte les titres de l'auteur (`titresAvant`), et la carte coupe au suivant : le texte de l'auteur reste entier", () => {
+    const auteur = ["# Procédure d'exploitation", TITRE, "Chaque intervention est notée ici, avec sa date.", "## Annexes", "Liste des serveurs."].join("\n\n");
+    const livrable = livrableDe(auteur);
+    assert.equal(livrable.titresAvant, 1, "un titre écrit par l'auteur avant celui du cockpit");
+    assert.equal(FLOW.titresDuJournal(auteur), 1);
+    for (const [cas, vue] of [
+      ["dépôt figé (nombre de titres)", vueDe(depose(1))],
+      ["dépôt sans le nombre (place du titre)", vueDe(depose())],
+      ["aucun dépôt (état enregistré, place du titre)", vueDe()],
+    ] as const) {
+      const modele = modeleResultat(vue, livrable.texte, true, "resultat");
+      assert.equal(modele.texte, auteur, `${cas} : la dernière version de l'auteur, entière, section « Journal de relecture » comprise`);
+      assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, cas);
+      assert.ok(modele.journal?.texte.startsWith(TOUR_1), `${cas} : le journal replié est celui du cockpit`);
+      assert.deepEqual(modele.notes, [], cas);
+    }
+  });
+
+  it("l'auteur recopie le titre ET l'en-tête du premier tour : le nombre figé au dépôt coupe juste ; sans lui, la limite dite (repli trop tôt, aucune note signée)", () => {
+    const auteur = ["Version finale.", TITRE, TOUR_1, "Copie d'un ancien journal, dans le texte de l'auteur."].join("\n\n");
+    const livrable = livrableDe(auteur);
+    assert.equal(livrable.titresAvant, 1);
+    const juste = modeleResultat(vueDe(depose(1)), livrable.texte, true, "resultat");
+    assert.equal(juste.texte, auteur, "dépôt figé : le texte de l'auteur reste entier");
+    assert.equal(juste.journal?.texte, [TOUR_1, "Bien.\nVERDICT: RIEN À REPRENDRE"].join("\n\n"));
+    const limite = modeleResultat(vueDe(), livrable.texte, true, "resultat");
+    assert.equal(limite.texte, "Version finale.", "limite dite dans le RECAPITULATIF : sans le nombre figé, repli au premier titre bien placé");
+    assert.deepEqual(limite.notes, []);
+  });
+
+  it("sans journal du cockpit à sa place (titre de l'auteur seul) : rien n'est replié, même quand l'état dit qu'un journal a été écrit", () => {
+    const texte = ["Version 2.", TITRE, "Section de l'auteur."].join("\n\n");
+    const modele = modeleResultat(vueDe(), texte, true, "resultat");
+    assert.deepEqual([modele.texte, modele.journal], [texte, null]);
+    // Un nombre figé qui dépasse les titres du texte (texte tronqué au relais) : rien n'est replié non plus.
+    assert.deepEqual([modeleResultat(vueDe(depose(3)), texte, true, "resultat").journal], [null]);
+  });
+
+  it("le dépôt fige le nombre avec le journal seulement : jamais sur des résultats partiels ni sans journal", () => {
+    const livrable = livrableDe("Version sans titre.");
+    assert.equal(livrable.titresAvant, 0);
+    const premierJet = deliverable(flow, { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: `A.\n\n${TITRE}` }, tours: { redac: 1 } });
+    assert.equal(premierJet?.titresAvant, undefined, "aucun journal écrit, aucun nombre");
+  });
+});
+// </c5:titre-du-cockpit>
 
 // <c5:depot-fige>
 // --- Grande fusion (GF4, A28 C6) : la carte du message déposé relit ce que le cockpit y a écrit AU DÉPÔT --------------------------
@@ -1101,7 +1206,8 @@ describe("GF4 (A28 C6) : ce que le cockpit a écrit est figé au dépôt, jamais
 
   it("dépôt d'un AUTRE message, ou résultats partiels : l'état enregistré décide comme avant, et des partiels ne sont jamais découpés", () => {
     const vue = run(relanceeAuPlafond(), { resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot({ messageId: "msg_ancien" }) });
-    assert.equal(modeleResultat(vue, IMITE, true, "resultat").journal?.titre, DELIVERABLE_TEXTS.journal, "sans dépôt de CE message, l'état décide");
+    // Reste c7 : le titre de l'IA n'est suivi d'aucun en-tête de tour — il n'est pas replié ; les notes, elles, suivent l'état.
+    assert.deepEqual(modeleResultat(vue, IMITE, true, "resultat").notes, NOTES, "sans dépôt de CE message, l'état décide");
     const partiels = run(relanceeAuPlafond(), { resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot({ genre: "resultats-partiels", journal: true }) });
     const modele = modeleResultat(partiels, IMITE, true, "resultat");
     assert.equal(modele.journal, null, "un dépôt de résultats partiels ne porte jamais de journal");

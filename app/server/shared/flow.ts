@@ -854,7 +854,23 @@ export interface FlowDeliverable {
    */
   journal?: true;
   // </c5:depot-fige>
+  // <c5:titre-du-cockpit>
+  /**
+   * Grande fusion (GF4, A28, constats-5b §6.2 d) : titres « ## Journal de relecture » que la dernière version de l'AUTEUR porte
+   * elle-même, AVANT celui que le cockpit écrit (présent avec le journal). Le journal du cockpit est le titre suivant : la carte
+   * coupe là, jamais au premier titre venu. Figé au dépôt avec le reste (reste c1).
+   */
+  titresAvant?: number;
+  // </c5:titre-du-cockpit>
 }
+
+// <c5:titre-du-cockpit>
+/** GF4 (A28, §6.2 d) : blocs d'un texte qui sont, à eux seuls, le titre « ## Journal de relecture » (comme la carte les lit). */
+export function titresDuJournal(texte: string): number {
+  const entete = `## ${DELIVERABLE_TEXTS.journal}`;
+  return (typeof texte === "string" ? texte : "").split("\n\n").filter((bloc) => bloc.trim() === entete).length;
+}
+// </c5:titre-du-cockpit>
 
 /** Dernier bloc de TRAVAIL du déroulé : c'est lui qui porte le livrable (une pause finale n'en porte aucun). */
 function dernierBlocDeTravail(flow: Flow): FlowBlock | null {
@@ -907,6 +923,9 @@ function relectureDeliverable(block: Extract<FlowBlock, { type: "relecture" }>, 
     // <c5:depot-fige>
     ...(verdicts.length > 0 ? { journal: true as const } : {}),
     // </c5:depot-fige>
+    // <c5:titre-du-cockpit>
+    ...(verdicts.length > 0 ? { titresAvant: titresDuJournal(texte) } : {}),
+    // </c5:titre-du-cockpit>
   };
 }
 
