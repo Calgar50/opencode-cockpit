@@ -44,6 +44,12 @@ import { StudioService } from "./studio.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent, FakePermissionRequest, FakeSession, FakeToolScript } from "./test-support/fake-opencode.ts";
 import { bash, promptAsync, until, within } from "./test-support/helpers.ts";
+// <gf3:v106> début : équipes × 1.0.6 (fiche-fusion-v106 §5)
+import type { Flow, TeamEstimateResponse, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
+import { exampleById, exampleFlow } from "./team-examples.ts";
+import { createTeamRunnerModule } from "./team-runner.ts";
+import { EQ_MODULES } from "./wiring-eq.ts";
+// </gf3:v106> fin
 
 const OC = "/workspace";
 /** Nom créable par une IA, valide sous NTFS : opencode 1.18.30 l'ouvrirait en « /secret ». */
@@ -1231,3 +1237,170 @@ describe("croisements v106 <gf2:v106> : 3D × 1.0.6 (fiche §4)", () => {
   });
 });
 // </gf2:v106>
+
+// <gf3:v106>
+// --- Grande fusion, GF3 : équipes × 1.0.6 (fiche-fusion-v106 §5) ------------------------------------------------------------------
+// Les équipes transmettent un dossier à opencode par le pré-lancement (estimation), le runner (sessions d'étape) et la carte ; tous
+// héritent du refus %XX d'isAllowedDirectory. Ici, le câblage complet (modules « tous », les cinq modules d'équipes réels, option
+// `omo` : les DEUX instances sont comptées), le faux à double décodage, et l'équipe « Revue SQL sur réplica » posée en base.
+
+const EQUIPE = "revue-sql";
+
+/** Équipe posée en base (déroulé de l'exemple de L37a), son assistant déclaré au faux, que le vrai pré-lancement relit. */
+function equipePosee(h: CockpitHarness): Flow {
+  const exemple = exampleById(EQUIPE);
+  assert.ok(exemple, "exemple « revue-sql » absent du catalogue");
+  const flow = exampleFlow(exemple, new Map());
+  h.db
+    .prepare("INSERT INTO teams (id, titre, description, flow, origine, created_at, updated_at) VALUES (?, ?, '', ?, 'creee', 1, 1)")
+    .run(EQUIPE, "[synthétique] Revue SQL", JSON.stringify(flow));
+  const assistants = new Set(flow.blocs.flatMap((bloc) => (bloc.type === "etape" ? [bloc.etape] : bloc.type === "avis" ? [...bloc.avis, bloc.synthese] : [])).map((e) => e.assistant));
+  const connus = new Set(h.fake.agents().map((agent) => agent.name));
+  const lecture = [
+    { permission: "*", pattern: "*", action: "deny" },
+    { permission: "read", pattern: "*", action: "allow" },
+    { permission: "grep", pattern: "*", action: "allow" },
+    { permission: "glob", pattern: "*", action: "allow" },
+  ] as FakeAgent["permission"];
+  const nouveaux: FakeAgent[] = [...assistants]
+    .filter((nom) => !connus.has(nom))
+    .map((name) => ({ name, mode: "all", description: name, model: MODEL, options: {}, permission: lecture, steps: 20 }));
+  h.fake.setAgents([...h.fake.agents(), ...nouveaux]);
+  return flow;
+}
+
+async function demarrerEquipes(t: TestContext, options: CockpitHarnessOptions = {}): Promise<{ h: CockpitHarness; omo: NonNullable<CockpitHarness["omo"]> }> {
+  const { h } = await start(t, {
+    settings: { ui: { mode: "avance" } },
+    modules: "tous",
+    omo: true,
+    equipes: [EQ_MODULES.agentMap, EQ_MODULES.teams, EQ_MODULES.teamPreflight, createTeamRunnerModule({ pollMs: 40, retryMs: 25, usageWaitMs: 300 }), EQ_MODULES.teamGuards],
+    ...options,
+  });
+  assert.ok(h.omo, "option « omo » du harnais");
+  equipePosee(h);
+  return { h, omo: h.omo };
+}
+
+/** Rien reçu par les DEUX instances pendant `appel` (le sondage GET /session/status de la 1.1, qui tourne seul, est écarté). */
+async function sansRequete<T>(h: CockpitHarness, omo: NonNullable<CockpitHarness["omo"]>, label: string, appel: () => Promise<T>): Promise<T> {
+  const principale = h.fake.requests.length;
+  const salle = omo.fake.requests.length;
+  const resultat = await appel();
+  const utiles = (liste: ReadonlyArray<{ method: string; pathname: string }>, depuis: number) =>
+    liste.slice(depuis).filter((r) => !(r.method === "GET" && r.pathname === "/session/status")).map((r) => `${r.method} ${r.pathname}`);
+  assert.deepEqual(utiles(h.fake.requests, principale), [], `${label} : requête à l'instance principale`);
+  assert.deepEqual(utiles(omo.fake.requests, salle), [], `${label} : requête à la salle`);
+  return resultat;
+}
+
+const lancementsEnBase = (h: CockpitHarness): number => (h.db.prepare("SELECT COUNT(*) AS n FROM team_runs").get() as { n: number }).n;
+
+async function vueDuLancement(h: CockpitHarness, runId: string, predicat: (v: TeamRunView) => boolean, label: string): Promise<TeamRunView> {
+  const limite = Date.now() + 10_000;
+  for (;;) {
+    const res = await h.call("GET", `/api/team-runs/${runId}`, { headers: h.headers.authed });
+    assert.equal(res.status, 200, res.body);
+    const vue = res.json<TeamRunView>();
+    if (predicat(vue)) return vue;
+    assert.ok(Date.now() < limite, `${label} : état ${vue.state}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Lancement réel dans `directory` ; chaque étape reste en cours (outil qui ne rend jamais la main) si `bloquee`. */
+async function lancerDans(h: CockpitHarness, directory: string, bloquee: boolean): Promise<TeamRunStarted & { estimateSha256: string }> {
+  h.fake.scriptWhen(
+    (s) => (s.metadata as { cockpit?: string } | undefined)?.cockpit === "equipe",
+    bloquee
+      ? { tools: [{ tool: "read", input: { filePath: `${directory}/a.txt` }, beforeAsk: () => new Promise<void>(() => undefined) }], stepMs: 1 }
+      : { text: "[synthétique] Constat.", cost: 0.01, stepMs: 5 },
+  );
+  const estimation = await h.call("POST", `/api/teams/${EQUIPE}/estimate`, { headers: h.headers.mutating, body: { directory, rootId: null } });
+  assert.equal(estimation.status, 200, estimation.body);
+  const { estimateSha256 } = estimation.json<TeamEstimateResponse>();
+  const run = await h.call("POST", `/api/teams/${EQUIPE}/run`, {
+    headers: h.headers.mutating,
+    body: { directory, rootId: null, demande: "[synthétique] Relis la requête.", fichiers: [], agentConversation: "build", estimateSha256, confirmations: {} },
+  });
+  assert.equal(run.status, 202, run.body);
+  return { ...run.json<TeamRunStarted>(), estimateSha256 };
+}
+
+describe("croisements v106 <gf3:v106> : équipes × 1.0.6 (fiche §5)", () => {
+  it("T-EQ1 : estimation, lancement et relance avec un dossier %XX → 403 forbidden-directory, zéro requête aux deux instances, aucune ligne team_runs", async (t) => {
+    const { h, omo } = await demarrerEquipes(t);
+    const corps = { directory: TRAP_DIR, rootId: null, demande: "[synthétique] Relis.", fichiers: [], agentConversation: "build", estimateSha256: "a".repeat(64), confirmations: {} };
+    const avant = lancementsEnBase(h);
+    assertForbidden(
+      await sansRequete(h, omo, "estimation", () => h.call("POST", `/api/teams/${EQUIPE}/estimate`, { headers: h.headers.mutating, body: { directory: TRAP_DIR, rootId: null } })),
+      "POST …/estimate",
+    );
+    assertForbidden(await sansRequete(h, omo, "lancement", () => h.call("POST", `/api/teams/${EQUIPE}/run`, { headers: h.headers.mutating, body: corps })), "POST …/run");
+    assert.equal(lancementsEnBase(h), avant, "aucune ligne team_runs pour un dossier %XX");
+
+    // Relance d'un lancement hérité au dossier %XX (ligne d'une base d'avant la 1.0.6) : estimation et relance refusées.
+    const { runId } = await lancerDans(h, dirOf("proj"), true);
+    await vueDuLancement(h, runId, (v) => v.steps.some((s) => s.state === "en-cours" && s.sessionId !== null), "étape en cours");
+    const eq = h.cockpit.equipes.eq;
+    eq.ports.runner.interrupt(runId, "rechargement");
+    await vueDuLancement(h, runId, (v) => v.relancable, "lancement relançable");
+    h.db.prepare("UPDATE team_runs SET directory = ? WHERE id = ?").run(TRAP_DIR, runId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const lignes = lancementsEnBase(h);
+    assertForbidden(
+      await sansRequete(h, omo, "estimation de relance", () => h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} })),
+      "POST /api/team-runs/:id/estimate",
+    );
+    assertForbidden(
+      await sansRequete(h, omo, "relance", () => h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: "a".repeat(64) } })),
+      "POST /api/team-runs/:id/relancer",
+    );
+    assert.equal(lancementsEnBase(h), lignes);
+    assertSentinel(h, "T-EQ1");
+  });
+
+  it("T-EQ2 : équipe en cours + PUT /api/studio/instructions?project=<%XX> → 403 (pas 409), zéro requête ; un projet légitime reçoit bien le 409 de la garde", async (t) => {
+    const { h, omo } = await demarrerEquipes(t, {
+      deps: (base) => ({
+        studio: new StudioService({ env: base.env, client: base.client, projects: base.projects, control: base.control, log: base.log, ...(base.configQueue ? { queue: base.configQueue } : {}) }),
+      }),
+    });
+    const { runId } = await lancerDans(h, dirOf("proj"), true);
+    await vueDuLancement(h, runId, (v) => v.steps.some((s) => s.state === "en-cours" && s.sessionId !== null), "étape en cours");
+    assert.equal(h.cockpit.c11.reloadBusy(), true, "une étape travaille : la garde de rechargement est occupée");
+    const piege = await sansRequete(h, omo, "Studio %XX", () =>
+      h.call("PUT", `/api/studio/instructions?project=${q(TRAP)}`, { headers: h.headers.mutating, body: { content: "[synthétique] consignes" } }),
+    );
+    assertForbidden(piege, "PUT instructions %XX pendant une équipe", "Nom de dossier non pris en charge (séquence %XX).");
+    // Témoin : sans séquence %XX, la même écriture bute sur la garde composée (étapes), en 409.
+    const legitime = await h.call("PUT", `/api/studio/instructions?project=${q(LEGIT[0])}`, { headers: h.headers.mutating, body: { content: "[synthétique] consignes" } });
+    assert.equal(legitime.status, 409, legitime.body);
+    await h.call("POST", `/api/team-runs/${runId}/stop`, { headers: h.headers.mutating });
+    assertSentinel(h, "T-EQ2");
+  });
+
+  it("T-EQ3 : sentinelle d'instance sur un lancement complet dans « Remise 20% » : sessions d'étape créées dans ce dossier, aucune instance hors de /workspace, aucun %XX transmis", async (t) => {
+    const { h } = await demarrerEquipes(t);
+    const directory = dirOf("Remise 20%");
+    const depuis = h.fake.requests.length;
+    const { runId } = await lancerDans(h, directory, false);
+    const vue = await vueDuLancement(h, runId, (v) => v.state === "terminee", "équipe terminée");
+    assert.equal(vue.steps.length, 4);
+    for (const step of vue.steps) {
+      assert.ok(step.sessionId, `étape ${step.stepId} sans session`);
+      assert.equal(h.fake.session(step.sessionId)?.directory, directory, `${step.stepId} : session d'étape créée dans le dossier, à l'octet`);
+    }
+    // Toute création de session du lancement (racine et étapes) : le dossier transmis tel quel, jamais un autre.
+    const creations = h.fake.requests.slice(depuis).filter((r) => r.method === "POST" && r.pathname === "/session");
+    assert.ok(creations.length >= vue.steps.length, `créations de session : ${creations.length}`);
+    assert.deepEqual(
+      [...new Set(creations.map((r) => r.query.directory))],
+      [directory],
+      "dossier transmis tel quel à chaque création de session du lancement",
+    );
+    assert.deepEqual(h.fake.instancesHors(), [], "instance hors de /workspace");
+    assertSentinel(h, "T-EQ3");
+  });
+});
+// </gf3:v106>

@@ -1261,6 +1261,18 @@ Les phrases entre guillemets de cette partie sont celles de l'interface, écrite
 **Sans écart : « Rien n'a été envoyé ni facturé. »** (D-eq-17, décision A4 du 19 septembre.) La sortie attendue par la spécification — aucun refus de pré-lancement n'émet de requête — est tenue **à la lettre**, sans aménagement : l'estimation est le seul point qui lit opencode, ses lectures sont gardées dix minutes en mémoire, et le lancement comme la relance décident sans émettre une seule requête. Un changement survenu depuis l'estimation ne devient pas un refus mais une **pause** à vérifier, avant toute écriture dans la conversation et avant tout appel d'IA.
 
 <!-- équipes (it4) : fin -->
+
+<!-- [gf3] début : jonction des équipes à la grande fusion (GF3) -->
+
+**Grande fusion, équipes (GF3, 27 septembre, chantier non publié).** Les équipes ont rejoint la branche du chantier, qui portait déjà l'autonomie contrôlée, la Salle OMO (livrée coupée) et la salle de contrôle 3D :
+
+- **Consigne d'une étape dans « Revoir »** : à chaque message d'étape accepté par opencode, l'exécution des étapes en garde aussi une copie dans la table des consignes de « Revoir » (clé `etape-<tour>-<tentative>-<session>`), avec les mêmes règles que les consignes de travail délégué : bornée à 8 000 caractères avec la mention de troncature, secrets masqués avant la coupe, purgée avec la conversation, jamais journalisée. [Voir la consigne] d'une étape la lit sans aucune requête à opencode ni ligne de coût.
+- **Verrous des équipes** : reportés sur le relais vers opencode de l'instance principale seulement, juste après la liste des routes permises. Une conversation de la Salle OMO n'est jamais verrouillée par une équipe, et une équipe ne se lance jamais dans une conversation de la salle (refus « instance-salle », sans aucune requête).
+- **Deux défauts de croisement corrigés, chacun avec son test** (`app/server/croisements-fusion.test.ts`) :
+  - une équipe lancée dans une conversation « Autonome avec contrôle » dont la demande autonome était encore ouverte faisait monter la dépense de cette demande : le plafond d'autonomie était atteint, l'équipe arrêtée et la conversation ramenée à « Demander à chaque fois ». La dépense d'une demande autonome ne compte plus les étapes d'une équipe, qui ont leur propre plafond d'arrêt (spécification §4.11) ;
+  - la carte néon et la salle de contrôle 3D ne dessinaient aucune étape d'équipe : elles les dessinent désormais comme des assistants à qui du travail est confié (secteur « Autres » pour un assistant sans rôle d'opencode), ce qui rend aussi [Voir la consigne] d'une étape atteignable dans « Revoir ».
+
+<!-- [gf3] fin -->
 ---
 
 ## 10. Validations réalisées
@@ -1539,6 +1551,12 @@ Aucune exécution facturée : tout a tourné hors ligne, sur le faux opencode de
 - **Relance après une purge** : quand la conversation a été supprimée, ou quand aucune étape n'a été envoyée, la suite d'une équipe ne peut plus être relancée (le cockpit ne garde ni la demande ni les pièces jointes en base). Il faut relancer l'équipe depuis la saisie.
 
 <!-- équipes (it4) : fin -->
+
+<!-- [gf3] début : restes de la grande fusion des équipes (GF3) -->
+
+**Grande fusion, équipes (GF3) : ce qui a changé ci-dessus.** Les croisements annoncés « à la grande fusion » sont faits pour l'autonomie contrôlée, la Salle OMO et la salle de contrôle 3D (`croisements-fusion.test.ts` et la section `<gf3:v106>` de `croisements-v106.test.ts`) ; le bouton qui montre la consigne d'une étape dans « Revoir » est branché. Restent pour la suite de la grande fusion : la construction et l'onglet « Salle OMO » de la carte des assistants. Limite dite : la Salle OMO ne compose pas la garde « réponse en cours » de l'instance principale (son compteur d'envois est propre), ce qui est voulu : un envoi de la salle ne coupe rien de l'instance principale.
+
+<!-- [gf3] fin -->
 
 **Chantier 1.1, itération 2 : en attente ou pas vérifié ici (non publié) :**
 
