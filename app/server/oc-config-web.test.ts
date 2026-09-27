@@ -1,6 +1,7 @@
 // T1 de la migration du web 1.0.x → 1.1.0 (décision A37, fiche MW §6) : planificateur pur de server/oc-config-web.ts, sans aucun
 // fichier ni processus. Cas a à u de la fiche, sauf n (croisement PERMISSION_PRESETS_1_0 exporté ↔ PERMISSION_PRESETS, écrit par
-// MW-b ; le train de V2 remplace les copies locales par des imports et ajoute le croisement planificateur ↔ legacyPresetOf).
+// MW-b). Au train de V2, les copies locales de MW-a ont été remplacées par les fonctions partagées de shared/assistant-rules.ts
+// (MW-b) ; le croisement planificateur ↔ legacyPresetOf est dans croisements-f2-v2.test.ts.
 //
 // Ce qui est vérifié ici tient aux octets : chaque bascule remplace exactement un jeton « "ask" » (ou « "allow" » d'un profil
 // 1.0) par « "deny" », à sa place, et rien d'autre ne change (commentaires, CRLF, virgules finales, adresse Copilot). Les
@@ -11,17 +12,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { applyEdits, modify, parse as parseJsonc } from "jsonc-parser";
+import { NOMS_GLOBAUX, OCTETS_MAX, planWebMigration, UNITES_MAX, verifierMigration } from "./oc-config-web.ts";
 import {
+  configProviderIssues,
+  detectPermissionPreset,
   legacyPresetOf,
   masque,
-  NOMS_GLOBAUX,
-  OCTETS_MAX,
+  PERMISSION_PRESET_IDS,
+  PERMISSION_PRESETS,
+  type PermissionPresetId,
   peutDemander,
-  planWebMigration,
-  UNITES_MAX,
-  verifierMigration,
-} from "./oc-config-web.ts";
-import { configProviderIssues, detectPermissionPreset, PERMISSION_PRESET_IDS, PERMISSION_PRESETS, type PermissionPresetId, rulesFromConfig } from "./shared/assistant-rules.ts";
+  rulesFromConfig,
+} from "./shared/assistant-rules.ts";
 
 const SERVER_DIR = import.meta.dirname;
 const RACINE = path.join(SERVER_DIR, "..", "..");
@@ -154,7 +156,7 @@ describe("T1 (c, e) : profils 1.0 et mélanges 1.0/1.1 → le MÊME profil 1.1",
     }
   });
 
-  it("legacyPresetOf (copie locale, R4) : profil 1.0 ou mélange → id ; profil 1.1, web absent ou valeur objet → null", () => {
+  it("legacyPresetOf (partagée, R4) : profil 1.0 ou mélange → id ; profil 1.1, web absent ou valeur objet → null", () => {
     for (const id of PERMISSION_PRESET_IDS) {
       assert.equal(legacyPresetOf(PROFILS_1_0[id]), id);
       assert.equal(legacyPresetOf(PERMISSION_PRESETS[id].permission), null, `${id} 1.1`);
@@ -323,7 +325,7 @@ describe("T1 (g, h, r, s, u) : efficacité outil par outil (R6, simulation R12)"
     assert.equal(pa.restes, 2);
   });
 
-  it("peutDemander et masque (copies locales, R6) : motif quelconque compté, dernière règle « * » deny = masqué", () => {
+  it("peutDemander et masque (partagées, R6) : motif quelconque compté, dernière règle « * » deny = masqué", () => {
     const regles = rulesFromConfig({ webfetch: "deny", "*": { "https://*": "ask" } });
     assert.equal(peutDemander(regles, "webfetch"), true);
     assert.equal(masque(regles, "webfetch"), false);

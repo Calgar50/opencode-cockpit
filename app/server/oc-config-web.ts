@@ -7,18 +7,21 @@
 //
 // Toutes les décisions se prennent sur l'ARBRE de jsonc-parser (parseTree), jamais sur un objet lu par JSON.parse : une clé
 // « __proto__ » ne peut rien ajouter ni rien cacher (R3). Les règles d'opencode viennent du module partagé (rulesFromConfig,
-// effectiveAgentRules, wildcardMatch) : une seule source des profils et de l'évaluation. Exécuté par server/migrate-oc-config.ts
-// dans un conteneur jetable de l'image app, pendant qu'opencode est arrêté (install.ps1, cockpit.ps1 restore).
+// effectiveAgentRules, legacyPresetOf, peutDemander) : une seule source des profils et de l'évaluation. Exécuté par
+// server/migrate-oc-config.ts dans un conteneur jetable de l'image app, pendant qu'opencode est arrêté (install.ps1, cockpit.ps1
+// restore).
 import { type Node, type ParseError, parseTree } from "jsonc-parser";
 import {
   detectPermissionPreset,
   effectiveAgentRules,
-  PERMISSION_PRESET_IDS,
+  legacyPresetOf,
+  type MemoRegles,
+  memoRegles,
   PERMISSION_PRESETS,
   type PermissionPresetId,
+  peutDemander,
   type Rule,
   rulesFromConfig,
-  wildcardMatch,
 } from "./shared/assistant-rules.ts";
 
 /** Fichiers globaux qu'opencode lit à la racine du volume (config.ts:272-290), dans l'ordre de la ligne de verdict. */
@@ -80,57 +83,15 @@ export interface PlanMigrationWeb {
   bascules: string[][];
 }
 
-// --- Copies locales (fiche MW §8, découpage MW-a / MW-b) ------------------------------------------------------------------------
-
-/**
- * Copie locale, remplacée par un import de shared/assistant-rules.ts (MW-b) au train de V2. Profil livré jusqu'à la 1.0.x (ou
- * mélange 1.0/1.1) reconnu dans un bloc « permission » global (R4) : hors de webfetch et websearch, le bloc égale (ordre ignoré)
- * celui de PERMISSION_PRESETS[id] ; webfetch et websearch existent tous deux en texte ask, allow ou deny ; l'un au moins n'est pas
- * deny. Hors du web, les profils 1.0 et 1.1 sont identiques : il suffit donc du profil courant.
- */
-export function legacyPresetOf(permission: unknown): PermissionPresetId | null {
-  if (!estObjet(permission)) return null;
-  const web = OUTILS_WEB.map((outil) => (Object.hasOwn(permission, outil) ? permission[outil] : undefined));
-  if (!web.every((valeur) => valeur === "ask" || valeur === "allow" || valeur === "deny")) return null;
-  if (web.every((valeur) => valeur === "deny")) return null;
-  const horsWeb = (bloc: Readonly<Record<string, unknown>>) => Object.fromEntries(Object.entries(bloc).filter(([cle]) => !estOutilWeb(cle)));
-  return PERMISSION_PRESET_IDS.find((id) => egalProfond(horsWeb(PERMISSION_PRESETS[id].permission), horsWeb(permission))) ?? null;
-}
-
-/**
- * Copie locale, remplacée par un import de shared/assistant-rules.ts (MW-b) au train de V2. L'outil peut encore demander (R6) : une
- * règle i dont la permission correspond à l'outil (wildcardMatch) a l'action « ask », QUEL QUE SOIT SON MOTIF, et aucune règle
- * j > i dont la permission correspond a le motif « * » (opencode pose la demande webfetch avec l'URL pour motif).
- */
-export function peutDemander(regles: readonly Rule[], outil: string, cache: Map<string, boolean> = new Map()): boolean {
-  for (let i = regles.length - 1; i >= 0; i--) {
-    const regle = regles[i];
-    if (!regle || !correspond(outil, regle.permission, cache)) continue;
-    if (regle.action === "ask") return true;
-    if (regle.pattern === "*") return false;
-  }
-  return false;
-}
-
-/**
- * Copie locale, remplacée par un import de shared/assistant-rules.ts (MW-b) au train de V2. L'outil est masqué : la dernière règle
- * dont la permission lui correspond a le motif « * » et l'action « deny » (permission/index.ts:204-213).
- */
-export function masque(regles: readonly Rule[], outil: string, cache: Map<string, boolean> = new Map()): boolean {
-  const derniere = regles.findLast((regle) => correspond(outil, regle.permission, cache));
-  return derniere?.pattern === "*" && derniere.action === "deny";
-}
-
-function correspond(outil: string, cle: string, cache: Map<string, boolean>): boolean {
-  // outil vaut webfetch ou websearch (sans « | ») : la clé du cache est sans ambiguïté.
-  const cleCache = `${outil}|${cle}`;
-  let vu = cache.get(cleCache);
-  if (vu === undefined) {
-    vu = wildcardMatch(outil, cle);
-    cache.set(cleCache, vu);
-  }
-  return vu;
-}
+// --- Fonctions partagées (train de V2 de F2, fiche MW §8) -------------------------------------------------------------------------
+//
+// legacyPresetOf (R4) et peutDemander (R6) sont IMPORTÉES de shared/assistant-rules.ts (MW-b, seul écrivain de ce module en V2) :
+// les copies locales posées par MW-a sont retirées au train, pour une seule source des profils et de l'évaluation. La clause
+// « clé hors bornes → peut demander » de peutDemander n'est jamais atteinte ici : lireArbre refuse avant toute évaluation une clé
+// piégée (clePiegee, mêmes bornes que cleHorsBornes, plus « __proto__ »), et les défauts d'opencode sont dans les bornes. Les deux
+// évaluations sont donc identiques à celles des copies (croisements-f2-v2.test.ts). Le mémo facultatif (memoRegles) remplace le
+// cache de wildcardMatch des copies : sur un fichier de 254 000 unités (7 000 règles globales, 2 000 agents), mesure du train,
+// 78 s sans lui contre 25 s avec les copies et 22 s avec lui, loin du délai de 120 s d'Invoke-CockpitWebMigration.
 
 // --- Valeurs, lues sur l'arbre seulement ----------------------------------------------------------------------------------------
 
@@ -139,8 +100,6 @@ type Objet = Record<string, unknown>;
 function estObjet(valeur: unknown): valeur is Objet {
   return typeof valeur === "object" && valeur !== null && !Array.isArray(valeur);
 }
-
-const estOutilWeb = (cle: string): cle is OutilWeb => cle === "webfetch" || cle === "websearch";
 
 /** Objet sans prototype : aucune clé (« __proto__ » comprise) ne peut atteindre Object.prototype. */
 const objetNu = (): Objet => Object.create(null) as Objet;
@@ -397,10 +356,10 @@ function candidates(arbre: Arbre, profil: PermissionPresetId | null): Bascule[] 
 }
 
 /** Paires (unité, outil) qui peuvent encore demander, la demande décisive venant de l'unité elle-même (R6). */
-function restesDe(unites: Map<string | null, Unite>, cache: Map<string, boolean>): number {
+function restesDe(unites: Map<string | null, Unite>, memo: MemoRegles): number {
   let restes = 0;
   for (const unite of unites.values()) {
-    for (const outil of OUTILS_WEB) if (peutDemander(unite.regles, outil, cache) && peutDemander(unite.propres, outil, cache)) restes++;
+    for (const outil of OUTILS_WEB) if (peutDemander(unite.regles, outil, memo) && peutDemander(unite.propres, outil, memo)) restes++;
   }
   return restes;
 }
@@ -415,7 +374,7 @@ interface Decision {
  * R6, outil par outil, sur parse(nouveauTexte) : le bloc global d'abord (règle de la paire pour un profil 1.0), puis chaque agent
  * par-dessus le global migré. Une bascule qui ne suffit pas (un joker à « ask » placé après, par exemple) est abandonnée seule.
  */
-function decider(texte: string, arbre: Arbre, profil: PermissionPresetId | null, cache: Map<string, boolean>): Decision | null {
+function decider(texte: string, arbre: Arbre, profil: PermissionPresetId | null, memo: MemoRegles): Decision | null {
   const toutes = candidates(arbre, profil);
   const evaluer = (liste: readonly Bascule[]) => {
     const racine = analyser(appliquer(texte, liste.map((b) => b.noeud)));
@@ -426,22 +385,22 @@ function decider(texte: string, arbre: Arbre, profil: PermissionPresetId | null,
   const globalUnite = avecTout.get(null);
   let globales = toutes.filter((b) => b.unite === null);
   if (profil !== null) {
-    if (OUTILS_WEB.some((outil) => peutDemander(globalUnite?.regles ?? [], outil, cache))) globales = [];
+    if (OUTILS_WEB.some((outil) => peutDemander(globalUnite?.regles ?? [], outil, memo))) globales = [];
   } else {
-    globales = globales.filter((b) => !peutDemander(globalUnite?.regles ?? [], b.outil, cache));
+    globales = globales.filter((b) => !peutDemander(globalUnite?.regles ?? [], b.outil, memo));
   }
   const agents = toutes.filter((b) => b.unite !== null);
   const surGlobalMigre = evaluer([...globales, ...agents]);
   if (!surGlobalMigre) return null;
-  const gardeesAgents = agents.filter((b) => !peutDemander(surGlobalMigre.get(b.unite)?.regles ?? [], b.outil, cache));
+  const gardeesAgents = agents.filter((b) => !peutDemander(surGlobalMigre.get(b.unite)?.regles ?? [], b.outil, memo));
   const gardees = [...globales, ...gardeesAgents].sort((a, b) => a.noeud.offset - b.noeud.offset);
   const nouveau = appliquer(texte, gardees.map((b) => b.noeud));
   const racine = analyser(nouveau);
   if (!racine) return null;
   const final = simuler(racine);
   // Chaque bascule gardée doit être efficace sur le texte qui sera écrit.
-  if (gardees.some((b) => peutDemander(final.get(b.unite)?.regles ?? [], b.outil, cache))) return null;
-  return { gardees, restes: restesDe(final, cache), texte: nouveau };
+  if (gardees.some((b) => peutDemander(final.get(b.unite)?.regles ?? [], b.outil, memo))) return null;
+  return { gardees, restes: restesDe(final, memo), texte: nouveau };
 }
 
 // --- Contrôle octet (R7) --------------------------------------------------------------------------------------------------------
@@ -543,8 +502,9 @@ export function planWebMigration(fichiers: Readonly<Partial<Record<string, Entre
   const blocGlobal = arbre.blocs.find((bloc) => bloc.unite === null);
   const legacy = blocGlobal ? legacyPresetOf(valeurDe(blocGlobal.noeud)) : null;
   const profil: ProfilLu = legacy ?? "-";
-  const cache = new Map<string, boolean>();
-  const decision = decider(texte, arbre, legacy, cache);
+  // Mémo de peutDemander (train de V2) : même réponse, sans réévaluer wildcardMatch pour chaque unité.
+  const memo = memoRegles();
+  const decision = decider(texte, arbre, legacy, memo);
   if (!decision) return plan("erreur", "verification", { fichier, profil });
   if (decision.gardees.length === 0) return plan("conforme", "-", { fichier, profil, restes: decision.restes, texte });
 
@@ -555,7 +515,7 @@ export function planWebMigration(fichiers: Readonly<Partial<Record<string, Entre
   const arbreEcrit = racineEcrite ? lireArbre(racineEcrite) : "inhabituel";
   if (typeof arbreEcrit === "string") return plan("erreur", "verification", { fichier, profil });
   const blocEcrit = arbreEcrit.blocs.find((bloc) => bloc.unite === null);
-  const second = decider(decision.texte, arbreEcrit, blocEcrit ? legacyPresetOf(valeurDe(blocEcrit.noeud)) : null, cache);
+  const second = decider(decision.texte, arbreEcrit, blocEcrit ? legacyPresetOf(valeurDe(blocEcrit.noeud)) : null, memo);
   if (!second || second.gardees.length > 0 || second.restes !== decision.restes) return plan("erreur", "verification", { fichier, profil });
 
   const blocs = new Set(bascules.map((chemin) => JSON.stringify(chemin.slice(0, -1)))).size;

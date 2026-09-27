@@ -6,6 +6,8 @@
 // - noms légitimes : relayés à l'octet, instance ouverte dans ce dossier ;
 // - aucune instance hors de /workspace (fake.instancesHors ; le harnais le revérifie au nettoyage de chaque test).
 // Sections que chaque fusion ajoute ici (fiche §3.10 à §8) : <gf1:v106>, <gf2:v106>, <gf3:v106>, <gf4:v106>, L39o, NAV.
+// L39o : sa sentinelle T-L39 est dans agent-map-omo.test.ts (fiche §7 et tableau du §11), avec ce même faux à double décodage
+// (train de V2 de F2) ; aucune section ici.
 // Aucun appel facturé : faux opencode seulement.
 import assert from "node:assert/strict";
 import fs from "node:fs";

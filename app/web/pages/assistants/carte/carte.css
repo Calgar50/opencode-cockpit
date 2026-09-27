@@ -486,3 +486,28 @@
     outline: 2px solid Highlight;
   }
 }
+
+/* <l39o:salle-omo> */
+/* Choix de la carte (instance principale ou Salle OMO, mode Avancé seulement ; CarteSalleOmo.tsx, ChoixCarte) : même forme
+   que la bascule des vues, sous sa PROPRE classe (train de V2 de F2). .ca-vues-choix reste le seul groupe des vues, celui
+   que désignent les scénarios du banc. Aucune animation, aucune transition. */
+.ca-choix-carte {
+  display: flex;
+  gap: 4px;
+}
+
+.ca-choix-carte .btn[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+
+@media (forced-colors: active) {
+  .ca-choix-carte .btn[aria-pressed="true"] {
+    border: 2px solid CanvasText;
+  }
+
+  .ca-choix-carte .btn:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+/* </l39o:salle-omo> */

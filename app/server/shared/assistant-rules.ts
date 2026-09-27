@@ -1741,6 +1741,46 @@ function regleHorsBornes(rule: Rule): boolean {
   return cleHorsBornes(rule.permission) || cleHorsBornes(rule.pattern);
 }
 
+/**
+ * Mémo FACULTATIF de peutDemander (train de V2 de F2) : pour un appelant qui évalue beaucoup de fois les mêmes règles (le
+ * planificateur de la migration, server/oc-config-web.ts), il garde wildcardMatch par outil et par clé, et le contrôle des bornes
+ * par tableau de règles (tableaux jamais modifiés après leur premier passage). Il ne change jamais la réponse : sans lui, chaque
+ * clé est évaluée comme avant (croisements-f2-v2.test.ts compare les deux).
+ */
+export interface MemoRegles {
+  correspond: Map<string, Map<string, boolean>>;
+  horsBornes: WeakMap<readonly Rule[], boolean>;
+}
+
+export function memoRegles(): MemoRegles {
+  return { correspond: new Map(), horsBornes: new WeakMap() };
+}
+
+function correspondA(tool: string, cle: string, memo?: MemoRegles): boolean {
+  if (memo === undefined) return wildcardMatch(tool, cle);
+  let parOutil = memo.correspond.get(tool);
+  if (parOutil === undefined) {
+    parOutil = new Map();
+    memo.correspond.set(tool, parOutil);
+  }
+  let vu = parOutil.get(cle);
+  if (vu === undefined) {
+    vu = wildcardMatch(tool, cle);
+    parOutil.set(cle, vu);
+  }
+  return vu;
+}
+
+function porteHorsBornes(rules: readonly Rule[], memo?: MemoRegles): boolean {
+  if (memo === undefined) return rules.some(regleHorsBornes);
+  let vu = memo.horsBornes.get(rules);
+  if (vu === undefined) {
+    vu = rules.some(regleHorsBornes);
+    memo.horsBornes.set(rules, vu);
+  }
+  return vu;
+}
+
 function isWebTool(cle: string): cle is WebTool {
   return cle === "webfetch" || cle === "websearch";
 }
@@ -1764,11 +1804,19 @@ function demandesDecisives(rules: readonly Rule[], tool: string): number[] {
 
 /**
  * R6 : l'outil peut encore poser une demande avec ces règles (dans l'ordre d'opencode). Une clé hors bornes rend vrai sans rien
- * évaluer (fermé en cas de doute).
+ * évaluer (fermé en cas de doute). Même réponse que « demandesDecisives non vide », en s'arrêtant à la première règle de l'outil
+ * lue depuis la fin : « ask » → une demande est possible ; motif « * » → tout ce qui précède est masqué. `memo` (facultatif) ne
+ * sert qu'à la vitesse.
  */
-export function peutDemander(rules: readonly Rule[], tool: string): boolean {
-  if (rules.some(regleHorsBornes)) return true;
-  return demandesDecisives(rules, tool).length > 0;
+export function peutDemander(rules: readonly Rule[], tool: string, memo?: MemoRegles): boolean {
+  if (porteHorsBornes(rules, memo)) return true;
+  for (let i = rules.length - 1; i >= 0; i--) {
+    const rule = rules[i] as Rule;
+    if (!correspondA(tool, rule.permission, memo)) continue;
+    if (rule.action === "ask") return true;
+    if (rule.pattern === "*") return false;
+  }
+  return false;
 }
 
 /**

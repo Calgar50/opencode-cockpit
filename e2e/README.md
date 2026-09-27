@@ -43,7 +43,8 @@ pose `e2e/lib/opencode-volume-1.0.6.jsonc` dans le volume `oc-config` : le fichi
 `migration-web etat=migre profil=prudent … sauvegarde=opencode.jsonc.avant-1.1.0` **avant** `up` ; enfin, un temporaire
 non migré est laissé comme leurre (`opencode.jsonc.0123456789ab.tmp`), qu'opencode doit ignorer comme la copie.
 `mw-api-volume-106.mjs` vérifie ce que sert la pile (Prudent 1.1, fichier attendu `opencode-volume-1.0.6.migre.jsonc` à
-l'octet, web refusé aux agents et absent des outils envoyés à l'IA) et joue un second passage par `ctx.migrerVolume()`
+l'octet, `security.webIssues` = `{ global: false, assistants: [] }` au démarrage, web refusé aux agents et absent des
+outils envoyés à l'IA) et joue un second passage par `ctx.migrerVolume()`
 (arrêt d'opencode, migration, relance : « conforme », texte inchangé) ; les scénarios qui lisent `casM2` attendent la
 configuration migrée.
 

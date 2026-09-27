@@ -6,7 +6,7 @@
 //   1. GET /api/opencode/config : permission = profil Prudent 1.1 (web refusé) ; opencode a donc démarré avec la copie
 //      opencode.jsonc.avant-1.1.0 et le temporaire présents, sans les lire (tous deux gardent le web sur « ask ») ;
 //   2. /api/opencode/config/raw : le fichier attendu à l'octet, commentaires de la 1.0.6 gardés ;
-//   3. security.webIssues = { global: false, assistants: [] } (MW-b ; « non joué » tant que MW-b n'est pas intégré) ;
+//   3. security.webIssues = { global: false, assistants: [] } (MW-b, exigé depuis le train de la vague 2) ;
 //   4. webfetch et websearch refusés par les règles effectives de chaque agent (GET /agent, evaluate) : websearch n'est jamais
 //      proposé à ce fournisseur, la preuve de son refus est donc la règle ;
 //   5. webfetch absent des outils envoyés au faux fournisseur pour un vrai tour ;
@@ -56,11 +56,17 @@ export async function run(ctx) {
   exiger(raw.content.includes("// Configuration initiale posée par opencode-cockpit au premier démarrage."), "commentaires de la 1.0.6 perdus.");
   releve(ctx, "volume 1.0.6 migré : Prudent 1.1 servi, fichier attendu à l'octet, copie et temporaire présents et ignorés");
 
-  // 3. Signalement (MW-b).
+  // 3. Signalement (MW-b, intégré au train de la vague 2) : le champ est exigé. null veut dire « opencode injoignable ou budget de
+  // 3 s dépassé » (jamais un faux « fermé ») : relu jusqu'à une valeur, puis comparé.
   const bootstrap = await ctx.api.get("/api/bootstrap");
-  const webIssues = bootstrap?.security?.webIssues;
-  if (webIssues === undefined) nonJoue(ctx, "security.webIssues", "le signalement arrive avec MW-b, vérifié au train de la vague 2");
-  else exiger(egal(webIssues, { global: false, assistants: [] }), `security.webIssues : ${resume(webIssues)}`);
+  exiger(bootstrap?.security !== undefined && Object.hasOwn(bootstrap.security, "webIssues"), "security.webIssues absent du bootstrap (MW-b).");
+  const webIssues = await attendreQue(async () => (await ctx.api.get("/api/bootstrap"))?.security?.webIssues ?? null, {
+    delaiMs: 60_000,
+    pasMs: 2_000,
+    libelle: "security.webIssues lisible",
+  });
+  exiger(egal(webIssues, { global: false, assistants: [] }), `security.webIssues : ${resume(webIssues)}`);
+  releve(ctx, "security.webIssues = { global: false, assistants: [] } : plus rien ne peut demander Internet");
 
   // 4. Règles effectives de chaque agent : webfetch et websearch refusés.
   const client = oc(ctx);

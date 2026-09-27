@@ -28,11 +28,14 @@ export interface ChoixCarteProps {
 
 /**
  * Boutons de l'onglet : la carte de l'instance principale ou les agents de la salle. Même forme que le choix de vue de la carte
- * (groupe nommé, aria-pressed, bordure et texte gras pour le bouton enfoncé, contraste forcé de carte.css).
+ * (groupe nommé, aria-pressed, bordure et texte gras pour le bouton enfoncé, contraste forcé), sous sa PROPRE classe
+ * `ca-choix-carte` (section l39o:salle-omo de carte.css, train de V2 de F2) : `ca-vues-choix` reste le seul groupe des vues
+ * Centrée, d'ensemble et Liste, que le banc désigne par elle ; partagée, elle faisait trouver ces boutons-ci avant que la
+ * carte ne soit chargée (it4-carte : « la vue « Centrée » n'est pas le défaut visuel »).
  */
 export function ChoixCarte({ salle, onChoisir }: ChoixCarteProps) {
   return (
-    <div className="ca-vues-choix" role="group" aria-label={S.choix}>
+    <div className="ca-choix-carte" role="group" aria-label={S.choix}>
       <button type="button" className="btn" aria-pressed={!salle} onClick={() => onChoisir(false)}>
         {P.titre}
       </button>
