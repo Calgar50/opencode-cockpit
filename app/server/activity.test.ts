@@ -216,7 +216,7 @@ describe("captures : fenêtres, repère, jamais démarré, détaché", () => {
     const replayed = replayMessages(emptyActivity(ROOT), snapshot(events));
     assertP1Windows(replayed, false);
     assert.deepEqual(summary(liveRows(replayed, now)), summary(liveRows(direct, now)));
-    assert.deepEqual(activityStatus(replayed), { source: "messages", partial: false, attentesEnregistrees: false, choix: null, arret: null });
+    assert.deepEqual(activityStatus(replayed), { source: "messages", partial: false, attentesEnregistrees: false, choix: null, arret: null, actionsExtension: 0 });
   });
 
   it("p2 : le repère du raccourci n'est pas facturé ; délégation lancée sans confirmation ; aucune génération avant la délégation", () => {
@@ -673,6 +673,115 @@ describe("bornes : 3 niveaux et 50 sessions", () => {
   });
 });
 
+describe("Salle OMO (fiche L25b) : tâche de fond, réveil, actions de l'extension", () => {
+  /** Conversation de la salle : la racine confie une délégation en tâche de fond (`fond`) ou qui attend son résultat. */
+  const salle = (fond: boolean): ActivityFact[] => [
+    fact(R, "statut", 90, { etat: "creee", role: "conversation", parent: null, agent: "sisyphus", instance: "omo" }),
+    busy(R, 100),
+    fact(R, "statut", 100, { etat: "appel", messageId: "msg_r" }, "msg_r"),
+    fact(R, "consigne", 110, { etat: "prepare", callId: "call_f", messageId: "msg_r" }, "call_f"),
+    fact(D, "statut", 120, { etat: "creee", role: "delegation", parent: R, agent: "explore", instance: "omo" }),
+    fact(
+      R,
+      "consigne",
+      130,
+      { etat: "envoyee", callId: "call_f", messageId: "msg_r", enfant: D, agent: "explore", source: "ia", commande: null, reprise: false, categorie: "quick", ia: "github-copilot/claude-sonnet-4.5", competences: 2, fond },
+      "call_f",
+    ),
+    busy(D, 140),
+  ];
+  const stateAt = (list: readonly ActivityFact[], at: number) => facts(emptyActivity(R), list.filter((f) => f.at <= at));
+  const stateOf = (state: ActivityState, key: string) => liveRows(state, 1_000).find((row) => row.key === key)?.state;
+
+  it("JP-3 : la session qui confie une tâche de fond garde son vrai statut, jamais « attend une délégation » ; celle qui attend, si", () => {
+    for (const fond of [true, false]) {
+      const list = salle(fond);
+      assert.equal(stateOf(stateAt(list, 135), R), fond ? "travaille" : "attend-delegation", `fond=${fond} après l'envoi`);
+    }
+    // Tâche de fond : la racine rédige puis se met au repos pendant que l'enfant travaille ; le résultat arrive à la fin de l'enfant.
+    const list = [
+      ...salle(true),
+      fact(R, "statut", 150, { etat: "appel-fini", messageId: "msg_r", cout: 0.02, raison: "tool-calls" }, "msg_r"),
+      fact(R, "statut", 160, { etat: "redige", messageId: "msg_r2" }, "msg_r2"),
+      idle(R, 200),
+      idle(D, 400),
+      fact(R, "resultat", 400, { etat: "rendu", callId: "call_f", messageId: "msg_r", enfant: D }, "call_f"),
+    ];
+    assert.equal(stateOf(stateAt(list, 170), R), "redige");
+    assert.deepEqual([stateOf(stateAt(list, 250), R), stateOf(stateAt(list, 250), D)], ["termine", "travaille"], "la racine au repos, l'enfant au travail");
+    const done = stateAt(list, 400);
+    assert.deepEqual([stateOf(done, R), stateOf(done, D)], ["termine", "termine"]);
+    assert.equal(liveRows(done, 1_000).find((row) => row.key === D)?.callId, "call_f", "l'enfant reste lié à sa délégation");
+    // Déroulé : aucune attente de délégation, génération de la racine jamais coupée pour la tâche de fond.
+    const root = rowOf(timeline(done), R) as TimelineRow | undefined;
+    assert.deepEqual(barsOf(root, "attente-delegation"), []);
+    assert.deepEqual(barsOf(root, "generation"), [[100, 200]]);
+    // La même histoire sans tâche de fond : attente dessinée, génération coupée le temps de la délégation.
+    const attendue = stateAt(
+      list.map((f) => (f.kind === "consigne" && f.data.etat === "envoyee" ? { ...f, data: { ...f.data, fond: false } } : f)),
+      400,
+    );
+    const rootAttendue = rowOf(timeline(attendue), R) as TimelineRow | undefined;
+    assert.deepEqual(barsOf(rootAttendue, "attente-delegation"), [[130, 150]]);
+    assert.deepEqual(barsOf(rootAttendue, "generation"), [[100, 130]]);
+    // Totaux : l'enfant n'a fait aucun appel d'IA, la tâche de fond ne coûte que ce qui a été facturé.
+    assert.deepEqual([totals(done).calls, totals(done).cost], [1, 0.02]);
+  });
+
+  it("JP-2 : un réveil `noReply` (origine cas 4 et fait « reveil ») ne fait ni appel, ni coût, ni travail, ni changement de ligne", () => {
+    const avant = [
+      ...salle(true),
+      fact(R, "statut", 150, { etat: "appel-fini", messageId: "msg_r", cout: 0.02, raison: "tool-calls" }, "msg_r"),
+      idle(R, 200),
+      idle(D, 400),
+      fact(R, "resultat", 400, { etat: "rendu", callId: "call_f", messageId: "msg_r", enfant: D }, "call_f"),
+    ];
+    const apres = [
+      ...avant,
+      fact(R, "origine", 450, { origine: "reveil-sans-reponse", cas: 4, messageId: "msg_reveil" }, "msg_reveil"),
+      fact(R, "reveil", 450, { etat: "depose", messageId: "msg_reveil" }, "msg_reveil"),
+    ];
+    const a = facts(emptyActivity(R), avant);
+    const b = facts(emptyActivity(R), apres);
+    assert.equal(b.facts.length, a.facts.length + 2, "les deux faits du réveil sont bien reçus");
+    assert.deepEqual(liveRows(b, 1_000), liveRows(a, 1_000));
+    assert.deepEqual(timeline(b), timeline(a));
+    assert.deepEqual(totals(b), totals(a));
+    assert.deepEqual(activityStatus(b), activityStatus(a));
+  });
+
+  it("`par: extension` : compté par session et pour l'arbre, une fois par appel d'outil ; aucun état ni total ne bouge", () => {
+    const base = [...salle(true), fact(D, "statut", 150, { etat: "outil", outil: "chercher", nom: "grep", phase: "termine", callId: "call_g", messageId: "msg_d", fichier: null, dossier: null }, "call_g")];
+    const extension = (callId: string, at: number) => fact(D, "decision", at, { verdict: "auto", regle: "A-grep", par: "extension" }, callId);
+    const withExtension = facts(emptyActivity(R), [
+      ...base,
+      extension("call_g", 160),
+      extension("call_g", 161),
+      extension("call_h", 170),
+      fact(D, "decision", 180, { verdict: "auto", regle: "E1", par: "regles" }, "per_1"),
+    ]);
+    const without = facts(emptyActivity(R), base);
+    assert.deepEqual(
+      liveRows(withExtension, 1_000).map((row) => [row.key, row.actionsExtension]),
+      [
+        [R, 0],
+        [D, 2],
+      ],
+    );
+    assert.equal(activityStatus(withExtension).actionsExtension, 2);
+    const strip = (rows: LiveRow[]) => rows.map(({ actionsExtension: _, ...rest }) => rest);
+    assert.deepEqual(strip(liveRows(withExtension, 1_000)), strip(liveRows(without, 1_000)));
+    assert.deepEqual(totals(withExtension), totals(without));
+    assert.deepEqual(timeline(withExtension), timeline(without));
+    // Hors de la salle, rien n'est compté.
+    assert.equal(activityStatus(without).actionsExtension, 0);
+    // Différé = direct : relu depuis la base, même compte.
+    const reread0 = replayFacts(emptyActivity(R), reread(withExtension.facts));
+    assert.deepEqual(liveRows(reread0, 1_000), liveRows(withExtension, 1_000));
+    assert.deepEqual(activityStatus(reread0), activityStatus(withExtension));
+  });
+});
+
 describe("applyEvent", () => {
   it("fait refusé par la garde, d'une autre racine ou d'un autre événement du cockpit, delta, doublon : même état", () => {
     const state = facts(emptyActivity(R), [busy(R, 1)]);
@@ -825,7 +934,7 @@ describe("registre (Archives)", () => {
     assert.deepEqual(barsOf(root, "attente-vous"), [[140, 155]]);
     assert.deepEqual(barsOf(root, "attente-delegation"), [[140, 400]]);
     assert.deepEqual(barsOf(root, "generation"), [[100, 140], [400, 450]]);
-    assert.deepEqual(activityStatus(state), { source: "registre", partial: false, attentesEnregistrees: false, choix: null, arret: null });
+    assert.deepEqual(activityStatus(state), { source: "registre", partial: false, attentesEnregistrees: false, choix: null, arret: null, actionsExtension: 0 });
     // Faits persistés relus ensuite : ils remplacent la reconstruction.
     assert.equal(replayFacts(state, [busy(R, 1)]).facts.length, 1);
   });

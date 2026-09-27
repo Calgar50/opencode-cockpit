@@ -12,7 +12,7 @@ import { type ArchiveService, buildDigest, type Conversation, type ConversationD
 import { catalogLite, ModelCatalog } from "./catalog.ts";
 import { Classifier, extractJson, parseClassifierOutput, pickClassifierModel } from "./classifier.ts";
 import { ControlService } from "./control.ts";
-import { openDb, openMemoryDb } from "./db.ts";
+import { MIGRATIONS, openDb, openMemoryDb } from "./db.ts";
 import { type AppEnv, EnvError, isValidConfirmedAt, loadEnv, parseAllowedProviders, parseLocalAccess } from "./env.ts";
 import { FrontmatterError, parseFrontmatter, stringifyFrontmatter } from "./frontmatter.ts";
 import { PathError, readInside, safeSegment, slugify } from "./fsutil.ts";
@@ -804,7 +804,8 @@ describe("sécurité et utilitaires", () => {
           return conversation;
         },
       } as unknown as ArchiveService,
-      sessions: { upsert: () => ({}) } as unknown as SessionTracker,
+      // `instanceOf` : lu par le classement depuis L18a (D-2b-05, une racine de la salle n'est jamais envoyée à une IA).
+      sessions: { upsert: () => ({}), instanceOf: () => "principale" } as unknown as SessionTracker,
       ledger: { recordAssistant: () => undefined } as unknown as Ledger,
       hub: { cockpit: (type: string) => void events.push(type) } as unknown as EventHub,
       log: createLogger("error"),
@@ -1672,9 +1673,9 @@ describe("profils de droits et catalogue partagés", () => {
 });
 
 describe("base", () => {
-  it("openMemoryDb atteint user_version 5 avec item_meta et chat_turns", () => {
+  it("openMemoryDb atteint user_version 6 avec item_meta et chat_turns", () => {
     const db = openMemoryDb();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
     const names = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE name IN ('item_meta', 'chat_turns', 'idx_chat_turns_session') ORDER BY name")
@@ -1694,18 +1695,19 @@ describe("base", () => {
     try {
       const old = openDb(dir);
       old.prepare("INSERT INTO prompts (message_id, session_id, root_id, created_at, preview) VALUES (?, ?, ?, ?, ?)").run("msg_1", "ses_1", "ses_1", 1, "DB_PASSWORD=Prod!2026");
-      // Base d'une version antérieure : migrations 1 et 2 seulement (ajouts des migrations 4 et 5 retirés, comme avant la 1.1).
+      // Base d'une version antérieure : migrations 1 et 2 seulement (ajouts des migrations 4, 5 et 6 retirés, comme avant la 1.1).
       old.exec(`DROP TABLE team_run_events; DROP TABLE team_run_steps; DROP TABLE team_runs; DROP TABLE teams;
         DROP TABLE delegations; DROP TABLE permission_waits; DROP TABLE conversation_autonomy; DROP TABLE autonomy_requests;
         DROP TABLE autonomy_decisions; ALTER TABLE sessions DROP COLUMN agent; ALTER TABLE sessions DROP COLUMN plancher;
         ALTER TABLE usage DROP COLUMN variant; ALTER TABLE prompts DROP COLUMN kind; ALTER TABLE item_meta DROP COLUMN methods;
         ALTER TABLE item_meta DROP COLUMN role;
-        DROP TABLE activity_facts; DROP TABLE omo_room_starts; ALTER TABLE sessions DROP COLUMN instance;`);
+        DROP TABLE activity_facts; DROP TABLE omo_room_starts; ALTER TABLE sessions DROP COLUMN instance;
+        DROP TABLE omo_rooms; DROP TABLE revoir_consignes;`); // [3d] et salle : ajouts des migrations 6 et 8 retirés comme les autres
       old.exec("PRAGMA user_version = 2");
       old.close();
       const db = openDb(dir);
       try {
-        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+        assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
         assert.deepEqual({ ...(db.prepare("SELECT preview FROM prompts WHERE message_id = 'msg_1'").get() as object) }, { preview: "" });
         assert.equal((db.prepare("PRAGMA secure_delete").get() as { secure_delete: number }).secure_delete, 1);
       } finally {

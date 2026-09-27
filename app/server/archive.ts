@@ -13,6 +13,7 @@ import { type OcMessageWithParts, type OcPart, type OcSession, type OpencodeClie
 import { redactSecrets } from "./redact.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
 
 export interface ConversationDigest {
   sessionId: string;
@@ -263,9 +264,25 @@ export interface ArchiveDeps {
 
 export class ArchiveService {
   readonly #d: ArchiveDeps;
+  /** Client par instance (1.1, L18a) : celui du constructeur sert l'instance principale. */
+  readonly #clients = new Map<SessionInstance, OpencodeClient>();
 
   constructor(deps: ArchiveDeps) {
     this.#d = deps;
+    this.#clients.set("principale", deps.client);
+  }
+
+  /** Pose le client d'une instance ; posé par instance-runtime.ts pour la Salle OMO. */
+  useClient(instance: SessionInstance, client: OpencodeClient): void {
+    this.#clients.set(instance, client);
+  }
+
+  /**
+   * Client de l'instance qui sert la session ; null quand cette instance n'existe pas (salle coupée, lignes restées en base).
+   * Une conversation n'est JAMAIS relue sur l'autre opencode : son 404 y marquerait la conversation supprimée (D-2b-05).
+   */
+  #clientOf(sessionId: string): OpencodeClient | null {
+    return this.#clients.get(this.#d.sessions.instanceOf(sessionId) ?? "principale") ?? null;
   }
 
   #row(sessionId: string): ConversationRow | undefined {
@@ -320,18 +337,27 @@ export class ArchiveService {
     return this.#d.settings.get().classifier.categories;
   }
 
-  /** Relit la session dans opencode, met à jour l'archive (et la classe par heuristique la première fois). */
+  /**
+   * Relit la session dans opencode, met à jour l'archive (et la classe par heuristique la première fois). La lecture passe par
+   * le client de l'INSTANCE de la session (1.1, L18a) : un 404 de l'autre instance ne marquerait pas la conversation supprimée,
+   * puisqu'elle n'y est jamais demandée. Instance absente (salle coupée) : rien n'est demandé et rien n'est modifié.
+   */
   async refresh(sessionId: string): Promise<{ conversation: Conversation; digest: ConversationDigest } | null> {
     const known = this.#d.sessions.get(sessionId);
     const directory = known?.directory || undefined;
+    const client = this.#clientOf(sessionId);
+    if (client === null) {
+      this.#d.log.warn("archivage impossible : instance de la session absente", { sessionId, instance: known?.instance });
+      return null;
+    }
     let info: OcSession;
     let messages: OcMessageWithParts[];
     try {
-      info = await this.#d.client.request<OcSession>("GET", `/session/${encodeURIComponent(sessionId)}`, {
+      info = await client.request<OcSession>("GET", `/session/${encodeURIComponent(sessionId)}`, {
         ...(directory ? { directory } : {}),
         timeoutMs: 15_000,
       });
-      messages = await this.#d.client.request<OcMessageWithParts[]>("GET", `/session/${encodeURIComponent(sessionId)}/message`, {
+      messages = await client.request<OcMessageWithParts[]>("GET", `/session/${encodeURIComponent(sessionId)}/message`, {
         directory: info.directory,
         timeoutMs: 60_000,
       });

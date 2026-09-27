@@ -46,6 +46,28 @@ const DQ = String.fromCharCode(34);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/**
+ * Inscription du câblage, lue sans dépendre du champ `instances` que T3b ajoutera (plan 2 bis §4.2, D-2b-40) : une inscription
+ * qui ne le porte pas sert l'instance principale.
+ */
+interface Inscription {
+  kind: string;
+  key: string;
+  module: string;
+  instances?: readonly string[];
+}
+
+/**
+ * Ouverture 2bis-V2 : les listes de crochets de ce fichier ne comparent que les inscriptions de l'instance PRINCIPALE. Sans ce
+ * filtre, elles tombaient dès que la salle inscrivait omoActivation puis omoCaps sur `beforeBilledSend` (§4.1.2, L22c et L22d),
+ * dans un fichier de croisement qu'aucun paquet n'a le droit de corriger. Les listes attendues, elles, ne bougent pas.
+ */
+const sertPrincipale = (r: Inscription): boolean => (r.instances ?? ["principale"]).includes("principale");
+
+/** Modules inscrits sur une étape, instance principale seule, dans l'ordre du câblage. */
+const crochets = (list: readonly Inscription[], step: string): string[] =>
+  list.filter((r) => r.kind === "hook" && r.key === step && sertPrincipale(r)).map((r) => r.module);
+
 /** Surveillance des plafonds sans minuterie réelle : les tours de sondage ne servent pas ici, aucune minuterie n'est posée. */
 const CAP_WATCH_SANS_MINUTERIE: Cockpit11Module = capWatchModuleWith({ schedule: () => () => undefined });
 
@@ -233,10 +255,22 @@ describe("croisements it2 V3 : bascule de la porte I1 (ACTIVATION_OUVERTE) sur l
     const h = await start(t);
     assert.equal(ACTIVATION_OUVERTE, true, "porte I1 basculée au train de cette vague");
     assert.equal(h.cockpit.c11.activationOuverte, true);
-    assert.deepEqual(
-      h.cockpit.wiring.registrations.filter((r) => r.kind === "hook" && r.key === "beforeBilledSend").map((r) => r.module),
-      ["floors", "plans", "activation", "requests"],
-    );
+    const inscriptions: readonly Inscription[] = h.cockpit.wiring.registrations;
+    assert.deepEqual(crochets(inscriptions, "beforeBilledSend"), ["floors", "plans", "activation", "requests"]);
+    // Non-régression de l'ouverture 2bis-V2 : un crochet de la salle sort de la liste, un crochet de l'instance principale y reste.
+    assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "omoActivation", instances: ["omo"] }], "beforeBilledSend"), [
+      "floors",
+      "plans",
+      "activation",
+      "requests",
+    ]);
+    assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "autre" }], "beforeBilledSend"), [
+      "floors",
+      "plans",
+      "activation",
+      "requests",
+      "autre",
+    ]);
 
     const root = await withAgent(h, "Porte ouverte");
     const sans = await putChoice(h, root.id, { choix: "autonome" }, h.headers.mutating);
@@ -257,10 +291,7 @@ describe("croisements it2 V3 : bascule de la porte I1 (ACTIVATION_OUVERTE) sur l
 
   it("porte REFERMÉE par la fabrique : « PUT autonome » confirmé → 409 « a-venir », aucun crochet d'activation, choix indisponibles", async (t) => {
     const h = await start(t, { modules: TOUS_PORTE_FERMEE });
-    assert.deepEqual(
-      h.cockpit.wiring.registrations.filter((r) => r.kind === "hook" && r.key === "beforeBilledSend").map((r) => r.module),
-      ["floors", "plans", "requests"],
-    );
+    assert.deepEqual(crochets(h.cockpit.wiring.registrations, "beforeBilledSend"), ["floors", "plans", "requests"]);
     const root = await withAgent(h, "Porte refermée");
     const res = await putChoice(h, root.id, { choix: "autonome" });
     assert.equal(res.status, 409, res.body);

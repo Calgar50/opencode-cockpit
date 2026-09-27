@@ -10,6 +10,12 @@
 //   Mesure du 17/09 : un écart d'au moins 15 entre TOUS les signes voisins est impossible en néon clair (rouge, orange, ambre et
 //   vert se replient sur un même jaune-brun en deutéranopie, sous le plafond de luminosité du contraste 3:1) ; leurs formes les
 //   distinguent. L'ancien gris d'arrêt (#8C96A6, #5F6B7A) se confondait avec le rose de la consigne en deutéranopie (écart 7 et 8).
+// - Salle OMO (fiche L25b, JP-10, JP-14) : l'orange de l'extension trace l'enceinte (double trait, statique) et la boucle « par
+//   l'extension ». Il partage une forme avec deux signes cyan (NEON_MEME_FORME_SALLE) : le contour de l'enceinte avec celui des
+//   territoires, le cercle de la marque « relance par l'extension » avec celui des autres marques d'origine ; le script exige
+//   entre eux l'écart de 15. Mesure du 23/09 : écart minimal 62,7 (néon clair, protanopie), contraste minimal 3,64:1 (grille du
+//   néon clair, deutéranopie). L'orange et l'ambre de l'attente se confondent en néon clair et en deutéranopie (écart 1) : leurs
+//   formes (boucle, hexagone hachuré à cadenas) les distinguent, comme le dit la mesure du 17/09.
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { NeonBeamKind } from "./neon-scene.ts";
 
@@ -80,7 +86,7 @@ export const NEON_PALETTES: Readonly<Record<NeonTheme, NeonPalette>> = Object.fr
   }),
 });
 
-/** Signes de la carte (§5.7.1). « extension » : Salle OMO seulement (L25). */
+/** Signes de la carte (§5.7.1). « extension » et « enceinte » : Salle OMO seulement (L25). */
 export type NeonSign =
   | "demande"
   | "preparation"
@@ -90,6 +96,7 @@ export type NeonSign =
   | "auto"
   | "refus"
   | "extension"
+  | "enceinte"
   | "appel"
   | "travaille"
   | "termine"
@@ -112,6 +119,8 @@ export const NEON_GRAMMAIRE: Readonly<Record<NeonSign, Readonly<NeonSignStyle>>>
   auto: Object.freeze({ forme: "bouclier-coche", trait: "auto" }),
   refus: Object.freeze({ forme: "croix", trait: "refus" }),
   extension: Object.freeze({ forme: "fleche-circulaire-mention", trait: "extension" }),
+  /** Enceinte de la Salle OMO (JP-10) : double trait autour de la carte, statique (JP-13). */
+  enceinte: Object.freeze({ forme: "double-trait-enceinte", trait: "extension" }),
   appel: Object.freeze({ forme: "impulsion", trait: "acteur" }),
   travaille: Object.freeze({ forme: "halo-statique", trait: "acteur" }),
   termine: Object.freeze({ forme: "anneau-coche", trait: "acteur" }),
@@ -132,6 +141,16 @@ export const NEON_SIGNE_FAISCEAU: Readonly<Record<NeonBeamKind, NeonSign>> = Obj
 export const NEON_MEME_FORME: ReadonlyArray<readonly [NeonToken, NeonToken]> = Object.freeze(
   [...new Set(Object.values(NEON_SIGNE_FAISCEAU).map((signe) => NEON_GRAMMAIRE[signe].trait))].map((trait) => Object.freeze([NEON_GRAMMAIRE.arret.trait, trait] as const)),
 );
+
+/**
+ * Salle OMO : couleurs qui partagent une forme avec l'orange de l'extension. Le contour de l'enceinte (double trait) et celui des
+ * territoires (hexagones) ; le cercle à glyphe de la marque « relance par l'extension » et celui des autres marques d'origine
+ * (neon.css, .neon-origine). Contrôlées par le script comme NEON_MEME_FORME.
+ */
+export const NEON_MEME_FORME_SALLE: ReadonlyArray<readonly [NeonToken, NeonToken]> = Object.freeze([
+  Object.freeze(["extension", "territoire"] as const),
+  Object.freeze(["extension", "acteur"] as const),
+]);
 
 export const SEUIL_TRAIT = 3;
 export const SEUIL_TEXTE = 4.5;
@@ -230,7 +249,7 @@ export function paletteProblems(palette: NeonPalette, theme: NeonTheme): ColorPr
     };
     for (const jeton of NEON_TRAITS) check(jeton, SEUIL_TRAIT);
     for (const jeton of NEON_TEXTES) check(jeton, SEUIL_TEXTE);
-    for (const [jeton, contre] of NEON_MEME_FORME) {
+    for (const [jeton, contre] of [...NEON_MEME_FORME, ...NEON_MEME_FORME_SALLE]) {
       const valeur = colorDistance(palette[jeton], palette[contre], vision);
       if (valeur < SEUIL_ECART) problems.push({ theme, vision, mesure: "ecart", jeton, contre, valeur, seuil: SEUIL_ECART });
     }

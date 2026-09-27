@@ -59,6 +59,11 @@ export interface AppEnv {
   tlsDir: string;
   /** Binaire openssl lancé par execFile pour générer le certificat (COCKPIT_OPENSSL, chemin absolu). */
   opensslPath: string;
+  /**
+   * Salle OMO (1.1) : interrupteur et chemins lus dans l'environnement, jamais dans l'interface (§3.6 l.289). Toujours rempli
+   * par loadEnv ; ABSENT d'un AppEnv construit à la main (harnais, tests d'avant la salle) = salle coupée, lu par `omoOf`.
+   */
+  omo?: OmoEnv;
   version: string;
   /**
    * Relais de sortie d'opencode (1.0.6) : port d'écoute sur le réseau interne (COCKPIT_RELAY_PORT) et nom du service qui désigne ce
@@ -137,6 +142,107 @@ export function parseRelay(env: NodeJS.ProcessEnv, interfacePort: number): { por
     throw new EnvError("COCKPIT_RELAY_PEER : nom de service attendu (par exemple opencode).");
   }
   return { port, peer };
+}
+
+// --- Salle OMO (§3.6 l.289, §3.15 ; contrat docker/opencode-omo/contrat-salle.json, clés `variables.cockpit`) -------------------
+
+/**
+ * Réglages de la Salle OMO lus dans l'environnement. Aucun comportement n'en découle ici : la salle reste coupée tant que le
+ * câblage ne la branche pas. `password` n'est jamais journalisé ni recopié dans un message d'erreur.
+ */
+export interface OmoEnv {
+  /** COCKPIT_OMO : « on » ouvre la salle ; absent, vide ou « off » la laisse coupée (défaut livré). */
+  enabled: boolean;
+  /** OPENCODE_OMO_URL : serveur opencode de la salle, joint par le réseau interne seul. */
+  url: string;
+  /** OPENCODE_OMO_PASSWORD : mot de passe du serveur de la salle, exigé (≥ 32 caractères) quand la salle est ouverte. */
+  password: string;
+  /** COCKPIT_OMO_IMAGE : image chargée par `install.ps1 -OmoArchive` ; vide tant qu'aucune archive n'a été chargée. */
+  image: string;
+  /** COCKPIT_OMO_CONTROL_DIR : volume `control-omo` côté cockpit (écriture) : battement, demande d'arrêt, état du filet. */
+  controlDir: string;
+  /** COCKPIT_OMO_STATE_DIR : volume `omo-state` côté cockpit (lecture seule) : `state.json` du superviseur. */
+  stateDir: string;
+  /** COCKPIT_OMO_AUTH_DIR : volume `omo-auth` côté cockpit (écriture) : `auth.json` réduit à l'entrée github-copilot. */
+  authDir: string;
+  /** COCKPIT_OMO_PROJECTS_FILE : `omo-projets.json` écrit par `install.ps1` ; null : aucune liste de projets préparés. */
+  projectsFile: string | null;
+  /** COCKPIT_EGRESS_JOURNAL : volume `egress-log` côté cockpit (lecture seule) : journal des sorties refusées. */
+  egressJournal: string;
+}
+
+/** Adresse d'office de la salle : nom du service du contrat, sur le réseau interne. */
+export const OMO_URL_DEFAUT = "http://opencode-omo:4096";
+/** Cibles d'office des volumes de la salle côté cockpit, telles que le contrat les monte. */
+export const OMO_CONTROL_DIR_DEFAUT = "/control-omo";
+export const OMO_STATE_DIR_DEFAUT = "/omo-state";
+export const OMO_AUTH_DIR_DEFAUT = "/omo-auth";
+export const OMO_EGRESS_JOURNAL_DEFAUT = "/egress-log";
+/** Longueur minimale du mot de passe du serveur de la salle, salle ouverte (même exigence que COCKPIT_TOKEN). */
+export const OMO_PASSWORD_MIN = 32;
+
+/** Salle coupée : ce que vaut `AppEnv.omo` quand l'environnement n'a pas été lu (objet construit à la main). */
+export const OMO_COUPEE: OmoEnv = Object.freeze({
+  enabled: false,
+  url: OMO_URL_DEFAUT,
+  password: "",
+  image: "",
+  controlDir: OMO_CONTROL_DIR_DEFAUT,
+  stateDir: OMO_STATE_DIR_DEFAUT,
+  authDir: OMO_AUTH_DIR_DEFAUT,
+  projectsFile: null,
+  egressJournal: OMO_EGRESS_JOURNAL_DEFAUT,
+});
+
+/** Réglages de la salle d'un AppEnv : champ absent = salle coupée. Point de lecture unique pour tout le serveur. */
+export function omoOf(env: Pick<AppEnv, "omo">): OmoEnv {
+  return env.omo ?? OMO_COUPEE;
+}
+
+/**
+ * Réglages de la salle, sur le modèle de parseAutonomy : « on » ou « off » seulement, tout le reste refuse le démarrage. Les
+ * messages nomment la clé sans jamais recopier la valeur lue (mot de passe, adresse, identifiant d'image).
+ */
+export function parseOmo(env: NodeJS.ProcessEnv): OmoEnv {
+  const interrupteur = env.COCKPIT_OMO?.trim().toLowerCase() ?? "";
+  if (interrupteur !== "" && interrupteur !== "on" && interrupteur !== "off") {
+    throw new EnvError("COCKPIT_OMO : valeur refusée (on ou off).");
+  }
+  const enabled = interrupteur === "on";
+
+  const url = (env.OPENCODE_OMO_URL?.trim() || OMO_URL_DEFAUT).replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new EnvError("OPENCODE_OMO_URL : adresse invalide (http(s)://hôte:port attendu).");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EnvError("OPENCODE_OMO_URL doit être http(s).");
+  // Même piège que OPENCODE_URL : un port refusé par fetch (Node) rendrait la salle injoignable sans aucune erreur lisible.
+  const omoPort = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+  if (isFetchBlockedPort(omoPort)) {
+    throw new EnvError(`OPENCODE_OMO_URL : le port ${omoPort} est refusé par fetch (Node), le cockpit ne pourrait jamais joindre la salle. Choisissez un autre port.`);
+  }
+
+  const password = env.OPENCODE_OMO_PASSWORD?.trim() ?? "";
+  if (enabled && password.length < OMO_PASSWORD_MIN) {
+    throw new EnvError(`Variable OPENCODE_OMO_PASSWORD manquante ou trop courte (${OMO_PASSWORD_MIN} caractères minimum).`);
+  }
+
+  const projets = env.COCKPIT_OMO_PROJECTS_FILE?.trim() ?? "";
+  if (projets !== "" && !path.isAbsolute(projets)) throw new EnvError("COCKPIT_OMO_PROJECTS_FILE : chemin absolu attendu.");
+
+  return {
+    enabled,
+    url,
+    password,
+    image: env.COCKPIT_OMO_IMAGE?.trim() ?? "",
+    controlDir: absolutePath(env, "COCKPIT_OMO_CONTROL_DIR", OMO_CONTROL_DIR_DEFAUT),
+    stateDir: absolutePath(env, "COCKPIT_OMO_STATE_DIR", OMO_STATE_DIR_DEFAUT),
+    authDir: absolutePath(env, "COCKPIT_OMO_AUTH_DIR", OMO_AUTH_DIR_DEFAUT),
+    projectsFile: projets === "" ? null : path.resolve(projets),
+    egressJournal: absolutePath(env, "COCKPIT_EGRESS_JOURNAL", OMO_EGRESS_JOURNAL_DEFAUT),
+  };
 }
 
 export type LocalScheme = "https" | "http";
@@ -238,6 +344,7 @@ export function loadEnv(env: NodeJS.ProcessEnv = process.env): AppEnv {
     ...parseLocalAccess(env),
     tlsDir: absolutePath(env, "COCKPIT_TLS_DIR", "/tls"),
     opensslPath: absolutePath(env, "COCKPIT_OPENSSL", "/usr/bin/openssl"),
+    omo: parseOmo(env),
     version: env.COCKPIT_VERSION?.trim() || "dev",
     relay: parseRelay(env, port),
   };

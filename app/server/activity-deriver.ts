@@ -18,6 +18,10 @@
 // l'évaluation de ses règles (garde des délégations, L1d) qui peut le dire, par ce même port. La source « raccourci » vient du
 // paramètre `command` de la partie `task`, que l'IA peut remplir elle-même (opencode 1.18.30) : seule l'absence de demande pour
 // l'appel prouve un lancement sans confirmation, et fact-store ne garde sans_confirmation qu'avec aucune demande connue.
+// 1.1, Salle OMO (L18a) : UNE dérivation PAR INSTANCE (option `instance`), donc une mémoire du flux par instance — rien ne
+// circule d'une instance à l'autre. Chacune n'accepte que les événements de son instance (origine du processeur) et que les
+// sessions de son instance ; `sessions.ensure` part sur le client de son instance. Les faits d'une racine de la salle sont donc
+// écrits comme ceux d'une racine de l'instance principale, jamais mêlés.
 import type { Cockpit11, DelegationUpsert, EventDerivation, WaitUpsert } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import type { OcGlobalEvent } from "./opencode.ts";
@@ -32,7 +36,7 @@ import {
   type FactSession,
   factsFromEvent,
 } from "./shared/activity-facts.ts";
-import type { ActivityFact, DelegationState, ReponseFactData } from "./shared/activity-types.ts";
+import type { ActivityFact, DelegationState, ReponseFactData, SessionInstance } from "./shared/activity-types.ts";
 import { ID_RE } from "./shared/ids.ts";
 
 /** Recherche d'une session inconnue (sessions.ensure) : 5 s au plus (§3.10 point 2). */
@@ -101,6 +105,11 @@ export interface ActivityDerivationOptions {
   now?: () => number;
   /** Tests : délai de sessions.ensure (5 s par défaut). */
   ensureTimeoutMs?: number;
+  /**
+   * Instance servie (1.1). Absente : « principale », et l'inscription garde exactement sa forme 1.0.x/it1 (aucun champ
+   * `instances`). « omo » : la dérivation est inscrite pour la salle seule et ne voit jamais l'instance principale.
+   */
+  instance?: SessionInstance;
 }
 
 interface Pending {
@@ -138,6 +147,7 @@ const waitOf = (row: WaitRow): WaitUpsert => ({
 export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOptions = {}): EventDerivation {
   const now = options.now ?? Date.now;
   const ensureTimeoutMs = options.ensureTimeoutMs ?? ENSURE_TIMEOUT_MS;
+  const instance: SessionInstance = options.instance ?? "principale";
   const memory = new EventMemory(MEMORY_MAX);
   const deduper = new FactDeduper();
   /** Sessions connues par leur événement session.created ou session.updated, avant que la file du processeur les enregistre. */
@@ -158,6 +168,8 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
 
   const session = (id: string, info?: Readonly<Record<string, unknown>>): FactSession | null => {
     const row = c11.sessions.get(id);
+    // Session suivie par l'AUTRE instance : cette dérivation ne la connaît pas (aucun fait croisé, même à identifiant égal).
+    if (row && (row.instance ?? "principale") !== instance) return null;
     if (row && (row.parent_id === null || c11.sessions.get(row.parent_id) !== undefined)) return fromRow(row);
     const known = seen.get(id);
     if (known) return known;
@@ -169,7 +181,7 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     const sticky = parent && STICKY_PURPOSES.has(parent.purpose) ? parent.purpose : null;
     // Titre d'un enfant écrit par l'IA (description du task) : jamais lu comme l'usage d'une session du cockpit (purposeOf).
     const purpose = sticky ?? purposeOf({ title: typeof info.title === "string" ? info.title : "", metadata: isRecord(info.metadata) ? info.metadata : undefined }, parentId);
-    return { rootId: parent?.rootId ?? id, parentId, purpose, instance: parent?.instance ?? "principale" };
+    return { rootId: parent?.rootId ?? id, parentId, purpose, instance: parent?.instance ?? instance };
   };
 
   const rememberSession = (event: FactEvent): void => {
@@ -204,6 +216,14 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     sentMessages.set(id, "message");
   };
 
+  // `amont` : demande de contrat de L25a, traitée par le train de la vague 2 (2 ter) sur ce fichier de L18a, clos — plan §2.3
+  // « Changement de contrat après son train ». Ce que la mémoire du flux sait et que les règles pures ne peuvent pas deviner :
+  // l'identité douteuse d'un message (MO-1) et la délégation en tâche de fond dont une session est l'enfant (JP-3). Toutes les
+  // entrées de `FactUpstream` sont facultatives et leur absence rend la règle MUETTE : sans ce branchement, aucune règle
+  // n'inventait quoi que ce soit, elles se taisaient. Hors de la salle, rien ne change : les anomalies de MO-1 ne se produisent
+  // pas dans l'instance principale et aucune clé nouvelle n'est écrite (fixtures p1/p2/p6/p7 et demo-p1.json inchangées).
+  // `noReply` (F-h) reste absent : seul le processeur de la salle sait qu'un message a été déposé sans tour, et il le fournira
+  // avec L23c (vague 4). Tant qu'il manque, le fait `reveil` par drapeau se tait ; le marqueur cru dans la salle suffit au cas 4.
   const context = (receivedAt: number): FactContext => ({
     receivedAt,
     session,
@@ -212,6 +232,7 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     firstUserMessage: (id) => memory.firstUserMessage(id),
     userMessageParts: (id) => memory.userMessageParts(id),
     unansweredUserMessages: (id) => memory.unansweredUserMessages(id),
+    amont: memory.amont(),
   });
 
   // --- Délégations et attentes d'accord (écrivain unique : ports.facts.work) -----------------------------------------------------
@@ -386,8 +407,10 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
     let found = false;
     try {
       found = await Promise.race([
-        c11.sessions.ensure(sessionId, directory).then(
-          (row) => row !== undefined,
+        // Recherche sur le client de l'instance de cette dérivation (L18a) : l'usage d'une session de la salle est relevé sur
+        // le serveur de la salle, et aucune session de la salle n'est demandée à l'instance principale.
+        c11.sessions.ensure(sessionId, directory, 0, instance).then(
+          (row) => row !== undefined && (row.instance ?? "principale") === instance,
           () => false,
         ),
         timeout,
@@ -424,7 +447,11 @@ export function activityDerivation(c11: Cockpit11, options: ActivityDerivationOp
 
   return {
     name: "facts",
-    onEvent(global: OcGlobalEvent): void {
+    // Champ ABSENT pour l'instance principale : l'inscription garde sa forme 1.0.x/it1 (listes exhaustives des croisements).
+    ...(instance === "principale" ? {} : { instances: [instance] }),
+    onEvent(global: OcGlobalEvent, origin?: { instance: SessionInstance }): void {
+      // Origine du processeur : absente = instance principale. Un événement d'une autre instance n'entre jamais ici.
+      if ((origin?.instance ?? "principale") !== instance) return;
       const event = global.payload as FactEvent | undefined;
       if (!event || typeof event.type !== "string") return;
       if (event.type === "session.updated") {

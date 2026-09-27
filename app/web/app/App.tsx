@@ -16,23 +16,35 @@ import { AssistantsPage } from "../pages/AssistantsPage.tsx";
 import { ChatPage } from "../pages/ChatPage.tsx";
 import { CostsPage } from "../pages/CostsPage.tsx";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage.tsx";
+// [3d] début : page de la salle de contrôle, #/salle-controle (itération 3, T3d-a)
+import { SalleControlePage } from "../pages/salle-controle/SalleControlePage.tsx";
+// [3d] fin
 import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
+import { SalleOmoPage } from "../pages/omo/SalleOmoPage.tsx";
 import { AppProvider, type ThemeChoice, useApp } from "./AppContext.tsx";
 import { BootErrorScreen, RecoveryBanner } from "./BootRecovery.tsx";
 import { FirstRunRules, needsRules, UPGRADE_NOTICE_VERSION, UpgradeNotice } from "./FirstRunRules.tsx";
 import { LocalHttpBanner } from "./LocalHttpNotice.tsx";
 import { useBootRecovery } from "./useBootRecovery.ts";
 
-const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean }> = [
+const NAV: Array<{ id: string; label: string; icon: IconName; advancedOnly?: boolean; omoOnly?: boolean }> = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "assistants", label: "Assistants", icon: "sparkle" },
   { id: "couts", label: "Coûts", icon: "coins" },
   { id: "archives", label: "Archives", icon: "archive" },
   { id: "studio", label: "Studio (avancé)", icon: "bot", advancedOnly: true },
+  // 1.1, Salle OMO (L26a) : visible en mode Avancé SEULEMENT, et seulement si COCKPIT_OMO est ouvert et l'image chargée
+  // (§4.14.1 l.806). Le champ `omo` du Bootstrap est absent quand la salle n'est pas configurée : rien ne s'affiche.
+  { id: "salle", label: "Salle OMO", icon: "bolt", advancedOnly: true, omoOnly: true },
   { id: "parametres", label: "Paramètres", icon: "settings" },
   { id: "diagnostic", label: "Diagnostic", icon: "pulse" },
 ];
+
+/** Entrée « Salle OMO » : mode Avancé, COCKPIT_OMO=on et image de la salle chargée sur ce poste. */
+function salleVisible(boot: Bootstrap): boolean {
+  return boot.omo?.enabled === true && boot.omo.imageChargee;
+}
 
 export function App() {
   // Amorçage et reprise automatique après un échec (1.1, décision U4) : une interface déjà chargée n'est plus remplacée par
@@ -237,7 +249,7 @@ function Shell({ recovery, onRetry }: { recovery: BootView<Bootstrap>; onRetry: 
   const providers = boot.allowedProviders ?? [];
   const testProviders = providers.length > 0 && !isDefaultProviders(providers);
   const providerIssues = boot.security.providerIssues ?? [];
-  const nav = NAV.filter((item) => advanced || !item.advancedOnly);
+  const nav = NAV.filter((item) => (advanced || !item.advancedOnly) && (!item.omoOnly || salleVisible(boot)));
   // Mode HTTP local : bandeau visible dans les modes Simple et Avancé, jamais masquable (I6).
   const accessNotice = localAccessNotice({
     scheme: boot.security.localScheme,
@@ -399,10 +411,21 @@ function Shell({ recovery, onRetry }: { recovery: BootView<Bootstrap>; onRetry: 
             ) : (
               <AdvancedOnlyPage title="Studio (avancé)" />
             )
+          ) : section === "salle" ? (
+            // Salle OMO (L26a) : rien n'y est atteignable en mode Simple, ni quand la salle n'est pas installée sur ce poste.
+            advanced && salleVisible(boot) ? (
+              <SalleOmoPage />
+            ) : (
+              <AdvancedOnlyPage title="Salle OMO" />
+            )
           ) : section === "parametres" ? (
             <SettingsPage />
           ) : section === "diagnostic" ? (
             <DiagnosticsPage />
+            // [3d] début : page de la salle de contrôle, sans entrée de navigation (itération 3, T3d-a)
+          ) : section === "salle-controle" ? (
+            <SalleControlePage />
+            // [3d] fin
           ) : (
             <ChatPage />
           )}

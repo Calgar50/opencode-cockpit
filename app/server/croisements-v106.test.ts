@@ -12,21 +12,38 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { Hono } from "hono";
+import { parse as parseYaml } from "yaml";
 import { knownDirectories, probeSessionsBusyStrict } from "./assistants.ts";
 import { requestPendingRescan } from "./autonomy-requests.ts";
-import type { ActivationPort, ControlAiInput, ConversationAutonomyPort, RequestsPort } from "./contracts-11.ts";
+import { createConsignesStore } from "./consignes-store.ts";
+import type { ActivationPort, Cockpit11, Cockpit11Module, ControlAiInput, ConversationAutonomyPort, RequestsPort } from "./contracts-11.ts";
 import { CONTROL_AGENT_PROMPT, createControlAiModule } from "./control-ai.ts";
 import { collectEditFacts } from "./edit-facts.ts";
-import { PERMISSION_MESSAGES } from "./http.ts";
+import { decideConnect, egressAllowedHosts, type LoginWindow, splitConnectTarget } from "./egress-policy.ts";
+import { hoteAutoriseDeLEnvironnement } from "./egress-proxy.ts";
+import { parseCopilotApiUrl, parseGithubEnterpriseDomain } from "./env.ts";
+import { forbiddenCommandArguments, forbiddenProxyBody, PERMISSION_MESSAGES } from "./http.ts";
+import { createLogger } from "./log.ts";
+import { createOcProxy, PROXY_RULES_OMO } from "./oc-proxy.ts";
+import type { OmoActivationPort, OmoControlPort, OmoPrecheckPort, OmoRoomPort, OmoStopPort } from "./omo-contracts.ts";
+import { createOmoControl } from "./omo-control.ts";
+import { createOmoRoom } from "./omo-room.ts";
+import { creerModuleOmoStop } from "./omo-stop.ts";
 import { ProjectsService } from "./projects.ts";
+import { registerOmoRoutes } from "./routes-omo.ts";
 import type { AutonomyChoice, AutonomyRequestView } from "./shared/autonomy-types.ts";
 import { CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
+import { decoupeCibleConnect, egressAllow } from "./shared/egress-allow.ts";
+import { ecrireEtat } from "./shared/omo-control-protocol.ts";
+import type { OmoPreparedProjects, OmoSupervisorState } from "./shared/omo-types.ts";
+import type { RevoirConsignesEnfantResponse, RevoirEtatResponse, RevoirResponse, TerritoiresResponse } from "./shared/salle3d-types.ts";
 import { classifyCommand } from "./shared/shell-gate.ts";
 import { collectShellContext } from "./shell-facts.ts";
 import { StudioService } from "./studio.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent, FakePermissionRequest, FakeSession, FakeToolScript } from "./test-support/fake-opencode.ts";
-import { bash, until, within } from "./test-support/helpers.ts";
+import { bash, promptAsync, until, within } from "./test-support/helpers.ts";
 
 const OC = "/workspace";
 /** Nom créable par une IA, valide sous NTFS : opencode 1.18.30 l'ouvrirait en « /secret ». */
@@ -641,3 +658,576 @@ describe("croisements v106 : GET /permission rejeté par opencode (option permis
     );
   });
 });
+
+// <gf1:v106>
+// --- Grande fusion, GF1 : salle × 1.0.6 (fiche-fusion-v106 §3.10 ; décisions A29 : D1, D2, D4) ------------------------------------
+// La salle entre fermée (SALLE_OUVERTE fausse dans le dépôt) : chaque test l'ouvre pour lui seul, comme ses propres tests (L18c,
+// L22c, L23b). Deux faux opencode, aucun appel facturé. T-S7 (banc complet de la salle) et T-S10 (omo-image.test.ts) sont ailleurs.
+
+/** Projet piège de la salle (fiche §3.5) : un seul segment ici ; après le double décodage d'opencode, son dossier de données. */
+const TRAP_SALLE = "a%2F..%2F..%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode";
+/** Nom légitime avec un % isolé : jamais une séquence %XX. */
+const REMISE = "Remise 20%";
+const RACINE_DEPOT = path.join(import.meta.dirname, "..", "..");
+
+interface SalleOuverte {
+  h: CockpitHarness;
+  omo: NonNullable<CockpitHarness["omo"]>;
+  workspace: string;
+  /** Projets passés au pré-contrôle (espion) : un projet refusé avant ne doit jamais y arriver. */
+  prechecks: string[];
+}
+
+/**
+ * Cockpit réel, salle branchée sur le VRAI service de L18c et ses routes /api/omo/*, porte SALLE_OUVERTE ouverte pour ce test seul ;
+ * pré-contrôle, arrêt et contrôle en espions. `projets` : préparés dans omo-projets.json, comme install.ps1 l'écrirait, et créés
+ * dans le dossier de travail.
+ */
+async function salleOuverte(t: TestContext, projets: readonly string[], options: Pick<CockpitHarnessOptions, "deps"> = {}): Promise<SalleOuverte> {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-croisements-v106-salle-")));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const dossier = (nom: string) => {
+    const complet = path.join(tmp, nom);
+    fs.mkdirSync(complet, { recursive: true });
+    return complet;
+  };
+  const workspace = dossier("workspace");
+  for (const projet of projets) fs.mkdirSync(path.join(workspace, projet, ".git"), { recursive: true });
+  const projetsFichier = path.join(dossier("source"), "omo-projets.json");
+  const liste: OmoPreparedProjects = {
+    version: 1,
+    genereLe: "2026-09-27T00:00:00Z",
+    projets: projets.map((chemin) => ({ chemin, git: "dossier" as const })),
+    gitProteges: projets.map((chemin) => ({ chemin: `${chemin}/.git`, forme: "dossier" as const })),
+  };
+  fs.writeFileSync(projetsFichier, `${JSON.stringify(liste)}\n`, "utf8");
+  const prechecks: string[] = [];
+  const omoPrecheck: OmoPrecheckPort = {
+    check: async (projet) => {
+      prechecks.push(projet);
+      return { ok: true, resultat: { projet, verdict: "conforme", raison: null, trouves: [] } };
+    },
+    beforeStart: async (startId) => ({ ok: true, startId, resultats: [] }),
+  };
+  const omoStop: OmoStopPort = { run: async () => assert.fail("arrêt inattendu"), relaunchAfterRequest: async () => undefined };
+  const omoControl: OmoControlPort = {
+    startHeartbeat: () => undefined,
+    stopHeartbeat: () => undefined,
+    requestStop: async () => undefined,
+    writePrecheckOk: async () => undefined,
+    writeGuardState: async () => undefined,
+    publishAuth: async () => undefined,
+    readState: async () => null,
+    suspend: () => undefined,
+    resume: () => undefined,
+    suspended: () => false,
+  };
+  const controlDir = dossier("control");
+  const authDir = dossier("auth");
+  const egressJournal = dossier("egress");
+  const moduleSalle: Cockpit11Module = {
+    name: "omoRoom",
+    install(reg, c11) {
+      const ouvert: Cockpit11 = { ...c11, salleOuverte: true };
+      ouvert.ports.omoRoom = createOmoRoom({
+        db: c11.db,
+        sessions: c11.sessions,
+        log: c11.log,
+        env: c11.env,
+        workspace,
+        controlDir,
+        authDir,
+        projectsFile: projetsFichier,
+        egressJournal,
+        ports: () => c11.ports,
+        instance: () => c11.instances?.omo ?? null,
+        salleOuverte: () => true,
+      });
+      reg.routes("omo", (app) => registerOmoRoutes(app, ouvert), { instances: ["omo"] });
+    },
+  };
+  const h = await startCockpit(t, {
+    ...options,
+    omo: true,
+    modules: [moduleSalle],
+    ports: { omoPrecheck, omoStop, omoControl },
+    settings: { ui: { mode: "avance" } },
+    env: { workspaceDir: workspace },
+  });
+  assert.ok(h.omo, "harnais : option « omo »");
+  return { h, omo: h.omo, workspace, prechecks };
+}
+
+/** Montage /api/omo/oc/* de la salle construit comme dans http.ts (createOcProxy, PROXY_RULES_OMO), hors de la porte SALLE_OUVERTE. */
+function proxySalle(h: CockpitHarness, omo: NonNullable<CockpitHarness["omo"]>, egressLogin?: Pick<LoginWindow, "open">): Hono {
+  const app = new Hono();
+  app.all(
+    "/api/omo/oc/*",
+    createOcProxy({
+      env: h.deps.env,
+      log: h.deps.log,
+      projects: h.deps.projects,
+      hooks: h.cockpit.wiring,
+      instanceOf: (id: string) => h.sessions.get(id)?.instance ?? null,
+      forbiddenProxyBody,
+      forbiddenCommandArguments,
+      enforceTurn: async (_c, _sub, _directory, body) => body,
+      instance: omo.deps,
+      prefix: "/api/omo/oc",
+      rules: PROXY_RULES_OMO,
+      ...(egressLogin === undefined ? {} : { egressLogin }),
+    }),
+  );
+  return app;
+}
+
+const lignesRooms = (h: CockpitHarness): number => (h.db.prepare("SELECT COUNT(*) AS n FROM omo_rooms").get() as { n: number }).n;
+const requetesDe = (requetes: ReadonlyArray<{ method: string; pathname: string }>, depuis: number): string[] =>
+  requetes.slice(depuis).map((r) => `${r.method} ${r.pathname}`);
+
+interface ServiceCompose {
+  profiles?: string[];
+  networks?: string[] | Record<string, unknown>;
+  network_mode?: string;
+  environment?: Record<string, string>;
+}
+interface ComposeLu {
+  services: Record<string, ServiceCompose>;
+  networks?: Record<string, { internal?: boolean } | null>;
+}
+const COMPOSE_TEXTE = fs.readFileSync(path.join(RACINE_DEPOT, "docker-compose.yml"), "utf8");
+/** Réseaux d'un service : sans clé, `default` seul (Compose) ; network_mode : aucun réseau du projet. */
+function reseauxDe(service: ServiceCompose | undefined): string[] {
+  if (service?.network_mode !== undefined) return [];
+  if (service?.networks === undefined) return ["default"];
+  return Array.isArray(service.networks) ? [...service.networks] : Object.keys(service.networks);
+}
+
+describe("croisements v106 <gf1:v106> : salle × 1.0.6 (fiche §3.10)", () => {
+  it("T-S1 : ouverture et pré-contrôle d'un projet préparé au nom %XX → 400 hors-workspace, zéro requête, aucune ligne omo_rooms ; « Remise 20% » préparé → ouvert, à l'octet", async (t) => {
+    const s = await salleOuverte(t, [TRAP_SALLE, REMISE]);
+    const repereSalle = s.omo.fake.requests.length;
+    const reperePrincipal = s.h.fake.requests.length;
+    const ouverture = await s.h.call("POST", "/api/omo/rooms", { headers: s.h.headers.confirmed, body: { projet: TRAP_SALLE } });
+    assert.equal(ouverture.status, 400, ouverture.body);
+    assert.equal(ouverture.json<{ error: string }>().error, "hors-workspace");
+    const precontrole = await s.h.call("GET", `/api/omo/precheck?projet=${q(TRAP_SALLE)}`, { headers: s.h.headers.authed });
+    assert.equal(precontrole.status, 400, precontrole.body);
+    assert.equal(precontrole.json<{ error: string }>().error, "hors-workspace");
+    assert.deepEqual(requetesDe(s.omo.fake.requests, repereSalle), [], "zéro requête à l'instance de la salle");
+    assert.deepEqual(requetesDe(s.h.fake.requests, reperePrincipal), [], "zéro requête à l'instance principale");
+    assert.deepEqual(s.prechecks, [], "le dossier piège n'est jamais lu par le pré-contrôle");
+    assert.equal(lignesRooms(s.h), 0);
+
+    // Témoin : un % isolé n'est pas une séquence ; la salle s'ouvre, dans ce dossier, à l'octet.
+    const remise = await s.h.call("POST", "/api/omo/rooms", { headers: s.h.headers.confirmed, body: { projet: REMISE } });
+    assert.equal(remise.status, 200, remise.body);
+    assert.deepEqual(s.prechecks, [REMISE]);
+    assert.equal(lignesRooms(s.h), 1);
+    const creations = s.omo.fake.requests.slice(repereSalle).filter((r) => r.method === "POST" && r.pathname === "/session");
+    assert.deepEqual(
+      creations.map((r) => r.query.directory),
+      [path.join(s.workspace, REMISE)],
+    );
+  });
+
+  it("T-S2 : proxy de la salle avec un dossier %XX — session, agent, prompt_async → 403 forbidden-directory, zéro requête à la salle", async (t) => {
+    const s = await salleOuverte(t, []);
+    const racine = await s.omo.deps.client.request<FakeSession>("POST", "/session", { directory: `${OC}/proj`, body: { title: "proj" } });
+    await until(() => s.h.sessions.get(racine.id)?.instance === "omo");
+    const proxy = proxySalle(s.h, s.omo);
+    const trap = q(`${OC}/${TRAP_SALLE}`);
+    const repere = s.omo.fake.requests.length;
+    const refus: Array<[string, Response]> = [
+      ["GET /session", await proxy.request(`/api/omo/oc/session?directory=${trap}`)],
+      ["GET /agent", await proxy.request(`/api/omo/oc/agent?directory=${trap}`)],
+      [
+        "POST prompt_async",
+        await proxy.request(`/api/omo/oc/session/${racine.id}/prompt_async?directory=${trap}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: MODEL, parts: [{ type: "text", text: "Travaille." }] }),
+        }),
+      ],
+    ];
+    for (const [label, res] of refus) {
+      const corps = await res.text();
+      assert.equal(res.status, 403, `${label} : ${corps}`);
+      assert.equal((JSON.parse(corps) as { error: string }).error, "forbidden-directory", label);
+    }
+    assert.deepEqual(requetesDe(s.omo.fake.requests, repere), [], "zéro requête à la salle");
+    assert.deepEqual(s.omo.fake.instancesHors(), [], "aucune instance de la salle hors de /workspace");
+  });
+
+  it("T-S3 : routes OAuth sur le montage de la salle → refus, fenêtre de connexion jamais ouverte ; montage principal : ouverte (I4) ; egressLogin passé au seul montage /api/oc", async (t) => {
+    let ouvertures = 0;
+    const fenetre = { open: () => void ouvertures++ };
+    const s = await salleOuverte(t, [], { deps: () => ({ egressLogin: fenetre }) });
+    // Même si un câblage futur passait la fenêtre au montage de la salle : PROXY_RULES_OMO n'a aucune route OAuth.
+    const proxy = proxySalle(s.h, s.omo, fenetre);
+    const repere = s.omo.fake.requests.length;
+    for (const route of ["authorize", "callback"]) {
+      const res = await proxy.request(`/api/omo/oc/provider/github-copilot/oauth/${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method: 0 }),
+      });
+      assert.equal(res.status, 404, route);
+      assert.equal(((await res.json()) as { error: string }).error, "not-allowed", route);
+      // Montage réel de l'application (fermé par SALLE_OUVERTE) : refusé aussi, sans rien ouvrir.
+      const reel = await s.h.call("POST", `/api/omo/oc/provider/github-copilot/oauth/${route}`, { headers: s.h.headers.mutating, body: { method: 0 } });
+      assert.ok(reel.status === 403 || reel.status === 404, `${route} : ${reel.status} ${reel.body}`);
+    }
+    assert.equal(ouvertures, 0, "fenêtre de connexion jamais ouverte depuis la salle");
+    assert.deepEqual(requetesDe(s.omo.fake.requests, repere), []);
+    // Montage principal : la demande du code ouvre la fenêtre (I4 inchangé par le déplacement du proxy, L18b).
+    await s.h.call("POST", "/api/oc/provider/github-copilot/oauth/authorize", { headers: s.h.headers.mutating, body: { method: 0, inputs: { deploymentType: "github.com" } } });
+    assert.equal(ouvertures, 1);
+    // Câblage : egressLogin n'est passé qu'au montage /api/oc, jamais à proxyCommun ni au montage de la salle.
+    const http = fs.readFileSync(path.join(import.meta.dirname, "http.ts"), "utf8");
+    const passages = [...http.matchAll(/egressLogin: deps\.egressLogin/g)].map((m) => m.index ?? 0);
+    assert.equal(passages.length, 1);
+    const principal = http.lastIndexOf('prefix: "/api/oc",', passages[0]);
+    const salle = http.indexOf('prefix: "/api/omo/oc",');
+    assert.ok(principal > 0 && (passages[0] ?? 0) - principal < 600 && (passages[0] ?? 0) < salle, "dans l'appel createOcProxy du montage principal");
+    assert.doesNotMatch(/const proxyCommun = \{[^\n]*\}/.exec(http)?.[0] ?? "", /egressLogin/);
+  });
+
+  it("T-S4 : docker-compose.yml fusionné valide (clés uniques, ancres fusionnées), avec et sans le profil omo ; une seule clé networks à la racine et dans cockpit", () => {
+    const complet = parseYaml(COMPOSE_TEXTE, { merge: true, uniqueKeys: true }) as ComposeLu;
+    assert.deepEqual(Object.keys(complet.services).sort(), ["cockpit", "egress", "omo-init", "opencode", "opencode-omo"]);
+    const sansProfil = Object.fromEntries(Object.entries(complet.services).filter(([, s]) => !(s.profiles ?? []).includes("omo")));
+    assert.deepEqual(Object.keys(sansProfil).sort(), ["cockpit", "opencode"]);
+    // Tout réseau cité, avec ou sans le profil, est déclaré une fois à la racine.
+    for (const services of [complet.services, sansProfil]) {
+      for (const [nom, service] of Object.entries(services)) {
+        for (const reseau of reseauxDe(service)) assert.ok(reseau === "default" || Object.hasOwn(complet.networks ?? {}, reseau), `${nom} : ${reseau}`);
+      }
+    }
+    assert.equal((COMPOSE_TEXTE.match(/^networks:$/gm) ?? []).length, 1);
+    const blocCockpit = COMPOSE_TEXTE.slice(COMPOSE_TEXTE.indexOf("\n  cockpit:\n"), COMPOSE_TEXTE.indexOf("\n  # --- Salle Oh My OpenAgent"));
+    assert.equal((blocCockpit.match(/^ {4}networks:/gm) ?? []).length, 1);
+    // Témoin : la fusion automatique de GF1 (seconde clé networks) est refusée par la même lecture.
+    assert.throws(() => parseYaml(`${COMPOSE_TEXTE}\nnetworks:\n  omo-internal:\n    internal: true\n`, { merge: true, uniqueKeys: true }), /unique/i);
+  });
+
+  it("T-S5 : réseaux — interne = {cockpit, opencode}, omo-internal = {cockpit, egress, opencode-omo} ; NO_PROXY d'opencode sans la salle, celui de la salle avec 0.0.0.0 et egress", () => {
+    const c = parseYaml(COMPOSE_TEXTE, { merge: true }) as ComposeLu;
+    const membres = (reseau: string) =>
+      Object.entries(c.services)
+        .filter(([, service]) => reseauxDe(service).includes(reseau))
+        .map(([nom]) => nom)
+        .sort();
+    assert.deepEqual(membres("interne"), ["cockpit", "opencode"]);
+    assert.deepEqual(membres("omo-internal"), ["cockpit", "egress", "opencode-omo"]);
+    assert.equal(c.networks?.interne?.internal, true);
+    assert.equal(c.networks?.["omo-internal"]?.internal, true);
+    assert.ok(!reseauxDe(c.services.opencode).includes("omo-internal"), "opencode jamais sur le réseau de la salle");
+    assert.deepEqual(reseauxDe(c.services["opencode-omo"]), ["omo-internal"], "la salle ni sur interne ni sur default");
+    const liste = (service: string, cle: string) => String(c.services[service]?.environment?.[cle] ?? "").split(",");
+    for (const cle of ["NO_PROXY", "no_proxy"]) {
+      const oc = liste("opencode", cle);
+      assert.ok(oc.includes("0.0.0.0"), cle);
+      assert.ok(!oc.includes("opencode-omo") && !oc.includes("egress"), `${cle} : ${oc.join(",")}`);
+    }
+    const salle = liste("opencode-omo", "NO_PROXY");
+    assert.ok(salle.includes("0.0.0.0") && salle.includes("egress"), salle.join(","));
+    assert.ok(!salle.includes("opencode"), salle.join(","));
+  });
+
+  it("T-S6 : NO_PROXY du cockpit garde opencode-omo et egress (sinon NODE_USE_ENV_PROXY enverrait le mot de passe de la salle au proxy de l'entreprise)", () => {
+    const c = parseYaml(COMPOSE_TEXTE, { merge: true }) as ComposeLu;
+    const cockpit = c.services.cockpit?.environment ?? {};
+    assert.equal(cockpit.NODE_USE_ENV_PROXY, "1");
+    const hotes = String(cockpit.NO_PROXY).replace(/\$\{[^}]*\}*/g, "").split(",");
+    for (const nom of ["opencode-omo", "egress", "opencode", "cockpit", "localhost", "127.0.0.1"]) assert.ok(hotes.includes(nom), nom);
+  });
+
+  it("T-S8 : egressAllow (salle) et decideConnect (relais) — mêmes décisions et mêmes raisons sur un corpus hostile ; écarts figés, tous fermés côté salle ; vecteurs GHE", () => {
+    const PERMIS = "api.githubcopilot.com";
+    const KELVIN = String.fromCharCode(0x212a);
+    const corpus = [
+      "api.githubcopilot.com:443",
+      "API.GitHubCopilot.COM:443",
+      "api.githubcopilot.com.:443",
+      "api.githubcopilot.com..:443",
+      "api.githubcopilot.com:80",
+      "api.githubcopilot.com:8443",
+      "api.githubcopilot.com",
+      "api.githubcopilot.com:",
+      "api.githubcopilot.com:0443",
+      "api.githubcopilot.com:99999",
+      "api.github.com:443",
+      "github.com:443",
+      "models.opencode.ai:443",
+      "registry.npmjs.org:443",
+      "api.githubcopilot.com.evil.test:443",
+      "evil.api.githubcopilot.com:443",
+      `api.githubcopilot.${KELVIN}om:443`,
+      `${KELVIN}.githubcopilot.com:443`,
+      "127.0.0.1:443",
+      "127.1:443",
+      "2130706433:443",
+      "0x7f.1:443",
+      "10.0.0.1.:443",
+      "[::1]:443",
+      "::1:443",
+      "[fe80::1%25eth0]:443",
+      "user:pass@api.githubcopilot.com:443",
+      "api.githubcopilot.com/chemin:443",
+      "https://api.githubcopilot.com:443",
+      "localhost:443",
+      "api-.githubcopilot.com:443",
+      "-api.githubcopilot.com:443",
+      `${"a".repeat(64)}.githubcopilot.com:443`,
+      "api.githubcopilot.com :443",
+      ":443",
+      "",
+    ];
+    /** Écarts connus, figés : la salle refuse ce que le relais accepte, ou refuse pour une autre raison ; jamais l'inverse. */
+    const ECARTS: Record<string, { salle: string; relais: string }> = {
+      // Point final : le relais tolère UN point final et fait sortir le nom canonique (1.0.6) ; egress le refuse (plus fermé).
+      "api.githubcopilot.com.:443": { salle: "invalide", relais: "ok" },
+      // Nom d'une seule étiquette : refusé des deux côtés, « hote » pour egress, « invalide » pour le relais (deux étiquettes au moins).
+      "localhost:443": { salle: "hote", relais: "invalide" },
+    };
+    for (const cible of corpus) {
+      const { hote, port } = decoupeCibleConnect(cible);
+      const salle = egressAllow(hote, port, PERMIS);
+      const relais = decideConnect(cible, new Set([PERMIS]));
+      const vu = { salle: salle.autorise ? "ok" : salle.raison, relais: relais.allow ? "ok" : relais.reason };
+      assert.deepEqual(vu, ECARTS[cible] ?? { salle: vu.relais, relais: vu.relais }, JSON.stringify(cible));
+      if (vu.salle === "ok") assert.equal(vu.relais, "ok", `${JSON.stringify(cible)} : la salle jamais plus ouverte que le relais`);
+      const coupe = splitConnectTarget(cible);
+      assert.deepEqual([hote, port], [coupe.host, coupe.port], `découpage de ${JSON.stringify(cible)}`);
+    }
+
+    // Vecteurs GHE : hôte d'API d'egress (lu dans SON environnement) et hôtes du relais (lus par le cockpit, loadEnv, I10).
+    const vecteurs: Array<[string | undefined, string | undefined]> = [
+      [undefined, undefined],
+      ["https://api.business.githubcopilot.com", undefined],
+      ["https://copilot-api.entreprise.ghe.com", "entreprise.ghe.com"],
+      ["https://copilot-api.entreprise.ghe.com", "Entreprise.GHE.com"],
+      ["https://copilot-api.entreprise.ghe.com", "https://entreprise.ghe.com/"],
+      ["https://copilot-api.entreprise.ghe.com", " entreprise.ghe.com "],
+      ["https://copilot-api.entreprise.ghe.com", "entreprise.ghe.com."],
+      [undefined, "entreprise.ghe.com"],
+    ];
+    for (const [url, domaine] of vecteurs) {
+      const salle = hoteAutoriseDeLEnvironnement({ COCKPIT_COPILOT_API_URL: url, COCKPIT_GITHUB_ENTERPRISE_DOMAIN: domaine });
+      const d = parseGithubEnterpriseDomain(domaine);
+      const relais = egressAllowedHosts({ copilotApiUrl: parseCopilotApiUrl(url, d), endpointUrl: null, enterpriseDomain: d, loginOpen: false });
+      const label = JSON.stringify([url, domaine]);
+      assert.ok(salle !== null && relais.has(salle), `${label} : ${salle} / ${[...relais].join(",")}`);
+      // Adresse imposée : un seul hôte d'API, le même des deux côtés. Sans elle, egress n'ouvre que l'adresse d'office, celle
+      // que la salle appelle (COCKPIT_COPILOT_API_URL d'office dans docker-compose.yml).
+      if (url !== undefined) assert.deepEqual([...relais], [salle], label);
+    }
+    // Domaine refusé par le cockpit (qui ne démarre pas) : egress ne laisse rien sortir non plus.
+    assert.throws(() => parseGithubEnterpriseDomain("10.0.0.1"));
+    assert.equal(hoteAutoriseDeLEnvironnement({ COCKPIT_GITHUB_ENTERPRISE_DOMAIN: "10.0.0.1" }), null);
+  });
+
+  it("T-S9 : arrêt de la salle quand GET /permission échoue (option permissionListeRejetee, passée explicitement) — sessions arrêtées, aucune demande acceptée, une ligne d'avertissement ; comportement actuel figé", async (t) => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-croisements-v106-arret-")));
+    t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+    const dossier = (nom: string) => {
+      const complet = path.join(tmp, nom);
+      fs.mkdirSync(complet, { recursive: true });
+      return complet;
+    };
+    const workspace = dossier("workspace");
+    dossier("workspace/app");
+    const controlDir = dossier("control-omo");
+    const stateDir = dossier("omo-state");
+    const control = createOmoControl({
+      controlDir,
+      stateDir,
+      authDir: dossier("omo-auth"),
+      opencodeDataDir: dossier("oc-data"),
+      cockpitDataDir: dossier("donnees-cockpit"),
+      projectsFile: null,
+      actif: () => true,
+      log: createLogger("error"),
+    });
+    t.after(async () => {
+      control.stopHeartbeat();
+      await control.settled();
+    });
+    const START = "0f5c3b1e-1111-4111-8111-00000000f106";
+    const etat: OmoSupervisorState = {
+      startId: START,
+      phase: "opencode-lance",
+      imageId: "",
+      manifestSha256: "",
+      manifesteReference: "ok",
+      validation: "ok",
+      dossiersConfig: [{ chemin: "/home/node/.omo", ok: true }],
+      projets: [{ chemin: "app", gitLectureSeule: true }],
+      workspaceGit: { verifieLe: 1, limiteAtteinte: false, nonProteges: [] },
+      startedAt: 1,
+    };
+    const publier = (valeur: OmoSupervisorState) => fs.writeFileSync(path.join(stateDir, "state.json"), ecrireEtat(valeur));
+    // Superviseur simulé par la pause de la sonde : dès que stop-request existe, state.json passe en phase « arret ».
+    const superviseur = async () => {
+      if (fs.existsSync(path.join(controlDir, "stop-request"))) publier({ ...etat, phase: "arret" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    };
+    const racines = new Set<string>();
+    const omoRoom: OmoRoomPort = { open: async () => assert.fail(), status: async () => assert.fail(), openProjects: () => ["app"], isRoomRoot: (id) => racines.has(id) };
+    const omoActivation: OmoActivationPort = {
+      view: async () => null,
+      put: async () => assert.fail("activation inattendue"),
+      consume: async () => assert.fail("envoi inattendu"),
+      activeRequest: () => null,
+      endRequest: () => undefined,
+    };
+    const arretReel = creerModuleOmoStop({ sleep: superviseur });
+    const moduleArret: Cockpit11Module = { name: "omoStop", install: (reg, c11) => arretReel.install(reg, { ...c11, salleOuverte: true }) };
+    const journal: string[] = [];
+    const h = await startCockpit(t, {
+      omo: true,
+      modules: ["floors", moduleArret],
+      ports: { omoControl: control, omoRoom, omoActivation },
+      env: { workspaceDir: workspace },
+      log: createLogger("warn", (ligne) => void journal.push(ligne)),
+    });
+    const omo = h.omo;
+    assert.ok(omo);
+    const DIR = `${OC}/app`;
+    const URL_DOC = "https://exemple.test/doc";
+    const racine = await omo.deps.client.request<FakeSession>("POST", "/session", { directory: DIR, body: { title: "app" } });
+    await until(() => h.sessions.get(racine.id)?.instance === "omo");
+    h.db.prepare("INSERT INTO omo_rooms (root_id, projet, created_at) VALUES (?, 'app', 1)").run(racine.id);
+    racines.add(racine.id);
+    // Demande webfetch sans délai : ses métadonnées n'ont pas de `timeout`, la liste de ce dossier est rejetée (mesure D11).
+    const depuis = omo.fake.emitted.length;
+    omo.fake.script(racine.id, {
+      tools: [
+        {
+          tool: "webfetch",
+          input: { url: URL_DOC, format: "markdown" },
+          ask: { permission: "webfetch", patterns: [URL_DOC], always: ["*"], metadata: { url: URL_DOC, format: "markdown" } },
+          output: "contenu",
+        },
+      ],
+    });
+    assert.equal(await promptAsync(omo.deps.client, racine.id, "Travaille."), 204);
+    const demande = (await omo.fake.waitForEvent("permission.asked", (p) => p.sessionID === racine.id, { since: depuis })).properties as unknown as FakePermissionRequest;
+    await until(() => omo.fake.statusOf(racine.id).type === "busy");
+    // Option du faux passée EXPLICITEMENT : elle reste désactivée par défaut (A32).
+    omo.fake.permissionListeRejetee = true;
+    publier(etat);
+    h.db.prepare("INSERT INTO omo_room_starts (started_at, image_id, manifest_sha256, precheck, cause, start_id) VALUES (1, '', '', '[]', '', ?)").run(START);
+    const repere = omo.fake.requests.length;
+
+    const resultat = await within(h.cockpit.c11.ports.omoStop.run(racine.id, "vous"), "arrêt de la salle", 10_000);
+
+    const pendant = requetesDe(omo.fake.requests, repere);
+    assert.ok(pendant.includes("GET /permission"), "la liste des demandes a été lue (et rejetée)");
+    assert.deepEqual(
+      omo.fake.requests.slice(repere).filter((r) => r.method === "POST" && r.pathname.startsWith("/permission/")),
+      [],
+      "aucune réponse envoyée : ni accord, ni refus (liste illisible)",
+    );
+    assert.equal(resultat.rejected, 0);
+    assert.ok(resultat.aborted.includes(racine.id), JSON.stringify(resultat));
+    assert.ok(pendant.includes(`POST /session/${racine.id}/abort`), pendant.join("\n"));
+    await within(omo.fake.settled(racine.id), "racine de la salle arrêtée");
+    const avertissements = journal.filter((ligne) => ligne.includes("arrêt de la salle : demandes d'autorisation illisibles"));
+    assert.equal(avertissements.length, 1, journal.join(""));
+    assert.ok(fs.existsSync(path.join(controlDir, "stop-request")), "salle relancée à neuf (stop-request écrit)");
+    assert.notEqual(demande.id, "");
+  });
+});
+// </gf1:v106>
+
+// <gf2:v106>
+// --- Grande fusion, GF2 : 3D × 1.0.6 (fiche-fusion-v106 §4) -------------------------------------------------------------------
+// La 3D n'ajoute qu'un appel à opencode avec un dossier : GET /session/status {directory} des territoires (territoires-service.ts),
+// sur les dossiers des racines récentes filtrés par projects.isAllowedDirectory (refus %XX de la 1.0.6). « Revoir » et ses
+// consignes gardées ne parlent jamais à opencode. Câblage complet (modules « tous »), faux à double décodage.
+
+/** Racine de conversation récente posée en base, comme une conversation héritée d'une version antérieure, dans `directory`. */
+function racineRecente(h: CockpitHarness, id: string, directory: string): void {
+  const maintenant = Date.now();
+  h.db
+    .prepare(
+      "INSERT INTO sessions (id, parent_id, root_id, directory, title, purpose, instance, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, 'chat', 'principale', ?, ?)",
+    )
+    .run(id, id, directory, "[synthétique] conversation héritée", maintenant, maintenant);
+}
+
+const RACINE_PIEGE = "ses_gf2_piege";
+const racineLegitime = (index: number) => `ses_gf2_legitime_${index}`;
+
+describe("croisements v106 <gf2:v106> : 3D × 1.0.6 (fiche §4)", () => {
+  it("T-3D1 : racine au dossier %XX → absente des territoires, aucun GET /session/status avec ce dossier ; noms légitimes interrogés à l'octet", async (t) => {
+    const { h } = await start(t, { modules: "tous" });
+    racineRecente(h, RACINE_PIEGE, TRAP_DIR);
+    LEGIT.forEach((nom, index) => racineRecente(h, racineLegitime(index), dirOf(nom)));
+    const avant = h.fake.requests.length;
+    const usageAvant = usageRows(h);
+
+    const reponse = await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed });
+    assert.equal(reponse.status, 200, reponse.body);
+    const vue = reponse.json<TerritoiresResponse>();
+    const territoires = [...vue.projets, ...(vue.salle?.projets ?? [])];
+    const racines = territoires.flatMap((territoire) => territoire.conversations.map((c) => c.rootId));
+    assert.equal(racines.includes(RACINE_PIEGE), false, "une racine au dossier %XX n'est jamais un territoire");
+    assert.equal(
+      territoires.some((territoire) => PERCENT.test(territoire.projet)),
+      false,
+      "aucun territoire au nom %XX (projets du workspace filtrés comme les racines)",
+    );
+    for (const [index, nom] of LEGIT.entries()) {
+      const territoire = vue.projets.find((candidat) => candidat.projet === nom);
+      assert.ok(territoire, `territoire « ${nom} »`);
+      assert.deepEqual(
+        territoire.conversations.map((c) => c.rootId),
+        [racineLegitime(index)],
+      );
+    }
+    const statuts = h.fake.requests.slice(avant).filter((r) => r.method === "GET" && r.pathname === "/session/status");
+    assert.deepEqual(statuts.map((r) => r.query.directory ?? "").sort(), LEGIT.map(dirOf).sort(), "un statut par dossier légitime, à l'octet");
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}`),
+      statuts.map(() => "GET /session/status"),
+      "aucune autre requête",
+    );
+    assert.equal(usageRows(h), usageAvant);
+    assertSentinel(h, "T-3D1");
+  });
+
+  it("T-3D2 : « Revoir » (route, état, consigne, consignes d'un enfant) → zéro requête à opencode, racine %XX comprise, avec le faux à double décodage", async (t) => {
+    const { h } = await start(t, { modules: "tous" });
+    const legitime = await conversation(h, dirOf("Remise 20%"), "Remise");
+    racineRecente(h, RACINE_PIEGE, TRAP_DIR);
+    const store = createConsignesStore(h.db);
+    for (const rootId of [legitime.id, RACINE_PIEGE]) {
+      assert.equal(store.enregistrer({ rootId, parent: rootId, enfant: "ses_gf2_enfant", callId: "call_gf2", brut: "[synthétique] consigne", at: 1 }), "enregistree");
+    }
+    const avant = h.fake.requests.length;
+    const usageAvant = usageRows(h);
+
+    for (const rootId of [legitime.id, RACINE_PIEGE]) {
+      const revoir = await h.call("GET", `/api/revoir/${rootId}`, { headers: h.headers.authed });
+      assert.equal(revoir.status, 200, revoir.body);
+      assert.equal(revoir.json<RevoirResponse>().instance, "principale");
+      const etat = await h.call("GET", `/api/revoir/${rootId}?etat=1`, { headers: h.headers.authed });
+      assert.equal(etat.json<RevoirEtatResponse>().acces, true);
+      const consigne = await h.call("GET", `/api/revoir/${rootId}/consignes/call_gf2`, { headers: h.headers.authed });
+      assert.equal(consigne.status, 200, consigne.body);
+      const parEnfant = await h.call("GET", `/api/revoir/${rootId}/consignes?enfant=ses_gf2_enfant`, { headers: h.headers.authed });
+      assert.equal(parEnfant.json<RevoirConsignesEnfantResponse>().consignes.length, 1);
+    }
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}`),
+      [],
+      "« Revoir » ne parle jamais à opencode",
+    );
+    assert.equal(usageRows(h), usageAvant, "aucune ligne usage pendant « Revoir »");
+    assertSentinel(h, "T-3D2");
+  });
+});
+// </gf2:v106>

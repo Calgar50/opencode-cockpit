@@ -157,10 +157,11 @@ function insertTree(db: DatabaseSync, rows: Array<[id: string, parent: string | 
 }
 
 describe("migration 5 : schéma", () => {
-  it("T-L2b-a : openMemoryDb atteint user_version 5 ; activity_facts, son index, sessions.instance, omo_room_starts", () => {
+  it("T-L2b-a : openMemoryDb atteint la dernière migration ; activity_facts, son index, sessions.instance, omo_room_starts", () => {
     const db = openMemoryDb();
-    assert.equal(MIGRATIONS.length, 5);
-    assert.equal(userVersion(db), 5);
+    // Règle d'assertion unique (décision A2 bis) : user_version = nombre d'entrées du tableau des migrations.
+    assert.ok(MIGRATIONS.length >= 5);
+    assert.equal(userVersion(db), MIGRATIONS.length);
     const columns = (table: string) =>
       (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; dflt_value: string | null; pk: number }>).map(
         (c) => [c.name, c.notnull, c.dflt_value, c.pk],
@@ -183,6 +184,8 @@ describe("migration 5 : schéma", () => {
       ["cause", 1, null, 0],
       ["ended_at", 0, null, 0],
       ["fin", 0, null, 0],
+      // Ajoutée par la migration 6 : la base ouverte ici est à la dernière version.
+      ["start_id", 0, null, 0],
     ]);
     assert.deepEqual(
       columns("sessions").find(([name]) => name === "instance"),
@@ -217,7 +220,7 @@ describe("migration 5 : schéma", () => {
 
 describe("migration 5 : bases existantes", () => {
   for (const from of [3, 4]) {
-    it(`T-L2b-b : base réelle en version ${from} (fichier, WAL) : migre en 5 sans perte, sessions en « principale »`, () =>
+    it(`T-L2b-b : base réelle en version ${from} (fichier, WAL) : migre en 6 sans perte, sessions en « principale »`, () =>
       withTempDir((dir) => {
         const old = createDbAtVersion(dir, from);
         assert.equal(userVersion(old), from);
@@ -229,7 +232,7 @@ describe("migration 5 : bases existantes", () => {
 
         const db = openDb(dir);
         try {
-          assert.equal(userVersion(db), 5);
+          assert.equal(userVersion(db), MIGRATIONS.length);
           assert.equal(count(db, "SELECT COUNT(*) AS n FROM activity_facts"), 0);
           assert.equal(count(db, "SELECT COUNT(*) AS n FROM omo_room_starts"), 0);
           const { sessions, ledger } = services(db);
@@ -246,12 +249,12 @@ describe("migration 5 : bases existantes", () => {
         }
         // Réouverture : rien à migrer, aucune erreur.
         const again = openDb(dir);
-        assert.equal(userVersion(again), 5);
+        assert.equal(userVersion(again), MIGRATIONS.length);
         again.close();
       }));
   }
 
-  it("T-L2b-c : les requêtes des versions 1.0.2, 1.0.3 et 1.0.4 s'exécutent sans erreur sur une base en version 5", () =>
+  it("T-L2b-c : les requêtes des versions 1.0.2, 1.0.3 et 1.0.4 s'exécutent sans erreur sur une base en version 6", () =>
     withTempDir((dir) => {
       assert.deepEqual(FIXTURE.versions, ["1.0.2", "1.0.3", "1.0.4"]);
       const migrated = createDbAtVersion(dir, 4);
@@ -259,10 +262,10 @@ describe("migration 5 : bases existantes", () => {
       const bases = [openMemoryDb(), openDb(dir)];
       try {
         for (const db of bases) {
-          // Leur boucle de migration (FIXTURE.migrations entrées) ne s'exécute pas : la base reste en version 5.
+          // Leur boucle de migration (FIXTURE.migrations entrées) ne s'exécute pas : la base reste en version 6.
           assert.ok(userVersion(db) >= FIXTURE.migrations);
           for (const entry of FIXTURE.requetes) runEntry(db, entry);
-          assert.equal(userVersion(db), 5);
+          assert.equal(userVersion(db), MIGRATIONS.length);
           // Lignes écrites par une version publiée, relues par la 1.1 : valeurs par défaut des migrations 4 et 5.
           const { sessions, ledger } = services(db);
           assert.deepEqual(

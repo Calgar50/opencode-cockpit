@@ -1,0 +1,259 @@
+// Configuration d'instance d'opencode 1.18.30 dans la Salle OMO (spéc. §3.15.1 point 5 ; plan D-2b-36 ; MO-6, MO-9).
+// Copiée dans l'image en lecture seule : /etc/opencode-omo/opencode.jsonc, lue par OPENCODE_CONFIG_DIR=/etc/opencode-omo.
+// validate.mjs l'exige à l'identique à la construction et à chaque démarrage (G14).
+//
+// C'est la SEULE couche de configuration appliquée dans la salle : le banc hors ligne a mesuré deux fois (porte G2, rapport
+// L21 §4.2 puis la remesure de la répétition générale de la 2 bis) que la 4.19.4 ne se sert pas de sa couche utilisateur
+// (~/.omo/omo.jsonc). Ce qui est écrit ici tient — greffons, fournisseur, adresse, IA déclarées, permissions, mesuré — et
+// ce qui n'est écrit que dans omo.jsonc ne tient pas. Les coupures d'outils qui comptent sont donc portées par le filet du
+// cockpit (/opt/omo-guard/cockpit-guard.js), déclaré ci-dessous comme second greffon.
+//
+// Une seule substitution de variable dans ce fichier, l'adresse de l'API Copilot : opencode remplace les substitutions dans
+// tout le texte, commentaires compris, et GET /config rend le résultat. Aucune autre variable, aucun fichier n'y est lu.
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // Version épinglée dans l'image, jamais de partage public, ni serveur de langage ni formateur téléchargés.
+  "autoupdate": false,
+  "share": "disabled",
+  "lsp": false,
+  "formatter": false,
+  // Aucun instantané git de chaque projet dans le volume de la salle (D-2b-36, MO-2).
+  "snapshot": false,
+
+  // GitHub Copilot seul (P1) ; seconde barrière : fournisseurs gratuits d'opencode désactivés.
+  "enabled_providers": ["github-copilot"],
+  "disabled_providers": ["opencode", "opencode-go"],
+
+  // L'extension, puis le filet du cockpit (L24) : le filet passe après elle sur chaque appel d'outil.
+  "plugin": [
+    "file:///opt/omo/node_modules/oh-my-openagent/dist/index.js",
+    "file:///opt/omo-guard/cockpit-guard.js"
+  ],
+
+  // Adresse de l'API Copilot : même source que la 1.0.3, passée par l'environnement de la salle (MO-6). Aucun secret ici :
+  // GET /config/providers rend ces options en clair. IA déclarées ici, car le catalogue distant (models.opencode.ai) est
+  // injoignable depuis le réseau interne (MO-9) ; limites prudentes, présence au catalogue du compte vérifiée par la recette G3.
+  "provider": {
+    "github-copilot": {
+      "options": { "baseURL": "{env:COCKPIT_COPILOT_API_URL}" },
+      "models": {
+        "gpt-5.4-mini": { "name": "GPT-5.4 mini", "tool_call": true, "limit": { "context": 128000, "output": 16000 } },
+        "claude-sonnet-5": { "name": "Claude Sonnet 5", "tool_call": true, "limit": { "context": 128000, "output": 16000 } },
+        "gpt-5.3-codex": { "name": "GPT-5.3-Codex", "tool_call": true, "limit": { "context": 128000, "output": 16000 } },
+        "claude-opus-5": { "name": "Claude Opus 5", "tool_call": true, "limit": { "context": 128000, "output": 16000 } }
+      }
+    }
+  },
+  "model": "github-copilot/claude-sonnet-5",
+  "small_model": "github-copilot/gpt-5.4-mini",
+
+  // Droits de l'instance. La DERNIÈRE règle qui correspond l'emporte : « * » d'abord, puis les refus, puis .env.example rendu
+  // à l'action de base (jamais refusé). Fichiers de clés et .env* refusés en lecture, modification et liste, avec les motifs
+  // du cockpit et les extensions P03, en minuscules et en majuscules (opencode respecte la casse sous Linux). Pour glob, la
+  // règle porte sur le MOTIF demandé, pas sur les fichiers trouvés (noms seuls, sans contenu). grep refusé en entier : ses
+  // règles ne voient que l'expression cherchée, et ripgrep lirait tout fichier que git n'ignore pas, .env et clés compris ;
+  // l'IA garde rg par une commande, soumise au portillon.
+  // webfetch, websearch et external_directory refusés explicitement : l'extension les remet à « allow » si la clé manque
+  // (audit L20). edit, bash et task demandés : chaque action concrète passe par le portillon du cockpit (décision M3).
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      ".env*": "deny",
+      "*/.env*": "deny",
+      "*.pfx": "deny",
+      "*.PFX": "deny",
+      "*.p12": "deny",
+      "*.P12": "deny",
+      "*.key": "deny",
+      "*.KEY": "deny",
+      "*.jks": "deny",
+      "*.JKS": "deny",
+      "*.keystore": "deny",
+      "*.KEYSTORE": "deny",
+      "*.kdbx": "deny",
+      "*.KDBX": "deny",
+      "*privkey*": "deny",
+      "*-key.pem": "deny",
+      "*_key.pem": "deny",
+      "*id_rsa*": "deny",
+      "*id_ecdsa*": "deny",
+      "*id_ed25519*": "deny",
+      "*kubeconfig*": "deny",
+      "*.kube/config": "deny",
+      "*.asc": "deny",
+      "*.ASC": "deny",
+      "*.cer": "deny",
+      "*.CER": "deny",
+      "*.crt": "deny",
+      "*.CRT": "deny",
+      "*.der": "deny",
+      "*.DER": "deny",
+      "*.gpg": "deny",
+      "*.GPG": "deny",
+      "*.ovpn": "deny",
+      "*.OVPN": "deny",
+      "*.p8": "deny",
+      "*.P8": "deny",
+      "*.pem": "deny",
+      "*.PEM": "deny",
+      "*.tfstate": "deny",
+      "*.TFSTATE": "deny",
+      "*.tfvars": "deny",
+      "*.TFVARS": "deny",
+      "*.env.example": "allow"
+    },
+    "edit": {
+      "*": "ask",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      ".env*": "deny",
+      "*/.env*": "deny",
+      "*.pfx": "deny",
+      "*.PFX": "deny",
+      "*.p12": "deny",
+      "*.P12": "deny",
+      "*.key": "deny",
+      "*.KEY": "deny",
+      "*.jks": "deny",
+      "*.JKS": "deny",
+      "*.keystore": "deny",
+      "*.KEYSTORE": "deny",
+      "*.kdbx": "deny",
+      "*.KDBX": "deny",
+      "*privkey*": "deny",
+      "*-key.pem": "deny",
+      "*_key.pem": "deny",
+      "*id_rsa*": "deny",
+      "*id_ecdsa*": "deny",
+      "*id_ed25519*": "deny",
+      "*kubeconfig*": "deny",
+      "*.kube/config": "deny",
+      "*.asc": "deny",
+      "*.ASC": "deny",
+      "*.cer": "deny",
+      "*.CER": "deny",
+      "*.crt": "deny",
+      "*.CRT": "deny",
+      "*.der": "deny",
+      "*.DER": "deny",
+      "*.gpg": "deny",
+      "*.GPG": "deny",
+      "*.ovpn": "deny",
+      "*.OVPN": "deny",
+      "*.p8": "deny",
+      "*.P8": "deny",
+      "*.pem": "deny",
+      "*.PEM": "deny",
+      "*.tfstate": "deny",
+      "*.TFSTATE": "deny",
+      "*.tfvars": "deny",
+      "*.TFVARS": "deny",
+      "*.env.example": "ask"
+    },
+    "grep": "deny",
+    "glob": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      ".env*": "deny",
+      "*/.env*": "deny",
+      "*.pfx": "deny",
+      "*.PFX": "deny",
+      "*.p12": "deny",
+      "*.P12": "deny",
+      "*.key": "deny",
+      "*.KEY": "deny",
+      "*.jks": "deny",
+      "*.JKS": "deny",
+      "*.keystore": "deny",
+      "*.KEYSTORE": "deny",
+      "*.kdbx": "deny",
+      "*.KDBX": "deny",
+      "*privkey*": "deny",
+      "*-key.pem": "deny",
+      "*_key.pem": "deny",
+      "*id_rsa*": "deny",
+      "*id_ecdsa*": "deny",
+      "*id_ed25519*": "deny",
+      "*kubeconfig*": "deny",
+      "*.kube/config": "deny",
+      "*.asc": "deny",
+      "*.ASC": "deny",
+      "*.cer": "deny",
+      "*.CER": "deny",
+      "*.crt": "deny",
+      "*.CRT": "deny",
+      "*.der": "deny",
+      "*.DER": "deny",
+      "*.gpg": "deny",
+      "*.GPG": "deny",
+      "*.ovpn": "deny",
+      "*.OVPN": "deny",
+      "*.p8": "deny",
+      "*.P8": "deny",
+      "*.pem": "deny",
+      "*.PEM": "deny",
+      "*.tfstate": "deny",
+      "*.TFSTATE": "deny",
+      "*.tfvars": "deny",
+      "*.TFVARS": "deny",
+      "*.env.example": "allow"
+    },
+    "list": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      ".env*": "deny",
+      "*/.env*": "deny",
+      "*.pfx": "deny",
+      "*.PFX": "deny",
+      "*.p12": "deny",
+      "*.P12": "deny",
+      "*.key": "deny",
+      "*.KEY": "deny",
+      "*.jks": "deny",
+      "*.JKS": "deny",
+      "*.keystore": "deny",
+      "*.KEYSTORE": "deny",
+      "*.kdbx": "deny",
+      "*.KDBX": "deny",
+      "*privkey*": "deny",
+      "*-key.pem": "deny",
+      "*_key.pem": "deny",
+      "*id_rsa*": "deny",
+      "*id_ecdsa*": "deny",
+      "*id_ed25519*": "deny",
+      "*kubeconfig*": "deny",
+      "*.kube/config": "deny",
+      "*.asc": "deny",
+      "*.ASC": "deny",
+      "*.cer": "deny",
+      "*.CER": "deny",
+      "*.crt": "deny",
+      "*.CRT": "deny",
+      "*.der": "deny",
+      "*.DER": "deny",
+      "*.gpg": "deny",
+      "*.GPG": "deny",
+      "*.ovpn": "deny",
+      "*.OVPN": "deny",
+      "*.p8": "deny",
+      "*.P8": "deny",
+      "*.pem": "deny",
+      "*.PEM": "deny",
+      "*.tfstate": "deny",
+      "*.TFSTATE": "deny",
+      "*.tfvars": "deny",
+      "*.TFVARS": "deny",
+      "*.env.example": "allow"
+    },
+    "bash": "ask",
+    "task": "ask",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "deny"
+  }
+}

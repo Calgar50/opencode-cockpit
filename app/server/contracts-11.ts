@@ -2,6 +2,9 @@
 // des modules, dépendances et ports. Types seulement, plus la classe PortUnavailableError levée par les ports neutres.
 // Aucun paquet ne modifie ce fichier seul : un changement de contrat est une demande écrite à l'intégrateur, traitée au train
 // de vague avec la liste des consommateurs prévenus (plan §2.8). Les ports rendent des CODES, jamais des phrases.
+// Salle OMO (plan 2 bis §4.2, T3b) : filtre d'instance des inscriptions (`InstanceFilter`, absent = principale), instance visée
+// par un relais (`ProxyContext.instance`), groupe de routes « omo », ports de la salle (OmoPorts) dans Cockpit11Ports, routeur
+// d'instances et dossiers de contrôle dans Cockpit11Deps, `Cockpit11.salleOuverte`.
 import type { DatabaseSync } from "node:sqlite";
 import type { Context, Hono } from "hono";
 import type { ArchiveService } from "./archive.ts";
@@ -11,15 +14,16 @@ import type { ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService } from "./control.ts";
 import type { AppEnv } from "./env.ts";
 import type { AppDeps, TierPort } from "./http.ts";
-import type { EventHub } from "./hub.ts";
+import type { EventHub, HubOmoEventMap } from "./hub.ts";
 import type { Ledger } from "./ledger.ts";
 import type { Logger } from "./log.ts";
 import type { OcLookup } from "./oc-lookup.ts";
+import type { InstanceRouter, OmoPorts, OmoRouteGroup } from "./omo-contracts.ts";
 import type { OcGlobalEvent, OcSession, OpencodeClient } from "./opencode.ts";
 import type { ProjectsService } from "./projects.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { SettingsStore } from "./settings.ts";
-import type { ActivityFact, DelegationDetailsView, DelegationSource, DelegationState, FactsResponse, WaitState } from "./shared/activity-types.ts";
+import type { ActivityFact, DelegationDetailsView, DelegationSource, DelegationState, FactsResponse, SessionInstance, WaitState } from "./shared/activity-types.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
 import type {
   ActivationRefusalCode,
@@ -78,8 +82,12 @@ export interface PermissionGate {
   rejectOrphans(requests: PendingPermission[], directory: string | null, context: Record<string, unknown>): Promise<void>;
   /** Comportement 1.0 de rejectAbortedPermissions. */
   rejectAborted(sessionId: string, directory: string | null, release: () => void): Promise<void>;
-  /** L1b : file → vérification « once » → inscription au registre → relais. */
-  relayOnce(requestId: string, directory: string | null, by: RepliedBy): Promise<RelayOutcome>;
+  /**
+   * L1b : file → vérification « once » → inscription au registre → relais. `stillAllowed` (Salle OMO, train de V5 de la 2 ter) :
+   * condition du service appelant, relue APRÈS la file et la vérification, juste avant l'inscription ; fausse (ou en erreur) →
+   * « expiree », rien n'est inscrit ni envoyé. Absente : comportement L1b inchangé.
+   */
+  relayOnce(requestId: string, directory: string | null, by: RepliedBy, stillAllowed?: () => boolean): Promise<RelayOutcome>;
   /**
    * L1b : refus retenu tant qu'une autre demande de la même session attend (F-c) ou qu'un appel d'outil voisin du même message est
    * encore en préparation ou en cours (sa demande arriverait après la lecture), puis vérifié et envoyé une fois seul. Borne de 45 s :
@@ -107,7 +115,20 @@ export interface PermissionGateDeps {
 
 export type CreatePermissionGate = (deps: PermissionGateDeps) => PermissionGate;
 
-// --- Crochets du proxy, dérivations, abonnements (plan §4.3) ------------------------------------------------------------------
+// --- Crochets du proxy, dérivations, abonnements (plan §4.3 ; instances : plan 2 bis §4.2, T3b) --------------------------------
+
+/**
+ * Instances servies par une inscription (plan 2 bis §4.2, D-2b-40). ABSENT = `["principale"]` : une inscription qui ne dit rien
+ * ne sert que l'instance principale, comme en 1.0.x. Les inscriptions des modules de la salle portent `["omo"]` ; la seule
+ * exception est l'inscription de démarrage d'`omoControl`, qui est côté cockpit (omo-control-module.ts).
+ */
+export type InstanceFilter = readonly SessionInstance[];
+
+/** Options communes à une inscription au registre (`Registrar`). */
+export interface RegistrationOptions {
+  /** Instances servies ; absent : `["principale"]`. */
+  instances?: InstanceFilter;
+}
 
 /** Étapes du proxy /api/oc/* ouvertes aux modules 1.1. */
 export type HookStep = "createSession" | "sessionCreated" | "beforeBilledSend" | "beforeOnceRelay" | "abort";
@@ -121,6 +142,11 @@ export interface ProxyContext {
   /** Corps JSON lu par le proxy ({} si vide). createSession peut le compléter (plancher) : le proxy envoie ce corps après les crochets. */
   body: Record<string, unknown>;
   sessionId: string | null;
+  /**
+   * Instance visée par le relais ; ABSENTE = instance principale (proxy /api/oc/* de http.ts, comportement 1.0.x). Le proxy de la
+   * salle (oc-proxy.ts, L18b) la pose à « omo » : runHooks n'appelle alors que les crochets inscrits pour la salle.
+   */
+  instance?: SessionInstance;
 }
 
 /**
@@ -143,7 +169,10 @@ export interface HookSignatures {
 /** Appelée de façon synchrone avant la file du processeur ; jamais d'attente réseau : poster un travail dans sa propre file. */
 export interface EventDerivation {
   readonly name: string;
-  onEvent(event: OcGlobalEvent): void;
+  /** Instances servies ; absent : `["principale"]` (app-factory ne la branche qu'au processeur de l'instance principale). */
+  readonly instances?: InstanceFilter;
+  /** `origin` : instance d'où vient l'événement ; ABSENTE = instance principale (processeur 1.0.x, qui appelle avec un seul argument). */
+  onEvent(event: OcGlobalEvent, origin?: { instance: SessionInstance }): void;
 }
 
 /** usage.updated : avec sessionId et rootId pour un message terminé dont le coût change ; sans eux après un rattrapage. */
@@ -152,6 +181,12 @@ export interface UsageUpdatedData {
   rootId?: string;
   monthSpentUsd: number;
   percent: number;
+  /**
+   * Instance dont le relevé change (T3c, posé par l'intégrateur au train de V2 : la table vit ici, dans le fichier de T3b).
+   * ABSENTE = instance principale, exactement l'objet publié en 1.0.x. L'aiguillage des abonnés ne lit PAS ce champ : il lit
+   * l'étiquette de l'enveloppe (`BrowserEvent.instance`), seule source du filtre par instance dans app-factory.ts.
+   */
+  instance?: SessionInstance;
 }
 
 export interface OpencodeConnectionData {
@@ -159,27 +194,50 @@ export interface OpencodeConnectionData {
   error: string | null;
 }
 
-/** Événements existants du hub (hub.cockpit) auxquels un module 1.1 peut s'abonner. */
+/**
+ * Événements existants du hub (hub.cockpit) auxquels un module 1.1 peut s'abonner. « omo.connection » vient de la table
+ * `HubOmoEventMap` de hub.ts (T3c), qui reprend elle-même `OmoEventMap` du contrat de la salle (T3a) : la donnée n'est définie
+ * qu'à un seul endroit. Reprise ici par l'intégrateur au train de V2, T3c n'ayant pas le droit d'écrire dans ce fichier.
+ */
 export interface HubEventMap {
   "usage.updated": UsageUpdatedData;
   "opencode.connection": OpencodeConnectionData;
+  "omo.connection": HubOmoEventMap["omo.connection"];
 }
 
 export type HubEventType = keyof HubEventMap;
 
-/** Groupes de routes 1.1, montés dans cet ordre juste avant le 404 de /api/*. */
-export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11";
+/** Groupes de routes 1.1, montés dans cet ordre juste avant le 404 de /api/* ; « omo » (T3a) en dernier. */
+export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11" | OmoRouteGroup;
 
 /** Registre remis à install() : chaque inscription est rangée par STEP_ORDER ; un couple absent de la table est refusé. */
 export interface Registrar {
-  hook<S extends HookStep>(step: S, fn: HookSignatures[S]): void;
+  hook<S extends HookStep>(step: S, fn: HookSignatures[S], options?: RegistrationOptions): void;
   derivation(derivation: EventDerivation): void;
-  hub<K extends HubEventType>(type: K, fn: (data: HubEventMap[K]) => void): void;
-  startup(fn: () => Promise<void>): void;
-  routes(group: RouteGroup, fn: (app: Hono) => void): void;
+  hub<K extends HubEventType>(type: K, fn: (data: HubEventMap[K]) => void, options?: RegistrationOptions): void;
+  startup(fn: () => Promise<void>, options?: RegistrationOptions): void;
+  routes(group: RouteGroup, fn: (app: Hono) => void, options?: RegistrationOptions): void;
 }
 
 // --- Dépendances, modules, ports ----------------------------------------------------------------------------------------------
+
+/**
+ * Dossiers de contrôle de la Salle OMO côté cockpit (L17b), remis au module `omoControl` (omo-control-module.ts). `null` : salle
+ * non configurée, le service réel n'est pas construit et AUCUN fichier n'est écrit. `cockpitDataDir` n'y figure pas : la
+ * suspension reste dans le dossier de données du cockpit (`env.dataDir`), hors des volumes de la salle (D-2b-29).
+ */
+export interface OmoControlDirs {
+  /** Volume `control-omo` côté cockpit (lecture-écriture). */
+  controlDir: string;
+  /** Volume `omo-state` côté cockpit (lecture seule). */
+  stateDir: string;
+  /** Volume `omo-auth` côté cockpit (lecture-écriture). */
+  authDir: string;
+  /** Dossier de données de l'instance principale : source d'`auth.json`. */
+  opencodeDataDir: string;
+  /** `omo-projets.json` généré par install.ps1 (COCKPIT_OMO_PROJECTS_FILE) ; absent : rien n'est déposé. */
+  projectsFile?: string | null;
+}
 
 /** Sac unique de dépendances, partagé par toutes les fabriques 1.1 : aucune signature de fabrique ne change ensuite. */
 export interface Cockpit11Deps {
@@ -206,6 +264,17 @@ export interface Cockpit11Deps {
    * sinon sonde stricte ; jamais « unverifiable » pendant un examen.
    */
   occupancy: () => Promise<SessionsOccupancy>;
+  /**
+   * Routeur d'instances (T3a), posé par app-factory : les champs ci-dessus (client, gate, lookup, catalog…) restent ceux de
+   * l'instance PRINCIPALE. `instances.omo` null = salle coupée : aucune inscription de la salle n'est active. Absent (tests de
+   * cadre montés sans app-factory) : lu comme `omo: null`.
+   */
+  instances?: InstanceRouter;
+  /**
+   * Dossiers de contrôle de la salle remis au module `omoControl` ; absent ou null : port neutre, aucun fichier écrit, jamais.
+   * Relié à `env.omo` (T3c) par l'intégrateur au train de V2.
+   */
+  omoControlDirs?: OmoControlDirs | null;
 }
 
 export interface Cockpit11 extends Cockpit11Deps {
@@ -213,6 +282,8 @@ export interface Cockpit11 extends Cockpit11Deps {
   ports: Cockpit11Ports;
   /** ACTIVATION_OUVERTE (porte I1). */
   readonly activationOuverte: boolean;
+  /** SALLE_OUVERTE (plan 2 bis §2.7) : faux dans le dépôt, basculé seulement dans une copie jetable de banc. */
+  readonly salleOuverte: boolean;
   /** Composé par wiring-11 : ports.autonomy.examining() (false tant que L10a n'est pas installé). Branché par L1a. */
   reloadBusy(): boolean;
 }
@@ -424,7 +495,11 @@ export interface DiagnosticsPort {
   delegation(): Promise<DelegationBanner[]>;
 }
 
-export interface Cockpit11Ports {
+/**
+ * Ports 1.1 : ceux de l'instance principale (itérations 1 et 2) et ceux de la Salle OMO (OmoPorts, T3a), posés par T3b en
+ * versions neutres. `PortName` et `ModuleName` s'étendent donc tout seuls aux modules de la salle.
+ */
+export interface Cockpit11Ports extends OmoPorts {
   stopTree: StopTreePort;
   taskGuard: TaskGuardPort;
   delegationWatch: DelegationWatchPort;
@@ -444,5 +519,10 @@ export interface Cockpit11Ports {
 
 export type PortName = keyof Cockpit11Ports;
 
-/** « gate » : module sans port (le portillon est une dépendance). Les autres modules portent le nom de leur port. */
+/**
+ * « gate » : module sans port (le portillon est une dépendance). Les autres modules portent le nom de leur port, ceux de la
+ * salle compris (`OmoModuleName` ⊂ `PortName`, par OmoPorts).
+ */
 export type ModuleName = "gate" | PortName;
+
+export type { OmoModuleName } from "./omo-contracts.ts";

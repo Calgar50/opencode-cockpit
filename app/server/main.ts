@@ -4,12 +4,15 @@ import { AssistantService, knownDirectories, probeSessionsBusy } from "./assista
 import { ModelCatalog } from "./catalog.ts";
 import { Classifier } from "./classifier.ts";
 import { canBill, ConfigWriteQueue } from "./config-queue.ts";
+import type { OmoControlDirs } from "./contracts-11.ts";
 import { ControlService } from "./control.ts";
 import { CopilotApi } from "./copilot.ts";
 import { openDb } from "./db.ts";
 import { LoginWindow, relayRules } from "./egress-policy.ts";
 import { type RelayHandle, startEgressRelay } from "./egress-relay.ts";
+import { omoOf } from "./env.ts";
 import { EventHub } from "./hub.ts";
+import { creerInstanceOmo, type OmoRuntime } from "./instance-runtime.ts";
 import { Ledger } from "./ledger.ts";
 import { createLogger, errorMessage } from "./log.ts";
 import { CopilotConfigSync, resyncOnIdle, resyncOnReconnect } from "./oc-copilot-config.ts";
@@ -27,6 +30,7 @@ import { StudioService } from "./studio.ts";
 import { TierService } from "./tiers.ts";
 import { TLS_RENEW_BEFORE_DAYS } from "./tls.ts";
 import { trustCorporateCertificates } from "./tls-trust.ts";
+import { SALLE_OUVERTE } from "./wiring-11.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const DAY_MS = 86_400_000;
@@ -59,7 +63,10 @@ const copilot = new CopilotApi({
   version: env.version,
 });
 const catalog = new ModelCatalog(client, { copilot });
-const sessions = new SessionTracker(db, client);
+// { log } : un conflit d'identifiant de session entre les deux instances (P11) est refusé sans rien écrire ET JOURNALISÉ
+// (fiche L18a). Sans cette option, le refus reste muet et l'exploitant n'a aucune trace qu'une frontière d'instance a été
+// forcée ; le rappel onInstanceConflict, lui, arrive avec L23c.
+const sessions = new SessionTracker(db, client, { log });
 const ledger = new Ledger({ db, settings, catalog });
 const hub = new EventHub();
 const projects = new ProjectsService(env);
@@ -172,6 +179,31 @@ const tickets = new AuthTickets();
 // Relais de sortie d'opencode (1.0.6) : github.com ne lui est ouvert que pendant une connexion à Copilot lancée depuis l'interface.
 const egressLogin = new LoginWindow();
 const routeDeps = { assistants, tiers, settings, hub, log };
+
+// Salle OMO : dossiers de contrôle reliés à `env.omo` (T3c) par l'intégrateur au train de V2, comme T3b le prévoit. Le module
+// `omoControl` (omo-control-module.ts) porte COCKPIT_OMO=on par la PRÉSENCE de ces dossiers, il ne lit aucune variable lui-même.
+// COCKPIT_OMO absent ou « off » : `null`, donc port NEUTRE, aucun fichier touché, jamais. COCKPIT_OMO=on : le service réel de
+// L17b est construit, et il reste inerte tant que SALLE_OUVERTE est fausse (plan 2 bis §2.7) — ni battement, ni precheck-ok, ni
+// guard-state.json ; seul le démarrage RETIRE la copie d'auth.json laissée par un cockpit précédent (demande n° 3 de L17b).
+const omoEnv = omoOf(env);
+const omoControlDirs: OmoControlDirs | null = omoEnv.enabled
+  ? {
+      controlDir: omoEnv.controlDir,
+      stateDir: omoEnv.stateDir,
+      authDir: omoEnv.authDir,
+      opencodeDataDir: env.opencodeDataDir,
+      projectsFile: omoEnv.projectsFile,
+    }
+  : null;
+// Instance de la Salle OMO (train de V3, fiche L18a « Sortie ») : construite SEULEMENT si la porte du code est ouverte ET si
+// COCKPIT_OMO=on a donné des dossiers de contrôle. Dans le dépôt, SALLE_OUVERTE est fausse (wiring-11.ts, §2.7) : `omoRuntime`
+// vaut null, `instances.omo` reste null, et il n'y a donc ni second client, ni second processeur, ni inscription de la salle —
+// exactement l'état du train de V2. Aucune variable d'environnement n'ouvre la salle : COCKPIT_OMO=on seul ne suffit pas.
+const omoRuntime: OmoRuntime | null =
+  SALLE_OUVERTE && omoControlDirs !== null
+    ? creerInstanceOmo({ env, log, db, hub, sessions, ledger, archive, classifier, projects, copilot })
+    : null;
+
 // Application 1.1 : portillon partagé, câblage de tous les modules (dérivations, abonnements, démarrage, routes), puis createApp.
 const cockpit = createCockpitApp({
   env,
@@ -198,7 +230,13 @@ const cockpit = createCockpitApp({
   sessions,
   tls,
   tickets,
+  // Fenêtre de connexion du relais (1.0.6) : ouverte par le seul proxy de l'instance principale (montage /api/oc).
   egressLogin,
+  // Salle OMO : les dépendances de la seconde instance quand la porte du code est ouverte, null sinon (le dépôt). Avec null, le
+  // routeur d'instances ne connaît qu'une instance et AUCUNE inscription de la salle n'est branchée (app-factory.ts).
+  omo: omoRuntime?.deps ?? null,
+  // Dossiers de contrôle de la salle, calculés plus haut depuis env.omo (train de V2).
+  omoControlDirs,
   routes: [(app) => registerAssistantRoutes(app, routeDeps), (app) => registerAiRoutes(app, routeDeps)],
 });
 reloadBusy = () => cockpit.c11.reloadBusy();
@@ -283,6 +321,9 @@ void (async () => {
   // Démarrage 1.1 : retour des choix, agents internes (ports.internalAgents.ensureAll), reprises.
   await cockpit.startup();
   processor.start();
+  // Flux d'événements de la salle, comme celui de l'instance principale : sans instance, rien à démarrer. Le serveur de la salle
+  // peut être injoignable — cela se voit sur « omo.connection », le démarrage du cockpit n'en dépend pas.
+  omoRuntime?.start();
 })();
 
 let stopping = false;
@@ -291,6 +332,7 @@ const shutdown = (signal: string) => {
   stopping = true;
   log.info("arrêt du cockpit", { signal });
   processor.stop();
+  omoRuntime?.close();
   cockpit.close();
   catalog.stop();
   copilotConfig.stop();

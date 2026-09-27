@@ -46,6 +46,37 @@
 .activity-region.demande > .neon-band > .neon-head {
   flex: none;
 }
+/* Clôture de l'itération 1 × commandes de l'itération 3. Pendant une demande, la bande n'a qu'une centaine de pixels de haut (la
+   liste des acteurs garde la sienne). Les commandes de la bande — [Figer l'affichage], [Tableau], [Voir une démonstration], et,
+   depuis l'itération 3, [Revoir cette demande] et [Ouvrir la salle de contrôle] (§5.7.4 l.985) — passaient alors sur trois lignes :
+   80 px de tête au lieu de 26, et la carte, déjà à son plancher de mini-carte, était coupée par le bas — ses signes (attente de
+   votre accord, préparation) tombaient sous « Qui travaille ? » à 1280 × 800, et la carte était rognée dès 1440 × 900. Dans ce
+   seul cas, la tête reste sur UNE ligne et ses commandes défilent latéralement quand elles ne tiennent pas : chaque bouton reste
+   atteignable (le focus clavier l'amène à la vue), et la carte garde la place de ses signes (§5.7.1, §5.7.3). */
+.activity-region.demande > .neon-band > .neon-head {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.activity-region.demande > .neon-band > .neon-head > .neon-title {
+  flex: none;
+}
+.activity-region.demande > .neon-band > .neon-head > .neon-commands {
+  flex: none;
+  flex-wrap: nowrap;
+}
+.activity-region.demande > .neon-band > .neon-head .btn {
+  white-space: nowrap;
+}
+/* La tête est ici un conteneur de défilement — un `overflow-x` autre que `visible` rend le `overflow-y: visible` équivalent à
+   `auto` (règle de calcul de CSS Overflow) — et elle n'a aucun rembourrage : sa hauteur est celle de ses boutons. L'anneau de
+   focus du dépôt (`:focus-visible { outline: 2px solid; outline-offset: 2px }`, styles.css) est dessiné 2 px EN DEHORS du
+   bouton : il serait rogné en haut, en bas et au bord du défilement, et le repère du parcours au clavier deviendrait illisible
+   (§5.7.1, « clavier seul »). Dans ce seul cas, on le dessine à l'INTÉRIEUR de la boîte du bouton : il reste entier, et la tête
+   garde ses 26 px. Les boutons ont 8 px de rembourrage latéral : l'anneau en retrait ne recouvre pas le libellé. */
+.activity-region.demande > .neon-band > .neon-head .btn:focus-visible {
+  outline-offset: -2px;
+}
 .activity-region.demande > .neon-band > .neon-body:has(> .neon-map-wrap) {
   flex: 0 1 auto;
   min-height: 4.5em;

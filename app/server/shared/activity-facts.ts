@@ -19,15 +19,21 @@
 // - consigne {etat: prepare | envoyee, callId, messageId, enfant?, agent?, source?, commande?, reprise?}   partie task
 // - resultat {etat: rendu | echec | interrompu, callId, messageId, enfant}                                partie task close
 // - attente {permission, messageId, callId, agent} · reponse {reponse}                  permission.asked · permission.replied
-// - origine {origine, cas, messageId}                                message utilisateur (§5.7.2) : dès sa première partie texte ou
+// - origine {origine, cas, messageId, relance?}                      message utilisateur (§5.7.2) : dès sa première partie texte ou
 //                                                                     subtask pour les cas 1 à 3 ; sinon quand toutes ses parties
 //                                                                     sont connues (réponse de l'assistant, ou session au repos)
-// Les faits decision, choix, affichage et statut {cause} sont écrits par leurs services (L10, L6a, L4b, L1c) ; reveil, reprise,
-// carnet et detection viendront avec la Salle OMO (L23, L25).
+// - reveil {etat: depose, messageId}                                 message classé « reveil-sans-reponse » (cas 4, JP-2) : résultat
+//                                                                     déposé, lu au prochain tour, sans appel d'IA et sans coût
+// - reprise {callId, messageId, enfant, tache}                       partie task qui reprend une tâche existante (`task_id`,
+//                                                                     `session_id`) : l'enfant n'est pas neuf (§5.8, légendes)
+// - carnet {etat: lu | modifie, chemin, fichier, dossier, callId, messageId}   outil sur `.omo/notepads/**` ou `.omo/plans/**` dans
+//                                                                     la salle (JP-6) : chemin RELATIF, jamais le contenu
+// Les faits decision, choix, affichage et statut {cause} sont écrits par leurs services (L10, L6a, L4b, L1c) ; detection vient avec
+// le service de la Salle OMO (L23).
 import { redactSecrets } from "../redact.ts";
 import type { ActivityFact, ActivityFactKind, FactValue, SessionInstance, SessionRole } from "./activity-types.ts";
 import { ID_RE } from "./ids.ts";
-import { contextVerdict, type OriginContext, type OriginPart, originPartSummary, originVerdict } from "./message-origin.ts";
+import { contextVerdict, type OriginContext, type OriginPart, originPartSummary, type OriginVerdict, originVerdict, partsCarryHookPrefix } from "./message-origin.ts";
 
 // --- Heure d'un événement (M15) -------------------------------------------------------------------------------------------------
 
@@ -180,6 +186,30 @@ export interface FactContext {
   userMessageParts(messageId: string): readonly OriginPart[];
   /** Messages utilisateur de la session auxquels aucune réponse de l'assistant n'a encore été vue (EventMemory). */
   unansweredUserMessages(sessionId: string): readonly string[];
+  /**
+   * Ce que seul l'amont sait (Salle OMO). Absent, les règles qui en dépendent restent muettes : aucune ne peut INVENTER un
+   * réveil, une identité douteuse ni une tâche de fond. EventMemory fournit `identiteSuspecte` et `tacheDeFond` ; `noReply` est
+   * porté par le processeur de la salle, seul à savoir comment un message a été déposé.
+   */
+  amont?: FactUpstream;
+}
+
+/** Délégation lancée en tâche de fond, retrouvée par la session de l'enfant (EventMemory). */
+export interface BackgroundTask {
+  callId: string;
+  messageId: string;
+  /** Session qui a confié le travail : c'est elle qui porte le fait « resultat ». */
+  parent: string;
+}
+
+/** Connaissances de l'amont, toutes facultatives : une absence rend la règle muette, jamais bavarde. */
+export interface FactUpstream {
+  /** MO-1 : l'identité du message est douteuse (`messageID` déjà vu pour une autre session, partie ajoutée à un message clos). */
+  identiteSuspecte?(messageId: string): boolean;
+  /** F-h : le message a été déposé sans tour (`noReply`), donc sans appel d'IA ni coût. */
+  noReply?(messageId: string): boolean;
+  /** JP-3 : délégation en tâche de fond dont cette session est l'enfant, null sinon. */
+  tacheDeFond?(childSessionId: string): BackgroundTask | null;
 }
 
 /** Parties gardées par message utilisateur ; au-delà, une partie inconnue est comptée (elle peut ne pas être synthétique). */
@@ -200,6 +230,14 @@ export class EventMemory {
   readonly #firstUser = new Map<string, string>();
   readonly #userParts = new Map<string, Map<string, OriginPart>>();
   readonly #unanswered = new Map<string, string[]>();
+  /** Session où chaque message a été vu la première fois (MO-1 : un `messageID` est un corrélateur, jamais une preuve). */
+  readonly #messageSessions = new Map<string, string>();
+  /** Messages utilisateur clos par la réponse de l'assistant : plus aucune partie de contenu ne doit s'y ajouter (MO-1). */
+  readonly #closed = new Map<string, true>();
+  /** Messages dont l'identité est douteuse (MO-1) : l'origine tombe en cas 7. */
+  readonly #suspects = new Map<string, true>();
+  /** Délégations en tâche de fond, par session d'enfant (JP-3). */
+  readonly #fond = new Map<string, BackgroundTask>();
 
   constructor(limit = 20_000) {
     this.#limit = Math.max(1, Math.floor(limit));
@@ -222,6 +260,11 @@ export class EventMemory {
     if (id === null || sessionId === null || (role !== "user" && role !== "assistant")) return;
     const seen = this.#roles.has(id);
     remember(this.#roles, id, role, this.#limit);
+    // MO-1 : le même `messageID` annoncé pour une AUTRE session. `prompt_async` accepte tout identifiant commençant par `msg` et
+    // écrit alors la partie dans la session du message emprunté, tout en annonçant celle qui était visée.
+    const premiere = this.#messageSessions.get(id);
+    if (premiere === undefined) remember(this.#messageSessions, id, sessionId, this.#limit);
+    else if (premiere !== sessionId) remember(this.#suspects, id, true, this.#limit);
     if (role === "assistant") {
       this.#answered(sessionId, idOf(info?.parentID));
       return;
@@ -246,13 +289,27 @@ export class EventMemory {
     const waiting = this.#unanswered.get(sessionId);
     const index = parentId === null || !waiting ? -1 : waiting.indexOf(parentId);
     if (index >= 0) waiting?.splice(index, 1);
+    // Le message auquel l'assistant répond est clos : opencode publie TOUTES ses parties avant de créer la réponse.
+    if (parentId !== null && this.#roles.get(parentId) === "user") remember(this.#closed, parentId, true, this.#limit);
   }
 
   #observePart(event: FactEvent): void {
     const part = isRecord(event.properties?.part) ? event.properties.part : null;
-    if (part?.type !== "text" && part?.type !== "subtask") return;
+    if (part === null) return;
+    if (part.type === "tool") {
+      this.#observeTask(part);
+      return;
+    }
+    if (part.type !== "text" && part.type !== "subtask") return;
     const messageId = idOf(part.messageID);
     if (messageId === null || this.#roles.get(messageId) !== "user") return;
+    // MO-1 : une partie de contenu ajoutée à un message déjà clos, ou écrite dans une autre session que celle où le message a été
+    // vu, est une anomalie ; seules les parties de CONTENU comptent (une partie de fichier ou d'outil publiée après la réponse
+    // n'est pas une réécriture de la demande).
+    if (this.#closed.has(messageId)) remember(this.#suspects, messageId, true, this.#limit);
+    const partSession = idOf(part.sessionID) ?? idOf(event.properties?.sessionID);
+    const premiere = this.#messageSessions.get(messageId);
+    if (premiere !== undefined && partSession !== null && partSession !== premiere) remember(this.#suspects, messageId, true, this.#limit);
     let parts = this.#userParts.get(messageId);
     if (!parts) {
       if (this.#userParts.size >= this.#limit) this.#userParts.delete(this.#userParts.keys().next().value as string);
@@ -264,8 +321,43 @@ export class EventMemory {
     else parts.set(UNKNOWN_PART_KEY, UNKNOWN_PART);
   }
 
+  /**
+   * Délégation lancée en tâche de fond (JP-3) : l'outil `task` de l'extension rend la main aussitôt (F-ab, « Background task
+   * launched/continued ») et l'enfant continue. Seul `task` est suivi : c'est le seul outil dont ce module tire une consigne et
+   * un résultat ; `call_omo_agent` est compté par les plafonds de la salle (L22) et reste à trancher pour L23c.
+   * `sessionId` vaut « pending » quand l'extension n'a pas encore l'identifiant de l'enfant : ce n'est pas un identifiant.
+   */
+  #observeTask(part: Record<string, unknown>): void {
+    if (nameOf(part.tool) !== "task") return;
+    const state = isRecord(part.state) ? part.state : null;
+    const input = isRecord(state?.input) ? state.input : {};
+    const metadata = isRecord(state?.metadata) ? state.metadata : {};
+    if (input.run_in_background !== true && metadata.run_in_background !== true) return;
+    const enfant = metadata.sessionId === "pending" ? null : idOf(metadata.sessionId);
+    const callId = idOf(part.callID);
+    const messageId = idOf(part.messageID);
+    const parent = idOf(part.sessionID);
+    if (enfant === null || callId === null || messageId === null || parent === null) return;
+    remember(this.#fond, enfant, { callId, messageId, parent }, this.#limit);
+  }
+
   messageRole(messageId: string): "user" | "assistant" | null {
     return this.#roles.get(messageId) ?? null;
+  }
+
+  /** MO-1 : identité du message mise en doute (voir #messageSessions et #closed). */
+  identiteSuspecte(messageId: string): boolean {
+    return this.#suspects.has(messageId);
+  }
+
+  /** JP-3 : délégation en tâche de fond dont cette session est l'enfant, null sinon. */
+  tacheDeFond(childSessionId: string): BackgroundTask | null {
+    return this.#fond.get(childSessionId) ?? null;
+  }
+
+  /** Connaissances à passer au contexte des faits (FactContext.amont) ; `noReply` reste à la charge du processeur de la salle. */
+  amont(): FactUpstream {
+    return { identiteSuspecte: (id) => this.identiteSuspecte(id), tacheDeFond: (id) => this.tacheDeFond(id) };
   }
 
   firstUserMessage(sessionId: string): string | null {
@@ -381,7 +473,10 @@ export function factsFromEvent(event: FactEvent, ctx: FactContext): ActivityFact
       if (!s || !etat) return [];
       const facts = [s.fact("statut", null, etat === "nouvelle-tentative" ? { etat, tentative: countOf(status?.attempt) } : { etat })];
       // Session au repos : un message resté sans réponse (sans réponse demandée, erreur avant l'appel) a toutes ses parties.
-      if (etat === "repos") for (const messageId of ctx.unansweredUserMessages(s.sessionId)) facts.push(...originFacts(messageId, s, ctx));
+      if (etat === "repos") {
+        for (const messageId of ctx.unansweredUserMessages(s.sessionId)) facts.push(...originFacts(messageId, s, ctx));
+        facts.push(...backgroundResultFacts(s.sessionId, at, ctx));
+      }
       return facts;
     }
     case "message.updated": {
@@ -445,21 +540,48 @@ function originContext(messageId: string, s: Facts, ctx: FactContext): OriginCon
     promptKind: ctx.promptKind(messageId),
     firstUserOfChild: s.session.parentId !== null && ctx.firstUserMessage(s.sessionId) === messageId,
     instance: s.session.instance,
+    racine: s.session.parentId === null,
+    noReply: ctx.amont?.noReply?.(messageId) === true,
+    identiteSuspecte: ctx.amont?.identiteSuspecte?.(messageId) === true,
   };
 }
 
-const originFact = (messageId: string, s: Facts, verdict: { origine: string; cas: number }) =>
-  s.fact("origine", messageId, { origine: verdict.origine, cas: verdict.cas, messageId });
+/**
+ * Fait « origine », et pour le cas 4 le fait « reveil » qui va avec (JP-2 : résultat déposé, lu au prochain tour, sans appel
+ * d'IA ni coût — aucun fait « statut appel » n'est écrit ici, il ne vient que d'une partie `step-start`).
+ */
+function originEventFacts(messageId: string, s: Facts, verdict: OriginVerdict, parts: readonly OriginPart[]): ActivityFact[] {
+  const data: FactData = { origine: verdict.origine, cas: verdict.cas, messageId };
+  if (verdict.relance !== undefined) data.relance = verdict.relance;
+  // JP-4, dans la salle : la consigne réelle de l'enfant est ce message (`messageId`) ; `hook` dit qu'un hook l'a préfixée, pour
+  // que la partie ajoutée soit marquée « ajouté par l'extension ». Hors de la salle, la clé n'existe pas.
+  if (verdict.cas === 3 && s.session.instance === "omo") data.hook = partsCarryHookPrefix(parts);
+  const facts = [s.fact("origine", messageId, data)];
+  if (verdict.cas === 4) facts.push(s.fact("reveil", messageId, { etat: "depose", messageId }));
+  return facts;
+}
 
 /**
  * Origine d'un message utilisateur dont toutes les parties sont connues (§5.7.2), classée sur le message ENTIER : les cas 4 à 7
  * dépendent de toutes ses parties (un message n'est synthétique que si toutes ses parties texte le sont). Aucun fait si aucune
  * partie texte ou subtask n'a été vue. Rendu à chaque clôture vue : le même verdict, écarté ensuite par FactDeduper.
  */
+/**
+ * Résultat d'une tâche de fond, au repos de l'ENFANT (JP-3) : le faisceau bleu part à la fin de l'enfant, jamais sur
+ * « Background task launched/continued ». Le fait est porté par la session qui a confié le travail, comme tout résultat.
+ * Sans amont (instance principale), aucune tâche de fond n'est connue : rien n'est écrit.
+ */
+function backgroundResultFacts(childSessionId: string, at: number, ctx: FactContext): ActivityFact[] {
+  const fond = ctx.amont?.tacheDeFond?.(childSessionId) ?? null;
+  const s = fond === null ? null : sessionFacts(ctx, fond.parent, at);
+  if (fond === null || !s) return [];
+  return [s.fact("resultat", fond.callId, { etat: "rendu", callId: fond.callId, messageId: fond.messageId, enfant: childSessionId })];
+}
+
 function originFacts(messageId: string, s: Facts, ctx: FactContext): ActivityFact[] {
   if (ctx.messageRole(messageId) !== "user") return [];
   const parts = ctx.userMessageParts(messageId);
-  return parts.length === 0 ? [] : [originFact(messageId, s, originVerdict(parts, originContext(messageId, s, ctx)))];
+  return parts.length === 0 ? [] : originEventFacts(messageId, s, originVerdict(parts, originContext(messageId, s, ctx)), parts);
 }
 
 function partFacts(part: Record<string, unknown>, eventSessionId: string | null, at: number, ctx: FactContext): ActivityFact[] {
@@ -481,7 +603,7 @@ function partFacts(part: Record<string, unknown>, eventSessionId: string | null,
       // Cas 1 à 3 : le contexte suffit, le verdict part dès la première partie. Sinon il attend la clôture du message (originFacts) :
       // classé sur les parties déjà arrivées, il dépendrait de leur ordre, et FactDeduper garderait le premier fait.
       const verdict = contextVerdict(originContext(messageId, s, ctx));
-      return verdict === null ? [] : [originFact(messageId, s, verdict)];
+      return verdict === null ? [] : originEventFacts(messageId, s, verdict, ctx.userMessageParts(messageId));
     }
     case "tool":
       return toolFacts(part, messageId, s);
@@ -499,31 +621,7 @@ function toolFacts(part: Record<string, unknown>, messageId: string, s: Facts): 
   const input = isRecord(state?.input) ? state.input : {};
   const metadata = isRecord(state?.metadata) ? state.metadata : {};
   const interrupted = metadata.interrupted === true;
-  if (tool === "task") {
-    const enfant = idOf(metadata.sessionId);
-    if (status === "pending") return [s.fact("consigne", callId, { etat: "prepare", callId, messageId })];
-    if (status === "running") {
-      if (enfant === null) return [];
-      // Source « raccourci » : `command` rempli, comme le fait opencode pour un raccourci `subtask`. L'IA peut aussi le remplir
-      // (paramètre facultatif de l'outil `task`) : seule l'absence de demande pour cet appel prouve un lancement sans confirmation.
-      const commande = nameOf(input.command);
-      return [
-        s.fact("consigne", callId, {
-          etat: "envoyee",
-          callId,
-          messageId,
-          enfant,
-          agent: nameOf(input.subagent_type),
-          source: commande === null ? "ia" : "raccourci",
-          commande,
-          reprise: typeof input.task_id === "string" && input.task_id !== "",
-        }),
-      ];
-    }
-    let etat = "rendu";
-    if (status === "error") etat = interrupted ? "interrompu" : "echec";
-    return [s.fact("resultat", callId, { etat, callId, messageId, enfant })];
-  }
+  if (tool === "task") return taskFacts({ input, metadata, status, interrupted }, messageId, callId, s);
   // Un outil en préparation (arguments en cours d'écriture) ne change rien à l'affichage : aucun fait.
   if (status === "pending") return [];
   const phase = status === "error" && interrupted ? "interrompu" : TOOL_PHASES[status];
@@ -539,7 +637,135 @@ function toolFacts(part: Record<string, unknown>, messageId: string, s: Facts): 
       fichier: filePath === null ? null : pathKey(filePath),
       dossier: filePath === null ? null : pathKey(folderOf(filePath)),
     }),
+    ...carnetFacts(filePath, messageId, callId, tool, phase, s),
   ];
+}
+
+// --- Salle OMO : consigne (JP-7), tâche de fond (JP-3), reprise et carnet partagé (JP-6) -------------------------------------------
+
+/** Longueur maximale d'un chemin de carnet gardé dans un fait (la garde `data` en accepte 128). */
+export const CARNET_CHEMIN_MAX = 100;
+
+/** Dossiers du carnet partagé et des plans, relatifs à la racine d'un projet (§5.7.3, JP-6 ; `omo-precheck-rules.ts`). */
+const CARNET_DOSSIERS: readonly string[] = [".omo/notepads/", ".omo/plans/"];
+
+/** Outils qui MODIFIENT un fichier ; les autres ne font que le lire (tuile au contour bleu contre tuile pleine, §5.7.4). */
+const OUTILS_MODIFIENT = new Set(["edit", "write", "multiedit", "patch", "apply_patch"]);
+
+/**
+ * Chemin du carnet partagé porté par un chemin de fichier : la partie qui commence à `.omo/notepads/` ou `.omo/plans/`, jamais
+ * ce qui la précède (le nom du projet vient de l'utilisateur, il n'a pas sa place dans un fait). null hors du carnet.
+ */
+export function carnetChemin(filePath: string): string | null {
+  const normalized = filePath.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
+  for (const dossier of CARNET_DOSSIERS) {
+    const cut = normalized.indexOf(dossier);
+    const debut = cut === 0 || (cut > 0 && normalized[cut - 1] === "/") ? cut : -1;
+    if (debut < 0) continue;
+    const chemin = normalized.slice(debut);
+    // Ni remontée, ni nom vide, ni chemin trop long : ce qui n'est pas reconnu reste hors du carnet plutôt que d'être deviné.
+    if (chemin.length > CARNET_CHEMIN_MAX || chemin.endsWith("/") || chemin.split("/").includes("..")) return null;
+    return chemin;
+  }
+  return null;
+}
+
+/**
+ * Fait « carnet » (JP-6) : un agent a lu ou modifié le carnet partagé ou un plan. Le chemin RELATIF est gardé — c'est la tuile
+ * de la station « Carnet partagé et plan » —, jamais le contenu. Hors de la Salle OMO, la station reste vide : aucun fait.
+ */
+function carnetFacts(filePath: string | null, messageId: string, callId: string, tool: string, phase: string | undefined, s: Facts): ActivityFact[] {
+  if (s.session.instance !== "omo" || filePath === null || phase !== "termine") return [];
+  const chemin = carnetChemin(filePath);
+  if (chemin === null) return [];
+  return [
+    s.fact("carnet", callId, {
+      etat: OUTILS_MODIFIENT.has(tool) ? "modifie" : "lu",
+      chemin,
+      fichier: pathKey(filePath),
+      dossier: pathKey(folderOf(filePath)),
+      callId,
+      messageId,
+    }),
+  ];
+}
+
+/** Nom d'IA (`fournisseur/modèle`) lu dans les métadonnées d'une consigne de la salle ; null si la forme n'est pas reconnue. */
+function iaDeMetadata(value: unknown): string | null {
+  if (typeof value === "string") return nameOf(value) ?? (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value) ? value : null);
+  if (!isRecord(value)) return null;
+  const fournisseur = nameOf(value.providerID);
+  const modele = nameOf(value.modelID);
+  return fournisseur === null || modele === null ? null : `${fournisseur}/${modele}`;
+}
+
+/**
+ * Métadonnées d'une consigne de la salle (JP-7, `omo:tools/delegate-task/sync-task-metadata.ts`) : catégorie, IA choisie, NOMBRE
+ * de compétences chargées et « attend le résultat » ou « en tâche de fond ». Les noms des compétences et le texte de la consigne
+ * ne sont jamais gardés. Hors de la salle, aucune de ces clés n'est écrite : les faits de l'instance principale ne bougent pas.
+ */
+function consigneOmo(input: Record<string, unknown>, metadata: Record<string, unknown>, s: Facts): FactData {
+  if (s.session.instance !== "omo") return {};
+  const skills = Array.isArray(metadata.load_skills) ? metadata.load_skills : input.load_skills;
+  const competences = Array.isArray(skills) ? skills.length : null;
+  return {
+    categorie: nameOf(metadata.category) ?? nameOf(input.category),
+    ia: iaDeMetadata(metadata.model),
+    competences,
+    fond: input.run_in_background === true || metadata.run_in_background === true,
+  };
+}
+
+/** Vrai si la consigne reprend une tâche existante : `task_id` (task d'opencode) ou `session_id` (délégation de l'extension). */
+const tacheReprise = (input: Record<string, unknown>): string | null =>
+  (typeof input.task_id === "string" && input.task_id !== "" ? idOf(input.task_id) : null) ??
+  (typeof input.session_id === "string" && input.session_id !== "" ? idOf(input.session_id) : null);
+
+interface TaskState {
+  input: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  status: string;
+  interrupted: boolean;
+}
+
+/**
+ * Faits d'une partie `task` : consigne préparée, consigne envoyée (avec les métadonnées de la salle), reprise et résultat.
+ * JP-3 : une tâche de fond se ferme AUSSITÔT (« Background task launched/continued ») sans porter le résultat ; le résultat part
+ * à la fin de l'enfant (`session.idle`), jamais sur cette clôture.
+ */
+function taskFacts(state: TaskState, messageId: string, callId: string, s: Facts): ActivityFact[] {
+  const { input, metadata, status, interrupted } = state;
+  const enfant = metadata.sessionId === "pending" ? null : idOf(metadata.sessionId);
+  if (status === "pending") return [s.fact("consigne", callId, { etat: "prepare", callId, messageId })];
+  const fond = input.run_in_background === true || metadata.run_in_background === true;
+  if (status === "running") {
+    if (enfant === null) return [];
+    // Source « raccourci » : `command` rempli, comme le fait opencode pour un raccourci `subtask`. L'IA peut aussi le remplir
+    // (paramètre facultatif de l'outil `task`) : seule l'absence de demande pour cet appel prouve un lancement sans confirmation.
+    const commande = nameOf(input.command);
+    const tache = tacheReprise(input);
+    const facts = [
+      s.fact("consigne", callId, {
+        etat: "envoyee",
+        callId,
+        messageId,
+        enfant,
+        agent: nameOf(input.subagent_type),
+        source: commande === null ? "ia" : "raccourci",
+        commande,
+        reprise: tache !== null,
+        ...consigneOmo(input, metadata, s),
+      }),
+    ];
+    // L'enfant n'est pas neuf : la légende « Il ne voit pas votre conversation… » ne s'applique plus (§5.8).
+    if (tache !== null) facts.push(s.fact("reprise", callId, { callId, messageId, enfant, tache }));
+    return facts;
+  }
+  // Tâche de fond : « lancée » n'est pas « rendue ». Le résultat vient du repos de l'enfant (factsFromEvent, session.status).
+  if (fond && !interrupted && status !== "error") return [];
+  let etat = "rendu";
+  if (status === "error") etat = interrupted ? "interrompu" : "echec";
+  return [s.fact("resultat", callId, { etat, callId, messageId, enfant })];
 }
 
 /** Session concernée par un événement (propriété, partie ou info), null sinon : l'appelant peut l'enregistrer avant de dériver. */

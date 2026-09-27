@@ -540,6 +540,10 @@ describe("croisements it2 V1 : classifieur et cockpit-controle gardés (L1g, L11
     assert.equal(once.status, 200, once.body);
     await within(h.fake.settled(conv.id), "réponse terminée");
     await until(() => h.fake.statusOf(conv.id).type === "idle");
+    // Au repos, cockpit compris (grande fusion, GF12) : la relecture des demandes lancée au démarrage (examen de la demande « ls »)
+    // peut finir APRÈS la réponse de l'utilisateur ; tant qu'elle examine, la garde de rechargement répond « sessions-busy », à
+    // raison. Mesuré sous la charge de la suite complète : 409, puis fin de l'examen 11 ms plus tard (décision « attente »).
+    await until(() => !h.cockpit.c11.reloadBusy(), 10_000);
     const restart = await h.call("POST", "/api/system/restart-opencode", { headers: h.headers.confirmed });
     assert.equal(restart.status, 200, restart.body);
     assert.deepEqual(installs, [CLASSIFIER_AGENT, CONTROL_AGENT_NAME], "installés au repos, dans l'ordre");

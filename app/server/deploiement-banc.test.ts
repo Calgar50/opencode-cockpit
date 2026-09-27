@@ -52,3 +52,32 @@ describe("banc e2e × 1.0.6 : la surcharge du banc ne rouvre aucune sortie à op
     assert.deepEqual(banc.services["faux-fournisseur"]?.profiles, ["reel-hors-ligne"]);
   });
 });
+
+// Grande fusion (GF1, fiche v106 §3.8) : le banc COMPLET de la salle (L21b) s'empile lui aussi sur docker-compose.yml. Même règle
+// que le banc e2e : l'instance principale reste sur « interne » derrière le relais ; seul le faux fournisseur la rejoint.
+describe("banc complet de la salle × 1.0.6 : la surcharge ne rouvre aucune sortie à opencode", () => {
+  const complet = parseYaml(read("e2e", "omo-banc", "cockpit", "cockpit.compose.yml"), { logLevel: "error" }) as Compose;
+  const prod = parseYaml(read("docker-compose.yml"), { merge: true }) as Compose;
+
+  it("réseau « interne » laissé tel quel ; opencode sans autre réseau, sans port publié", () => {
+    assert.equal(complet.networks?.interne, undefined);
+    assert.equal(complet.services.opencode?.networks, undefined);
+    assert.equal(complet.services.opencode?.ports, undefined);
+  });
+
+  it("proxys d'opencode jamais surchargés ; NO_PROXY = celui de docker-compose.yml plus le seul faux fournisseur", () => {
+    const oc = complet.services.opencode?.environment ?? {};
+    for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) assert.equal(oc[key], undefined, key);
+    const prodOc = prod.services.opencode?.environment ?? {};
+    for (const key of ["NO_PROXY", "no_proxy"]) {
+      assert.deepEqual(String(oc[key]).split(","), [...String(prodOc[key]).split(","), "faux-fournisseur"], key);
+    }
+  });
+
+  it("seul le faux fournisseur rejoint le réseau d'opencode ; la salle, egress et les pilotes jamais", () => {
+    const joined = Object.entries(complet.services)
+      .filter(([, service]) => networksOf(service).includes("interne"))
+      .map(([name]) => name);
+    assert.deepEqual(joined, ["faux-fournisseur"]);
+  });
+});

@@ -61,6 +61,13 @@ const SERVICES = { faux: ["faux-opencode", "cockpit"], "reel-hors-ligne": ["open
 const IMAGES_A_BATIR = { faux: ["cockpit"], "reel-hors-ligne": ["cockpit", "opencode"], reel: ["cockpit", "opencode"] };
 
 /**
+ * Pile de la salle (« --salle », L26c) : en « --faux » seulement, le faux opencode principal, le faux catalogue Copilot, la salle
+ * FACTICE et le cockpit, sous le profil `salle` de la surcharge. La préparation (`salle-preparation`) est jouée à part, avant.
+ */
+const PROFIL_SALLE = "salle";
+const SERVICES_SALLE = ["faux-opencode", "faux-copilot", "faux-salle", "cockpit"];
+
+/**
  * Ports que le navigateur refuse (Chromium, net/base/port_util.cc, kRestrictedPorts). Au 2026-09-16 cette liste est
  * exactement celle que fetch refuse dans Node 24 (app/server/fetch-ports.ts) : on en fait l'union plutôt que d'en
  * recopier 82 valeurs, et ECARTS_NAVIGATEUR garde la place des ports que seul le navigateur refuserait un jour.
@@ -396,13 +403,17 @@ export async function preparerPlan(options) {
   if (!SCHEMAS.includes(schema)) refuser(`schéma inconnu : « ${schema} ».`);
   const posteMouvement = options.posteMouvement ?? null;
   if (posteMouvement !== null && !MOUVEMENTS.includes(posteMouvement)) refuser(`réglage de mouvement du poste inconnu : « ${posteMouvement} » (${MOUVEMENTS.join(", ")}).`);
+  const salle = options.salle === true;
+  if (salle && mode !== "faux") refuser("« --salle » n'existe qu'en « --faux » : la salle y est FACTICE (aucune extension, aucune IA, aucun appel facturé).");
   const id = options.id ?? identifiantExecution();
   const projet = verifierProjet(`${options.prefixe}-${id}`);
-  const imageApp = verifierImage(`${options.prefixe}/app:${options.tag}`);
+  // Salle : l'image du cockpit porte SALLE_OUVERTE basculée (copie du contexte seulement) ; elle a donc son propre nom, pour
+  // qu'une image ouverte ne remplace jamais, sous le même nom, l'image du banc ordinaire.
+  const imageApp = verifierImage(`${options.prefixe}/${salle ? "app-salle" : "app"}:${options.tag}`);
   const imageOpencode = verifierImage(`${options.prefixe}/opencode:${options.tag}`);
   const dossier = path.join(DOSSIER_BANC, projet);
   const fichierEnv = verifierFichierEnv(options.fichierEnv ?? path.join(dossier, "banc.env"));
-  const [portCockpit, portControle, portFournisseur] = await choisirPorts(3);
+  const [portCockpit, portControle, portFournisseur, portSalle] = await choisirPorts(4);
   return {
     mode,
     schema,
@@ -410,16 +421,20 @@ export async function preparerPlan(options) {
     posteMouvement,
     id,
     projet,
-    profils: PROFILS[mode],
-    services: SERVICES[mode],
+    salle,
+    profils: salle ? [...PROFILS[mode], PROFIL_SALLE] : PROFILS[mode],
+    services: salle ? SERVICES_SALLE : SERVICES[mode],
     aBatir: IMAGES_A_BATIR[mode],
     imageApp,
     imageOpencode,
+    // COCKPIT_OMO_IMAGE de la pile de la salle : un NOM, jamais une image qui existe ; seul le Bootstrap le lit (« image chargée »).
+    imageSalleFactice: salle ? verifierImage(`${options.prefixe}/salle-factice:${options.tag}`) : null,
     dossier,
     fichierEnv,
     portCockpit,
     portControle,
     portFournisseur,
+    portSalle,
     dryRun: options.dryRun === true,
     motif: options.motif ?? null,
     garderPile: options.garderPile === true,
@@ -432,13 +447,16 @@ export async function preparerPlan(options) {
  * Variables du fichier d'environnement du banc hors des préfixes COCKPIT_ et E2E_ : environnementDocker les retire aussi
  * de l'environnement de docker, pour que le fichier du banc l'emporte toujours.
  */
-const CLES_ENVIRONNEMENT = new Set(["OPENCODE_SERVER_PASSWORD", "WORKSPACE_DIR", "ARCHIVE_DIR"]);
+const CLES_ENVIRONNEMENT = new Set(["OPENCODE_SERVER_PASSWORD", "OPENCODE_OMO_PASSWORD", "WORKSPACE_DIR", "ARCHIVE_DIR"]);
 
 /**
  * Lignes du fichier d'environnement de la pile jetable (sans l'écrire). HTTPS : schéma servi par défaut par la 1.0.5,
  * aucune date de confirmation. --http : mode HTTP explicite de la 1.0.5, confirmé à l'instant au format strict.
+ * « --salle » (L26c) : COCKPIT_OMO=on, le NOM factice de l'image de la salle (jamais une image qui existe), le mot de passe de la
+ * salle factice, son adresse et l'autorité jetable du faux catalogue ; sans « --salle », rien de la salle n'est allumé et les
+ * variables de la surcharge valent ce que le produit vaut (adresse `opencode-omo`, `./certs`).
  */
-export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte, maintenant = new Date() }) {
+export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte, motDePasseSalle = null, maintenant = new Date() }) {
   const acces =
     plan.schema === "http"
       ? ["COCKPIT_LOCAL_SCHEME=http", `COCKPIT_LOCAL_HTTP_CONFIRMED=${maintenant.toISOString().slice(0, 19)}Z`]
@@ -467,6 +485,12 @@ export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, co
     `E2E_PORT_CONTROLE=${plan.portControle}`,
     `E2E_PORT_FOURNISSEUR=${plan.portFournisseur}`,
     `E2E_JETON_CONTROLE=${jetonControle}`,
+    // Salle OMO (L26c) : écrites dans tous les modes (la surcharge les exige), inertes sans « --salle ».
+    `E2E_SALLE_URL=${plan.salle ? URL_SALLE_FACTICE : URL_SALLE_PRODUIT}`,
+    `E2E_CERTS_COCKPIT=${plan.salle ? VOLUME_CA_SALLE : "./certs"}`,
+    `E2E_OMO_SOURCE=${path.join(plan.dossier, "omo-source")}`,
+    `E2E_PORT_SALLE=${plan.portSalle}`,
+    ...(plan.salle ? ["COCKPIT_OMO=on", `COCKPIT_OMO_IMAGE=${plan.imageSalleFactice}`, `OPENCODE_OMO_PASSWORD=${motDePasseSalle}`] : []),
   ];
 }
 
@@ -476,13 +500,204 @@ export function ecrireEnvironnement(plan, contexte = path.join(plan.dossier, "co
   const jeton = crypto.randomBytes(32).toString("hex");
   const motDePasse = secret(24);
   const jetonControle = secret(24);
-  const lignes = lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte });
+  // Salle : 32 octets, soit 43 caractères, au-dessus des 32 exigés par le cockpit (OMO_PASSWORD_MIN, env.ts).
+  const motDePasseSalle = plan.salle ? secret(32) : null;
+  const lignes = lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte, motDePasseSalle });
   // Dossiers fermés (0700) : ils portent le fichier d'environnement et les captures de la pile jetable.
   fs.mkdirSync(path.join(plan.dossier, "workspace"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(plan.dossier, "archives"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(plan.dossier, "omo-source"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(plan.captures, { recursive: true, mode: 0o700 });
   fs.writeFileSync(plan.fichierEnv, `${lignes.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  if (plan.salle) preparerDossierSalle(plan);
   return { jeton, jetonControle };
+}
+
+// --- Salle OMO factice (« --salle », L26c) ----------------------------------------------------------------------------------------
+
+/** Adresse de la salle vue du cockpit : la salle FACTICE en « --salle », celle du produit sinon (inerte, COCKPIT_OMO coupé). */
+export const URL_SALLE_FACTICE = "http://faux-salle:4096";
+export const URL_SALLE_PRODUIT = "http://opencode-omo:4096";
+
+/** Volume de la surcharge qui porte le certificat PUBLIC de l'autorité jetable du faux catalogue, monté sur /certs du cockpit. */
+export const VOLUME_CA_SALLE = "salle-ca";
+
+/** Scénarios de la salle : ils ne tournent que sur la pile de la salle (« --salle »), et elle ne fait tourner qu'eux. */
+export const PREFIXE_SCENARIOS_SALLE = "omo-ui-";
+export const estScenarioSalle = (nom) => String(nom).startsWith(PREFIXE_SCENARIOS_SALLE);
+
+/**
+ * Partage des scénarios entre la pile ordinaire et celle de la salle. La pile de la salle n'est pas celle du produit (salle
+ * allumée, catalogue Copilot factice) : les autres scénarios n'y tournent pas ; et ceux de la salle ne tournent que sur elle.
+ */
+export function partagerScenarios(scenarios, salle) {
+  const retenus = scenarios.filter((s) => estScenarioSalle(s.nom) === salle);
+  const ecartes = scenarios.filter((s) => estScenarioSalle(s.nom) !== salle);
+  return { retenus, ecartes };
+}
+
+/** Déclaration basculée, dans la COPIE du contexte seulement (plan 2 bis §2.7) : jamais dans le dossier de travail, jamais commitée. */
+export const SALLE_FERMEE = "export const SALLE_OUVERTE = false;";
+export const SALLE_OUVERTE_BANC = "export const SALLE_OUVERTE = true;";
+export const FICHIER_SALLE_OUVERTE = path.join("app", "server", "wiring-11.ts");
+
+/** Bascule le texte de wiring-11.ts : exactement une déclaration, sinon refus (une image bâtie sur zéro ou deux serait fausse). */
+export function basculerSalleOuverte(texte) {
+  const occurrences = String(texte).split(SALLE_FERMEE).length - 1;
+  if (occurrences !== 1) {
+    refuser(`« --salle » : « ${SALLE_FERMEE} » trouvée ${occurrences} fois dans ${FICHIER_SALLE_OUVERTE} (une seule attendue) ; aucune image n'est bâtie.`);
+  }
+  return String(texte).replace(SALLE_FERMEE, SALLE_OUVERTE_BANC);
+}
+
+/**
+ * Ouvre la salle dans la copie `cible` du contexte de construction. Refusé ailleurs que sous le dossier du banc : ni le dépôt, ni
+ * le dossier de travail, ni une copie git ne reçoivent jamais la bascule.
+ */
+export function ouvrirSalleDansLaCopie(cible, { racine = RACINE, banc = DOSSIER_BANC } = {}) {
+  const resolue = path.resolve(cible);
+  const depuisBanc = path.relative(path.resolve(banc), resolue);
+  const depuisRacine = path.relative(path.resolve(racine), resolue);
+  const dansRacine = depuisRacine === "" || (!depuisRacine.startsWith("..") && !path.isAbsolute(depuisRacine));
+  if (dansRacine || depuisBanc === "" || depuisBanc.startsWith("..") || path.isAbsolute(depuisBanc)) {
+    refuser(`« --salle » : SALLE_OUVERTE ne se bascule que dans la copie du banc (${banc}), jamais dans « ${resolue} ».`);
+  }
+  const fichier = path.join(resolue, FICHIER_SALLE_OUVERTE);
+  fs.writeFileSync(fichier, basculerSalleOuverte(fs.readFileSync(fichier, "utf8")));
+}
+
+/** Projets préparés de la salle factice : `projet-a` sans historique git, `projet-b` avec un dépôt protégé par la liste. */
+export const PROJETS_SALLE = Object.freeze(["projet-a", "projet-b"]);
+
+/** `omo-projets.json` au format qu'écrit install.ps1 (OmoPreparedProjects) : projets triés, `.git` protégés par leur chemin. */
+export function listeDesProjetsSalle(maintenant = new Date()) {
+  return {
+    version: 1,
+    genereLe: maintenant.toISOString(),
+    projets: [
+      { chemin: "projet-a", git: "absent" },
+      { chemin: "projet-b", git: "dossier" },
+    ],
+    gitProteges: [{ chemin: "projet-b/.git", forme: "dossier" }],
+  };
+}
+
+/**
+ * Dossier de travail et liste des projets de la salle, posés comme install.ps1 les laisse sur un poste : deux projets de premier
+ * niveau, et `omo-projets.json` dans le dossier source monté sur /omo-source du cockpit. Tout est dans le dossier du banc.
+ */
+export function preparerDossierSalle(plan, maintenant = new Date()) {
+  const ws = path.join(plan.dossier, "workspace");
+  const ecrire = (relatif, texte) => {
+    const chemin = path.join(ws, ...relatif.split("/"));
+    fs.mkdirSync(path.dirname(chemin), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(chemin, texte, { encoding: "utf8" });
+  };
+  ecrire("projet-a/README.md", "# Projet A du banc e2e de la salle\n");
+  ecrire("projet-a/src/app.txt", "Fichier ordinaire du projet A.\n");
+  ecrire("projet-b/README.md", "# Projet B du banc e2e de la salle (dépôt git)\n");
+  ecrire("projet-b/.git/HEAD", "ref: refs/heads/main\n");
+  ecrire("projet-b/.git/config", "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
+  const liste = path.join(plan.dossier, "omo-source", "omo-projets.json");
+  fs.writeFileSync(liste, `${JSON.stringify(listeDesProjetsSalle(maintenant), null, 2)}\n`, { encoding: "utf8" });
+}
+
+/** Clés et valeurs qu'un scénario de la salle peut changer en redémarrant le cockpit (T-L26-e) ; rien d'autre, jamais un secret. */
+export function verifierReconfiguration(plan, variables) {
+  if (plan?.salle !== true) refuser("reconfiguration du cockpit réservée à la pile de la salle (« --salle »).");
+  if (typeof variables !== "object" || variables === null || Array.isArray(variables)) refuser("reconfiguration : objet de variables attendu.");
+  const entrees = Object.entries(variables);
+  if (entrees.length === 0) refuser("reconfiguration : aucune variable donnée.");
+  const valeurs = new Map();
+  for (const [cle, valeur] of entrees) {
+    if (cle === "COCKPIT_OMO") {
+      if (valeur !== "on" && valeur !== "off") refuser(`reconfiguration : COCKPIT_OMO vaut « on » ou « off », pas « ${valeur} ».`);
+    } else if (cle === "COCKPIT_OMO_IMAGE") {
+      if (valeur !== "" && valeur !== plan.imageSalleFactice) refuser("reconfiguration : COCKPIT_OMO_IMAGE vaut le nom factice de la pile ou rien, jamais une autre image.");
+    } else {
+      refuser(`reconfiguration : variable « ${cle} » refusée (COCKPIT_OMO et COCKPIT_OMO_IMAGE seulement).`);
+    }
+    valeurs.set(cle, valeur);
+  }
+  return valeurs;
+}
+
+/** Réécrit, dans le fichier d'environnement du banc, les lignes des clés données (chacune doit y être exactement une fois). */
+export function reecrireEnvironnement(fichier, valeurs) {
+  const lignes = fs.readFileSync(fichier, "utf8").split("\n");
+  for (const [cle, valeur] of valeurs) {
+    const indices = lignes.flatMap((ligne, i) => (ligne.startsWith(`${cle}=`) ? [i] : []));
+    if (indices.length !== 1) refuser(`reconfiguration : « ${cle} » trouvée ${indices.length} fois dans le fichier d'environnement du banc.`);
+    lignes[indices[0]] = `${cle}=${valeur}`;
+  }
+  fs.writeFileSync(fichier, lignes.join("\n"), { encoding: "utf8", mode: 0o600 });
+  fs.chmodSync(fichier, 0o600);
+}
+
+/**
+ * Redémarre le cockpit de la pile de la salle avec d'autres interrupteurs (T-L26-e : COCKPIT_OMO coupé, image absente) : fichier
+ * du banc réécrit, conteneur recréé (volumes gardés : base, certificat, session), épinglage relu et comparé, santé, opencode joint.
+ * Une session perdue est rouverte comme au début de l'exécution (défi signé, ticket), cookie reposé dans l'onglet.
+ */
+export async function reconfigurerCockpit(plan, variables, { urlCockpit, epinglage, api, onglet }) {
+  const valeurs = verifierReconfiguration(plan, variables);
+  reecrireEnvironnement(plan.fichierEnv, valeurs);
+  await compose(plan, ["up", "-d", "--no-build", "--no-deps", "--force-recreate", "cockpit"], { silencieux: true });
+  await attendreDemarrage(plan, "cockpit");
+  if (epinglage) {
+    const relu = await lireEpinglage(plan);
+    if (relu.sha256 !== epinglage.sha256 || relu.spki !== epinglage.spki) refuser("reconfiguration : le certificat du cockpit a changé ; l'épinglage de l'exécution ne vaut plus.");
+  }
+  await attendreSante(urlCockpit, { epinglage });
+  try {
+    await api.get("/api/bootstrap");
+  } catch {
+    await api.connecter();
+    await connecterNavigateur(onglet, urlCockpit, api.cookie);
+  }
+  await attendreOpencode(api);
+  return Object.fromEntries(valeurs);
+}
+
+/**
+ * Pilotage de la salle factice (e2e/fake-opencode-server.ts « --instance omo ») : les relevés communs du faux (requêtes, tours
+ * scriptés) et son superviseur factice (état publié, réglages de la sonde, relance, racine créée hors du cockpit).
+ */
+export function piloteSalle(url, jeton) {
+  const releves = relevesDuBanc(url, jeton);
+  const appeler = async (methode, chemin, corps) => {
+    const reponse = await fetch(`${url}${chemin}`, {
+      method: methode,
+      headers: { "x-banc-jeton": jeton, ...(corps === undefined ? {} : { "content-type": "application/json" }) },
+      body: corps === undefined ? undefined : JSON.stringify(corps),
+    });
+    const texte = await reponse.text();
+    if (!reponse.ok) throw new Error(`pilotage de la salle factice : ${reponse.status} sur ${chemin} (${texte.slice(0, 200)})`);
+    return texte ? JSON.parse(texte) : null;
+  };
+  return {
+    ...releves,
+    /** Démarrage, phase, projets lus, flux du cockpit depuis le lancement (`fluxDepuisLancement`, `fluxApresMs`), réglages et journal. */
+    superviseur: async () => await appeler("GET", "/banc/salle"),
+    /** Réglages de la sonde factice (`nonProteges`, `limiteAtteinte`, `manifesteReference`, `imageId`, `dureeArretMs`, `relancer`). */
+    regler: async (corps) => await appeler("POST", "/banc/salle", corps),
+    /** Racine créée dans la salle SANS le cockpit (détection 2), par la route même d'opencode. */
+    racineEtrangere: async (dossier) => await appeler("POST", "/banc/salle/racine-etrangere", dossier === undefined ? {} : { dossier }),
+  };
+}
+
+/** Attend qu'une ligne du journal d'un service de la pile corresponde à `motif` (démarrage d'un faux). */
+async function attendreJournalService(plan, service, motif, delaiMs = 60_000) {
+  const limite = Date.now() + delaiMs;
+  while (Date.now() < limite) {
+    const { sortie } = await compose(plan, ["logs", "--no-color", service], { silencieux: true, tolerant: true });
+    if (motif.test(sortie)) return true;
+    if (/\bexited\b/.test((await compose(plan, ["ps", "-a", "--format", "{{.Service}} {{.State}}"], { silencieux: true, tolerant: true })).sortie.split("\n").find((l) => l.startsWith(`${service} `)) ?? "")) {
+      refuser(`le service « ${service} » s'est arrêté avant d'être prêt.`);
+    }
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  refuser(`le service « ${service} » n'est pas prêt après ${Math.round(delaiMs / 1000)} s.`);
 }
 
 // --- Contexte de build ------------------------------------------------------------------------
@@ -513,6 +728,8 @@ export function preparerContexte(plan, { racine = RACINE } = {}) {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
   }
+  // « --salle » : SALLE_OUVERTE basculée dans CETTE copie seulement (plan 2 bis §2.7), jamais dans le dossier de travail.
+  if (plan.salle) ouvrirSalleDansLaCopie(cible);
   return { chemin: cible, fichiers: liste.length };
 }
 
@@ -706,16 +923,24 @@ export async function executer(options) {
     console.log(`Mesure M-B1 lue dans ${mesure.fichier} : mode réel hors ligne permis.`);
   }
 
-  const scenarios = listerScenarios(plan.motif);
-  if (scenarios.length === 0) refuser(plan.motif ? `aucun scénario ne correspond à « ${plan.motif} ».` : "aucun scénario dans e2e/scenarios.");
+  const { retenus: scenarios, ecartes } = partagerScenarios(listerScenarios(plan.motif), plan.salle);
+  if (ecartes.length > 0) {
+    console.log(
+      plan.salle
+        ? `Banc e2e : ${ecartes.length} scénario(s) hors de la salle écarté(s) : la pile de la salle n'est pas celle du produit ; lancez-les sans « --salle ».`
+        : `Banc e2e : ${ecartes.length} scénario(s) de la salle écarté(s) (${ecartes.map((s) => s.nom).join(", ")}) : ils demandent la pile de la salle, « --salle ».`,
+    );
+  }
+  if (scenarios.length === 0) refuser(plan.motif ? `aucun scénario ne correspond à « ${plan.motif} »${plan.salle ? " dans la salle" : ""}.` : "aucun scénario dans e2e/scenarios.");
 
   const acces = plan.schema === "https" ? "HTTPS épinglé" : "HTTP explicite (--http)";
-  console.log(`Banc e2e : mode ${plan.mode}, ${acces}, projet ${plan.projet}, port 127.0.0.1:${plan.portCockpit}, ${scenarios.length} scénario(s).`);
+  console.log(`Banc e2e : mode ${plan.mode}${plan.salle ? " avec la salle factice" : ""}, ${acces}, projet ${plan.projet}, port 127.0.0.1:${plan.portCockpit}, ${scenarios.length} scénario(s).`);
   if (plan.dryRun) {
     console.log("À blanc : les commandes ci-dessous ne sont pas exécutées.");
     for (const sous of [
       ["build", ...plan.aBatir],
       ...(plan.mode === "reel-hors-ligne" ? [["run", "--rm", "--no-deps", "preparation"]] : []),
+      ...(plan.salle ? [["run", "--rm", "--no-deps", "salle-preparation"], ["up", "-d", "--no-build", ...plan.services.filter((s) => s !== "cockpit")]] : []),
       ["up", "-d", "--no-build", ...plan.services],
       ["ps", "-a"],
       ...(plan.schema === "https" ? lecturesTlsPubliques() : []),
@@ -742,6 +967,14 @@ export async function executer(options) {
 
     await compose(plan, ["build", ...plan.aBatir]);
     if (plan.mode === "reel-hors-ligne") await compose(plan, ["run", "--rm", "--no-deps", "preparation"]);
+    if (plan.salle) {
+      // Salle : préparation (certificat du faux catalogue, auth.json factice, omo-state), puis les faux AVANT le cockpit : son
+      // premier relevé du catalogue du compte doit trouver le faux catalogue Copilot déjà à l'écoute.
+      await compose(plan, ["run", "--rm", "--no-deps", "salle-preparation"]);
+      await compose(plan, ["up", "-d", "--no-build", ...plan.services.filter((s) => s !== "cockpit")]);
+      await attendreJournalService(plan, "faux-copilot", /faux catalogue Copilot : \d+ IA/);
+      console.log(`Salle factice : cockpit bâti avec SALLE_OUVERTE basculée dans la copie seulement ; image de la salle : ${plan.imageSalleFactice} (nom factice).`);
+    }
     await compose(plan, ["up", "-d", "--no-build", ...plan.services]);
     await attendreDemarrage(plan, "cockpit");
 
@@ -759,8 +992,10 @@ export async function executer(options) {
     await attendreOpencode(sonde);
     const faux = plan.mode === "faux" ? relevesDuBanc(`http://127.0.0.1:${plan.portControle}`, secrets.jetonControle) : null;
     const fournisseur = plan.mode === "reel-hors-ligne" ? relevesDuBanc(`http://127.0.0.1:${plan.portFournisseur}`, secrets.jetonControle) : null;
+    const salle = plan.salle ? piloteSalle(`http://127.0.0.1:${plan.portSalle}`, secrets.jetonControle) : null;
     if (faux) await faux.attendre();
     if (fournisseur) await fournisseur.attendre();
+    if (salle) await salle.attendre();
     etat.navigateur = await ouvrirNavigateur({
       dossierProfil: path.join(plan.dossier, "profil-navigateur"),
       spkiEpingle: epinglage?.spki ?? null,
@@ -780,7 +1015,7 @@ export async function executer(options) {
       const onglet = await etat.navigateur.nouvelOnglet();
       const prefixe = path.join(plan.captures, scenario.nom.replace(/\.mjs$/, ""));
       try {
-        const ctx = await construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, secrets, scenario, prefixe });
+        const ctx = await construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, salle, secrets, scenario, prefixe });
         const module = await import(pathToFileURL(scenario.chemin).href);
         if (typeof module.run !== "function") refuser(`le scénario « ${scenario.nom} » n'exporte pas run(ctx).`);
         // Garde de R106-b : toute action du scénario sur la page est relevée ; elle doit suivre un réglage de mouvement fixé.
@@ -814,12 +1049,22 @@ export async function executer(options) {
 }
 
 /** Contexte remis à chaque scénario (format figé par la fiche L7a). */
-async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, secrets, scenario, prefixe }) {
+async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, salle = null, secrets, scenario, prefixe }) {
   const api = creerClientCockpit(urlCockpit, secrets.jeton, epinglage);
   await api.connecter();
   // La session du navigateur est ouverte ici, par le cookie du client d'API : ni le jeton ni le scénario n'y touchent.
   await connecterNavigateur(onglet, urlCockpit, api.cookie);
   return {
+    // Salle OMO factice (« --salle », L26c) ; null hors de la pile de la salle.
+    salle: salle
+      ? {
+          pilote: salle,
+          workspace: path.join(plan.dossier, "workspace"),
+          projets: [...PROJETS_SALLE],
+          imageFactice: plan.imageSalleFactice,
+          reconfigurer: (variables) => reconfigurerCockpit(plan, variables, { urlCockpit, epinglage, api, onglet }),
+        }
+      : null,
     navigateur: onglet,
     url: urlCockpit,
     faux,
@@ -1202,6 +1447,142 @@ export async function verifierGardes() {
   });
 
   console.log(echecs.length === 0 ? "Gardes du banc : aucune n'est tombée." : `Gardes du banc : ${echecs.length} vérification(s) en échec.`);
+  // Gardes de la pile de la salle (« --salle », L26c) : comptées et annoncées À PART des gardes d'isolation ci-dessus, dont le
+  // RECAPITULATIF donne le nombre (croisements-it2-v4) ; leur total est imprimé par verifierGardesSalle.
+  const echecsSalle = await verifierGardesSalle();
+  return echecs.length + echecsSalle;
+}
+
+/**
+ * Gardes de la pile de la salle (L26c), sans Docker ni navigateur. Chacune tombe si sa garde est retirée : bascule de
+ * SALLE_OUVERTE dans la copie seule et une seule fois, image distincte, « --faux » seul, partage des scénarios, fichier
+ * d'environnement, reconfiguration bornée, vraie salle jamais démarrée par la surcharge.
+ */
+export async function verifierGardesSalle() {
+  const echecs = [];
+  let jouees = 0;
+  const gardeSalle = async (nom, fn) => {
+    jouees++;
+    try {
+      await fn();
+      console.log(`  ok    [salle] ${nom}`);
+    } catch (err) {
+      echecs.push(nom);
+      console.error(`  ÉCHEC [salle] ${nom} : ${err?.message ?? err}`);
+    }
+  };
+  const refusAttendu = async (fn, extrait) => {
+    let erreur = null;
+    try {
+      await fn();
+    } catch (err) {
+      erreur = err;
+    }
+    if (!erreur) throw new Error(`aucun refus (attendu : « ${extrait} »)`);
+    if (!(erreur instanceof ErreurBanc)) throw new Error(`refus inattendu : ${erreur.message}`);
+    if (!erreur.message.includes(extrait)) throw new Error(`message sans « ${extrait} » : ${erreur.message}`);
+  };
+
+  await gardeSalle("SALLE_OUVERTE basculée exactement une fois, refusée à zéro ou deux déclarations", async () => {
+    const source = `a;\n${SALLE_FERMEE}\nb;\n`;
+    if (basculerSalleOuverte(source) !== `a;\n${SALLE_OUVERTE_BANC}\nb;\n`) throw new Error("bascule inattendue");
+    await refusAttendu(() => basculerSalleOuverte("rien ici"), "trouvée 0 fois");
+    await refusAttendu(() => basculerSalleOuverte(`${SALLE_FERMEE}\n${SALLE_FERMEE}`), "trouvée 2 fois");
+  });
+
+  await gardeSalle("SALLE_OUVERTE basculée dans la copie du banc seulement, jamais dans le dépôt ; le dépôt la garde fausse", () =>
+    avecDossierEssai(async (essai) => {
+      const banc = path.join(essai, "banc");
+      const copie = path.join(banc, "p", "contexte");
+      fs.mkdirSync(path.join(copie, "app", "server"), { recursive: true });
+      fs.writeFileSync(path.join(copie, FICHIER_SALLE_OUVERTE), `${SALLE_FERMEE}\n`);
+      ouvrirSalleDansLaCopie(copie, { banc });
+      if (fs.readFileSync(path.join(copie, FICHIER_SALLE_OUVERTE), "utf8") !== `${SALLE_OUVERTE_BANC}\n`) throw new Error("copie non basculée");
+      await refusAttendu(() => ouvrirSalleDansLaCopie(RACINE, { banc }), "jamais dans");
+      await refusAttendu(() => ouvrirSalleDansLaCopie(path.join(essai, "ailleurs"), { banc }), "jamais dans");
+      await refusAttendu(() => ouvrirSalleDansLaCopie(copie, { banc, racine: path.join(banc, "p") }), "jamais dans");
+      const depot = fs.readFileSync(path.join(RACINE, FICHIER_SALLE_OUVERTE), "utf8");
+      if (depot.split(SALLE_FERMEE).length !== 2 || depot.includes(SALLE_OUVERTE_BANC)) throw new Error("SALLE_OUVERTE n'est plus fausse dans le dépôt");
+    }),
+  );
+
+  await gardeSalle("image du cockpit de la salle distincte (app-salle), image de la salle réduite à un nom factice", async () => {
+    const salle = await preparerPlan({ mode: "faux", salle: true, prefixe: "sal11-e2e", tag: "essai", id: "essai", fichierEnv: path.join(DOSSIER_BANC, "sal11-e2e-essai-garde", "b.env") });
+    const ordinaire = await preparerPlan({ mode: "faux", prefixe: "sal11-e2e", tag: "essai", id: "essai", fichierEnv: path.join(DOSSIER_BANC, "sal11-e2e-essai-garde", "o.env") });
+    if (salle.imageApp !== "sal11-e2e/app-salle:essai" || ordinaire.imageApp !== "sal11-e2e/app:essai") throw new Error(`images : ${salle.imageApp}, ${ordinaire.imageApp}`);
+    if (salle.imageSalleFactice !== "sal11-e2e/salle-factice:essai" || ordinaire.imageSalleFactice !== null) throw new Error(`nom factice : ${salle.imageSalleFactice}`);
+    if (!salle.profils.includes("salle") || ordinaire.profils.includes("salle")) throw new Error(`profils : ${salle.profils}, ${ordinaire.profils}`);
+    if (salle.services.includes("opencode-omo") || salle.services.includes("egress")) throw new Error(`services : ${salle.services}`);
+  });
+
+  await gardeSalle("« --salle » refusé hors de « --faux »", async () => {
+    await refusAttendu(() => preparerPlan({ mode: "reel", salle: true, prefixe: "sal11-e2e", tag: "essai" }), "n'existe qu'en « --faux »");
+    await refusAttendu(() => preparerPlan({ mode: "reel-hors-ligne", salle: true, prefixe: "sal11-e2e", tag: "essai" }), "n'existe qu'en « --faux »");
+    if (analyserArguments(["--salle"]).salle !== true || analyserArguments([]).salle !== false) throw new Error("option « --salle » mal lue");
+  });
+
+  await gardeSalle("scénarios de la salle joués sur sa pile seulement, et seuls", () => {
+    const liste = [{ nom: "000-smoke.mjs" }, { nom: "omo-ui-salle.mjs" }, { nom: "it2-ui-commun.mjs" }];
+    const avec = partagerScenarios(liste, true);
+    const sans = partagerScenarios(liste, false);
+    if (avec.retenus.map((s) => s.nom).join() !== "omo-ui-salle.mjs" || avec.ecartes.length !== 2) throw new Error(`avec --salle : ${avec.retenus.map((s) => s.nom)}`);
+    if (sans.retenus.some((s) => estScenarioSalle(s.nom)) || sans.ecartes.map((s) => s.nom).join() !== "omo-ui-salle.mjs") throw new Error(`sans --salle : ${sans.retenus.map((s) => s.nom)}`);
+  });
+
+  await gardeSalle("fichier d'environnement : salle allumée seulement avec « --salle », mot de passe d'au moins 32 caractères, rien pour le shell", () => {
+    const base = { schema: "https", mode: "faux", id: "essai", projet: "sal11-e2e-essai", imageApp: "sal11-e2e/app:essai", imageOpencode: "sal11-e2e/opencode:essai", portCockpit: 17801, portControle: 17802, portFournisseur: 17803, portSalle: 17804, dossier: path.join(DOSSIER_BANC, "sal11-e2e-essai") };
+    const valeurs = { jeton: "essai", motDePasse: "essai", jetonControle: "essai", contexte: "contexte", motDePasseSalle: secret(32) };
+    const avec = lignesEnvironnement({ ...base, salle: true, imageApp: "sal11-e2e/app-salle:essai", imageSalleFactice: "sal11-e2e/salle-factice:essai" }, valeurs);
+    const sans = lignesEnvironnement({ ...base, salle: false, imageSalleFactice: null }, valeurs);
+    const valeur = (lignes, cle) => lignes.find((l) => l.startsWith(`${cle}=`))?.slice(cle.length + 1);
+    if (valeur(avec, "COCKPIT_OMO") !== "on" || valeur(avec, "COCKPIT_OMO_IMAGE") !== "sal11-e2e/salle-factice:essai") throw new Error("salle non allumée avec --salle");
+    if ((valeur(avec, "OPENCODE_OMO_PASSWORD") ?? "").length < 32) throw new Error("mot de passe de la salle trop court");
+    if (valeur(avec, "E2E_SALLE_URL") !== URL_SALLE_FACTICE || valeur(avec, "E2E_CERTS_COCKPIT") !== VOLUME_CA_SALLE) throw new Error("salle factice ou autorité jetable absentes");
+    for (const cle of ["COCKPIT_OMO", "COCKPIT_OMO_IMAGE", "OPENCODE_OMO_PASSWORD"]) if (valeur(sans, cle) !== undefined) throw new Error(`${cle} écrite sans --salle`);
+    if (valeur(sans, "E2E_SALLE_URL") !== URL_SALLE_PRODUIT || valeur(sans, "E2E_CERTS_COCKPIT") !== "./certs") throw new Error("sans --salle, la surcharge ne vaut plus le produit");
+    const shell = Object.fromEntries([...avec.map((l) => l.slice(0, l.indexOf("="))), "PATH"].map((cle) => [cle, "valeur-du-shell"]));
+    const restees = Object.keys(environnementDocker(shell)).filter((cle) => cle !== "PATH" && cle !== "MSYS_NO_PATHCONV");
+    if (restees.length > 0) throw new Error(`variables du shell gardées pour docker : ${restees.join(", ")}`);
+  });
+
+  await gardeSalle("reconfiguration du cockpit bornée : pile de la salle, COCKPIT_OMO on/off, image factice ou rien", () =>
+    avecDossierEssai(async (essai) => {
+      const plan = { salle: true, imageSalleFactice: "sal11-e2e/salle-factice:essai", fichierEnv: path.join(essai, "b.env") };
+      await refusAttendu(() => verifierReconfiguration({ ...plan, salle: false }, { COCKPIT_OMO: "off" }), "réservée à la pile de la salle");
+      await refusAttendu(() => verifierReconfiguration(plan, {}), "aucune variable");
+      await refusAttendu(() => verifierReconfiguration(plan, { COCKPIT_OMO: "peut-etre" }), "« on » ou « off »");
+      await refusAttendu(() => verifierReconfiguration(plan, { COCKPIT_OMO_IMAGE: "opencode-cockpit/opencode-omo:4.19.4" }), "jamais une autre image");
+      await refusAttendu(() => verifierReconfiguration(plan, { COCKPIT_TOKEN: "x" }), "refusée");
+      fs.writeFileSync(plan.fichierEnv, "COCKPIT_OMO=on\nCOCKPIT_OMO_IMAGE=sal11-e2e/salle-factice:essai\nE2E_ESSAI=factice\n");
+      reecrireEnvironnement(plan.fichierEnv, verifierReconfiguration(plan, { COCKPIT_OMO: "off", COCKPIT_OMO_IMAGE: "" }));
+      if (fs.readFileSync(plan.fichierEnv, "utf8") !== "COCKPIT_OMO=off\nCOCKPIT_OMO_IMAGE=\nE2E_ESSAI=factice\n") throw new Error("fichier du banc mal réécrit");
+      await refusAttendu(() => reecrireEnvironnement(plan.fichierEnv, new Map([["E2E_ABSENTE", "x"]])), "trouvée 0 fois");
+    }),
+  );
+
+  await gardeSalle("surcharge : la vraie salle n'y démarre jamais, la salle factice tourne dans l'image du banc", () => {
+    const texte = fs.readFileSync(path.join(RACINE, "e2e", "docker-compose.e2e.yml"), "utf8");
+    const bloc = (service) => {
+      const debut = texte.search(new RegExp(`^  ${service}:\\s*$`, "m"));
+      if (debut < 0) throw new Error(`service « ${service} » absent de la surcharge`);
+      const suite = texte.slice(debut + 1).search(/^ {2}[a-z][a-z0-9-]*:\s*$|^[a-z]/m);
+      return suite < 0 ? texte.slice(debut) : texte.slice(debut, debut + 1 + suite);
+    };
+    for (const service of ["opencode-omo", "egress", "omo-init"]) {
+      if (!/profiles: !override \["jamais-dans-le-banc-e2e"\]/.test(bloc(service))) throw new Error(`« ${service} » n'est pas écarté du banc`);
+    }
+    for (const service of ["faux-salle", "faux-copilot", "salle-preparation"]) {
+      const b = bloc(service);
+      if (!/^ {4}image: \$\{E2E_IMAGE_APP:\?/m.test(b) || !/^ {4}pull_policy: never$/m.test(b) || !/^ {4}profiles: \["salle"\]$/m.test(b)) throw new Error(`« ${service} » hors de l'image du banc ou de son profil`);
+      if (/opencode-omo|COCKPIT_OMO_IMAGE/.test(b)) throw new Error(`« ${service} » cite l'image de la salle`);
+    }
+  });
+
+  console.log(
+    echecs.length === 0
+      ? `Gardes de la pile de la salle (--salle, L26c) : ${jouees}, aucune n'est tombée.`
+      : `Gardes de la pile de la salle (--salle, L26c) : ${echecs.length} vérification(s) en échec sur ${jouees}.`,
+  );
   return echecs.length;
 }
 
@@ -1320,7 +1701,7 @@ async function verifierGardesHttps(verifier, refuse) {
   });
   await refuse("schéma inconnu refusé", () => preparerPlan({ mode: "faux", schema: "ftp", prefixe: "it11-e2e", tag: "essai" }), "schéma inconnu");
 
-  const planEssai = (schema) => ({ schema, mode: "faux", id: "essai", projet: "it11-e2e-essai", imageApp: "it11-e2e/app:essai", imageOpencode: "it11-e2e/opencode:essai", portCockpit: 17801, portControle: 17802, portFournisseur: 17803, dossier: path.join(DOSSIER_BANC, "it11-e2e-essai") });
+  const planEssai = (schema) => ({ schema, mode: "faux", id: "essai", projet: "it11-e2e-essai", imageApp: "it11-e2e/app:essai", imageOpencode: "it11-e2e/opencode:essai", portCockpit: 17801, portControle: 17802, portFournisseur: 17803, portSalle: 17804, dossier: path.join(DOSSIER_BANC, "it11-e2e-essai") });
   const valeursEssai = { jeton: "essai", motDePasse: "essai", jetonControle: "essai", contexte: "contexte", maintenant: new Date("2026-09-19T10:00:00.000Z") };
   await verifier("fichier d'environnement : HTTPS sans date de confirmation, « --http » daté au format strict", () => {
     const enHttps = lignesEnvironnement(planEssai("https"), valeursEssai);
@@ -1421,7 +1802,7 @@ async function verifierGardesHttps(verifier, refuse) {
 // --- Arguments --------------------------------------------------------------------------------
 
 export function analyserArguments(argv) {
-  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null };
+  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null, salle: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const suivant = () => {
@@ -1434,6 +1815,8 @@ export function analyserArguments(argv) {
     else if (arg === "--reel") options.mode = "reel";
     // Mode HTTP explicite de la 1.0.5 ; sans l'option, HTTPS épinglé.
     else if (arg === "--http") options.schema = "http";
+    // Pile de la salle OMO factice (L26c) : scénarios omo-ui-* seulement, en « --faux » seulement.
+    else if (arg === "--salle") options.salle = true;
     else if (arg === "--scenarios") options.motif = suivant();
     else if (arg === "--project-prefix") options.prefixe = suivant();
     else if (arg === "--image-tag") options.tag = suivant();

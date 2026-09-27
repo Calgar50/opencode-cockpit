@@ -340,12 +340,16 @@ function ficheSource(name: string): CatalogueFiche | null {
 /**
  * Dossiers où opencode a une instance à interroger : l'instance par défaut (null) et, avec `db`, les dossiers autorisés des
  * sessions récentes ; sans `db`, les projets du workspace. Chaque `directory` interrogé démarre une instance d'opencode.
+ *
+ * 1.1, Salle OMO (réservation 4 du plan 2 bis §1.3, L18a) : les dossiers lus sont ceux de l'INSTANCE PRINCIPALE seule. Les
+ * dossiers d'une conversation de la salle ne sont jamais interrogés sur l'opencode de l'instance principale (ils y feraient
+ * démarrer une instance pour rien) ni comptés par la garde de rechargement et la synchro de l'adresse Copilot.
  */
 export async function knownDirectories(deps: { projects: Pick<ProjectsService, "isAllowedDirectory" | "list">; db?: DatabaseSync }): Promise<Array<string | null>> {
   const directories = new Set<string | null>([null]);
   if (deps.db) {
     const rows = deps.db
-      .prepare("SELECT DISTINCT directory FROM sessions WHERE deleted_at IS NULL AND directory != '' AND updated_at >= ? LIMIT 100")
+      .prepare("SELECT DISTINCT directory FROM sessions WHERE deleted_at IS NULL AND directory != '' AND instance = 'principale' AND updated_at >= ? LIMIT 100")
       .all(Date.now() - RECENT_SESSION_MS) as Array<{ directory: string }>;
     for (const row of rows) if (deps.projects.isAllowedDirectory(row.directory)) directories.add(row.directory);
   } else {

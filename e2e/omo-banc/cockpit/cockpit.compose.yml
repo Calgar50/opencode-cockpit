@@ -1,0 +1,269 @@
+# Banc COMPLET de la salle (L21b) : le cockpit RÉEL jetable, pas les pilotes. Cette surcharge REMPLACE `banc.compose.yml` : elle
+# s'empile sur le compose du produit et sur la surcharge des projets d'`install.ps1 -OmoProjetsSeulement` :
+#
+#   docker compose -p sal11-omo-banc-<id> --env-file <banc.env> \
+#     -f docker-compose.yml -f docker-compose.omo-projets.yml -f e2e/omo-banc/cockpit/cockpit.compose.yml --profile omo up -d
+#
+# Différence avec le banc hors ligne (L21) : ici le VRAI cockpit tient la place des pilotes — il publie l'authentification (à partir
+# d'un `auth.json` FACTICE posé dans le volume de l'instance principale), fait le pré-contrôle et, quand sa tête le sait, bat et
+# active. L'instance principale est un VRAI opencode devant un faux fournisseur hors ligne (modèle L7a --reel-hors-ligne :
+# `enabled_providers` réduit au faux, aucun appel facturable possible) ; la SALLE (`opencode-omo`) reste la vraie image de
+# l'extension, devant le faux Copilot en TLS. Le cockpit parle à la salle À TRAVERS l'espion (`OPENCODE_OMO_URL`), qui compte
+# `POST …/command`, les envois, les sessions et les événements.
+#
+# Rien du produit n'est modifié : `opencode` et `cockpit` sont SURCHARGÉS (image, environnement, montages), jamais réécrits.
+#
+# HORS LIGNE, et c'est tenu par le réseau, pas par la bonne volonté des services :
+# - le réseau `default` du projet devient `internal: true` : ni le cockpit, ni l'instance principale, ni `egress` n'ont de route
+#   vers l'extérieur (catalogue de modèles, npm, GitHub : tout échoue sur place) ;
+# - les ports publiés passent par `banc-front`, un pont SANS traduction d'adresse vers l'extérieur (même levier que `e2e-front`
+#   du banc e2e, mesure MX1 §8) : l'hôte joint le service, le service ne joint rien ;
+# - le faux Copilot est détourné par `extra_hosts` sur `omo-internal`, fermé lui aussi.
+#
+# Ports : UN SEUL mécanisme par service. Le cockpit publie par la variable du produit (`COCKPIT_PORT`, posée par le banc à un port
+# du banc, jamais 7777) : une liste `ports` ici s'AJOUTERAIT à celle du produit (Compose fusionne les listes) au lieu de la
+# remplacer. Aucun montage vers la copie de travail : `/certs` et `/archives` du produit (`./certs`, `./archives`, relatifs au
+# dépôt) sont remplacés par des dossiers du banc, que Docker créerait sinon dans le dépôt.
+#
+# Battement : sur une tête où aucun code de production n'appelle encore `omoControl.startHeartbeat()` (constat du banc, remis à
+# l'intégrateur), la salle ne démarre jamais derrière un cockpit réel. `run-banc.mjs --complet --battement-banc` démarre alors
+# `banc-amorce` et `banc-battement` (les deux gestes de `startHeartbeat()` : liste des projets déposée, battement toutes les 5 s),
+# et le banc le DIT dans son bilan : le reste (authentification, pré-contrôle, ouverture) reste celui du cockpit réel.
+
+services:
+  # --- Instance principale : VRAI opencode devant un faux fournisseur hors ligne (modèle L7a) --------------------------------
+  # Config posée dans le volume avant le premier démarrage, comme le fait le banc e2e --reel-hors-ligne. Un `auth.json` FACTICE à
+  # entrée `github-copilot` est aussi posé, pour que la publication d'authentification du cockpit ait une source à recopier.
+  cockpit-prepare:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "0:0"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    pids_limit: 32
+    network_mode: none
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-cockpit/prepare-principale.mjs", "--config", "/banc-lib-e2e/opencode-hors-ligne.jsonc", "--oc-config", "/oc-config", "--oc-data", "/oc-data"]
+    volumes:
+      - ${BANC_COCKPIT}:/banc-cockpit:ro
+      - ${BANC_LIB_E2E}:/banc-lib-e2e:ro
+      - oc-config:/oc-config
+      - oc-data:/oc-data
+
+  # Faux fournisseur compatible OpenAI du banc e2e (L7a), réemployé TEL QUEL (e2e/lib/faux-fournisseur.mjs, jamais modifié).
+  faux-fournisseur:
+    profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      E2E_JETON_CONTROLE: ${BANC_JETON_PILOTE}
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib-e2e/faux-fournisseur.mjs"]
+    expose: ["8080"]
+    ports: ["127.0.0.1:${BANC_PORT_FOURNISSEUR}:8081"]
+    volumes:
+      - ${BANC_LIB_E2E}:/banc-lib-e2e:ro
+    # « interne » (1.0.6) : l'instance principale n'est plus que sur ce réseau, derrière le relais du cockpit ; elle joint le faux
+    # fournisseur EN DIRECT (NO_PROXY ci-dessous), jamais par le relais, qui le refuserait. Banc seulement.
+    networks: [default, banc-front, interne]
+
+  opencode:
+    image: ${COCKPIT_OPENCODE_IMAGE:-sal11/opencode:sal11}
+    pull_policy: never
+    restart: "no"
+    # 1.0.6 : NO_PROXY de docker-compose.yml plus le seul faux fournisseur, joint en direct sur « interne ». Ni les proxys (relais du
+    # cockpit) ni les réseaux d'opencode ne sont surchargés : la topologie du produit reste celle qui est éprouvée.
+    environment:
+      NO_PROXY: localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit,faux-fournisseur
+      no_proxy: localhost,127.0.0.1,::1,0.0.0.0,opencode,cockpit,faux-fournisseur
+    volumes:
+      - ${BANC_CERTS}:/certs:ro
+    depends_on:
+      cockpit-prepare:
+        condition: service_completed_successfully
+      faux-fournisseur:
+        condition: service_started
+
+  # --- Cockpit RÉEL jetable (image bâtie par cockpit/preparer.mjs, SALLE_OUVERTE basculée dans la copie) ---------------------
+  cockpit:
+    image: ${COCKPIT_REEL_IMAGE:?le banc complet exige COCKPIT_REEL_IMAGE (cockpit/preparer.mjs)}
+    pull_policy: never
+    restart: "no"
+    environment:
+      # La salle est allumée dans CETTE pile jetable seulement : l'image porte SALLE_OUVERTE=true, et le cockpit reçoit
+      # COCKPIT_OMO=on avec les dossiers de contrôle. Rien de tout cela ne touche le dépôt ni la pile de l'utilisateur.
+      COCKPIT_OMO: "on"
+      COCKPIT_AUTONOMY: "on"
+      COCKPIT_OMO_IMAGE: ${COCKPIT_OMO_IMAGE}
+      OPENCODE_OMO_URL: http://banc-espion:4097
+      OPENCODE_OMO_PASSWORD: ${OPENCODE_OMO_PASSWORD}
+      # Fournisseurs permis, pour les DEUX instances (le contrôle des envois facturés, enforceTurn, lit ce seul réglage) :
+      # `banc` pour l'instance principale (faux fournisseur hors ligne, bandeau « mode test » attendu) et `github-copilot` pour la
+      # salle, dont le Copilot est le faux du banc (mesuré le 24/09 : sans lui, tout envoi dans la salle reçoit 403
+      # « fournisseur-refuse »). Rien ne peut sortir : réseau fermé, et l'instance principale n'active que `banc`.
+      COCKPIT_ALLOWED_PROVIDERS: github-copilot,banc
+      # Accès local du banc en HTTP explicite (pile de dix minutes : aucun certificat à épingler).
+      COCKPIT_LOCAL_SCHEME: http
+      COCKPIT_LOCAL_HTTP_CONFIRMED: ${BANC_HTTP_CONFIRMED}
+    volumes:
+      - ${BANC_CERTS}:/certs:ro
+      - ${BANC_ARCHIVES}:/archives
+    networks: [default, omo-internal, banc-front]
+
+  # --- Salle : la vraie image de l'extension, devant le faux Copilot en TLS (comme le banc hors ligne) ----------------------
+  opencode-omo:
+    volumes:
+      - ${BANC_CERTS}:/certs:ro
+    extra_hosts:
+      - "api.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.business.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.enterprise.githubcopilot.com:${BANC_IP_COPILOT}"
+
+  egress:
+    extra_hosts:
+      - "api.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.business.githubcopilot.com:${BANC_IP_COPILOT}"
+      - "api.enterprise.githubcopilot.com:${BANC_IP_COPILOT}"
+
+  # --- Faux fournisseur Copilot (L21a), TLS sur 443 : la salle croit parler à Copilot, rien ne sort (MO-9) -----------------
+  banc-copilot:
+    profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    user: "0:0"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    pids_limit: 128
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      FAUX_COPILOT_JETON_PILOTE: ${BANC_JETON_PILOTE}
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command:
+      - /banc-lib/faux-copilot.mjs
+      - --tls
+      - --cert
+      - /banc-certs/serveur.pem
+      - --key
+      - /banc-certs/serveur.key
+      - --host
+      - 0.0.0.0
+      - --port
+      - "443"
+      - --pilot-host
+      - 0.0.0.0
+      - --pilot-port
+      - "9443"
+    ports: ["127.0.0.1:${BANC_PORT_PILOTE}:9443"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_CERTS_PRIVE}:/banc-certs:ro
+    networks:
+      banc-front: {}
+      omo-internal:
+        aliases: ["api.githubcopilot.com", "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com"]
+        ipv4_address: ${BANC_IP_COPILOT}
+
+  # --- Espion : le seul chemin du cockpit vers la salle, et le compteur de tout ce qui l'engage ---------------------------
+  banc-espion:
+    profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/espion.mjs", "--port", "4097", "--amont", "opencode-omo", "--port-amont", "4096"]
+    ports: ["127.0.0.1:${BANC_PORT_ESPION}:4097"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+    networks: [default, omo-internal, banc-front]
+
+  # --- Gestes de `startHeartbeat()` assurés par le banc (`--battement-banc` SEULEMENT) --------------------------------------
+  # Démarrés seulement quand le banc les nomme à `up` : sinon ils restent créés à rien. Mêmes pilotes que le banc hors ligne.
+  banc-amorce:
+    profiles: ["omo"]
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      omo-init:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-precheck.mjs", "--amorcer"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_SOURCE}:/banc-source:ro
+      - ${BANC_OUT}:/banc-out
+      - control-omo:/control
+
+  banc-battement:
+    profiles: ["omo"]
+    # Image du cockpit, autre commande : son HEALTHCHECK (server/healthcheck.ts) ne peut jamais passer ici, et `compose up --wait`
+    # l'attendrait pour rien (240 s par banc). Le banc juge lui-même que ce service est prêt.
+    healthcheck:
+      disable: true
+    image: ${COCKPIT_APP_IMAGE:-sal11-omo/app:sal11}
+    restart: "no"
+    read_only: true
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 32
+    network_mode: none
+    depends_on:
+      banc-amorce:
+        condition: service_completed_successfully
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning"]
+    command: ["/banc-lib/pilote-battement.mjs"]
+    volumes:
+      - ${BANC_LIB}:/banc-lib:ro
+      - ${BANC_OUT}:/banc-out
+      - control-omo:/control
+
+networks:
+  # Réseau du projet FERMÉ : le banc complet ne sort nulle part, instance principale comprise.
+  default:
+    internal: true
+  # Seul accès depuis l'hôte (ports publiés sur 127.0.0.1) : un pont sans traduction d'adresse vers l'extérieur.
+  banc-front:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+  omo-internal:
+    ipam:
+      config:
+        - subnet: ${BANC_SUBNET}

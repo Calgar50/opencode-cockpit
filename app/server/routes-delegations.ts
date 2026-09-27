@@ -1,7 +1,8 @@
 // Propriétaire : L1d.
 // GET /api/conversations/:rootId/delegations/:permissionId → DelegationDetailsView (plan d'exécution §4.5) : carte détaillée d'une
 // délégation en attente, pour le mode Avancé (cible, IA, estimation, droits comparés, compteurs, refus que la garde appliquerait).
-// 400 identifiant invalide (shared/ids.ts) ; 404 racine inconnue, demande absente, autre permission ou autre conversation ; 503
+// 400 identifiant invalide (shared/ids.ts) ; 404 racine inconnue, racine de la Salle OMO (P11 : rien n'est demandé à l'opencode
+// de l'instance principale pour elle), demande absente, autre permission ou autre conversation ; 503
 // opencode injoignable (rien n'est deviné). Groupe « delegations », monté par le module taskGuard. Route mince : la logique est dans
 // le port (c11.ports.taskGuard, lu à chaque requête) ; phrases : shared/delegation-texts.ts. Lecture seule : aucune réponse n'est
 // envoyée à opencode. Authentification : garde globale de http.ts, avant ces routes.

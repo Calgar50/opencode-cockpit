@@ -473,28 +473,8 @@ describe("démarrage extrait (server-start.ts) : configuration et certificat ava
     }
   });
 
-  it("une seule fonction d'écoute de l'interface (server-start.ts), appelée une fois par main.ts ; le relais d'opencode à part", () => {
-    assert.deepEqual(Object.keys(serverStart).sort(), ["logHttpsFailure", "prepareStartup", "startLocalServer"]);
-    const sources = fs
-      .readdirSync(SERVER_DIR, { recursive: true, encoding: "utf8" })
-      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
-      .map((file) => file.replaceAll("\\", "/"))
-      // Outillage de test 1.1 (harnais, faux opencode) : retiré de l'image par app/Dockerfile, jamais chargé par main.ts.
-      .filter((file) => !file.startsWith("test-support/"));
-    const listeners = sources.filter((file) =>
-      /from "@hono\/node-server"|\bcreateServer\b|createSecureServer|\.listen\(/.test(fs.readFileSync(path.join(SERVER_DIR, file), "utf8")),
-    );
-    // 1.0.6 : le relais de sortie d'opencode écoute aussi, seulement sur le réseau interne (egress-relay.test.ts), et seul main.ts le lance.
-    assert.deepEqual(listeners.sort(), ["egress-relay.ts", "server-start.ts"]);
-    const importers = sources.filter((file) => file !== "main.ts" && fs.readFileSync(path.join(SERVER_DIR, file), "utf8").includes('from "./egress-relay.ts"'));
-    assert.deepEqual(importers, []);
-    const main = fs.readFileSync(path.join(SERVER_DIR, "main.ts"), "utf8");
-    assert.equal(main.match(/\bstartLocalServer\(/g)?.length, 1);
-    assert.equal(main.match(/\bstartEgressRelay\(/g)?.length, 1);
-    // Certificat préparé avant la base, base ouverte avant l'écoute, relais d'opencode après l'interface.
-    const order = ["prepareStartup(", "openDb(", "startLocalServer(", "startEgressRelay("].map((marker) => main.indexOf(marker));
-    assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > (order[i - 1] ?? 0))), JSON.stringify(order));
-  });
+  // Gardes statiques des écoutes (fonction d'écoute, importeurs, ordre de main.ts) : dans ecoutes.test.ts (décision D12), un
+  // fichier qui ne lance aucun processus, pour qu'une mort de ce fichier au chargement ne puisse jamais les masquer.
 });
 
 // --- main.ts réel : échec avant toute écoute ------------------------------------------------------------------------------

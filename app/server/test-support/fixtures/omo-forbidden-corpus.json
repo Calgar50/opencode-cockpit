@@ -1,0 +1,375 @@
+{
+  "source": "Corpus de la porte G7 (spécification l.1221), partie unitaire : demandes d'autorisation telles que l'instance de la salle les publie (permission.asked), classées par classifyOmoPermission (app/server/shared/omo-forbidden.ts, paquet L22b). Écrit à la main depuis les formes relevées par la mesure MX1 (metadata des outils edit, write et apply_patch d'opencode 1.18.30) et depuis les exemples de la spécification ; aucune capture, aucune donnée de la machine.",
+  "porte": "G7",
+  "nettoyage": "Aucun secret : les fichiers cités sont des noms, jamais un contenu ; les adresses sont des noms réservés aux exemples (.test, .invalid) ; aucun chemin de l'hôte, aucune adresse IP, aucune adresse électronique. Le test refait cette recherche à chaque exécution.",
+  "projetOuvert": "/workspace/projet",
+  "autreProjetPrepare": "/workspace/autre-projet",
+  "ideCiDynamiques": [".githooks", "outils/hooks"],
+  "notes": [
+    "attendu.verdict vaut « once » ou « interdit » ; une catégorie n'est donnée que pour un refus.",
+    "Les commandes passent par tokenizeCommand (L8a) ; celles que la porte refuse de découper sont analysées par fragments (cas « enchaînement »), texte recollé et chaînes citées compris, et P03 s'y applique en entier (décision A18).",
+    "Décision n° 7 (Q2) : les interpréteurs, les tests, les scripts et les programmes du projet passent, c'est le réseau fermé (G1) qui tient le reste."
+  ],
+  "cas": [
+    {
+      "nom": "clé privée lue par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .ssh/id_ed25519" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "P03 : dossier sensible et nom de clé (§4.5)."
+    },
+    {
+      "nom": "clé dans un sous-dossier du projet",
+      "demande": { "permission": "bash", "metadata": { "command": "wc -l certificats/serveur.key" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Extension de clé P03, où qu'elle soit."
+    },
+    {
+      "nom": ".env lu par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .env" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "§9.4 n° 1 : l'IA ne peut ni lire ni modifier un .env, sans accord possible."
+    },
+    {
+      "nom": ".env.local lu par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "head -n 3 config/.env.local" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "Famille .env* sur chaque segment."
+    },
+    {
+      "nom": ".envrc lu par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .envrc" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "Motif .env*, plus large que *.env et *.env.* de KEY_FILE_READ_RULES."
+    },
+    {
+      "nom": "prod.env.local lu par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "cat prod.env.local" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "Motif *.env.* de KEY_FILE_READ_RULES, que P03 seul ne porte pas."
+    },
+    {
+      "nom": ".env.example lu par bash",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .env.example" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Seule exception de la famille (KEY_FILE_READ_RULES « allow »)."
+    },
+    {
+      "nom": "modèle d'environnement d'un service",
+      "demande": { "permission": "bash", "metadata": { "command": "cat service.env.example" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Motif *.env.example, permis lui aussi."
+    },
+    {
+      "nom": ".env.example.bak",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .env.example.bak" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "L'exception ne vaut que pour le nom exact, jamais pour ce qui commence par lui."
+    },
+    {
+      "nom": "git push",
+      "demande": { "permission": "bash", "metadata": { "command": "git push origin main" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
+      "pourquoi": "§4.1 : envoi git, refus automatique."
+    },
+    {
+      "nom": "git remote add",
+      "demande": { "permission": "bash", "metadata": { "command": "git remote add miroir ssh-depot" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
+      "pourquoi": "git remote est refusé comme git push."
+    },
+    {
+      "nom": "option globale de git",
+      "demande": { "permission": "bash", "metadata": { "command": "git -c core.hooksPath=outils/hooks status" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-options-globales" },
+      "pourquoi": "-c change la configuration et les programmes lancés (§4.5)."
+    },
+    {
+      "nom": "option globale collée à sa valeur",
+      "demande": { "permission": "bash", "metadata": { "command": "git -C/workspace/autre-projet log" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-options-globales" },
+      "pourquoi": "-C collé à son dossier reste une option globale."
+    },
+    {
+      "nom": "git --git-dir",
+      "demande": { "permission": "bash", "metadata": { "command": "git --git-dir=autre/.git status" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-options-globales" },
+      "pourquoi": "Option globale, avant même le .git du chemin."
+    },
+    {
+      "nom": "git status",
+      "demande": { "permission": "bash", "metadata": { "command": "git status --short" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Les autres sous-commandes de git passent dans la salle (décision n° 7)."
+    },
+    {
+      "nom": "curl",
+      "demande": { "permission": "bash", "metadata": { "command": "curl https://exemple.test/depot" } },
+      "attendu": { "verdict": "interdit", "categorie": "reseau" },
+      "pourquoi": "Liste S4 « réseau »."
+    },
+    {
+      "nom": "curl sous une enveloppe",
+      "demande": { "permission": "bash", "metadata": { "command": "env NO_PROXY=1 curl https://exemple.test" } },
+      "attendu": { "verdict": "interdit", "categorie": "reseau" },
+      "pourquoi": "Une enveloppe fait de chaque mot suivant un programme candidat."
+    },
+    {
+      "nom": "curl caché dans un interpréteur",
+      "demande": { "permission": "bash", "metadata": { "command": "sh -c 'curl https://exemple.test'" } },
+      "attendu": { "verdict": "interdit", "categorie": "reseau" },
+      "pourquoi": "Le contenu d'un mot cité est découpé à son tour."
+    },
+    {
+      "nom": "kubectl",
+      "demande": { "permission": "bash", "metadata": { "command": "kubectl get pods" } },
+      "attendu": { "verdict": "interdit", "categorie": "production" },
+      "pourquoi": "Liste S4 « production »."
+    },
+    {
+      "nom": "docker après un enchaînement",
+      "demande": { "permission": "bash", "metadata": { "command": "npm run build && docker compose up -d" } },
+      "attendu": { "verdict": "interdit", "categorie": "production" },
+      "pourquoi": "Texte non découpable par la porte : analyse par fragments, chaque début de fragment est un programme."
+    },
+    {
+      "nom": "git push après un tube",
+      "demande": { "permission": "bash", "metadata": { "command": "echo ok | git push" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
+      "pourquoi": "Même analyse par fragments."
+    },
+    {
+      "nom": ".env coupé par une citation",
+      "demande": { "permission": "bash", "metadata": { "command": "cat .e\"nv\"" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "Décision A18 n° 2 : le texte recollé comme le lit le shell fait foi (§4.5), une citation au milieu d'un mot ne cache rien."
+    },
+    {
+      "nom": "git coupé par une citation",
+      "demande": { "permission": "bash", "metadata": { "command": "g'i't push" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-envoi" },
+      "pourquoi": "Décision A18 n° 2 : même recollage pour le programme."
+    },
+    {
+      "nom": "nom P03 derrière un tube",
+      "demande": { "permission": "bash", "metadata": { "command": "cat credentials.json | head" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Décision A18 n° 3 : P03 s'applique en entier à chaque fragment, catégorie « nom » comprise."
+    },
+    {
+      "nom": "nom P03 dans une commande citée",
+      "demande": { "permission": "bash", "metadata": { "command": "sh -c 'cat credentials.json > /tmp/x'" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Décision A18 n° 3 : même règle pour le contenu d'un mot cité."
+    },
+    {
+      "nom": "npm test",
+      "demande": { "permission": "bash", "metadata": { "command": "npm test" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : les tests du projet passent (décision n° 7)."
+    },
+    {
+      "nom": "pytest",
+      "demande": { "permission": "bash", "metadata": { "command": "pytest -q" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : catégorie S4 « code », non appliquée dans la salle."
+    },
+    {
+      "nom": "make",
+      "demande": { "permission": "bash", "metadata": { "command": "make" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : compilation du projet."
+    },
+    {
+      "nom": "script du projet",
+      "demande": { "permission": "bash", "metadata": { "command": "python script.py" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : interpréteur et script du projet."
+    },
+    {
+      "nom": "tâche npm au nom trompeur",
+      "demande": { "permission": "bash", "metadata": { "command": "npm run docker" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Un argument n'est pas un programme : seuls le premier mot et ce qui suit une enveloppe le sont."
+    },
+    {
+      "nom": "commande sans texte",
+      "demande": { "permission": "bash", "metadata": {} },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "Fermé en cas de doute : rien ne dit que la demande reste dans le projet ouvert."
+    },
+    {
+      "nom": "écriture d'un fichier du projet",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/src/x.ts" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : le travail ordinaire de l'IA dans la salle."
+    },
+    {
+      "nom": "écriture d'un fichier au nom sensible",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/src/token-parser.ts" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Un nom qui ressemble à une clé ne suffit pas pour une écriture : les vrais fichiers de clés restent refusés."
+    },
+    {
+      "nom": "écriture de .env",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.env" } },
+      "attendu": { "verdict": "interdit", "categorie": "env" },
+      "pourquoi": "§9.4 n° 1 : ni lecture ni modification."
+    },
+    {
+      "nom": "écriture de .env.example",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.env.example" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Exception de la famille, en écriture comme en lecture."
+    },
+    {
+      "nom": "écriture d'une clé privée",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/deploiement/id_ed25519" } },
+      "attendu": { "verdict": "interdit", "categorie": "fichier-cle" },
+      "pourquoi": "Motif *id_ed25519* de KEY_FILE_READ_RULES."
+    },
+    {
+      "nom": "écriture dans .git",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/.git/hooks/pre-commit" } },
+      "attendu": { "verdict": "interdit", "categorie": "git-interne" },
+      "pourquoi": "G7 : .git est en lecture seule dans chaque projet préparé."
+    },
+    {
+      "nom": "écriture de .omo/omo.jsonc",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.omo/omo.jsonc" } },
+      "attendu": { "verdict": "interdit", "categorie": "config-extension" },
+      "pourquoi": "Configuration de l'extension (F-u, liste du pré-contrôle)."
+    },
+    {
+      "nom": "écriture de .omo/boulder.json",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.omo/boulder.json" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "L'extension écrit son propre état dans .omo : seuls omo.json et omo.jsonc y sont refusés (§9.3 n° 11)."
+    },
+    {
+      "nom": "écriture d'une compétence",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.agents/skills/x/SKILL.md" } },
+      "attendu": { "verdict": "interdit", "categorie": "config-extension" },
+      "pourquoi": "D-2b-34 : .agents/ rejoint la liste des interdits."
+    },
+    {
+      "nom": "écriture d'opencode.jsonc",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/opencode.jsonc" } },
+      "attendu": { "verdict": "interdit", "categorie": "config-extension" },
+      "pourquoi": "Configuration d'opencode (liste du pré-contrôle)."
+    },
+    {
+      "nom": "écriture de .vscode/tasks.json",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/.vscode/tasks.json" } },
+      "attendu": { "verdict": "interdit", "categorie": "ide-ci" },
+      "pourquoi": "Fichier d'IDE (§4.14.5 n° 7)."
+    },
+    {
+      "nom": "écriture d'un flux de CI",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/.github/workflows/build.yml" } },
+      "attendu": { "verdict": "interdit", "categorie": "ide-ci" },
+      "pourquoi": "Fichier de CI, dossier couvert avec tout son contenu."
+    },
+    {
+      "nom": "écriture d'un canal de déploiement",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/azure-pipelines-nuit.yml" } },
+      "attendu": { "verdict": "interdit", "categorie": "ide-ci" },
+      "pourquoi": "Motif azure-pipelines*.yml à la racine du projet."
+    },
+    {
+      "nom": "écriture d'un crochet git relevé dans l'arbre de travail",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/projet/.githooks/pre-commit" } },
+      "attendu": { "verdict": "interdit", "categorie": "ide-ci" },
+      "pourquoi": "Relecture 2bis-vague-0 : les cibles de la configuration git (core.hooksPath) sont des fichiers d'IDE et de CI."
+    },
+    {
+      "nom": "écriture dans un autre projet préparé",
+      "demande": { "permission": "write", "metadata": { "filepath": "/workspace/autre-projet/src/y.ts" } },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "D-2b-09 : « hors dossier » veut dire hors du projet ouvert de la racine."
+    },
+    {
+      "nom": "écriture hors du dossier de travail",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/tmp/essai.txt" } },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "Hors de /workspace, donc hors du projet ouvert."
+    },
+    {
+      "nom": "remontée par ..",
+      "demande": { "permission": "edit", "metadata": { "filepath": "/workspace/projet/../autre-projet/src/y.ts" } },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "Le chemin est résolu avant d'être comparé au projet ouvert."
+    },
+    {
+      "nom": "correctif à plusieurs fichiers, un seul interdit",
+      "demande": {
+        "permission": "edit",
+        "metadata": {
+          "filepath": "src/a.ts, .vscode/tasks.json",
+          "files": [
+            { "filePath": "/workspace/projet/src/a.ts", "relativePath": "src/a.ts", "type": "update" },
+            { "filePath": "/workspace/projet/.vscode/tasks.json", "relativePath": ".vscode/tasks.json", "type": "update" }
+          ]
+        }
+      },
+      "attendu": { "verdict": "interdit", "categorie": "ide-ci" },
+      "pourquoi": "Chaque fichier du correctif est contrôlé."
+    },
+    {
+      "nom": "déplacement vers un autre projet",
+      "demande": {
+        "permission": "edit",
+        "metadata": {
+          "filepath": "src/a.ts",
+          "files": [{ "filePath": "/workspace/projet/src/a.ts", "relativePath": "src/a.ts", "type": "move", "movePath": "/workspace/autre-projet/a.ts" }]
+        }
+      },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "La cible d'un déplacement est un chemin d'écriture comme un autre."
+    },
+    {
+      "nom": "correctif propre à plusieurs fichiers",
+      "demande": {
+        "permission": "edit",
+        "metadata": {
+          "filepath": "src/a.ts, src/b.ts",
+          "files": [
+            { "filePath": "/workspace/projet/src/a.ts", "relativePath": "src/a.ts", "type": "update" },
+            { "filePath": "/workspace/projet/src/b.ts", "relativePath": "src/b.ts", "type": "add" }
+          ]
+        }
+      },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : un correctif du projet passe."
+    },
+    {
+      "nom": "écriture sans chemin lisible",
+      "demande": { "permission": "edit", "metadata": { "diff": "Index: inconnu" } },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "Fermé en cas de doute : une écriture non contrôlable est refusée."
+    },
+    {
+      "nom": "sortie du dossier",
+      "demande": { "permission": "external_directory", "metadata": { "path": "/workspace/autre-projet" } },
+      "attendu": { "verdict": "interdit", "categorie": "hors-projet" },
+      "pourquoi": "§4.1 : hors dossier, refus."
+    },
+    {
+      "nom": "page web",
+      "demande": { "permission": "webfetch", "metadata": { "url": "https://exemple.test/doc" } },
+      "attendu": { "verdict": "interdit", "categorie": "web" },
+      "pourquoi": "Décision du 19/09 n° 7 : deny explicite ET refus ici."
+    },
+    {
+      "nom": "recherche web",
+      "demande": { "permission": "websearch", "metadata": { "query": "comment publier" } },
+      "attendu": { "verdict": "interdit", "categorie": "web" },
+      "pourquoi": "Même décision."
+    },
+    {
+      "nom": "délégation",
+      "demande": { "permission": "task", "metadata": { "subagent_type": "explore" } },
+      "attendu": { "verdict": "once" },
+      "pourquoi": "Témoin : les délégations sont bornées par les plafonds et le filet, pas par les interdits absolus."
+    }
+  ]
+}

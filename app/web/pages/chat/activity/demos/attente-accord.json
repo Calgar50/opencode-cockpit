@@ -1,0 +1,19 @@
+{
+  "suite": "attente-accord",
+  "rootId": "ses_094a1640000200000000000002",
+  "faits": [
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":null,"data":{"etat":"creee","role":"conversation","parent":null,"agent":null,"instance":"principale"},"at":1789200000000},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"origine","ref":"msg_094a165f400200000000000005","data":{"origine":"demande","cas":1,"messageId":"msg_094a165f400200000000000005"},"at":1789200000750},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":null,"data":{"etat":"occupee"},"at":1789200001250},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"msg_094a169dc00200000000000011","data":{"etat":"appel","messageId":"msg_094a169dc00200000000000011"},"at":1789200001750},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"attente","ref":"per_094a16cca00200000000000018","data":{"permission":"bash","messageId":"msg_094a169dc00200000000000011","callId":"call_094a16bd000200000000000015","agent":null},"at":1789200002250},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"call_094a16bd000200000000000015","data":{"etat":"outil","outil":"commande","nom":"bash","phase":"en-cours","callId":"call_094a16bd000200000000000015","messageId":"msg_094a169dc00200000000000011","fichier":null,"dossier":null},"at":1789200002500},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"reponse","ref":"per_094a16cca00200000000000018","data":{"reponse":"once"},"at":1789200002750},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"call_094a16bd000200000000000015","data":{"etat":"outil","outil":"commande","nom":"bash","phase":"termine","callId":"call_094a16bd000200000000000015","messageId":"msg_094a169dc00200000000000011","fichier":null,"dossier":null},"at":1789200003000},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"msg_094a169dc00200000000000011","data":{"etat":"appel-fini","messageId":"msg_094a169dc00200000000000011","cout":0.0042,"raison":"tool-calls"},"at":1789200003250},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"msg_094a1749a00200000000000028","data":{"etat":"appel","messageId":"msg_094a1749a00200000000000028"},"at":1789200004500},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"msg_094a1749a00200000000000028","data":{"etat":"redige","messageId":"msg_094a1749a00200000000000028"},"at":1789200004750},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":"msg_094a1749a00200000000000028","data":{"etat":"appel-fini","messageId":"msg_094a1749a00200000000000028","cout":0.0018,"raison":"stop"},"at":1789200005000},
+    {"rootId":"ses_094a1640000200000000000002","sessionId":"ses_094a1640000200000000000002","kind":"statut","ref":null,"data":{"etat":"repos"},"at":1789200005750}
+  ]
+}

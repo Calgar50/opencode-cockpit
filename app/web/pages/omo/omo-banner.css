@@ -1,0 +1,59 @@
+/* Propriétaire : L26a. Bandeau permanent de la Salle OMO (spécification §4.12 l.784, §5.5, §5.6 ; D-2b-45, JP-10).
+   - « Salle OMO · extension active · actions non contrôlées avant exécution · {x} $ sur {montant} $ » [Arrêter] [Journal] ;
+   - icône + mot, jamais la couleur seule (P7) : la teinte d'alerte ne porte aucune information à elle seule ;
+   - AUCUNE animation, donc aucune animation infinie (web-animations, périmètre étendu à pages/omo/** par L26b) ;
+   - à 400 px le bandeau tient sans défilement horizontal : le résumé passe à la ligne et les boutons descendent sous lui ;
+   - l'enceinte de la bande néon est à L25b (vague 4) : rien ici ne dessine la bande.
+   - @media (forced-colors: active) : bordure et focus en couleurs système. */
+
+.omo-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--warning-ink);
+  background: var(--warning-soft);
+}
+
+.omo-banner-resume {
+  display: flex;
+  flex: 1 1 260px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.omo-banner-resume .icon {
+  flex: none;
+}
+
+.omo-banner-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@media (max-width: 400px) {
+  .omo-banner {
+    padding: 6px 8px;
+  }
+  .omo-banner-actions {
+    flex-basis: 100%;
+  }
+}
+
+@media (forced-colors: active) {
+  .omo-banner {
+    border: 1px solid CanvasText;
+    border-left-width: 3px;
+  }
+}

@@ -8,13 +8,27 @@
 // Le résumé de l'action et la raison sont des DONNÉES (déjà masquées et bornées par le serveur) : React les échappe, elles ne
 // sont jamais interprétées. Aucune animation (web-animations.test.ts) ; le mot dit la décision, l'icône l'accompagne.
 // Composant interne : ses propriétés restent libres pour son propriétaire (Déroulé).
+// 1.1 (L26b), Salle OMO (§4.12 l.784, §5.7.4 l.987) : le Journal montre AUSSI le verdict « refus-interdit », les actions
+// « par : extension » — marquées « non contrôlé avant exécution » —, les détections après coup et les fichiers mis de côté.
+// Ces lignes n'existent que dans une conversation de la salle ; ailleurs, le tableau est celui de l'instance principale, à
+// l'identique. Les détections et la quarantaine arrivent par PROPRIÉTÉS (aucune route nouvelle, aucun appel d'ici) : leurs
+// phrases viennent de server/shared/omo-room-texts.ts, par omo-journal.ts.
 import { useId, useMemo, useState } from "react";
-import { libelleDecision, libellePar, montant, phraseRegle, regleCarte, TEXTES } from "../../../../server/shared/autonomy-texts.ts";
+import { libelleDecision as libelleDecisionPrincipale, libellePar, montant, phraseRegle, regleCarte, TEXTES } from "../../../../server/shared/autonomy-texts.ts";
+import type { OmoSignale } from "../../../../server/shared/omo-types.ts";
 import { Icon, type IconName } from "../../../components/Icon.tsx";
 import { useAsync } from "../../../components/ui.tsx";
 import { activityApi } from "../../../lib/api-activity.ts";
 import { errorText } from "../../../lib/api.ts";
 import type { DecisionBy, DecisionVerdict, DecisionView } from "../../../lib/types.ts";
+import {
+  DECISION_REFUS_INTERDIT,
+  type JournalDetection,
+  marquesOmo,
+  PAR_EXTENSION,
+  phraseDetectionJournal,
+  phraseQuarantaine,
+} from "./omo-journal.ts";
 import "./autonomy-journal.css";
 
 const JOURNAL = TEXTES.partout.journal;
@@ -22,28 +36,33 @@ const JOURNAL = TEXTES.partout.journal;
 /** Heure d'une décision, à la seconde (§4.12 : « 10:42:03 ») : deux décisions peuvent tomber dans la même minute. */
 const heureFr = new Intl.DateTimeFormat("fr-FR", { timeStyle: "medium" });
 
-/** Verdicts de l'instance principale, dans l'ordre d'affichage des repères ; « refus-interdit » est réservé à la Salle OMO. */
-const VERDICTS: readonly Exclude<DecisionVerdict, "refus-interdit">[] = ["auto", "attente", "refus-auto", "non-controle"];
+/** Verdicts dans l'ordre d'affichage des repères ; « refus-interdit » n'apparaît que dans une conversation de la Salle OMO. */
+const VERDICTS: readonly DecisionVerdict[] = ["auto", "attente", "refus-auto", "non-controle", "refus-interdit"];
 
 /** Icône de chaque décision : le mot reste le texte, l'icône l'accompagne (jamais la couleur seule, §5.5). */
-const VERDICT_ICONS: Readonly<Record<Exclude<DecisionVerdict, "refus-interdit">, IconName>> = {
+const VERDICT_ICONS: Readonly<Record<DecisionVerdict, IconName>> = {
   auto: "check",
   attente: "hourglass",
   "refus-auto": "ban",
   "non-controle": "alert",
+  "refus-interdit": "lock",
 };
 
 /** Lignes de détail d'un repère : au-delà, le Journal montre le reste. */
 const DETAIL_MAX = 4;
 
-const isMainVerdict = (verdict: DecisionVerdict): verdict is Exclude<DecisionVerdict, "refus-interdit"> =>
-  (VERDICTS as readonly string[]).includes(verdict);
+const isMainVerdict = (verdict: DecisionVerdict): verdict is Exclude<DecisionVerdict, "refus-interdit"> => verdict !== "refus-interdit";
 
 const isMainBy = (par: DecisionBy): par is Exclude<DecisionBy, "extension"> => par !== "extension";
 
-/** Décision de l'instance principale : la Salle OMO (verdict « refus-interdit », par « extension ») arrive en itération 2 ter. */
-function estPrincipale(decision: DecisionView): boolean {
-  return isMainVerdict(decision.verdict) && isMainBy(decision.par);
+/** Libellé de la colonne « Décision » : celui de l'instance principale, ou celui de l'interdit absolu de la salle. */
+function libelleDecision(verdict: DecisionVerdict): string {
+  return isMainVerdict(verdict) ? libelleDecisionPrincipale(verdict) : DECISION_REFUS_INTERDIT;
+}
+
+/** Libellé de la colonne « Par » : celui de l'instance principale, ou l'extension de la salle. */
+function libelleQuiDecide(par: DecisionBy): string {
+  return isMainBy(par) ? libellePar(par) : PAR_EXTENSION;
 }
 
 export interface JournalTextOptions {
@@ -57,10 +76,14 @@ function phrase(regle: string, options: JournalTextOptions): string {
   return phraseRegle(regle, { mode: options.advanced ? "avance" : "simple", controleIa: options.controleIa });
 }
 
-/** Raison affichée : celle du serveur (masquée, bornée) ; à défaut, la phrase de la règle. */
+/**
+ * Raison affichée : celle du serveur (masquée, bornée) ; à défaut, la phrase de la règle. Une ligne de la Salle OMO y ajoute le
+ * message de l'interdit absolu et la marque « non contrôlé avant exécution » (§5.7.4), tous deux repris tels quels des textes.
+ */
 function raisonAffichee(decision: DecisionView, options: JournalTextOptions): string {
   const raison = decision.raison.trim();
-  return raison === "" ? phrase(decision.regle, options) : raison;
+  const base = raison === "" && isMainVerdict(decision.verdict) ? phrase(decision.regle, options) : raison;
+  return [base, ...marquesOmo(decision)].filter((part) => part !== "").join(" · ");
 }
 
 /** Coût du contrôle par IA d'une ligne : « — » quand aucune IA n'a été appelée. */
@@ -71,10 +94,12 @@ function coutControle(decision: DecisionView): string {
 /**
  * Décisions d'une conversation, lues une fois par ouverture et relues quand le nombre de faits « decision » change. `attendu` à
  * zéro : aucune décision enregistrée, donc aucune lecture (P12 : le signe vient du fait, jamais l'inverse).
+ * Toutes les décisions enregistrées sont rendues, celles de la Salle OMO comprises (§4.12 l.784) : hors de la salle, le serveur
+ * n'en écrit aucune, donc le tableau reste celui de l'instance principale.
  */
 export function useControlDecisions(rootId: string, attendu: number): { decisions: DecisionView[]; error: string | null; chargement: boolean } {
   const lu = useAsync(async () => (attendu > 0 ? await activityApi.activity(rootId) : null), [rootId, attendu]);
-  const decisions = useMemo(() => (lu.data?.decisions ?? []).filter(estPrincipale), [lu.data]);
+  const decisions = useMemo(() => lu.data?.decisions ?? [], [lu.data]);
   const error = lu.error === null || lu.error === undefined ? null : errorText(lu.error);
   return { decisions, error, chargement: attendu > 0 && lu.data === null && error === null };
 }
@@ -95,6 +120,10 @@ export interface ControlJournalProps {
    * demande ou toute la conversation. Absent : la phrase du module de textes.
    */
   vide?: string | undefined;
+  /** Salle OMO (§4.14.5) : détections repérées après coup pendant cette demande. Absent ou vide hors de la salle. */
+  detections?: readonly JournalDetection[] | undefined;
+  /** Salle OMO (D-2b-37) : fichiers signalés et historique git mis de côté. Absent ou vide hors de la salle. */
+  quarantaine?: readonly OmoSignale[] | undefined;
 }
 
 /** Ligne d'acteur que le Déroulé ne montre pas (fenêtre choisie, bornes du Déroulé) : même nom que le Déroulé lui donnerait. */
@@ -105,69 +134,114 @@ function qui(decision: DecisionView, noms: ReadonlyMap<string, string> | undefin
   return noms?.get(decision.sessionId) ?? TRAVAIL_DELEGUE;
 }
 
+/** Titres des blocs de la Salle OMO, sous le tableau (§4.12 l.784). */
+const TITRE_DETECTIONS = "Repéré après coup";
+const TITRE_QUARANTAINE = "Fichiers mis de côté";
+
+/** Heure d'une détection, à la seconde, comme les lignes du tableau. */
+const heureDetection = (at: number) => heureFr.format(at);
+
+/** Blocs de la Salle OMO : détections après coup et fichiers mis de côté. Rien hors de la salle (listes vides). */
+function OmoJournalBlocs({ detections, quarantaine }: { detections: readonly JournalDetection[]; quarantaine: readonly OmoSignale[] }) {
+  if (detections.length === 0 && quarantaine.length === 0) return null;
+  return (
+    <div className="stack tight" style={{ marginTop: 10 }}>
+      {detections.length > 0 ? (
+        <section>
+          <h4 className="small">{TITRE_DETECTIONS}</h4>
+          <ul className="small">
+            {detections.map((detection) => (
+              <li key={detection.id}>
+                <span className="nowrap">{heureDetection(detection.at)}</span> · {phraseDetectionJournal(detection.cause)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {quarantaine.length > 0 ? (
+        <section>
+          <h4 className="small">{TITRE_QUARANTAINE}</h4>
+          <ul className="small">
+            {quarantaine.map((signale) => (
+              <li key={`${signale.genre}:${signale.chemin}`}>
+                <code>{signale.chemin}</code> · {phraseQuarantaine(signale)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 /** Journal du contrôle (§4.12) : `<table>` (§5.5), texte échappé, état vide quand aucune décision n'a été enregistrée. */
-export function ControlJournal({ decisions, advanced, controleIa, noms, chargement, error, vide }: ControlJournalProps) {
+export function ControlJournal({ decisions, advanced, controleIa, noms, chargement, error, vide, detections, quarantaine }: ControlJournalProps) {
   const options: JournalTextOptions = { advanced, controleIa };
+  const blocs = <OmoJournalBlocs detections={detections ?? []} quarantaine={quarantaine ?? []} />;
   if (error) return <p className="callout critical small">{error}</p>;
   if (decisions.length === 0) {
     // Des décisions sont enregistrées mais la lecture n'est pas finie : ne jamais dire « aucune décision » à tort (P3).
-    return <p className="small muted">{chargement ? "Lecture du journal…" : (vide ?? JOURNAL.vide)}</p>;
+    return (
+      <>
+        <p className="small muted">{chargement ? "Lecture du journal…" : (vide ?? JOURNAL.vide)}</p>
+        {blocs}
+      </>
+    );
   }
   return (
-    <div className="table-wrap journal-wrap">
-      <table className="table journal-table">
-        <caption className="visually-hidden">{JOURNAL.titre}</caption>
-        <thead>
-          <tr>
-            <th scope="col">{JOURNAL.colonnes.heure}</th>
-            <th scope="col">{JOURNAL.colonnes.qui}</th>
-            <th scope="col">{JOURNAL.colonnes.action}</th>
-            <th scope="col">{JOURNAL.colonnes.decision}</th>
-            <th scope="col">{JOURNAL.colonnes.par}</th>
-            <th scope="col">{JOURNAL.colonnes.regle}</th>
-            <th scope="col">{JOURNAL.colonnes.raison}</th>
-            <th scope="col" className="num">
-              {JOURNAL.colonnes.cout}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {decisions.map((decision) => (
-            <tr key={decision.id}>
-              <td className="nowrap">{heureFr.format(decision.askedAt)}</td>
-              <th scope="row" className="journal-qui">
-                {qui(decision, noms)}
+    <>
+      <div className="table-wrap journal-wrap">
+        <table className="table journal-table">
+          <caption className="visually-hidden">{JOURNAL.titre}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{JOURNAL.colonnes.heure}</th>
+              <th scope="col">{JOURNAL.colonnes.qui}</th>
+              <th scope="col">{JOURNAL.colonnes.action}</th>
+              <th scope="col">{JOURNAL.colonnes.decision}</th>
+              <th scope="col">{JOURNAL.colonnes.par}</th>
+              <th scope="col">{JOURNAL.colonnes.regle}</th>
+              <th scope="col">{JOURNAL.colonnes.raison}</th>
+              <th scope="col" className="num">
+                {JOURNAL.colonnes.cout}
               </th>
-              <td>
-                <code className="journal-action">{decision.resume}</code>
-              </td>
-              <td className="journal-decision">
-                {isMainVerdict(decision.verdict) ? (
+            </tr>
+          </thead>
+          <tbody>
+            {decisions.map((decision) => (
+              <tr key={decision.id}>
+                <td className="nowrap">{heureFr.format(decision.askedAt)}</td>
+                <th scope="row" className="journal-qui">
+                  {qui(decision, noms)}
+                </th>
+                <td>
+                  <code className="journal-action">{decision.resume}</code>
+                </td>
+                <td className="journal-decision">
                   <span className="journal-mot nowrap">
                     <Icon name={VERDICT_ICONS[decision.verdict]} size={12} />
                     {libelleDecision(decision.verdict)}
                   </span>
-                ) : (
-                  decision.verdict
-                )}
-              </td>
-              <td>{isMainBy(decision.par) ? libellePar(decision.par) : decision.par}</td>
-              <td>
-                <code>{decision.regle}</code>
-              </td>
-              <td className="journal-raison">{raisonAffichee(decision, options)}</td>
-              <td className="num nowrap">{coutControle(decision)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+                </td>
+                <td>{libelleQuiDecide(decision.par)}</td>
+                <td>
+                  <code>{decision.regle}</code>
+                </td>
+                <td className="journal-raison">{raisonAffichee(decision, options)}</td>
+                <td className="num nowrap">{coutControle(decision)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {blocs}
+    </>
   );
 }
 
 /** Repère d'une ligne d'acteur : un verdict, son nombre, et les couples règle/raison à montrer au focus. */
 interface Repere {
-  verdict: Exclude<DecisionVerdict, "refus-interdit">;
+  verdict: DecisionVerdict;
   nombre: number;
   details: string[];
 }

@@ -1,4 +1,5 @@
-/* 1.1 (L5c) : bande néon 2D du chat, carte des agents en direct (spécification §5.7.4, §5.5, §5.6, JP-13, JP-14).
+/* 1.1 (L5c, puis L25b pour la Salle OMO) : bande néon 2D du chat, carte des agents en direct (spécification §5.7.4, §5.5, §5.6,
+   JP-10, JP-13, JP-14).
    - Couleurs : jetons --neon-* de styles.css (néon sombre en thème sombre, néon clair en thème clair). Chaque signe prend sa
      couleur par `color` et ses formes la lisent par currentColor ; un texte s'écrit toujours en --neon-texte ou
      --neon-texte-discret, jamais dans une couleur de trait. La forme dit le sens, la couleur la double (couleurs forcées).
@@ -275,6 +276,47 @@
   color: var(--neon-arret);
 }
 
+/* Salle OMO (L25b ; JP-10, JP-13) : enceinte en double trait orange, STATIQUE — ni animation, ni transition, ni opacité qui
+   varie ; boucle orange « par l'extension » ; tuiles du carnet partagé (contour bleu = lu, plein rose = modifié) et liens en
+   pointillé fin vers les assistants qui l'ont touché. */
+.neon-enceinte {
+  color: var(--neon-extension);
+}
+.neon-enceinte-trait {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-extension {
+  color: var(--neon-extension);
+}
+.neon-boucle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.neon-carnet-tuile {
+  color: var(--neon-texte-discret);
+}
+.neon-carnet-tuile rect {
+  fill: var(--neon-fond);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.neon-carnet-tuile.is-lu {
+  color: var(--neon-resultat);
+}
+.neon-carnet-tuile.is-modifie rect {
+  fill: var(--neon-consigne);
+}
+.neon-lien-carnet line {
+  stroke: var(--neon-territoire);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
+
 /* Zoom 3 : anneau d'outils et tuiles de fichiers (contour bleu = lu, plein rose = modifié, barré = refusé). */
 .neon-outil {
   color: var(--neon-acteur);
@@ -394,6 +436,36 @@
   overflow: auto;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* JP-7 : métadonnées de la consigne d'un assistant de la salle, en deux colonnes ; valeurs venues de l'IA coupées au mot. */
+.neon-panel .neon-consigne-salle {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 10px;
+}
+.neon-panel .neon-consigne-salle dt {
+  margin-top: 0;
+  font-weight: 500;
+}
+.neon-panel .neon-consigne-salle dd {
+  overflow-wrap: anywhere;
+}
+
+/* Salle OMO : nom de l'enceinte hors du dessin (le dessin est aria-hidden) ; assistants au-delà des bornes, comptés. */
+.neon-salle {
+  justify-self: start;
+  margin: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--neon-extension);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-1);
+}
+.neon-hors-bornes {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
 }
 
 /* --- Tableau -------------------------------------------------------------------------- */

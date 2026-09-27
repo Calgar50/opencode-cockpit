@@ -87,7 +87,10 @@ export async function run(ctx) {
       exiger(ligne.includes(`raccourci /${COMMANDE}`), `« raccourci /${COMMANDE} » absent de « Qui travaille ? » : ${resume(ligne, 300)}`);
       await page.attendreQue(`window.__e2e.faisceaux.some((f) => f.cle.startsWith("f:consigne:${racine.id}:"))`, { libelle: "faisceau de consigne du raccourci dessiné" });
       await capturerConversation(ctx, "p2-lance-sans-confirmation");
-      // 4. Phrase du tableau d'honnêteté (§6 l.1048), cherchée pendant le travail délégué, liste dépliée.
+      // 4. Phrase du tableau d'honnêteté (§6 l.1048), cherchée pendant le travail délégué, liste dépliée. La dernière capture, à
+      // 400 px, replie « Qui travaille ? » (§5.6, (max-width: 400px)) ; la taille rendue, la page ne le déplie qu'après son
+      // événement de changement de média : la liste est attendue dépliée avant d'être lue (course relevée à la grande fusion).
+      await page.attendreQue("document.querySelector('.who-banner.expanded') !== null", { libelle: "« Qui travaille ? » déplié après les captures" });
       const texte = await texteVisible(page, ".chat-center");
       if (!texte.toLowerCase().includes(PHRASES.sansConfirmation)) absente = texte;
 

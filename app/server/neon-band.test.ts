@@ -49,7 +49,7 @@ import {
 } from "./shared/neon-band.ts";
 import { neonCssVariables } from "./shared/neon-palette.ts";
 import { NEON_CADRE, type NeonScene, scene } from "./shared/neon-scene.ts";
-import { TEXTES } from "./shared/neon-texts.ts";
+import { TEXTES, texteHorsBornes } from "./shared/neon-texts.ts";
 
 const WEB_DIR = path.join(import.meta.dirname, "..", "web");
 const BAND_TSX = path.join(WEB_DIR, "pages", "chat", "activity", "NeonBand.tsx");
@@ -335,6 +335,15 @@ describe("bande néon : résumé, tableau et noms tirés de la scène (P12)", ()
     assert.equal(nomAssistant({ agent: "", role: "delegation" }), TEXTES.partout.assistantInconnu);
     assert.equal(libelleNoeud({ agent: null, role: "delegation", etat: "echec" }), "Assistant non identifié, échec");
   });
+
+  it("assistants non dessinés (relecture 2ter-vague-4) : singulier pour un seul, pluriel au-delà ; la bande écrit cette phrase-là", () => {
+    assert.equal(texteHorsBornes(1), "Déroulé partiel : 1 assistant non dessiné (plus de 3 niveaux ou de 50 assistants).");
+    assert.equal(texteHorsBornes(2), "Déroulé partiel : 2 assistants non dessinés (plus de 3 niveaux ou de 50 assistants).");
+    assert.equal(texteHorsBornes(11), "Déroulé partiel : 11 assistants non dessinés (plus de 3 niveaux ou de 50 assistants).");
+    const source = fs.readFileSync(BAND_TSX, "utf8");
+    assert.match(source, /texteHorsBornes\(vue\.horsBornes\)/);
+    assert.doesNotMatch(source, /TEXTES\.partout\.horsBornes/, "le gabarit au pluriel n'est plus rempli à la main");
+  });
 });
 
 // --- Panneau du zoom 3 -------------------------------------------------------------------------------------------------------------
@@ -503,11 +512,12 @@ describe("bande néon : mouvement (JP-13) et dessin", () => {
     const gardes: Array<[RegExp, string]> = [
       [/repliPourLaDemande = false \}: NeonBandProps\)/, "propriété facultative, fausse par défaut"],
       [/if \(contexteVu !== contexte\) \{[^}]*setReplieeDOffice\(false\);\s*setAttenteVue\(false\);\s*\} else if \(attenteVue !== repliPourLaDemande\) \{/, "autre contexte : repli d'office oublié, demande relue au rendu suivant"],
-      [/const focusDansLaCarte = corpsRef\.current\?\.contains\(document\.activeElement\) === true;/, "focus clavier dans la carte : pas de repli"],
-      [/if \(repliPourLaDemande && deplie && !focusDansLaCarte\) \{\s*setReplieeDOffice\(true\);\s*setDeplie\(false\);\s*setFocus\(null\);\s*\}/, "repli d'office d'une carte dépliée (Simple)"],
+      [/const focusDansLaBande = bandeRef\.current\?\.contains\(document\.activeElement\) === true;/, "focus clavier dans la bande entière : pas de repli"],
+      [/if \(repliPourLaDemande && deplie && !focusDansLaBande\) \{\s*setReplieeDOffice\(true\);\s*setDeplie\(false\);\s*setFocus\(null\);\s*\}/, "repli d'office d'une carte dépliée (Simple)"],
       [/else if \(!repliPourLaDemande && replieeDOffice\) \{\s*setDeplie\(true\);\s*setReplieeDOffice\(false\);\s*\}/, "demande réglée : carte dépliée de nouveau"],
       [/const basculerRepli = \(\) => \{[^}]*setReplieeDOffice\(false\);/, "votre choix l'emporte sur le repli d'office"],
-      [/<div className="neon-body" id=\{corpsId\} ref=\{corpsRef\}>/, "corps de la carte suivi pour le focus"],
+      [/<section className="neon-band"[^>]*\sref=\{bandeRef\}>/, "bande entière suivie pour le focus, boîtes de la barre de commandes comprises"],
+      [/<div className="neon-body" id=\{corpsId\}>/, "corps de la carte : plus de ref propre, le focus est lu sur la bande"],
     ];
     for (const [re, garde] of gardes) assert.match(source, re, garde);
     // Contrôles discriminants : la bande ne lit aucune demande elle-même (ni propriété « demande en attente », ni lignes d'acteurs), et
@@ -519,6 +529,40 @@ describe("bande néon : mouvement (JP-13) et dessin", () => {
     assert.match(region, /<NeonBand[^>]*\srepliPourLaDemande=\{repliPourLaDemande\}\s*\/>/, "bande : repli de la seule règle");
     assert.match(region, /<WhoIsWorking[^>]*\srepliPourLaDemande=\{repliPourLaDemande\}/, "« Qui travaille ? » : repli de la seule règle");
     assert.doesNotMatch(region, /demandeEnAttente=\{|permissionId !== null/, "aucune demande brute passée aux composants");
+  });
+
+  it("NeonBand.tsx : le repli d'office lit le focus sur la BANDE, jamais sur le seul corps (une boîte de la barre de commandes n'est pas démontée)", () => {
+    // Corrections de la relecture 3-vague-1 : [Revoir cette demande] (L28b) ouvre une boîte modale rendue dans .neon-head >
+    // .neon-commands, donc HORS de .neon-body. Tant que le garde-fou du repli n'interrogeait que le corps, une demande d'autorisation
+    // qui survient en mode Simple repliait la bande, démontait la boîte ouverte et laissait le focus retomber sur <body>
+    // (spécification §5.5 : « focus jamais volé ni perdu »).
+    const source = code(fs.readFileSync(BAND_TSX, "utf8"));
+
+    /** Nom du `ref` interrogé par le calcul du repli, et élément qui le porte : les deux doivent être la bande. */
+    const refDuRepli = (src: string): { lu: string | null; porteParLaBande: string | null; porteParLeCorps: string | null } => ({
+      lu: /const focusDansLa\w+ = (\w+)\.current\?\.contains\(document\.activeElement\)/.exec(src)?.[1] ?? null,
+      porteParLaBande: /<section className="neon-band"[^>]*\sref=\{(\w+)\}/.exec(src)?.[1] ?? null,
+      porteParLeCorps: /<div className="neon-body"[^>]*\sref=\{(\w+)\}/.exec(src)?.[1] ?? null,
+    });
+
+    const reel = refDuRepli(source);
+    assert.notEqual(reel.lu, null, "le calcul du repli lit bien un ref");
+    assert.equal(reel.lu, reel.porteParLaBande, "le ref interrogé est celui de <section className=\"neon-band\">");
+    assert.equal(reel.porteParLeCorps, null, ".neon-body ne porte plus de ref : le focus se lit sur la bande entière");
+    // La boîte de « Revoir » est bien à l'intérieur de la section, dans la barre de commandes : le garde-fou la couvre donc.
+    assert.match(source, /<section className="neon-band"[\s\S]*<div className="neon-commands">[\s\S]*<BandCommands3d\b/);
+
+    // DISCRIMINANT : la variante fautive (ref du seul corps) est vue comme un manquement.
+    const fautif = source
+      .replace(/const bandeRef = useRef<HTMLElement>\(null\);/, "const corpsRef = useRef<HTMLDivElement>(null);")
+      .replace(/const focusDansLaBande = bandeRef\./, "const focusDansLaCarte = corpsRef.")
+      .replace(/<section className="neon-band"([^>]*)\sref=\{bandeRef\}>/, "<section className=\"neon-band\"$1>")
+      .replace(/<div className="neon-body" id=\{corpsId\}>/, "<div className=\"neon-body\" id={corpsId} ref={corpsRef}>");
+    const variante = refDuRepli(fautif);
+    assert.equal(variante.lu, "corpsRef");
+    assert.equal(variante.porteParLaBande, null, "source fabriqué : la bande ne porte aucun ref");
+    assert.equal(variante.porteParLeCorps, "corpsRef", "source fabriqué : seul le corps est suivi — c'est le manquement");
+    assert.notEqual(variante.lu, variante.porteParLaBande);
   });
 
   it("géométrie : mêmes centre et anneaux que la scène ; grille sans boucle sans fin ; segments, hexagones, trait vers l'extérieur", () => {

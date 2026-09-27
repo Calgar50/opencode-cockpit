@@ -15,7 +15,9 @@
     .\cockpit.ps1 rollback              Revient a la version precedente (confirmation demandee)
     .\cockpit.ps1 backup                Sauvegarde reglages, couts, archives et configuration opencode
     .\cockpit.ps1 restore <fichier>     Restaure une sauvegarde (remplace les donnees actuelles)
-    .\cockpit.ps1 uninstall [-Purge]    Supprime les conteneurs (-Purge : donnees et images comprises)
+    .\cockpit.ps1 uninstall [-Purge [-PurgeOmo]]
+                                        Supprime les conteneurs (-Purge : donnees et images du cockpit ;
+                                        -PurgeOmo en plus : image, volumes et configuration de la salle)
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +28,8 @@ param(
     [Parameter(Position = 1)]
     [string]$Target = '',
     [switch]$Purge,
+    # 'uninstall -Purge -PurgeOmo' : supprime aussi l'image de la salle, ses volumes et sa configuration figee.
+    [switch]$PurgeOmo,
     # 'tls -Renew' : efface le certificat local pour en creer un nouveau au demarrage suivant.
     [switch]$Renew
 )
@@ -54,6 +58,14 @@ Assert-CockpitFullLanguage
 
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Attention([string]$Message) { Write-Host "[!] $Message" -ForegroundColor Yellow }
+
+# Volumes nommes de docker-compose.yml (cockpit) et de la salle (docker\opencode-omo\contrat-salle.json, cle volumes) :
+# 'uninstall -Purge' n'efface que les premiers ; les seconds portent les conversations de la salle et sa configuration
+# figee, et ne partent qu'avec -PurgeOmo (decision du 17/09 n. 3). Egalite verifiee par tests\ps51\Test-Cockpit.ps1.
+$CockpitVolumes = @('oc-config', 'oc-data', 'oc-cache', 'cockpit-data', 'cockpit-tls', 'control')
+$OmoVolumes = @('control-omo', 'omo-auth', 'omo-state', 'egress-log', 'oc-omo-data', 'omo-config', 'omo-carnets')
+# Volume des conversations de la salle : sauvegarde comme oc-data, sans jamais son auth.json.
+$OmoDataVolume = 'oc-omo-data'
 
 # Nom du projet tel que docker compose le resout : lu une seule fois, seulement quand une commande en a besoin.
 $ProjectName = $null
@@ -858,17 +870,19 @@ try {
             Invoke-Docker compose stop
             try {
                 Write-Step "Sauvegarde vers backups\cockpit-$stamp.tar.gz"
+                # Conversations de la salle comprises (decision du 17/09 n. 3) ; les deux auth.json restent exclus.
                 Invoke-Docker run --rm --entrypoint tar `
                     -v "${project}_cockpit-data:/src/cockpit-data:ro" `
                     -v "${project}_oc-config:/src/oc-config:ro" `
                     -v "${project}_oc-data:/src/oc-data:ro" `
+                    -v "${project}_${OmoDataVolume}:/src/${OmoDataVolume}:ro" `
                     -v "${archiveDir}:/src/archives:ro" `
                     -v "${backupDir}:/backup" `
-                    $image czf "/backup/cockpit-$stamp.tar.gz" --exclude=oc-data/auth.json --exclude=oc-config/node_modules -C /src .
+                    $image czf "/backup/cockpit-$stamp.tar.gz" --exclude=oc-data/auth.json "--exclude=$OmoDataVolume/auth.json" --exclude=oc-config/node_modules -C /src .
             } finally {
                 Invoke-Docker compose start
             }
-            Write-Host 'Sauvegarde terminee. Exclus volontairement : jeton GitHub Copilot (auth.json), fichier .env, dossier certs\ et certificat HTTPS local (volume cockpit-tls).' -ForegroundColor Green
+            Write-Host 'Sauvegarde terminee. Exclus volontairement : jeton GitHub Copilot (auth.json, celui de la salle compris), fichier .env, dossier certs\ et certificat HTTPS local (volume cockpit-tls).' -ForegroundColor Green
         }
         'restore' {
             if (-not $Target -or -not (Test-Path -LiteralPath $Target -PathType Leaf)) {
@@ -890,13 +904,15 @@ try {
             Invoke-Docker compose stop
             try {
                 Write-Step "Restauration de $($backup.Name)"
+                # Les deux auth.json (instance principale et salle) survivent a la restauration : ils ne sont pas dans l archive.
                 $script = "set -e; " +
-                    "for d in cockpit-data oc-config oc-data; do find /dst/`$d -mindepth 1 -maxdepth 1 ! -name auth.json -exec rm -rf {} +; done; " +
-                    "tar xzf /backup/$($backup.Name) --no-same-owner -C /dst; chown -R 1000:1000 /dst/cockpit-data /dst/oc-config /dst/oc-data"
+                    "for d in cockpit-data oc-config oc-data $OmoDataVolume; do find /dst/`$d -mindepth 1 -maxdepth 1 ! -name auth.json -exec rm -rf {} +; done; " +
+                    "tar xzf /backup/$($backup.Name) --no-same-owner -C /dst; chown -R 1000:1000 /dst/cockpit-data /dst/oc-config /dst/oc-data /dst/$OmoDataVolume"
                 Invoke-Docker run --rm --user 0 --entrypoint sh `
                     -v "${project}_cockpit-data:/dst/cockpit-data" `
                     -v "${project}_oc-config:/dst/oc-config" `
                     -v "${project}_oc-data:/dst/oc-data" `
+                    -v "${project}_${OmoDataVolume}:/dst/${OmoDataVolume}" `
                     -v "${archiveDir}:/dst/archives" `
                     -v "$($backup.DirectoryName):/backup:ro" `
                     $image -c $script
@@ -908,14 +924,37 @@ try {
             Write-Host 'Restauration terminee.' -ForegroundColor Green
         }
         'uninstall' {
+            if ($PurgeOmo -and -not $Purge) { throw '-PurgeOmo ne s utilise qu avec -Purge : .\cockpit.ps1 uninstall -Purge -PurgeOmo' }
             if ($Purge) {
-                Write-Attention 'Suppression DEFINITIVE des conteneurs, des volumes (reglages, couts, connexion Copilot, certificat HTTPS local) et des images designees dans .env.'
+                Write-Attention 'Suppression DEFINITIVE des conteneurs, des volumes du cockpit (reglages, couts, connexion Copilot, certificat HTTPS local) et des images du cockpit designees dans .env.'
+                if ($PurgeOmo) {
+                    Write-Attention 'ET DE LA SALLE : son image, ses volumes (conversations comprises) et sa configuration figee. Cette image ne se retelecharge pas : il faut la reconstruire sur le PC personnel, puis la recopier avec son fichier .sha256.'
+                } else {
+                    Write-Attention 'Conserves : l image de la salle, ses volumes (conversations) et sa configuration (-PurgeOmo, avec -Purge, pour les supprimer aussi).'
+                }
                 Write-Attention 'Conserves : archives\, backups\, certs\ et .env. Images d anciennes versions : docker image ls, puis docker image rm.'
                 Write-Attention 'A la reinstallation : nouveau certificat local, donc nouvel avertissement a accepter dans le navigateur.'
                 $answer = Read-Host 'Tapez SUPPRIMER pour confirmer'
                 if ($answer -cne 'SUPPRIMER') { Write-Host 'Annule.'; return }
-                # --rmi all : aussi les images telechargees (-Mode Pull) ou chargees depuis l'archive (-Mode Load).
-                Invoke-Docker compose down --volumes --rmi all
+                $project = Get-Project
+                # Conteneurs et reseau d'abord, la salle comprise (le profil est ajoute quand .env porte COCKPIT_OMO=on) :
+                # un conteneur du profil encore en vie empecherait de supprimer le reseau et ses volumes (MO-3 point 2).
+                Invoke-Docker compose down --remove-orphans
+                # Volumes nommes un par un, jamais --volumes : ceux de la salle ne partent qu'avec -PurgeOmo.
+                $volumes = @($CockpitVolumes)
+                if ($PurgeOmo) { $volumes += $OmoVolumes }
+                $volumeArgs = @($volumes | ForEach-Object { '{0}_{1}' -f $project, $_ })
+                $removed = Invoke-DockerTimeout 180 volume rm -f @volumeArgs
+                if ($removed.ExitCode -ne 0) { Write-Attention ('Volumes non supprimes : ' + (Get-CockpitFirstLine $removed.Output)) }
+                # Images nommees une par une, jamais --rmi all : celle de la salle ne part qu'avec -PurgeOmo.
+                $images = @((Get-EnvValue 'COCKPIT_APP_IMAGE'), (Get-EnvValue 'COCKPIT_OPENCODE_IMAGE'))
+                if ($PurgeOmo) { $images += (Get-EnvValue 'COCKPIT_OMO_IMAGE') }
+                $images = @($images | Where-Object { $_ })
+                if ($images.Count -gt 0) {
+                    $dropped = Invoke-DockerTimeout 180 image rm -f @images
+                    if ($dropped.ExitCode -ne 0) { Write-Attention ('Images non supprimees : ' + (Get-CockpitFirstLine $dropped.Output)) }
+                }
+                Write-Host 'Desinstallation terminee.' -ForegroundColor Green
             } else {
                 Invoke-Docker compose down
                 Write-Host 'Conteneurs supprimes. Les donnees restent dans les volumes Docker (-Purge pour tout effacer).'

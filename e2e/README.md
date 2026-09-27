@@ -186,11 +186,12 @@ sortie est le nombre d'échecs.
 |---|---|
 | `scripts/run-e2e.sh` | point d'entrée, aide, vérifications de base (Node 24, Docker), `MSYS_NO_PATHCONV` |
 | `e2e/lib/docker-e2e.mjs` | gardes d'isolation, pile Compose, lecture de l'épinglage sur le volume et contre-épreuves, déroulé, et leurs propres vérifications (`--gardes`) |
+| `e2e/lib/docker-e2e.d.mts` | déclaration de types minimale de `docker-e2e.mjs` (`correspond`, `listerScenarios`) pour les tests de croisement de `app/server`, qui appliquent la règle de `--scenarios` telle quelle au lieu de la recopier |
 | `e2e/lib/cdp.mjs` | navigateur sans fenêtre, profil temporaire neuf, clé publique épinglée, captures, clavier, console, journal réseau, trames du flux ; médias émulés (thème et mouvement toujours ensemble) et relevé du réglage de mouvement pour la garde de R106-b |
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
-| `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable |
+| `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable ; avec `--salle`, aussi la salle factice, le faux catalogue Copilot et la préparation de leur pile |
 | `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
 | `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même ; `010-reprise-apres-coupure.mjs` vérifie que l'interface se rétablit seule après un rechargement de l'amorçage en échec (coupure réseau, retour de l'onglet, focus sur « Réessayer », onglet caché, redémarrage réel du conteneur, amorçage lent puis deux changements rapprochés, 401) |
 
@@ -207,6 +208,7 @@ ni le faux.
 | `E2E_MESURES_DIR` | dossier où lire `MX1.md` pour `--reel-hors-ligne` |
 | `E2E_ACCORD_FACTURE` | accord écrit pour une recette facturée : `it1-ui-m1-noreply.mjs` ne joue la mesure M1 qu'en `--reel` et si la valeur contient `M1` |
 | `E2E_M1_IA` | IA de la recette M1, séparées par des virgules (sinon la première IA Claude et la première IA GPT du catalogue) |
+| `E2E_OMO_ETAPES` | étapes de `omo-ui-salle.mjs` à rejouer seules, séparées par des virgules (voir la [Salle OMO](#scénario-de-linterface-de-la-salle-omo-chantier-11-l26c)) |
 
 Ces chemins sont lus par Node : sous Git Bash, écrivez-les à la mode Windows (`C:/…`) et non `/c/…`.
 
@@ -250,7 +252,7 @@ console muette :
 | `it1-ui-delegation.mjs` | mode Avancé, demande posée quelques millisecondes après la partie `task` comme sur opencode réel (`askAfterMs` du faux) : carte « Détails de la délégation » ; sans aucun clic pendant la demande, carte des agents et « Qui travaille ? » dépliés, attente de votre accord (hexagone hachuré, cadenas, ambre) et préparation (pointillé rose fixe) visibles dans la fenêtre, titre, lignes et [Répondre] de « Qui travaille ? » vus (elementFromPoint, pas seulement rendus) ; « Autoriser une fois » cliqué, faisceau rose (préparation, consigne) puis bleu (résultat), dans l'ordre des faits |
 | `it1-ui-arreter.mjs` | « Arrêter » visible pendant le travail délégué ; le clic arrête tout l'arbre et la consigne est figée en gris |
 | `it1-ui-mise-en-page.mjs` | mode Avancé, délégation en attente puis en cours, à 1440, 1280, 1024 et 400 px : fil et « Qui travaille ? » visibles, « Autoriser une fois », « Refuser… » et « Arrêter » dans la fenêtre et non recouverts (elementFromPoint), [Répondre] atteignable (au besoin en faisant défiler la seule région d'activité), zone principale jamais défilée, « Contexte » fermé de lui-même sous 1280 px ; carte des agents dépliée pendant la demande ; tout relevé vu (elementFromPoint) : titre de « Qui travaille ? » vu sans défiler aux quatre tailles, ses lignes et [Répondre], l'attente de votre accord et la préparation vues sans défiler à 1440 et 1280, atteintes en faisant défiler la région et la bande à 1024 × 768 (la saisie y prend 428 px), bandeau d'une ligne et [Répondre] vus à 400 ; [Répondre] focalise « Autoriser une fois » ; modification en attente sur la racine, à 1440 : « Qui travaille ? » et l'attente de votre accord vus sans défiler |
-| `it1-ui-demonstration.mjs` | démonstration en Simple puis en Avancé : étiquette, avis du mode Simple, tous les moments parcourus, zéro requête de la page et d'opencode |
+| `it1-ui-demonstration.mjs` | démonstration en Simple puis en Avancé : étiquette, avis du mode Simple, tous les moments parcourus, zéro requête de la page (la relecture de sa propre liste par la page du chat, `GET /api/archive`, et une reconnexion de son flux comptées à part) et rien reçu par opencode sur la conversation, aucun appel d'IA hors son classement automatique |
 | `it1-ui-p2-raccourci.mjs` | capture p2 : délégation d'un raccourci `subtask` lancée sans demande, enregistrée « sans confirmation », et « lancé sans confirmation » affiché |
 | `it1-ui-m25.mjs` | mesure M25 dans le schéma du banc (HTTPS épinglé par défaut) : CSP servie, flux d'événements, transitions WAAPI de 900 ms jouées une fois, aucune violation |
 | `it1-ui-selecteur-clavier.mjs` | sélecteur « Autonomie » au clavier seul (APG), jusqu'à la création de « Plan d'abord (nouvelle conversation) » par Entrée ; le focus reste sur le bouton du sélecteur dans la conversation de plan |
@@ -321,6 +323,84 @@ console muette :
 | `it2-ui-plan-autonome.mjs` | plan exécuté en autonome : carte à quatre boutons, 428 puis confirmation, nouvelle conversation créée en « Autonome avec contrôle » avec un brouillon prérempli et rien d'envoyé |
 | `it2-ui-bandeau-journal.mjs` | bandeau d'autonomie (compteurs, dépense, plafond, [Arrêter], [Journal]), Journal du contrôle ligne à ligne, puis fin de demande avec [Voir les modifications de cette demande] ; les douze captures des vues de L12 |
 | `it2-ui-onglet-ferme.mjs` | onglet fermé pendant une demande autonome : les décisions automatiques continuent et l'attente est retrouvée à la réouverture, bandeau et carte compris |
+
+## Scénario de l'interface de la Salle OMO (chantier 1.1, L26c)
+
+La Salle Oh My OpenAgent est livrée **coupée** (`SALLE_OUVERTE` fausse dans le dépôt). Son interface s'éprouve sur une pile
+à part, la **pile de la salle**, en `--faux` seulement :
+
+```sh
+scripts/run-e2e.sh --faux --salle --project-prefix sal11-e2e --image-tag sal11
+```
+
+- **Salle factice, jamais l'extension.** `e2e/fake-opencode-server.ts` y tourne en trois rôles de plus, tous dans l'image du
+  banc (`<préfixe>/app-salle:<étiquette>`, `pull_policy: never`) : `--instance omo`, la salle (le faux opencode avec les
+  assistants de l'extension, et un superviseur factice qui parle au cockpit par les fichiers du contrat : état publié,
+  battement et `precheck-ok` attendus, `stop-request` et homme mort honorés, relance à neuf) ; `--copilot`, le catalogue du
+  compte GitHub Copilot, factice, servi en TLS sous `api.githubcopilot.com` sur le réseau interne ; `--preparer-salle`, joué
+  une fois avant le démarrage, sans réseau (certificat du faux catalogue par une autorité jetable de deux jours, gardé dans des
+  volumes de la pile et jamais sur l'hôte ; `auth.json` factice ; volume d'état donné à `node`). Les services `opencode-omo`,
+  `egress` et `omo-init` du produit changent de profil dans la surcharge : la vraie salle ne peut pas démarrer dans le banc.
+- **`SALLE_OUVERTE` basculée dans la copie du banc seulement** (le contexte de construction, hors du dépôt), une seule
+  déclaration exigée ; le dépôt la garde fausse, et le scénario le vérifie. `COCKPIT_OMO=on`, un **nom** d'image factice
+  (`<préfixe>/salle-factice:<étiquette>`, jamais une image qui existe) et un mot de passe de salle fabriqué à chaque exécution
+  sont écrits dans le fichier d'environnement du banc, et nulle part ailleurs.
+- **Partage des scénarios.** Avec `--salle`, seuls les scénarios `omo-ui-*` tournent (la pile de la salle n'est pas celle du
+  produit) ; sans `--salle`, ils sont écartés et le banc le dit.
+- **Gardes.** `--gardes` joue aussi, à part, les gardes de la pile de la salle (bascule dans la copie seule et une seule fois,
+  image distincte, `--faux` seul, partage des scénarios, fichier d'environnement, reconfiguration bornée, vraie salle jamais
+  démarrée) et en imprime le total sur sa propre ligne.
+
+Dans les scénarios, `ctx.salle` donne `pilote` (relevés de la salle factice, `superviseur()`, `regler({…})` de sa sonde,
+`racineEtrangere()`), `workspace` (dossier de travail du banc, hors du dépôt), `projets` et `reconfigurer({ COCKPIT_OMO,
+COCKPIT_OMO_IMAGE })`, qui redémarre le cockpit de la pile avec l'un de ces deux interrupteurs changés, et rien d'autre ; il
+vaut `null` hors de la pile de la salle. `superviseur()` dit aussi si le cockpit écoute la salle depuis son dernier lancement
+(`fluxDepuisLancement`, `fluxApresMs`) : « Salle prête » se lit dans l'état publié, alors que le flux d'événements du cockpit
+revient avec un délai croissant (500 ms à 10 s). Chaque étape attend ce rebranchement avant d'agir, et le bilan en donne les
+délais relevés.
+
+`omo-ui-salle.mjs` est **un seul fichier**, découpé en étapes : `croisements-it1-v5` n'admet qu'un scénario hors du relevé des
+noms `itN-…` et `NNN-…`. Une étape en échec est notée et capturée, la salle est remise en état et les suivantes sont jouées ;
+le scénario échoue à la fin en les nommant toutes. `E2E_OMO_ETAPES=<étape>[,<étape>…]` rejoue des étapes seules (les
+préalables le sont toujours), par exemple sur une machine chargée.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `omo-ui-salle.mjs` | par étapes, au clavier seul là où la fiche le demande, captures 1440, 1024 et 400 dans les deux thèmes : **préalables** (salle factice prête, catalogue du compte vérifié, `SALLE_OUVERTE` fausse dans le dépôt) ; **simple** : en mode Simple, entrée absente, page inaccessible, aucune requête `/api/omo/*`, et aucun événement de la salle reçu par le flux pendant une relance, alors que la même relance en Avancé en fait arriver ; **entree** : entrée « Salle OMO » atteinte et ouverte au clavier ; **projet-piege** : pré-contrôle refusé, liste masquée (nom du fichier de clés jamais montré), ouverture impossible ; **activation** : champ vide → erreur annoncée et rien d'envoyé, 409 du serveur affiché avec sa phrase et rien d'envoyé, confirmation → bandeau, [Arrêter] → `POST /api/omo/rooms/:rootId/stop`, « Salle en relance » puis « Salle prête », variante Prometheus de l'écran et du tableau « sans demande » ; **fin-de-demande** : [Journal] au clavier, puis relance à neuf et « Salle prête » ; **signales** (§4.14.5, « signalé sans arrêt ») : un `*.ps1` écrit pendant une demande, `omo.signales` reçu par le flux du cockpit en fin de demande, puis le fichier et « à relire avant de lancer sur votre poste » sur la page de la salle, atteints au clavier ; **suspendue** : deux racines créées hors du cockpit → « Salle suspendue », activation refusée avec sa phrase (écran et 409), levée par la réouverture d'une salle, battement repris ; **detection** : `.git` créé pendant une demande → arrêt, quarantaine sur le disque, liste et Journal atteints au clavier à 1440 et 400 px ; **git-attente** (décision A16 point 4) : un `.git` non protégé fait attendre la salle, raison écrite sur la page de la salle et dans le Diagnostic, atteinte au clavier, 409 `git-inscriptible` ; **focus-ecran** (§5.5, « focus jamais volé ») : écran d'activation ouvert, focus sur [Lancer comme Oh My OpenAgent], la page relit l'état de la salle sur un événement du flux, le focus doit rester en place ; **sans-salle** : `COCKPIT_OMO` coupé puis image absente → entrée absente, puis rétablie ; sur tout le scénario, console muette (seule tolérance : le 409 d'activation provoqué exprès), aucune violation de CSP, P6 et P11 (l'instance principale ne reçoit rien de la salle) et P4 dans la salle |
+
+<!-- [3d] début : scénarios de la salle de contrôle 3D (itération 3, L35) -->
+## Scénarios de l'itération 3 : salle de contrôle 3D et « Revoir »
+
+```sh
+scripts/run-e2e.sh --faux --scenarios 'it3-' --project-prefix 3d11-e2e --image-tag 3d11
+```
+
+`e2e/lib/webgl.mjs` porte les aides 3D. Rien n'y passe par un réglage du cockpit (D-3d-18) : tout se fait par
+injection CDP (`Page.addScriptToEvaluateOnNewDocument`), sur une **seconde connexion** au navigateur déjà lancé par le
+banc, attachée au même onglet — `e2e/lib/cdp.mjs` n'est pas touché. Deux familles d'injections : les **causes de 2D**
+(`simulerWebgl` : refus du contexte demandé avec `failIfMajorPerformanceCaveat`, nom de moteur logiciel) et le
+**« moteur simulé »** (`moteurSimule` : drapeau retiré, nom matériel fictif, horloge de la sonde avancée de 12 ms par
+image pendant ses 90 images). S'y ajoutent l'écouteur des violations de la CSP, les compteurs d'objets WebGL vivants,
+la lecture des marques `salle3d:*`, le journal réseau et l'émulation des réglages du poste (`emuler`).
+
+**Mode 3D du banc**, relu à chaque exécution (`modeBanc`, mesure M3D-1) : contexte *matériel* → aucune injection, la
+3D du banc est la vraie ; *logiciel* seulement → « moteur simulé » ; *aucun* `webgl2` → les contrôles 3D sont
+consignés « en attente », jamais comptés tenus. **Contrôle non vide** : un scénario où la 3D est attendue exige au
+moins une marque `salle3d:scene` **et** le morceau paresseux de three réellement chargé, sinon il échoue.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `it3-salle-controle.mjs` | mode Avancé : délégation scriptée, [Ouvrir la salle de contrôle] depuis la bande, zoom 2 en direct en 3D, « Consigne confiée » (rose) avant « Résultat rendu » (bleu) ; zoom 3 puis zoom 1 par le fil d'Ariane sans aucune marque `salle3d:bascule` ; clavier seul (grille, étiquettes, lecteur) ; zéro violation de CSP et console muette ; à la fermeture, `salle3d:memoire` à géométries 0 et textures 0, et 0 tampon, 0 tableau de sommets, 0 programme WebGL |
+| `it3-repli.mjs` | repli 2D : refus du contexte à l'ouverture et **pendant une lecture en différé** (même demande, même moment, même vitesse), moteur « SwiftShader » simulé, mouvement réduit puis [Réessayer] ; chaque cause dit sa phrase, et la 2D dessine aussi ses marques `salle3d:plan` |
+| `it3-revoir.mjs` | « Revoir » depuis la bande et depuis les Archives : bandeau, moments « n / N », ← et → au curseur focalisé, les cinq vitesses, badge « EN DIFFÉRÉ ×… · hh:mm:ss », étiquette d'un écart raccourci ; zoom 3 dans la boîte sans texte de message ; [Voir la consigne] depuis une légende et depuis le zoom 3, consigne de 9 000 caractères tronquée ; entre l'ouverture et la fermeture, seulement des `GET /api/revoir/…` (la relecture de sa propre liste par la page du chat, `GET /api/archive` après un classement, comptée à part), rien reçu par le faux sur la conversation revue et aucun appel d'IA hors le classement automatique du cockpit, dépenses inchangées ; vocabulaire du mode Simple |
+| `it3-demos.mjs` | les trois démonstrations en Simple et en Avancé sur le lecteur complet, curseur mené au dernier moment au clavier, au moins deux assistants montrés et nommés, avis du mode Simple, zéro requête de la page (la relecture de sa propre liste par la page du chat, `GET /api/archive`, et une reconnexion de son flux comptées à part) et rien de reçu par opencode hors son classement automatique |
+| `it3-debit.mjs` | mesure M20 sur la suite dense de `e2e/lib/gen-dense.mjs` (`e2e/fixtures/it3-dense.jsonl` : 50 sessions, 3 niveaux, rafales de 200 événements par seconde rejouées par `POST /banc/emettre`) : au plus 4 marques `salle3d:plan` par fenêtre d'une seconde, au moins une par seconde de rafale, en 3D puis en repli 2D |
+| `it3-captures.mjs` | captures (L33) des cinq vues — zooms 1, 2 et 3, « Revoir » avec le panneau de la consigne ouvert (U2, texte long qui défile à 400 px et mention de troncature), démonstration enregistrée — à 1440, 1024 et 400 px, dans les deux thèmes, plus niveaux de gris (`achromatopsia`) et deutéranopie à 1440 ; puis couleurs forcées et mouvement réduit émulés, où la salle passe en 2D **avec sa phrase** et sans canevas ; à 400 px la vue disparaît et la liste reste la vérité ; toutes les images sont écrites dans le dossier du banc, jamais dans le dépôt |
+
+La route de pilotage `POST /banc/emettre` (section `[3d]` de `e2e/fake-opencode-server.ts`, appelée par
+`ctx.faux.emettre`) passe une liste d'événements à `faux.emit` : aucun tour n'est joué, aucune IA n'est appelée,
+aucun appel n'est facturé. La recette réelle de M20 (capture d'une demande de la Salle OMO) reste en attente.
+<!-- [3d] fin -->
 
 ## Contrôle des types
 

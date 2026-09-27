@@ -7,11 +7,12 @@ Poste de pilotage web pour [opencode](https://opencode.ai), conçu pour travaill
 - **Chat** : réponses en direct, appels d'outils lisibles (commandes, diffs, travail délégué), autorisations à valider en un clic, `@fichier`, `/raccourci`, images. L'IA qui va répondre est affichée avant l'envoi.
 - **Travail en direct** (1.1, en préparation) : « Qui travaille ? » montre chaque assistant au travail pour votre demande, avec son état, sa durée et son coût ; **Arrêter** arrête toute la conversation, travail délégué compris ; **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier.
 - **Autonomie à la demande** (1.1, en préparation) : un sélecteur à quatre choix par conversation (demander à chaque fois, modifications automatiques, plan d'abord, autonome avec contrôle), des plafonds qui arrêtent le travail, et un **Journal du contrôle** qui dit, ligne par ligne, qui a décidé quoi et selon quelle règle.
+- **Salle Oh My OpenAgent** (1.1, en préparation, **livrée coupée**) : une demande confiée à l'extension Oh My OpenAgent, dans un conteneur à part, sur un réseau fermé sauf GitHub Copilot, bornée et arrêtée par le cockpit. Elle ne s'ouvre qu'au terme d'une procédure de mise en service (voir [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée)).
 - **Studio** (mode Avancé) : créer et régler les agents, skills, commandes et instructions (`AGENTS.md`), avec validation et retour arrière automatique.
 - **Archives** : chaque conversation est résumée, **classée automatiquement** (débogage, fonctionnalité, SQL, sécurité…), indexée en plein texte et exportée en Markdown dans un dossier rangé par catégorie.
 - **Coûts** : suivi en temps réel de la facturation Copilot au token face à votre budget mensuel, projection de fin de mois, alertes et garde-fou sur les modèles coûteux.
 
-Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles. Depuis la 1.0.6, opencode n'a plus aucun accès direct au réseau : sa seule sortie est le cockpit, qui ne laisse passer que GitHub Copilot et bloque tout le reste sur le poste (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)).
+Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles. Depuis la 1.0.6, opencode n'a plus aucun accès direct au réseau : sa seule sortie est le cockpit, qui ne laisse passer que GitHub Copilot et bloque tout le reste sur le poste (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)). La [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée), si elle est activée, sort par son propre proxy, `egress` : sa propre liste fermée, l'API Copilot seule, jamais `github.com`.
 
 L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers de l'IA : règles d'utilisation à accepter au premier lancement, réglages risqués masqués. Le **mode Avancé** (Paramètres › Affichage) donne accès au Studio et aux réglages fins.
 
@@ -28,13 +29,15 @@ L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers
 7. [Travail en direct, arrêt et Plan d'abord (1.1)](#travail-en-direct-arrêt-et-plan-dabord-11)
 8. [Autonomie : quatre choix, plafonds et Journal (1.1)](#autonomie--quatre-choix-plafonds-et-journal-11)
 9. [Ce qui échappe au contrôle : limites propres à opencode](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)
-10. [Suivi des coûts](#suivi-des-coûts)
-11. [Classement et archives](#classement-et-archives)
-12. [Studio](#studio)
-13. [Commandes du quotidien](#commandes-du-quotidien)
-14. [Sécurité](#sécurité)
-15. [Dépannage](#dépannage)
-16. [Développement](#développement)
+10. [Salle Oh My OpenAgent (1.1, livrée coupée)](#salle-oh-my-openagent-11-livrée-coupée)
+11. [Salle de contrôle et « Revoir » (1.1)](#salle-de-contrôle-et--revoir--11)
+12. [Suivi des coûts](#suivi-des-coûts)
+13. [Classement et archives](#classement-et-archives)
+14. [Studio](#studio)
+15. [Commandes du quotidien](#commandes-du-quotidien)
+16. [Sécurité](#sécurité)
+17. [Dépannage](#dépannage)
+18. [Développement](#développement)
 
 ---
 
@@ -218,7 +221,7 @@ Les proxys d'entreprise inspectent souvent le HTTPS en re-signant les certificat
 - Pour le changer : `.\install.ps1 -Proxy http://proxy.entreprise.lan:8080`.
 - Pour s'en passer : `.\install.ps1 -Proxy ''`. Ce choix est mémorisé.
 - Le trafic interne entre conteneurs ne passe jamais par le proxy.
-- Depuis la 1.0.6, seul le conteneur du cockpit utilise ce proxy, pour ses propres appels et pour ceux d'opencode qu'il laisse passer. Indiquez-le en `http://` (schéma absent = `http://`) : le cockpit ne sait pas passer par un proxy en `https://` ou `socks`, et `install.ps1` vous le signale.
+- Depuis la 1.0.6, le conteneur du cockpit utilise ce proxy, pour ses propres appels et pour ceux d'opencode qu'il laisse passer. La salle, si elle est activée, y passe aussi, mais par `egress`, son propre proxy de sortie : sa propre liste fermée, l'API Copilot seule, jamais `github.com`. Indiquez-le en `http://` (schéma absent = `http://`) : le cockpit ne sait pas passer par un proxy en `https://` ou `socks`, et `install.ps1` vous le signale.
 - Docker Desktop télécharge les images (image de base en mode Build, images GHCR en `-Mode Pull`) avec son propre réglage de proxy (**Settings › Resources › Proxies**), pas avec celui de `.env`.
 
 **Secours, vérification TLS désactivée :** `.\install.ps1 -InsecureTls`. À réserver au cas où l'export des certificats ne suffit pas. La vérification est alors coupée pour opencode **et** pour tous les appels sortants du serveur du cockpit, jeton Copilot compris. Un bandeau rouge le rappelle en permanence dans l'interface. Le réglage est mémorisé : `.\install.ps1 -SecureTls` réactive la vérification.
@@ -520,6 +523,190 @@ Ces limites viennent d'opencode 1.18.30, pas du cockpit, et la configuration ne 
 - **Le contrôle porte sur ce que le cockpit a lu au moment de la demande.** Entre cette lecture et l'exécution par opencode, le disque peut changer : un fichier créé entre-temps par une autre action autorisée de la même réponse, un `.git/config` modifié après la vérification, ou un lien créé après la décision ne sont pas revus. La fenêtre est courte et propre à la réponse « une fois », mais elle existe : c'est pourquoi les catégories de commandes interdites et les refus de l'assistant, qui ne dépendent d'aucune lecture du disque, restent la première barrière.
 - **Liens vers un fichier protégé.** Un fichier du dossier de travail peut être un second nom d'un fichier protégé (`.git/config`, configuration d'opencode) : son chemin semble intérieur et son nom n'est pas protégé, mais l'écrire modifie l'autre. Une modification automatique n'est donc laissée passer que sur un fichier ordinaire portant **un seul nom** ; sinon elle attend votre accord. Mesuré à travers un montage Docker Desktop d'un dossier Windows : un fichier ordinaire porte bien un seul nom, un fichier à deux noms est vu comme tel. Le cockpit n'accorde jamais de lui-même la commande qui crée ces liens.
 
+<!-- [salle] début : Salle Oh My OpenAgent (DOC-OMO, itération 2 ter) -->
+## Salle Oh My OpenAgent (1.1, livrée coupée)
+
+> **Version 1.1 en préparation, non publiée. La salle y est livrée coupée, et aucun réglage de `.env` ne l'ouvre.** Cette section dit ce que son code contient, comment elle s'installe et ce qu'elle ne protège pas. Elle ne servira qu'au terme de la [procédure de mise en service](docs/RECAPITULATIF.md#mettre-la-salle-oh-my-openagent-en-service-11-non-publiée). Les phrases de l'interface citées ici entre « » sont celles de `app/server/shared/omo-room-texts.ts`, à la lettre. L'état des portes, ce qui est prouvé sur le banc ou seulement par les tests, les recettes en attente et les écarts avec la spécification sont dans le récapitulatif : [portes et preuves](docs/RECAPITULATIF.md#chantier-11-salle-oh-my-openagent--portes-et-preuves-non-publiée), [recettes, errata et limites](docs/RECAPITULATIF.md#salle-oh-my-openagent--recettes-en-attente-errata-et-limites-non-publiée).
+
+La **Salle OMO** confie une demande à l'extension **Oh My OpenAgent 4.19.4**, qui enchaîne le travail seule : elle est faite pour déléguer, relancer et résumer sans vous demander (au banc, sa délégation échoue encore dans la salle : voir les [limites](#limites-dites-franchement)). Elle tourne dans une seconde instance d'opencode, le conteneur `opencode-omo`, sur un réseau fermé dont la seule sortie mène à GitHub Copilot. Elle est réservée au mode Avancé ; en mode Simple, le cockpit répond « La Salle OMO est réservée au mode Avancé. ». L'instance principale n'en dépend pas : une salle absente, coupée ou arrêtée ne change rien au reste du cockpit.
+
+### Pourquoi elle est livrée coupée
+
+Dans la salle, une IA modifie les projets et lance commandes, tests et programmes **sans vous demander**. Le cockpit ne l'ouvre qu'une fois prouvé qu'il sait l'arrêter, la borner et voir ce qu'elle fait : c'est le rôle des portes G1 à G14. Au 26 septembre 2026, toutes les portes du banc local sont vertes, hors ligne, sur la vraie salle : réseau, chargement, arrêt, plafonds, interdits, dépôts piégés, homme mort (avec le cockpit réel), agents, actions hors contrôle et configuration. Les interdits ne le sont qu'après une correction du cockpit faite au train de la vague 5 : des commandes étaient encore autorisées juste après un arrêt hors contrôle. La relecture de la vague 5 a fermé une fenêtre qui restait, pendant que l'arrêt lit l'état de la salle avant de clore la demande ; cette dernière correction est prouvée par un test du cockpit, pas encore rejouée au banc. Deux portes restent partielles : l'arrêt attend sa recette sur Copilot réel, et les actions hors contrôle n'ont pas pu éprouver une vraie délégation, qui échoue dans la salle (voir les [limites](#limites-dites-franchement)). Aucune recette sur GitHub Copilot réel n'a été lancée (aucune exécution facturée, sur décision de l'utilisateur).
+
+La coupure est **tenue par le code**, jamais par un réglage :
+
+- la constante `SALLE_OUVERTE` de `app/server/wiring-11.ts` vaut `false`, et plusieurs tests échouent si elle change dans le dépôt ;
+- tant qu'elle est fausse, même avec `COCKPIT_OMO=on`, toutes les routes `/api/omo/*` répondent 403, le cockpit n'écrit ni battement, ni accord de démarrage, ni authentification pour la salle, et aucune seconde instance n'est branchée dans le cockpit. La page de la salle affiche « Salle coupée », avec la raison « La Salle OMO est coupée sur ce cockpit. » ;
+- sans battement du cockpit, le superviseur de la salle ne lance jamais opencode : les conteneurs de la salle peuvent être créés, par `cockpit.ps1` ou par un `docker compose --profile omo up` tapé à la main, rien n'y démarre ;
+- **aucune variable d'environnement n'ouvre la salle.** Les bancs de test basculent la constante dans une copie jetable du dépôt, jamais dans le dépôt. La mise en service est une décision humaine, portée par une version dédiée : voir la [procédure](docs/RECAPITULATIF.md#mettre-la-salle-oh-my-openagent-en-service-11-non-publiée).
+
+### Construire l'image sur le PC personnel
+
+L'image `opencode-omo` (opencode 1.18.30 et Oh My OpenAgent 4.19.4) n'est **jamais publiée** : ni registre, ni release, ni CI. Elle se construit à la main, sur le PC personnel, avec Internet ; seule son archive va au travail.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-omo-image.ps1 `
+  -BaseImage <image opencode>@sha256:<64 hex> -OutDir <dossier hors du dépôt>
+```
+
+- `-BaseImage` exige l'image opencode du cockpit **épinglée par son empreinte**. Piège mesuré : Docker ne résout une empreinte qu'auprès d'un registre, jamais dans le magasin local. Une image construite sur place doit donc d'abord passer par un registre local jetable pour recevoir une empreinte de dépôt : marche à suivre dans [`e2e/omo-banc/README.md`](e2e/omo-banc/README.md#construire-limage-de-la-salle).
+- Le script construit sans cache ; il installe l'extension par `npm ci --ignore-scripts` (aucun script d'installation, intégrité SHA-512 du fichier de verrouillage) ; il compare `npm audit` à `docker/opencode-omo/audit-baseline.json` et s'arrête sur une alerte haute nouvelle ; il écrit le SBOM ; il vérifie la configuration **sans réseau** (`--network none`) et compare le manifeste de l'image à la référence du dépôt. Il écrit enfin l'archive `opencode-cockpit-omo-4.19.4-<aaaammjj-hhmmss>.tar.gz` et son fichier `.sha256` (empreinte de l'archive **et** identifiant d'image), avec le rapport d'audit, le SBOM et les journaux, dans `-OutDir` (défaut : `%USERPROFILE%\opencode-cockpit-omo`), jamais dans le dépôt.
+- `-SelfTest` prouve que la construction refuse une configuration fausse (nom de crochet inconnu, clé inconnue, valeur épinglée retirée) ; `-DryRun` affiche les commandes sans lancer Docker ; `-UpdateLock` régénère le fichier de verrouillage de l'extension. Le script ne pousse jamais rien (aucun `docker push`).
+- **Base 1.0.6 ou plus récente exigée** : le script lit l'environnement de l'image de base et la refuse sans les drapeaux de la 1.0.6 (`OPENCODE_DISABLE_MODELS_FETCH=1`, `npm_config_offline=true`), que la salle hérite à l'exécution. npm n'est remis en ligne que pour ses propres étapes de construction (installation de l'extension, fichier de verrouillage). Changer d'image de base impose de refaire l'amorçage du manifeste ci-dessous. Au travail, `install.ps1 -OmoArchive` avertit seulement si l'image chargée ne porte pas ces drapeaux.
+
+**Amorçage du manifeste.** `docker/opencode-omo/omo-manifest.sha256` porte l'empreinte SHA-256 de chaque fichier du périmètre de l'image : extension, vérificateurs, filet de garde, configuration, superviseur. Le superviseur refuse de démarrer si l'image s'en écarte, ou si ce fichier n'est qu'une amorce. Il s'écrit avec `-AcceptManifest` : deux constructions sans cache, un manifeste identique exigé, puis la référence écrite dans le dépôt, à commiter. C'est à refaire après tout changement de l'image de base ou d'un fichier copié dans ce périmètre ; `app/server/omo-manifeste-sources.test.ts` signale une référence périmée.
+
+**Transport.** Recopiez l'archive **et** son `.sha256` ensemble jusqu'au poste de travail, sans registre ni partage public.
+
+### Installer au travail : `install.ps1 -OmoArchive`
+
+```powershell
+.\install.ps1 -OmoArchive <dossier>\opencode-cockpit-omo-4.19.4-<aaaammjj-hhmmss>.tar.gz
+```
+
+- Le `.sha256` voisin est exigé. L'empreinte de l'archive est vérifiée **avant** tout `docker load`, puis l'identifiant de l'image chargée est comparé à celui du `.sha256`. Au moindre écart, l'image n'est pas utilisée et `COCKPIT_OMO_IMAGE` n'est pas écrite.
+- `.env` reçoit `COCKPIT_OMO_IMAGE` (étiquette locale), `COCKPIT_OMO=off` s'il n'y figurait pas, et `OPENCODE_OMO_PASSWORD`, mot de passe du serveur de la salle, tiré par le générateur cryptographique de Windows et jamais affiché. **L'installation ne met jamais `COCKPIT_OMO` à `on`.** Son dernier message, `La salle reste coupee (COCKPIT_OMO=off) : activez-la depuis l interface, en mode Avance.`, est inexact : l'interface ne met pas la salle en service (reste consigné dans le récapitulatif).
+- Elle prépare aussi les projets (voir plus bas), et le refait à chaque passage d'`install.ps1` tant qu'une image de la salle est inscrite dans `.env`. `.\install.ps1 -OmoProjetsSeulement -WorkspacePath <dossier>` fait cette seule préparation : il réécrit les deux fichiers des projets préparés, sans toucher à `.env` ni à Docker. Donnez-lui le dossier de travail de l'installation, sans quoi la salle en recevrait un autre.
+- Le service `opencode-omo` porte `pull_policy: never` : aucune image de la salle n'est jamais tirée d'un registre, même homonyme.
+- `.\cockpit.ps1 backup` inclut les conversations de la salle, jamais son `auth.json`. `.\cockpit.ps1 uninstall -Purge` garde l'image de la salle, ses volumes et sa configuration ; `-Purge -PurgeOmo` les supprime aussi (l'image ne se retélécharge pas : il faut recharger son archive, ou la reconstruire sur le PC personnel).
+
+### Interrupteurs : `COCKPIT_OMO` et `COCKPIT_AUTONOMY`
+
+- **`COCKPIT_OMO`** (`.env`, `off` par défaut) : `on` ou `off`, toute autre valeur empêche le cockpit de démarrer. Écrivez `on` en minuscules : `cockpit.ps1` ne crée les conteneurs de la salle (profil compose `omo`) que pour cette forme exacte. À `off`, ils ne sont pas créés et l'entrée **Salle OMO** reste cachée. À `on`, le cockpit exige `OPENCODE_OMO_PASSWORD` (32 caractères au moins), et l'entrée apparaît en mode Avancé quand une image est inscrite. Il se change dans `.env`, puis `.\cockpit.ps1 restart` ; jamais depuis l'interface. **Tant que `SALLE_OUVERTE` est fausse, `on` ne fait qu'afficher la salle coupée** : ses conteneurs attendent un battement qui ne vient pas.
+- **`COCKPIT_AUTONOMY=off`** coupe aussi la salle (décision du 14 septembre) : l'activation est refusée avec « Autonomie coupée sur ce cockpit par son administrateur : la Salle OMO l'est aussi. », et le cockpit n'écrit aucun battement, donc la salle ne lance pas opencode.
+
+### Projets préparés et protection des dépôts git
+
+Seuls les **projets préparés** par `install.ps1` s'ouvrent dans la salle. Depuis la décision A16 du 22 septembre, leur protection repose sur des **montages inversés** :
+
+- le dossier de travail **entier** est monté **en lecture seule** sur `/workspace` dans la salle ;
+- l'écriture n'y est rouverte que **par exception** : un montage en écriture pour **chaque entrée de premier niveau** (fichier ou dossier) de chaque projet préparé, jamais sur la racine d'un projet ni sur le dossier de travail. Restent en lecture seule : `.git` et tout nom qui s'y ramène (casse, points de fin, nom court comme `GIT~1`), un `.omo` déjà présent, et toute entrée qui contient un dépôt git (sous-module, dépôt imbriqué ou nu) ou un autre projet préparé. La liste vit dans `docker-compose.omo-projets.yml` et `omo-projets.json`, générés par `install.ps1` : ne les modifiez pas à la main ;
+- **pourquoi** : sur Docker Desktop pour Windows, le partage de fichiers est insensible à la casse et expose les noms courts. Un `.git` monté en lecture seule **sous** un dossier ouvert en écriture s'y contourne par `.GIT`, `GIT~1` ou le dossier parent (`/workspace/PROJET/.git`) : 10 chemins inscriptibles mesurés, et un crochet `pre-commit` posé depuis le conteneur retrouvé dans le vrai dépôt. Sous un **ancêtre** en lecture seule, tout alias reçoit `EROFS` (système de fichiers en lecture seule), même un alias que personne n'a imaginé ;
+- **tous** les dépôts git du dossier de travail sont protégés, pas seulement ceux des projets : `install.ps1` le parcourt sans suivre les liens ni les jonctions (`node_modules` et intérieurs de `.git` exclus, 200 000 entrées et 256 niveaux au plus). Un `.git` fichier (`gitdir:`) est protégé avec sa cible, un dépôt nu aussi. L'installation s'arrête, avec la liste et sans écrire la surcharge, sur : un `.git` lien ou jonction, une cible `gitdir:` introuvable ou hors du dossier de travail, un lien ou une jonction de dossier où que ce soit (hors `node_modules`), un lien de fichier à la racine d'un projet, un dossier illisible, un dossier de travail qui est lui-même un dépôt nu, ou le plafond atteint ;
+- au démarrage, le superviseur de la salle **revérifie tout**, en tant qu'utilisateur `node` : il lit la table des montages, exige la lecture seule sur `/workspace`, n'accepte l'écriture que sur une entrée de premier niveau d'un projet préparé (jamais `.git` ni un de ses alias, jamais une entrée remplacée par un lien), et teste les alias de chaque `.git` **et** de ses dossiers parents. Au moindre doute, la salle reste fermée ; la page de la salle et **Diagnostic › Salle Oh My OpenAgent** disent pourquoi : « L'historique git de ces dossiers n'est pas protégé : la salle ne démarre pas. {liste} » ;
+- les **carnets** de la salle vont dans un volume Docker à elle (`omo-carnets`) : aucun dossier `.omo` n'est créé dans vos projets, et rien n'est demandé sur votre poste (ni droit administrateur, ni attribut de fichier).
+
+**Deux frictions assumées :**
+
+1. **L'IA de la salle ne peut créer ni fichier ni dossier à la racine d'un projet.** Elle reçoit un refus net (`EROFS`, système de fichiers en lecture seule), jamais une perte silencieuse. Elle écrit librement **dans** les dossiers de premier niveau qui existaient à l'installation, et écrit en place les fichiers de premier niveau. Elle ne peut ni supprimer ni renommer une entrée de premier niveau (chacune est un point de montage), ni remplacer un fichier de premier niveau en renommant par-dessus un fichier temporaire, comme le font certains outils (refusé, mesuré).
+2. **Relancez `install.ps1` quand vous ajoutez un fichier ou un dossier à la racine d'un projet** : sans cela, la salle ne peut pas y écrire. De même pour un projet ou un dépôt ajouté après l'installation : « Projet non préparé pour la salle : relancez `install.ps1` », ou, à l'activation, « L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste} ».
+
+Après une entrée de premier niveau supprimée, renommée ou remplacée par un lien ou une jonction (`git clean`, changement de branche…), relancez-le aussi : d'ici là, `cockpit.ps1` ne démarre plus la salle et le dit, pour que Docker ne recrée pas un dossier vide à sa place sur votre poste ; le reste du cockpit démarre.
+
+**Règle d'hygiène : les liens symboliques.** Un lien symbolique que la salle pose dans un dossier ouvert en écriture arrive sur votre poste comme un **vrai lien**, qu'un outil du poste qui suit les liens suivrait. La sonde du superviseur les signale à chaque démarrage de la salle, donc après chaque demande, sans les suivre ni les supprimer, dans le journal de son conteneur (`.\cockpit.ps1 logs`, sans nom de service). Relisez-les avant d'ouvrir le projet avec un tel outil.
+
+### Une demande dans la salle
+
+- **Ouvrir une salle** : **Salle OMO** (mode Avancé), choix d'un projet préparé, puis pré-contrôle. Un projet est refusé quand lui-même ou un dossier parent contient une configuration de l'extension ou d'opencode (`.omo/omo.jsonc`, `.opencode/`, `.claude/`, `.agents/`, `.mcp.json`…) ou un fichier de clés ; la liste masquée des chemins trouvés est affichée. Le pré-contrôle couvre aujourd'hui **tous** les projets préparés : un seul non conforme empêche le démarrage de la salle.
+- **Activer, à chaque demande** : fenêtre « Lancer cette demande comme Oh My OpenAgent ? », avec un montant d'arrêt automatique **à saisir** (vide la première fois, votre dernier montant ensuite, borné par le maximum de **Paramètres › Budget** ; aucun montant par défaut) et l'aide « Ses appels ne passent pas par le contrôle de coût avant envoi : le cockpit arrête à ce montant ; un appel en cours par assistant peut le dépasser. ». La confirmation ne vaut que pour un envoi. Rien n'est envoyé quand une condition manque : interrupteurs, salle ni suspendue ni en relance, aucune autre demande en cours, battement frais, image et manifeste attendus, dépôts protégés (revérifiés à chaque activation), pré-contrôle de ce démarrage, catalogue des IA du compte lisible, adresse Copilot inchangée, budget du mois, montant valide. Chaque refus a sa phrase. Sans adresse Copilot imposée (`-CopilotApiUrl`), la salle ne joint que l'adresse d'office : si l'adresse que le cockpit a vérifiée pour votre abonnement en est une autre, l'activation est refusée avec « Adresse Copilot changée : relancez l'installation » suivie de la commande à lancer, « Imposez l'adresse de votre abonnement : .\install.ps1 -CopilotApiUrl {adresse} ». Sinon, chaque envoi de la salle partirait vers `api.githubcopilot.com`, refusé et journalisé par le proxy de l'entreprise.
+- **Pendant la demande** : bandeau « Salle OMO · extension active · actions non contrôlées avant exécution · {x} $ sur {montant} $ », avec [Arrêter] et [Journal]. Le cockpit accorde une seule fois chaque demande d'autorisation de la salle, sauf les **interdits absolus** : fichiers de clés et `.env*` (sauf `.env.example`), production, réseau et accès web, envoi git et options globales de git, hors du projet, configuration de l'extension et d'opencode, fichiers d'IDE et de CI, `.git`. Ceux-là sont refusés avec « Interdit absolu du cockpit : {categorie}. N'essayez pas de le contourner. ». Tout s'arrête au montant saisi, à 60 minutes, au-delà de 30 sessions créées par l'extension, à trois nouvelles tentatives d'affilée après un refus de débit de GitHub Copilot, ou au franchissement d'un seuil mensuel du budget (80 % et 100 %).
+- **Relance à neuf à la fin de chaque demande** : quand toutes les conversations de la salle sont au repos depuis 15 secondes, sans tâche de fond ni autorisation en attente, le cockpit relance la salle à neuf, ce qui tue tout programme resté en arrière-plan : « Demande terminée : la salle est relancée à neuf. ». Chaque relance repart de dossiers temporaires vides et refait le pré-contrôle ; elle a pris 24 à 26 secondes au banc complet.
+- **Arrêter** : refuse les demandes d'autorisation en attente, arrête chaque conversation occupée, relance la salle à neuf et met de côté le `boulder.json` de l'extension dans chaque projet ouvert, sans jamais envoyer de commande à l'extension.
+- **Arrêt au redémarrage du cockpit** : si la salle travaillait, elle est arrêtée et la demande marquée interrompue : « Le cockpit a redémarré : la demande en cours a été arrêtée et la salle relancée à neuf. ». La demande suivante exige une nouvelle confirmation.
+- **Activité hors demande, puis suspension** : si l'extension agit alors qu'aucune demande n'est en cours, la salle est arrêtée (« L'extension a agi alors qu'aucune demande n'était en cours : la salle a été arrêtée. ») ; deux fois en 10 minutes, elle est suspendue : « Salle suspendue : l'extension a agi sans demande à deux reprises. Rouvrez une salle pour la relancer. ».
+- **Homme mort** : le cockpit écrit un battement toutes les 5 secondes ; s'il se tait, la salle s'arrête d'elle-même, en 27 secondes au plus après le dernier battement (borne calculée ; 21,2 et 21,5 secondes mesurées au banc). L'écran promet « 30 secondes au plus ».
+- **Détections, toutes suivies d'un arrêt** : réponse d'autorisation que le cockpit n'a pas émise, conversation créée sans lui, rechargement non demandé, permissions modifiées, message d'origine inconnue, configuration apparue, historique git créé, fichier d'IDE ou de CI modifié (dans **tout** projet préparé, ouvert ou non), nouvelles tentatives répétées, activité hors demande. Un `.git` créé pendant la demande n'est jamais supprimé : il est mis de côté **après** l'arrêt, une fois le conteneur de la demande sorti, puis la salle est relancée à neuf, avec « Un historique git créé pendant la demande a été mis de côté ({chemin}). Relisez ces fichiers avant de rouvrir ce projet dans votre éditeur. ». Si la relance n'est pas vue à temps, rien n'est renommé et le chemin est seulement signalé, à relire. `package.json`, `Makefile` et les `*.ps1` modifiés sont listés en fin de demande, « à relire avant de lancer sur votre poste ».
+
+### Limites, dites franchement
+
+- **La détection vient après coup.** « Le cockpit l'a repéré après coup : un programme a pu agir avant l'arrêt. » Aucune prévention n'est possible : un programme lancé par l'extension (tests, scripts, compilations du projet) agit avant que le cockpit le voie.
+- **Le plugin de garde est un filet, pas une frontière.** Installé dans la salle, il refuse aux **outils de l'IA** les fichiers de clés et les `.env*`, les chemins hors du projet, le web, `grep`, les outils coupés par l'audit et la délégation au-delà du plafond. Il ne lit pas le texte des commandes shell, et rien de ce que fait un programme ne passe par lui. Il est aussi plus étroit que le répondeur du cockpit pour les `.env*` : il ne regarde que le nom du fichier, pas les dossiers du chemin.
+- **`/tmp` et le dossier personnel de la salle permettent l'exécution** (`exec`) : les lanceurs de tests d'un projet en ont besoin. Un `noexec` n'y changerait d'ailleurs rien : `sh /tmp/script.sh` passe quand même (mesuré).
+- **Le jeton Copilot est lisible par un programme de la salle.** Le cockpit ne transmet à la salle que l'entrée `github-copilot` de son `auth.json`, jamais le volume de données de l'instance principale ; mais un programme lancé par l'extension peut la lire, et joindre opencode avec le mot de passe de la salle. L'écran d'activation le dit : « Un programme lancé automatiquement peut lire et modifier les fichiers de tous les projets du dossier de travail, dont les `.env` et les fichiers de clés, lire le jeton Copilot et agir sur opencode. Le cockpit arrête tout s'il le détecte, après coup. »
+- **Dossiers dont le nom porte une séquence `%XX`** (par exemple `a%2F..%2Fx`) : opencode 1.18.30 décode deux fois le dossier qu'on lui transmet, et ouvrirait la salle ailleurs, hors du dossier de travail. `install.ps1` écarte ces projets de la préparation, avec un avertissement qui les nomme, et le cockpit refuse de les ouvrir ou de les pré-contrôler : « Projet hors du dossier de travail : refusé. ». Le filet de garde de la salle ne protège pas de ce cas, car il ne voit que le dossier déjà décodé : **la seule barrière contre un dossier `%XX` est le refus du cockpit.** Renommez ces dossiers ; un `%` isolé, comme dans « Remise 20% », reste accepté.
+- **Les `.git` sous `node_modules` ne sont pas vérifiés** : les parcours d'`install.ps1` et du superviseur ignorent `node_modules`. Un dépôt git rangé là, dans une entrée ouverte en écriture, n'est pas protégé.
+- **Ensemble borné de capacités** : le superviseur démarre root avec les seules capacités `SETUID` et `SETGID`, puis bascule vers l'utilisateur `node` avec des capacités effectives, permises, héritables et ambiantes à 0. L'ensemble borné garde ces deux capacités : le vider demanderait `SETPCAP`, plus dangereuse, et `setpriv --bounding-set -all` sans elle ne fait rien sans le dire (mesure MO-7).
+- **DNS et réseau** : la salle ne résout aucun nom public et n'a aucune route vers l'extérieur (mesure MO-10). Elle ne joint que les services de son réseau fermé : le proxy de sortie `egress`, seule sortie (`CONNECT` vers l'hôte de l'API Copilot en vigueur, port 443 seulement ; `api.github.com` toujours refusé), et le cockpit, dont l'API exige la connexion, sauf sa santé et sa page de connexion. Le proxy de sortie ignore `NO_PROXY` : dès qu'un proxy d'entreprise est déclaré, il passe par lui, sans exception par hôte.
+- **Configuration git** : la configuration git globale de votre poste (`~/.gitconfig`) est invisible depuis la salle ; `install.ps1` avertit seulement quand un `core.hooksPath` global pointe dans le dossier de travail. Dans la configuration d'un dépôt, seules les cibles de `core.hooksPath`, de `core.fsmonitor` et des inclusions sont surveillées : un filtre, un alias, un `core.pager`… qui désigne un script du projet ne l'est pas, et ce script, que la salle peut modifier, s'exécuterait à votre prochaine commande git sur le poste.
+- **Trafic interne en HTTP** : entre le cockpit et la salle, le trafic reste en HTTP sur le réseau fermé de Docker, sans port publié, comme pour l'instance principale.
+- **Carnets de l'extension indisponibles** : Oh My OpenAgent 4.19.4 écrit ses plans, son `boulder.json` et ses notes dans un dossier `.omo` figé sous le projet. La racine du projet étant en lecture seule, ces écritures reçoivent `EROFS` : les plans du planificateur et la reprise par `/start-work` ne sont pas disponibles. Le volume `omo-carnets` existe, mais l'extension ne s'en sert pas d'elle-même (à arbitrer).
+- **Configuration figée de l'extension non appliquée** : la couche `omo.jsonc` que la salle installe n'est pas lue par la 4.19.4 (mesuré deux fois). Ce qui tient : la configuration d'instance d'opencode, le réseau fermé, les montages en lecture seule, le filet de garde, et côté cockpit les plafonds, les détections et l'arrêt (erratum A14 du récapitulatif).
+- **Fournisseurs** : `COCKPIT_ALLOWED_PROVIDERS` vaut pour les deux instances. Une liste qui n'autorise pas `github-copilot` fait refuser tout envoi de la salle.
+- **La délégation de l'extension échoue dans la salle** (mesuré au banc complet, 25 et 26 septembre) : chaque délégation à un assistant (`explore`, `multimodal-looker`, par catégorie) finit en erreur et ne crée aucune conversation enfant. Cause supposée, à confirmer : l'extension interroge opencode sans le mot de passe de la salle. D'ici là, la salle travaille sans délégation, et l'arrêt d'une délégation qui change ses permissions n'est prouvé que par les tests.
+- **Une demande d'autorisation posée pendant une coupure du flux** entre le cockpit et la salle n'est jamais répondue : le cockpit ne relit pas les demandes en attente quand le flux revient. La demande reste en cours, sans rien autoriser, jusqu'à un plafond (60 minutes au plus) ou à [Arrêter].
+- **Une délégation en tâche de fond qui échoue retient la fin de demande** : le cockpit attend le retour d'un enfant qui n'a jamais existé. La demande reste en cours jusqu'à 60 minutes ou à [Arrêter].
+- **Flux d'opencode muet** : si opencode accepte la connexion du flux d'événements sans jamais y répondre, le cockpit peut rester jusqu'à 5 minutes sans le voir ni le dire (défaut présent aussi dans les versions 1.0.5 et 1.0.6, instance principale comprise). Dans la salle, ni les demandes d'autorisation ni ce que les détections surveillent ne sont vus pendant ce temps.
+- **Détections pendant la reprise du flux** : après chaque relance à neuf, le flux du cockpit vers la salle revient en 0,5 à 10 secondes. Une conversation que l'extension créerait dans ce délai ne serait pas vue ; rien de la demande précédente ne survit à la relance.
+- **Mode Simple** : les routes d'activité et de faits d'une conversation de la salle y répondent 403, et ce refus est définitif, voulu. **Revoir** (itération 3) passera par ses propres routes en lecture seule, `GET /api/revoir/:rootId` et `…/consignes/:callId`.
+- **Prouvé sur le banc, ou seulement par les tests** : les montages inversés, le réseau fermé, le chargement, l'homme mort (avec le cockpit réel), les permissions d'agents, la configuration, une demande de bout en bout (activation, envoi, fin de demande et relance à neuf), l'arrêt par [Arrêter] et au redémarrage du cockpit, les plafonds, les interdits absolus du répondeur, les dépôts piégés, les détections, la quarantaine et la suspension sont prouvés sur la vraie salle, hors ligne. La coupure du filet n'y est prouvée que pour deux outils (`session_list` et `lsp_status`) : les autres noms de la liste et le préfixe `codegraph_` suivent la même règle, prouvée par les tests unitaires. Restent sans preuve de banc : une vraie délégation (elle échoue dans la salle) et une relance de la salle quand `install.ps1` change la liste des projets pendant que le cockpit tourne. Détail dans le [récapitulatif](docs/RECAPITULATIF.md#chantier-11-salle-oh-my-openagent--portes-et-preuves-non-publiée).
+<!-- [salle] fin -->
+
+<!-- [3d] début : salle de contrôle, « Revoir », démonstrations et three.js (itération 3, DOC-3D) -->
+
+## Salle de contrôle et « Revoir » (1.1)
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà. Ces deux vues ne font que **lire** ce que le cockpit a déjà enregistré : aucune IA n'est appelée, aucune conversation n'est modifiée, et le bandeau de « Revoir » le rappelle en permanence : « Revoir : rien n'est relancé ni facturé ».
+
+### La salle de contrôle
+
+**Ouvrir la salle de contrôle**, à côté de la carte du travail en direct, montre en grand le travail en cours dans vos projets. Il n'y a pas d'entrée de menu : on y arrive par cette commande de la bande du travail en direct, ou par l'adresse. Trois niveaux :
+
+| Niveau | Adresse | Ce qu'on y voit |
+|---|---|---|
+| **Vos projets** | `#/salle-controle` | Un territoire par projet, plus les dossiers où une conversation a travaillé dans les dernières 24 heures. Pour chacun : combien travaillent, combien attendent votre accord, et le total étiqueté « Coût des demandes en cours dans ce projet ». Quand le cockpit ne peut pas lire l'état d'un projet, il écrit « état non vérifiable », jamais zéro. Aucun trait ne relie deux projets : « Aucun faisceau entre projets : une conversation ne confie jamais de travail à une conversation d'un autre projet. » Sans rien à montrer : « Aucune conversation récente dans vos projets. » |
+| **Une conversation** | `#/salle-controle/<conversation>` | La scène de la carte du travail en direct, en grand : l'assistant de la conversation, les consignes confiées (rose), les résultats rendus (bleu), les attentes de votre accord et chaque appel vers GitHub Copilot. Le sélecteur « Conversations de ce projet » passe de l'une à l'autre, et [Liste] / [Tableau] donnent la même chose en texte. |
+| **Un intervenant** | `#/salle-controle/<conversation>/<intervenant>` | Le détail d'un intervenant : ses outils, ses fichiers, sa consigne reçue et son résultat rendu. |
+
+Le fil d'Ariane, en tête, part de « Projets » et descend jusqu'à l'intervenant ouvert ; la station fixe « Cockpit – contrôle », à gauche, représente le cockpit lui-même. Les positions des projets ne bougent pas tant que la vue reste ouverte.
+
+**La liste reste la vérité.** Sous la scène, la liste des conversations et le tableau des intervenants disent exactement la même chose, en texte, en 3D comme en 2D. La scène n'est qu'une image : elle ne dessine que ce que le cockpit a enregistré, et un lecteur d'écran ne la lit pas. Au plus 60 étiquettes sont posées sur la scène ; au-delà, la liste reste seule complète.
+
+### Au clavier
+
+- Dans la grille des conversations : **←** et **→** dans un projet, **↑** et **↓** d'un projet à l'autre, **Début** et **Fin** aux extrémités de la ligne (avec **Ctrl**, de toute la grille), **Entrée** ouvre la conversation. Au bord, la flèche ne saute pas à la ligne voisine.
+- Ces touches n'agissent que **dans** la grille : le cockpit ne prend aucun raccourci à une touche hors du composant qui a le focus, et ne déplace jamais le focus tout seul.
+- Dans le lecteur de « Revoir », **←**, **→**, **Début** et **Fin** déplacent le curseur des moments **seulement quand ce curseur a le focus**.
+- Dans la boîte « Revoir », **Échap** ferme et rend le focus au bouton qui l'a ouverte.
+
+### « Revoir » une demande
+
+**Revoir cette demande** s'ouvre depuis la bande du travail en direct, depuis les Archives et depuis la salle de contrôle. La demande est rejouée moment par moment, en 2D, dans une boîte qui ne remplace jamais l'affichage en direct :
+
+- barre du lecteur : [Lire], [Figer ici], [Moment précédent], [Moment suivant], un curseur « 4 / 12 », une « Vitesse » (×0,25, ×0,5, ×1, ×2, ×4) et le badge « EN DIRECT » ou « EN DIFFÉRÉ ×0,5 · 10:42:07 » ;
+- un temps mort de plus de 4 secondes est montré en une seconde, avec l'étiquette « 10 s sans nouvel événement, montrées en 1 s » ;
+- [Suivre l'action] déplace la vue avec le travail rejoué ; [Revenir au direct] revient au présent ;
+- les légendes expliquent ce qu'elles montrent (« Pourquoi ? »), par exemple « Il ne voit pas votre conversation : il reçoit seulement cette consigne et peut lire le projet », « Il reprend son travail précédent, avec tout son historique » ou « Il travaille en tâche de fond : celui qui lui a confié le travail n'attend pas son résultat. » ;
+- **rien n'est relancé ni facturé** : « Revoir » lit les faits déjà enregistrés, ne demande rien à opencode et n'ajoute aucune ligne au suivi des coûts. Aucune saisie, aucun bouton d'autorisation, aucun arrêt : c'est une lecture.
+
+**[Voir la consigne]** montre la consigne reçue par un intervenant. Elle vient de la **copie que le cockpit a gardée au moment de l'envoi**, jamais d'une nouvelle demande à l'IA : « Copie gardée par le cockpit au moment de l'envoi, secrets reconnus masqués : rien n'est redemandé à l'IA. »
+
+- Les secrets reconnus sont masqués avant que la copie soit écrite ; au-delà de 8 000 caractères, le texte est coupé avec la mention « Consigne tronquée : 8 000 caractères affichés sur 12 345. » ; au-delà de 500 consignes dans une conversation, plus rien n'est gardé.
+- Sans copie : « Consigne non enregistrée : le cockpit n'en a pas gardé de copie (demande antérieure à cette version, cockpit arrêté pendant l'envoi, ou plus de 500 consignes dans cette conversation). »
+- Cette copie **est supprimée avec la conversation**, comme les faits et les archives, et n'est jamais écrite dans un journal ni dans un export.
+- Les **autres** textes de message ne sont pas relus pendant « Revoir » : « Texte non affiché pendant « Revoir » : rien n'est redemandé ni relancé. » C'est voulu : le cockpit ne redemande rien pour afficher un rejeu.
+
+### 3D, repli en 2D et préférence du poste
+
+La 3D n'est **proposée que si le poste sait la dessiner**. Avant de l'ouvrir, le cockpit vérifie que le navigateur donne un affichage 3D accéléré par la carte graphique ; à l'ouverture, il mesure 90 images. Sinon, la même vue s'affiche en 2D, avec la raison :
+
+| Raison | Phrase affichée |
+|---|---|
+| Réglages d'accessibilité (mouvement réduit, couleurs forcées) | « Affichage 2D : vos réglages d'accessibilité le demandent » |
+| Poste sans carte graphique (bureau à distance, machine virtuelle) | « Affichage 2D : ce poste dessine la 3D sans carte graphique (bureau à distance ou machine virtuelle) » |
+| Navigateur sans affichage 3D | « Affichage 2D : la 3D n'est pas disponible dans ce navigateur » |
+| Images trop lentes à la mesure, ou pendant l'usage | « La 3D n'était pas fluide sur ce poste » |
+| Choix gardé sur ce poste | « Affichage 2D : vous l'avez choisi sur ce poste » |
+
+Quand la 3D devient saccadée en cours de route, le cockpit propose d'abord « La 3D saccade sur ce poste. » avec [Passer en 2D] et [Rester en 3D], puis annonce « Passage en 2D dans quelques secondes. » avant de basculer de lui-même ; si l'affichage 3D s'interrompt tout seul, il le dit : « L'affichage 3D s'est interrompu : retour en 2D. »
+
+**[Réessayer]** relance la mesure et redonne sa chance à la 3D. Le choix « 2D » que vous faites vous-même est gardé **sur ce poste seulement** (dans le navigateur, sous la clé `cockpit.salle3d`) ; une bascule automatique, elle, n'est jamais gardée : un onglet laissé en arrière-plan ne ferme donc pas la 3D pour de bon. Rien de tout cela n'est envoyé au serveur.
+
+### Démonstrations
+
+**Voir une démonstration** joue une capture enregistrée sur le lecteur de « Revoir », avec l'étiquette « Démonstration enregistrée : aucune IA n'est appelée ». « Choisir une démonstration » en propose trois : « Deux assistants en même temps », « Attente de votre accord » et « Arrêt au plafond ». Aucune requête n'est envoyée à opencode pendant une démonstration, dans les deux modes. En mode Simple, une démonstration qui montre du travail délégué le signale : « Démonstration enregistrée en mode Avancé : en mode Simple, l'IA ne délègue pas, elle continue seule. »
+
+### three.js, licence et sécurité
+
+La 3D est dessinée par **three.js 0.186.0** (licence MIT), la seule bibliothèque ajoutée par la 1.1 :
+
+- **version exacte épinglée** (`0.186.0`, sans `^` ni `~`), en dépendance de développement : elle est compilée dans l'interface, pas installée dans l'image du serveur ;
+- **empreinte vérifiée** : l'archive du registre npm porte le SHA-256 `61eeff9d7616005c9a481c796f52287d81fbbbc0d55eaca5565322924252c1aa`, et le `package-lock.json` enregistre le SHA-512 correspondant ;
+- **licence servie avec l'application** : le build écrit `licences/three-LICENSE.txt`, copie exacte de la licence MIT de three, et **échoue** si elle manque ;
+- **aucun élargissement de la politique de sécurité du navigateur (CSP)** : elle est **inchangée**, sans `'unsafe-eval'`. Le build vérifie qu'aucun morceau de three ne contient `new Function` ni `eval(`, qu'aucun module expérimental de three n'entre dans l'application, et que three reste chargé **à la demande** : il n'est téléchargé que si vous ouvrez la salle de contrôle.
+
+<!-- [3d] fin -->
+
 ## Suivi des coûts
 
 Depuis le **1er juin 2026**, Copilot facture **au token**, en crédits IA (1 crédit = 0,01 $). Le compteur est remis à zéro le 1er de chaque mois à 00:00 UTC, et un budget utilisateur épuisé bloque les requêtes, sans repli sur un modèle gratuit.
@@ -757,3 +944,9 @@ Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'it�
 ## Licence
 
 MIT. opencode est un projet MIT d'Anomaly (anciennement SST).
+
+<!-- [3d] début : licence de three.js (itération 3, DOC-3D) -->
+
+La salle de contrôle en 3D utilise **three.js 0.186.0**, publié sous licence MIT. Sa licence est livrée avec l'interface, dans `licences/three-LICENSE.txt`, et le build échoue si elle manque.
+
+<!-- [3d] fin -->

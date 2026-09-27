@@ -1210,6 +1210,13 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     const before = lookups();
     await notFound("enfant pris pour une racine", child.id, taskAsk.id);
     assert.equal(lookups(), before, "aucune lecture d'opencode pour une session qui n'est pas une racine");
+    // Racine de la Salle OMO (P11) : refusée AVANT toute lecture, l'opencode de l'instance principale ne doit jamais ouvrir
+    // d'instance sur le dossier que la salle travaille (cloison que `knownDirectories` respecte déjà).
+    const avantSalle = lookups();
+    h.db.prepare("UPDATE sessions SET instance = 'omo' WHERE id = ?").run(session.id);
+    await notFound("racine de la salle", session.id, taskAsk.id);
+    assert.equal(lookups(), avantSalle, "P11 : aucune lecture sur l'opencode de l'instance principale");
+    h.db.prepare("UPDATE sessions SET instance = 'principale' WHERE id = ?").run(session.id);
     // Racine de classement ou supprimée : jamais une conversation à détailler.
     h.db.prepare("UPDATE sessions SET purpose = 'classifier' WHERE id = ?").run(session.id);
     await notFound("racine de classement", session.id, taskAsk.id);
@@ -1219,6 +1226,25 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     assert.equal((await details(h, session.id, taskAsk.id)).permissionId, taskAsk.id, "rétablie : de nouveau détaillée");
     assert.equal((await h.call("GET", `/api/conversations/${session.id}/delegations/${taskAsk.id}`)).status, 401, "sans cookie de session");
     assert.deepEqual(repliesTo(h, taskAsk.id), [], "lecture seule : aucune réponse envoyée");
+  });
+
+  it("racine de la salle en mode Simple aussi : 404 et zéro requête (la route n'a pas de garde de mode)", async (t) => {
+    // Aucune délégation n'est lancée ici : le mode Simple en refuserait une d'office, et ce refus lit lui-même `/permission`.
+    // La garde d'instance se mesure donc sur une racine nue, où la seule lecture possible serait celle de la route.
+    const h = await startCockpit(t, { modules: ["taskGuard"] });
+    const session = await conversation(h, "Simple");
+    h.db.prepare("UPDATE sessions SET instance = 'omo' WHERE id = ?").run(session.id);
+    await flush();
+    const lookups = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission").length;
+    const before = lookups();
+    const res = await h.call("GET", `/api/conversations/${session.id}/delegations/per_abcdefghijklmnopqrstuvwxyz`, { headers: h.headers.authed });
+    assert.equal(res.status, 404, res.body);
+    assert.equal(lookups(), before, "P11 : aucune lecture sur l'opencode de l'instance principale");
+    // Contrôle discriminant : la même racine sur l'instance principale, elle, fait bien partir la lecture.
+    h.db.prepare("UPDATE sessions SET instance = 'principale' WHERE id = ?").run(session.id);
+    const relayee = await h.call("GET", `/api/conversations/${session.id}/delegations/per_abcdefghijklmnopqrstuvwxyz`, { headers: h.headers.authed });
+    assert.equal(relayee.status, 404, relayee.body);
+    assert.ok(lookups() > before, "sans la garde d'instance, la lecture part : c'est ce que la garde empêche");
   });
 
   it("route : opencode injoignable pendant la lecture → 503, rien deviné", async (t) => {

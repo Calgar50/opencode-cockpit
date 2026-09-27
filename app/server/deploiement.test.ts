@@ -28,7 +28,13 @@ describe("déploiement 1.0.6 : opencode ne sort que par le relais du cockpit", (
   it("docker-compose.yml : opencode seul sur le réseau interne, sans port publié", () => {
     assert.equal(compose.networks.interne?.internal, true);
     assert.deepEqual(compose.services.opencode?.networks, ["interne"]);
-    assert.deepEqual([...(compose.services.cockpit?.networks ?? [])].sort(), ["default", "interne"]);
+    // Grande fusion (GF1) : le cockpit rejoint aussi le réseau fermé de la salle (omo-internal) ; « interne » reste à lui et à opencode.
+    assert.deepEqual([...(compose.services.cockpit?.networks ?? [])].sort(), ["default", "interne", "omo-internal"]);
+    const surInterne = Object.entries(compose.services)
+      .filter(([, service]) => (service?.networks ?? []).includes("interne"))
+      .map(([nom]) => nom)
+      .sort();
+    assert.deepEqual(surInterne, ["cockpit", "opencode"]);
     assert.equal(compose.services.opencode?.ports, undefined);
   });
 

@@ -1,6 +1,7 @@
 // Contrat 1.1 « Autonomie à la demande » : TYPES UNIQUEMENT (aucun code exécuté), partagés par le serveur et l'interface.
 // Spécification §3.5, §3.9, §4.1-§4.3, §4.9, §4.11 ; plan d'exécution §4.2 (T0). Les ports et les routes rendent des CODES ;
 // les phrases affichées sont écrites dans server/shared/*-texts.ts (contrôlés par textes.test.ts).
+import type { SessionInstance } from "./activity-types.ts";
 import type { AutonomieSettings } from "./api-types.ts";
 
 /** Choix d'autonomie d'une conversation (racine), appliqué à tout son travail délégué. Défaut : « demander ». */
@@ -31,6 +32,8 @@ export type RequestEnd =
   | "recreation"
   | "plafond-tentatives"
   | "plafond-sessions"
+  // Salle OMO (D-2b-41) : seuil du budget mensuel atteint (80 ou 100 %, §4.8.2). Les autres fins de la salle sont déjà au-dessus.
+  | "seuil-mensuel"
   | "interrompue";
 
 /** `autonomy_decisions.verdict` ; « refus-interdit » : Salle OMO seulement (migration 5). */
@@ -106,6 +109,11 @@ export interface ConversationAutonomyView {
   disponibles: AutonomyChoiceAvailability[];
   /** Demande autonome en cours, sinon null. */
   demande: AutonomyRequestView | null;
+  /**
+   * Instance opencode de la racine (réservation 2 du plan 2 bis). Champ ABSENT : instance principale, comme en 1.0.x. Rempli
+   * plus tard par le paquet d'activation de la salle ; aucune route ne l'écrit ici.
+   */
+  instance?: SessionInstance;
 }
 
 export interface AutonomyRequestView {
