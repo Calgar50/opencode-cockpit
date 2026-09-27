@@ -14,7 +14,7 @@
 //   4. `prefers-reduced-motion: reduce` : « Affichage 2D : vos réglages d'accessibilité le demandent », puis [Réessayer] une
 //      fois le réglage levé : la 3D revient.
 // Le repli dessine la même vue en 2D : la marque `salle3d:plan` y est posée aussi (M20), avec `rendu: "2d"`.
-import { attendreFinDuTour, attendreIa, attendreQue, cliquerBouton, exiger, nonJoue, oc, preparerPage, releve, resume, texteVisible } from "./it1-ui-commun.mjs";
+import { attendreFinDuTour, attendreIa, attendreQue, cliquerBouton, exiger, LARGE, nonJoue, oc, preparerPage, releve, resume, texteVisible } from "./it1-ui-commun.mjs";
 import { attendre, attendre2d, attendreScene3d, emuler, marques, ouvrirSalle, positionLecteur, preparer3d, reglerWebgl, violationsCsp } from "../lib/webgl.mjs";
 
 /** Phrases de la spécification, écrites en clair : c'est la spécification qu'on vérifie, pas ce que le code déclare. */
@@ -64,10 +64,13 @@ export async function run(ctx) {
   // 4. Mouvement réduit : phrase des réglages d'accessibilité, puis [Réessayer] le réglage levé.
   const accessibilite = await preparer3d(ctx, { mouvementReduit: true });
   try {
-    const page = await preparerPage(ctx);
+    // Même réglage que preparer3d (R106-b) : preparerPage émule le mouvement de l'onglet du banc, qui remplacerait « reduce ».
+    const page = await preparerPage(ctx, LARGE, { mouvement: "reduce" });
     await ouvrirSalle(page, null);
     await attendre2d(page);
     await exigerPhrase(page, PHRASES.accessibilite, "mouvement réduit");
+    // Réglage levé : l'onglet du banc d'abord (garde de R106-b), puis la seconde connexion avec le jeu complet (dernier envoi).
+    await ctx.navigateur.mouvement("no-preference");
     await emuler(accessibilite.cdp, { mouvementReduit: false });
     await cliquerBouton(page, PHRASES.reessayer, { portee: ".salle3d-fluidite" });
     if (accessibilite.mode.mode === "materiel") {

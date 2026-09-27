@@ -401,6 +401,12 @@ export async function modeBanc(cdp) {
  * les injections ne valent que pour les documents SUIVANTS. Rend le contexte 3D du scénario.
  */
 export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouvementReduit = false, couleursForcees = false, theme = "clair" } = {}) {
+  // Grande fusion (GF12) × garde du mouvement de R106-b : l'onglet du banc fixe le MÊME réglage de mouvement et le même thème
+  // que la seconde connexion, AVANT toute action sur la page. `Emulation.setEmulatedMedia` remplace toute la liste de la page à
+  // chaque envoi, quelle que soit la connexion : le banc émule donc d'abord, puis la seconde connexion pose le jeu complet
+  // (thème, mouvement, couleurs forcées). Un appel suivant de preparerPage(ctx, …, { mouvement }) doit garder ce réglage.
+  await ctx.navigateur.mouvement(mouvementReduit ? "reduce" : "no-preference");
+  await ctx.navigateur.theme(theme);
   const cdp = await ouvrirCdp(ctx);
   const journal = await reseau(cdp);
   await emuler(cdp, { theme, mouvementReduit, couleursForcees });

@@ -17,7 +17,7 @@
 //   3. AU MOINS une marque `salle3d:plan` par seconde DE RAFALE (l'écoulement de 1,5 s qui suit la dernière rafale n'en est pas
 //      une : la vue y a rattrapé) : sans cela le contrôle serait vide et le scénario échoue ;
 //   4. le repli 2D dessine lui aussi, au même plafond : la mesure est refaite avec `prefers-reduced-motion: reduce`.
-import { attendre, attendreFinDuTour, attendreIa, exiger, nonJoue, oc, preparerPage, releve, resume } from "./it1-ui-commun.mjs";
+import { attendre, attendreFinDuTour, attendreIa, exiger, LARGE, nonJoue, oc, preparerPage, releve, resume } from "./it1-ui-commun.mjs";
 import { chargerFixture, DENSE } from "../lib/gen-dense.mjs";
 import { attendre2d, attendreScene3d, debitParSeconde, marques, oublierMarques, ouvrirSalle, preparer3d } from "../lib/webgl.mjs";
 
@@ -74,11 +74,15 @@ export async function run(ctx) {
   // 4. Même mesure en repli 2D : la marque `salle3d:plan` y est posée aussi (M20 compte les deux rendus).
   const repli = await preparer3d(ctx, { mouvementReduit: true });
   try {
-    const page2d = await preparerPage(ctx);
+    // Même réglage que preparer3d (R106-b) : preparerPage émule le mouvement de l'onglet du banc, qui remplacerait « reduce ».
+    const page2d = await preparerPage(ctx, LARGE, { mouvement: "reduce" });
     const resultat2d = await mesurer(ctx, page2d, repli.cdp, repliAFaire.rootId, repliAFaire.rafales, { attendue3d: false });
     releve(ctx, `M20 (repli 2D) : ${resume(resultat2d)}`);
   } finally {
     await repli.cdp.fermer();
+    // La seconde connexion fermée emporte ses réglages émulés : l'onglet du banc repose le sien, « reduce », que la garde de
+    // R106-b relit dans la page à la fin du scénario.
+    await ctx.navigateur.mouvement("reduce");
   }
   ctx.expectNoConsoleErrors();
 }
