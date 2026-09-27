@@ -3,14 +3,14 @@
 // Spécification §4.11 (« Activation refusée … si COCKPIT_AUTONOMY=off : restent « Demander » et « Plan d'abord » »), §4.3
 // (pré-conditions du cycle), §4.13 (choix indisponible désactivé avec sa raison) ; plan d'exécution, fiche L13.
 //
-// UN SEUL SCÉNARIO, DEUX CÔTÉS, choisis par l'environnement de la pile — sans toucher au banc.
-// `docker-compose.yml` sert `COCKPIT_AUTONOMY: ${COCKPIT_AUTONOMY:-on}` : Compose interpole d'abord l'environnement du shell,
-// puis le fichier d'environnement du banc (qui ne porte pas cette variable). Les deux côtés se jouent donc ainsi, chacun sur sa
-// propre pile jetable, sans modifier `scripts/run-e2e.sh`, `e2e/lib/*` ni le fichier Compose :
+// UN SEUL SCÉNARIO, DEUX CÔTÉS, choisis par le fichier d'environnement de la pile jetable.
+// `docker-compose.yml` sert `COCKPIT_AUTONOMY: ${COCKPIT_AUTONOMY:-on}`. Le banc retire de l'environnement de docker toute
+// variable COCKPIT_* du shell (environnementDocker, protection de R105b) : un `COCKPIT_AUTONOMY=off` posé dans le shell ne coupe
+// donc RIEN, et le compose sert « on ». Le côté coupé passe par l'option du banc, qui écrit la ligne dans SON fichier :
 //   - ALLUMÉ (passage ordinaire du banc) :
 //       bash scripts/run-e2e.sh --faux --project-prefix i211-e2e --image-tag i211
 //   - COUPÉ (second passage, ce seul scénario) :
-//       COCKPIT_AUTONOMY=off bash scripts/run-e2e.sh --faux --project-prefix i211-e2e --image-tag i211 \
+//       bash scripts/run-e2e.sh --faux --autonomie-coupee --project-prefix i211-e2e --image-tag i211 \
 //         --scenarios it2-api-interrupteur
 //     (les autres scénarios it2-* exigent l'autonomie allumée : les lancer dans ce second passage n'aurait pas de sens.)
 //
@@ -64,7 +64,7 @@ export async function run(ctx) {
   exiger(vue?.interrupteur === interrupteur, `la vue et l'amorçage ne disent pas le même interrupteur (${resume(vue?.interrupteur)}).`);
 
   if (interrupteur !== true) {
-    // Pile montée avec COCKPIT_AUTONOMY=off : le scénario devient le contrôle complet de la décision n° 13.
+    // Pile montée avec COCKPIT_AUTONOMY=off (--autonomie-coupee) : le scénario devient le contrôle complet de la décision n° 13.
     const coupes = disponibles.filter((d) => d.choix === "modifications" || d.choix === "autonome");
     for (const choix of coupes) {
       exiger(choix.disponible === false, `« ${choix.choix} » disponible alors que l'autonomie est coupée.`);
@@ -99,8 +99,8 @@ export async function run(ctx) {
   nonJoue(
     ctx,
     "COCKPIT_AUTONOMY=off",
-    "ce passage sert l'interrupteur allumé ; le côté coupé se joue dans un second passage, « COCKPIT_AUTONOMY=off bash " +
-      "scripts/run-e2e.sh --faux … --scenarios it2-api-interrupteur » (marche à suivre en tête du scénario)",
+    "ce passage sert l'interrupteur allumé ; le côté coupé se joue dans un second passage, « bash scripts/run-e2e.sh " +
+      "--faux --autonomie-coupee … --scenarios it2-api-interrupteur » (marche à suivre en tête du scénario)",
   );
   await exigerP6SurRequetes(ctx, depuis);
   releve(ctx, "interrupteur allumé : les quatre choix sont actifs et « Autonome avec contrôle » s'active");

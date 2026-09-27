@@ -79,10 +79,9 @@ export async function run(ctx) {
     const resultat2d = await mesurer(ctx, page2d, repli.cdp, repliAFaire.rootId, repliAFaire.rafales, { attendue3d: false });
     releve(ctx, `M20 (repli 2D) : ${resume(resultat2d)}`);
   } finally {
+    // La seconde connexion fermée emporte ses réglages émulés : sa fermeture (fermetureUnique, webgl.mjs) repose, sur l'onglet
+    // du banc, le « reduce » fixé par preparer3d, que la garde de R106-b relit dans la page à la fin du scénario.
     await repli.cdp.fermer();
-    // La seconde connexion fermée emporte ses réglages émulés : l'onglet du banc repose le sien, « reduce », que la garde de
-    // R106-b relit dans la page à la fin du scénario.
-    await ctx.navigateur.mouvement("reduce");
   }
   ctx.expectNoConsoleErrors();
 }

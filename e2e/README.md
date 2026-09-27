@@ -292,11 +292,12 @@ prend un quatrième paramètre `{ entetes }` : `putAutonomie` et `postExecutionD
 cookie de session, `origin` et `x-cockpit-csrf` compris. Plus un seul `fetch` nu dans les scénarios de l'itération 2.
 
 **Interrupteur.** `it2-api-interrupteur.mjs` est le seul scénario à deux côtés. Le passage ordinaire du banc le joue
-allumé. Pour le côté coupé, la variable se pose dans l'environnement du shell — Compose l'interpole avant le fichier
-d'environnement du banc, donc aucun fichier n'est à modifier :
+allumé. Pour le côté coupé, l'option `--autonomie-coupee` écrit `COCKPIT_AUTONOMY=off` dans le fichier d'environnement
+**du banc**. Poser la variable dans le shell ne coupe rien : le banc retire de l'environnement de docker toute variable
+`COCKPIT_*` du shell (protection de R105b), et le compose sert alors `on`.
 
 ```sh
-COCKPIT_AUTONOMY=off scripts/run-e2e.sh --faux --project-prefix i211-e2e --image-tag i211 \
+scripts/run-e2e.sh --faux --autonomie-coupee --project-prefix i211-e2e --image-tag i211 \
   --scenarios it2-api-interrupteur
 ```
 
@@ -382,6 +383,13 @@ banc, attachée au même onglet — `e2e/lib/cdp.mjs` n'est pas touché. Deux fa
 **« moteur simulé »** (`moteurSimule` : drapeau retiré, nom matériel fictif, horloge de la sonde avancée de 12 ms par
 image pendant ses 90 images). S'y ajoutent l'écouteur des violations de la CSP, les compteurs d'objets WebGL vivants,
 la lecture des marques `salle3d:*`, le journal réseau et l'émulation des réglages du poste (`emuler`).
+
+**Seconde connexion et garde du mouvement.** `preparer3d` fixe d'abord le réglage de l'onglet du banc (garde de R106-b),
+puis la seconde connexion pose le jeu complet. Chromium retire l'émulation d'une session qui se détache : la page
+retombe alors sur le réglage du **poste**. `cdp.fermer()` repose donc, la connexion fermée, le réglage de l'onglet du
+banc : celui fixé par `preparer3d`, ou celui qu'un scénario a changé par `mouvement(…)` du contexte rendu. Un second
+appel ne renvoie rien. Sans cela, sur un poste en animations réduites (sessions RDP), la garde relisait `reduce` à la
+fin de 5 scénarios `it3-*` sur 6 (répétition générale F1) ; `--poste-mouvement reduce` en est la contre-épreuve.
 
 **Mode 3D du banc**, relu à chaque exécution (`modeBanc`, mesure M3D-1) : contexte *matériel* → aucune injection, la
 3D du banc est la vraie ; *logiciel* seulement → « moteur simulé » ; *aucun* `webgl2` → les contrôles 3D sont

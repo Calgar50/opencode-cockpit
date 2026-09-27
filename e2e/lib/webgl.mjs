@@ -396,18 +396,44 @@ export async function modeBanc(cdp) {
 }
 
 /**
+ * Fermeture UNIQUE de la seconde connexion (répétition générale F1 × garde du mouvement de R106-b). Chromium retire l'émulation
+ * d'une session quand elle se détache : la page retombe alors sur le réglage du POSTE, pas sur celui que l'onglet du banc avait
+ * fixé. Sur un poste normal, la retombée donne « no-preference » et ne se voit pas ; sur un poste en animations réduites (sessions
+ * RDP, A20), la garde relisait « reduce » à la fin du scénario, alors que toutes ses vérifications étaient passées. La
+ * connexion fermée, l'onglet du banc repose donc son réglage (`reglage.mouvement`) ; le thème qu'il porte part avec lui
+ * (emulerMedias de `cdp.mjs` envoie toujours les deux ensemble). Un second appel ne renvoie rien.
+ */
+export function fermetureUnique(onglet, fermerConnexion, reglage) {
+  let fermeture = null;
+  return () => {
+    fermeture ??= (async () => {
+      try {
+        await fermerConnexion();
+      } finally {
+        await onglet.mouvement(reglage.mouvement);
+      }
+    })();
+    return fermeture;
+  };
+}
+
+/**
  * Prépare l'onglet d'un scénario it3 : injections de D-3d-18 selon le mode du banc, réglages du poste émulés (la 3D exige
  * `prefers-reduced-motion: no-preference` et `forced-colors: none`, que le poste du banc ne garantit pas), puis rechargement —
- * les injections ne valent que pour les documents SUIVANTS. Rend le contexte 3D du scénario.
+ * les injections ne valent que pour les documents SUIVANTS. Rend le contexte 3D du scénario. `ouvrir` : seconde connexion
+ * (ouvrirCdp) ; les gardes du banc y passent une connexion simulée, sans navigateur.
  */
-export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouvementReduit = false, couleursForcees = false, theme = "clair" } = {}) {
+export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouvementReduit = false, couleursForcees = false, theme = "clair" } = {}, { ouvrir = ouvrirCdp } = {}) {
   // Grande fusion (GF12) × garde du mouvement de R106-b : l'onglet du banc fixe le MÊME réglage de mouvement et le même thème
   // que la seconde connexion, AVANT toute action sur la page. `Emulation.setEmulatedMedia` remplace toute la liste de la page à
   // chaque envoi, quelle que soit la connexion : le banc émule donc d'abord, puis la seconde connexion pose le jeu complet
-  // (thème, mouvement, couleurs forcées). Un appel suivant de preparerPage(ctx, …, { mouvement }) doit garder ce réglage.
-  await ctx.navigateur.mouvement(mouvementReduit ? "reduce" : "no-preference");
+  // (thème, mouvement, couleurs forcées). Un appel suivant de preparerPage(ctx, …, { mouvement }) doit garder ce réglage ; un
+  // scénario qui le CHANGE passe par `mouvement(…)` du contexte rendu, que la fermeture de la connexion repose ensuite.
+  const reglage = { mouvement: mouvementReduit ? "reduce" : "no-preference" };
+  await ctx.navigateur.mouvement(reglage.mouvement);
   await ctx.navigateur.theme(theme);
-  const cdp = await ouvrirCdp(ctx);
+  const cdp = await ouvrir(ctx);
+  cdp.fermer = fermetureUnique(ctx.navigateur, cdp.fermer, reglage);
   const journal = await reseau(cdp);
   await emuler(cdp, { theme, mouvementReduit, couleursForcees });
   const mode = await modeBanc(cdp);
@@ -415,7 +441,22 @@ export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouv
   if (simule) await moteurSimule(cdp);
   else await simulerWebgl(cdp, { refusCaveat, moteur });
   await ctx.navigateur.aller(`${ctx.url}/`);
-  return { cdp, journal, mode, simule, attendue3d: mode.mode !== "aucun" && !refusCaveat && moteur === null && !mouvementReduit && !couleursForcees };
+  return {
+    cdp,
+    journal,
+    mode,
+    simule,
+    attendue3d: mode.mode !== "aucun" && !refusCaveat && moteur === null && !mouvementReduit && !couleursForcees,
+    /**
+     * Change le réglage de mouvement en cours de scénario : l'onglet du banc d'abord (garde de R106-b), puis la seconde
+     * connexion avec le jeu complet (dernier envoi) ; la fermeture de la connexion reposera ce réglage.
+     */
+    async mouvement(valeur) {
+      await ctx.navigateur.mouvement(valeur);
+      reglage.mouvement = valeur;
+      await emuler(cdp, { theme, mouvementReduit: valeur === "reduce", couleursForcees });
+    },
+  };
 }
 
 // --- Contrôles non vides (fiche L35) ---------------------------------------------------------------------------------------------

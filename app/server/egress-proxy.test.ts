@@ -95,12 +95,35 @@ async function serveurTcp(t: TestContext, surConnexion: (socket: net.Socket) => 
   return etat;
 }
 
-/** Port où plus rien n'écoute (connexion refusée). */
-async function portFerme(): Promise<number> {
-  const serveur = net.createServer();
-  const port = await listenFetchable(serveur, "127.0.0.1");
-  await fermerServeur(serveur);
-  return port;
+/**
+ * Port où rien n'écoute (connexion refusée), TENU par le test jusqu'à sa fin : c'est le port local d'une connexion d'essai
+ * gardée ouverte vers un serveur du test. Personne n'y écoute, et le système ne le donne à aucune écoute nouvelle sur le port 0
+ * tant que la connexion vit : mesuré le 27/09 sous Windows, 250 000 écoutes éphémères d'un autre processus ne l'ont jamais
+ * reçu, alors qu'un port fermé à l'ancienne l'a été 4 fois. L'ancienne forme (écouter sur un port éphémère, le fermer, le
+ * rendre) laissait une course pendant `npm test` : un fichier de test d'un autre processus pouvait recevoir ce port entre la
+ * fermeture et l'assertion, et sonder() rendait alors true, à raison, puisque quelqu'un écoutait (répétition générale F1).
+ */
+async function tenirPortFerme(t: TestContext): Promise<{ port: number; tenue: net.Socket }> {
+  const serveur = await serveurTcp(t, () => undefined);
+  const tenue = net.connect({ host: "127.0.0.1", port: serveur.port });
+  t.after(() => {
+    tenue.destroy();
+  });
+  await within(
+    new Promise<void>((resolve, reject) => {
+      tenue.once("connect", resolve);
+      tenue.once("error", reject);
+    }),
+    "connexion qui tient le port fermé",
+  );
+  tenue.on("error", () => undefined);
+  const port = tenue.localPort;
+  assert.ok(port !== undefined && port > 0, "port local de la connexion d'essai illisible");
+  return { port, tenue };
+}
+
+async function portFerme(t: TestContext): Promise<number> {
+  return (await tenirPortFerme(t)).port;
 }
 
 interface Client {
@@ -416,7 +439,7 @@ describe("proxy de sortie : liste blanche", () => {
     for (const socket of echo.sockets) socket.resetAndDestroy();
     await within(cr.ferme, "client fermé après la coupure brutale de l'amont");
 
-    const ferme = await portFerme();
+    const ferme = await portFerme(t);
     const b2 = await banc(t, {}, { port: ferme });
     const c2 = client(b2.port, connect(`${COPILOT}:443`));
     assert.equal(await reponse(c2), "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -604,7 +627,7 @@ describe("proxy de sortie : proxy d'entreprise chaîné", () => {
     assert.equal(fp.demandes.length, 1);
     assert.ok(b.lignes.some((ligne) => ligne.includes("délai dépassé")));
 
-    const b2 = await banc(t, { proxyEntreprise: lireProxyEntreprise({ HTTPS_PROXY: `http://127.0.0.1:${await portFerme()}` }) });
+    const b2 = await banc(t, { proxyEntreprise: lireProxyEntreprise({ HTTPS_PROXY: `http://127.0.0.1:${await portFerme(t)}` }) });
     const c2 = client(b2.port, connect(`${COPILOT}:443`));
     assert.match(await reponse(c2), /^HTTP\/1\.1 502 /);
   });
@@ -690,7 +713,17 @@ describe("proxy de sortie : configuration", () => {
     assert.equal(await sonder(serveur.port), true);
     await until(() => serveur.fermees === 1);
     assert.deepEqual(recu, [], "la sonde n'envoie rien : aucune ligne au journal");
-    assert.equal(await sonder(await portFerme()), false);
+    assert.equal(await sonder(await portFerme(t)), false);
+  });
+
+  it("port fermé des tests : port local d'une connexion encore ouverte, jamais une écoute ; refusé pendant toute l'assertion", async (t) => {
+    const { port, tenue } = await tenirPortFerme(t);
+    assert.equal(tenue.localPort, port, "le port rendu n'est pas celui que la connexion d'essai tient");
+    assert.notEqual(tenue.remotePort, port, "le port rendu est celui du serveur d'essai, qui écoute");
+    assert.equal(await sonder(port), false);
+    // Toujours tenu APRÈS l'assertion : aucune écoute éphémère d'un autre processus n'a pu le recevoir entre-temps.
+    assert.equal(tenue.destroyed, false, "connexion d'essai fermée avant la fin du test : le port redevient libre");
+    assert.equal(tenue.localPort, port);
   });
 });
 
@@ -832,7 +865,7 @@ describe("proxy de sortie : démarrage et arrêt (en mémoire)", () => {
     const serveur = await serveurTcp(t, () => undefined);
     const ok = await refuserDeDemarrer(["--sonde", "--port", String(serveur.port)], {});
     assert.deepEqual(ok.codes, [0]);
-    const ko = await refuserDeDemarrer(["--sonde", "--port", String(await portFerme())], {});
+    const ko = await refuserDeDemarrer(["--sonde", "--port", String(await portFerme(t))], {});
     assert.deepEqual(ko.codes, [1]);
   });
 

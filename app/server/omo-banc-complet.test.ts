@@ -14,7 +14,7 @@
 // Les modules du banc sont des scripts `.mjs` sans déclarations : ils sont chargés par import DYNAMIQUE et typés ici, au plus
 // juste de ce que le test lit. Aucun conteneur, aucun réseau hors de la boucle locale, aucune pause fixe.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
@@ -211,6 +211,48 @@ async function lancerBanc(args: string[]): Promise<{ code: number; sortie: strin
 
 // --- 1. Cockpit réel jetable ----------------------------------------------------------------------------------------------------
 
+/**
+ * HEAD de CE dépôt est-il lisible ? Non dans une copie sans historique : c'est la forme `git archive` que le plan it5 §8.3
+ * prescrit pour les sources des répétitions générales. Le dossier doit aussi être la racine du dépôt que git lit, jamais une
+ * copie rangée dans un autre dépôt, dont HEAD serait extrait à sa place. Même garde que les voisins qui lisent l'historique
+ * (croisements-3d-v1, croisements-3d-fusion).
+ */
+function headLisible(depot = RACINE): boolean {
+  const git = (...args: string[]): string => execFileSync("git", ["-C", depot, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  try {
+    git("rev-parse", "--verify", "HEAD^{commit}");
+    const racineGit = fs.realpathSync.native(git("rev-parse", "--show-toplevel"));
+    const racine = fs.realpathSync.native(depot);
+    return process.platform === "win32" ? racineGit.toLowerCase() === racine.toLowerCase() : racineGit === racine;
+  } catch {
+    return false;
+  }
+}
+
+describe("L21b, garde de l'historique : l'extraction réelle ne se joue que sur la racine d'un dépôt lisible", () => {
+  it("copie sans historique, ou rangée dans un autre dépôt : illisible ; dépôt avec son historique : lisible", () => {
+    const sansDepot = dossierTemporaire("sal11-l21b-sans-git-");
+    fs.mkdirSync(path.join(sansDepot, "app", "server"), { recursive: true });
+    assert.equal(headLisible(sansDepot), false, "une copie git archive n'a pas de HEAD à extraire");
+
+    // Dépôt jetable, sans la configuration git de l'utilisateur ni du système (même forme que shell-facts.test.ts).
+    const autre = dossierTemporaire("sal11-l21b-autre-depot-");
+    const configVide = path.join(dossierTemporaire("sal11-l21b-config-"), "gitconfig-vide");
+    fs.writeFileSync(configVide, "");
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: configVide, GIT_TERMINAL_PROMPT: "0" };
+    const git = (...args: string[]) => execFileSync("git", ["-C", autre, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    git("init", "--quiet");
+    git("-c", "user.name=essai", "-c", "user.email=essai@exemple.invalid", "commit", "--quiet", "--allow-empty", "-m", "essai");
+    assert.equal(headLisible(autre), true, "la racine d'un dépôt avec un commit est lisible");
+    const rangee = path.join(autre, "copie-sans-historique");
+    fs.mkdirSync(rangee);
+    assert.equal(headLisible(rangee), false, "le HEAD d'un AUTRE dépôt serait extrait à la place de la copie");
+
+    // Ce dépôt : lisible dès que son historique est là (copie de travail ou worktree), jamais sauté par erreur.
+    if (fs.existsSync(path.join(RACINE, ".git"))) assert.equal(headLisible(), true, "HEAD du dépôt illisible alors que .git est présent");
+  });
+});
+
 describe("L21b, cockpit réel jetable : SALLE_OUVERTE basculée dans la copie git archive SEULEMENT", () => {
   it("la bascule exige exactement UNE déclaration ; le fichier du dépôt en porte une, fausse", () => {
     const depot = fs.readFileSync(path.join(RACINE, ...preparer.FICHIER_SALLE_OUVERTE.split("/")), "utf8");
@@ -224,20 +266,24 @@ describe("L21b, cockpit réel jetable : SALLE_OUVERTE basculée dans la copie gi
     assert.match(lireBanc("cockpit/preparer.mjs"), /remplacements !== 1\) \{\s*throw new Error/, "preparerCockpit refuse une image bâtie sur zéro ou deux bascules");
   });
 
-  it("extraction réelle de HEAD (sans construction) : la copie porte true, le dépôt reste à false", { timeout: 180_000 }, async () => {
-    const cible = path.join(dossierTemporaire("sal11-l21b-copie-"), "cockpit-src");
-    const r = await preparer.preparerCockpit({ racineDepot: RACINE, ref: "HEAD", cible, construire: false });
-    assert.equal(r.construite, false);
-    assert.match(r.sha, /^[0-9a-f]{40}$/);
-    assert.match(fs.readFileSync(path.join(cible, "app", "server", "wiring-11.ts"), "utf8"), /export const SALLE_OUVERTE = true;/);
-    const depot = fs.readFileSync(path.join(RACINE, "app", "server", "wiring-11.ts"), "utf8");
-    assert.match(depot, /export const SALLE_OUVERTE = false;/, "le dépôt n'est JAMAIS basculé");
-    assert.doesNotMatch(depot, /SALLE_OUVERTE = true/);
-    // Le tar intermédiaire ne survit pas, et git archive a suivi .gitattributes (scripts de l'image en LF).
-    assert.equal(fs.existsSync(`${cible}.tar`), false);
-    assert.equal(fs.readFileSync(path.join(cible, "docker", "opencode-omo", "supervisor.sh"), "utf8").includes("\r\n"), false);
-    assert.equal(typeof r.activation.livree, "boolean");
-  });
+  it(
+    "extraction réelle de HEAD (sans construction) : la copie porte true, le dépôt reste à false",
+    { timeout: 180_000, skip: headLisible() ? false : "HEAD illisible ici (copie sans historique, forme git archive des répétitions générales)" },
+    async () => {
+      const cible = path.join(dossierTemporaire("sal11-l21b-copie-"), "cockpit-src");
+      const r = await preparer.preparerCockpit({ racineDepot: RACINE, ref: "HEAD", cible, construire: false });
+      assert.equal(r.construite, false);
+      assert.match(r.sha, /^[0-9a-f]{40}$/);
+      assert.match(fs.readFileSync(path.join(cible, "app", "server", "wiring-11.ts"), "utf8"), /export const SALLE_OUVERTE = true;/);
+      const depot = fs.readFileSync(path.join(RACINE, "app", "server", "wiring-11.ts"), "utf8");
+      assert.match(depot, /export const SALLE_OUVERTE = false;/, "le dépôt n'est JAMAIS basculé");
+      assert.doesNotMatch(depot, /SALLE_OUVERTE = true/);
+      // Le tar intermédiaire ne survit pas, et git archive a suivi .gitattributes (scripts de l'image en LF).
+      assert.equal(fs.existsSync(`${cible}.tar`), false);
+      assert.equal(fs.readFileSync(path.join(cible, "docker", "opencode-omo", "supervisor.sh"), "utf8").includes("\r\n"), false);
+      assert.equal(typeof r.activation.livree, "boolean");
+    },
+  );
 
   it("une référence qui ressemble à une option (ou qui n'est pas un nom) est refusée AVANT tout appel à git", async () => {
     for (const bonne of ["HEAD", "HEAD~1", "chantier/1.1-salle", "7e5f9c4", "v1.0.5", "tmp/sal-L21b", "HEAD^"]) assert.equal(preparer.refAcceptee(bonne), true, bonne);

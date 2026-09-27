@@ -419,6 +419,8 @@ export async function preparerPlan(options) {
     schema,
     // Réglage d'animations du poste SIMULÉ pour le navigateur (« --poste-mouvement ») ; null : le vrai réglage du poste.
     posteMouvement,
+    // Côté coupé de l'interrupteur COCKPIT_AUTONOMY (décision n° 13, « --autonomie-coupee ») : écrit dans le fichier du banc.
+    autonomieCoupee: options.autonomieCoupee === true,
     id,
     projet,
     salle,
@@ -455,6 +457,8 @@ const CLES_ENVIRONNEMENT = new Set(["OPENCODE_SERVER_PASSWORD", "OPENCODE_OMO_PA
  * « --salle » (L26c) : COCKPIT_OMO=on, le NOM factice de l'image de la salle (jamais une image qui existe), le mot de passe de la
  * salle factice, son adresse et l'autorité jetable du faux catalogue ; sans « --salle », rien de la salle n'est allumé et les
  * variables de la surcharge valent ce que le produit vaut (adresse `opencode-omo`, `./certs`).
+ * « --autonomie-coupee » : COCKPIT_AUTONOMY=off, écrit ICI et jamais pris du shell (environnementDocker retire toute variable
+ * COCKPIT_* de l'environnement de docker, R105b) ; sans l'option, la ligne est absente et le compose sert « on ».
  */
 export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, contexte, motDePasseSalle = null, maintenant = new Date() }) {
   const acces =
@@ -491,6 +495,7 @@ export function lignesEnvironnement(plan, { jeton, motDePasse, jetonControle, co
     `E2E_OMO_SOURCE=${path.join(plan.dossier, "omo-source")}`,
     `E2E_PORT_SALLE=${plan.portSalle}`,
     ...(plan.salle ? ["COCKPIT_OMO=on", `COCKPIT_OMO_IMAGE=${plan.imageSalleFactice}`, `OPENCODE_OMO_PASSWORD=${motDePasseSalle}`] : []),
+    ...(plan.autonomieCoupee === true ? ["COCKPIT_AUTONOMY=off"] : []),
   ];
 }
 
@@ -935,6 +940,9 @@ export async function executer(options) {
 
   const acces = plan.schema === "https" ? "HTTPS épinglé" : "HTTP explicite (--http)";
   console.log(`Banc e2e : mode ${plan.mode}${plan.salle ? " avec la salle factice" : ""}, ${acces}, projet ${plan.projet}, port 127.0.0.1:${plan.portCockpit}, ${scenarios.length} scénario(s).`);
+  if (plan.autonomieCoupee) {
+    console.log("Autonomie coupée (--autonomie-coupee) : COCKPIT_AUTONOMY=off est écrit dans le fichier d'environnement du banc ; seul it2-api-interrupteur a un sens sur cette pile.");
+  }
   if (plan.dryRun) {
     console.log("À blanc : les commandes ci-dessous ne sont pas exécutées.");
     for (const sous of [
@@ -1322,6 +1330,22 @@ export async function verifierGardes() {
     () => preparerPlan({ mode: "faux", schema: "https", prefixe: "it11-e2e", tag: "essai", posteMouvement: "rapide" }),
     "réglage de mouvement du poste inconnu",
   );
+  await verifier("seconde connexion de la 3D fermée : l'onglet du banc repose son réglage, que la garde relit (répétition générale F1)", () => verifierFermetureSeconde());
+
+  // Interrupteur COCKPIT_AUTONOMY (décision n° 13) : le côté coupé passe par le fichier du banc, jamais par le shell (R105b).
+  await verifier("--autonomie-coupee : COCKPIT_AUTONOMY=off écrit dans le fichier du banc, jamais pris du shell (décision n° 13)", async () => {
+    if (analyserArguments([]).autonomieCoupee !== false) throw new Error("autonomie coupée sans l'option");
+    if (analyserArguments(["--faux", "--autonomie-coupee", "--scenarios", "it2-api-interrupteur"]).autonomieCoupee !== true) throw new Error("option sans effet");
+    const plan = await preparerPlan({ mode: "faux", prefixe: "it11-e2e", tag: "essai", id: "essai", autonomieCoupee: true, fichierEnv: path.join(DOSSIER_BANC, "it11-e2e-essai-autonomie", "b.env") });
+    if (plan.autonomieCoupee !== true) throw new Error("option perdue entre les arguments et le plan");
+    const valeurs = { jeton: "essai", motDePasse: "essai", jetonControle: "essai", contexte: "contexte" };
+    const coupee = lignesEnvironnement(plan, valeurs).filter((ligne) => ligne.startsWith("COCKPIT_AUTONOMY="));
+    if (coupee.length !== 1 || coupee[0] !== "COCKPIT_AUTONOMY=off") throw new Error(`avec l'option : ${coupee.join(", ") || "aucune ligne"}`);
+    const allumee = lignesEnvironnement({ ...plan, autonomieCoupee: false }, valeurs).filter((ligne) => ligne.startsWith("COCKPIT_AUTONOMY="));
+    if (allumee.length !== 0) throw new Error(`sans l'option : ${allumee.join(", ")} (le compose sert « on » d'office)`);
+    // La variable du shell ne passe jamais à docker : sans l'option, un COCKPIT_AUTONOMY=off du shell ne coupe rien.
+    if ("COCKPIT_AUTONOMY" in environnementDocker({ COCKPIT_AUTONOMY: "off", PATH: "valeur-du-shell" })) throw new Error("COCKPIT_AUTONOMY du shell gardé pour docker");
+  });
 
   await verifier("verrou tenu : le message donne le processus et la marche à suivre", () => {
     rendreVerrou(verrouEssai);
@@ -1668,6 +1692,97 @@ async function verifierMediasOnglet(essai) {
 }
 
 /**
+ * Seconde connexion de la 3D (e2e/lib/webgl.mjs, répétition générale F1), sur une page SIMULÉE, sans navigateur : chaque session
+ * pose ses surcharges de média sur la page, et une session qui se détache retire les siennes, comme Chromium ; la page retombe
+ * alors sur le réglage du poste. preparer3d puis la fermeture de sa connexion laissent la page au réglage fixé (« no-preference »
+ * d'office sur un poste en animations réduites, « reduce » demandé sur un poste normal, réglage changé en cours de scénario), et
+ * la garde de R106-b l'accepte ; une seconde fermeture ne renvoie rien. Contre-épreuve : la connexion détachée sans la fermeture
+ * du banc laisse la page au réglage du poste, et la garde refuse (c'était le défaut : 5 scénarios it3-* sur 6).
+ */
+async function verifierFermetureSeconde() {
+  const { preparer3d } = await import(pathToFileURL(path.join(RACINE, "e2e", "lib", "webgl.mjs")).href);
+  const essai = async (poste, { options = {}, changer = null, fermer = true } = {}) => {
+    const surcharges = new Map();
+    const poses = new Map();
+    const emuler = (session, features) => {
+      for (const nom of poses.get(session) ?? []) surcharges.delete(nom);
+      poses.set(session, features.map((f) => f.name));
+      for (const f of features) surcharges.set(f.name, f.value);
+    };
+    const detacher = (session) => {
+      for (const nom of poses.get(session) ?? []) surcharges.delete(nom);
+      poses.delete(session);
+    };
+    const pageDit = () => surcharges.get("prefers-reduced-motion") ?? poste;
+    const ecouteurs = new Set();
+    let mediasDuBanc = 0;
+    const client = {
+      envoyer: async (methode, params = {}, sessionId = null) => {
+        if (methode === "Emulation.setEmulatedMedia") {
+          mediasDuBanc++;
+          emuler(sessionId, params.features ?? []);
+        }
+        if (methode === "Page.navigate") {
+          setImmediate(() => {
+            for (const fn of ecouteurs) fn({ sessionId, method: "Page.loadEventFired" });
+          });
+        }
+        if (methode === "Runtime.evaluate") return { result: { value: params.expression === EXPR_MOUVEMENT ? pageDit() : true } };
+        return {};
+      },
+      ecouter: (fn) => {
+        ecouteurs.add(fn);
+        return () => ecouteurs.delete(fn);
+      },
+    };
+    const onglet = await creerOnglet(client, "session-banc", "cible-essai");
+    let detachee = false;
+    const ouvrir = async () => ({
+      envoyer: async (methode, params = {}) => {
+        if (methode === "Emulation.setEmulatedMedia") emuler("session-seconde", params.features ?? []);
+        return {};
+      },
+      ecouter: () => () => {},
+      // modeBanc : aucun contexte webgl2, rien à simuler (aucune injection de moteur).
+      evaluer: async () => ({ avecDrapeau: false, webgl2: false, moteur: null }),
+      injecter: async () => "injection-essai",
+      fermer: async () => {
+        detachee = true;
+        detacher("session-seconde");
+      },
+    });
+    onglet.suivreMouvement();
+    const contexte = await preparer3d({ navigateur: onglet, url: "https://127.0.0.1:1" }, options, { ouvrir });
+    if (changer !== null) await contexte.mouvement(changer);
+    await onglet.evaluer("document.title");
+    if (fermer) {
+      await contexte.cdp.fermer();
+      const envois = mediasDuBanc;
+      await contexte.cdp.fermer();
+      if (mediasDuBanc !== envois) throw new Error("seconde fermeture : réglage renvoyé une seconde fois");
+      if (!detachee) throw new Error("connexion jamais détachée");
+    } else {
+      detacher("session-seconde");
+    }
+    const suivi = onglet.finSuiviMouvement();
+    return { verdict: verdictMouvement(suivi, pageDit()), page: pageDit() };
+  };
+  const cas = [
+    ["poste en animations réduites, réglage d'office", "reduce", {}, "no-preference"],
+    ["poste normal, mouvement réduit demandé", "no-preference", { options: { mouvementReduit: true } }, "reduce"],
+    ["poste en animations réduites, réglage levé en cours de scénario", "reduce", { options: { mouvementReduit: true }, changer: "no-preference" }, "no-preference"],
+  ];
+  for (const [nom, poste, reglages, attendu] of cas) {
+    const { verdict, page } = await essai(poste, reglages);
+    if (verdict !== null || page !== attendu) throw new Error(`${nom} : page en ${page} au lieu de ${attendu}${verdict === null ? "" : ` (${verdict})`}`);
+  }
+  const brute = await essai("reduce", { fermer: false });
+  if (brute.page !== "reduce" || !String(brute.verdict).includes("la page rapporte")) {
+    throw new Error(`contre-épreuve : la page simulée ne retombe pas sur le réglage du poste (${brute.page}, ${brute.verdict ?? "accepté"})`);
+  }
+}
+
+/**
  * Certificat PUBLIC d'essai des gardes (ECDSA P-256, SAN IP:127.0.0.1 et DNS:localhost, valable jusqu'au 2046-09-14).
  * Sa clé a été jetée à sa création : il ne sert qu'aux contre-vérifications, jamais à servir du TLS.
  */
@@ -1802,7 +1917,7 @@ async function verifierGardesHttps(verifier, refuse) {
 // --- Arguments --------------------------------------------------------------------------------
 
 export function analyserArguments(argv) {
-  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null, salle: false };
+  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null, salle: false, autonomieCoupee: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const suivant = () => {
@@ -1827,6 +1942,8 @@ export function analyserArguments(argv) {
     else if (arg === "--garder-pile") options.garderPile = true;
     // Réglage d'animations du poste simulé pour le navigateur (R106-b) : « reduce » ou « no-preference ».
     else if (arg === "--poste-mouvement") options.posteMouvement = suivant();
+    // Côté coupé de l'interrupteur (décision n° 13) : COCKPIT_AUTONOMY=off dans le fichier du banc, jamais depuis le shell.
+    else if (arg === "--autonomie-coupee") options.autonomieCoupee = true;
     else refuser(`option inconnue : « ${arg} ».`);
   }
   if (!options.tag) options.tag = "local";
