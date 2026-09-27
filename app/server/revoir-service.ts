@@ -3,8 +3,10 @@
 // conversation, titre masqué. Lecture seule en base : aucune requête à opencode, aucune écriture, aucune ligne `usage`, requêtes
 // SQL paramétrées.
 // - `lire(rootId, mode)` : ligne `sessions` de la racine (existence, instance, titre), faits par `ports.facts.since(rootId, 0)`,
-//   sessions occupées par `occupeesSelonFaits`, dernière ligne `autonomy_requests` de la racine (`ended_at`), décision par
-//   `revoirAcces` (L28a) ; accès donné : RevoirResponse avec `termine` et le titre passé par `redactSecrets`.
+//   sessions occupées par `occupeesSelonFaits`, dernière demande de la racine (ligne `autonomy_requests`, `ended_at` ; pour une
+//   racine de la salle, aussi sa ligne « omo » de conversation_autonomy et la demande active du port omoActivation,
+//   salle-demande.ts), décision par `revoirAcces` (L28a) ; accès donné : RevoirResponse avec `termine` et le titre passé par
+//   `redactSecrets`.
 // - `etat(rootId, mode)` : MÊME décision, sans rendre les faits. Ils ne sont lus que lorsque la décision en dépend (racine de la
 //   salle en mode Simple) ; sinon `sessionsOccupees` vaut null, c'est-à-dire « fin inconnue », donc un refus si la règle changeait
 //   un jour : fermé en cas de doute, jamais ouvert par défaut. `etat` rend AUSSI l'instance de la racine (null : racine inconnue) :
@@ -17,11 +19,16 @@
 //   les deux disent « omo », ou `sessions` seule le dit (racine de la salle que le cockpit n'a pas ouverte) → salle ; `omo_rooms`
 //   connaît la racine alors que `sessions` dit « principale » (désaccord), ou `omo_rooms` est illisible → instance inconnue, traitée
 //   comme la salle, comme une instance illisible (fermé en cas de doute, jamais ouvert par défaut) ;
-// - « terminée » garde la règle de D-3d-09 (faits de l'arbre, dernière ligne `autonomy_requests`) : le routeur d'instances
-//   (instances.omo) n'expose aucun état synchrone des sessions de la salle (client, portillon et processeur seulement), et les
-//   ports de « Revoir » sont synchrones (contracts-3d.ts). Aucune requête à opencode n'est donc ajoutée ici.
+// - « terminée » garde la règle de D-3d-09 (faits de l'arbre, dernière demande finie) : le routeur d'instances (instances.omo)
+//   n'expose aucun état synchrone des sessions de la salle (client, portillon et processeur seulement), et les ports de « Revoir »
+//   sont synchrones (contracts-3d.ts). Aucune requête à opencode n'est donc ajoutée ici.
+// - répétition générale « 3s » : la salle n'écrit JAMAIS `autonomy_requests` (omo-activation.ts) ; sa demande se lit dans la ligne
+//   « omo » de conversation_autonomy et dans la demande active du port omoActivation (salle-demande.ts, fermé en cas de doute).
+//   Sans cette lecture, une demande finie de la salle restait refusée en Simple (« salle-fin-inconnue »). Une racine de l'instance
+//   principale garde la seule ligne `autonomy_requests`.
 import type { RevoirPort, RevoirResult, Salle3dDeps } from "./contracts-3d.ts";
 import { redactSecrets } from "./redact.ts";
+import { demandeDeLaSalle } from "./salle-demande.ts";
 import { sessionRole } from "./shared/activity-facts.ts";
 import type { FactsResponse, SessionInstance } from "./shared/activity-types.ts";
 import type { NeonMode } from "./shared/neon-scene.ts";
@@ -96,7 +103,9 @@ function decider(deps: Salle3dDeps, rootId: string, mode: NeonMode, avecFaits: b
   const faitsNecessaires = avecFaits || (racine.instance !== "principale" && mode !== "avance");
   const faits = faitsNecessaires ? deps.ports.facts.since(rootId, 0) : null;
   const occupees = faits === null ? null : occupeesSelonFaits(faits.facts, faits.partial);
-  const demande = derniereDemande(deps, rootId);
+  // Racine de la salle (ou d'instance illisible) : sa demande est aussi lue là où la salle l'écrit (répétition générale « 3s »).
+  const derniereLigne = derniereDemande(deps, rootId);
+  const demande = racine.instance === "principale" ? derniereLigne : demandeDeLaSalle(deps, rootId, derniereLigne);
   const acces = revoirAcces({ existe: true, instance: racine.instance, mode, sessionsOccupees: occupees, derniereDemande: demande });
   return { racine, faits, occupees, demande, acces };
 }

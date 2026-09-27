@@ -1053,6 +1053,43 @@ describe("L22c : redémarrage du cockpit pendant une demande", () => {
     s.service().endRequest(s.racine, "terminee");
     assert.deepEqual([ligneOmo(s)?.demande, ligneOmo(s)?.retourCause], [null, null]);
   });
+
+  // Croisement de la répétition générale « 3s » (Q6, D-3d-09 ; revoir-service.ts, salle-demande.ts) : la demande que CE service
+  // écrit (ligne « omo », demande active) est celle que « Revoir » lit en mode Simple. La salle n'écrit jamais `autonomy_requests` :
+  // avant la correction, « Revoir » restait refusé (« salle-fin-inconnue ») après la fin de la demande.
+  it("croisement 3s : « Revoir » en Simple suit la demande du service — refusé pendant, permis après endRequest et après une demande « interrompue » ; aucune ligne `autonomy_requests`", async (t) => {
+    const s = await salle(t);
+    const etatRevoir = async () => {
+      const lu = await s.h.call("GET", `/api/revoir/${s.racine}?etat=1`, { headers: s.h.headers.authed });
+      assert.equal(lu.status, 200, lu.body);
+      return lu.json<{ rootId: string; acces: boolean; raison: string | null; instance: string | null }>();
+    };
+    // Lecture en Simple, puis retour en Avancé (seul mode où la salle s'active).
+    const enSimple = async <T>(lire: () => Promise<T>): Promise<T> => {
+      s.h.settings.update({ ui: { mode: "simple" } });
+      try {
+        return await lire();
+      } finally {
+        s.h.settings.update({ ui: { mode: "avance" } });
+      }
+    };
+    assert.equal((await activer(s, { choix: "omo", plafondUsd: "1" })).status, 200);
+    assert.equal((await envoyer(s)).status, 204);
+    assert.deepEqual(await enSimple(etatRevoir), { rootId: s.racine, acces: false, raison: "salle-demande-en-cours", instance: "omo" });
+    s.service().endRequest(s.racine, "terminee");
+    assert.deepEqual(await enSimple(etatRevoir), { rootId: s.racine, acces: true, raison: null, instance: "omo" });
+    const lecture = await enSimple(() => s.h.call("GET", `/api/revoir/${s.racine}`, { headers: s.h.headers.authed }));
+    assert.equal(lecture.status, 200, lecture.body);
+    assert.equal(lecture.json<{ termine: boolean }>().termine, true);
+
+    // Nouvelle demande, puis redémarrage du cockpit pendant qu'elle court : dite « interrompue » au démarrage, donc finie.
+    assert.equal((await activer(s, { choix: "omo", plafondUsd: "1" })).status, 200);
+    assert.equal((await envoyer(s)).status, 204);
+    assert.equal((await enSimple(etatRevoir)).raison, "salle-demande-en-cours");
+    await s.redemarrer();
+    assert.equal((await enSimple(etatRevoir)).acces, true);
+    assert.equal((s.h.db.prepare("SELECT COUNT(*) AS n FROM autonomy_requests").get() as { n: number }).n, 0);
+  });
 });
 
 // --- Installation (dépôt livré : salle coupée) ----------------------------------------------------------------------------

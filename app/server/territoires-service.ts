@@ -23,11 +23,16 @@
 //   rend `travaillent` null (« état non vérifiable », jamais 0) ;
 // - salle coupée (`instances.omo` null ou absent : cas de production tant que SALLE_OUVERTE est faux) : rien ne change,
 //   compteurs par les faits et `statutVerifie` faux ;
-// - en Simple : AUCUNE requête, ni au client principal ni à celui de la salle, pour une racine de la salle (D-3d-14).
+// - en Simple : AUCUNE requête, ni au client principal ni à celui de la salle, pour une racine de la salle (D-3d-14) ;
+// - demande terminée (revoirAcces, D-3d-09 ; répétition générale « 3s ») : la salle n'écrit JAMAIS `autonomy_requests`
+//   (omo-activation.ts) ; sa demande se lit AUSSI dans la ligne « omo » de conversation_autonomy et dans la demande active du port
+//   omoActivation (salle-demande.ts, lecture en base et en mémoire, fermée en cas de doute). Sans elle, le zoom 1 ne listait jamais
+//   en Simple une conversation terminée de la salle.
 // Titres passés par redactSecrets. Requêtes SQL paramétrées seulement ; identifiants validés par shared/ids.ts.
 import type { Cockpit11 } from "./contracts-11.ts";
 import type { Salle3dDeps, TerritoiresPort } from "./contracts-3d.ts";
 import { redactSecrets } from "./redact.ts";
+import { demandeDeLaSalle } from "./salle-demande.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
 import type { NeonMode } from "./shared/neon-scene.ts";
@@ -211,7 +216,10 @@ export function createTerritoiresPort(deps: TerritoiresDeps, options: Territoire
     }
   };
 
-  /** Dernière ligne `autonomy_requests` de la racine (revoirAcces) ; null : aucune. */
+  /**
+   * Dernière ligne `autonomy_requests` de la racine ; null : aucune. Une racine de la salle y ajoute sa ligne « omo » et sa demande
+   * active (`demandeDeLaSalle`, plus bas) : la salle n'écrit jamais `autonomy_requests` (répétition générale « 3s »).
+   */
   // Égalité `root_id = ?` gardée à dessein, et non TREE_SQL comme les attentes : une demande d'autonomie s'ouvre toujours sur une
   // VRAIE racine (l'utilisateur la demande depuis sa conversation), jamais sur une racine provisoire, et la salle veut la dernière
   // demande de cette racine-là, pas la plus récente de tout l'arbre. Écart de convention avec routes-activity.ts, assumé ici.
@@ -281,7 +289,8 @@ export function createTerritoiresPort(deps: TerritoiresDeps, options: Territoire
     const conversationsSalle: Array<{ directory: string; conversation: ConversationTerritoire }> = [];
     for (const racine of racinesSalle) {
       const occupees = occupeesDeLaSalle(racine.id);
-      const acces = revoirAcces({ existe: true, instance: racine.instance, mode, sessionsOccupees: occupees, derniereDemande: derniereDemande(racine.id) });
+      const demande = demandeDeLaSalle(deps, racine.id, derniereDemande(racine.id));
+      const acces = revoirAcces({ existe: true, instance: racine.instance, mode, sessionsOccupees: occupees, derniereDemande: demande });
       // D-3d-14 : en Simple, seules les demandes terminées sont listées.
       if (simple && !acces.ok) continue;
       const attendent = simple ? 0 : attentes(racine.id);

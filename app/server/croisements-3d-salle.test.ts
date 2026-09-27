@@ -8,8 +8,12 @@
 //    envoi et réponse d'autorisation refusés dans les deux modes. TÉMOIN Q6 (Avancé, salle ouverte → envoi relayé) : EN ATTENTE,
 //    la porte du montage /api/omo/oc/* lit la CONSTANTE SALLE_OUVERTE (http.ts, que la 3D ne modifie jamais) et le harnais n'a aucun
 //    moyen de l'ouvrir ; le test qui le constate échoue le jour où un moyen existe. Jamais remplacé par le seul 403.
+//    Répétition générale « 3s » : la demande de la salle est posée comme la SALLE l'écrit (ligne « omo » de conversation_autonomy,
+//    par le magasin réel), jamais par une ligne `autonomy_requests` fabriquée, que la salle n'écrit pas.
 // 3. P11 : les territoires lisent l'état de la salle par SON instance en Avancé, rien en Simple, jamais par le client principal ; une
 //    consigne n'est jamais croisée entre les instances.
+// 3 bis. Fin de la demande de la salle (salle-demande.ts) : ligne « omo », demande active du port omoActivation et dernière ligne
+//    `autonomy_requests`, fermée en cas de doute (aucune demande connue, ligne illisible, port qui lève).
 // 4. Enceinte : le texte du zoom 1 est le début du bandeau permanent de la salle, jusqu'à « avant exécution ».
 // 5. Fixtures de la salle (omo-jp1-jp7.jsonl, omo-banc-m20/m21/r16.jsonl) : « différé = direct » du plan 3D ; P12 ; carnet dessiné
 //    et libéré par le graphe three.js ; vue Simple de « Revoir » par roleDeAgent, sans nom d'agent ; légendes (tâche de fond
@@ -22,6 +26,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { BufferGeometry, InstancedMesh, LineBasicMaterial, MeshBasicMaterial, ShaderMaterial, SpriteMaterial, Texture } from "three";
 import { creerGraphe } from "../web/pages/salle-controle/three/graphe.ts";
+import { ConversationAutonomyStore } from "./conversation-autonomy.ts";
 import { refusMontageSalle } from "./oc-proxy.ts";
 import { EventMemory, type FactContext, FactDeduper, type FactEvent, factsFromEvent, type FactSession } from "./shared/activity-facts.ts";
 import type { ActivityFact, SessionInstance } from "./shared/activity-types.ts";
@@ -35,7 +40,7 @@ import { roleDeAgent } from "./shared/omo-roles.ts";
 import { TEXTES as OMO_TEXTES } from "./shared/omo-room-texts.ts";
 import { TEXTES as REVOIR } from "./shared/revoir-texts.ts";
 import { TEXTES as SALLE3D } from "./shared/salle3d-texts.ts";
-import type { Plan3d, RevoirConsigneResponse, RevoirResponse, TerritoiresResponse } from "./shared/salle3d-types.ts";
+import type { Plan3d, RevoirConsigneResponse, RevoirEtatResponse, RevoirResponse, TerritoiresResponse } from "./shared/salle3d-types.ts";
 import { modeSceneRevoir, nomsSimples, vueSimple } from "./shared/vue-simple.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import { readCapture } from "./test-support/fake-opencode.ts";
@@ -126,10 +131,31 @@ function poserRacine(h: CockpitHarness, rootId: string, instance: SessionInstanc
   if (instance === "omo") h.db.prepare("INSERT INTO omo_rooms (root_id, projet, created_at) VALUES (?, 'proj', ?)").run(rootId, maintenant);
 }
 
+/**
+ * Ligne `autonomy_requests` (règle écrite de D-3d-09). La salle n'en écrit JAMAIS (omo-activation.ts, L22c) : ces lignes ne servent
+ * qu'aux cas « fermé en cas de doute » ; une demande de la salle se pose avec `poserDemandeSalle` (répétition générale « 3s »).
+ */
 function poserDemande(h: CockpitHarness, id: string, rootId: string, finie: boolean): void {
   h.db
     .prepare("INSERT INTO autonomy_requests (id, root_id, choix, plafonds, started_at, ended_at) VALUES (?, ?, 'autonome', '{}', 100, ?)")
     .run(id, rootId, finie ? 200 : null);
+}
+
+/**
+ * Demande de la salle telle que la SALLE l'écrit (omo-activation.ts, L22c), par le magasin réel : ligne « omo » de
+ * conversation_autonomy, `demande` = {id, debut} dès l'envoi confirmé, null à la fin (endRequest) ou au démarrage qui la dit
+ * « interrompue ». Correction de la répétition générale « 3s » : les tests de L3s-a fabriquaient une ligne `autonomy_requests`
+ * « autonome » que la salle n'écrit jamais, d'où un vert que le banc démentait (« salle-fin-inconnue » après la fin de la demande).
+ */
+function poserDemandeSalle(h: CockpitHarness, rootId: string, enCours: boolean, retourCause: "interrompue" | null = null): void {
+  new ConversationAutonomyStore(h.db).writeOmo(rootId, { plafondUsd: "0,50", demande: enCours ? { id: "req_l3sa_salle", debut: 100 } : null, depuis: 100, retourCause });
+}
+
+/** Accès à « Revoir » (état seul) d'une racine, dans le mode en vigueur. */
+async function etatRevoir(h: CockpitHarness, rootId: string): Promise<RevoirEtatResponse> {
+  const lu = await h.call("GET", `/api/revoir/${rootId}?etat=1`, { headers: h.headers.authed });
+  assert.equal(lu.status, 200, lu.body);
+  return lu.json<RevoirEtatResponse>();
 }
 
 /** Partie `task` à l'état `running`, émise sur l'instance voulue (h.emitOmo : processeur réel de la salle). */
@@ -171,7 +197,8 @@ describe("croisements 3d-salle : Q6 sur le cockpit réel (Revoir, consignes de l
     const h = await startCockpit(t, { modules: "tous", omo: true });
     assert.ok(h.omo);
     poserRacine(h, OMO_RACINE, "omo");
-    poserDemande(h, "aur_l3sa_salle", OMO_RACINE, true);
+    // Demande finie, telle que la salle l'écrit (ligne « omo ») : AUCUNE ligne `autonomy_requests` (répétition générale « 3s »).
+    poserDemandeSalle(h, OMO_RACINE, false);
     h.cockpit.c11.ports.facts.append(omoFaits());
     // Consigne confiée dans la salle, vue par le processeur de la SALLE : gardée sous la racine de la salle.
     const prompt = "[synthétique] consigne confiée par l'orchestrateur de la salle à un assistant";
@@ -197,8 +224,9 @@ describe("croisements 3d-salle : Q6 sur le cockpit réel (Revoir, consignes de l
       [[OMO_RACINE, true]],
     );
 
-    // Demande en cours : « Revoir » et la consigne se ferment ensemble, et le zoom 1 ne propose plus l'entrée.
-    h.db.prepare("UPDATE autonomy_requests SET ended_at = NULL WHERE id = 'aur_l3sa_salle'").run();
+    // Demande en cours (envoi confirmé, ligne « omo » écrite avant que la demande soit active) : « Revoir » et la consigne se
+    // ferment ensemble, et le zoom 1 ne propose plus l'entrée.
+    poserDemandeSalle(h, OMO_RACINE, true);
     for (const route of [`/api/revoir/${OMO_RACINE}`, `/api/revoir/${OMO_RACINE}/consignes/call_l3sa_q6`]) {
       const refus = await h.call("GET", route, { headers: h.headers.authed });
       assert.equal(refus.status, 403, `${route} : ${refus.body}`);
@@ -272,7 +300,7 @@ describe("croisements 3d-salle : Q6 sur le cockpit réel (Revoir, consignes de l
     const h = await startCockpit(t, { modules: "tous", omo: true, settings: { ui: { mode: "avance" } } });
     assert.ok(h.omo);
     poserRacine(h, OMO_RACINE, "omo");
-    poserDemande(h, "aur_l3sa_terr", OMO_RACINE, false);
+    poserDemandeSalle(h, OMO_RACINE, true);
     const avantPrincipale = h.fake.requests.length;
     const avantSalle = h.omo.fake.requests.length;
     const vue = (await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed })).json<TerritoiresResponse>();
@@ -280,6 +308,90 @@ describe("croisements 3d-salle : Q6 sur le cockpit réel (Revoir, consignes de l
     assert.deepEqual(requetes(h.fake.requests, avantPrincipale), [], "P11");
     assert.equal(vue.salle?.projets[0]?.conversations[0]?.travaillent, 0);
     assert.equal(vue.statutVerifie, true);
+  });
+});
+
+// --- 3 bis. Fin de la demande de la salle (répétition générale « 3s ») --------------------------------------------------------------
+// La salle tient sa demande dans la ligne « omo » de conversation_autonomy et dans le port omoActivation (activeRequest), jamais dans
+// `autonomy_requests` (omo-activation.ts). « Revoir », ses consignes gardées et le zoom 1 lisent ces sources, fermés en cas de doute.
+
+describe("croisements 3d-salle : fin de la demande de la salle, lue là où la salle l'écrit (répétition générale « 3s »)", () => {
+  it("Simple : sans AUCUNE ligne `autonomy_requests`, demande finie (ligne « omo », fin ou « interrompue ») → « Revoir » permis, consignes et zoom 1 compris ; en cours → « salle-demande-en-cours »", async (t) => {
+    const h = await startCockpit(t, { modules: "tous", omo: true });
+    assert.ok(h.omo);
+    poserRacine(h, OMO_RACINE, "omo");
+    h.cockpit.c11.ports.facts.append(omoFaits());
+    await h.emitOmo({ directory: "/workspace/proj", payload: { id: "evt_l3sa_fin", ...tache(OMO_RACINE, "call_l3sa_fin", "ses_jp_junior", "[synthétique] consigne de la salle") } });
+    const nAutonomie = () => (h.db.prepare("SELECT COUNT(*) AS n FROM autonomy_requests").get() as { n: number }).n;
+    const conversationsDuZoom1 = async () =>
+      ((await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed })).json<TerritoiresResponse>().salle?.projets ?? []).flatMap((p) =>
+        p.conversations.map((c) => [c.rootId, c.revoir]),
+      );
+
+    // Envoi confirmé : la salle écrit sa ligne « omo » avec la demande.
+    poserDemandeSalle(h, OMO_RACINE, true);
+    assert.deepEqual(await etatRevoir(h, OMO_RACINE), { rootId: OMO_RACINE, acces: false, raison: "salle-demande-en-cours", instance: "omo" });
+    assert.deepEqual(await conversationsDuZoom1(), []);
+
+    // Fin de la demande (endRequest) : même ligne, demande effacée.
+    poserDemandeSalle(h, OMO_RACINE, false);
+    assert.deepEqual(await etatRevoir(h, OMO_RACINE), { rootId: OMO_RACINE, acces: true, raison: null, instance: "omo" });
+    const revoir = await h.call("GET", `/api/revoir/${OMO_RACINE}`, { headers: h.headers.authed });
+    assert.equal(revoir.status, 200, revoir.body);
+    assert.equal(revoir.json<RevoirResponse>().termine, true);
+    const consigne = await h.call("GET", `/api/revoir/${OMO_RACINE}/consignes/call_l3sa_fin`, { headers: h.headers.authed });
+    assert.equal(consigne.status, 200, consigne.body);
+    assert.deepEqual(await conversationsDuZoom1(), [[OMO_RACINE, true]]);
+
+    // Demande dite « interrompue » par le démarrage suivant (interruptSalleAtStartup) : finie aussi.
+    poserDemandeSalle(h, OMO_RACINE, true);
+    poserDemandeSalle(h, OMO_RACINE, false, "interrompue");
+    assert.equal((await etatRevoir(h, OMO_RACINE)).acces, true);
+    assert.equal(nAutonomie(), 0, "la salle n'écrit jamais `autonomy_requests`");
+  });
+
+  it("fermé en cas de doute : aucune demande connue, ligne « omo » illisible, port qui lève → « salle-fin-inconnue » ; port actif sur la racine ou dernière ligne `autonomy_requests` ouverte → en cours ; instance principale inchangée", async (t) => {
+    const h = await startCockpit(t, { modules: "tous", omo: true });
+    poserRacine(h, OMO_RACINE, "omo");
+    poserRacine(h, "ses_l3sa_principale", "principale");
+    const raison = async (rootId = OMO_RACINE) => (await etatRevoir(h, rootId)).raison;
+
+    // Aucune demande connue (ni ligne « omo », ni demande active, ni `autonomy_requests`) : fin inconnue, comme avant.
+    assert.equal(await raison(), "salle-fin-inconnue");
+    // Ligne « omo » au contenu illisible (le magasin la lit « sans demande ») : jamais lue comme finie.
+    for (const plafonds of ["{", "[]", "{}", '{"plafondUsd":"0,50"}', '{"plafondUsd":"0,50","demande":"oui"}', '{"plafondUsd":"0,50","demande":null,"autre":1}']) {
+      h.db
+        .prepare("INSERT INTO conversation_autonomy (root_id, choix, plafonds, depuis, retour_cause) VALUES (?, 'omo', ?, 100, NULL) ON CONFLICT(root_id) DO UPDATE SET plafonds = excluded.plafonds")
+        .run(OMO_RACINE, plafonds);
+      assert.equal(await raison(), "salle-fin-inconnue", plafonds);
+    }
+    // Demande finie selon la ligne, mais encore active en mémoire sur CETTE racine (port omoActivation) : en cours.
+    poserDemandeSalle(h, OMO_RACINE, false);
+    assert.equal(await raison(), null, "témoin : ligne finie seule → permis");
+    const ports = h.cockpit.c11.ports;
+    const neutre = ports.omoActivation;
+    t.after(() => {
+      ports.omoActivation = neutre;
+    });
+    ports.omoActivation = { ...neutre, activeRequest: () => ({ rootId: OMO_RACINE, requestId: "req_l3sa_actif", startedAt: 100, plafondUsd: "0,50" }) };
+    assert.equal(await raison(), "salle-demande-en-cours");
+    // Active sur une AUTRE racine de la salle (une seule demande à la fois, D-2b-08) : celle-ci reste finie.
+    ports.omoActivation = { ...neutre, activeRequest: () => ({ rootId: "ses_l3sa_autre", requestId: "req_l3sa_autre", startedAt: 100, plafondUsd: "0,50" }) };
+    assert.equal(await raison(), null);
+    // Port illisible : fin inconnue.
+    ports.omoActivation = {
+      ...neutre,
+      activeRequest: () => {
+        throw new Error("[synthétique] port illisible");
+      },
+    };
+    assert.equal(await raison(), "salle-fin-inconnue");
+    ports.omoActivation = neutre;
+    // Dernière ligne `autonomy_requests` ouverte (règle écrite de D-3d-09) : en cours, même si la ligne « omo » est finie.
+    poserDemande(h, "aur_l3sa_doute", OMO_RACINE, false);
+    assert.equal(await raison(), "salle-demande-en-cours");
+    // Instance principale : toujours consultable, quelles que soient ces sources.
+    assert.equal(await raison("ses_l3sa_principale"), null);
   });
 });
 

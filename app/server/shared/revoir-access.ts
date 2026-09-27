@@ -4,9 +4,10 @@
 // - Conversation de l'instance principale → accès (la bande en direct la montre déjà, dans les deux modes).
 // - Racine de la Salle OMO (ou instance illisible : traitée comme la salle) en mode Avancé → accès.
 // - Racine de la salle en mode Simple (ou mode illisible) : accès seulement pour une demande TERMINÉE (D-3d-09) : aucune session
-//   occupée selon les faits et une dernière ligne `autonomy_requests` finie (`ended_at`). Faits partiels (borne des 20 000) ou
-//   aucune ligne → 403 « salle-fin-inconnue » ; session occupée ou demande pas finie → 403 « salle-demande-en-cours ». Fermé en
-//   cas de doute.
+//   occupée selon les faits et une dernière demande finie : ligne `autonomy_requests` (`ended_at`) et, pour la salle, qui ne l'écrit
+//   jamais là, sa ligne « omo » de conversation_autonomy et sa demande active (salle-demande.ts, répétition générale « 3s »). Faits
+//   partiels (borne des 20 000) ou aucune demande connue → 403 « salle-fin-inconnue » ; session occupée ou demande pas finie → 403
+//   « salle-demande-en-cours ». Fermé en cas de doute.
 // occupeesSelonFaits : sessions dont le dernier fait `statut` de cycle (occupee, nouvelle-tentative, repos, erreur) est occupee ou
 // nouvelle-tentative ; null si les faits sont partiels.
 // Aucune chaîne affichable (D-3d-21) : codes seulement ; les phrases viennent de revoir-texts.ts (T3d-b).
@@ -26,7 +27,10 @@ export interface RevoirAccesEntree {
   mode: NeonMode;
   /** Sessions occupées selon les faits (occupeesSelonFaits) ; null : faits partiels. */
   sessionsOccupees: number | null;
-  /** Dernière ligne `autonomy_requests` de la racine (`finie` : `ended_at` renseigné) ; null : aucune. */
+  /**
+   * Dernière demande de la racine (`finie` : `ended_at` renseigné, ou demande de la salle close, salle-demande.ts) ; null : aucune
+   * demande connue, ou fin illisible.
+   */
   derniereDemande: { finie: boolean } | null;
 }
 

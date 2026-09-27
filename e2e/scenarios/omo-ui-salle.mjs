@@ -37,7 +37,10 @@
 //                  seulement dans le journal du conteneur ; 409 « git-inscriptible » ;
 //   focus-ecran    §5.5 « focus jamais volé » : écran d'activation ouvert, focus sur [Lancer…], la page relit l'état de la salle
 //                  sur un événement du flux ; le focus doit rester où l'utilisateur l'a mis ;
-//   sans-salle     T-L26-e : COCKPIT_OMO coupé, puis image absente (cockpit redémarré) → entrée absente ; puis rétabli.
+//   revoir-simple  Q6 (§5.9, §6 l.1065 ; D-3d-09, D-3d-14 ; répétition générale « 3s ») : demande brève lancée par l'API, en Simple
+//                  « Revoir » refusé pendant la demande, /facts 403, puis permis quand elle est finie, sans requête aux instances,
+//                  et la conversation listée au zoom 1 avec [Revoir] ;
+//   sans-salle    T-L26-e : COCKPIT_OMO coupé, puis image absente (cockpit redémarré) → entrée absente ; puis rétabli.
 // Chaque étape part d'une salle prête ET écoutée : le flux d'événements du cockpit rebranché sur son dernier lancement (relevé de
 // la salle factice) ; le délai de ce rebranchement est dit au bilan.
 // Sur tout le scénario : captures 1440, 1024 et 400 dans les deux thèmes (T-L26-d), zéro erreur de console (une seule tolérance,
@@ -946,6 +949,116 @@ async function focusEcran(s) {
   );
 }
 
+/** Envoi d'une demande dans la salle PAR L'API (préparation) : IA de l'agent principal de la salle, confirmée ; 409 d'IA changée suivi. */
+async function envoyerApi(ctx, rootId, directory) {
+  const agents = await ctx.api.brut("GET", `/api/omo/oc/agent?directory=${encodeURIComponent(directory)}`);
+  exiger(agents.code === 200, `GET /api/omo/oc/agent : ${agents.code} ${resume(agents.corps)}`);
+  const principal = (a) => typeof a?.name === "string" && a.mode !== "subagent";
+  const liste = JSON.parse(agents.corps);
+  const agent = liste.find((a) => principal(a) && a.name === "build") ?? liste.find((a) => principal(a) && a.hidden !== true);
+  const model = agent?.model?.providerID && agent?.model?.modelID ? { providerID: agent.model.providerID, modelID: agent.model.modelID } : null;
+  const parts = [{ type: "text", text: "[synthétique] demande brève de la salle, revue ensuite en mode Simple" }];
+  const chemin = `/api/omo/oc/session/${encodeURIComponent(rootId)}/prompt_async?directory=${encodeURIComponent(directory)}`;
+  const confirmer = { entetes: { "x-cockpit-confirm": "1" } };
+  let reponse = await ctx.api.brut("POST", chemin, { parts, ...(model ? { model } : {}) }, confirmer);
+  const lu = reponse.corps ? JSON.parse(reponse.corps) : null;
+  if (reponse.code === 409 && lu?.error === "assistant-model-changed" && lu?.model) {
+    reponse = await ctx.api.brut("POST", chemin, { parts, model: lu.model, ...(lu.variant ? { variant: lu.variant } : {}) }, confirmer);
+  }
+  return reponse;
+}
+
+/**
+ * « Revoir » en Simple d'une demande TERMINÉE de la salle (Q6 ; spécification §5.9 l.1018-1024, §6 l.1065 ; plan it3 D-3d-09,
+ * D-3d-14, sortie de L3s-a) : étape 6 du témoin de la répétition générale « 3s », versée au dépôt. Une salle neuve est ouverte et
+ * activée PAR L'API (préparation, jamais le parcours éprouvé), une demande brève part en Avancé et finit d'elle-même (repos, puis
+ * fin de demande, D-2b-29). En Simple : pendant la demande, « Revoir » est refusé (« salle-demande-en-cours ») et /facts reste 403
+ * (L18c) ; la demande finie, « Revoir » est permis (état, puis lecture 200 « terminée »), sans aucune requête aux deux instances,
+ * et le zoom 1 liste la conversation avec [Revoir cette demande]. Défaut reproduit par cette étape avant sa correction : la salle
+ * tient sa demande dans la ligne « omo » de conversation_autonomy (omo-activation.ts), jamais dans `autonomy_requests`, et
+ * « Revoir » restait refusé (« salle-fin-inconnue ») après la fin de la demande.
+ */
+async function revoirSimple(s) {
+  const { ctx, page } = s;
+  // La page quitte la salle avant le passage en Simple : rien d'elle n'est éprouvé ici (API seule).
+  await page.evaluer(`location.hash = "#/chat"`);
+  await changerMode(ctx, "avance");
+  await sallePrete(s);
+  // Racine NEUVE : une seule demande, finie d'elle-même (jamais une racine dont une étape précédente a arrêté la demande).
+  const ouverte = await ouvrirSalleApi(ctx);
+  const rootId = ouverte.rootId;
+  s.racines.add(rootId);
+  const directory = `/workspace/${ouverte.projet ?? "projet-a"}`;
+  await ctx.salle.pilote.tourParDefaut(TOUR_BREF);
+  const activation = await activerApi(ctx, rootId);
+  exiger(activation.code === 200, `activation par l'API : ${resume(activation)}`);
+  const envoisAvant = (await envoisSalle(ctx, rootId)).length;
+  const envoi = await envoyerApi(ctx, rootId, directory);
+  exiger(envoi.code >= 200 && envoi.code < 300, `envoi en Avancé : ${envoi.code} ${resume(envoi.corps)}`);
+  await attendreQue(async () => (await envoisSalle(ctx, rootId)).length === envoisAvant + 1, { delaiMs: 15_000, libelle: "message reçu par la salle factice" });
+
+  await changerMode(ctx, "simple");
+  const etatRevoir = async () => {
+    const lu = await ctx.api.brut("GET", `/api/revoir/${encodeURIComponent(rootId)}?etat=1`);
+    exiger(lu.code === 200, `GET /api/revoir/:rootId?etat=1 : ${lu.code} ${resume(lu.corps)}`);
+    return JSON.parse(lu.corps);
+  };
+  const etatSalle = async () => {
+    const lu = await ctx.api.brut("GET", "/api/omo/status");
+    return lu.code === 200 ? (JSON.parse(lu.corps)?.etatSalle ?? "?") : `http ${lu.code}`;
+  };
+  const pendant = await etatRevoir();
+  const facts = await ctx.api.brut("GET", `/api/conversations/${encodeURIComponent(rootId)}/facts`);
+
+  // Fin de la demande : « Revoir » permis. Le suivi (raison du refus / état de la salle) est dit à l'échec, jamais un simple délai ;
+  // la fin est attendue AVANT de juger le relevé fait pendant la demande, pour que l'échec dise les deux.
+  const suivi = [];
+  let dernier = null;
+  let fin = null;
+  try {
+    await attendreQue(
+      async () => {
+        const etat = await etatRevoir();
+        const cle = `${etat.acces === true ? "permis" : etat.raison}/${await etatSalle()}`;
+        if (cle !== dernier) suivi.push(cle);
+        dernier = cle;
+        return etat.acces === true ? etat : false;
+      },
+      { delaiMs: 90_000, pasMs: 1_000, libelle: "demande de la salle terminée, « Revoir » permis en mode Simple" },
+    );
+  } catch (err) {
+    fin = `${err?.message ?? err} ; suivi ${suivi.join(" → ")}`;
+  }
+  exiger(
+    pendant.acces === false && pendant.raison === "salle-demande-en-cours" && pendant.instance === "omo",
+    `Simple, demande en cours : ${resume(pendant)} (refus « salle-demande-en-cours » attendu) ; après la fin : ${fin ?? `permis (${suivi.join(" → ")})`}`,
+  );
+  exiger(facts.code === 403, `Simple : /facts ${facts.code} (403 attendu, L18c)`);
+  exiger(fin === null, fin);
+
+  // Lecture : 200, demande terminée, aucune requête à la salle ni à l'instance principale (rien n'est relancé ni facturé).
+  const avantSalle = (await ctx.salle.pilote.requetes()).length;
+  const avantPrincipale = (await ctx.opencodeRequests()).length;
+  const lecture = await ctx.api.brut("GET", `/api/revoir/${encodeURIComponent(rootId)}`);
+  await attendre(500);
+  const versSalle = (await ctx.salle.pilote.requetes()).length - avantSalle;
+  const versPrincipale = (await ctx.opencodeRequests()).length - avantPrincipale;
+  exiger(lecture.code === 200, `Simple, demande terminée : « Revoir » ${lecture.code} ${resume(lecture.corps)}`);
+  const vue = JSON.parse(lecture.corps);
+  exiger(vue.instance === "omo" && vue.termine === true, `« Revoir » : ${resume({ instance: vue.instance, termine: vue.termine })}`);
+  exiger(versSalle === 0 && versPrincipale === 0, `« Revoir » : ${versSalle} requête(s) à la salle, ${versPrincipale} à l'instance principale`);
+
+  // Zoom 1 (D-3d-14) : en Simple, la conversation terminée de la salle est listée, avec [Revoir cette demande], sans compteur.
+  const territoires = await ctx.api.get("/api/salle-controle/territoires");
+  const conversation = (territoires.salle?.projets ?? []).flatMap((p) => p.conversations ?? []).find((c) => c.rootId === rootId);
+  exiger(conversation?.revoir === true && conversation.travaillent === null, `zoom 1 en Simple : ${resume(territoires.salle)}`);
+  await changerMode(ctx, "avance");
+  s.bilan.push(
+    `« Revoir » en Simple (Q6) : pendant la demande « ${pendant.raison} », /facts ${facts.code} ; ${suivi.join(" → ")} ; lecture ${lecture.code} ` +
+      `(${Array.isArray(vue.facts) ? vue.facts.length : "?"} faits, terminée), 0 requête aux deux instances ; zoom 1 : conversation listée avec [Revoir]`,
+  );
+}
+
 async function sansSalle(s) {
   const { ctx, page } = s;
   exigerConsole(s, "avant les redémarrages du cockpit");
@@ -1040,6 +1153,7 @@ const ETAPES = [
   ["detection", detection],
   ["git-attente", gitAttente],
   ["focus-ecran", focusEcran],
+  ["revoir-simple", revoirSimple],
   ["sans-salle", sansSalle],
 ];
 

@@ -5,7 +5,8 @@
 // Ce que la vague doit prouver ENSEMBLE (§5.2, ligne V5), et qu'aucun paquet ne peut prouver seul :
 //   1. `SALLE_OUVERTE` reste fausse dans le dépôt livré : aucun fichier suivi ne la bascule ; les deux bancs qui l'ouvrent (e2e
 //      « --salle » de L26c, banc complet de L21b que jouent L27a et L27b) ne la basculent que dans une copie ;
-//   2. e2e faux complet : le scénario de la salle (L26c) est branché sur ses douze étapes, « --salle » n'existe qu'en « --faux », la
+//   2. e2e faux complet : le scénario de la salle (L26c) est branché sur ses étapes (douze de L26c, plus « revoir-simple » de la
+//      répétition générale « 3s »), « --salle » n'existe qu'en « --faux », la
 //      pile de la salle n'utilise jamais l'image réelle de la salle ;
 //   3. résultats des portes du banc : les six portes de la vague sont chargées par le banc complet, et le corpus de G7 (L27b) est le
 //      reflet exact d'`omo-forbidden` (L22b), vérifié hors Docker ;
@@ -117,7 +118,7 @@ describe("croisement 1 : SALLE_OUVERTE reste fausse dans le dépôt livré (plan
 describe("croisement 2 : e2e de l'interface de la salle (L26c), faux complet", () => {
   const scenario = lire("e2e", "scenarios", "omo-ui-salle.mjs");
 
-  it("le scénario joue ses douze étapes, dont « signales » et « focus-ecran » (défauts corrigés par ce train)", () => {
+  it("le scénario joue ses treize étapes, dont « signales » et « focus-ecran » (défauts corrigés par ce train) et « revoir-simple » (3s)", () => {
     const table = /const ETAPES = \[([\s\S]*?)\];/.exec(scenario)?.[1] ?? "";
     const etapes = [...table.matchAll(/\["([a-z-]+)",/g)].map((m) => m[1]);
     assert.deepEqual(etapes, [
@@ -132,6 +133,8 @@ describe("croisement 2 : e2e de l'interface de la salle (L26c), faux complet", (
       "detection",
       "git-attente",
       "focus-ecran",
+      // Répétition générale « 3s » : « Revoir » en Simple d'une demande terminée de la salle (Q6, D-3d-09).
+      "revoir-simple",
       "sans-salle",
     ]);
   });
