@@ -36,13 +36,43 @@ export async function assertInside(root: string, target: string): Promise<string
   }
 }
 
+/**
+ * Refus TRANSITOIRES d'un renommage sous Windows : cible ou fichier temporaire tenu un instant par un autre (lecture concurrente,
+ * antivirus, indexeur). Mesuré à la grande fusion (GF12) : le stop-request de la salle était perdu (EPERM) pendant qu'un lecteur
+ * relisait le fichier, et l'arrêt restait « non confirmé ». Linux ne connaît pas ce refus : un seul essai, comportement inchangé.
+ */
+const RENOMMAGE_TRANSITOIRE = new Set(["EPERM", "EACCES", "EBUSY"]);
+/** Essais sous Windows, attente croissante entre deux (10, 20, … 70 ms : 280 ms au plus). */
+export const RENOMMAGE_ESSAIS_WINDOWS = 8;
+
+/** Renommage d'écriture atomique, repris sous Windows sur un refus transitoire ; toute autre erreur remonte au premier essai. */
+export async function renameAtomic(
+  from: string,
+  to: string,
+  options: { rename?: (a: string, b: string) => Promise<void>; platform?: NodeJS.Platform; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const rename = options.rename ?? fs.rename;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const essais = (options.platform ?? process.platform) === "win32" ? RENOMMAGE_ESSAIS_WINDOWS : 1;
+  for (let essai = 1; ; essai++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (essai >= essais || !RENOMMAGE_TRANSITOIRE.has(code)) throw err;
+      await sleep(10 * essai);
+    }
+  }
+}
+
 /** Écriture atomique : fichier temporaire voisin puis renommage. */
 export async function writeFileAtomic(file: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${crypto.randomBytes(6).toString("hex")}.tmp`;
   try {
     await fs.writeFile(tmp, content, { encoding: "utf8", mode: 0o644 });
-    await fs.rename(tmp, file);
+    await renameAtomic(tmp, file);
   } catch (err) {
     await fs.rm(tmp, { force: true });
     throw err;
