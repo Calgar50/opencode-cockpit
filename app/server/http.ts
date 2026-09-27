@@ -80,21 +80,26 @@ import type {
   StatusLocalAccess,
   TierView,
   TlsStatus,
+  UpdateProfileResponse,
 } from "./shared/api-types.ts";
 import {
   assistantModelChangedMessage,
   catalogEntry,
   changedSettingsPaths,
+  cheminOuverture,
   chooseEstimate,
   configProviderIssues,
+  configWebOpenings,
   describeTurn,
   estimateText,
   isReservedModel,
+  legacyPresetOf,
   MESSAGES,
   MODEL_OVERRIDE_HEADER,
   modelKey,
   modelName,
   parseModelKey,
+  PERMISSION_PRESETS,
   presetPermission,
   type Problem,
   problemMessage,
@@ -111,14 +116,19 @@ import {
   type TierDefs,
   type TierResolution,
   type Turn,
+  type WebIssues,
+  webAskAgents,
+  webOpenings,
+  webOpeningsIntroduced,
   withTierAvailability,
 } from "./shared/assistant-rules.ts";
+import { TEXTES as TEXTES_INTERNET, texteRefusInternet } from "./shared/internet-texts.ts";
 import type { BootstrapAutonomy } from "./shared/autonomy-types.ts";
 import { ID, SESSION_ID_RE } from "./shared/ids.ts";
 import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
 import type { BootstrapOmo } from "./shared/omo-types.ts";
 import { isReservedTitle } from "./shared/session-purpose.ts";
-import { StudioApplyError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
+import { StudioApplyError, StudioInternetFermeError, type StudioScope, type StudioService, StudioValidationError } from "./studio.ts";
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
 import { ACTIVATION_OUVERTE, SALLE_OUVERTE } from "./wiring-11.ts";
@@ -573,6 +583,8 @@ export function createApp(deps: AppDeps): Hono {
   app.use("*", csrfGuard(env.localScheme));
 
   app.onError((err, c) => {
+    // 1.1.0 (A37) : ouverture d'Internet introduite par un enregistrement du Studio (sous-classe de StudioValidationError).
+    if (err instanceof StudioInternetFermeError) return fail(c, 422, "internet-ferme", err.message, { issues: err.issues });
     if (err instanceof StudioValidationError) return fail(c, 422, "validation", err.message, { issues: err.issues });
     if (err instanceof StudioApplyError) {
       return fail(c, 422, "rejected-by-opencode", err.message, { issues: err.issues, restarted: err.restarted });
@@ -661,19 +673,51 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Vue d'ensemble -------------------------------------------------------------------
 
+  /** Configuration globale d'opencode lue en 3 s au plus ; null : opencode ne répond pas (enveloppe : une valeur lue n'est jamais null). */
+  const readGlobalConfig = (): Promise<{ config: unknown } | null> =>
+    client.request<unknown>("GET", "/global/config", { timeoutMs: 3_000 }).then(
+      (config) => ({ config }),
+      () => null,
+    );
+
+  /**
+   * 1.1.0 (A37, fiche de la migration du web §5.3) : ce qui peut encore demander Internet, sur les règles EFFECTIVES de GET /agent (cache
+   * de lookup, vidé sur opencode.config.changed et global.disposed) et la configuration globale. Même budget de 3 s que providerIssues :
+   * null si opencode ne répond pas ou si le délai est dépassé, jamais un faux « fermé ». Titre d'assistant seulement, jamais le nom.
+   */
+  const webIssuesWithin = async (global: Promise<{ config: unknown } | null>): Promise<WebIssues | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 3_000);
+    });
+    const titleOf = (name: string): string | null => {
+      const title = assistants.agentTitle(name);
+      return title === name ? null : title;
+    };
+    const work = Promise.all([global, lookup.get(null)]).then(
+      ([read, snapshot]) => (read === null || !isRecord(read.config) ? null : webAskAgents(snapshot.agents, read.config.permission, titleOf)),
+      () => null,
+    );
+    try {
+      return await Promise.race([work, budget]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   app.get("/api/bootstrap", async (c) => {
     const s = settings.get();
     const omoEnv = omoOf(env);
-    const [health, projectList, copilotConnected, caFiles, supervisor, providerIssues] = await Promise.all([
+    const globalConfig = readGlobalConfig();
+    const [health, projectList, copilotConnected, caFiles, supervisor, providerIssues, webIssues] = await Promise.all([
       client.health(),
       projects.list(),
       quota.copilotConnected(),
       control.caFilesCount(),
       control.supervisorPresent(),
       // Verrou réel d'opencode (enabled_providers, IA par défaut) : null si opencode ne répond pas.
-      client
-        .request<unknown>("GET", "/global/config", { timeoutMs: 3_000 })
-        .then((config) => configProviderIssues(config, env.allowedProviders, env.githubEnterpriseDomain), () => null),
+      globalConfig.then((read) => (read === null ? null : configProviderIssues(read.config, env.allowedProviders, env.githubEnterpriseDomain))),
+      webIssuesWithin(globalConfig),
     ]);
     const usage = ledger.summary();
     return c.json({
@@ -691,6 +735,7 @@ export function createApp(deps: AppDeps): Hono {
         proxy: Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY),
         projectConfig: env.projectConfig,
         providerIssues,
+        webIssues,
         ...localAccessBootstrap(),
       },
       workspace: { hostDir: process.env.COCKPIT_HOST_WORKSPACE_DIR ?? null, root: projects.opencodeRoot },
@@ -1362,6 +1407,18 @@ export function createApp(deps: AppDeps): Hono {
   /** Écriture qui retirerait le verrou « fournisseurs » d'opencode (enabled_providers, IA par défaut ou d'un agent). */
   const refuseProviders = (c: Context, issues: IssueLite[]) => fail(c, 422, "fournisseur-refuse", MESSAGES.providerLockRefused, { issues });
 
+  /**
+   * 1.1.0 (A37, fiche de la migration du web §5.1) : écriture qui INTRODUIRAIT une ouverture d'Internet (webfetch ou websearch à ask
+   * ou allow, joker à ask, permission en texte « ask »), comparée à l'état d'avant. Un « ask » déjà présent n'est jamais refusé. Jamais
+   * dans replacePermission : « Revenir au profil Prudent » et « Fermer l'accès à Internet » passent par elle.
+   */
+  const refuseInternet = (c: Context, chemins: readonly string[]) => {
+    const liste = chemins.slice(0, 20);
+    return fail(c, 422, "internet-ferme", texteRefusInternet(liste), { chemins: liste });
+  };
+  const introducedWeb = (avant: unknown, apres: unknown): string[] =>
+    webOpeningsIntroduced(configWebOpenings(avant), configWebOpenings(apres)).map(cheminOuverture);
+
   app.get("/api/opencode/config/raw", async (c) => {
     const file = await configFile();
     return c.json({ file: path.basename(file), content: (await readInside(env.opencodeConfigDir, file)) ?? "" });
@@ -1525,6 +1582,7 @@ export function createApp(deps: AppDeps): Hono {
   type ConfigPatch =
     | { ok: true; updated: unknown }
     | { ok: false; issues: IssueLite[] }
+    | { ok: false; internet: string[] }
     | { ok: false; status: 409 | 503; error: string; message: string; wrote: boolean; cause?: string };
 
   // Correctif de la configuration globale (mode Avancé) : écrit par opencode (PATCH, qui met aussi à jour son cache), puis instances
@@ -1549,8 +1607,12 @@ export function createApp(deps: AppDeps): Hono {
       if (control.restarting) return { ok: false, status: 409, error: "redemarrage-en-cours", message: MESSAGES.restartEnCours, wrote: false };
       // Contrôle sur la configuration résultante : un correctif sans rapport reste refusé tant que le verrou manque.
       const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 15_000 });
-      const issues = configProviderIssues(mergeConfigPatch(current, patch), env.allowedProviders, env.githubEnterpriseDomain);
+      const merged = mergeConfigPatch(current, patch);
+      const issues = configProviderIssues(merged, env.allowedProviders, env.githubEnterpriseDomain);
       if (issues.length > 0) return { ok: false, issues };
+      // 1.1.0 (A37) : avant = GET /global/config, après = mergeConfigPatch(avant, corps) ; seules les ouvertures introduites comptent.
+      const internet = introducedWeb(current, merged);
+      if (internet.length > 0) return { ok: false, internet };
       return configQueue.applyingWhile(async (): Promise<ConfigPatch> => {
         let busy: boolean;
         try {
@@ -1598,6 +1660,7 @@ export function createApp(deps: AppDeps): Hono {
     if (result.ok || ("wrote" in result && result.wrote)) await afterWrite();
     if (result.ok) return c.json(result.updated);
     if ("issues" in result) return refuseProviders(c, result.issues);
+    if ("internet" in result) return refuseInternet(c, result.internet);
     return fail(c, result.status, result.error, result.message);
   });
 
@@ -1607,14 +1670,18 @@ export function createApp(deps: AppDeps): Hono {
     if (issues.length > 0) return refuseProviders(c, issues);
     const root = env.opencodeConfigDir;
     const file = await assertInside(root, await configFile());
-    const result = await configQueue.run(async (): Promise<ConfigApply> => {
+    const result = await configQueue.run(async (): Promise<ConfigApply | { ok: false; internet: string[]; restarted: false }> => {
       if (control.restarting) return restartInProgress();
       // Relue dans la file, sans suivre de lien : c'est la version remise en cas de refus.
       const backup = await readInside(root, file);
+      // 1.1.0 (A37) : avant = texte du fichier actuel ; seules les ouvertures d'Internet introduites par le nouveau texte comptent.
+      const internet = introducedWeb(parseJsonc(backup ?? "{}", [], { allowTrailingComma: true }), parseJsonc(content, [], { allowTrailingComma: true }));
+      if (internet.length > 0) return { ok: false, internet, restarted: false };
       return backup === content ? { ok: true, restarted: false } : applyConfigFile(file, content, backup, "fichier de configuration brut");
     });
     // Redémarrage fait (fichier appliqué ou retour arrière) : nouveau processus, qui a pu perdre l'adresse imposée.
     if (result.restarted) resyncCopilot();
+    if (!result.ok && "internet" in result) return refuseInternet(c, result.internet);
     if (!result.ok) return configFailure(c, result, "opencode a refusé ce fichier");
     return c.json({ ok: true, restarted: result.restarted });
   });
@@ -1688,6 +1755,11 @@ export function createApp(deps: AppDeps): Hono {
 
   app.put("/api/opencode/config/permission", advanced, bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
     const { permission } = z.object({ permission: permissionSchema }).parse(await c.req.json());
+    // 1.1.0 (A37) : avant = permission actuelle d'opencode, après = corps ; contrôle fait ICI, jamais dans replacePermission.
+    const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => undefined);
+    if (current === undefined) return fail(c, 503, "opencode-injoignable", MESSAGES.opencodeInjoignable);
+    const internet = webOpeningsIntroduced(webOpenings(isRecord(current) ? current.permission : undefined), webOpenings(permission)).map(cheminOuverture);
+    if (internet.length > 0) return refuseInternet(c, internet);
     const result = await replacePermission(permission, "permissions globales");
     // Après la tâche de la file : un redémarrage fait (appliqué, refusé ou non confirmé) relance la synchro de l'adresse Copilot.
     if (result.restarted) resyncCopilot();
@@ -1703,6 +1775,25 @@ export function createApp(deps: AppDeps): Hono {
     if (result.restarted) resyncCopilot();
     if (!result.ok) return permissionFailure(c, result);
     const response: RestorePrudentResponse = { ok: true, permission, restarted: result.restarted };
+    return c.json(response);
+  });
+
+  // Paramètres › Sécurité (les deux modes), 1.1.0 (A37, fiche de la migration du web §5.2) : « Fermer l'accès à Internet » d'un
+  // profil d'une version précédente. Le MÊME profil en version 1.1 (seul le web change : ni élargissement ni resserrement), par la
+  // même écriture vérifiée que « Revenir au profil Prudent » ; tout autre réglage : 409, rien d'écrit.
+  app.post("/api/security/update-profile", bodyLimit({ maxSize: 4_096 }), async (c) => {
+    z.strictObject({}).parse(await c.req.json().catch(() => null));
+    const current = await client.request<unknown>("GET", "/global/config", { timeoutMs: 20_000 }).catch(() => undefined);
+    if (current === undefined) return fail(c, 503, "opencode-injoignable", MESSAGES.opencodeInjoignable);
+    const id = legacyPresetOf(isRecord(current) ? current.permission : undefined);
+    if (id === null) return fail(c, 409, "profil-inconnu", TEXTES_INTERNET.partout.profilInconnu);
+    const permission = presetPermission(id);
+    const result = await replacePermission(permission, `Internet fermé (profil ${PERMISSION_PRESETS[id].label})`);
+    if (result.restarted) resyncCopilot();
+    if (!result.ok) return permissionFailure(c, result);
+    // Règles déjà appliquées entre-temps : aucun redémarrage, donc aucun événement d'applyConfigFile ; l'interface relit quand même.
+    if (!result.restarted) hub.cockpit("opencode.config.changed", {});
+    const response: UpdateProfileResponse = { ok: true, profil: id, permission, restarted: result.restarted };
     return c.json(response);
   });
 
@@ -1773,11 +1864,12 @@ export function createApp(deps: AppDeps): Hono {
   // --- Système ---------------------------------------------------------------------------
 
   app.get("/api/system/status", async (c) => {
-    const [health, supervisor, caFiles, copilotConnected] = await Promise.all([
+    const [health, supervisor, caFiles, copilotConnected, webIssues] = await Promise.all([
       client.health(),
       control.supervisorPresent(),
       control.caFilesCount(),
       quota.copilotConnected(),
+      webIssuesWithin(readGlobalConfig()),
     ]);
     const count = (table: string) => (deps.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
     return c.json({
@@ -1795,6 +1887,7 @@ export function createApp(deps: AppDeps): Hono {
         noProxy: process.env.NO_PROXY ?? "",
         allowedHosts: env.allowedHosts,
         projectConfig: env.projectConfig,
+        webIssues,
         ...localAccessStatus(),
       },
       copilotConnected,

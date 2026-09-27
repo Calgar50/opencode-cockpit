@@ -476,6 +476,16 @@ export interface RestorePrudentResponse {
   restarted: boolean;
 }
 
+/** 1.1.0 (A37) : POST /api/security/update-profile, « Fermer l'accès à Internet » d'un profil d'une version précédente. */
+export interface UpdateProfileResponse {
+  ok: true;
+  /** Profil gardé, écrit dans sa version 1.1 (seul le web change). */
+  profil: "prudent" | "equilibre" | "autonome";
+  permission: Record<string, unknown>;
+  /** opencode redémarré pour appliquer les règles (false : elles l'étaient déjà). */
+  restarted: boolean;
+}
+
 // --- Accès local 1.0.5 : schéma servi, preuve du jeton, ticket, certificat ----------------------------------------------
 
 /** Schéma servi sur la boucle locale : HTTPS par défaut, HTTP seulement après install.ps1 -Http confirmé. */

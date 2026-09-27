@@ -1,14 +1,19 @@
 // Paramètres › Sécurité (§8) : profil de droits global d'opencode, retour au profil Prudent, fournisseur d'IA autorisé.
+// 1.1.0 (A37, fiche de la migration du web §5.2 et §5.3) : un profil d'une version précédente (Internet encore ouvert) n'est plus vert
+// et propose « Fermer l'accès à Internet » (même profil, seul le web change) ; les assistants qui peuvent encore demander Internet
+// sont signalés par leur titre (security.webIssues), jamais par leur nom technique en mode Simple.
 import { useEffect, useRef, useState } from "react";
 import {
   configProviderIssues,
-  detectPermissionPreset,
   isDefaultProviders,
+  legacyProfileText,
   MESSAGES,
   modifiedProfileText,
   PERMISSION_PRESETS,
   SECURITY_TEXTS,
+  securiteProfil,
 } from "../../../server/shared/assistant-rules.ts";
+import { TEXTES as TEXTES_INTERNET, texteAssistantsSignales, texteFermerMessage, texteFermerReussite } from "../../../server/shared/internet-texts.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
@@ -17,12 +22,17 @@ import { ApiError, api, errorText } from "../../lib/api.ts";
 import { cockpitEvent, useEvents } from "../../lib/events.ts";
 
 export function SecuriteTab() {
-  const { boot } = useApp();
+  const { boot, advanced } = useApp();
   const toast = useToast();
   const confirm = useConfirm();
   const config = useAsync(() => api.opencodeConfig(), []);
-  const reloadRef = useRef(config.reload);
-  reloadRef.current = config.reload;
+  // Assistants signalés : relus avec l'état du système (même champ que le Diagnostic), sinon ceux du démarrage.
+  const status = useAsync(() => api.systemStatus(), []);
+  const reloadRef = useRef<() => void>(() => undefined);
+  reloadRef.current = () => {
+    config.reload();
+    status.reload();
+  };
   const [restoring, setRestoring] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 
@@ -34,7 +44,10 @@ export function SecuriteTab() {
     }
   });
 
-  const preset = config.data ? detectPermissionPreset(config.data.permission) : null;
+  // Jugé par securiteProfil (legacyPresetOf puis detectPermissionPreset) : un profil 1.0 n'est jamais « Prudent » en vert.
+  const profil = config.data ? securiteProfil(config.data.permission) : null;
+  const webIssues = status.data ? status.data.security.webIssues : (boot.security.webIssues ?? null);
+  const signales = texteAssistantsSignales(webIssues, advanced);
   const providers = boot.allowedProviders ?? ["github-copilot"];
   // Verrou réellement appliqué par opencode (enabled_providers, IA par défaut), pas seulement COCKPIT_ALLOWED_PROVIDERS.
   const lockIssues = config.data
@@ -45,17 +58,16 @@ export function SecuriteTab() {
   const restore = async () => {
     const ok = await confirm({
       title: "Revenir au profil Prudent ?",
-      message:
-        "Les permissions globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier, lancer une commande, consulter le web ou déléguer. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
+      message: TEXTES_INTERNET.partout.prudentMessage,
       confirmLabel: SECURITY_TEXTS.restorePrudent,
     });
     if (!ok) return;
     setRestoring(true);
     try {
       const result = await api.restorePrudent();
-      const detail = "L'assistant demande de nouveau avant chaque action sensible.";
+      const detail = TEXTES_INTERNET.partout.prudentReussite;
       toast.success("Profil Prudent rétabli", result.restarted ? `opencode a redémarré pour l'appliquer. ${detail}` : detail);
-      config.reload();
+      reloadRef.current();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) toast.warning("Profil non appliqué", err.message);
       else toast.error("Profil non appliqué", err);
@@ -64,9 +76,26 @@ export function SecuriteTab() {
     }
   };
 
+  // « Fermer l'accès à Internet » (deux modes) : le serveur relit la configuration et n'écrit que le même profil en version 1.1.
+  const closeInternet = async (label: string) => {
+    const ok = await confirm({ title: TEXTES_INTERNET.partout.fermerTitre, message: texteFermerMessage(label), confirmLabel: SECURITY_TEXTS.closeInternet });
+    if (!ok) return;
+    setRestoring(true);
+    try {
+      const result = await api.updateProfile();
+      toast.success(texteFermerReussite(PERMISSION_PRESETS[result.profil].label), result.restarted ? "opencode a redémarré pour l'appliquer." : undefined);
+      reloadRef.current();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) toast.warning("Profil non modifié", err.message);
+      else toast.error("Profil non modifié", err);
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   return (
     <div className="stack loose">
-      <Card title="Profil de droits" subtitle="Règles globales appliquées à l'Assistant général et aux agents sans règles propres.">
+      <Card title="Profil de droits" subtitle="Règles globales appliquées à l'Assistant général et aux assistants sans règles propres.">
         {config.loading && !config.data ? (
           <Spinner />
         ) : config.error && !config.data ? (
@@ -77,16 +106,11 @@ export function SecuriteTab() {
               Réessayer
             </Button>
           </div>
-        ) : preset === "prudent" ? (
-          <div className="callout good">
-            <Icon name="shield" size={18} />
-            <span>{SECURITY_TEXTS.prudent}</span>
-          </div>
-        ) : (
+        ) : profil === null || profil.etat === "modifie" ? (
           <div className="stack">
             <div className="callout warning">
               <Icon name="alert" size={18} />
-              <span>{modifiedProfileText(preset ? PERMISSION_PRESETS[preset].label : "Personnalisé")}</span>
+              <span>{modifiedProfileText(profil?.label ?? "Personnalisé")}</span>
             </div>
             <div>
               <Button variant="primary" icon="shield" loading={restoring} onClick={() => void restore()}>
@@ -94,7 +118,30 @@ export function SecuriteTab() {
               </Button>
             </div>
           </div>
+        ) : profil.etat === "ancien" ? (
+          <div className="stack">
+            <div className="callout warning" role="status">
+              <Icon name="alert" size={18} />
+              <span>{legacyProfileText(profil.label)}</span>
+            </div>
+            <div>
+              <Button variant="primary" icon="lock" loading={restoring} onClick={() => void closeInternet(profil.label)}>
+                {SECURITY_TEXTS.closeInternet}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="callout good">
+            <Icon name="shield" size={18} />
+            <span>{SECURITY_TEXTS.prudent}</span>
+          </div>
         )}
+        {config.data && signales !== null ? (
+          <div className="callout warning" role="status" style={{ marginTop: 12 }}>
+            <Icon name="alert" size={18} />
+            <span>{signales}</span>
+          </div>
+        ) : null}
       </Card>
 
       <Card title="Fournisseur d'IA">

@@ -31,7 +31,7 @@ import { apiHostFor, type QuotaSync } from "./quota.ts";
 import { sessionValue } from "./security.ts";
 import { purposeOf, SessionTracker } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
-import { MESSAGES, type Run } from "./shared/assistant-rules.ts";
+import { effectiveAgentRules, MESSAGES, type Run } from "./shared/assistant-rules.ts";
 import { isClassifierRoot } from "./shared/session-purpose.ts";
 import { StudioService, StudioValidationError } from "./studio.ts";
 import { TierService } from "./tiers.ts";
@@ -608,6 +608,10 @@ describe("serveur HTTP (sécurité et proxy)", () => {
   let agentFails = false;
   /** Nombre de prochains GET /agent qui répondent 500 (panne passagère). */
   let agentTransientFailures = 0;
+  /** 1.1.0 (MW-b) : délai de réponse de GET /agent (opencode lent : budget de 3 s de security.webIssues). */
+  let agentDelayMs = 0;
+  /** 1.1.0 (MW-b) : erreur levée par l'écriture simulée du Studio (correspondance d'erreur de onError). */
+  let studioSaveError: Error | null = null;
   /** Faux opencode : demandes en attente (GET /permission), états (GET /session/status), sous-agents (GET /session/:id/children). */
   let ocPermissions: Array<Record<string, unknown>> = [];
   let ocStatuses: unknown = {};
@@ -712,6 +716,7 @@ describe("serveur HTTP (sécurité et proxy)", () => {
             agentTransientFailures--;
             json(500, { name: "UnknownError", data: { message: "panne passagère simulée" } });
           } else if (agentFails || refusedConfig) json(400, { name: "ConfigInvalidError", data: { path: "/oc-config/agents/x.md", issues: [] } });
+          else if (agentDelayMs > 0) setTimeout(() => json(200, FIXTURE_AGENTS), agentDelayMs);
           else json(200, FIXTURE_AGENTS);
         } else if (req.method === "GET" && pathname === "/command") {
           json(200, FIXTURE_COMMANDS);
@@ -843,18 +848,21 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       readSkillFile: realStudio.readSkillFile.bind(realStudio),
       // Portée contrôlée avant la garde « réponse en cours » de la 1.1 (écritures du Studio) : règle réelle.
       checkScope: realStudio.checkScope.bind(realStudio),
-      save: async (kind: string, _scope: unknown, input: { name: string; frontmatter: Record<string, unknown>; body: string }) => ({
-        kind,
-        name: input.name,
-        scope: "global",
-        project: null,
-        file: `${kind}/${input.name}.md`,
-        frontmatter: input.frontmatter,
-        body: input.body,
-        error: null,
-        files: [],
-        updatedAt: T,
-      }),
+      save: async (kind: string, _scope: unknown, input: { name: string; frontmatter: Record<string, unknown>; body: string }) => {
+        if (studioSaveError) throw studioSaveError;
+        return {
+          kind,
+          name: input.name,
+          scope: "global",
+          project: null,
+          file: `${kind}/${input.name}.md`,
+          frontmatter: input.frontmatter,
+          body: input.body,
+          error: null,
+          files: [],
+          updatedAt: T,
+        };
+      },
       remove: async () => true,
       ensureClassifierAgent: async () => undefined,
     } as unknown as StudioService;
@@ -1792,6 +1800,214 @@ describe("serveur HTTP (sécurité et proxy)", () => {
       settings.update({ ui: { mode: "simple" } });
       fs.rmSync(file, { force: true });
       fs.rmSync(other, { force: true });
+    }
+  });
+
+  // --- 1.1.0 (MW-b, décision A37 ; fiche de la migration du web §5, §6 T4) : l'interface ne rouvre plus Internet ---------------
+
+  /** Profil Prudent d'une version précédente (volume non migré : web sur « ask ») et Équilibré 1.1. */
+  const PRUDENT_1_0 = { ...PRUDENT, webfetch: "ask", websearch: "ask" };
+  const EQUILIBRE = { edit: "allow", bash: "ask", task: "ask", webfetch: "deny", websearch: "deny" };
+  const configWith = (permission: unknown, commentaire = "réglage d'une version précédente") =>
+    `{\n  "enabled_providers": ["github-copilot"],\n  // ${commentaire}\n  "permission": ${JSON.stringify(permission)}\n}\n`;
+  const refusInternet = (res: { status: number; body: string }, chemins: string[]) => {
+    assert.equal(res.status, 422, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(body.error, "internet-ferme");
+    assert.deepEqual(body.chemins, chemins);
+    assert.equal(
+      body.message,
+      `Internet est fermé : « ask » et « allow » ne sont plus acceptés pour webfetch et websearch (${chemins.join(", ")}). Une demande web restée en attente bloquait les autres autorisations. Mettez « deny ».`,
+    );
+  };
+
+  it("1.1.0 : 422 internet-ferme pour les seules ouvertures web INTRODUITES (correctif, fichier brut, permissions), rien d'écrit, aucun redémarrage", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const ancien = configWith({ ...PRUDENT, webfetch: "ask" });
+    fs.writeFileSync(file, ancien);
+    const patches = () => upstreamRequests.filter((r) => r.method === "PATCH" && r.url.startsWith("/global/config")).length;
+    const patch = (body: unknown) => call("PATCH", "/api/opencode/config", mutating, JSON.stringify(body));
+    const raw = (content: string) => call("PUT", "/api/opencode/config/raw", mutating, JSON.stringify({ content }));
+    const put = (permission: unknown) => call("PUT", "/api/opencode/config/permission", mutating, JSON.stringify({ permission }));
+    settings.update({ ui: { mode: "avance" } });
+    const from = restarts.length;
+    const p0 = patches();
+    try {
+      // Correctif : avant = GET /global/config, après = mergeConfigPatch(avant, corps).
+      refusInternet(await patch({ permission: { websearch: "ask" } }), ["permission.websearch"]);
+      refusInternet(await patch({ permission: { webfetch: "allow" } }), ["permission.webfetch"]);
+      refusInternet(await patch({ agent: { veille: { permission: { webfetch: "allow" } } } }), ["agent.veille.permission.webfetch"]);
+      refusInternet(await patch({ mode: { vieux: { permission: "ask" } } }), ["mode.vieux.permission"]);
+      assert.equal(patches(), p0);
+      // Correctif sans rapport sur un fichier qui garde webfetch à ask : accepté (un « ask » déjà présent n'est jamais refusé).
+      const small = await patch({ small_model: "github-copilot/gpt-5-mini" });
+      assert.equal(small.status, 200, small.body);
+      assert.equal(patches(), p0 + 1);
+
+      // Fichier brut : avant = texte du fichier actuel.
+      refusInternet(await raw(ancien.replace('"websearch":"deny"', '"websearch":"ask"')), ["permission.websearch"]);
+      refusInternet(await raw(ancien.replace("}\n}\n", '},\n  "agent": { "veille": { "permission": { "*": "ask" } } }\n}\n')), ["agent.veille.permission.*"]);
+      assert.equal(fs.readFileSync(file, "utf8"), ancien);
+      assert.equal(restarts.length, from);
+      const garde = ancien.replace("réglage d'une version précédente", "commentaire changé");
+      const kept = await raw(garde);
+      assert.equal(kept.status, 200, kept.body);
+      assert.equal(fs.readFileSync(file, "utf8"), garde);
+      assert.deepEqual(restarts.slice(from), ["application : fichier de configuration brut"]);
+
+      // Permissions globales : avant = permission actuelle d'opencode.
+      refusInternet(await put({ ...PRUDENT, webfetch: "allow" }), ["permission.webfetch"]);
+      refusInternet(await put({ ...PRUDENT, webfetch: "ask", "*": "ask" }), ["permission.*"]);
+      assert.equal(fs.readFileSync(file, "utf8"), garde);
+      assert.equal(restarts.length, from + 1);
+      const same = await put({ ...PRUDENT, webfetch: "ask", edit: "allow" });
+      assert.equal(same.status, 200, same.body);
+      assert.equal(restarts.length, from + 2);
+    } finally {
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("1.1.0 : refus du Studio (ouverture web introduite) rendu en 422 internet-ferme", async () => {
+    const studioModule = (await import("./studio.ts")) as Record<string, unknown>;
+    const Erreur = studioModule.StudioInternetFermeError as (new (issues: Array<{ path: string; message: string }>) => Error) | undefined;
+    assert.equal(typeof Erreur, "function", "StudioInternetFermeError attendue dans studio.ts");
+    const issues = [{ path: "frontmatter.permission.webfetch", message: "Internet est fermé : « webfetch » n'accepte plus que « deny »." }];
+    settings.update({ ui: { mode: "avance" } });
+    studioSaveError = new (Erreur as new (issues: Array<{ path: string; message: string }>) => Error)(issues);
+    try {
+      const res = await call("PUT", "/api/studio/agents/veille", mutating, JSON.stringify({ frontmatter: { description: "x", permission: { webfetch: "ask" } }, body: "Consignes." }));
+      assert.equal(res.status, 422, res.body);
+      assert.deepEqual(JSON.parse(res.body), { error: "internet-ferme", message: issues[0]?.message, issues });
+    } finally {
+      studioSaveError = null;
+      settings.update({ ui: { mode: "simple" } });
+    }
+  });
+
+  it("1.1.0 : « Fermer l'accès à Internet » (POST /api/security/update-profile, deux modes) : profil 1.0 → même profil 1.1, sinon 409", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const update = (body = "{}") => call("POST", "/api/security/update-profile", mutating, body);
+    const seen: string[] = [];
+    const off = hub.subscribe((event) => {
+      if (event.kind === "cockpit") seen.push(event.type);
+    });
+    fs.writeFileSync(file, configWith({ ...EQUILIBRE, webfetch: "ask", websearch: "ask" }));
+    const from = restarts.length;
+    try {
+      // Mode Simple (par défaut) : seul le web change, Équilibré garde edit à allow ; écriture vérifiée, relue par opencode.
+      const res = await update();
+      assert.equal(res.status, 200, res.body);
+      assert.deepEqual(JSON.parse(res.body), { ok: true, profil: "equilibre", permission: EQUILIBRE, restarted: true });
+      const written = fs.readFileSync(file, "utf8");
+      assert.match(written, /réglage d'une version précédente/);
+      assert.deepEqual(parseJsonc(written).permission, EQUILIBRE);
+      assert.equal(restarts.length, from + 1);
+      assert.ok(seen.includes("opencode.config.changed"), seen.join(", "));
+      // Relu : ce n'est plus un profil d'une version précédente.
+      const again = await update();
+      assert.equal(again.status, 409, again.body);
+      assert.equal(JSON.parse(again.body).error, "profil-inconnu");
+      // Réglage personnalisé : 409, rien d'écrit, aucun redémarrage (jamais d'élargissement ni de resserrement).
+      const custom = configWith({ edit: "allow", webfetch: "ask" }, "personnalisé");
+      fs.writeFileSync(file, custom);
+      const refused = await update();
+      assert.equal(refused.status, 409, refused.body);
+      assert.equal(JSON.parse(refused.body).error, "profil-inconnu");
+      assert.match(JSON.parse(refused.body).message, /Revenir au profil Prudent/);
+      assert.equal(fs.readFileSync(file, "utf8"), custom);
+      assert.equal(restarts.length, from + 1);
+      // Corps strict, comme restore-prudent.
+      assert.equal((await update('{"profil":"autonome"}')).status, 400);
+      // Mode Avancé : Sans confirmation 1.0 → Sans confirmation 1.1 (profil gardé, seul le web change).
+      settings.update({ ui: { mode: "avance" } });
+      fs.writeFileSync(file, configWith({ edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" }));
+      const autonome = await update();
+      assert.equal(autonome.status, 200, autonome.body);
+      assert.equal(JSON.parse(autonome.body).profil, "autonome");
+      assert.deepEqual(parseJsonc(fs.readFileSync(file, "utf8")).permission, { edit: "allow", bash: "allow", task: "allow", webfetch: "deny", websearch: "deny" });
+    } finally {
+      off();
+      settings.update({ ui: { mode: "simple" } });
+      fs.rmSync(file, { force: true });
+    }
+  });
+
+  it("1.1.0 (non-régression) : « Revenir au profil Prudent » sur un Prudent 1.0 écrit le Prudent 1.1, jamais refusé par le 422 (deux modes)", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    for (const mode of ["simple", "avance"] as const) {
+      settings.update({ ui: { mode } });
+      fs.writeFileSync(file, configWith(PRUDENT_1_0));
+      try {
+        const res = await call("POST", "/api/security/restore-prudent", mutating, "{}");
+        assert.equal(res.status, 200, res.body);
+        assert.deepEqual(JSON.parse(res.body), { ok: true, permission: PRUDENT, restarted: true });
+        assert.deepEqual(parseJsonc(fs.readFileSync(file, "utf8")).permission, PRUDENT);
+      } finally {
+        settings.update({ ui: { mode: "simple" } });
+        fs.rmSync(file, { force: true });
+      }
+    }
+  });
+
+  it("1.1.0 : security.webIssues (démarrage et Diagnostic) : titres, natifs exclus, règle générale une fois, null si opencode ne répond pas en 3 s", async () => {
+    const file = path.join(tmp, "opencode.jsonc");
+    const nombre = FIXTURE_AGENTS.length;
+    const agent = (name: string, propre: unknown, global: unknown, extra: Record<string, unknown> = {}) =>
+      ({ name, mode: "primary", options: {}, permission: effectiveAgentRules(global, propre), ...extra }) as unknown as (typeof FIXTURE_AGENTS)[number];
+    db.prepare("INSERT INTO item_meta (kind, name, title, task_size, origin, created_at, updated_at) VALUES ('agents', ?, ?, 'M', 'assistant', ?, ?)").run(
+      "veille-cve",
+      "Veille des failles (CVE)",
+      T,
+      T,
+    );
+    FIXTURE_AGENTS.push(
+      agent("veille-cve", { websearch: "ask" }, PRUDENT),
+      agent("explore", { webfetch: "ask" }, PRUDENT, { native: true, mode: "subagent" }),
+      agent("cache", { webfetch: "ask" }, PRUDENT, { hidden: true, mode: "subagent" }),
+    );
+    const issues = async () => {
+      const boot = await call("GET", "/api/bootstrap", authed);
+      const status = await call("GET", "/api/system/status", authed);
+      assert.equal(boot.status, 200, boot.body);
+      assert.equal(status.status, 200, status.body);
+      const found = JSON.parse(boot.body).security.webIssues;
+      assert.deepEqual(JSON.parse(status.body).security.webIssues, found);
+      return found;
+    };
+    try {
+      lookup.invalidate();
+      assert.deepEqual(await issues(), { global: false, assistants: [{ name: "veille-cve", title: "Veille des failles (CVE)" }] });
+      // Règle générale d'une version précédente : signalée une fois ; un agent qui en hérite n'est pas listé en plus.
+      fs.writeFileSync(file, configWith(PRUDENT_1_0));
+      FIXTURE_AGENTS.push(agent("herite", {}, PRUDENT_1_0));
+      lookup.invalidate();
+      const ouverte = await issues();
+      assert.equal(ouverte.global, true);
+      assert.deepEqual(
+        ouverte.assistants.map((a: { name: string }) => a.name),
+        ["veille-cve"],
+      );
+      // opencode refuse de répondre : null (jamais un faux « fermé »).
+      agentFails = true;
+      lookup.invalidate();
+      assert.equal(await issues(), null);
+      agentFails = false;
+      // Délai dépassé : null en 3 s (même budget que providerIssues).
+      agentDelayMs = 4_000;
+      lookup.invalidate();
+      const debut = Date.now();
+      const boot = await call("GET", "/api/bootstrap", authed);
+      assert.equal(JSON.parse(boot.body).security.webIssues, null);
+      assert.ok(Date.now() - debut < 3_800, `${Date.now() - debut} ms`);
+    } finally {
+      agentFails = false;
+      agentDelayMs = 0;
+      FIXTURE_AGENTS.splice(nombre);
+      db.prepare("DELETE FROM item_meta WHERE kind = 'agents' AND name = 'veille-cve'").run();
+      fs.rmSync(file, { force: true });
+      lookup.invalidate();
     }
   });
 

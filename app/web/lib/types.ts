@@ -11,7 +11,7 @@ import type {
   TlsSummary,
   UiSettings,
 } from "../../server/shared/api-types.ts";
-import type { Rule, Tier } from "../../server/shared/assistant-rules.ts";
+import type { Rule, Tier, WebIssues } from "../../server/shared/assistant-rules.ts";
 import type { BootstrapAutonomy } from "../../server/shared/autonomy-types.ts";
 import type { BootstrapOmo } from "../../server/shared/omo-types.ts";
 
@@ -49,6 +49,7 @@ export type {
   TurnLock,
   UiMode,
   UseCase,
+  WebIssues,
 } from "../../server/shared/assistant-rules.ts";
 export type {
   AdoptRequest,
@@ -88,6 +89,7 @@ export type {
   ToCompleteItem,
   UiSettings,
   UpdateItem,
+  UpdateProfileResponse,
   UsageRow,
   UsageRowState,
   UsageRowType,
@@ -227,6 +229,8 @@ export interface Bootstrap {
     projectConfig: boolean;
     /** Verrou « fournisseurs » de la configuration globale d'opencode (configProviderIssues) ; null : opencode injoignable. */
     providerIssues: Array<{ path: string; message: string }> | null;
+    /** 1.1.0 (A37) : ce qui peut encore demander Internet (webAskAgents) ; null : opencode injoignable ou délai de 3 s dépassé. */
+    webIssues: WebIssues | null;
     /** 1.0.5 : schéma servi sur la boucle locale (HTTPS par défaut). */
     localScheme: LocalScheme;
     /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */
@@ -465,6 +469,8 @@ export interface SystemStatus {
     noProxy: string;
     allowedHosts: string[];
     projectConfig: boolean;
+    /** 1.1.0 (A37) : ce qui peut encore demander Internet (webAskAgents) ; null : opencode injoignable ou délai de 3 s dépassé. */
+    webIssues: WebIssues | null;
     /** 1.0.5 : schéma servi sur la boucle locale (HTTPS par défaut). */
     localScheme: LocalScheme;
     /** Date UTC de la confirmation du mode HTTP (AAAA-MM-JJTHH:MM:SSZ) ; null en HTTPS. */

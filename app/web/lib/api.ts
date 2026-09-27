@@ -52,6 +52,7 @@ import type {
   StudioTemplate,
   SystemStatus,
   Todo,
+  UpdateProfileResponse,
   UsageSummary,
   ValidationIssue,
 } from "./types.ts";
@@ -278,6 +279,8 @@ export const api = {
   chatChoices: (sessionId: string) => http.get<ChoicesResponse>(`/api/chat/choices/${enc(sessionId)}`),
   /** Réapplique le profil de droits Prudent (permission globale d'opencode). */
   restorePrudent: () => http.post<RestorePrudentResponse>("/api/security/restore-prudent"),
+  /** 1.1.0 (A37) : « Fermer l'accès à Internet » d'un profil d'une version précédente (même profil, seul le web change). */
+  updateProfile: () => http.post<UpdateProfileResponse>("/api/security/update-profile"),
 };
 
 /** Corps 409 « assistant-model-changed » d'un ApiError, sinon null (le client renvoie une fois avec ce modèle). */

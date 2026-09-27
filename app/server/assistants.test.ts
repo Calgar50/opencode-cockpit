@@ -48,7 +48,10 @@ const SONNET = "github-copilot/claude-sonnet-5";
 const CODEX = "github-copilot/gpt-5.3-codex";
 const CRLF = String.fromCharCode(13, 10);
 const GLOBAL = { type: "global" } as const;
-const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" };
+// 1.1.0 (A37) : profil Prudent livré, web refusé. Un volume 1.0 non migré (web sur « ask ») est simulé par PRUDENT_1_0 là où un
+// test en a besoin.
+const PRUDENT = { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "deny", websearch: "deny" };
+const PRUDENT_1_0 = { ...PRUDENT, webfetch: "ask", websearch: "ask" };
 
 const NAMES: Record<string, string> = {
   "claude-sonnet-5": "Claude Sonnet 5",
@@ -962,5 +965,144 @@ describe("modes Simple et Avancé", () => {
     assert.equal(refused.status, 422);
     assert.equal(refused.body.error, "fournisseur-refuse");
     assert.equal(h.meta("agents", "relire")?.applied_model, CODEX);
+  });
+});
+
+// 1.1.0 (MW-b, décision A37 ; fiche de la migration du web §5.1, §6 T3 et T4) : l'interface ne rouvre plus Internet. Le champ
+// `web` des assistants reste accepté mais IGNORÉ ; le Studio refuse une ouverture web INTRODUITE, jamais un « ask » déjà présent ;
+// studio-schema.ts et agentFrontmatterSchema sont INCHANGÉS, pour que le réalignement ne casse jamais sur un assistant d'avant.
+describe("Internet fermé pour les assistants (1.1.0)", () => {
+  const ouvert = (valeur: unknown) => valeur === "ask" || valeur === "allow";
+  const webDe = (file: string) => {
+    const permission = parseFrontmatter(fs.readFileSync(file, "utf8")).data.permission as Record<string, unknown>;
+    return [permission.webfetch, permission.websearch];
+  };
+  /** Fichier d'agent réécrit comme par une version précédente (« Consulter Internet » coché : webfetch et websearch à ask). */
+  const versionPrecedente = (file: string) =>
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("webfetch: deny", "webfetch: ask").replace("websearch: deny", "websearch: ask"));
+
+  it("enregistrement avec web: true (champ accepté mais ignoré) : fichier écrit avec webfetch et websearch à deny", async () => {
+    const h = harness();
+    const preview = await h.call("POST", "/api/assistants/preview", { ...DRAFT, web: true });
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.body.issues, []);
+    assert.ok(preview.body.rightLines.some((l: Json) => l.id === "internet" && l.kind === "non"), JSON.stringify(preview.body.rightLines));
+    const res = await h.call("PUT", "/api/assistants/veille", { ...DRAFT, web: true });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const file = path.join(h.config, "agents", "veille.md");
+    assert.deepEqual(webDe(file), ["deny", "deny"]);
+    assert.equal(res.body.web, false);
+    // Assistant d'une version précédente : son profil reste affiché (detectRights inchangé), puis « Modifier » et Enregistrer ferme
+    // Internet pour lui, même si le corps renvoie web: true (assistant de création, bibliothèque des méthodes).
+    versionPrecedente(file);
+    const avant = (await h.call("GET", "/api/assistants")).body.assistants.find((a: Json) => a.name === "veille");
+    assert.equal(avant.web, true);
+    assert.equal(avant.rights, "lecture");
+    const saved = await h.call("PUT", "/api/assistants/veille", { ...DRAFT, web: true, previousName: "veille" });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual(webDe(file), ["deny", "deny"]);
+  });
+
+  it("Studio (Avancé) : une ouverture d'Internet INTRODUITE est refusée (internet-ferme), un « ask » déjà présent est gardé", async () => {
+    const h = harness({ mode: "avance" });
+    const agents = path.join(h.config, "agents");
+    const frontmatter = (permission: unknown, description = "Veille des failles publiées") => ({ description, mode: "primary", model: SONNET, permission });
+    const save = (name: string, permission: unknown, description?: string) =>
+      h.studio.save("agents", GLOBAL, { name, frontmatter: frontmatter(permission, description), body: "Consignes de l'agent de veille." });
+    const refus = (promise: Promise<unknown>, cle: string) =>
+      assert.rejects(promise, (err: unknown) => {
+        assert.ok(err instanceof StudioValidationError, String(err));
+        assert.equal(err.name, "StudioInternetFermeError");
+        assert.deepEqual(err.issues, [{ path: `frontmatter.permission.${cle}`, message: `Internet est fermé : « ${cle} » n'accepte plus que « deny ».` }]);
+        return true;
+      });
+    await refus(save("veille", { webfetch: "ask" }), "webfetch");
+    await refus(save("veille", { edit: "ask", websearch: "allow" }), "websearch");
+    await refus(save("veille", { "*": "ask" }), "*");
+    assert.equal(fs.existsSync(path.join(agents, "veille.md")), false);
+    // Joker « * » à ask masqué pour les deux outils par leur refus placé après lui : aucune demande web possible, accepté.
+    assert.equal((await save("veille", { "*": "ask", webfetch: "deny", websearch: "deny" })).name, "veille");
+
+    // Agent d'une version précédente, écrit hors du Studio : l'enregistrer sans toucher au web est accepté (réglage gardé).
+    const ancien = path.join(agents, "ancien.md");
+    fs.writeFileSync(ancien, `---\ndescription: Agent d'une version précédente\nmode: primary\nmodel: ${SONNET}\npermission:\n  webfetch: ask\n  websearch: deny\n---\n\nConsignes.\n`);
+    const kept = await save("ancien", { webfetch: "ask", websearch: "deny" }, "Agent d'une version précédente, relu");
+    assert.equal((kept.frontmatter.permission as Record<string, unknown>).webfetch, "ask");
+    // Y ouvrir un autre outil, ou passer webfetch de ask à allow : refusé, fichier inchangé.
+    const avant = fs.readFileSync(ancien, "utf8");
+    await refus(save("ancien", { webfetch: "ask", websearch: "ask" }), "websearch");
+    await refus(save("ancien", { webfetch: "allow", websearch: "deny" }), "webfetch");
+    assert.equal(fs.readFileSync(ancien, "utf8"), avant);
+    // Refuser : accepté.
+    await save("ancien", { webfetch: "deny", websearch: "deny" });
+    assert.deepEqual(webDe(ancien), ["deny", "deny"]);
+  });
+
+  it("réalignement en mode Simple et applyModels avec un assistant d'une version précédente (webfetch à ask) : 200, IA mise à jour", async () => {
+    const h = harness();
+    assert.equal(h.settings.get().ui.mode, "simple");
+    for (const name of ["relire-a", "relire-b"]) assert.equal((await h.call("PUT", `/api/assistants/${name}`, DRAFT)).status, 200);
+    const ancien = path.join(h.config, "agents", "relire-a.md");
+    versionPrecedente(ancien);
+    h.settings.update({ ai: { tiers: { ...DEFAULT_TIERS, equilibre: { candidates: [CODEX], variant: null } } } });
+    const res = await h.call("POST", "/api/ai/realign", {}, { "x-cockpit-confirm": "1" });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(res.body.updated.map((u: Json) => u.name).sort(), ["relire-a", "relire-b"]);
+    const data = parseFrontmatter(fs.readFileSync(ancien, "utf8")).data;
+    assert.equal(data.model, CODEX);
+    // Le réalignement ne change que l'IA : les règles du fichier restent celles de l'utilisateur.
+    assert.deepEqual(webDe(ancien), ["ask", "ask"]);
+    await h.studio.applyModels([{ kind: "agents", name: "relire-a", model: SONNET, variant: null }]);
+    assert.equal(parseFrontmatter(fs.readFileSync(ancien, "utf8")).data.model, SONNET);
+    assert.deepEqual(webDe(ancien), ["ask", "ask"]);
+  });
+
+  it("écrivains : chaque appel d'assistantPermission dont web n'est pas false est justifié ; catalogue, équipiers et exemples sans Internet", () => {
+    const app = path.join(import.meta.dirname, "..");
+    const appels: Array<{ fichier: string; web: string }> = [];
+    for (const top of ["server", "web"]) {
+      for (const entry of fs.readdirSync(path.join(app, top), { recursive: true }) as string[]) {
+        const rel = `${top}/${entry.replaceAll("\\", "/")}`;
+        if (!/\.tsx?$/.test(rel) || /\.test\.tsx?$/.test(rel) || rel.includes("/test-support/")) continue;
+        const source = fs.readFileSync(path.join(app, rel), "utf8");
+        for (const m of source.matchAll(/\bassistantPermission\(/g)) {
+          if (/function\s+$/.test(source.slice(Math.max(0, (m.index ?? 0) - 20), m.index))) continue;
+          // Arguments au premier niveau (parenthèses, crochets et accolades équilibrés).
+          let depth = 0;
+          let at = (m.index ?? 0) + m[0].length;
+          const args: string[] = [""];
+          for (; at < source.length; at++) {
+            const c = source.charAt(at);
+            if (depth === 0 && c === ")") break;
+            if ("([{".includes(c)) depth++;
+            if (")]}".includes(c)) depth--;
+            if (depth === 0 && c === ",") args.push("");
+            else args[args.length - 1] += c;
+          }
+          appels.push({ fichier: rel, web: (args[1] ?? "").trim() });
+        }
+      }
+    }
+    // Justifications : detectRights compare le fichier à un profil (lecture, jamais écrit) ; le catalogue écrit entry.web, faux pour
+    // chaque entrée (vérifié ci-dessous) ; buildAssistantFile écrit toujours false (champ web du brouillon ignoré).
+    const justifies = new Set(["server/shared/assistant-rules.ts|web", "server/assistants.ts|entry.web"]);
+    const autres = appels.filter((a) => a.web !== "false" && !justifies.has(`${a.fichier}|${a.web}`));
+    assert.deepEqual(autres, [], "appel d'assistantPermission qui peut ouvrir Internet sans justification");
+    assert.ok(appels.some((a) => a.fichier === "server/shared/assistant-rules.ts" && a.web === "false"), "buildAssistantFile écrit web=false");
+    const regles = fs.readFileSync(path.join(app, "server", "shared", "assistant-rules.ts"), "utf8");
+    assert.match(regles, /permission: assistantPermission\(d\.rights, false, fiches\),/);
+    // Catalogue (équipiers de la construction compris) : web toujours faux.
+    assert.ok(CATALOGUE.length >= 10);
+    for (const entry of CATALOGUE) assert.equal(entry.web, false, entry.id);
+    // Exemples du Studio : aucune règle qui ouvre Internet (ni webfetch ni websearch à ask ou allow, ni joker « * » à ask).
+    for (const template of TEMPLATES.filter((t) => t.kind === "agents")) {
+      const permission = template.frontmatter.permission;
+      if (typeof permission === "string") {
+        assert.notEqual(permission, "ask", template.name);
+        continue;
+      }
+      const p = (permission ?? {}) as Record<string, unknown>;
+      assert.equal(ouvert(p.webfetch) || ouvert(p.websearch) || p["*"] === "ask", false, template.name);
+    }
   });
 });
