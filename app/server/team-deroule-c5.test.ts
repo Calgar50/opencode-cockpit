@@ -891,6 +891,34 @@ describe("GF4 (A28 C6) : ce que le cockpit a écrit est figé au dépôt, jamais
 });
 // </c5:depot-fige>
 
+// <c5:chemin-relance>
+describe("GF4 (A27/A28), « C2 après une relance » : la carte ne lit que les tours de la tentative COURANTE du relecteur", () => {
+  it("tentative 1 au plafond de tours, relance conclue « rien à reprendre » au tour 1 : journal d'un tour, aucune note signée", () => {
+    rang = 0;
+    const steps = [
+      faite({ stepId: "redac", tentative: 1 }),
+      faite({ stepId: "relec", tentative: 1, verdict: "a-reprendre" }),
+      faite({ stepId: "redac", tentative: 1, tour: 2 }),
+      faite({ stepId: "relec", tentative: 1, tour: 2, verdict: "a-reprendre" }),
+      ligne({ stepId: "redac", tentative: 1, tour: 3, state: "interrompue" }),
+      faite({ stepId: "redac", tentative: 2 }),
+      faite({ stepId: "relec", tentative: 2, verdict: "rien-a-reprendre" }),
+    ];
+    const NOTES = [DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", "2")];
+    // Le relecteur (une IA) a fini son texte par les deux notes : elles restent SON texte, dans le journal replié.
+    const livrable = ["Version neuve.", `## ${DELIVERABLE_TEXTS.journal}`, "### tour 1 · Rien à reprendre", "Rien à redire.", ...NOTES].join("\n\n");
+    for (const vue of [run(steps, { blocs: [{ index: 0, type: "relecture", toursMax: 2 }] }), run(steps, {})]) {
+      const cas = vue.blocs === undefined ? "sans bornes" : "avec bornes";
+      const modele = modeleResultat(vue, livrable, true, "resultat");
+      assert.equal(modele.texte, "Version neuve.", cas);
+      assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, cas);
+      assert.deepEqual(modele.notes, [], `${cas} : la tentative courante a conclu, le cockpit n'a écrit aucune note`);
+      assert.ok(modele.journal?.texte.endsWith(NOTES.join("\n\n")), `${cas} : les phrases du relecteur restent dans le journal`);
+    }
+  });
+});
+// </c5:chemin-relance>
+
 // --- Clôture de la 5b (D-5b-1, revue d'itération 5b) : la carte d'une pause reprise après un redémarrage du cockpit -----------
 
 describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre son issue et un texte vrai", () => {

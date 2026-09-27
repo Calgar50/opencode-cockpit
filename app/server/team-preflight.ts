@@ -90,6 +90,9 @@ import type {
   TeamStepState,
 } from "./shared/team-types.ts";
 import { INTERNAL_AGENTS } from "./studio.ts";
+// <c5:chemin-relance>
+import { cheminDeRelance, cheminParPassages, RELAUNCHABLE } from "./team-run-guards.ts";
+// </c5:chemin-relance>
 import { ACTIVE_RUN_STATES, createTeamStore, type TeamStore } from "./team-store.ts";
 
 /** Validité d'un instantané de lectures (D-eq-17) : au-delà, la feuille ré-estime (409 estimation-perimee). */
@@ -857,22 +860,13 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     if (relance) {
       const run = store().runs.get(relance.runId);
       if (!run || run.root_session_id !== rootId) return { ok: false, status: 404, code: "not-found" };
-      // Passages déjà TERMINÉS, une ligne par (étape, tour), sa dernière tentative faisant foi : une relecture repasse par la
-      // même étape à chaque tour (L42a), donc un seul passage fini n'en retire qu'un du chemin, jamais tous.
-      const faits = new Map<string, number>();
-      const derniere = new Map<string, { tentative: number; state: string; stepId: string }>();
-      for (const step of store().steps.ofRun(relance.runId)) {
-        const cle = `${step.step_id}\u0000${step.tour}`;
-        const kept = derniere.get(cle);
-        if (!kept || step.tentative >= kept.tentative) derniere.set(cle, { tentative: step.tentative, state: step.state, stepId: step.step_id });
-      }
-      for (const ligne of derniere.values()) if (ligne.state === "terminee") faits.set(ligne.stepId, (faits.get(ligne.stepId) ?? 0) + 1);
-      chemin = tous.filter((stepId) => {
-        const restant = faits.get(stepId) ?? 0;
-        if (restant <= 0) return true;
-        faits.set(stepId, restant - 1);
-        return false;
-      });
+      // <c5:chemin-relance>
+      // Grande fusion (GF4, A27/A28 §3) : l'estimation d'une RELANCE compte ce que la relance exécute vraiment (P3) — le chemin
+      // que lisent aussi le contrôle de la confirmation et l'exécuteur (`cheminDeRelance`) : une relecture qui repart est
+      // refaite ENTIÈRE au tour 1, sessions neuves. Une PAUSE reprise après un redémarrage ne refait rien : son reste est compté
+      // par passage, tentative courante seulement (`cheminParPassages`), comme avant.
+      chemin = RELAUNCHABLE.includes(run.state) ? cheminDeRelance(flow, store().steps.ofRun(relance.runId)) : cheminParPassages(store(), run);
+      // </c5:chemin-relance>
       deja = store().spentOfRun(relance.runId);
     }
 

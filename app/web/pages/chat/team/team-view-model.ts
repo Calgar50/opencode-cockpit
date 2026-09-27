@@ -583,11 +583,16 @@ function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
   const [auteur, relecteur] = [...rangs.entries()].sort((a, b) => a[1] - b[1]);
   if (rangs.size !== 2 || auteur === undefined || relecteur === undefined || auteur[1] === relecteur[1]) return [];
   const parTour = new Map<number, StepRunView>();
+  // <c5:chemin-relance>
+  // Grande fusion (GF4, A27/A28 §3, « C2 après une relance ») : la tentative COURANTE du relecteur seulement, comme l'exécuteur
+  // (`verdictsCourants`). Mêlée, une relecture relancée qui avait fait moins de tours que la tentative précédente comptait les
+  // tours anciens, et la carte signait des notes que le livrable de la tentative courante ne porte pas.
+  const courante = Math.max(0, ...lignes.filter((ligne) => ligne.stepId === relecteur[0]).map((ligne) => ligne.tentative));
   for (const ligne of lignes) {
-    if (ligne.stepId !== relecteur[0]) continue;
-    const vue = parTour.get(ligne.tour);
-    if (!vue || ligne.tentative >= vue.tentative) parTour.set(ligne.tour, ligne);
+    if (ligne.stepId !== relecteur[0] || ligne.tentative !== courante) continue;
+    parTour.set(ligne.tour, ligne);
   }
+  // </c5:chemin-relance>
   const tours: StepRunView[] = [];
   for (let tour = 1; parTour.get(tour)?.state === "terminee"; tour++) tours.push(parTour.get(tour) as StepRunView);
   return tours;

@@ -115,6 +115,9 @@ import type {
   TeamStepState,
 } from "./shared/team-types.ts";
 import { emitEquipe } from "./team-events.ts";
+// <c5:chemin-relance>
+import { cheminDeRelance, etapesARefaire, etatDuChemin, RELAUNCHABLE, verdictsCourants } from "./team-run-guards.ts";
+// </c5:chemin-relance>
 import { createTeamStore, type StepKey, type TeamStore } from "./team-store.ts";
 
 // --- Constantes ---------------------------------------------------------------------------------------------------------------
@@ -509,22 +512,17 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   /** Verdicts rendus dans chaque bloc « relecture », dans l'ordre des tours ; `null` = verdict illisible (colonne `verdict`). */
   const verdictsDesBlocs = (run: RunMemory): Record<string, (VerdictRelecteur | null)[]> => {
     const out: Record<string, (VerdictRelecteur | null)[]> = {};
-    const derniere = new Map<string, StepRow>();
-    for (const row of store.steps.ofRun(run.runId)) {
-      const cle = `${row.step_id}\u0000${row.tour}`;
-      const kept = derniere.get(cle);
-      if (!kept || row.tentative >= kept.tentative) derniere.set(cle, row);
-    }
+    // <c5:chemin-relance>
+    // Grande fusion (GF4, A27/A28 §3) : la tentative COURANTE du relecteur seulement (`verdictsCourants`), comme `toursTermines`
+    // pour les tours. Relue par tour et par tentative la plus haute, une relecture relancée qui concluait « rien à reprendre » au
+    // tour 1 retrouvait le « à reprendre » d'un ancien tour 2, et repartait pour un tour de trop — atteignable depuis que la
+    // relance d'une relecture commencée n'est plus refusée.
+    const lignes = store.steps.ofRun(run.runId);
     for (const bloc of run.flow.blocs) {
       if (bloc.type !== "relecture") continue;
-      const tours: (VerdictRelecteur | null)[] = [];
-      for (let tour = 1; ; tour++) {
-        const row = derniere.get(`${bloc.relecteur.id}\u0000${tour}`);
-        if (!row || row.state !== "terminee") break;
-        tours.push(row.verdict === "a-reprendre" || row.verdict === "rien-a-reprendre" ? row.verdict : null);
-      }
-      out[bloc.id] = tours;
+      out[bloc.id] = verdictsCourants(lignes, bloc.relecteur.id);
     }
+    // </c5:chemin-relance>
     return out;
   };
 
@@ -770,6 +768,15 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   };
 
   const suiteOf = (run: RunMemory): { typique: number; maximum: number } => {
+    // <c5:chemin-relance>
+    // Grande fusion (GF4, A27/A28 §3) : [Relancer la suite (≈ x $)] d'un lancement relançable annonce ce que la relance fera
+    // vraiment — le chemin commun (`cheminDeRelance`), celui que l'estimation montrée et l'exécution suivent aussi.
+    const etat = store.runs.get(run.runId)?.state;
+    if (etat !== undefined && RELAUNCHABLE.includes(etat)) {
+      const reste = suiteEstimate(run.flow, { etapes: etatDuChemin(run.flow, cheminDeRelance(run.flow, store.steps.ofRun(run.runId))) }, estimateContext(run));
+      return { typique: reste.typique, maximum: reste.maximum };
+    }
+    // </c5:chemin-relance>
     const rows = lastRows(run.runId);
     const finis = toursTermines(run.runId);
     // UNE entrée par étape, jamais une par passage : `suiteEstimate` additionne les comptes de tours qu'on lui donne.
@@ -2189,39 +2196,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   // --- Relance ----------------------------------------------------------------------------------------------------------------
 
-  /**
-   * Bloc « relecture » qui REPART à la relance : une de ses deux étapes n'est pas terminée et son dernier verdict ne l'a pas
-   * clos. Les deux lectures de l'état d'un bloc — les tours faits (`toursTermines`) et les verdicts rendus (`verdictsDesBlocs`)
-   * — doivent alors porter sur la MÊME tentative : la ligne neuve du relecteur périme son verdict, comme celle du rédacteur
-   * périme ses tours.
-   */
-  const relectureQuiRepart = (
-    run: RunMemory,
-    stepId: string,
-    rows: Map<string, StepRow>,
-    verdicts: Record<string, (VerdictRelecteur | null)[]>,
-  ): boolean => {
-    const bloc = etapeDuDeroule(run.flow, stepId)?.bloc;
-    if (!bloc || bloc.type !== "relecture") return false;
-    if ((verdicts[bloc.id] ?? []).at(-1) === "rien-a-reprendre") return false;
-    return [bloc.auteur.id, bloc.relecteur.id].some((id) => rows.get(id)?.state !== "terminee");
-  };
-
-  /**
-   * Bloc « aiguillage » dont VOTRE choix tient encore : son aiguilleur est terminé — sa ligne n'est donc pas recréée et garde
-   * la colonne `choix` — et ce choix est lisible. Si l'aiguilleur lui-même repart, le choix est perdu avec sa ligne et les
-   * spécialistes écartés doivent bien redevenir « prevue ».
-   */
-  const aiguillageArbitre = (
-    run: RunMemory,
-    stepId: string,
-    rows: Map<string, StepRow>,
-    confirmes: Record<string, string[] | "aucun">,
-  ): boolean => {
-    const bloc = etapeDuDeroule(run.flow, stepId)?.bloc;
-    if (!bloc || bloc.type !== "aiguillage") return false;
-    return rows.get(bloc.aiguilleur.id)?.state === "terminee" && Object.hasOwn(confirmes, bloc.id);
-  };
+  // <c5:chemin-relance>
+  // Grande fusion (GF4, A27/A28 §3) : `relectureQuiRepart` et `aiguillageArbitre` (L42b) sont devenues la règle commune
+  // `etapesARefaire` de team-run-guards.ts, lue à la fois par l'estimation, le contrôle de la confirmation et `relaunch`.
+  // </c5:chemin-relance>
 
   const relaunch = async (runId: string, plan: RunPlan): Promise<TeamRunView | RunnerRefusal> => {
     const row = store.runs.get(runId);
@@ -2265,22 +2243,23 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     store.runs.patch(runId, { estimateSha256: plan.estimateSha256, plafond: plan.plafond, endedAt: null });
     // Nouvelle tentative (nouvelle ligne, nouvelle session) pour chaque étape non terminée ; les terminées ne sont pas refacturées.
     const rows = lastRows(runId);
-    // État du déroulé AVANT les lignes neuves : les verdicts déjà rendus (pour savoir quel bloc de relecture repart) et VOTRE
-    // choix, relu en base puisque `run.choix` vient d'être vidé (colonne `choix` de l'aiguilleur, ligne non recréée).
-    const verdictsAvant = verdictsDesBlocs(run);
-    const choixTenus = choixConfirmes(run);
     const tentativesMax = new Map<string, number>();
     for (const ligne of store.steps.ofRun(runId)) tentativesMax.set(ligne.step_id, Math.max(tentativesMax.get(ligne.step_id) ?? 0, ligne.tentative));
+    // <c5:chemin-relance>
+    // Grande fusion (GF4, A27/A28 §3) : les étapes REFAITES viennent de la règle commune (`etapesARefaire`, team-run-guards.ts),
+    // lue sur la base AVANT les lignes neuves, celle-là même que suivent l'estimation montrée et le contrôle de la confirmation :
+    // - une étape TERMINÉE n'est refaite que lorsque son bloc de relecture repart (une de ses deux étapes non terminée, dernier
+    //   verdict de la tentative courante autre que « rien à reprendre ») : le bloc entier recommence alors au tour 1, avec de
+    //   nouvelles sessions des deux côtés (D-5-14, fiche L42b) ;
+    // - un spécialiste écarté par VOTRE choix reste « Non choisi », état final, tant que ce choix tient en base (colonne `choix`
+    //   de l'aiguilleur, ligne non recréée).
+    const refaites = etapesARefaire(run.flow, store.steps.ofRun(runId));
+    // </c5:chemin-relance>
     for (const declaree of etapesDeclarees(run.flow)) {
       const previous = rows.get(declaree.stepId);
-      // Une étape TERMINÉE n'est refaite que lorsque son bloc de relecture repart : le bloc entier recommence alors au tour 1,
-      // avec de nouvelles sessions des deux côtés (D-5-14, fiche L42b). Sans cela, le rédacteur repartait seul au tour 1 tandis
-      // que le verdict du relecteur, resté sur l'ancienne tentative, faisait redemander un tour 2 dont la session n'existait
-      // plus : la relance retombait en échec sans rien envoyer, indéfiniment.
-      if (previous?.state === "terminee" && !relectureQuiRepart(run, declaree.stepId, rows, verdictsAvant)) continue;
-      // Un spécialiste écarté par VOTRE choix reste « Non choisi », état final, tant que ce choix tient en base. Le recréer
-      // « prevue » le laissait ainsi pour toujours : `blocEnChoix` ne redemande rien et l'aiguillage ne lance que les retenus.
-      if (previous?.state === "non-choisi" && aiguillageArbitre(run, declaree.stepId, rows, choixTenus)) continue;
+      // <c5:chemin-relance>
+      if (!refaites.has(declaree.stepId)) continue;
+      // </c5:chemin-relance>
       // La tentative la plus haute TOUS TOURS confondus : au tour 2 d'une relecture interrompue, la ligne du tour 1 porte déjà
       // la même tentative, et la nouvelle ligne du tour 1 doit lui succéder.
       const tentative = (tentativesMax.get(declaree.stepId) ?? 0) + 1;

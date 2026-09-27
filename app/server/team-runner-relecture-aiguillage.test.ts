@@ -42,6 +42,9 @@ import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from ".
 import type { FakeAgent, FakeSession } from "./test-support/fake-opencode.ts";
 import { until } from "./test-support/helpers.ts";
 import { createTeamRunnerModule, type TeamRunner } from "./team-runner.ts";
+// <c5:chemin-relance>
+import { cheminDeRelance, etapesARefaire, passagesTermines, verdictsCourants } from "./team-run-guards.ts";
+// </c5:chemin-relance>
 import { createTeamStore } from "./team-store.ts";
 
 const MODEL = "github-copilot/gpt-5-mini";
@@ -1758,6 +1761,163 @@ describe("Clôture 5b, tour 3 (D-5b-1) : les accords montrés par la boîte de l
     h.assertNoGlobalRestart();
   });
 });
+
+// <c5:chemin-relance>
+// --- Grande fusion (GF4, A27/A28, constats-5b §3) : UN chemin de relance pour l'estimation, le contrôle et l'exécution --------
+
+/** Ligne `team_run_steps` minimale pour les fonctions pures du chemin (team-run-guards.ts). */
+const l = (step_id: string, tour: number, tentative: number, state: string, verdict: string | null = null, choix: string | null = null) =>
+  ({ step_id, tour, tentative, state, verdict, choix }) as Parameters<typeof cheminDeRelance>[1][number];
+
+/** Ajoute une ligne à un lancement semé (tours suivants, tentatives), comme l'exécuteur les crée. */
+function ajouterLigne(h: CockpitHarness, runId: string, ligne: { step: string; titre: string; agent: string; tour: number; tentative: number; state: string; verdict?: string | null; sessionId?: string | null; extrait?: string | null }): void {
+  h.db
+    .prepare(
+      `INSERT INTO team_run_steps (run_id, step_id, tour, tentative, ordre, bloc_index, titre, agent, state, session_id, result_excerpt, verdict, model, cost)
+       VALUES (:run, :step, :tour, :tentative, 1, 0, :titre, :agent, :state, :session, :extrait, :verdict, :model, 0)`,
+    )
+    .run({ run: runId, step: ligne.step, tour: ligne.tour, tentative: ligne.tentative, titre: ligne.titre, agent: ligne.agent, state: ligne.state, session: ligne.sessionId ?? null, extrait: ligne.extrait ?? null, verdict: ligne.verdict ?? null, model: MODEL });
+}
+
+describe("GF4 (A27/A28 §3) : le chemin d'une relance, fonctions pures", () => {
+  it("relecture commencée puis interrompue : le bloc REPART entier (5 passages), ses deux étapes sont refaites", () => {
+    const lignes = [l("redac", 1, 1, "terminee"), l("relec", 1, 1, "interrompue")];
+    assert.deepEqual([...etapesARefaire(relectureFlow(), lignes)], ["redac", "relec"]);
+    assert.deepEqual(cheminDeRelance(relectureFlow(), lignes), ["redac", "relec", "redac", "relec", "redac"]);
+  });
+
+  it("relecture au repos entre deux tours (verdict « à reprendre ») : elle poursuit, rien n'est refait, seuls les tours restants comptent", () => {
+    const lignes = [l("redac", 1, 1, "terminee"), l("relec", 1, 1, "terminee", "a-reprendre")];
+    assert.deepEqual([...etapesARefaire(relectureFlow(), lignes)], []);
+    assert.deepEqual(cheminDeRelance(relectureFlow(), lignes), ["redac", "relec", "redac"]);
+  });
+
+  it("relecture close « rien à reprendre », étape suivante en échec : seule l'étape en échec est refaite", () => {
+    const flow: Flow = { version: 1, blocs: [...relectureFlow().blocs, { type: "etape", id: "b2", etape: etape("fin", "Mise au propre", AGENT_SCRIPT, "precedent") }] };
+    const lignes = [l("redac", 1, 1, "terminee"), l("relec", 1, 1, "terminee", "rien-a-reprendre"), l("fin", 1, 1, "echec")];
+    assert.deepEqual([...etapesARefaire(flow, lignes)], ["fin"]);
+    assert.deepEqual(cheminDeRelance(flow, lignes), ["fin"]);
+  });
+
+  it("tentative COURANTE seulement : une relance relancée ne compte ni les tours ni les verdicts de la tentative précédente", () => {
+    const lignes = [
+      l("redac", 1, 1, "terminee"),
+      l("relec", 1, 1, "terminee", "a-reprendre"),
+      l("redac", 2, 1, "terminee"),
+      l("relec", 2, 1, "terminee", "a-reprendre"),
+      l("redac", 3, 1, "interrompue"),
+      l("redac", 1, 2, "terminee"),
+      l("relec", 1, 2, "terminee", "rien-a-reprendre"),
+    ];
+    assert.deepEqual(verdictsCourants(lignes, "relec"), ["rien-a-reprendre"], "le « à reprendre » de l'ancien tour 2 n'entre pas");
+    assert.deepEqual(Object.fromEntries(passagesTermines(lignes)), { redac: 1, relec: 1 });
+    assert.deepEqual(cheminDeRelance(relectureFlow(), lignes), [], "la relecture relancée est close : rien ne reste");
+  });
+
+  it("aiguillage dont VOTRE choix tient : le spécialiste retenu est refait, les écartés restent « Non choisi » mais gardent leur place dans le plafond", () => {
+    const lignes = [l("tri", 1, 1, "terminee", null, JSON.stringify(["s3"])), l("s1", 1, 1, "non-choisi"), l("s2", 1, 1, "non-choisi"), l("s3", 1, 1, "echec"), l("syn", 1, 1, "non-choisi")];
+    assert.deepEqual([...etapesARefaire(aiguillageFlow(), lignes)], ["s3"], "l'exécuteur ne relance que le retenu");
+    assert.deepEqual(cheminDeRelance(aiguillageFlow(), lignes), ["s1", "s2", "syn"], "le chemin compté reste un plafond (choixMax places)");
+    // Choix perdu (aiguilleur à refaire) : tout le bloc repart.
+    const perdu = [l("tri", 1, 1, "interrompue"), l("s1", 1, 1, "prevue"), l("s2", 1, 1, "prevue"), l("s3", 1, 1, "prevue"), l("syn", 1, 1, "prevue")];
+    assert.deepEqual([...etapesARefaire(aiguillageFlow(), perdu)], ["tri", "s1", "s2", "s3", "syn"]);
+  });
+});
+
+describe("GF4 (A27/A28 §3) : relance d'une relecture commencée, sur le pré-lancement RÉEL", () => {
+  it("interrompue après le premier jet, relecture commencée : POST …/relancer confirmé passe (200), estimation = contrôle = bloc entier, et l'exécuteur refait le bloc au tour 1 avec des sessions neuves", async (t) => {
+    const { h, runner, directory } = await bancReel(t);
+    const rootId = await nouvelleSession(h, "Conversation");
+    const redac = await nouvelleSession(h, "Rédaction");
+    const relec = await nouvelleSession(h, "Relecture");
+    // Témoin : une relecture interrompue AVANT tout jet, que la relance refait entière elle aussi.
+    const temoin = "abababab-cdcd-efef-0101-232323232323";
+    seedLancement(h, { runId: temoin, rootId: await nouvelleSession(h, "Témoin"), flow: relectureFlow(), state: "interrompue", cause: "rechargement", directory, lignes: { redac: { state: "interrompue", sessionId: redac, extrait: null } } });
+    const runId = "cdcdcdcd-efef-0101-2323-454545454545";
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: relectureFlow(),
+      state: "interrompue",
+      cause: "rechargement",
+      directory,
+      lignes: { redac: { state: "terminee", sessionId: redac, extrait: "Version 1 du compte rendu." }, relec: { state: "interrompue", sessionId: relec, extrait: null } },
+    });
+    await h.cockpit.startup();
+    assert.equal(runner.view(runId)?.relancable, true);
+
+    const estimer = async (id: string) => {
+      const reponse = await h.call("POST", `/api/team-runs/${id}/estimate`, { headers: h.headers.mutating, body: {} });
+      assert.equal(reponse.status, 200, reponse.body);
+      return reponse.json<TeamEstimateResponse>();
+    };
+    // Le témoin d'abord : les deux estimations ont la même empreinte, et l'instantané gardé est celui de la DERNIÈRE (clé partagée).
+    const entiere = await estimer(temoin);
+    const montree = await estimer(runId);
+    // P3 : la relance refait le bloc ENTIER ; elle coûte donc ce que coûte le bloc repris de zéro, jamais moins.
+    assert.deepEqual([montree.estimate.typique, montree.estimate.maximum, montree.plafond], [entiere.estimate.typique, entiere.estimate.maximum, entiere.plafond]);
+    assert.equal(runner.view(runId)?.suite?.maximum, entiere.estimate.maximum, "le libellé [Relancer la suite (≈ x $)] annonce le même reste");
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string; tentative?: number } | undefined)?.etape === "redac", { text: "Version neuve.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec", { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: montree.estimateSha256 } });
+    assert.equal(confirme.status, 200, confirme.body);
+    const fini = await until(() => {
+      const courante = runner.view(runId);
+      return courante && (courante.state === "terminee" || courante.state === "echec") ? courante : undefined;
+    }, 8_000);
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    // Exécution : exactement ce que le chemin compté prévoit au plus — le bloc au tour 1, deux sessions NEUVES, tentative 2.
+    const neuves = creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string; tentative?: number } }).metadata);
+    assert.deepEqual(neuves.map((m) => `${m?.etape}#${m?.tentative}`), ["redac#2", "relec#2"]);
+    assert.deepEqual(
+      fini.steps.filter((step) => step.tentative === 2).map((step) => `${step.stepId}#${step.tour}:${step.state}`),
+      ["redac#1:terminee", "relec#1:terminee"],
+    );
+    h.assertNoGlobalRestart();
+  });
+});
+
+describe("GF4 (A27/A28), « C2 après une relance » : la relecture relancée ne lit ni les tours ni les verdicts d'une tentative précédente", () => {
+  it("tentative 1 au plafond de tours (révision finale interrompue), relance conclue « rien à reprendre » au tour 1 : ni révision de trop, ni note", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "efefefef-0101-2323-4545-676767676767";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const redac = await nouvelleSession(h, "Rédaction");
+    const relec = await nouvelleSession(h, "Relecture");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: relectureFlow(),
+      state: "interrompue",
+      cause: "rechargement",
+      lignes: { redac: { state: "terminee", sessionId: redac, extrait: "Version 1." }, relec: { state: "terminee", sessionId: relec, extrait: "Faux.\nVERDICT: À REPRENDRE" } },
+    });
+    h.db.prepare("UPDATE team_run_steps SET verdict = 'a-reprendre' WHERE run_id = ? AND step_id = 'relec'").run(runId);
+    ajouterLigne(h, runId, { step: "redac", titre: "Rédaction", agent: AGENT_SCRIPT, tour: 2, tentative: 1, state: "terminee", sessionId: redac, extrait: "Version 2." });
+    ajouterLigne(h, runId, { step: "relec", titre: "Relecture", agent: AGENT_SQL, tour: 2, tentative: 1, state: "terminee", verdict: "a-reprendre", sessionId: relec, extrait: "Encore faux.\nVERDICT: À REPRENDRE" });
+    ajouterLigne(h, runId, { step: "redac", titre: "Rédaction", agent: AGENT_SCRIPT, tour: 3, tentative: 1, state: "interrompue", sessionId: redac });
+    await h.cockpit.startup();
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "redac", { text: "Version neuve.", cost: 0.01, stepMs: 5 }, { text: "Révision de trop.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec", { text: "Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const avant = envois(h).length;
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: ctx.plan.estimateSha256 } });
+    assert.equal(confirme.status, 200, confirme.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "terminee" || v.state === "echec", "relance terminée");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.equal(envois(h).length - avant, 2, "le jet neuf et UNE relecture : aucune révision de plus");
+    const texte = livraison(h, rootId);
+    assert.ok(texte.includes("Version neuve."), texte);
+    assert.equal(texte.includes("Révision de trop."), false);
+    assert.equal(texte.includes(`${DELIVERABLE_TEXTS.tour.replace("{n}", "2")} ·`), false, "le journal ne porte que le tour de la tentative courante");
+    assert.equal(texte.includes(DELIVERABLE_TEXTS.nonRelue), false, "aucune note : la tentative courante a conclu");
+    assert.deepEqual(ctx.view(runId).depot, { messageId: ctx.view(runId).resultMessageId, genre: "resultat", journal: true, nonRelue: false, nonConclue: null });
+    h.assertNoGlobalRestart();
+  });
+});
+// </c5:chemin-relance>
 
 describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
   it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {
