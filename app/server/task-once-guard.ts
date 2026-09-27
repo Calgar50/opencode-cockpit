@@ -39,6 +39,7 @@ import {
   type DelegationRequestRef,
   type EventDerivation,
   type HookSignatures,
+  type PermissionGate,
   PortUnavailableError,
   type TaskGuardPort,
   type WaitUpsert,
@@ -47,6 +48,10 @@ import { errorMessage } from "./log.ts";
 import type { OcLookupSnapshot, OcAgentInfo } from "./oc-lookup.ts";
 import { OpencodeError, type OpencodeClient } from "./opencode.ts";
 import { finishedToolSession } from "./permission-gate.ts";
+// <gf5:d11>
+import { ListeBloqueeError } from "./pending-table.ts";
+import { phraseListeBloquee } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 import { registerDelegationRoutes } from "./routes-delegations.ts";
 import { CONFIRM_HEADER } from "./security.ts";
 import type { SessionRow } from "./sessions.ts";
@@ -262,12 +267,24 @@ function toTaskPermission(item: Record<string, unknown>): TaskPermission {
   return { id, sessionID, permission, patterns, metadata: isRecord(item.metadata) ? item.metadata : {}, tool };
 }
 
-/** Demande `id` encore en attente dans le dossier, null si absente ; erreur si opencode ne répond pas ou répond autre chose. */
-export async function readPermission(client: Pick<OpencodeClient, "request">, directory: string | null, id: string): Promise<TaskPermission | null> {
-  const list = await client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: GUARD_REQUEST_TIMEOUT_MS });
-  if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
-  const item = list.find((entry) => isRecord(entry) && entry.id === id);
-  return isRecord(item) ? toTaskPermission(item) : null;
+/**
+ * Demande `id` encore en attente dans le dossier, null si absente ; erreur si opencode ne répond pas ou répond autre chose.
+ * GF5 (D11 §6.3) : lue par le portillon (gate.pending), donc aussi par la table des attentes quand opencode ne sait pas encoder sa
+ * liste ; métadonnées comprises (`subagent_type`). Liste bloquée et table non fiable : ListeBloqueeError (pending-table.ts). La
+ * table ne donne que l'existence de la demande : l'appel `task` est toujours relu en direct (readToolCall).
+ */
+export async function readPermission(gate: Pick<PermissionGate, "pending">, directory: string | null, id: string): Promise<TaskPermission | null> {
+  const item = (await gate.pending(directory)).find((entry) => entry.id === id);
+  return item === undefined
+    ? null
+    : toTaskPermission({
+        id: item.id,
+        sessionID: item.sessionID,
+        permission: item.permission,
+        patterns: item.patterns,
+        metadata: item.metadata,
+        tool: item.tool === "invalid" ? null : item.tool,
+      });
 }
 
 interface ToolCall {
@@ -416,7 +433,7 @@ export interface InspectOptions {
  * si inconnu (D7 ne passe jamais). Lève si opencode ne répond pas.
  */
 export async function inspectDelegation(c11: Cockpit11, ref: DelegationRequestRef, options: InspectOptions = {}): Promise<DelegationInspection> {
-  const read = options.request !== undefined ? options.request : await readPermission(c11.client, ref.directory, ref.permissionId);
+  const read = options.request !== undefined ? options.request : await readPermission(c11.gate, ref.directory, ref.permissionId);
   const request = read !== null && read.id === ref.permissionId && read.permission === "task" && read.sessionID === ref.sessionId ? read : null;
   const call = request ? await readToolCall(c11.client, request, ref.directory) : null;
   const input = call?.input ?? null;
@@ -601,7 +618,7 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
       // rootSession de conversation-autonomy.ts et rootConversation de plans.ts). Avant tout calcul de dossier : rien ne part.
       if (root.instance !== "principale") return null;
       const directory = root.directory === "" ? null : root.directory;
-      const request = await readPermission(c11.client, directory, permissionId);
+      const request = await readPermission(c11.gate, directory, permissionId);
       if (request === null || request.permission !== "task") return null;
       if ((await rootOfSession(c11, request.sessionID, directory)) !== rootId) return null;
       const inspection = await inspectDelegation(c11, { rootId, sessionId: request.sessionID, permissionId, directory }, { request });
@@ -687,13 +704,17 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
 
   const unverifiable = (ctx: Parameters<TaskGuard["hook"]>[0], requestId: string, err: unknown): Response => {
     c11.log.warn("travail délégué non vérifiable : « once » non relayé", { requestId, error: errorMessage(err) });
+    // <gf5:d11>
+    // Liste bloquée par une demande en attente (D11) : phrase dédiée, jamais « opencode ne répond pas ».
+    if (err instanceof ListeBloqueeError) return ctx.c.json({ error: "liste-bloquee", message: phraseListeBloquee(err.outil), outil: err.outil }, 503);
+    // </gf5:d11>
     return ctx.c.json({ error: "verification-impossible", message: verificationImpossible() }, 503);
   };
 
   const hook: TaskGuard["hook"] = async (ctx, requestId) => {
     let request: TaskPermission | null;
     try {
-      request = await readPermission(c11.client, ctx.directory, requestId);
+      request = await readPermission(c11.gate, ctx.directory, requestId);
     } catch (err) {
       return unverifiable(ctx, requestId, err);
     }

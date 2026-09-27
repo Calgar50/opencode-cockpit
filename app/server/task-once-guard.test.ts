@@ -34,6 +34,7 @@ import {
   PROMPT_REFS_MAX,
   PROMPT_SCAN_MAX,
   promptRiskOf,
+  readPermission,
   REPLI_ATTENTE_SIMPLE,
   SIMPLE_JOBS_MAX,
   SIMPLE_RETAINED_MAX,
@@ -431,6 +432,13 @@ function stubGuard(options: StubOptions = {}) {
       },
     },
     gate: {
+      // gf5:d11 : readPermission passe par le portillon (gate.pending, D11 §6.3) ; la doublure lit la liste du client, comme le vrai.
+      pending: async () => {
+        calls.network++;
+        const list = options.request ? await options.request("GET", "/permission") : [];
+        if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
+        return list;
+      },
       rejectWhenAlone: (requestId: string, sessionId: string, _directory: string | null, message: string, by: string) => {
         calls.rejects.push({ requestId, sessionId, message, by });
         return options.reject ? options.reject(requestId) : new Promise(() => undefined);
@@ -1353,3 +1361,63 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     assert.equal(denied.length, 1, "la délégation interdite échoue sans demande");
   });
 });
+
+// <gf5:d11>
+// --- GF5 (D11 §6.3, §6.6 n° 5) : readPermission par le portillon, sur le poison ------------------------------------------------------
+describe("GF5 (D11) : garde du « task once » sur une liste d'opencode illisible", () => {
+  const URL_WEB = "https://exemple.test/doc";
+  const webfetchSansDelai: FakeToolScript = {
+    tool: "webfetch",
+    input: { url: URL_WEB, format: "markdown" },
+    ask: { permission: "webfetch", patterns: [URL_WEB], always: ["*"], metadata: { url: URL_WEB, format: "markdown" } },
+    output: "contenu",
+  };
+
+  it("readPermission lit la table (subagent_type compris) ; carte des délégations servie ; « once » vérifié sur l'appel `task` relu EN DIRECT ; témoin sans table : 503 « liste-bloquee »", async (t) => {
+    const h = await startCockpit(t, { modules: ["pending", "gate", "taskGuard"], settings: AVANCE });
+    const web = await conversation(h, "Web");
+    await send(h, web, [webfetchSansDelai]);
+    await pending(h, web, 1);
+    const racine = await conversation(h, "Délégation");
+    await send(h, racine, [task("general")]);
+    const [demande] = await pending(h, racine, 1);
+    assert.ok(demande);
+    await h.processor.settled();
+    await h.attentesAuRepos();
+    await assert.rejects(h.deps.client.request("GET", "/permission"), (err) => err instanceof Error && /Expected JSON value/.test(err.message), "poison actif");
+
+    const lue = await readPermission(h.cockpit.gate, null, demande.id);
+    assert.deepEqual(
+      lue && { permission: lue.permission, subagent: lue.metadata.subagent_type, patterns: lue.patterns, tool: lue.tool !== null },
+      { permission: "task", subagent: "general", patterns: ["general"], tool: true },
+    );
+    const carte = await h.call("GET", `/api/conversations/${racine.id}/delegations/${demande.id}`, { headers: h.headers.authed });
+    assert.equal(carte.status, 200, carte.body);
+    assert.equal(carte.json<DelegationDetailsView>().cible?.nom, "general");
+
+    // Invariant de sûreté : le crochet relit l'appel `task` en direct (GET /session/:id/message/:mid), jamais la table seule.
+    const depuis = h.fake.requests.length;
+    const res = await once(h, demande.id);
+    assert.equal(res.status, 200, res.body);
+    assert.ok(
+      h.fake.requests.slice(depuis).some((r) => r.method === "GET" && r.pathname === `/session/${racine.id}/message/${demande.tool?.messageID}`),
+      "appel `task` relu en direct",
+    );
+    await within(h.fake.settled(racine.id), "délégation terminée");
+
+    const temoin = await startCockpit(t, { modules: ["gate", "taskGuard"], settings: AVANCE });
+    const poison = await conversation(temoin, "Web");
+    await send(temoin, poison, [webfetchSansDelai]);
+    await pending(temoin, poison, 1);
+    const autre = await conversation(temoin, "Délégation");
+    await send(temoin, autre, [task("general")]);
+    const [bloquee] = await pending(temoin, autre, 1);
+    assert.ok(bloquee);
+    const refus = await temoin.call("GET", `/api/conversations/${autre.id}/delegations/${bloquee.id}`, { headers: temoin.headers.authed });
+    assert.equal(refus.status, 503, refus.body);
+    assert.equal(refus.json<{ error: string }>().error, "liste-bloquee");
+    assert.notEqual(refus.json<{ message: string }>().message, verificationImpossible(), "jamais « opencode ne répond pas »");
+    assert.deepEqual(repliesTo(temoin, bloquee.id), []);
+  });
+});
+// </gf5:d11>

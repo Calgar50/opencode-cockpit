@@ -53,6 +53,33 @@ describe("écoutes du cockpit (gardes statiques, D12)", () => {
     assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > (order[i - 1] ?? 0))), JSON.stringify(order));
   });
 
+  // <gf5:a32-6>
+  // Mutation R17 de la vérification de la 1.0.6 (A26, A32 (6)) : retirer l'arrêt du relais au shutdown de main.ts ne faisait tomber
+  // aucun test (le relais retenait l'arrêt du processus jusqu'à la sortie forcée de 5 s, tunnels ouverts). Garde STATIQUE, sans
+  // processus : le relais démarré par main.ts est la variable `relay`, et le corps de `shutdown` l'arrête une fois.
+  it("main.ts : le relais d'opencode est ARRÊTÉ au shutdown (mutation R17 tuée) ; témoins : arrêt retiré, sorti de shutdown ou relais renommé → vu", () => {
+    const main = lire("main.ts");
+    const arretsDuRelais = (source: string): number => {
+      const debut = source.indexOf("const shutdown = (");
+      const fin = source.indexOf('process.on("SIGTERM"', debut);
+      if (debut < 0 || fin < 0) return -1;
+      // La variable du relais est celle que main.ts assigne avec startEgressRelay(…).
+      const variable = /\b(\w+)\s*=\s*startEgressRelay\(/.exec(source)?.[1];
+      if (variable === undefined) return -1;
+      return source.slice(debut, fin).match(new RegExp(`\\b${variable}\\??\\.stop\\(\\)`, "g"))?.length ?? 0;
+    };
+    assert.equal(arretsDuRelais(main), 1, "shutdown arrête le relais une fois");
+    const retire = main.replace(/^[ \t]*void relay\?\.stop\(\);[ \t]*\r?\n/m, "");
+    assert.notEqual(retire, main, "témoin : la ligne d'arrêt du relais existe telle quelle");
+    assert.equal(arretsDuRelais(retire), 0, "mutation R17 (arrêt retiré) vue");
+    const SIGINT = 'process.on("SIGINT", () => shutdown("SIGINT"));';
+    const deplace = retire.replace(SIGINT, `${SIGINT}\nvoid relay?.stop();`);
+    assert.notEqual(deplace, retire, "témoin : la ligne SIGINT existe telle quelle");
+    assert.equal(arretsDuRelais(deplace), 0, "arrêt placé hors de shutdown : vu");
+    assert.equal(arretsDuRelais(main.replaceAll(/\brelay = startEgressRelay\(/g, "autre = startEgressRelay(")), 0, "relais assigné à une autre variable : vu");
+  });
+  // </gf5:a32-6>
+
   it("témoins : la garde voit une écoute ajoutée et un import détourné, sous toutes leurs formes", () => {
     const faux: Record<string, string> = {
       "a.ts": 'import { serve } from "@hono/node-server";',

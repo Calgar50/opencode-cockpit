@@ -118,9 +118,9 @@ describe("croisement 1 : SALLE_OUVERTE reste fausse dans le dépôt livré (plan
 describe("croisement 2 : e2e de l'interface de la salle (L26c), faux complet", () => {
   const scenario = lire("e2e", "scenarios", "omo-ui-salle.mjs");
 
-  it("le scénario joue ses treize étapes, dont « signales » et « focus-ecran » (défauts corrigés par ce train) et « revoir-simple » (3s)", () => {
+  it("le scénario joue ses quatorze étapes, dont « signales » et « focus-ecran » (défauts corrigés par ce train), « temoin-q6 » (GF5) et « revoir-simple » (3s)", () => {
     const table = /const ETAPES = \[([\s\S]*?)\];/.exec(scenario)?.[1] ?? "";
-    const etapes = [...table.matchAll(/\["([a-z-]+)",/g)].map((m) => m[1]);
+    const etapes = [...table.matchAll(/\["([a-z0-9-]+)",/g)].map((m) => m[1]); // GF5 : chiffres admis (« temoin-q6 »)
     assert.deepEqual(etapes, [
       "prealables",
       "simple",
@@ -133,6 +133,8 @@ describe("croisement 2 : e2e de l'interface de la salle (L26c), faux complet", (
       "detection",
       "git-attente",
       "focus-ecran",
+      // GF5 (A38 (1)) : étapes 1 à 5 du témoin Q6 de la répétition générale « 3s », versées au dépôt.
+      "temoin-q6",
       // Répétition générale « 3s » : « Revoir » en Simple d'une demande terminée de la salle (Q6, D-3d-09).
       "revoir-simple",
       "sans-salle",

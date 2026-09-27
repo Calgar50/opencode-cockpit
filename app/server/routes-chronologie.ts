@@ -19,6 +19,11 @@
 // Chronologie.tsx) qui ne montre la chronologie qu'en mode Avancé, « jeton » étant interdit en Simple (§4.3).
 // Rappel D-5-17 : la chronologie d'une racine de la SALLE en Simple devra répondre 403, comme /facts (L18c). Le code de la salle
 // n'est pas dans la construction : ce point est traité par GF5 à la grande fusion, et rien n'en est anticipé ici.
+// <c5:salle-en-simple>
+// GF5 (grande fusion, D-5-17 ; spécification §3.9 l.343, §5.9 l.1019) : une racine ouverte dans la Salle OMO reçoit en mode Simple
+// 403 « mode-avance », avec la MÊME phrase que /facts et /activity (routes-activity.ts, L18c) : la chronologie parle le vocabulaire
+// du mode Avancé. « Revoir » d'une demande terminée de la salle passe par /api/revoir (plan it3 D-3d-08), jamais par ici.
+// </c5:salle-en-simple>
 import type { Context, Hono } from "hono";
 import type { ConstructionModule } from "./construction-contracts.ts";
 import type { Cockpit11, Registrar } from "./contracts-11.ts";
@@ -26,6 +31,10 @@ import { CHRONO_MAX_ROWS, CONSTRUCTION_ROUTE_PATHS } from "./shared/construction
 import { TEXTES } from "./shared/construction-texts.ts";
 import type { ChronologieResponse, ChronologieUsageRow } from "./shared/construction-types.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
+// <c5:salle-en-simple-import>
+import { isAdvanced } from "./mode.ts";
+import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
+// </c5:salle-en-simple-import>
 
 /** Ligne `usage` telle que la base la rend (colonnes de db.ts, `variant` ajoutée par une migration antérieure). */
 interface UsageRow {
@@ -97,11 +106,17 @@ export function estRacine(c11: Pick<Cockpit11, "sessions">, rootId: string): boo
 const invalide = (c: Context) => c.json({ error: "invalid", message: "Identifiant de conversation invalide." }, 400);
 const inconnue = (c: Context) => c.json({ error: "racine-inconnue", message: TEXTES.partout.erreurs["racine-inconnue"] }, 404);
 
-export function registerChronologieRoutes(app: Hono, c11: Pick<Cockpit11, "db" | "sessions">): void {
+export function registerChronologieRoutes(app: Hono, c11: Pick<Cockpit11, "db" | "sessions" | "settings" | "ports">): void { // c5 : settings et ports (GF5)
   app.get(CONSTRUCTION_ROUTE_PATHS.chronologie, (c) => {
     const rootId = c.req.param("rootId");
     if (!SESSION_ID_RE.test(rootId)) return invalide(c);
     if (!estRacine(c11, rootId)) return inconnue(c);
+    // <c5:salle-en-simple-refus>
+    // Racine de la salle en mode Simple : 403 comme /facts (le port neutre rend isRoomRoot faux : hors de la salle, rien ne change).
+    if (!isAdvanced(c11.settings) && c11.ports.omoRoom.isRoomRoot(rootId)) {
+      return c.json({ error: "mode-avance", message: phraseRefusActivation("mode-avance") }, 403);
+    }
+    // </c5:salle-en-simple-refus>
     return c.json(chronologieRows(c11.db, rootId));
   });
 }

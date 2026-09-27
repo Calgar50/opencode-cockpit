@@ -113,6 +113,13 @@ export interface StopTreeDeps {
   hub: Pick<EventHub, "cockpit">;
   /** Ports en vigueur, lus au moment de l'appel (jamais en copie). */
   ports: () => Pick<Cockpit11Ports, "requests" | "facts">;
+  // <gf5:a32-5>
+  /**
+   * Dossier qu'opencode ouvrirait bien dans le dossier de travail (projects.isAllowedDirectory : séquence %XX décodée deux fois,
+   * chemin hors du dossier monté ; A22, R106-a). Absent : tout dossier est permis (doublures de test antérieures).
+   */
+  isAllowedDirectory?: (directory: string) => boolean;
+  // </gf5:a32-5>
 }
 
 export interface StopTreeOptions {
@@ -155,12 +162,24 @@ export function createStopTree(deps: StopTreeDeps, options: StopTreeOptions = {}
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const running = new Map<string, Promise<StopResult>>();
+  // <gf5:a32-5>
+  const allowed = (directory: string): boolean => deps.isAllowedDirectory?.(directory) ?? true;
+  // </gf5:a32-5>
 
   const stop = async (rootId: string, cause: StopCause): Promise<StopResult> => {
     const startedAt = now();
     const root = stoppableRoot(sessions, rootId);
     if (!root) throw new StopRootUnknownError();
     const rootDirectory = root.directory || null;
+    // <gf5:a32-5>
+    // Racine héritée dans un dossier qu'opencode ouvrirait ailleurs (%XX, A22) : AUCUNE requête (ni GET /permission, ni /children,
+    // ni arrêt), sinon opencode ouvrirait une instance hors du dossier de travail. La racine n'est pas arrêtable par le cockpit : la
+    // route répond 404 et le proxy refuse déjà ce dossier (403 forbidden-directory). Même règle pour un dossier de sous-conversation.
+    if (rootDirectory !== null && !allowed(rootDirectory)) {
+      log.warn("arrêt : dossier de la conversation refusé (hors du dossier de travail), rien n'est demandé à opencode", { rootId });
+      throw new StopRootUnknownError();
+    }
+    // </gf5:a32-5>
     /** Dossiers des instances à interroger : celui de la racine, et ceux des sous-sessions trouvées par /children. */
     const directories = new Set<string | null>([rootDirectory]);
     const foundDirectory = new Map<string, string>();
@@ -187,7 +206,11 @@ export function createStopTree(deps: StopTreeDeps, options: StopTreeOptions = {}
       for (const id of found) if (members.size < TREE_MAX_SESSIONS) members.add(id);
       return [...members];
     };
-    const directoryOf = (id: string): string | null => sessions.get(id)?.directory || foundDirectory.get(id) || rootDirectory;
+    // gf5:a32-5 : un dossier de sous-conversation refusé n'est jamais transmis ; la requête part dans celui de la racine (permis).
+    const directoryOf = (id: string): string | null => {
+      const directory = sessions.get(id)?.directory || foundDirectory.get(id) || rootDirectory;
+      return directory === null || allowed(directory) ? directory : rootDirectory;
+    };
 
     /**
      * Complète l'arbre par GET /session/:id/children depuis la racine, borné, jusqu'à trouver les sessions `wanted` qui n'y sont
@@ -230,7 +253,7 @@ export function createStopTree(deps: StopTreeDeps, options: StopTreeOptions = {}
             const childId = isRecord(child) && typeof child.id === "string" && ID_RE.test(child.id) ? child.id : null;
             if (childId === null || visited.has(childId)) continue;
             if (!found.includes(childId)) found.push(childId);
-            if (isRecord(child) && typeof child.directory === "string" && child.directory !== "") {
+            if (isRecord(child) && typeof child.directory === "string" && child.directory !== "" && allowed(child.directory)) {
               foundDirectory.set(childId, child.directory);
               directories.add(child.directory);
             }
@@ -439,7 +462,11 @@ export function createStopTree(deps: StopTreeDeps, options: StopTreeOptions = {}
 export const stopTreeModule: Cockpit11Module = {
   name: "stopTree",
   install(reg, c11) {
-    const isStoppableRoot = (id: string): boolean => stoppableRoot(c11.sessions, id) !== null;
+    // gf5:a32-5 : racine au dossier refusé (%XX, hors du dossier de travail) : non arrêtable par le cockpit (404, rien d'envoyé).
+    const isStoppableRoot = (id: string): boolean => {
+      const root = stoppableRoot(c11.sessions, id);
+      return root !== null && (root.directory === "" || c11.projects.isAllowedDirectory(root.directory));
+    };
     c11.ports.stopTree = createStopTree({
       client: c11.client,
       sessions: c11.sessions,
@@ -448,6 +475,8 @@ export const stopTreeModule: Cockpit11Module = {
       log: c11.log,
       hub: c11.hub,
       ports: () => c11.ports,
+      // gf5:a32-5 : jamais une racine héritée au dossier %XX (sentinelle d'instance, croisements-v106).
+      isAllowedDirectory: (directory) => c11.projects.isAllowedDirectory(directory),
     });
     // « Arrêter » du navigateur par le proxy : racine suivie → arrêt de tout l'arbre (200 StopResult) ; sinon relais 1.0.
     reg.hook("abort", async (ctx, sessionId) => {

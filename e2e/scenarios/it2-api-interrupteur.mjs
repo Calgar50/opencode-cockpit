@@ -21,7 +21,8 @@
 //   2. GET /api/conversations/:rootId/autonomie : « demander » et « plan » restent possibles ; « modifications » et « autonome »
 //      indisponibles, chacun avec la raison `autonomie-coupee` et la phrase « Coupé sur ce cockpit par son administrateur :
 //      « Demander à chaque fois » et « Plan d'abord » restent possibles. » ;
-//   3. PUT …/autonomie {choix: "autonome"}, même confirmé : 403 `autonomie-coupee`, et le choix de la conversation ne bouge pas ;
+//   3. PUT …/autonomie {choix: "modifications"} PUIS {choix: "autonome"}, même confirmés : 403 `autonomie-coupee` pour chacun, avec
+//      la phrase, et le choix de la conversation ne bouge pas (A36 (2), A38 (3) : « 403 sur les deux autres » est éprouvé en entier) ;
 //   4. POST /api/plans reste permis : « Plan d'abord » ouvre bien une conversation de plan.
 import {
   activerAutonome,
@@ -73,12 +74,15 @@ export async function run(ctx) {
     // « Demander à chaque fois » reste ouvert ; « Plan d'abord » aussi, sa raison `nouvelle-conversation` n'étant pas un refus.
     const restants = choixFermes(vue).filter((d) => d.choix === "demander" || d.choix === "plan");
     exiger(restants.length === 0, `choix fermés alors qu'ils doivent rester possibles : ${resume(restants)}`);
-    const refus = await putAutonomie(ctx, racine.id, { choix: "autonome" }, { confirme: true });
-    exiger(refus.code === 403, `PUT autonome avec l'autonomie coupée : code ${refus.code} au lieu de 403.`);
-    exiger(refus.corps?.error === "autonomie-coupee", `403 sans le code attendu : ${resume(refus.corps)}`);
-    exiger(refus.corps?.message === PHRASE_COUPEE, `403 avec une autre phrase : ${resume(refus.corps?.message)}`);
-    const apres = await lireAutonomie(ctx, racine.id);
-    exiger(apres?.choix === "demander", `le choix a bougé malgré le refus : ${resume(apres?.choix)}`);
+    // Les DEUX autres choix (A36 (2), A38 (3)) : « Modifications automatiques » puis « Autonome avec contrôle ».
+    for (const choix of ["modifications", "autonome"]) {
+      const refus = await putAutonomie(ctx, racine.id, { choix }, { confirme: true });
+      exiger(refus.code === 403, `PUT ${choix} avec l'autonomie coupée : code ${refus.code} au lieu de 403.`);
+      exiger(refus.corps?.error === "autonomie-coupee", `PUT ${choix} : 403 sans le code attendu : ${resume(refus.corps)}`);
+      exiger(refus.corps?.message === PHRASE_COUPEE, `PUT ${choix} : 403 avec une autre phrase : ${resume(refus.corps?.message)}`);
+      const apres = await lireAutonomie(ctx, racine.id);
+      exiger(apres?.choix === "demander", `le choix a bougé malgré le refus de « ${choix} » : ${resume(apres?.choix)}`);
+    }
 
     // 4. « Plan d'abord » reste entier : une conversation de plan s'ouvre, et elle porte bien le choix « plan ».
     const plan = await ctx.api.post("/api/plans", { directory: DOSSIER_ATELIER });
@@ -87,7 +91,7 @@ export async function run(ctx) {
     exiger(vuePlan?.choix === "plan", `conversation de plan en « ${resume(vuePlan?.choix)} » au lieu de « plan ».`);
 
     await exigerP6SurRequetes(ctx, depuis);
-    releve(ctx, "COCKPIT_AUTONOMY coupé : seuls « Demander à chaque fois » et « Plan d'abord » restent actifs (403 sur les deux autres)");
+    releve(ctx, "COCKPIT_AUTONOMY coupé : seuls « Demander à chaque fois » et « Plan d'abord » restent actifs (PUT « modifications » et « autonome » : 403 sur les deux autres)");
     return;
   }
 

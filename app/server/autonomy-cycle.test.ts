@@ -21,6 +21,9 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { autonomyModuleWith } from "./autonomy.ts";
+// <gf5:d11>
+import { requestPendingRescan } from "./autonomy-requests.ts";
+// </gf5:d11>
 import type { ActivationPort, Cockpit11Ports, ControlAiPort, ConversationAutonomyPort, DelegationPolicyPort, PermissionGate } from "./contracts-11.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
@@ -1061,3 +1064,60 @@ describe("L10a : fixture autonomie-p8.jsonl", () => {
     assertNeverForbidden(h);
   });
 });
+
+// <gf5:d11>
+// --- GF5 (D11 §6.3, §6.6 n° 5) : relecture (rescanNow) par le portillon, sur le poison -------------------------------------------------
+describe("GF5 (D11) : relecture des demandes en attente sur une liste d'opencode illisible", () => {
+  const URL_WEB = "https://exemple.test/doc";
+  const webfetchSansDelai: FakeToolScript = {
+    tool: "webfetch",
+    input: { url: URL_WEB, format: "markdown" },
+    ask: { permission: "webfetch", patterns: [URL_WEB], always: ["*"], metadata: { url: URL_WEB, format: "markdown" } },
+    output: "contenu",
+  };
+
+  it("rescanNow lit la table (métadonnées comprises) : demande restée en attente reprise et décidée, « once » relayé ; témoin sans table : non relue", async (t) => {
+    for (const avecTable of [true, false]) {
+      const { h, choices } = await startCycle(t, {
+        controleIa: false,
+        modules: avecTable ? ["pending", "autonomy", "requests", "facts", "floors"] : ["autonomy", "requests", "facts", "floors"],
+      });
+      const web = await conversation(h, "Web");
+      choices.set(web.id, "demander");
+      await ask(h, web, webfetchSansDelai);
+      const conv = await conversation(h, "Autonome");
+      choices.set(conv.id, "autonome");
+      // Envoi direct à opencode : aucune demande autonome ouverte (« X-hors-demande »), la demande reste à l'utilisateur.
+      h.fake.script(conv.id, { tools: [bash("grep -rn 'TODO' src")], followUp: { text: FIN } });
+      const since = h.fake.emitted.length;
+      await h.deps.client.request("POST", `/session/${conv.id}/prompt_async`, {
+        directory: conv.directory,
+        body: { agent: "build", model: MODEL, parts: [{ type: "text", text: "Travaille." }] },
+      });
+      const request = (await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === conv.id, { since })).properties as unknown as FakePermissionRequest;
+      assert.equal((await decisionOf(h, request.id)).regle, "X-hors-demande");
+      await h.attentesAuRepos();
+      await assert.rejects(h.deps.client.request("GET", "/permission", { directory: DOSSIER }), /Expected JSON value/, "poison actif");
+
+      h.db
+        .prepare("INSERT INTO autonomy_requests (id, root_id, choix, plafonds, started_at) VALUES ('dem-d11', ?, 'autonome', ?, ?)")
+        .run(conv.id, JSON.stringify({ plafondUsd: 1, actionsMax: 60, delegationsMax: 5, dureeMinutes: 30, fichiersMax: 25, controlesIaMax: 20 }), Date.now());
+      const lectures = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission").length;
+      const avant = lectures();
+      requestPendingRescan(h.cockpit.c11, conv.id);
+      if (avecTable) {
+        await until(() => decisions(h).length === 2, 8_000);
+        const reprise = decisions(h).at(-1);
+        assert.deepEqual(reprise && [reprise.verdict, reprise.regle, reprise.relais, reprise.permission_id], ["auto", "A-grep", "ok", request.id]);
+        assert.deepEqual(repliesTo(h, request.id), [{ reply: "once" }]);
+        await within(h.fake.settled(conv.id), "réponse autonome terminée");
+      } else {
+        await until(() => lectures() > avant);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(decisions(h).length, 1, "sans table : relecture illisible, rien n'est repris");
+        assert.deepEqual(repliesTo(h, request.id), []);
+      }
+    }
+  });
+});
+// </gf5:d11>

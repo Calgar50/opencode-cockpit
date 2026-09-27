@@ -16,6 +16,9 @@ import {
   TIER_LABELS,
 } from "../../server/shared/assistant-rules.ts";
 import { pickRestorableAgent } from "../../server/shared/agent-choice.ts";
+// <gf5:d11>
+import { avertissementDeLecture } from "../../server/shared/attentes-texts.ts";
+// </gf5:d11>
 import { isClassifierRoot } from "../../server/shared/session-purpose.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -149,6 +152,10 @@ export function ChatPage() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [statuses, setStatuses] = useState<Record<string, OcSessionStatus>>({});
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
+  // <gf5:d11>
+  // Liste des demandes d'autorisation illisible au chargement (D11 §6.4) : avertissement non bloquant, jamais une liste vide en silence.
+  const [listeIllisible, setListeIllisible] = useState<string | null>(null);
+  // </gf5:d11>
   const [questions, setQuestions] = useState<QuestionRequest[]>([]);
   const [agents, setAgents] = useState<OcAgent[]>([]);
   const [commands, setCommands] = useState<OcCommand[]>([]);
@@ -243,7 +250,15 @@ export function ChatPage() {
       toast.error("Conversations indisponibles", list.reason);
     }
     if (status.status === "fulfilled") setStatuses(status.value);
-    if (perms.status === "fulfilled") setPermissions(perms.value);
+    // <gf5:d11>
+    // Échec de la liste : avertissement (outil en cause pour le 503 « liste-bloquee »), les demandes déjà connues restent affichées.
+    if (perms.status === "fulfilled") {
+      setPermissions(perms.value);
+      setListeIllisible(null);
+    } else {
+      setListeIllisible(avertissementDeLecture(perms.reason));
+    }
+    // </gf5:d11>
     if (qs.status === "fulfilled") setQuestions(qs.value);
     if (agentList.status === "fulfilled") setAgents(agentList.value);
     if (commandList.status === "fulfilled") setCommands(commandList.value);
@@ -1268,8 +1283,16 @@ export function ChatPage() {
           )}
         </div>
 
-        {localPermissions.length > 0 || localQuestions.length > 0 || otherPending > 0 ? (
+        {localPermissions.length > 0 || localQuestions.length > 0 || otherPending > 0 || listeIllisible !== null ? (
           <div className="interactions">
+            {/* <gf5:d11> */}
+            {listeIllisible !== null ? (
+              <div className="callout warning small" role="status" data-liste-illisible="">
+                <Icon name="shield" size={14} />
+                {listeIllisible}
+              </div>
+            ) : null}
+            {/* </gf5:d11> */}
             {localPermissions.map((request) => (
               <PermissionPrompt
                 key={request.id}

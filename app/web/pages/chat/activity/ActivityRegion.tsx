@@ -10,6 +10,11 @@
 //   `ui.activityAnnouncements` ;
 // - premier bandeau : phrase d'accueil, puis `ui.seenOnboarding` écrit par l'API des réglages (PUT /api/settings) ;
 // - [Voir une démonstration] de la bande : DemoPlayer (L5d), démonstration enregistrée, sans aucune requête.
+// <c5:demonstration-equipe-appelant>
+// - GF5 (U1, D-5-24 ; plan it5 §2.8) : c'est ICI, et non dans la bande, que le lecteur est rendu ; la région calcule donc
+//   equipesOuvertes(mode, ouvertesEnSimple) et passe `equipesVisibles` au lecteur (« Comment se déroule une équipe » dans son choix).
+//   En Simple, `ouvertesEnSimple` est lu à l'affichage de la région (useOuvertesEnSimple), jamais pendant la démonstration.
+// </c5:demonstration-equipe-appelant>
 import { useCallback, useEffect, useRef, useState } from "react";
 import { phrasesAnnonces, TEXTES } from "../../../../server/shared/activity-texts.ts";
 import type { ActivityAnnouncement } from "../../../../server/shared/activity.ts";
@@ -21,6 +26,10 @@ import type { ActivityFact } from "../../../lib/types.ts";
 import { bannerVisible, demandeEnAttente, onboardingToSave, replierPendantLaDemande, useActivity } from "../../../lib/useActivity.ts";
 import type { ActivityRegionProps } from "../slots.ts";
 import { DemoPlayer } from "./DemoPlayer.tsx";
+// <c5:demonstration-equipe-import>
+import { equipesOuvertes } from "../../../../server/shared/equipes-ouvertes.ts";
+import { useOuvertesEnSimple } from "./useOuvertesEnSimple.ts";
+// </c5:demonstration-equipe-import>
 import { NeonBand } from "./NeonBand.tsx";
 import { WhoIsWorking } from "./WhoIsWorking.tsx";
 import "./activity.css";
@@ -70,6 +79,9 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
   const [demonstration, setDemonstration] = useState(false);
   const ouvrirDemonstration = useCallback(() => setDemonstration(true), []);
   const fermerDemonstration = useCallback(() => setDemonstration(false), []);
+  // <c5:demonstration-equipe-visible>
+  const equipesVisibles = equipesOuvertes(advanced ? "avance" : "simple", useOuvertesEnSimple(!advanced));
+  // </c5:demonstration-equipe-visible>
 
   return (
     <div className={classe}>
@@ -83,7 +95,8 @@ function Region({ rootId, directory, advanced, onTreeWorking, onOpenSession, onR
         onDemonstration={ouvrirDemonstration}
         repliPourLaDemande={repliPourLaDemande}
       />
-      {demonstration ? <DemoPlayer advanced={advanced} onClose={fermerDemonstration} /> : null}
+      {/* c5:demonstration-equipe-visible : le lecteur reçoit la visibilité de la démonstration d'équipe, il ne la lit jamais. */}
+      {demonstration ? <DemoPlayer advanced={advanced} equipesVisibles={equipesVisibles} onClose={fermerDemonstration} /> : null}
       {visible ? (
         <WhoIsWorking
           rows={activity.rows}

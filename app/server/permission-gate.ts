@@ -9,7 +9,18 @@
 // ses propres refus retenus. Sa dérivation est inscrite avec `instances: ["omo"]`, donc branchée au seul processeur de la salle.
 // Le câblage n'installe que le portillon de l'instance principale (c11.gate) : celui-ci installe ensuite celui de la salle, ce
 // qui évite d'éditer wiring-11.ts.
+// <gf5:d11>
+// GF5 (D11, décision A31 a ; mesures/D11-permission.md §6.2 à §6.4) : chaque portillon porte la TABLE DES ATTENTES de son instance
+// (pending-table.ts), installée par le module « pending ». pendingPermissions lit GET /permission ; si la lecture réussit, la table
+// est resynchronisée ; si opencode répond EXACTEMENT le défaut de sa liste (400, demande en attente sans argument facultatif), la
+// table est rendue à sa place, seulement si elle est fiable ET cohérente avec l'erreur (contrôle fort de l'entrée citée) ; sinon
+// ListeBloqueeError (phrase dédiée, jamais « opencode ne répond pas »). Toute autre erreur : levée comme avant.
+// INVARIANT DE SÛRETÉ : la table ne donne que l'EXISTENCE d'une demande. checkOnce relit TOUJOURS en direct l'état des
+// conversations (GET /session/status) et l'appel d'outil (GET /session/:id/message/:mid) ; la garde du « task once » relit l'appel
+// `task` (readToolCall). Rien de cela ne vient de la table.
+// </gf5:d11>
 import type {
+  Cockpit11,
   EmittedReply,
   EventDerivation,
   OnceVerdict,
@@ -17,9 +28,24 @@ import type {
   PermissionGate,
   PermissionGateDeps,
   PermissionTool,
+  Registrar,
+  RepliListe,
 } from "./contracts-11.ts";
 import { errorMessage } from "./log.ts";
 import { OpencodeError } from "./opencode.ts";
+// <gf5:d11>
+import {
+  cleDossier,
+  createPendingTable,
+  type DemandeEnAttente,
+  defautDansCorps,
+  ListeBloqueeError,
+  METADONNEES_FACULTATIVES,
+  premiereIllisible,
+  type TableDesAttentes,
+} from "./pending-table.ts";
+import { outilDeCle } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 import type { SessionInstance } from "./shared/activity-types.ts";
 import type { RelayOutcome, RepliedBy } from "./shared/autonomy-types.ts";
 import { ID_RE } from "./shared/ids.ts";
@@ -84,13 +110,24 @@ export function emittedRegistry(max = EMITTED_MAX): PermissionGate["emitted"] & 
 /** Dépendances du portillon, plus l'instance qu'il sert (1.1) ; absente : « principale », exactement comme en 1.0.x. */
 export interface PermissionGateInstanceDeps extends PermissionGateDeps {
   instance?: SessionInstance;
+  // <gf5:d11>
+  /** Table des attentes remplacée (tests) ; absente : une table neuve, propre à ce portillon. */
+  table?: TableDesAttentes;
+  // </gf5:d11>
 }
 
 /** Portillon des accords : proxy, puis autonomie et garde des délégations (P9). */
-export function createPermissionGate(deps: PermissionGateInstanceDeps): PermissionGate {
+export function createPermissionGate(deps: PermissionGateInstanceDeps): PermissionGate & { readonly attentes: TableDesAttentes } {
   const { client, log } = deps;
   const instance: SessionInstance = deps.instance ?? "principale";
   const emitted = emittedRegistry();
+  // <gf5:d11>
+  const table = deps.table ?? createPendingTable({ instance });
+  /** Racine d'opencode (clé null de la table), posée à l'installation du module « pending » ; null avant. */
+  let racine: string | null = null;
+  /** Dossiers dont le repli sur la table est déjà écrit au journal : un épisode dure jusqu'à la prochaine lecture réussie. */
+  const episodes = new Set<string | null>();
+  // </gf5:d11>
 
   const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
   /** Bornes du nettoyage après un arrêt : profondeur de sous-agents, sessions suivies, appels à opencode, refus envoyés. */
@@ -109,16 +146,93 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
       : "invalid";
   };
 
-  /** Demandes en attente (GET /permission, même dossier) ; erreur si opencode ne répond pas ou répond autre chose qu'une liste. */
+  // <gf5:d11>
+  const textes = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+
+  /** Demande de la liste d'opencode, telle que le portillon la rend (ce qu'elle porte compris, D11 §6.2). */
+  const deLaListe = (item: Record<string, unknown>, id: string, sessionID: string): PendingPermission => ({
+    id,
+    sessionID,
+    tool: permissionTool(item.tool),
+    permission: typeof item.permission === "string" ? item.permission : "",
+    patterns: textes(item.patterns),
+    metadata: isRecord(item.metadata) ? item.metadata : {},
+    always: textes(item.always),
+  });
+
+  /** Demande de la table (déjà validée et bornée par pending-table.ts). */
+  const deLaTable = (demande: DemandeEnAttente): PendingPermission => ({
+    id: demande.id,
+    sessionID: demande.sessionID,
+    tool: demande.tool,
+    permission: demande.permission,
+    patterns: [...demande.patterns],
+    metadata: demande.metadata,
+    always: [...demande.always],
+  });
+
+  /**
+   * Repli sur la table (D11 §6.2, réserves du sceptique) : seulement sur la signature EXACTE du défaut ; table FIABLE ; indice cité
+   * présent dans la table ; CONTRÔLE FORT de l'entrée citée (permission de METADONNEES_FACULTATIVES, sans la clé citée) ; aucune
+   * entrée précédente qu'opencode aurait citée avant elle. Sinon « bloquee » : rien n'est deviné. Autre erreur : null.
+   */
+  const repliListe = (directory: string | null, status: number, corps: unknown): RepliListe => {
+    const defaut = defautDansCorps(status, corps);
+    if (defaut === null) return null;
+    const bloquee = { repli: "bloquee", outil: outilDeCle(defaut.cle) } as const;
+    const etat = table.etat(directory);
+    if (!etat.fiable) return bloquee;
+    // Indice hors de la table : la demande qu'opencode cite n'y est pas, la table est incomplète.
+    if (defaut.indice >= etat.demandes.length) return bloquee;
+    const entree = etat.demandes[defaut.indice] as DemandeEnAttente;
+    const facultatives = Object.hasOwn(METADONNEES_FACULTATIVES, entree.permission) ? METADONNEES_FACULTATIVES[entree.permission] : undefined;
+    if (facultatives === undefined || !facultatives.includes(defaut.cle) || Object.hasOwn(entree.metadata, defaut.cle)) return bloquee;
+    // opencode cite la PREMIÈRE demande illisible : une entrée précédente illisible dirait une table dans un autre ordre.
+    const prevue = premiereIllisible(etat.demandes.slice(0, defaut.indice));
+    if (prevue !== null) return bloquee;
+    const cle = cleDossier(directory, racine);
+    if (!episodes.has(cle)) {
+      episodes.add(cle);
+      log.warn("liste d'opencode illisible (demande sans argument facultatif en attente), état tiré du flux", {
+        instance,
+        outil: bloquee.outil,
+        cle: defaut.cle,
+        demandes: etat.demandes.length,
+      });
+    }
+    return { repli: "table", demandes: etat.demandes };
+  };
+
+  /**
+   * Demandes en attente (GET /permission, même dossier). Lecture réussie : table resynchronisée (les événements reçus pendant la
+   * lecture y sont rejoués). Défaut exact de la liste : la table si repliListe l'accepte, sinon ListeBloqueeError. Toute autre
+   * erreur : levée comme avant (opencode ne répond pas, réponse illisible).
+   */
   const pendingPermissions = async (directory: string | null): Promise<PendingPermission[]> => {
-    const list = await client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
-    if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
+    const lecture = table.debutLecture(directory);
+    let list: unknown;
+    try {
+      list = await client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS });
+    } catch (err) {
+      table.abandonLecture(lecture);
+      if (err instanceof OpencodeError) {
+        const repli = repliListe(directory, err.status, err.body);
+        if (repli?.repli === "table") return repli.demandes.map(deLaTable);
+        if (repli?.repli === "bloquee") throw new ListeBloqueeError(repli.outil);
+      }
+      throw err;
+    }
+    if (!Array.isArray(list)) {
+      table.abandonLecture(lecture);
+      throw new Error("liste des demandes d'autorisation illisible");
+    }
+    table.finLecture(lecture, list);
+    episodes.delete(cleDossier(directory, racine));
     return list.flatMap((item) =>
-      isRecord(item) && typeof item.id === "string" && typeof item.sessionID === "string"
-        ? [{ id: item.id, sessionID: item.sessionID, tool: permissionTool(item.tool) }]
-        : [],
+      isRecord(item) && typeof item.id === "string" && typeof item.sessionID === "string" ? [deLaListe(item, item.id, item.sessionID)] : [],
     );
   };
+  // </gf5:d11>
 
   /** Conversations qui travaillent (busy ou retry) : GET /session/status ne liste que les sessions qui ne sont pas au repos. */
   const workingSessions = async (directory: string | null): Promise<Set<string>> => {
@@ -230,6 +344,15 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
       if (await toolCallRunning(request.sessionID, request.tool, directory)) return { ok: true };
       return { ok: false, status: 409, request, orphan: false };
     } catch (err) {
+      // <gf5:d11>
+      if (err instanceof ListeBloqueeError) {
+        log.warn("demande d'autorisation non vérifiable : liste d'opencode bloquée par une demande en attente, table des attentes non fiable", {
+          requestId,
+          outil: err.outil,
+        });
+        return { ok: false, status: 503, request: null, orphan: false, bloquee: err.outil };
+      }
+      // </gf5:d11>
       log.warn("demande d'autorisation non vérifiable : réponse non relayée", { requestId, error: errorMessage(err) });
       return { ok: false, status: 503, request: null, orphan: false };
     }
@@ -594,6 +717,82 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
     },
   };
 
+  // <gf5:d11>
+  /**
+   * Suppression d'une conversation (proxy DELETE /session/:id) : refus PRÉALABLE de ses demandes en attente et de celles de ses
+   * sous-conversations (arbre suivi, complété par /children), dans la file des réponses. Contrairement au nettoyage d'un arrêt, une
+   * conversation qui travaille encore est refusée aussi : elle va disparaître, et sa demande orpheline bloquerait sinon la liste
+   * de tout le dossier (mesure D11 : ni l'arrêt ni DELETE /session ne la retirent). Liste illisible : rien n'est refusé, « ok: false ».
+   */
+  const rejectBeforeDelete = async (
+    sessionId: string,
+    directory: string | null,
+  ): Promise<{ ok: true; rejected: number } | { ok: false; bloquee: ReturnType<typeof outilDeCle> | null }> => {
+    if (!ID_RE.test(sessionId)) return { ok: true, rejected: 0 };
+    const release = await acquireReplyGate();
+    try {
+      let pending: PendingPermission[];
+      try {
+        pending = await pendingPermissions(directory);
+      } catch (err) {
+        log.warn("suppression : demandes d'autorisation en attente illisibles, rien n'est refusé", { sessionId, error: errorMessage(err) });
+        return { ok: false, bloquee: err instanceof ListeBloqueeError ? err.outil : null };
+      }
+      if (pending.length === 0) return { ok: true, rejected: 0 };
+      const tree = new Set([sessionId]);
+      trackedDescendants(sessionId, tree);
+      if (pending.some((p) => !tree.has(p.sessionID))) await opencodeDescendants(sessionId, directory, tree);
+      let rejected = 0;
+      for (const request of pending.filter((p) => tree.has(p.sessionID) && ID_RE.test(p.id)).slice(0, CLEANUP_MAX_REJECTS)) {
+        // P9 : inscrite au registre avant l'envoi.
+        emitted.record({ requestId: request.id, reply: "reject", by: "cockpit", at: Date.now() });
+        try {
+          await client.request("POST", `/permission/${encodeURIComponent(request.id)}/reply`, {
+            query: { directory },
+            body: { reply: "reject" },
+            timeoutMs: PERMISSION_LOOKUP_TIMEOUT_MS,
+          });
+          rejected++;
+        } catch (err) {
+          // F-c : un refus emporte les autres demandes de la même conversation (404 ensuite) : sans conséquence ici.
+          if (!(err instanceof OpencodeError && err.status === 404)) {
+            log.warn("suppression : demande d'autorisation non refusée", { sessionId, requestId: request.id, error: errorMessage(err) });
+          }
+        }
+      }
+      log.info("suppression : demandes d'autorisation de la conversation refusées avant la suppression", { sessionId, rejected });
+      return { ok: true, rejected };
+    } finally {
+      release();
+    }
+  };
+
+  /**
+   * Installation du module « pending » : dérivation « pending » de la table de CETTE instance, coupure du flux (opencode.connection
+   * pour l'instance principale, omo.connection pour la salle), racine d'opencode, relecture proactive par pendingPermissions pour un
+   * dossier permis seulement (jamais un dossier %XX ou hors du dossier de travail, A22). Puis la table de la salle.
+   */
+  const installPending = (reg: Registrar, c11: Cockpit11): void => {
+    racine = c11.projects.opencodeRoot;
+    table.poserRacine(racine);
+    const permis = (dir: string): boolean => {
+      if (instance === "principale") return c11.projects.isAllowedDirectory(dir);
+      return c11.instances?.of(instance)?.isAllowedDirectory(dir) ?? false;
+    };
+    table.poserRelecture(async (dir) => {
+      if (dir !== null && !permis(dir)) return;
+      await pendingPermissions(dir);
+    });
+    reg.derivation(table.derivation);
+    if (instance === "principale") {
+      reg.hub("opencode.connection", () => table.surConnexion());
+      c11.instances?.omo?.gate.installPending?.(reg, c11);
+    } else {
+      reg.hub("omo.connection", () => table.surConnexion(), { instances: [instance] });
+    }
+  };
+  // </gf5:d11>
+
   return {
     acquire: acquireReplyGate,
     pending: pendingPermissions,
@@ -611,5 +810,11 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
       // salle, construit par instance-runtime.ts, inscrit donc sa dérivation ici, juste après. Salle coupée : rien.
       if (instance === "principale") c11.instances?.omo?.gate.install?.(reg, c11);
     },
+    // <gf5:d11>
+    installPending,
+    repliListe,
+    rejectBeforeDelete,
+    attentes: table,
+    // </gf5:d11>
   };
 }

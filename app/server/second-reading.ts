@@ -178,6 +178,12 @@ export function createSecondReadingService(c11: Cockpit11, options: { now?: () =
   };
 
   const beforeBilledSend: SecondReadingService["beforeBilledSend"] = async (ctx) => {
+    // <c5:salle-instance>
+    // GF5 (grande fusion ; plan it5 §8.6 GF5 point 1) : la Seconde lecture n'existe pas dans la Salle OMO. Le crochet est inscrit
+    // pour l'instance principale seule (filtre d'instance de runHooks) ; ici, en plus, un envoi de l'instance « omo » ne requalifie
+    // RIEN, même si le crochet y était appelé par erreur (fermé en cas de doute).
+    if (ctx.instance !== undefined && ctx.instance !== "principale") return null;
+    // </c5:salle-instance>
     try {
       // Seul un envoi de message porte des parties de texte : un raccourci (`/command`) et un résumé n'en ont pas.
       const sessionId = ctx.sessionId;

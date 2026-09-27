@@ -204,6 +204,9 @@ describe("croisements 3d-salle : Q6 sur le cockpit réel (Revoir, consignes de l
     const prompt = "[synthétique] consigne confiée par l'orchestrateur de la salle à un assistant";
     await h.emitOmo({ directory: "/workspace/proj", payload: { id: "evt_l3sa_q6", ...tache(OMO_RACINE, "call_l3sa_q6", "ses_jp_junior", prompt) } });
     assert.equal(consignesDe(h, OMO_RACINE), 1, "consigne gardée par la capture de la salle");
+    // gf5:d11 : la table des attentes de la salle relit GET /permission à la première apparition de /workspace/proj sur son flux ;
+    // cette lecture appartient à l'événement ci-dessus, pas à « Revoir ».
+    await h.attentesAuRepos();
 
     const avantPrincipale = h.fake.requests.length;
     const avantSalle = h.omo.fake.requests.length;

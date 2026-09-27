@@ -12,6 +12,10 @@ import { errorMessage } from "./log.ts";
 import type { DelegationDetailsView } from "./shared/activity-types.ts";
 import { erreurDetails, verificationImpossible } from "./shared/delegation-texts.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
+// <gf5:d11>
+import { ListeBloqueeError } from "./pending-table.ts";
+import { phraseListeBloquee } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 
 export function registerDelegationRoutes(app: Hono, c11: Cockpit11): void {
   app.get("/api/conversations/:rootId/delegations/:permissionId", async (c) => {
@@ -22,6 +26,10 @@ export function registerDelegationRoutes(app: Hono, c11: Cockpit11): void {
     try {
       view = await c11.ports.taskGuard.details(rootId, permissionId);
     } catch (err) {
+      // <gf5:d11>
+      // Liste bloquée par une demande en attente (D11) : opencode répond, la phrase le dit (jamais « opencode ne répond pas »).
+      if (err instanceof ListeBloqueeError) return c.json({ error: "liste-bloquee", message: phraseListeBloquee(err.outil), outil: err.outil }, 503);
+      // </gf5:d11>
       c11.log.warn("détails d'une délégation illisibles : opencode ne répond pas", { rootId, permissionId, error: errorMessage(err) });
       return c.json({ error: "verification-impossible", message: verificationImpossible() }, 503);
     }

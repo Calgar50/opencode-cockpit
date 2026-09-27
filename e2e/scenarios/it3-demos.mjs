@@ -13,7 +13,10 @@
 //   4. ZÉRO requête vers opencode pendant tout cela (journal du faux) et zéro requête de la page — la relecture de SA PROPRE
 //      liste par la page du chat (« GET /api/archive », après un classement de fond) et une reconnexion de son flux
 //      d'événements (« GET /api/events ») sont comptées à part et consignées : la démonstration ne peut pas les émettre ;
-//   5. en mode Simple, une démonstration qui dessine une délégation porte l'avis d'U1.
+//   5. en mode Simple, une démonstration qui dessine une délégation porte l'avis d'U1 ;
+//   6. GF5 (U1, D-5-24, plan it5 §8.6 point 3) : « Comment se déroule une équipe » entre dans le choix du lecteur complet en mode
+//      Avancé (moments « n / N », badge « EN DIFFÉRÉ », [Lire], carte d'exécution sous la bande), JAMAIS en mode Simple tant que les
+//      équipes y sont fermées (EQUIPES_SIMPLE_OUVERTES faux) ; zéro requête, comme les trois autres.
 //
 // ÉCART consigné : la fiche parle de « deux boutons d'assistant ». Le lecteur des démonstrations (L34) monte `NeonCarte` SANS
 // `onOuvrir` : la carte est un dessin, et la vérité reste le tableau (P7, §5.8 l.1009). Le scénario compte donc les assistants
@@ -43,6 +46,8 @@ const CHOIX = ".modal .row.wrap select";
 
 /** §5.9 l.1015, D-3d-26 : les trois démonstrations livrées avec l'interface. */
 const DEMOS = ["Deux assistants en même temps", "Attente de votre accord", "Arrêt au plafond"];
+/** GF5 : démonstration d'équipe, proposée seulement si les équipes sont ouvertes dans le mode courant (U1). */
+const DEMO_EQUIPE = "Comment se déroule une équipe";
 /** Avis du mode Simple sur une démonstration qui délègue (U1, D-3d-26). */
 const AVIS_SIMPLE = "Démonstration enregistrée en mode Avancé : en mode Simple, l'IA ne délègue pas, elle continue seule.";
 /** Relecture archivée d'une conversation au repos, 4 s après (classifier.ts, onIdle). */
@@ -112,6 +117,24 @@ async function jouer(ctx, page, { mode, bouton }) {
     await attendre(700);
     await cliquerBouton(page, "Figer ici", { portee: ".modal .revoir-commandes" }).catch(() => {});
     vus.push(`${demo} : ${moments}`);
+  }
+
+  // 6. GF5 : la démonstration d'équipe, seulement en Avancé (équipes fermées en Simple, U1), sur le même lecteur complet.
+  if (mode === "avance") {
+    exiger(choix.includes(DEMO_EQUIPE), `« ${DEMO_EQUIPE} » absente du choix en mode Avancé : ${resume(choix)}`);
+    await choisir(page, DEMO_EQUIPE);
+    const moments = await texteVisible(page, ".modal .revoir-moments");
+    exiger(/^\d+ \/ \d+$/.test(moments), `« ${DEMO_EQUIPE} » : moments « n / N » attendus, lus « ${resume(moments)} ».`);
+    const badge = await texteVisible(page, ".modal .revoir-badge");
+    exiger(/^EN DIFFÉRÉ ×/.test(badge), `« ${DEMO_EQUIPE} » : badge « EN DIFFÉRÉ ×… » attendu, lu « ${resume(badge)} ».`);
+    await cliquerBouton(page, "Lire", { portee: ".modal .revoir-commandes" });
+    await attendre(700);
+    await cliquerBouton(page, "Figer ici", { portee: ".modal .revoir-commandes" }).catch(() => {});
+    const carte = await page.evaluer("Boolean(document.querySelector('.modal .team-card'))");
+    exiger(carte, `« ${DEMO_EQUIPE} » : carte d'exécution absente sous la bande.`);
+    vus.push(`${DEMO_EQUIPE} : ${moments}`);
+  } else {
+    exiger(!choix.includes(DEMO_EQUIPE), `« ${DEMO_EQUIPE} » proposée en mode Simple alors que les équipes y sont fermées (U1) : ${resume(choix)}`);
   }
 
   // 3. « Deux assistants en même temps » : au moins deux assistants dessinés, chacun nommé dans le tableau (P7).

@@ -37,9 +37,18 @@
 //                  seulement dans le journal du conteneur ; 409 « git-inscriptible » ;
 //   focus-ecran    §5.5 « focus jamais volé » : écran d'activation ouvert, focus sur [Lancer…], la page relit l'état de la salle
 //                  sur un événement du flux ; le focus doit rester où l'utilisateur l'a mis ;
+//   temoin-q6      Q6 (§5.9 l.1019 ; A38 (1), témoin prouvé au banc --faux --salle par la répétition générale « 3s », étapes 1 à 5
+//                  versées par GF5) : sur la MÊME racine activée, même corps, API seule : (1) Simple → envoi 403 « mode-avance »,
+//                  0 relayé ; (2) Avancé → envoi relayé (204), 1 relayé à la salle factice ; (3) réponse d'autorisation du
+//                  navigateur → 403 dans les DEUX modes, 0 relayée ; (4) P11 : l'instance principale ne reçoit rien sur cette
+//                  racine ; (5) territoires : en Avancé, l'état de la racine vient de la salle (jamais du client principal), en
+//                  Simple, aucune requête à la salle. Le test « TÉMOIN Q6 bout en bout » de croisements-3d-salle.test.ts reste
+//                  sauté « en attente » tant que le harnais ne sait pas ouvrir la salle : c'est ce banc qui le tient ;
 //   revoir-simple  Q6 (§5.9, §6 l.1065 ; D-3d-09, D-3d-14 ; répétition générale « 3s ») : demande brève lancée par l'API, en Simple
-//                  « Revoir » refusé pendant la demande, /facts 403, puis permis quand elle est finie, sans requête aux instances,
-//                  et la conversation listée au zoom 1 avec [Revoir] ;
+//                  « Revoir » refusé pendant la demande (consignes gardées comprises : …/consignes?enfant= et …/consignes/:callId),
+//                  /facts 403, puis permis quand elle est finie, consignes comprises, sans requête aux instances ; au zoom 1, la
+//                  RÉPONSE DE L'API (GET /api/salle-controle/territoires) liste la conversation avec `revoir` vrai et sans compteur
+//                  (`travaillent` nul) — le bouton [Revoir cette demande] de l'interface n'est pas cliqué ici ;
 //   sans-salle    T-L26-e : COCKPIT_OMO coupé, puis image absente (cockpit redémarré) → entrée absente ; puis rétabli.
 // Chaque étape part d'une salle prête ET écoutée : le flux d'événements du cockpit rebranché sur son dernier lancement (relevé de
 // la salle factice) ; le délai de ce rebranchement est dit au bilan.
@@ -949,23 +958,131 @@ async function focusEcran(s) {
   );
 }
 
-/** Envoi d'une demande dans la salle PAR L'API (préparation) : IA de l'agent principal de la salle, confirmée ; 409 d'IA changée suivi. */
-async function envoyerApi(ctx, rootId, directory) {
+/** Réponses d'autorisation reçues par la salle factice (POST /permission/:id/reply). */
+const reponsesAutorisation = async (ctx) => (await ctx.salle.pilote.requetes()).filter((r) => r.method === "POST" && /^\/permission\/[^/]+\/reply$/.test(r.pathname)).length;
+
+/**
+ * Témoin Q6 (A38 (1)) : étapes 1 à 5 du scénario jetable de la répétition générale « 3s » (scratchpad, 3d11-rg3s-omo-ui-q6-temoin),
+ * prouvées trois fois au banc --faux --salle, versées ici par GF5. API seule, sur une racine NEUVE, activée, avec le même corps.
+ */
+async function temoinQ6(s) {
+  const { ctx, page } = s;
+  await page.evaluer(`location.hash = "#/chat"`);
+  await changerMode(ctx, "avance");
+  await sallePrete(s);
+  const repereP = (await ctx.opencodeRequests()).length;
+  const ouverte = await ouvrirSalleApi(ctx);
+  const rootId = ouverte.rootId;
+  s.racines.add(rootId);
+  const directory = `/workspace/${ouverte.projet ?? "projet-a"}`;
+  await ctx.salle.pilote.tourParDefaut(TOUR_BREF);
+  const activation = await activerApi(ctx, rootId);
+  exiger(activation.code === 200, `activation par l'API : ${resume(activation)}`);
+
+  // Corps lu UNE fois, en Avancé (l'IA de la salle vient de /api/omo/oc/agent, 403 en Simple), puis envoyé tel quel dans les deux modes.
+  const corps = await corpsEnvoi(ctx, directory, "[synthétique] témoin Q6 de la répétition générale");
+
+  // 1. Simple : même racine activée, même corps → 403 « mode-avance », rien relayé.
+  const avantSimple = (await envoisSalle(ctx, rootId)).length;
+  await changerMode(ctx, "simple");
+  const simple = await envoyerCorps(ctx, rootId, directory, corps);
+  const simpleLu = simple.corps ? JSON.parse(simple.corps) : null;
+  await attendre(1_500);
+  const apresSimple = (await envoisSalle(ctx, rootId)).length;
+  exiger(simple.code === 403 && simpleLu?.error === "mode-avance", `Simple : envoi ${simple.code} ${resume(simpleLu)} (403 « mode-avance » attendu)`);
+  exiger(apresSimple === avantSimple, `Simple : ${apresSimple - avantSimple} envoi(s) relayé(s) à la salle`);
+
+  // 3a. Réponse d'autorisation du navigateur en Simple → 403, rien relayé.
+  const reponsesAvant = await reponsesAutorisation(ctx);
+  const repSimple = await ctx.api.brut("POST", `/api/omo/oc/permission/per_temoinq6e2e/reply?directory=${encodeURIComponent(directory)}`, { reply: "once" });
+  exiger(repSimple.code === 403, `Simple : réponse d'autorisation ${repSimple.code} ${resume(repSimple.corps)} (403 attendu)`);
+
+  // 2. Avancé (témoin) : le même envoi passe la porte et arrive à la salle factice (204, un relayé).
+  await changerMode(ctx, "avance");
+  let avance = await envoyerCorps(ctx, rootId, directory, corps);
+  if (avance.code === 409 && /activ/i.test(String((avance.corps ? JSON.parse(avance.corps) : null)?.error ?? ""))) {
+    // L'activation vaut pour une demande ; si le passage par Simple l'a retirée, elle est redonnée (même racine).
+    const re = await activerApi(ctx, rootId);
+    exiger(re.code === 200, `réactivation après le passage en Simple : ${resume(re)}`);
+    avance = await envoyerCorps(ctx, rootId, directory, corps);
+  }
+  exiger(avance.code === 204, `Avancé : envoi ${avance.code} ${resume(avance.corps)} (204 attendu)`);
+  await attendreQue(async () => ((await envoisSalle(ctx, rootId)).length > apresSimple ? true : false), { delaiMs: 15_000, pasMs: 250, libelle: "envoi relayé à la salle factice" });
+  const relayes = (await envoisSalle(ctx, rootId)).length - apresSimple;
+  exiger(relayes === 1, `Avancé : ${relayes} envoi(s) relayé(s) à la salle factice (1 attendu)`);
+
+  // 3b. Réponse d'autorisation du navigateur en Avancé → 403 aussi, rien relayé.
+  const repAvance = await ctx.api.brut("POST", `/api/omo/oc/permission/per_temoinq6e2e/reply?directory=${encodeURIComponent(directory)}`, { reply: "once" });
+  exiger(repAvance.code === 403, `Avancé : réponse d'autorisation ${repAvance.code} ${resume(repAvance.corps)} (403 attendu)`);
+  await attendre(1_000);
+  const reponsesApres = await reponsesAutorisation(ctx);
+  exiger(reponsesApres === reponsesAvant, `réponses d'autorisation relayées à la salle : ${reponsesApres - reponsesAvant}`);
+
+  // 4. P11 : l'instance principale n'a rien reçu sur la racine de la salle.
+  const principales = (await ctx.opencodeRequests()).slice(repereP);
+  const deLaSalle = principales.filter((r) => `${r.pathname} ${JSON.stringify(r.query ?? {})} ${JSON.stringify(r.body ?? null)}`.includes(rootId));
+  exiger(deLaSalle.length === 0, `P11 : ${deLaSalle.length} requête(s) de la salle à l'instance principale`);
+
+  // 5. Territoires (L3s-a) : en Avancé, l'état de la racine vient de SON instance, jamais du client principal ; en Simple, aucune
+  //    requête à la salle.
+  const statutsSalle = async () => (await ctx.salle.pilote.requetes()).filter((r) => r.method === "GET" && r.pathname === "/session/status").length;
+  const statutsPrincipaux = async () =>
+    (await ctx.opencodeRequests()).filter((r) => r.method === "GET" && r.pathname === "/session/status" && String(r.query?.directory ?? "") === directory).length;
+  const sAvant = await statutsSalle();
+  const pAvant = await statutsPrincipaux();
+  const terrAvance = await ctx.api.get("/api/salle-controle/territoires");
+  const sApresAvance = await statutsSalle();
+  const pApresAvance = await statutsPrincipaux();
+  const dansEnceinte = (terrAvance.salle?.projets ?? []).some((p) => (p.conversations ?? []).some((c) => c.rootId === rootId));
+  exiger(dansEnceinte, `territoires Avancé : racine de la salle absente de l'enceinte (${resume(terrAvance.salle)})`);
+  exiger(sApresAvance > sAvant, "territoires Avancé : aucune lecture de statut sur l'instance de la salle");
+  exiger(pApresAvance === pAvant, `territoires Avancé : ${pApresAvance - pAvant} lecture(s) de statut du dossier de la salle sur l'instance principale`);
+  await changerMode(ctx, "simple");
+  await ctx.api.get("/api/salle-controle/territoires");
+  const sApresSimple = await statutsSalle();
+  exiger(sApresSimple === sApresAvance, `territoires Simple : ${sApresSimple - sApresAvance} requête(s) à la salle`);
+  await changerMode(ctx, "avance");
+
+  // Remise en état : arrêt de la demande par la route de la salle.
+  await ctx.api.brut("POST", `/api/omo/rooms/${encodeURIComponent(rootId)}/stop`, {});
+  s.bilan.push(
+    `témoin Q6 : Simple envoi ${simple.code} « ${simpleLu?.error} », 0 relayé ; Avancé envoi ${avance.code}, ${relayes} relayé ; réponse d'autorisation ${repSimple.code} (Simple) et ${repAvance.code} (Avancé), 0 relayée ; P11 0 requête à la principale ; territoires ${sApresAvance - sAvant} lecture(s) sur la salle en Avancé, 0 en Simple`,
+  );
+}
+
+/**
+ * Corps d'un envoi dans la salle : IA de l'agent principal de la salle, lue par GET /api/omo/oc/agent — donc EN MODE AVANCÉ (en
+ * Simple, la route répond 403 « mode-avance » comme tout /api/omo/oc/*). Le témoin Q6 lit ce corps une fois, en Avancé, puis
+ * envoie le MÊME corps dans les deux modes.
+ */
+async function corpsEnvoi(ctx, directory, texte) {
   const agents = await ctx.api.brut("GET", `/api/omo/oc/agent?directory=${encodeURIComponent(directory)}`);
   exiger(agents.code === 200, `GET /api/omo/oc/agent : ${agents.code} ${resume(agents.corps)}`);
   const principal = (a) => typeof a?.name === "string" && a.mode !== "subagent";
   const liste = JSON.parse(agents.corps);
   const agent = liste.find((a) => principal(a) && a.name === "build") ?? liste.find((a) => principal(a) && a.hidden !== true);
   const model = agent?.model?.providerID && agent?.model?.modelID ? { providerID: agent.model.providerID, modelID: agent.model.modelID } : null;
-  const parts = [{ type: "text", text: "[synthétique] demande brève de la salle, revue ensuite en mode Simple" }];
+  return { parts: [{ type: "text", text: texte }], ...(model ? { model } : {}) };
+}
+
+/** Envoi d'un corps dans la salle PAR L'API, confirmé ; 409 d'IA changée suivi (même texte, IA rendue par le cockpit). */
+async function envoyerCorps(ctx, rootId, directory, corps) {
   const chemin = `/api/omo/oc/session/${encodeURIComponent(rootId)}/prompt_async?directory=${encodeURIComponent(directory)}`;
   const confirmer = { entetes: { "x-cockpit-confirm": "1" } };
-  let reponse = await ctx.api.brut("POST", chemin, { parts, ...(model ? { model } : {}) }, confirmer);
-  const lu = reponse.corps ? JSON.parse(reponse.corps) : null;
+  let reponse = await ctx.api.brut("POST", chemin, corps, confirmer);
+  let lu = null;
+  try {
+    lu = reponse.corps ? JSON.parse(reponse.corps) : null;
+  } catch {}
   if (reponse.code === 409 && lu?.error === "assistant-model-changed" && lu?.model) {
-    reponse = await ctx.api.brut("POST", chemin, { parts, model: lu.model, ...(lu.variant ? { variant: lu.variant } : {}) }, confirmer);
+    reponse = await ctx.api.brut("POST", chemin, { parts: corps.parts, model: lu.model, ...(lu.variant ? { variant: lu.variant } : {}) }, confirmer);
   }
   return reponse;
+}
+
+/** Envoi d'une demande dans la salle PAR L'API (préparation, mode Avancé) : corps lu puis envoyé. */
+async function envoyerApi(ctx, rootId, directory) {
+  return await envoyerCorps(ctx, rootId, directory, await corpsEnvoi(ctx, directory, "[synthétique] demande brève de la salle, revue ensuite en mode Simple"));
 }
 
 /**
@@ -1009,6 +1126,9 @@ async function revoirSimple(s) {
   };
   const pendant = await etatRevoir();
   const facts = await ctx.api.brut("GET", `/api/conversations/${encodeURIComponent(rootId)}/facts`);
+  // Route des consignes gardées (U2, D-3d-30 ; A38 (2)) : même règle que « Revoir » pendant la demande (403).
+  const consignesDe = (suite) => ctx.api.brut("GET", `/api/revoir/${encodeURIComponent(rootId)}/consignes${suite}`);
+  const consignesPendant = [await consignesDe(`?enfant=${encodeURIComponent(rootId)}`), await consignesDe("/call_revoir_simple")];
 
   // Fin de la demande : « Revoir » permis. Le suivi (raison du refus / état de la salle) est dit à l'échec, jamais un simple délai ;
   // la fin est attendue AVANT de juger le relevé fait pendant la demande, pour que l'échec dise les deux.
@@ -1034,12 +1154,20 @@ async function revoirSimple(s) {
     `Simple, demande en cours : ${resume(pendant)} (refus « salle-demande-en-cours » attendu) ; après la fin : ${fin ?? `permis (${suivi.join(" → ")})`}`,
   );
   exiger(facts.code === 403, `Simple : /facts ${facts.code} (403 attendu, L18c)`);
+  for (const lu of consignesPendant) {
+    const corps = lu.corps ? JSON.parse(lu.corps) : null;
+    exiger(lu.code === 403 && corps?.code === "salle-demande-en-cours", `Simple, demande en cours : consignes ${lu.code} ${resume(corps)} (403 « salle-demande-en-cours » attendu)`);
+  }
   exiger(fin === null, fin);
 
   // Lecture : 200, demande terminée, aucune requête à la salle ni à l'instance principale (rien n'est relancé ni facturé).
   const avantSalle = (await ctx.salle.pilote.requetes()).length;
   const avantPrincipale = (await ctx.opencodeRequests()).length;
   const lecture = await ctx.api.brut("GET", `/api/revoir/${encodeURIComponent(rootId)}`);
+  // Consignes gardées, demande finie : la liste par l'enfant (200, liste vide possible : cette demande brève n'a rien délégué)
+  // et une consigne absente (404 « consigne-absente », phrase de « Revoir »), sans requête aux instances, elles aussi.
+  const parEnfant = await consignesDe(`?enfant=${encodeURIComponent(rootId)}`);
+  const absente = await consignesDe("/call_revoir_simple");
   await attendre(500);
   const versSalle = (await ctx.salle.pilote.requetes()).length - avantSalle;
   const versPrincipale = (await ctx.opencodeRequests()).length - avantPrincipale;
@@ -1047,15 +1175,20 @@ async function revoirSimple(s) {
   const vue = JSON.parse(lecture.corps);
   exiger(vue.instance === "omo" && vue.termine === true, `« Revoir » : ${resume({ instance: vue.instance, termine: vue.termine })}`);
   exiger(versSalle === 0 && versPrincipale === 0, `« Revoir » : ${versSalle} requête(s) à la salle, ${versPrincipale} à l'instance principale`);
+  const listeLue = parEnfant.corps ? JSON.parse(parEnfant.corps) : null;
+  exiger(parEnfant.code === 200 && Array.isArray(listeLue?.consignes) && listeLue.enfant === rootId, `consignes par l'enfant, demande finie : ${parEnfant.code} ${resume(listeLue)}`);
+  const absenteLue = absente.corps ? JSON.parse(absente.corps) : null;
+  exiger(absente.code === 404 && absenteLue?.code === "consigne-absente", `consigne absente, demande finie : ${absente.code} ${resume(absenteLue)} (404 « consigne-absente » attendu)`);
 
-  // Zoom 1 (D-3d-14) : en Simple, la conversation terminée de la salle est listée, avec [Revoir cette demande], sans compteur.
+  // Zoom 1 (D-3d-14) : en Simple, la RÉPONSE DE L'API (GET /api/salle-controle/territoires) liste la conversation terminée de la
+  // salle avec `revoir` vrai et sans compteur (`travaillent` nul). Le bouton [Revoir cette demande] de l'interface n'est pas cliqué.
   const territoires = await ctx.api.get("/api/salle-controle/territoires");
   const conversation = (territoires.salle?.projets ?? []).flatMap((p) => p.conversations ?? []).find((c) => c.rootId === rootId);
   exiger(conversation?.revoir === true && conversation.travaillent === null, `zoom 1 en Simple : ${resume(territoires.salle)}`);
   await changerMode(ctx, "avance");
   s.bilan.push(
     `« Revoir » en Simple (Q6) : pendant la demande « ${pendant.raison} », /facts ${facts.code} ; ${suivi.join(" → ")} ; lecture ${lecture.code} ` +
-      `(${Array.isArray(vue.facts) ? vue.facts.length : "?"} faits, terminée), 0 requête aux deux instances ; zoom 1 : conversation listée avec [Revoir]`,
+      `(${Array.isArray(vue.facts) ? vue.facts.length : "?"} faits, terminée), consignes gardées ${consignesPendant.map((l) => l.code).join("/")} pendant puis ${parEnfant.code}/${absente.code}, 0 requête aux deux instances ; zoom 1 (réponse de l'API) : revoir vrai, sans compteur`,
   );
 }
 
@@ -1153,6 +1286,7 @@ const ETAPES = [
   ["detection", detection],
   ["git-attente", gitAttente],
   ["focus-ecran", focusEcran],
+  ["temoin-q6", temoinQ6],
   ["revoir-simple", revoirSimple],
   ["sans-salle", sansSalle],
 ];

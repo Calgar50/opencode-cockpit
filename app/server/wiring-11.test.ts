@@ -375,6 +375,7 @@ describe("câblage 1.1 : ordre figé", () => {
 
   it("MODULE_ORDER et STEP_ORDER : ordre du plan §4.4 pour le cockpit, du §4.1.2 pour la salle", () => {
     assert.deepEqual(MODULE_ORDER, [
+      "pending", // gf5:d11 : table des attentes (D11), avant le portillon qui la lit
       "gate",
       "floors",
       "facts",
@@ -407,8 +408,11 @@ describe("câblage 1.1 : ordre figé", () => {
         beforeOnceRelay: ["taskGuard"],
         abort: ["stopTree", "omoStop"],
       },
-      derivations: ["gate", "omoDetections", "omoResponder", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch", "omoCaps"],
+      // gf5:d11 : « pending » en tête des dérivations, et ses deux abonnements (coupure du flux de chaque instance) en tête du hub.
+      derivations: ["pending", "gate", "omoDetections", "omoResponder", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch", "omoCaps"],
       hub: [
+        ["pending", "opencode.connection"],
+        ["pending", "omo.connection"],
         ["delegationWatch", "usage.updated"],
         ["autonomy", "opencode.connection"],
         ["capWatch", "usage.updated"],
@@ -467,7 +471,7 @@ describe("câblage 1.1 : ordre figé", () => {
     for (const name of MODULE_ORDER) assert.equal(MODULES[name].name, name);
     // <c5:ports>
     // La construction n'ajoute aucun port (D-5-04) : ses modules n'ont pas de port neutre, comme « gate ».
-    const SANS_PORT: readonly ModuleName[] = ["gate", ...CONSTRUCTION_MODULE_ORDER];
+    const SANS_PORT: readonly ModuleName[] = ["gate", "pending", ...CONSTRUCTION_MODULE_ORDER]; // gf5:d11 : « pending » sans port, comme « gate »
     assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => !SANS_PORT.includes(name)).sort());
     // </c5:ports>
   });
@@ -481,6 +485,14 @@ describe("câblage 1.1 : ordre figé", () => {
     };
     const derivation = (name: ModuleName) => ({ name, onEvent: () => void trace.push(name) });
     const factices: Cockpit11Module[] = [
+      // gf5:d11 : table des attentes, dérivation en tête et coupure du flux de l'instance principale.
+      {
+        name: "pending",
+        install: (reg) => {
+          reg.derivation(derivation("pending"));
+          reg.hub("opencode.connection", () => void trace.push("pending:opencode.connection"));
+        },
+      },
       { name: "gate", install: (reg) => reg.derivation(derivation("gate")) },
       {
         name: "floors",
@@ -578,12 +590,12 @@ describe("câblage 1.1 : ordre figé", () => {
     assert.deepEqual(await run(() => wiring.runHooks("beforeOnceRelay", ctx, "per_1")), ["taskGuard"]);
     assert.deepEqual(await run(() => wiring.runHooks("abort", ctx, ROOT)), ["stopTree"]);
     const event = { payload: { type: "permission.replied", properties: {} } };
-    assert.deepEqual(await run(() => wiring.derivations.forEach((d) => d.onEvent(event))), ["gate", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch"]);
+    assert.deepEqual(await run(() => wiring.derivations.forEach((d) => d.onEvent(event))), ["pending", "gate", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch"]);
     assert.deepEqual(
       await run(() => wiring.subscriptions.forEach((sub) => (sub.fn as (data: unknown) => void)({}))),
-      ["delegationWatch:usage.updated", "autonomy:opencode.connection", "capWatch:usage.updated"],
+      ["pending:opencode.connection", "delegationWatch:usage.updated", "autonomy:opencode.connection", "capWatch:usage.updated"],
     );
-    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
+    assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["opencode.connection", "usage.updated", "opencode.connection", "usage.updated"]);
     assert.deepEqual(
       await run(async () => {
         for (const start of wiring.startup) await start();

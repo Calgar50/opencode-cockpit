@@ -14,6 +14,9 @@ import { methodChipReason } from "../../../server/shared/chat-methods-view.ts";
 import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
 import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodChip.tsx";
 // </c5:methodes-import>
+// <c5:salle-import>
+import { outilsDeConstruction } from "../../../server/shared/construction-salle.ts";
+// </c5:salle-import>
 import type { ComposerSlots } from "./slots.ts";
 import type { CommandOption } from "./turn.ts";
 // --- équipes (it4) : début ---
@@ -110,6 +113,7 @@ export function Composer({
   team,
   draftHandle,
   // --- équipes (it4) : fin ---
+  salle = false, // c5 : GF5, racine de la Salle OMO
 }: ComposerSlots & {
   directory: string;
   busy: boolean;
@@ -141,6 +145,10 @@ export function Composer({
   /** Reçoit la lecture et l'effacement du brouillon (lanceur d'équipe). */
   draftHandle?: RefObject<ComposerDraftHandle | null> | undefined;
   // --- équipes (it4) : fin ---
+  // <c5:salle-propriete>
+  /** GF5 : racine de la Salle OMO, ni puce « + Méthode » ni méthodes retenues (outilsDeConstruction). Absente : faux. */
+  salle?: boolean;
+  // </c5:salle-propriete>
 }) {
   const toast = useToast();
   const [text, setText] = useState("");
@@ -150,6 +158,9 @@ export function Composer({
   // Méthodes retenues pour CE message (2 au plus, D-5-07) : elles ne vivent que le temps de l'envoi, comme le texte.
   const [methodes, setMethodes] = useState<ChosenMethod[]>([]);
   // </c5:methodes-etat>
+  // <c5:salle-outils>
+  const outils = outilsDeConstruction(salle);
+  // </c5:salle-outils>
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -490,7 +501,8 @@ export function Composer({
             <p className="methodes-item-raison">{raisonMethodes}</p>
           </div>
         ) : null}
-        <MethodChipList valeur={methodes} onChange={setMethodes} raison={raisonMethodes} />
+        {/* GF5 : aucune méthode retenue dans une racine de la salle. */}
+        {outils.puceMethode ? <MethodChipList valeur={methodes} onChange={setMethodes} raison={raisonMethodes} /> : null}
         {/* </c5:methodes-retenues> */}
 
         <textarea
@@ -539,7 +551,10 @@ export function Composer({
               texte réellement envoyé (`raccourci`) : aucune méthode ne s'y ajoute.
               L44f : désactivée aussi quand une équipe tient la saisie (`equipeChoisie`) — les méthodes d'une équipe se règlent
               sur ses étapes. Les deux raisons sont écrites, même si `equipeChoisie` implique déjà `disabled` aujourd'hui. */}
-          <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled || equipeChoisie} valeur={methodes} onChange={setMethodes} />
+          {/* GF5 : ni puce ni méthode dans une racine de la salle (outilsDeConstruction). */}
+          {outils.puceMethode ? (
+            <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled || equipeChoisie} valeur={methodes} onChange={setMethodes} />
+          ) : null}
           {/* </c5:methodes-puce> */}
           {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
           {busy || stopVisible ? (

@@ -19,6 +19,9 @@ import { MethodBubble } from "./methods/MethodBubble.tsx";
 import { MethodPresence } from "./methods/MethodPresence.tsx";
 import { SecondReadingButton, SecondReadingFooter } from "./methods/SecondReadingButton.tsx";
 // </c5:methodes-import>
+// <c5:salle-import>
+import { outilsDeConstruction } from "../../../server/shared/construction-salle.ts";
+// </c5:salle-import>
 import { relativePath, ToolCard } from "./ToolCard.tsx";
 import { type MessageEntry, type Turn, turnTotals } from "./transcript.ts";
 import {
@@ -203,6 +206,10 @@ interface TurnViewProps {
    * montre une conversation racine. Faux dans le tiroir d'un travail délégué, qui n'est pas une conversation racine.
    */
   conversationRoot?: boolean;
+  // <c5:salle-propriete>
+  /** GF5 : racine de la Salle OMO, ni « Méthode appliquée » ni Seconde lecture (outilsDeConstruction). Absente : faux. */
+  salle?: boolean;
+  // </c5:salle-propriete>
 }
 
 /**
@@ -230,7 +237,9 @@ function TurnFooter({ turn, conversationRoot, advanced }: { turn: Turn; conversa
   );
 }
 
-function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot = true }: TurnViewProps) {
+function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot = true, salle = false }: TurnViewProps) {
+  // c5:salle-outils (GF5) : outils de la construction proposés dans cette conversation.
+  const outils = outilsDeConstruction(salle);
   const { advanced } = useApp();
   const totals = turnTotals(turn);
   const agents = [...new Set(turn.replies.map((r) => r.info.agent))];
@@ -307,13 +316,13 @@ function TurnViewImpl({ turn, root, modelName, onOpenSession, conversationRoot =
           {/* <c5:methodes-presence> */}
           {/* Sous la réponse qui suit une demande avec méthode : « Méthode appliquée » ou « Méthode non détectée dans la
               réponse ». Tant que la réponse s'écrit, rien n'est affirmé : la section peut encore arriver. */}
-          {totals.running ? null : <MethodPresence demandees={methodesDemandees} reponse={reponse} />}
+          {totals.running || !outils.presenceMethode ? null : <MethodPresence demandees={methodesDemandees} reponse={reponse} />}
           {/* </c5:methodes-presence> */}
           {/* <c5:seconde-lecture> */}
           {/* Pied de la réponse du Relecteur, puis « Seconde lecture (≈ {x} $) » sous une réponse terminée : ni en cours, ni
               message repère, ni la relecture elle-même (C §9.7). Le composeur garde son assistant. */}
-          {pied !== null && !totals.running ? <SecondReadingFooter texte={pied} /> : null}
-          {conversationRoot && sessionDeTour !== null ? (
+          {pied !== null && !totals.running && outils.secondeLecture ? <SecondReadingFooter texte={pied} /> : null}
+          {conversationRoot && sessionDeTour !== null && outils.secondeLecture ? (
             <SecondReadingButton
               sessionId={sessionDeTour}
               cle={turn.key}

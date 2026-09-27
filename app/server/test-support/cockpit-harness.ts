@@ -150,6 +150,14 @@ export interface CockpitHarness {
    * /instance/dispose, ou si un redémarrage a été demandé à la doublure du contrôle.
    */
   assertNoGlobalRestart(): void;
+  // <gf5:d11>
+  /**
+   * Relectures proactives de la table des attentes (GF5, D11 : GET /permission à la première apparition d'un dossier sur le flux)
+   * terminées, sur les deux instances. Un test qui compte les requêtes reçues par un faux PENDANT une action (« Revoir », etc.)
+   * l'appelle avant de prendre son repère : ces lectures appartiennent à l'événement qui les a déclenchées, pas à l'action.
+   */
+  attentesAuRepos(): Promise<void>;
+  // </gf5:d11>
   /**
    * Arrêt et nettoyage (aussi fait par t.after) ; idempotent. Échoue si le faux opencode a ouvert une instance hors de son dossier
    * (sentinelle d'instance, R106-a).
@@ -560,6 +568,15 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     },
     cockpitEvents: () => events.map((event) => ({ ...event })),
     assertNoGlobalRestart,
+    // <gf5:d11>
+    attentesAuRepos: async () => {
+      const tables = [cockpit.gate, omoParts?.runtime.deps.gate].flatMap((gate) => {
+        const attentes = (gate as { attentes?: { relecturesEnCours(): number } } | undefined)?.attentes;
+        return attentes === undefined ? [] : [attentes];
+      });
+      await until(() => tables.every((table) => table.relecturesEnCours() === 0), 5_000);
+    },
+    // </gf5:d11>
     close,
   };
 }

@@ -455,7 +455,8 @@ function entreeDemonstration(source: string): string | null {
   if (!ouvrir) return `${bande[1]} n'ouvre pas la démonstration par un rappel stable`;
   const etat = new RegExp(`const \\[(\\w+), ${ouvrir[1]}\\] = useState\\(false\\);`).exec(code);
   if (!etat) return "état de la démonstration introuvable, ou ouvert au premier rendu";
-  const lecteur = new RegExp(`\\{${etat[1]} \\? <DemoPlayer advanced=\\{advanced\\} onClose=\\{(\\w+)\\} /> : null\\}`).exec(code);
+  // GF5 (U1, plan it5 §2.8) : la région passe aussi `equipesVisibles`, calculé par equipesOuvertes ; le lecteur ne le lit jamais.
+  const lecteur = new RegExp(`\\{${etat[1]} \\? <DemoPlayer advanced=\\{advanced\\}(?: equipesVisibles=\\{equipesVisibles\\})? onClose=\\{(\\w+)\\} /> : null\\}`).exec(code);
   if (!lecteur) return "DemoPlayer n'est pas rendu à l'ouverture";
   if (!new RegExp(`const ${lecteur[1]} = useCallback\\(\\(\\) => ${ouvrir[1]}\\(false\\), \\[\\]\\);`).test(code)) return `${lecteur[1]} : fermeture sans rappel stable`;
   return null;

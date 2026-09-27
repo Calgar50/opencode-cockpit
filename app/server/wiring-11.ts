@@ -79,6 +79,7 @@ export const INSTANCES_PAR_DEFAUT: InstanceFilter = ["principale"];
 
 /** Ordre d'installation des modules : ceux du cockpit (it1, it2), puis ceux de la salle (OMO_MODULE_NAMES, T3a). */
 export const MODULE_ORDER = [
+  "pending", // gf5:d11 : table des attentes (D11), installée avant le portillon qui la lit
   "gate",
   "floors",
   "facts",
@@ -139,8 +140,17 @@ export const STEP_ORDER = {
   },
   // gate : permission.replied (réévaluation des refus retenus) ; taskGuard : refus Simple.
   // Salle : gate → omoDetections → omoResponder → facts → omoCaps (les deux modules de la salle s'intercalent avant les faits).
-  derivations: ["gate", "omoDetections", "omoResponder", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch", "omoCaps"],
+  // <gf5:d11>
+  // pending (GF5, D11) : table des attentes de chaque instance, EN TÊTE — tout module qui lit gate.pending pendant un événement voit
+  // la table déjà à jour de cet événement (permission.asked, permission.replied, libérations).
+  // </gf5:d11>
+  derivations: ["pending", "gate", "omoDetections", "omoResponder", "facts", "taskGuard", "delegationWatch", "autonomy", "capWatch", "omoCaps"],
   hub: [
+    // <gf5:d11>
+    // pending : coupure ou reconnexion du flux de chaque instance → table non fiable (avant la relecture de l'autonomie).
+    ["pending", "opencode.connection"],
+    ["pending", "omo.connection"],
+    // </gf5:d11>
     ["delegationWatch", "usage.updated"],
     ["autonomy", "opencode.connection"],
     ["capWatch", "usage.updated"],
@@ -173,8 +183,22 @@ const gateModule: Cockpit11Module = {
   },
 };
 
+// <gf5:d11>
+/**
+ * Module « pending » (GF5, D11) : la table des attentes est portée par le portillon (une par instance) ; son installation aussi,
+ * comme celle du module « gate ». Sans port.
+ */
+const pendingModule: Cockpit11Module = {
+  name: "pending",
+  install(reg, c11) {
+    c11.gate?.installPending?.(reg, c11);
+  },
+};
+// </gf5:d11>
+
 /** Modules réels, par nom (production : tous ; harnais : ceux que le test déclare). */
 export const MODULES: { readonly [N in ModuleName]: Cockpit11Module } = {
+  pending: pendingModule, // gf5:d11
   gate: gateModule,
   floors: floorsModule,
   facts: factsModule,
