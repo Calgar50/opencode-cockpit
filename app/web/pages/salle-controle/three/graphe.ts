@@ -14,7 +14,11 @@
 // | faisceau               |   1    | `Mesh` (`TubeGeometry` le long d'une `QuadraticBezierCurve3`, matériau additif)          |
 // | marque                 |   1    | `Mesh` (plaque couchée + texture de la forme)                                            |
 // | lot de tuiles non vide |   1    | `InstancedMesh` (un par dossier ET par état : au plus 4 par dossier)                     |
+// | lien du carnet         |   1    | `Mesh` (`TubeGeometry` FIN et droit, jeton `territoire`, sans texture : jamais un faisceau) |
 // Un lot de tuiles vide ne crée aucun objet. Les étiquettes du plan ne sont pas dessinées ici : elles sont posées en DOM (L29d).
+// Salle OMO (« 3s », L3s-a) : les tuiles de la station « Carnet partagé et plan » arrivent en lots de tuiles ordinaires (dossier
+// `carnet`), la boucle « par l'extension » en marque d'anneau au jeton `extension` ; seuls les liens du carnet ont leur forme,
+// un trait fin (comme le pointillé fin de la bande), plus mince que le plus mince des faisceaux.
 //
 // Règles tenues ici :
 // - **P12** : chaque objet hors décor porte `userData.faits`, RECOPIÉ du plan ; le décor (sol, stations, territoires) porte
@@ -55,9 +59,20 @@ import {
   Sprite,
   SpriteMaterial,
   type Texture,
+  TubeGeometry,
 } from "three";
 import type { NeonPalette, NeonToken } from "../../../../server/shared/neon-palette.ts";
-import type { Plan3d, Plan3dBeam, Plan3dMark, Plan3dNode, Plan3dStation, Plan3dTerritoire, Plan3dTileBatch, Point3 } from "../../../../server/shared/salle3d-types.ts";
+import type {
+  Plan3d,
+  Plan3dBeam,
+  Plan3dLienCarnet,
+  Plan3dMark,
+  Plan3dNode,
+  Plan3dStation,
+  Plan3dTerritoire,
+  Plan3dTileBatch,
+  Point3,
+} from "../../../../server/shared/salle3d-types.ts";
 import { courbeFaisceau, geometrieAretes, geometriePlaque, geometriePrisme, geometrieTube, geometrieTuile, TAILLES } from "./formes.ts";
 import { creerSol } from "./sol.ts";
 import { textureFaisceau, textureHalo, textureMarque } from "./textures.ts";
@@ -85,6 +100,13 @@ export const JETON_STATION: NeonToken = "territoire";
 export const JETON_FIGE: NeonToken = "arret";
 /** Teinte de l'enceinte de la Salle OMO (JP-10). */
 export const JETON_ENCEINTE: NeonToken = "extension";
+/** Lien de la station « Carnet partagé et plan » vers un assistant (L3s-a) : trait du territoire, comme la bande (`neon.css`). */
+export const JETON_LIEN_CARNET: NeonToken = "territoire";
+/** Rayon du tube d'un lien du carnet : trait fin, trois fois plus mince au moins que celui d'un faisceau (formes.ts). */
+export const RAYON_LIEN_CARNET = 0.04;
+/** Segments et côtés du tube d'un lien du carnet (droit : peu de segments suffisent). */
+export const SEGMENTS_LIEN_CARNET = 8;
+export const COTES_LIEN_CARNET = 4;
 /** Couleur d'une tuile selon son état, comme la bande 2D ; son épaisseur la double (HAUTEURS_TUILE). */
 export const JETONS_TUILE: Readonly<Record<Plan3dTileBatch["etat"], NeonToken>> = Object.freeze({
   lu: "resultat",
@@ -441,6 +463,22 @@ export function creerGraphe(plan: Plan3d, palette: NeonPalette): Graphe {
     return entreeDe(atelier, objet);
   }
 
+  /** Lien du carnet partagé (L3s-a) : tube fin et droit de la station vers l'assistant, sans texture ni défilement. */
+  function creerLienCarnet(lien: Plan3dLienCarnet): Entree {
+    const atelier = nouvelAtelier();
+    const courbe = courbeFaisceau(lien.de, milieu(lien.de, lien.vers), lien.vers);
+    const geometrie = propreGeometrie(atelier, new TubeGeometry(courbe, SEGMENTS_LIEN_CARNET, RAYON_LIEN_CARNET, COTES_LIEN_CARNET, false));
+    const materiau = partageMateriau(
+      atelier,
+      `lien-carnet:${JETON_LIEN_CARNET}`,
+      () => new MeshBasicMaterial({ color: couleur(JETON_LIEN_CARNET), transparent: true, opacity: 0.85, depthWrite: false }),
+    );
+    // Géométrie déjà dans les coordonnées de la scène, comme un faisceau : l'objet reste à l'origine.
+    const tube = new Mesh(geometrie, materiau);
+    tube.name = `lien-carnet:${lien.id}`;
+    return entreeDe(atelier, tube);
+  }
+
   function creerTuiles(lot: Plan3dTileBatch): Entree {
     const atelier = nouvelAtelier();
     const geometrie = partageGeometrie(atelier, `tuile:${lot.etat}`, () => geometrieTuile(lot.etat));
@@ -583,6 +621,16 @@ export function creerGraphe(plan: Plan3d, palette: NeonPalette): Graphe {
       (lot) => `${lot.etat}|${lot.positions.length}`,
       creerTuiles,
       majTuiles,
+      vus,
+    );
+    // Salle OMO (L3s-a) : liens du carnet partagé, s'il y en a ; champ facultatif du plan.
+    synchroniser(
+      "lien-carnet",
+      nouveau.liensCarnet ?? [],
+      (lien) => lien.id,
+      (lien) => `${clePoint(lien.de)}|${clePoint(lien.vers)}`,
+      creerLienCarnet,
+      (entree, lien) => marquer(entree, lien.id, lien.faits, { famille: "lien-carnet" }),
       vus,
     );
     // Copie des clés : `retirer` enlève l'entrée de la table pendant le parcours.

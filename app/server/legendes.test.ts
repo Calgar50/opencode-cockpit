@@ -2,11 +2,14 @@
 // fiche L28a) : la légende « ne voit pas votre conversation » (clé neuf) n'est JAMAIS émise sur une reprise (fait reprise: true,
 // enfant déjà vu, propriété sur 200 suites synthétiques à graine fixe) ; callId des légendes de consigne sur p1 et p2, null pour
 // réveil et relance ; carnet dans la salle ; tâche de fond ancrée au faisceau de la consigne ; au plus 2 clés ; faits de chaque moment.
+// Salle branchée (« 3s », L3s-a) : prédicats de legendes-salle.ts (tâche de fond `fond: true`, carnet bien formé), tâche de fond
+// branchée par défaut pour une racine de la salle, légende « carnet » d'après les faits `carnet`, « neuf » jamais sur une reprise.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { EventMemory, type FactContext, FactDeduper, type FactEvent, factsFromEvent, type FactSession } from "./shared/activity-facts.ts";
 import type { ActivityFact, ActivityFactKind, FactValue } from "./shared/activity-types.ts";
 import { type Legende, LEGENDE_CLES_MAX, type LegendeKey, legendesAuMoment, type LegendesOptions } from "./shared/legendes.ts";
+import { carnetTouche, tacheDeFond } from "./shared/legendes-salle.ts";
 import { moments, type NeonSceneOptions, scene, visibleCount } from "./shared/neon-scene.ts";
 import { readCapture } from "./test-support/fake-opencode.ts";
 
@@ -363,5 +366,108 @@ describe("salle, tâche de fond et bornes", () => {
     story.deleguerNeuf(R, "call_a", "ses_a");
     story.origine(R, "reveil-sans-reponse", "msg_r");
     for (const { legende } of legendesDeTousLesMoments(story.facts, { salle: true, tacheDeFond: () => true })) for (const cle of legende.cles) assert.ok(toutes.includes(cle));
+  });
+});
+
+// --- Salle OMO branchée (itération « 3s », L3s-a) : prédicats de legendes-salle.ts ------------------------------------------------
+
+/** Consigne envoyée de la salle : les clés de consigneOmo (activity-facts.ts, L25a), dont `fond`. */
+function envoyeeSalle(story: Story, parent: string, callId: string, enfant: string, fond: boolean, reprise = false): ActivityFact {
+  return story.add(
+    parent,
+    "consigne",
+    { etat: "envoyee", callId, messageId: "msg_x", enfant, agent: "explore", source: "ia", commande: null, reprise, categorie: "quick", ia: null, competences: 0, fond },
+    callId,
+  );
+}
+
+/** Fait `carnet` de la salle (JP-6), bien formé : chemin relatif sous .omo, clé de fichier de 16 chiffres hexadécimaux. */
+function carnetSalle(story: Story, sessionId: string, callId: string, etat = "lu", chemin = ".omo/notepads/n.md"): ActivityFact {
+  return story.add(sessionId, "carnet", { etat, chemin, fichier: "00000000000000c1", dossier: "00000000000000d0", callId, messageId: "msg_c" }, callId);
+}
+
+describe("salle branchée (L3s-a) : prédicats de legendes-salle.ts", () => {
+  it("tacheDeFond : consigne envoyée avec `fond: true` seulement ; carnetTouche : fait carnet bien formé seulement", () => {
+    const story = new Story();
+    assert.equal(tacheDeFond(envoyeeSalle(story, R, "call_f", "ses_f", true)), true);
+    assert.equal(tacheDeFond(envoyeeSalle(story, R, "call_s", "ses_s", false)), false);
+    // Hors de la salle, la clé `fond` n'existe pas ; une consigne préparée ou un autre fait ne sont jamais une tâche de fond.
+    assert.equal(tacheDeFond(story.envoyee(R, "call_p", "ses_p", false)), false);
+    assert.equal(tacheDeFond(story.add(R, "consigne", { etat: "prepare", callId: "call_q", messageId: "msg_x", fond: true }, "call_q")), false);
+    assert.equal(tacheDeFond(story.add(R, "statut", { etat: "occupee", fond: true })), false);
+    assert.equal(carnetTouche(carnetSalle(story, R, "call_c1", "lu")), "lu");
+    assert.equal(carnetTouche(carnetSalle(story, R, "call_c2", "modifie", ".omo/plans/plan.md")), "modifie");
+    for (const [etat, chemin] of [
+      ["x", ".omo/notepads/n.md"],
+      ["lu", ".omo/notepads/../../secret"],
+      ["lu", "/workspace/projet/.omo/notepads/n.md"],
+      ["lu", ".omo/notepads/"],
+      ["lu", "notes/n.md"],
+    ] as const) {
+      assert.equal(carnetTouche(carnetSalle(story, R, "call_x", etat, chemin)), null, `${etat} ${chemin}`);
+    }
+    assert.equal(carnetTouche(story.add(R, "carnet", { etat: "lu", chemin: ".omo/notepads/n.md", fichier: "pas-une-cle" }, "call_y")), null);
+    assert.equal(carnetTouche(story.statut(R, "occupee")), null);
+  });
+
+  it("tâche de fond BRANCHÉE dans la salle : légende à part, ancrée au faisceau, sans prédicat de l'appelant ; `fond: false`, hors salle : jamais ; le prédicat de l'appelant l'emporte", () => {
+    const story = new Story();
+    story.creee("ses_f", R);
+    envoyeeSalle(story, R, "call_f", "ses_f", true);
+    story.creee("ses_s", R);
+    envoyeeSalle(story, R, "call_s", "ses_s", false);
+    const salle = legendesDeTousLesMoments(story.facts, { salle: true }).map(({ legende }) => legende);
+    const fond = salle.filter((legende) => legende.cles.includes("tache-de-fond"));
+    assert.deepEqual(fond, [{ cles: ["tache-de-fond"], ancre: { genre: "faisceau", id: "consigne:ses_racine:call_f" }, sessionId: "ses_f", callId: "call_f" }]);
+    assert.deepEqual(legendeDeConsigne(story.facts, "call_f", { salle: true }).cles, ["neuf", "carnet"], "la légende du nœud garde ses 2 phrases");
+    // Hors de la salle : le même fait ne porte jamais la tâche de fond (défaut « jamais »).
+    assert.ok(legendesDeTousLesMoments(story.facts, HORS_SALLE).every(({ legende }) => !legende.cles.includes("tache-de-fond")));
+    // Le prédicat de l'appelant l'emporte sur celui de la salle.
+    assert.ok(legendesDeTousLesMoments(story.facts, { salle: true, tacheDeFond: () => false }).every(({ legende }) => !legende.cles.includes("tache-de-fond")));
+  });
+
+  it("carnet d'après les faits `carnet` : la conversation qui touche le carnet reçoit « carnet » seule, une fois ; un assistant qui l'a reçue avec sa consigne ne la reçoit pas deux fois ; hors salle, fait mal formé : rien", () => {
+    const story = new Story();
+    story.statut(R, "occupee");
+    const premier = carnetSalle(story, R, "call_c1", "modifie", ".omo/plans/plan.md");
+    carnetSalle(story, R, "call_c2", "lu", ".omo/plans/plan.md");
+    story.creee("ses_j", R);
+    envoyeeSalle(story, R, "call_j", "ses_j", false);
+    carnetSalle(story, "ses_j", "call_c3", "modifie");
+    // Un assistant dont la consigne n'est pas dans les faits (connu par sa seule session) : la phrase lui est dite à son carnet.
+    carnetSalle(story, "ses_inconnu", "call_c4", "lu");
+    const legendes = legendesDeTousLesMoments(story.facts, { salle: true });
+    const carnets = legendes.filter(({ legende }) => legende.cles.length === 1 && legende.cles[0] === "carnet").map(({ t, legende }) => ({ t, legende }));
+    assert.deepEqual(
+      carnets.map(({ legende }) => legende),
+      [
+        { cles: ["carnet"], ancre: { genre: "noeud", id: R }, sessionId: R, callId: null },
+        { cles: ["carnet"], ancre: { genre: "noeud", id: "ses_inconnu" }, sessionId: "ses_inconnu", callId: null },
+      ],
+    );
+    assert.equal(carnets[0]?.t, premier.at, "ancrée au moment du premier fait carnet de la conversation");
+    assert.deepEqual(legendeDeConsigne(story.facts, "call_j", { salle: true }).cles, ["neuf", "carnet"], "ses_j l'a reçue avec sa consigne");
+    for (const { legende } of legendes) {
+      assert.ok(legende.cles.length <= LEGENDE_CLES_MAX);
+      assert.ok(!(legende.cles.includes("neuf") && legende.cles.includes("reprise")));
+    }
+    // Hors de la salle : aucun fait carnet n'y porte de légende.
+    assert.ok(legendesDeTousLesMoments(story.facts, HORS_SALLE).every(({ legende }) => !(legende.cles.length === 1 && legende.cles[0] === "carnet")));
+    // Fait mal formé : rien.
+    const mal = new Story();
+    carnetSalle(mal, R, "call_m", "lu", ".omo/notepads/../../secret");
+    assert.deepEqual(legendesDeTousLesMoments(mal.facts, { salle: true }), []);
+  });
+
+  it("dans la salle, la légende « neuf » n'est jamais émise sur une reprise, tâche de fond comprise", () => {
+    const story = new Story();
+    story.creee("ses_a", R);
+    envoyeeSalle(story, R, "call_a", "ses_a", true);
+    story.statut("ses_a", "occupee");
+    envoyeeSalle(story, R, "call_b", "ses_a", true);
+    envoyeeSalle(story, R, "call_c", "ses_c", true, true);
+    assert.deepEqual(legendeDeConsigne(story.facts, "call_a", { salle: true }).cles, ["neuf", "carnet"]);
+    assert.deepEqual(legendeDeConsigne(story.facts, "call_b", { salle: true }).cles, ["reprise", "carnet"]);
+    assert.deepEqual(legendeDeConsigne(story.facts, "call_c", { salle: true }).cles, ["reprise", "carnet"]);
   });
 });

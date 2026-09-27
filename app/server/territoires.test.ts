@@ -6,6 +6,8 @@
 // - service (territoires-service.ts) sur le harnais du cockpit : deux projets, une racine occupée, une en attente d'accord, une au
 //   repos, coûts, réponses de statut illisibles, salle en Simple et en Avancé, P11, et les attentes comptées sur l'ARBRE de la
 //   conversation (ligne écrite sous une racine provisoire, puis rattachée).
+// - salle branchée (« 3s », L3s-a) : en Avancé, état des sessions de la salle par le client de SON instance (jamais le principal,
+//   P11) ; en Simple, aucune requête ; salle coupée : inchangé ; racine connue d'omo_rooms rangée dans l'enceinte.
 import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
@@ -575,5 +577,129 @@ describe("territoires : Salle OMO au zoom 1 (D-3d-14, P11)", () => {
     assert.deepEqual(appels, ["/workspace/mixte"], "un seul appel, pour le dossier de la racine principale");
     assert.equal(conversationDe(vue, "mixte", "ses_principale")?.travaillent, 1);
     assert.deepEqual(racinesDe(vue.salle?.projets), ["ses_omo"], "la racine de la salle n'apparaît que dans l'enceinte");
+  });
+});
+
+// --- Salle branchée (itération « 3s », L3s-a) : état des sessions de la salle par SON instance -------------------------------------
+
+describe("territoires : salle branchée (L3s-a, P11)", () => {
+  /** Racine de la salle en base (instance omo), faits de cycle et dernière demande. */
+  function semerSalle(h: CockpitHarness, id: string, options: { etat: "occupee" | "repos"; demande: "finie" | "en-cours"; directory?: string }): void {
+    semerSession(h.db, { id, directory: options.directory ?? "/workspace/salle", instance: "omo", title: `Demande ${id}` });
+    h.cockpit.c11.ports.facts.append([{ rootId: id, sessionId: id, kind: "statut", ref: null, data: { etat: options.etat }, at: MAINTENANT - 900 }]);
+    h.db
+      .prepare("INSERT INTO autonomy_requests (id, root_id, choix, plafonds, started_at, ended_at) VALUES (?, ?, 'autonome', '{}', ?, ?)")
+      .run(`req_${id}`, id, MAINTENANT - 900, options.demande === "finie" ? MAINTENANT - 100 : null);
+  }
+  /** Deux lectures espionnées : client principal et client de la salle. */
+  const espions = (salle: (directory: string) => Promise<unknown>) => {
+    const principal: string[] = [];
+    const deLaSalle: string[] = [];
+    return {
+      principal,
+      deLaSalle,
+      options: {
+        statut: async (directory: string) => {
+          principal.push(directory);
+          return {};
+        },
+        statutSalle: async (directory: string) => {
+          deLaSalle.push(directory);
+          return salle(directory);
+        },
+      },
+    };
+  };
+
+  it("Avancé, salle présente : « travaillent » par le CLIENT DE LA SALLE (règle de statusBusy), jamais par le principal ; statutVerifie vrai", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"], omo: true });
+    // Les faits disent « au repos » : seul le statut de la salle peut dire qu'elle travaille (discriminant contre les faits).
+    semerSalle(h, "ses_encours", { etat: "repos", demande: "en-cours" });
+    semerSession(h.db, { id: "ses_enfant_salle", directory: "/workspace/salle", parent: "ses_encours", instance: "omo" });
+    semerSalle(h, "ses_finie", { etat: "repos", demande: "finie" });
+    const e = espions(async () => ({ ses_enfant_salle: { type: "busy" }, ses_etrangere: { type: "busy" } }));
+    const vue = await createTerritoiresPort(h.cockpit.c11, e.options).lire("avance", MAINTENANT);
+    assert.deepEqual(e.principal, [], "P11 : rien au client principal pour la salle");
+    assert.deepEqual(e.deLaSalle, ["/workspace/salle"], "un appel par dossier de la salle, sur la salle");
+    const parId = new Map((vue.salle?.projets ?? []).flatMap((t2) => t2.conversations).map((c) => [c.rootId, c]));
+    assert.equal(parId.get("ses_encours")?.travaillent, 1, "l'enfant occupé de l'arbre, d'après la salle");
+    assert.equal(parId.get("ses_encours")?.demandeEnCours, true);
+    assert.equal(parId.get("ses_finie")?.travaillent, 0, "une session d'un autre arbre ne compte pas");
+    assert.equal(vue.statutVerifie, true, "toutes les réponses sont arrivées");
+  });
+
+  it("Avancé, réponse de la salle en échec ou illisible : « travaillent » null, statutVerifie faux, jamais 0", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"], omo: true });
+    semerSalle(h, "ses_encours", { etat: "occupee", demande: "en-cours" });
+    for (const [nom, lecture] of [
+      ["échec", async () => Promise.reject(new Error("injoignable"))],
+      ["levée tout de suite", () => {
+        throw new Error("injoignable");
+      }],
+      ["tableau", async () => []],
+    ] as const) {
+      const vue = await createTerritoiresPort(h.cockpit.c11, { statut: async () => ({}), statutSalle: lecture as (directory: string) => Promise<unknown> }).lire("avance", MAINTENANT);
+      const conversation = vue.salle?.projets[0]?.conversations[0];
+      assert.equal(conversation?.travaillent, null, nom);
+      assert.equal(vue.statutVerifie, false, nom);
+    }
+  });
+
+  it("vrai client de la salle (second faux) : GET /session/status?directory=… reçu par la SALLE seulement", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"], omo: true });
+    assert.ok(h.omo);
+    semerSalle(h, "ses_encours", { etat: "repos", demande: "en-cours" });
+    const avantPrincipale = h.fake.requests.length;
+    const avantSalle = h.omo.fake.requests.length;
+    const vue = await createTerritoiresPort(h.cockpit.c11).lire("avance", MAINTENANT);
+    const deLaSalle = h.omo.fake.requests.slice(avantSalle).map((r) => `${r.method} ${r.pathname} ${r.query.directory ?? ""}`);
+    assert.deepEqual(deLaSalle, ["GET /session/status /workspace/salle"]);
+    assert.deepEqual(
+      h.fake.requests.slice(avantPrincipale).map((r) => `${r.method} ${r.pathname}`),
+      [],
+      "P11 : zéro requête au faux principal",
+    );
+    assert.equal(vue.salle?.projets[0]?.conversations[0]?.travaillent, 0);
+    assert.equal(vue.statutVerifie, true);
+  });
+
+  it("Simple, salle présente : AUCUNE requête, ni au principal ni à la salle ; seules les demandes terminées, avec « Revoir » (D-3d-14)", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"], omo: true });
+    semerSalle(h, "ses_finie", { etat: "repos", demande: "finie" });
+    semerSalle(h, "ses_encours", { etat: "occupee", demande: "en-cours" });
+    const e = espions(async () => ({}));
+    const vue = await createTerritoiresPort(h.cockpit.c11, e.options).lire("simple", MAINTENANT);
+    assert.deepEqual([e.principal, e.deLaSalle], [[], []]);
+    assert.deepEqual(racinesDe(vue.salle?.projets), ["ses_finie"]);
+    assert.equal(vue.salle?.projets[0]?.conversations[0]?.revoir, true);
+    assert.equal(vue.salle?.projets[0]?.conversations[0]?.travaillent, null);
+    assert.equal(vue.statutVerifie, false);
+  });
+
+  it("salle coupée (instances.omo absent, cas de production) : rien ne change — la lecture de la salle n'est jamais appelée, compteurs par les faits", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"] });
+    assert.equal(h.cockpit.c11.instances?.omo ?? null, null);
+    semerSalle(h, "ses_encours", { etat: "occupee", demande: "en-cours" });
+    const e = espions(async () => ({ ses_encours: { type: "idle" } }));
+    const vue = await createTerritoiresPort(h.cockpit.c11, e.options).lire("avance", MAINTENANT);
+    assert.deepEqual([e.principal, e.deLaSalle], [[], []]);
+    assert.equal(vue.salle?.projets[0]?.conversations[0]?.travaillent, 1, "par les faits, comme avant L3s-a");
+    assert.equal(vue.statutVerifie, false);
+  });
+
+  it("racine ouverte par le cockpit (omo_rooms) mais `sessions` dit « principale » : rangée dans l'enceinte, jamais demandée au client principal", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts"] });
+    semerSession(h.db, { id: "ses_desaccord", directory: "/workspace/salle", instance: "principale" });
+    h.db.prepare("INSERT INTO omo_rooms (root_id, projet, created_at) VALUES (?, 'salle', ?)").run("ses_desaccord", MAINTENANT - 1_000);
+    semerSession(h.db, { id: "ses_principale", directory: "/workspace/alpha" });
+    const e = espions(async () => ({}));
+    const vue = await createTerritoiresPort(h.cockpit.c11, e.options).lire("avance", MAINTENANT);
+    assert.deepEqual(e.principal, ["/workspace/alpha"], "seul le dossier de la vraie racine principale");
+    assert.deepEqual(racinesDe(vue.salle?.projets), ["ses_desaccord"]);
+    assert.equal(racinesDe(vue.projets).includes("ses_desaccord"), false);
+    // Témoin : sans la ligne omo_rooms, la même racine est une conversation principale.
+    h.db.prepare("DELETE FROM omo_rooms WHERE root_id = ?").run("ses_desaccord");
+    const temoin = await createTerritoiresPort(h.cockpit.c11, { statut: async () => ({}) }).lire("avance", MAINTENANT);
+    assert.ok(racinesDe(temoin.projets).includes("ses_desaccord"));
   });
 });

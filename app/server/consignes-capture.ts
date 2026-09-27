@@ -6,14 +6,25 @@
 // manquée vaut mieux qu'une file de processeur bloquée ; la phrase « absente » de « Revoir » le dit à l'utilisateur).
 // Journal : le NOM de l'erreur et le callId seulement, jamais le message d'erreur (il peut recopier la consigne ou un morceau de
 // requête SQL), jamais le texte. Une erreur n'arrête pas le processeur.
+// Salle OMO (itération « 3s », L3s-a ; U2, D-3d-30, P11) : la même dérivation, pour `instance = "omo"`, est inscrite AUSSI sur le
+// processeur de l'instance de la salle (section [3d] d'app-factory.ts, seulement si cette instance existe : salle coupée, rien ne
+// change). Cloison des instances : la session qui confie le travail ET sa racine doivent être suivies par l'instance du processeur
+// (`sessions.instance`) — un événement de la salle n'est jamais appliqué à une racine principale, ni l'inverse. Seul le texte de
+// `state.input.prompt` est gardé, celui que l'assistant a écrit en confiant le travail : une partie qu'un crochet de l'extension
+// ajoute ensuite au premier message de l'enfant n'est jamais lue ici (L25a n'en garde que les identifiants et le drapeau `hook`),
+// ce que dit la phrase `copie` de « Revoir » (copie gardée au moment de l'envoi). Mêmes bornes, même masquage, même purge.
 import { createConsignesStore } from "./consignes-store.ts";
 import type { EventDerivation } from "./contracts-11.ts";
 import type { Salle3dDeps } from "./contracts-3d.ts";
 import type { OcGlobalEvent } from "./opencode.ts";
 import { eventTime } from "./shared/activity-facts.ts";
+import type { SessionInstance } from "./shared/activity-types.ts";
 
 /** Nom de la dérivation, hors de STEP_ORDER (wiring-11). */
 export const CONSIGNES_DERIVATION = "consignes-3d";
+
+/** Nom de la même dérivation sur le processeur de la salle (L3s-a) : distinct, pour qu'une inscription se compte par instance. */
+export const CONSIGNES_DERIVATION_SALLE = "consignes-3d-salle";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const texte = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
@@ -21,11 +32,15 @@ const texte = (value: unknown): string | null => (typeof value === "string" && v
 /** Nom d'une erreur, sans son message (qui pourrait recopier la consigne) : « SQLiteError », « TypeError », sinon son type. */
 const nomErreur = (err: unknown): string => (err instanceof Error && err.name !== "" ? err.name : typeof err);
 
-export function createConsignesDerivation(deps: Salle3dDeps): EventDerivation {
+/**
+ * Dérivation des consignes pour le processeur d'une instance : « principale » (défaut, processeur principal) ou « omo » (processeur
+ * de la salle, L3s-a). Une partie dont la session ou la racine appartient à l'autre instance est ignorée (P11).
+ */
+export function createConsignesDerivation(deps: Salle3dDeps, instance: SessionInstance = "principale"): EventDerivation {
   const store = createConsignesStore(deps.db);
 
   return {
-    name: CONSIGNES_DERIVATION,
+    name: instance === "omo" ? CONSIGNES_DERIVATION_SALLE : CONSIGNES_DERIVATION,
     onEvent(global: OcGlobalEvent): void {
       let callId: string | null = null;
       try {
@@ -49,6 +64,8 @@ export function createConsignesDerivation(deps: Salle3dDeps): EventDerivation {
         callId = appel;
         const rootId = deps.sessions.rootOf(parent);
         if (rootId === null) return;
+        // P11 (L3s-a) : la session qui confie et sa racine sont de l'instance de ce processeur, lue dans `sessions`, sinon rien.
+        if (deps.sessions.instanceOf(parent) !== instance || deps.sessions.instanceOf(rootId) !== instance) return;
         store.enregistrer({ rootId, parent, enfant, callId: appel, brut: prompt, at: eventTime(event.id, Date.now()) });
       } catch (err: unknown) {
         deps.log.warn("consignes gardées : enregistrement abandonné", { callId, erreur: nomErreur(err) });

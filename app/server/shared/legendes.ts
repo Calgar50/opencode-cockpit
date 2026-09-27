@@ -4,13 +4,19 @@
 //   déjà connu avant la consigne (un fait de sa session autre que sa création, ou une consigne ou un résultat qui le désigne) ;
 //   « neuf » seulement sinon : la phrase « ne voit pas votre conversation » n'est JAMAIS émise sur une reprise (spéc. l.1169). Dans
 //   la salle, ajout de « carnet ». Ancre : le nœud de l'enfant ; `callId` : celui du fait consigne, pour [Voir la consigne] (U2).
-// - Tâche de fond (JP-3) : si le prédicat `tacheDeFond` le dit (défaut : jamais ; branché en « 3s »), légende à part, ancrée au
-//   faisceau de la consigne : une légende garde ainsi 1 ou 2 phrases (spéc. l.999) et « carnet » ne l'efface pas.
+// - Tâche de fond (JP-3) : si le prédicat `tacheDeFond` le dit, légende à part, ancrée au faisceau de la consigne : une légende
+//   garde ainsi 1 ou 2 phrases (spéc. l.999) et « carnet » ne l'efface pas. Prédicat : celui de l'appelant ; à défaut, pour une
+//   racine de la salle, celui de legendes-salle.ts (branché en « 3s », L3s-a : consigne `fond: true`) ; hors de la salle, jamais.
+// - Carnet partagé (JP-6, L3s-a) : dans la salle, le PREMIER fait `carnet` bien formé d'une session qui n'a pas encore reçu la
+//   phrase « carnet » (la conversation, qui ne reçoit jamais de consigne, ou un assistant dont la consigne n'est pas dans les faits)
+//   porte la légende « carnet » seule, ancrée à son nœud, qu'un lien relie alors à la station « Carnet partagé et plan ». Une
+//   session qui l'a déjà reçue avec sa consigne ne la reçoit pas deux fois.
 // - Origine `reveil-sans-reponse` → « reveil » ; origine `relance-extension` → « relance » : ancre le nœud du message, callId null.
 // - Au plus 2 clés par légende, dans l'ordre de spéc. l.1000-1002 (neuf ou reprise, puis carnet).
 // Aucune chaîne affichable (D-3d-21, prouvé par textes-3d.test.ts de T3d-b) : les phrases sont dans legendes-texts.ts.
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import type { ActivityFact } from "./activity-types.ts";
+import { carnetTouche, tacheDeFond as tacheDeFondSalle } from "./legendes-salle.ts";
 import { moments, visibleCount } from "./neon-scene.ts";
 import type { LegendeKey } from "./salle3d-types.ts";
 
@@ -35,7 +41,10 @@ export interface Legende {
 export interface LegendesOptions {
   /** Racine de la Salle OMO : ajout de « carnet » aux consignes. */
   salle: boolean;
-  /** Vrai pour une consigne confiée en tâche de fond (JP-3) ; absent : jamais. */
+  /**
+   * Vrai pour une consigne confiée en tâche de fond (JP-3). Absent : celui de legendes-salle.ts pour une racine de la salle
+   * (`salle`), jamais ailleurs.
+   */
   tacheDeFond?: (fait: ActivityFact) => boolean;
 }
 
@@ -67,24 +76,49 @@ function apprendre(connues: Set<string>, fait: ActivityFact): void {
   if (enfant !== null) connues.add(enfant);
 }
 
-function legendesDuFait(fait: ActivityFact, connues: ReadonlySet<string>, options: LegendesOptions): Legende[] {
+/** État des légendes au fil des faits : sessions connues (reprise) et, dans la salle, sessions qui ont déjà la phrase « carnet ». */
+interface Memoire {
+  connues: Set<string>;
+  carnetDit: Set<string>;
+}
+
+/** Enfant d'une consigne envoyée qui porte une légende ; null sinon. */
+const enfantDeConsigne = (fait: ActivityFact): string | null => (fait.kind === "consigne" && fait.data.etat === "envoyee" ? str(fait.data.enfant) : null);
+
+/** Session dont un fait `carnet` bien formé de la salle porterait la légende « carnet » seule ; null sinon. */
+const sessionDuCarnet = (fait: ActivityFact, memoire: Memoire, options: LegendesOptions): string | null =>
+  options.salle && carnetTouche(fait) !== null && !memoire.carnetDit.has(fait.sessionId) ? fait.sessionId : null;
+
+function legendesDuFait(fait: ActivityFact, memoire: Memoire, options: LegendesOptions): Legende[] {
   if (fait.kind === "origine") {
     const cle = CLES_ORIGINE.get(String(fait.data.origine));
     return cle === undefined ? [] : [{ cles: [cle], ancre: { genre: "noeud", id: fait.sessionId }, sessionId: fait.sessionId, callId: null }];
   }
-  if (fait.kind !== "consigne" || fait.data.etat !== "envoyee") return [];
-  const enfant = str(fait.data.enfant);
+  const carnet = sessionDuCarnet(fait, memoire, options);
+  if (carnet !== null) return [{ cles: ["carnet"], ancre: { genre: "noeud", id: carnet }, sessionId: carnet, callId: null }];
+  const enfant = enfantDeConsigne(fait);
   if (enfant === null) return [];
   const callId = str(fait.data.callId) ?? str(fait.ref);
-  const reprise = fait.data.reprise === true || connues.has(enfant);
+  const reprise = fait.data.reprise === true || memoire.connues.has(enfant);
   // Ordre de spéc. l.1000-1002 ; 2 clés au plus (LEGENDE_CLES_MAX) par construction.
   const cles: LegendeKey[] = [reprise ? "reprise" : "neuf"];
   if (options.salle) cles.push("carnet");
   const out: Legende[] = [{ cles, ancre: { genre: "noeud", id: enfant }, sessionId: enfant, callId }];
-  if (callId !== null && options.tacheDeFond?.(fait) === true) {
+  // Prédicat de l'appelant ; à défaut, dans la salle, celui de legendes-salle.ts (L3s-a) ; ailleurs, jamais.
+  const fond = options.tacheDeFond ?? (options.salle ? tacheDeFondSalle : undefined);
+  if (callId !== null && fond?.(fait) === true) {
     out.push({ cles: ["tache-de-fond"], ancre: { genre: "faisceau", id: faisceauDeConsigne(fait.sessionId, callId) }, sessionId: enfant, callId });
   }
   return out;
+}
+
+/** Ce que la légende d'un fait laisse derrière elle : dans la salle, la phrase « carnet » est dite une fois par session. */
+function retenir(memoire: Memoire, fait: ActivityFact, options: LegendesOptions): void {
+  if (!options.salle) return;
+  const carnet = sessionDuCarnet(fait, memoire, options);
+  if (carnet !== null) memoire.carnetDit.add(carnet);
+  const enfant = enfantDeConsigne(fait);
+  if (enfant !== null) memoire.carnetDit.add(enfant);
 }
 
 /**
@@ -99,13 +133,14 @@ export function legendesAuMoment(faits: readonly ActivityFact[], t: number | nul
   const fin = visibleCount(faits, coupures[p] ?? 0);
   const debut = p === 0 ? 0 : visibleCount(faits, coupures[p - 1] ?? 0);
   const rootId = faits.find(estLisible)?.rootId ?? null;
-  const connues = new Set<string>();
+  const memoire: Memoire = { connues: new Set<string>(), carnetDit: new Set<string>() };
   const out: Legende[] = [];
   for (let i = 0; i < fin; i++) {
     const fait = faits[i];
     if (!estLisible(fait) || fait.rootId !== rootId) continue;
-    if (i >= debut) out.push(...legendesDuFait(fait, connues, options));
-    apprendre(connues, fait);
+    if (i >= debut) out.push(...legendesDuFait(fait, memoire, options));
+    retenir(memoire, fait, options);
+    apprendre(memoire.connues, fait);
   }
   return out;
 }

@@ -7,16 +7,18 @@
 //   tous les libellés (titre, stations, origines, tableau) sont ceux du mode Simple. NeonCarte et NeonTableau lisent les noms par
 //   nomAssistant et libelleNoeud (neon-band.ts) : aucun nom de rôle de la salle n'atteint l'écran, ni « agent », ni
 //   « orchestrateur » (§2.3 l.104).
-// - P12 : rien d'autre n'est touché ; positions, faisceaux, attentes, décisions et `faits` de chaque signe sont recopiés tels
-//   quels, donc chaque signe dessiné garde le fait qui le justifie.
+// - P12 : rien d'autre n'est touché ; positions, faisceaux, attentes, décisions, bornes (`horsBornes`, « Déroulé partiel ») et
+//   `faits` de chaque signe sont recopiés tels quels, donc chaque signe dessiné garde le fait qui le justifie.
+// - Salle branchée (« 3s », L3s-a ; D-3d-20) : le nom Simple d'un assistant de la salle est son RÔLE français, lu par
+//   roleDeAgent(clé de l'agent) d'omo-roles.ts — la clé de configuration, jamais le `displayName` — puis écrit par le libellé de
+//   son secteur (libelleSecteur : « Chercher », « Exécuter »…) ; une clé inconnue ou absente donne « Autres ». Le nom de l'agent
+//   lui-même n'atteint jamais l'écran.
 // Aucune chaîne affichable (D-3d-21, prouvé par textes-3d.test.ts) : les noms viennent de revoir-texts.ts et de neon-texts.ts.
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
-import type { NeonMode, NeonNode, NeonScene, NeonSector } from "./neon-scene.ts";
+import type { NeonMode, NeonNode, NeonScene } from "./neon-scene.ts";
 import { libelleSecteur } from "./neon-texts.ts";
+import { roleDeAgent } from "./omo-roles.ts";
 import { TEXTES } from "./revoir-texts.ts";
-
-/** Secteur d'un nœud dessiné hors du centre ; un nœud sans secteur (jamais produit par scene()) tombe dans « Autres ». */
-const SECTEUR_PAR_DEFAUT: NeonSector = "autres";
 
 /** Contexte d'une scène de « Revoir » : racine de la Salle OMO, et mode choisi par l'utilisateur. */
 export interface ModeRevoirOptions {
@@ -34,10 +36,13 @@ export function modeSceneRevoir({ salle, advanced }: ModeRevoirOptions): NeonMod
   return advanced ? "avance" : "simple";
 }
 
-/** Nom Simple d'un nœud : « Assistant principal » au centre, le libellé de son secteur ailleurs. */
-function nomSimple(noeud: Pick<NeonNode, "role" | "secteur">): string {
+/**
+ * Nom Simple d'un nœud de la salle : « Assistant principal » au centre ; ailleurs, le libellé du secteur de son rôle, lu par
+ * roleDeAgent sur la clé de l'agent (les rôles d'OMO_ROLES sont les secteurs de la carte ; clé inconnue ou absente : « Autres »).
+ */
+function nomSimple(noeud: Pick<NeonNode, "role" | "agent">): string {
   if (noeud.role === "conversation") return TEXTES.simple.assistantPrincipal;
-  return libelleSecteur(noeud.secteur ?? SECTEUR_PAR_DEFAUT);
+  return libelleSecteur(roleDeAgent(noeud.agent));
 }
 
 /**

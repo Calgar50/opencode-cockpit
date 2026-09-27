@@ -12,6 +12,14 @@
 //   liste des territoires ne portant que les racines actives des dernières 24 h.
 // `etat` est AUSSI consommé par la route des consignes gardées (L28d, U2, D-3d-30), qui lui applique la même règle d'accès : sa
 // signature ne change pas après le train sans demande écrite à l'intégrateur.
+// Salle OMO branchée (itération « 3s », L3s-a ; Q6, D-3d-09) :
+// - une racine de la salle est reconnue par `sessions.instance` ET par `omo_rooms` (migration 6, salles ouvertes par le cockpit) :
+//   les deux disent « omo », ou `sessions` seule le dit (racine de la salle que le cockpit n'a pas ouverte) → salle ; `omo_rooms`
+//   connaît la racine alors que `sessions` dit « principale » (désaccord), ou `omo_rooms` est illisible → instance inconnue, traitée
+//   comme la salle, comme une instance illisible (fermé en cas de doute, jamais ouvert par défaut) ;
+// - « terminée » garde la règle de D-3d-09 (faits de l'arbre, dernière ligne `autonomy_requests`) : le routeur d'instances
+//   (instances.omo) n'expose aucun état synchrone des sessions de la salle (client, portillon et processeur seulement), et les
+//   ports de « Revoir » sont synchrones (contracts-3d.ts). Aucune requête à opencode n'est donc ajoutée ici.
 import type { RevoirPort, RevoirResult, Salle3dDeps } from "./contracts-3d.ts";
 import { redactSecrets } from "./redact.ts";
 import { sessionRole } from "./shared/activity-facts.ts";
@@ -25,18 +33,43 @@ const DERNIERE_DEMANDE_SQL = "SELECT ended_at FROM autonomy_requests WHERE root_
 
 /** Racine consultable : ligne `sessions` d'une conversation (jamais un enfant, jamais une session de service). */
 interface Racine {
-  /** `sessions.instance` ; null si la valeur est illisible : traitée comme la salle (fermé en cas de doute, L28a). */
+  /**
+   * `sessions.instance` recoupé par `omo_rooms` (L3s-a) ; null si la valeur est illisible ou si les deux sources se contredisent :
+   * traitée comme la salle (fermé en cas de doute, L28a).
+   */
   instance: SessionInstance | null;
   /** `sessions.title`, masqué par redactSecrets. */
   titre: string;
+}
+
+/** Salle ouverte par le cockpit pour cette racine (`omo_rooms`, migration 6) : vrai, faux, ou null si la table est illisible. */
+const SALLE_OUVERTE_SQL = "SELECT 1 AS n FROM omo_rooms WHERE root_id = :root";
+
+function dansOmoRooms(deps: Salle3dDeps, rootId: string): boolean | null {
+  try {
+    return deps.db.prepare(SALLE_OUVERTE_SQL).get({ root: rootId }) !== undefined;
+  } catch (err: unknown) {
+    // Table illisible : on ne sait plus si la racine est une salle. Nom de l'erreur seulement (jamais un morceau de requête).
+    deps.log.warn("« Revoir » : salles ouvertes illisibles, racine traitée comme la salle", { rootId, erreur: err instanceof Error ? err.name : typeof err });
+    return null;
+  }
+}
+
+/**
+ * Instance retenue pour « Revoir » (L3s-a) : `sessions.instance` recoupé par `omo_rooms`. « principale » seulement si `sessions`
+ * le dit ET qu'`omo_rooms` ne connaît pas la racine ; « omo » si `sessions` le dit ; null (traité comme la salle) sinon.
+ */
+function instanceDeLaRacine(deps: Salle3dDeps, rootId: string, instance: unknown): SessionInstance | null {
+  if (instance === "omo") return "omo";
+  if (instance !== "principale") return null;
+  return dansOmoRooms(deps, rootId) === false ? "principale" : null;
 }
 
 /** Ligne `sessions` de la racine, ou null : racine inconnue du cockpit, session enfant, ou session de service (classement). */
 function lireRacine(deps: Salle3dDeps, rootId: string): Racine | null {
   const row = deps.sessions.get(rootId);
   if (row === undefined || row.parent_id !== null || sessionRole(row.purpose, null) !== "conversation") return null;
-  const instance = row.instance === "principale" || row.instance === "omo" ? row.instance : null;
-  return { instance, titre: redactSecrets(row.title) };
+  return { instance: instanceDeLaRacine(deps, rootId, row.instance), titre: redactSecrets(row.title) };
 }
 
 /** Dernière ligne `autonomy_requests` de la racine ; null : aucune demande enregistrée (D-3d-09 : refus en mode Simple). */
