@@ -1,12 +1,14 @@
 // Configuration globale d'opencode : modèles, fournisseurs, partage, permissions et fichier brut.
 import { useEffect, useId, useRef, useState } from "react";
 import {
-  detectPermissionPreset,
+  activePermissionPreset,
+  legacyPresetOf,
   MESSAGES,
   PERMISSION_PRESETS,
   type PermissionPresetId,
   presetPermission,
 } from "../../../server/shared/assistant-rules.ts";
+import { TEXTES as TEXTES_INTERNET } from "../../../server/shared/internet-texts.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -18,19 +20,20 @@ import { useDraft } from "./common.tsx";
 
 const COPILOT = "github-copilot";
 
-// Règles de chaque profil : PERMISSION_PRESETS (server/shared), « prudent » = docker/opencode/opencode.default.jsonc.
+// Règles de chaque profil : PERMISSION_PRESETS (server/shared), « prudent » = docker/opencode/opencode.default.jsonc. 1.1.0 (A37) :
+// web refusé dans les trois profils (textes d'internet-texts.ts, contrôlés par le test « textes »).
 const PRESETS: Array<{ id: PermissionPresetId; title: string; summary: string; points: string[]; danger?: boolean }> = [
   {
     id: "prudent",
     title: "Prudent",
     summary: "Confirmation avant toute modification ou commande (configuration d'origine).",
-    points: ["Fichiers : demander", "Shell : demander (seul pwd est autorisé d'office)", "Sous-agents : demander", "Web : demander"],
+    points: ["Fichiers : demander", "Shell : demander (seul pwd est autorisé d'office)", "Sous-agents : demander", TEXTES_INTERNET.avance.cartesWeb],
   },
   {
     id: "equilibre",
     title: "Équilibré",
-    summary: "Modifications de fichiers libres ; commandes, sous-agents et web sur confirmation.",
-    points: ["Fichiers : autoriser", "Shell : demander", "Sous-agents : demander", "Web : demander"],
+    summary: TEXTES_INTERNET.avance.resumeEquilibre,
+    points: ["Fichiers : autoriser", "Shell : demander", "Sous-agents : demander", TEXTES_INTERNET.avance.cartesWeb],
   },
   {
     id: "autonome",
@@ -38,7 +41,7 @@ const PRESETS: Array<{ id: PermissionPresetId; title: string; summary: string; p
     // d'autonomie d'une conversation, jamais ce profil.
     title: PERMISSION_PRESETS.autonome.label,
     summary: "Aucune confirmation : l'agent agit seul.",
-    points: ["Fichiers : autoriser", "Shell : autoriser", "Sous-agents : autoriser", "Web : autoriser"],
+    points: ["Fichiers : autoriser", "Shell : autoriser", "Sous-agents : autoriser", TEXTES_INTERNET.avance.cartesWeb],
     danger: true,
   },
 ];
@@ -95,7 +98,10 @@ function RawConfigEditor({ reloadToken, onDirty, onSaved }: { reloadToken: numbe
       toast.success("Fichier enregistré", result.restarted ? "opencode a redémarré pour l'appliquer." : "opencode utilisait déjà ce fichier.");
       onSaved();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 422) {
+      if (err instanceof ApiError && err.code === "internet-ferme") {
+        // 1.1.0 (A37) : ouverture d'Internet introduite, refusée par le cockpit avant toute écriture (fichier inchangé).
+        toast.warning("Fichier non enregistré", err.message);
+      } else if (err instanceof ApiError && err.status === 422) {
         const data = (err.data ?? {}) as { restarted?: unknown };
         setRejected({ message: err.message, restarted: data.restarted === true });
       } else if (err instanceof ApiError && err.status === 409) {
@@ -203,7 +209,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
       setRawReload((n) => n + 1);
       return true;
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) toast.warning("Modification non appliquée", err.message);
+      if (err instanceof ApiError && (err.status === 409 || err.code === "internet-ferme")) toast.warning("Modification non appliquée", err.message);
       else toast.error(err instanceof ApiError && err.status === 503 ? "Modification non appliquée" : "opencode a refusé la modification", err);
       return false;
     } finally {
@@ -235,17 +241,19 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
   };
 
   const currentPermission = cfg.permission;
-  const activePreset = detectPermissionPreset(currentPermission);
-  // Mode Simple : la carte « Sans confirmation (déconseillé) » n'est pas proposée (seulement affichée si ce profil est déjà actif).
+  // 1.1.0 (A37) : un profil d'une version précédente (Internet encore ouvert) n'est plus « actif » : « Appliquer » le met à jour.
+  const activePreset = activePermissionPreset(currentPermission);
+  const legacyPreset = legacyPresetOf(currentPermission);
+  // Mode Simple : la carte « Sans confirmation (déconseillé) » n'est pas proposée (seulement affichée si ce profil est déjà en place).
   const advanced = boot.ui?.mode === "avance";
-  const visiblePresets = PRESETS.filter((p) => advanced || p.id !== "autonome" || activePreset === "autonome");
+  const visiblePresets = PRESETS.filter((p) => advanced || p.id !== "autonome" || activePreset === "autonome" || legacyPreset === "autonome");
 
   const applyPreset = async (preset: (typeof PRESETS)[number]) => {
     const ok = await confirm({
       title: `Appliquer le profil « ${preset.title} » ?`,
       message: `${
         preset.danger
-          ? "L'agent pourra modifier des fichiers, lancer n'importe quelle commande et accéder au web sans rien vous demander. À réserver à des projets jetables ou entièrement versionnés."
+          ? TEXTES_INTERNET.avance.avertissementSansConfirmation
           : "Les permissions globales d'opencode seront remplacées pour tous les agents qui n'ont pas leurs propres règles."
       } opencode redémarre quelques secondes pour les appliquer, jamais pendant une réponse.`,
       confirmLabel: "Appliquer",
@@ -412,6 +420,12 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
                   {activePreset === preset.id ? <Badge tone="accent">actif</Badge> : preset.danger ? <Badge tone="critical">risqué</Badge> : null}
                 </div>
                 <p className="small secondary">{preset.summary}</p>
+                {legacyPreset === preset.id ? (
+                  <p className="small row" role="note" style={{ gap: 6 }}>
+                    <Icon name="alert" size={14} />
+                    <span>{TEXTES_INTERNET.avance.repereAncien}</span>
+                  </p>
+                ) : null}
                 <ul>
                   {preset.points.map((p) => (
                     <li key={p}>{p}</li>
@@ -436,7 +450,7 @@ export function OpencodeTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean)
             fichier, puis redémarre opencode pour les appliquer ; le fichier brut permet un contrôle total.
           </p>
           <div className="stack tight">
-            <span className="field-label">Permissions actuelles{activePreset ? "" : " (personnalisées)"}</span>
+            <span className="field-label">Permissions actuelles{activePreset || legacyPreset ? "" : " (personnalisées)"}</span>
             <pre className="json-preview mono">{currentPermission === undefined ? "(non définies : valeurs par défaut d'opencode)" : JSON.stringify(currentPermission, null, 2)}</pre>
           </div>
         </div>

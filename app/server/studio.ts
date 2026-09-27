@@ -21,7 +21,10 @@ import {
   providerOf,
   unknownAgentKeyMessage,
   unknownAgentKeys,
+  webOpenings,
+  webOpeningsIntroduced,
 } from "./shared/assistant-rules.ts";
+import { texteStudioInternet } from "./shared/internet-texts.ts";
 import {
   agentFrontmatterSchema,
   commandFrontmatterSchema,
@@ -59,6 +62,22 @@ export class StudioValidationError extends Error {
   constructor(issues: ValidationIssue[]) {
     super("Contenu invalide.");
     this.issues = issues;
+  }
+}
+
+/**
+ * 1.1.0 (A37, fiche de la migration du web §5.1) : enregistrement d'agent qui INTRODUIT une ouverture d'Internet (webfetch ou
+ * websearch à ask ou allow, joker à ask, permission en texte « ask ») par rapport au fichier sur disque : 422 « internet-ferme ».
+ * Sous-classe de StudioValidationError : les appelants qui attrapent un refus de contenu le voient comme tel. Placé dans save
+ * SEULEMENT : studio-schema.ts et agentFrontmatterSchema restent inchangés, applyModels (réalignement, ouvert en mode Simple) ne
+ * refuse donc jamais un assistant d'une version précédente.
+ */
+export class StudioInternetFermeError extends StudioValidationError {
+  override name = "StudioInternetFermeError";
+
+  constructor(issues: ValidationIssue[]) {
+    super(issues);
+    this.message = issues.map((issue) => issue.message).join(" ");
   }
 }
 
@@ -382,6 +401,15 @@ export class StudioService {
         const onDisk = renaming ? previous : existing;
         const before = onDisk ? await this.#frontmatterOf(onDisk) : null;
         for (const key of unknownAgentKeys(frontmatter, before)) checks.push({ path: `frontmatter.${key}`, message: unknownAgentKeyMessage(key) });
+        // 1.1.0 (A37) : Internet fermé. Seules les ouvertures INTRODUITES par rapport au fichier sur disque sont refusées : un
+        // agent d'une version précédente s'enregistre sans rien changer au web (fichier illisible : tout est introduit).
+        const introduites = webOpeningsIntroduced(webOpenings(before?.permission), webOpenings(frontmatter.permission));
+        if (checks.length === 0 && introduites.length > 0) {
+          const cles = [...new Set(introduites.map((o) => o.cle ?? "permission"))];
+          throw new StudioInternetFermeError(
+            cles.map((cle) => ({ path: cle === "permission" ? "frontmatter.permission" : `frontmatter.permission.${cle.slice(0, 64)}`, message: texteStudioInternet(cle.slice(0, 64)) })),
+          );
+        }
       }
       if (checks.length > 0) throw new StudioValidationError(checks);
 

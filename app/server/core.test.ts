@@ -1355,7 +1355,9 @@ describe("fichier d'assistant", () => {
       assert.equal(permission.task, "deny");
       assert.deepEqual(permission.bash, { "*": "ask" });
       assert.equal(permission.edit, "ask");
-      assert.equal(permission.webfetch, "ask");
+      // 1.1.0 (A37, fiche MW §5.1) : le champ web du brouillon est accepté mais IGNORÉ, Internet est toujours fermé.
+      assert.equal(permission.webfetch, "deny");
+      assert.equal(permission.websearch, "deny");
       assert.equal("external_directory" in permission, false);
       assert.equal("question" in permission, false);
     }
@@ -1697,8 +1699,10 @@ describe("profils de droits et catalogue partagés", () => {
       assert.deepEqual([webfetch, websearch], ["deny", "deny"], id);
     }
     assert.deepEqual([(shipped.permission as Record<string, unknown>).webfetch, (shipped.permission as Record<string, unknown>).websearch], ["deny", "deny"]);
-    // Profils de la 1.0.x (web sur « ask », « allow » pour Sans confirmation) toujours reconnus : affichage et contrôle d'activation
-    // inchangés pour une installation existante. Un mélange des deux versions reste « Personnalisé ».
+    // Profils de la 1.0.x (PERMISSION_PRESETS_1_0 : web sur « ask », « allow » pour Sans confirmation), migrés vers la 1.1 à la mise à
+    // jour et à la restauration (A37) : detectPermissionPreset les reconnaît encore pour le contrôle d'activation de l'autonomie d'un
+    // volume non migré. L'affichage ne passe plus par lui : legacyPresetOf (web-rules.test.ts) les montre « d'une version
+    // précédente », mélanges compris, qui restent « Personnalisé » ici.
     assert.equal(detectPermissionPreset(PRUDENT), "prudent");
     assert.equal(detectPermissionPreset({ edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" }), "equilibre");
     assert.equal(detectPermissionPreset({ edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" }), "autonome");

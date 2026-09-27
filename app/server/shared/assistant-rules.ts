@@ -13,6 +13,8 @@ import { COPILOT_PRICES, computeCost, type ModelPrice, roundUsd } from "../prici
 // methods.ts est pur lui aussi (il n'importe que construction-constants.ts) : le bundle web ne gagne aucune dépendance.
 import { stripMethodBlocks } from "./methods.ts";
 // </c5:methodes-import>
+// 1.1.0 (MW-b, A37) : textes de l'accès à Internet fermé, rangés dans un module contrôlé par le test « textes » (pur, sans import).
+import { TEXTES as TEXTES_INTERNET, texteProfilAncien } from "./internet-texts.ts";
 
 export type { ModelPrice } from "../pricing.ts";
 
@@ -1431,7 +1433,10 @@ export function buildAssistantFile(d: AssistantDraft, ctx: { model: string; vari
     ...(ctx.variant ? { variant: ctx.variant } : {}),
     steps: TASK_STEPS[d.taskSize],
     color: USE_CASE_INFO[d.useCase].color,
-    permission: assistantPermission(d.rights, d.web, fiches),
+    // 1.1.0 (A37, fiche de la migration du web §5.1) : Internet toujours fermé. Le champ `web` du brouillon reste accepté par l'API
+    // (assistant de création, bibliothèque des méthodes, adoption) mais il est IGNORÉ ; detectRights et assistantPermission ne
+    // changent pas, un assistant d'une version précédente garde donc son profil affiché jusqu'à son prochain enregistrement.
+    permission: assistantPermission(d.rights, false, fiches),
   };
   return { name, frontmatter, body: assistantBody(d.instructions, fiches) };
 }
@@ -1604,11 +1609,12 @@ export const PERMISSION_PRESETS: Readonly<Record<PermissionPresetId, { label: st
 });
 
 /**
- * Profils livrés jusqu'à la 1.0.x (webfetch et websearch sur « ask », ou « allow » pour « Sans confirmation »), toujours reconnus
- * par detectPermissionPreset : une installation existante garde son profil affiché, et le contrôle d'activation de l'autonomie voit
- * toujours « Sans confirmation » actif. Aucune migration : appliquer un profil écrit sa version courante.
+ * Profils livrés jusqu'à la 1.0.x (web sur « ask », ou « allow » pour Sans confirmation). Migrés vers la 1.1 à la mise à jour et à la
+ * restauration (install.ps1, cockpit.ps1 restore : server/migrate-oc-config.ts, server/oc-config-web.ts). Encore reconnus pour un
+ * volume non migré (échec, image ancienne, retour de la 1.0.6) : affichage « version précédente » (legacyPresetOf) et contrôle
+ * d'activation de l'autonomie.
  */
-const PERMISSION_PRESETS_1_0: Readonly<Record<PermissionPresetId, Readonly<Record<string, unknown>>>> = Object.freeze({
+export const PERMISSION_PRESETS_1_0: Readonly<Record<PermissionPresetId, Readonly<Record<string, unknown>>>> = Object.freeze({
   prudent: { edit: "ask", bash: { "*": "ask", pwd: "allow" }, task: "ask", webfetch: "ask", websearch: "ask" },
   equilibre: { edit: "allow", bash: "ask", task: "ask", webfetch: "ask", websearch: "ask" },
   autonome: { edit: "allow", bash: "allow", task: "allow", webfetch: "allow", websearch: "allow" },
@@ -1697,15 +1703,304 @@ export function detectPermissionPreset(permission: unknown): PermissionPresetId 
 }
 
 export const SECURITY_TEXTS = Object.freeze({
-  prudent:
-    "Profil de droits : Prudent. L'assistant demande avant de modifier un fichier, lancer une commande, consulter le web ou déléguer.",
+  // 1.1.0 (A37) : Internet fermé dans le profil Prudent ; texte rangé dans internet-texts.ts (contrôlé par le test « textes »).
+  prudent: TEXTES_INTERNET.partout.prudent,
   provider: "Fournisseur d'IA : GitHub Copilot uniquement.",
   restorePrudent: "Revenir au profil Prudent",
+  closeInternet: TEXTES_INTERNET.partout.fermer,
 });
 
 /** « Profil de droits : {profil}. Il a été modifié en mode Avancé. » */
 export function modifiedProfileText(presetLabel: string): string {
   return `Profil de droits : ${presetLabel}. Il a été modifié en mode Avancé.`;
+}
+
+// --- Accès à Internet fermé (1.1.0, décision A37 ; fiche de la migration du web §2 R3, R4, R6 et §5) ---------------------------
+//
+// Fonctions PARTAGÉES de référence : la migration (oc-config-web.ts, MW-a) importe legacyPresetOf et peutDemander d'ici. Aucune
+// ne répare : l'interface EMPÊCHE (422 sur une ouverture introduite, deny toujours écrit), propose un RECOURS (« Fermer l'accès à
+// Internet ») et SIGNALE (webAskAgents). Fermé en cas de doute : une clé hors bornes compte comme une ouverture.
+
+/** Outils web d'opencode 1.18.30, fermés dans la 1.1.0. */
+export const WEB_TOOLS = ["webfetch", "websearch"] as const;
+export type WebTool = (typeof WEB_TOOLS)[number];
+
+/** Bornes R3 d'une clé de permission ou de motif : au-delà, jamais évaluée (wildcardMatch croît en n^8 environ). */
+export const WEB_KEY_MAX = 256;
+export const WEB_JOKERS_MAX = 16;
+
+/** Clé de permission ou de motif hors des bornes R3 : plus de 256 caractères, ou plus de 16 jokers (« * » ou « ? »). */
+export function cleHorsBornes(cle: string): boolean {
+  if (cle.length > WEB_KEY_MAX) return true;
+  let jokers = 0;
+  for (const c of cle) if (c === "*" || c === "?") jokers++;
+  return jokers > WEB_JOKERS_MAX;
+}
+
+function regleHorsBornes(rule: Rule): boolean {
+  return cleHorsBornes(rule.permission) || cleHorsBornes(rule.pattern);
+}
+
+function isWebTool(cle: string): cle is WebTool {
+  return cle === "webfetch" || cle === "websearch";
+}
+
+/**
+ * Indices, dans l'ordre, des règles « ask » décisives pour l'outil (R6) : permission qui correspond à l'outil (wildcardMatch), action
+ * « ask », QUEL QUE SOIT SON MOTIF (opencode pose la demande webfetch avec l'adresse pour motif, tool/webfetch.ts:40-41), sans règle
+ * plus loin dont la permission correspond à l'outil et dont le motif est « * ». Clés supposées dans les bornes.
+ */
+function demandesDecisives(rules: readonly Rule[], tool: string): number[] {
+  const out: number[] = [];
+  let masquee = false;
+  for (let i = rules.length - 1; i >= 0; i--) {
+    const rule = rules[i] as Rule;
+    if (!wildcardMatch(tool, rule.permission)) continue;
+    if (rule.action === "ask" && !masquee) out.push(i);
+    if (rule.pattern === "*") masquee = true;
+  }
+  return out.reverse();
+}
+
+/**
+ * R6 : l'outil peut encore poser une demande avec ces règles (dans l'ordre d'opencode). Une clé hors bornes rend vrai sans rien
+ * évaluer (fermé en cas de doute).
+ */
+export function peutDemander(rules: readonly Rule[], tool: string): boolean {
+  if (rules.some(regleHorsBornes)) return true;
+  return demandesDecisives(rules, tool).length > 0;
+}
+
+/**
+ * R6 : l'outil est refusé pour toute entrée — la dernière règle dont la permission lui correspond a le motif « * » et l'action
+ * « deny » (permission/index.ts:204-213). Une clé hors bornes rend faux (jamais « masqué » en cas de doute).
+ */
+export function masque(rules: readonly Rule[], tool: string): boolean {
+  if (rules.some(regleHorsBornes)) return false;
+  const last = rules.findLast((rule) => wildcardMatch(tool, rule.permission));
+  return last !== undefined && last.pattern === "*" && last.action === "deny";
+}
+
+function sansWeb(permission: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(permission).filter(([cle]) => !isWebTool(cle)));
+}
+
+/**
+ * R4 : profil d'une version précédente (bloc global). Un id quand le bloc est un objet dont les clés autres que webfetch et websearch
+ * égalent (ordre ignoré) celles de PERMISSION_PRESETS[id] (1.1 : hors du web, les profils 1.0 et 1.1 sont identiques), que webfetch
+ * et websearch existent tous deux en action (ask, allow ou deny) et que l'un au moins n'est pas « deny ». Couvre les profils 1.0
+ * exacts, leurs clés dans le désordre et les mélanges 1.0/1.1. Ne dépend JAMAIS de PERMISSION_PRESETS_1_0.
+ */
+export function legacyPresetOf(permission: unknown): PermissionPresetId | null {
+  if (!isPlainObject(permission)) return null;
+  const webfetch = own(permission, "webfetch");
+  const websearch = own(permission, "websearch");
+  if (!isAction(webfetch) || !isAction(websearch) || (webfetch === "deny" && websearch === "deny")) return null;
+  const reste = sansWeb(permission);
+  return PERMISSION_PRESET_IDS.find((id) => deepEqual(sansWeb(PERMISSION_PRESETS[id].permission), reste)) ?? null;
+}
+
+export function isLegacyPermissionPreset(permission: unknown): boolean {
+  return legacyPresetOf(permission) !== null;
+}
+
+/**
+ * Profil « actif » de Paramètres › opencode : un profil d'une version précédente ne l'est plus (« Appliquer » le met à jour, repère
+ * « Version précédente »). detectPermissionPreset, lui, les reconnaît encore pour le contrôle d'activation de l'autonomie.
+ */
+export function activePermissionPreset(permission: unknown): PermissionPresetId | null {
+  return legacyPresetOf(permission) === null ? detectPermissionPreset(permission) : null;
+}
+
+/** « Profil de droits : {profil} (réglage d'une version précédente). … » */
+export function legacyProfileText(label: string): string {
+  return texteProfilAncien(label);
+}
+
+export type SecuriteEtat = "prudent" | "ancien" | "modifie";
+
+export interface SecuriteProfil {
+  etat: SecuriteEtat;
+  id: PermissionPresetId | null;
+  /** Libellé du profil, « Personnalisé » sinon. */
+  label: string;
+  /** Bouton de l'encadré : « Fermer l'accès à Internet » (ancien), « Revenir au profil Prudent » (modifié), aucun (Prudent). */
+  bouton: string | null;
+}
+
+/**
+ * État de l'écran Sécurité (fiche §5.2) : « prudent » (1.1, vert) ; « ancien » (profil 1.0 ou mélange : encadré legacyProfileText
+ * et « Fermer l'accès à Internet », seul le web change) ; « modifie » (Équilibré ou Sans confirmation 1.1, personnalisé).
+ */
+export function securiteProfil(permission: unknown): SecuriteProfil {
+  const ancien = legacyPresetOf(permission);
+  if (ancien !== null) return { etat: "ancien", id: ancien, label: PERMISSION_PRESETS[ancien].label, bouton: SECURITY_TEXTS.closeInternet };
+  const id = detectPermissionPreset(permission);
+  if (id === "prudent") return { etat: "prudent", id, label: PERMISSION_PRESETS.prudent.label, bouton: null };
+  return { etat: "modifie", id, label: id ? PERMISSION_PRESETS[id].label : "Personnalisé", bouton: SECURITY_TEXTS.restorePrudent };
+}
+
+/** Ouverture d'Internet dans un bloc `permission` (fiche §5.1). */
+export interface WebOpening {
+  /** Bloc : « permission », « agent.<nom>.permission » ou « mode.<nom>.permission ». */
+  chemin: string;
+  /** Clé de permission ; null : permission en texte. */
+  cle: string | null;
+  /** Motif d'une règle par motif ; null : valeur simple. */
+  motif: string | null;
+  /** « doute » : clé hors bornes, ou valeur de webfetch/websearch qui n'est pas une action, comptée comme une ouverture. */
+  action: "ask" | "allow" | "doute";
+}
+
+/**
+ * Ouvertures d'Internet d'un bloc `permission` (pur) : clé webfetch ou websearch valant ask ou allow (valeur simple ou motif) ; clé
+ * joker correspondante (wildcardMatch) valant ask, en valeur simple ou dans un motif, sauf si une règle « * » de l'outil la suit dans
+ * le même bloc (elle ne peut alors rien demander) ; `permission` en texte « ask ». Une clé hors bornes compte comme ouverture et
+ * n'est jamais évaluée. Lecture des seules propriétés propres : « __proto__ » reste une donnée.
+ */
+export function webOpenings(bloc: unknown, chemin = "permission"): WebOpening[] {
+  if (typeof bloc === "string") return bloc === "ask" ? [{ chemin, cle: null, motif: null, action: "ask" }] : [];
+  if (!isPlainObject(bloc)) return [];
+  const lignes: Array<{ cle: string; motif: string | null; valeur: unknown; doute: boolean }> = [];
+  for (const [cle, valeur] of Object.entries(bloc)) {
+    if (isPlainObject(valeur)) {
+      for (const [motif, action] of Object.entries(valeur)) lignes.push({ cle, motif, valeur: action, doute: cleHorsBornes(cle) || cleHorsBornes(motif) });
+    } else {
+      lignes.push({ cle, motif: null, valeur, doute: cleHorsBornes(cle) });
+    }
+  }
+  // Règles évaluables, dans l'ordre d'opencode (Permission.fromConfig) : les clés hors bornes en sont écartées, ce qui ne peut
+  // qu'ajouter des ouvertures (une règle écartée ne masque plus rien).
+  const regles: Array<Rule & { ligne: number }> = [];
+  lignes.forEach((l, ligne) => {
+    if (!l.doute && isAction(l.valeur)) regles.push({ permission: l.cle, pattern: l.motif ?? "*", action: l.valeur, ligne });
+  });
+  const decisives = new Set<number>();
+  for (const tool of WEB_TOOLS) for (const index of demandesDecisives(regles, tool)) decisives.add((regles[index] as { ligne: number }).ligne);
+  const out: WebOpening[] = [];
+  lignes.forEach((l, ligne) => {
+    if (l.doute) out.push({ chemin, cle: l.cle, motif: l.motif, action: "doute" });
+    else if (isWebTool(l.cle)) {
+      if (l.valeur === "ask" || l.valeur === "allow") out.push({ chemin, cle: l.cle, motif: l.motif, action: l.valeur });
+      else if (l.valeur !== "deny") out.push({ chemin, cle: l.cle, motif: l.motif, action: "doute" });
+    } else if (l.valeur === "ask" && decisives.has(ligne)) out.push({ chemin, cle: l.cle, motif: l.motif, action: "ask" });
+  });
+  return out;
+}
+
+/** Ouvertures d'une configuration globale : `permission`, puis chaque `agent.<nom>.permission` et `mode.<nom>.permission`. */
+export function configWebOpenings(config: unknown): WebOpening[] {
+  if (!isPlainObject(config)) return [];
+  const out = webOpenings(own(config, "permission"), "permission");
+  for (const section of ["agent", "mode"]) {
+    const entries = own(config, section);
+    if (!isPlainObject(entries)) continue;
+    for (const [nom, def] of Object.entries(entries)) {
+      if (isPlainObject(def) && Object.hasOwn(def, "permission")) out.push(...webOpenings(def.permission, `${section}.${nom}.permission`));
+    }
+  }
+  return out;
+}
+
+const identiteOuverture = (o: WebOpening) => JSON.stringify([o.chemin, o.cle, o.motif, o.action]);
+
+/**
+ * Ouvertures INTRODUITES : présentes après, absentes avant, comparées par chemin, clé, motif et action. Un « ask » déjà présent
+ * n'est donc jamais une cause de refus ; un « allow » introduit l'est (garde R10 a de la migration).
+ */
+export function webOpeningsIntroduced(avant: readonly WebOpening[], apres: readonly WebOpening[]): WebOpening[] {
+  const connues = new Set(avant.map(identiteOuverture));
+  return apres.filter((o) => !connues.has(identiteOuverture(o)));
+}
+
+/** Chemin lisible d'une ouverture (« agent.x.permission.websearch », « permission.*.https://* »), chaque partie bornée. */
+export function cheminOuverture(o: WebOpening): string {
+  return [o.chemin, o.cle, o.motif]
+    .filter((part): part is string => part !== null)
+    .map((part) => (part.length > 64 ? `${part.slice(0, 64)}…` : part))
+    .join(".");
+}
+
+/** Studio : valeur de webfetch ou websearch qui n'est pas un refus (ask, allow, motifs, valeur illisible). */
+export function webStudioOuvert(valeur: unknown): boolean {
+  return valeur !== undefined && valeur !== "deny";
+}
+
+/** Studio : le bloc d'un agent garde webfetch ou websearch ouvert ; l'enregistrement y écrira « deny ». */
+export function webAFermer(permission: unknown): boolean {
+  return isPlainObject(permission) && WEB_TOOLS.some((tool) => Object.hasOwn(permission, tool) && webStudioOuvert(permission[tool]));
+}
+
+/** Studio : copie du bloc où webfetch et websearch ouverts passent à « deny », à leur place ; rien d'autre ne change. */
+export function fermerWebStudio(permission: unknown): unknown {
+  if (!webAFermer(permission)) return permission;
+  return Object.fromEntries(
+    Object.entries(permission as Record<string, unknown>).map(([cle, valeur]) => [cle, isWebTool(cle) && webStudioOuvert(valeur) ? "deny" : valeur]),
+  );
+}
+
+/** Ce qui peut encore demander Internet (security.webIssues) ; null côté serveur quand opencode ne répond pas. */
+export interface WebIssues {
+  /** La règle générale (configuration globale) peut encore demander : signalée une seule fois. */
+  global: boolean;
+  /** Agents visibles et non natifs dont la demande vient de leurs propres règles ; titre d'assistant, sinon null. */
+  assistants: Array<{ name: string; title: string | null }>;
+}
+
+/** Agent de GET /agent réduit à ce que lit webAskAgents (OcAgentInfo convient). */
+export interface WebAgentLite {
+  name: string;
+  hidden?: boolean;
+  native?: boolean;
+  /** Règles EFFECTIVES (défauts, configuration globale, agent). */
+  permission?: readonly Rule[];
+}
+
+function sameRule(a: Rule, b: Rule | undefined): boolean {
+  return b !== undefined && a.permission === b.permission && a.pattern === b.pattern && a.action === b.action;
+}
+
+/**
+ * Signaler, jamais réparer (fiche §5.3) : à partir des règles EFFECTIVES de GET /agent, peutDemander sur webfetch et websearch.
+ * `global` : la configuration globale demande encore (une seule fois). Agents : visibles, non natifs, et seulement quand la règle
+ * décisive est la leur — les règles d'opencode sont les défauts, puis la configuration globale, puis celles de l'agent ; un agent
+ * dont les règles ne commencent pas ainsi, ou qui porte une clé hors bornes, est signalé (fermé en cas de doute). `titleOf` : titre
+ * d'assistant, null sinon (jamais le nom technique en mode Simple).
+ */
+export function webAskAgents(
+  agents: readonly WebAgentLite[],
+  globalPermission: unknown,
+  titleOf: (name: string) => string | null = () => null,
+): WebIssues {
+  const globales = [...rulesFromConfig(opencodeDefaultPermission()), ...rulesFromConfig(globalPermission ?? {})];
+  const globalePiegee = globales.some(regleHorsBornes);
+  const global = WEB_TOOLS.some((tool) => peutDemander(globales, tool));
+  const signales = new Map<string, { name: string; title: string | null }>();
+  for (const agent of agents) {
+    if (agent.native === true || agent.hidden === true || !Array.isArray(agent.permission) || signales.has(agent.name)) continue;
+    const rules = agent.permission;
+    let signale = rules.some(regleHorsBornes);
+    for (const tool of WEB_TOOLS) {
+      if (signale) break;
+      const decisives = demandesDecisives(rules, tool);
+      if (decisives.length === 0) continue;
+      if (globalePiegee) {
+        signale = true;
+        break;
+      }
+      const pertinentes = rules.flatMap((rule, index) => (wildcardMatch(tool, rule.permission) ? [index] : []));
+      const prefixe = globales.filter((rule) => wildcardMatch(tool, rule.permission));
+      const herite = prefixe.length <= pertinentes.length && prefixe.every((rule, k) => sameRule(rule, rules[pertinentes[k] as number]));
+      const propres = herite ? new Set(pertinentes.slice(prefixe.length)) : null;
+      signale = propres === null || decisives.some((index) => propres.has(index));
+    }
+    if (signale) signales.set(agent.name, { name: agent.name, title: titleOf(agent.name) });
+  }
+  const assistants = [...signales.values()].sort((a, b) => {
+    if ((a.title === null) !== (b.title === null)) return a.title === null ? 1 : -1;
+    return (a.title ?? a.name).localeCompare(b.title ?? b.name, "fr") || a.name.localeCompare(b.name, "fr");
+  });
+  return { global, assistants };
 }
 
 // --- Affichage d'un tour (puces du compositeur) ------------------------------------------

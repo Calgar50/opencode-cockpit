@@ -1,7 +1,13 @@
 // Éditeur des permissions d'un agent : action simple par outil ou règles par motif.
+// 1.1.0 (A37, fiche de la migration du web §5.1) : webfetch et websearch n'offrent que « Refuser », et « Hérité » seulement quand la
+// règle globale refuse l'outil (sinon retirer la clé rendrait le « * » : allow par défaut d'opencode). Un ask, un allow ou des motifs
+// déjà présents s'affichent « Refuser (appliqué à l'enregistrement) » : ItemEditor écrit « deny » à l'enregistrement.
 import { useEffect, useRef, useState } from "react";
+import { effectiveAgentRules, masque, webStudioOuvert } from "../../../server/shared/assistant-rules.ts";
+import { TEXTES as TEXTES_INTERNET, texteStudioInternet } from "../../../server/shared/internet-texts.ts";
 import { Icon } from "../../components/Icon.tsx";
-import { Button, IconButton, Segmented } from "../../components/ui.tsx";
+import { Button, IconButton, Segmented, useAsync } from "../../components/ui.tsx";
+import { api } from "../../lib/api.ts";
 import { isRecord } from "./shared.ts";
 
 type Action = "allow" | "ask" | "deny";
@@ -25,6 +31,52 @@ const PERMISSIONS: Array<{ key: string; label: string; hint: string; patterns: b
 ];
 
 const MANAGED = new Set(PERMISSIONS.map((p) => p.key));
+/** Outils web, fermés dans la 1.1.0. */
+const WEB_KEYS = new Set(["webfetch", "websearch"]);
+
+/**
+ * Ligne de webfetch ou websearch : « Refuser », et « Hérité » si la règle globale le refuse (`heriteRefuse` ; null : inconnue, pas
+ * proposé). Une valeur ouverte reste dans le brouillon jusqu'à l'enregistrement, qui écrit « deny » (ItemEditor, fermerWebStudio).
+ */
+function WebPermissionRow({
+  perm,
+  rule,
+  heriteRefuse,
+  onSet,
+}: {
+  perm: (typeof PERMISSIONS)[number];
+  rule: unknown;
+  heriteRefuse: boolean | null;
+  onSet: (rule: "deny" | undefined) => void;
+}) {
+  const ouvert = webStudioOuvert(rule);
+  const options: Array<{ value: "inherit" | "deny"; label: string; title?: string }> = [
+    { value: "deny", label: ouvert ? TEXTES_INTERNET.avance.refuserALEnregistrement : TEXTES_INTERNET.avance.refuser },
+  ];
+  if (heriteRefuse === true) options.unshift({ value: "inherit", label: TEXTES_INTERNET.avance.herite, title: TEXTES_INTERNET.avance.heriteAide });
+  const hint = ouvert ? texteStudioInternet(perm.key) : rule === undefined && heriteRefuse === false ? TEXTES_INTERNET.avance.heriteOuvert : null;
+  return (
+    <div className="perm-row">
+      <div className="perm-head">
+        <div className="stack tight" style={{ gap: 0, minWidth: 0 }}>
+          <strong className="small">
+            {perm.label} <span className="mono muted tiny">{perm.key}</span>
+          </strong>
+          <span className="tiny muted">{perm.hint}</span>
+          {hint ? <span className="tiny">{hint}</span> : null}
+        </div>
+        <div className="row wrap" style={{ gap: 6, justifyContent: "flex-end" }}>
+          <Segmented<"inherit" | "deny">
+            label={perm.label}
+            value={rule === undefined ? "inherit" : "deny"}
+            options={options}
+            onChange={(next) => onSet(next === "inherit" ? undefined : "deny")}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function isAction(value: unknown): value is Action {
   return value === "allow" || value === "ask" || value === "deny";
@@ -145,6 +197,11 @@ function PatternRules({
 }
 
 export function PermissionsEditor({ value, onChange }: { value: unknown; onChange: (value: unknown) => void }) {
+  // Règle globale d'opencode : « Hérité » n'est proposé pour le web que si elle refuse l'outil pour toute entrée (masque).
+  const global = useAsync(() => api.opencodeConfig(), []);
+  const globalRules = global.data ? effectiveAgentRules(global.data.permission, {}) : null;
+  const heriteRefuse = (key: string): boolean | null => (globalRules === null ? null : masque(globalRules, key));
+
   if (typeof value === "string") {
     return (
       <div className="callout accent">
@@ -177,6 +234,11 @@ export function PermissionsEditor({ value, onChange }: { value: unknown; onChang
     <div className="stack">
       {PERMISSIONS.map((perm) => {
         const rule = record[perm.key];
+        if (WEB_KEYS.has(perm.key)) {
+          return (
+            <WebPermissionRow key={perm.key} perm={perm} rule={rule} heriteRefuse={heriteRefuse(perm.key)} onSet={(next) => setKey(perm.key, next)} />
+          );
+        }
         const advanced = isRecord(rule);
         const choice: Choice = isAction(rule) ? rule : "inherit";
         return (

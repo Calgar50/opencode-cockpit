@@ -17,6 +17,7 @@ import {
   USE_CASES,
   VARIANT_HELP,
 } from "../../../server/shared/assistant-rules.ts";
+import { TEXTES as TEXTES_INTERNET } from "../../../server/shared/internet-texts.ts";
 // <c5:methodes-import>
 import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
 import { methodAttachable, methodLabels, texteQuand, wizardMethodState } from "../../../server/shared/methods-view.ts";
@@ -614,6 +615,15 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
           ))}
         </ol>
 
+        {/* 1.1.0 (A37) : assistant d'une version précédente (« Consulter Internet » coché : detectRights rend web) ou agent
+            à compléter qui peut demander Internet ; l'enregistrement écrit Internet fermé (buildAssistantFile). */}
+        {source.draft.web ? (
+          <div className="callout warning" role="status" style={{ marginBottom: 16 }}>
+            <Icon name="alert" size={18} />
+            <span>{TEXTES_INTERNET.partout.creationAncien}</span>
+          </div>
+        ) : null}
+
         <div className={`wiz-layout${step === LAST_STEP ? " single" : ""}`}>
           <div className="wiz-main card stack">
             {step === 0 ? (
@@ -709,16 +719,11 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
                     </label>
                   ))}
                 </div>
-                <label className={`choice-card${draft.web ? " selected" : ""}`}>
-                  <input type="checkbox" checked={draft.web} onChange={(e) => setDraft((d) => ({ ...d, web: e.target.checked }))} />
-                  <span className="stack tight">
-                    <strong>Consulter Internet (sur demande)</strong>
-                    <span className="small secondary">
-                      Utile pour vérifier une faille (CVE). Chaque consultation vous est demandée. Une adresse web peut contenir des données : refusez en
-                      cas de doute.
-                    </span>
-                  </span>
-                </label>
+                {/* 1.1.0 (A37) : plus de case pour Internet, dans les deux modes. L'assistant est toujours écrit avec Internet fermé. */}
+                <div className="callout accent" role="note">
+                  <Icon name="lock" size={18} />
+                  <span>{TEXTES_INTERNET.partout.creationFerme}</span>
+                </div>
                 <div className="callout accent">
                   <Icon name="shield" size={18} />
                   <span>

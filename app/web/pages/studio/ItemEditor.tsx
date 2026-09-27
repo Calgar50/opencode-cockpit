@@ -1,7 +1,7 @@
 // Éditeur d'un agent, d'une commande ou d'un skill : nom, champs du type, corps, enregistrement.
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 // SHELL_LINE_RE : ligne « !`commande` » d'un texte de commande, exécutée par opencode sans demande de permission.
-import { SHELL_LINE_RE, unknownAgentKeyMessage, unknownAgentKeys } from "../../../server/shared/assistant-rules.ts";
+import { fermerWebStudio, SHELL_LINE_RE, unknownAgentKeyMessage, unknownAgentKeys, webAFermer } from "../../../server/shared/assistant-rules.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { CodeEditor } from "../../components/CodeEditor.tsx";
 import { Icon } from "../../components/Icon.tsx";
@@ -172,6 +172,8 @@ export function ItemEditor({
     let frontmatter = { ...draft.frontmatter };
     if (typeof frontmatter.description === "string") frontmatter = withKey(frontmatter, "description", frontmatter.description.trim() || (kind === "commands" ? undefined : ""));
     if (kind === "skills") frontmatter.name = draft.name;
+    // 1.1.0 (A37) : webfetch et websearch ouverts (ask, allow, motifs) s'écrivent « deny », à leur place (PermissionsEditor l'annonce).
+    if (kind === "agents" && webAFermer(frontmatter.permission)) frontmatter = withKey(frontmatter, "permission", fermerWebStudio(frontmatter.permission));
     const previousName = item && item.name !== draft.name ? item.name : null;
     const tier = tierToSend(frontmatter, previousName);
     try {
@@ -192,7 +194,7 @@ export function ItemEditor({
       if (err instanceof ApiError && err.code === "rejected-by-opencode") {
         const data = (err.data ?? {}) as { restarted?: unknown };
         setProblem({ type: "rejected", message: err.message, issues: err.issues, restarted: data.restarted === true });
-      } else if (err instanceof ApiError && err.code === "validation") {
+      } else if (err instanceof ApiError && (err.code === "validation" || err.code === "internet-ferme")) {
         setProblem({ type: "validation", message: err.message, issues: err.issues });
       } else {
         toast.error("Enregistrement impossible", err);

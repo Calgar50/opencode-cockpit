@@ -1,5 +1,6 @@
 // Diagnostic : état d'opencode, du flux d'événements, du réseau, de Copilot et journal.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { texteDiagnosticInternet } from "../../server/shared/internet-texts.ts";
 import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
 import type { OmoStatusResponse } from "../../server/shared/omo-types.ts";
 import { useApp } from "../app/AppContext.tsx";
@@ -177,7 +178,17 @@ function problemsOf(s: SystemStatus, quotaEnabled: boolean): Problem[] {
     });
   }
   if (quotaEnabled && s.quota.lastError) out.push({ tone: "warning", text: "La synchronisation du solde GitHub échoue." });
+  // 1.1.0 (A37) : ce qui peut encore demander Internet (security.webIssues) ; rien quand opencode n'a pas répondu (null).
+  const internet = texteDiagnosticInternet(s.security.webIssues);
+  if (internet?.ton === "attention") out.push({ tone: "warning", text: internet.texte });
   return out;
+}
+
+/** 1.1.0 (A37) : accès à Internet de l'assistant (fermé, ou ce qui peut encore le demander) ; absent quand opencode n'a pas répondu. */
+function InternetLine({ issues }: { issues: SystemStatus["security"]["webIssues"] }) {
+  const internet = texteDiagnosticInternet(issues);
+  if (internet === null) return null;
+  return <Line tone={internet.ton === "bon" ? "good" : "warning"} label={internet.texte} />;
 }
 
 type CopyValue = (value: string, what: string) => void;
@@ -637,6 +648,7 @@ export function DiagnosticsPage() {
                         : undefined
                     }
                   />
+                  <InternetLine issues={s.security.webIssues} />
                   <Line tone="neutral" label="Proxy HTTP" value={s.security.httpProxy ? "configuré" : "aucun"} />
                   <Line tone="neutral" label="Proxy HTTPS" value={s.security.httpsProxy ? "configuré" : "aucun"} />
                   <Line tone="neutral" label="Exceptions (NO_PROXY)" value={s.security.noProxy ? <span className="mono small">{s.security.noProxy}</span> : "aucune"} />
