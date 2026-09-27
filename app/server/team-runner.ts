@@ -34,6 +34,9 @@
 // EQ_STEP_ORDER. neutralRunner reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan it4 §2.3).
 import { createHash, randomUUID } from "node:crypto";
 import { billRefusal } from "./config-queue.ts";
+// <gf3:consignes-etape> début : magasin des consignes de « Revoir » (3D, L28d), appelé par la jonction U2 des étapes (GF3)
+import { createConsignesStore } from "./consignes-store.ts";
+// </gf3:consignes-etape> fin
 import {
   type EqContext,
   type EqModule,
@@ -1140,6 +1143,28 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     } finally {
       end();
     }
+    // <gf3:consignes-etape> début : jonction U2 × équipes (grande fusion GF3, seul propriétaire ; plan it5 §8.4, plan it4 §9.3,
+    // plan it3 D-3d-30). Endroit UNIQUE où le runner envoie le message d'une étape : une fois le message accepté par opencode,
+    // sa copie est gardée pour « Revoir » par l'API publique du magasin des consignes de la 3D, jamais par une seconde lecture
+    // de `message_text`. Même borne, même masquage (avant la coupe), même mention de troncature, même purge avec la conversation
+    // (arbre de `root_id`) que les consignes de délégation. Clé refusée par ID_RE (enregistrer rend « cle-invalide ») : rien
+    // d'écrit. Jamais journalisée : un échec n'est signalé que par son code, sans le texte, et n'arrête jamais l'étape.
+    try {
+      const ecriture = createConsignesStore(c11.db).enregistrer({
+        rootId: run.rootId,
+        parent: run.rootId,
+        enfant: sessionId,
+        callId: `etape-${key.tour}-${key.tentative}-${sessionId}`,
+        brut: texte,
+        at: now(),
+      });
+      if (ecriture === "limite" || ecriture === "cle-invalide") {
+        warn("consigne d'étape non gardée pour « Revoir »", { runId: run.runId, etape: stepId, raison: ecriture });
+      }
+    } catch (err) {
+      warn("consigne d'étape non gardée pour « Revoir »", { runId: run.runId, etape: stepId, error: errorMessage(err) });
+    }
+    // </gf3:consignes-etape> fin
     audit(run.runId, "etape-envoyee", { etape: stepId, tentative: key.tentative, sessionId, empreinte });
 
     // (4) Attente, puis (5) lecture et (6) enregistrement.
