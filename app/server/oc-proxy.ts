@@ -26,11 +26,34 @@ import { MESSAGES, type UiMode } from "./shared/assistant-rules.ts";
 // <gf5:d11>
 import { phraseListeBloquee, phraseListeIllisible, phraseSuppressionImpossible } from "./shared/attentes-texts.ts";
 // </gf5:d11>
+// <nav:import>
+import { estProtege } from "./shared/fichiers-regles.ts";
+// </nav:import>
 import { ID } from "./shared/ids.ts";
 import type { Cockpit11Wiring } from "./wiring-11.ts";
 
 /** Crochets du proxy /api/oc/* : listes par étape et exécution dans l'ordre (la première Response l'emporte). */
 export type ProxyHooks = Pick<Cockpit11Wiring, "hooks" | "runHooks">;
+
+// <nav:mentions>
+/**
+ * Mentions @ du composeur (GET /find/file ; décision A21, fiche NAV §12.2 n° 2) : la liste rendue par opencode, sans les noms que
+ * l'onglet « Fichiers » protège (`estProtege` : .env*, clés et certificats, fichiers d'identifiants, .git, historiques…), pour que
+ * les deux vues du dossier de travail se tiennent. Chemins relatifs découpés sur « / » (et « \ », par prudence), aucun décodage.
+ * Réponse illisible, ou qui n'est pas une liste : liste vide (fermé en cas de doute) ; élément qui n'est pas un texte : retiré.
+ * Rien n'est journalisé.
+ */
+export function mentionsSansProteges(texte: string): string[] {
+  let liste: unknown;
+  try {
+    liste = JSON.parse(texte);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(liste)) return [];
+  return liste.filter((chemin): chemin is string => typeof chemin === "string" && !estProtege(chemin.split(/[\\/]/).filter((segment) => segment !== "")));
+}
+// </nav:mentions>
 
 /** Corps d'un refus du proxy : même forme que celle de createApp (error, message, puis détails). */
 const fail = (c: Context, status: number, error: string, message: string, extra: Record<string, unknown> = {}) =>
@@ -594,6 +617,14 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
         return c.json(repli.demandes.map(auFormatOpencode), 200);
       }
       // </gf5:d11>
+      // <nav:mentions>
+      // Mentions @ (GET /find/file), sur les deux instances : noms protégés retirés (mentionsSansProteges). Erreur d'opencode : relayée.
+      if (method === "GET" && sub === "/find/file" && upstream.ok) {
+        const liste = mentionsSansProteges(await upstream.text());
+        headers.set("content-type", "application/json");
+        return new Response(JSON.stringify(liste), { status: upstream.status, headers });
+      }
+      // </nav:mentions>
       if (method === "POST" && sub === "/session" && upstream.ok && proxyHooks && proxyHooks.hooks.sessionCreated.length > 0) {
         // Corps de la réponse lu seulement ici : vérification de la conversation créée (écart : supprimée, 502).
         const text = await upstream.text();

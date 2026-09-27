@@ -78,8 +78,8 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     const groupes = h.cockpit.wiring.registrations.filter((r) => r.kind === "routes");
     assert.deepEqual(
       groupes.filter(sertPrincipale).map((r) => r.key),
-      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11", "construction", "construction", "construction", "construction"],
-      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, construction ×4",
+      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11", "fichiers", "construction", "construction", "construction", "construction"], // nav
+      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, Fichiers, construction ×4",
     );
     // </c5:inscriptions>
     assert.equal(h.cockpit.wiring.routes.length, groupes.length, "une fonction de routes câblée par inscription");

@@ -62,6 +62,9 @@ import { EQ_MODULES } from "./wiring-eq.ts";
 import { SECOND_READING_CATALOG_ID } from "./shared/construction-constants.ts";
 import type { FlowStep } from "./shared/team-types.ts";
 // </gf4:v106> fin
+// <nav:v106>
+import { FICHIERS_ROUTES } from "./shared/fichiers-regles.ts";
+// </nav:v106>
 
 const OC = "/workspace";
 /** Nom créable par une IA, valide sous NTFS : opencode 1.18.30 l'ouvrirait en « /secret ». */
@@ -1877,3 +1880,60 @@ describe("croisements v106 <gf5:v106> : grande fusion × 1.0.6 (sentinelle compl
   });
 });
 // </gf5:v106> fin
+
+// <nav:v106>
+// Onglet « Fichiers » × 1.0.6 (fiche-fusion-v106 §8 et §9.3, décisions D14 (b) et A22 ; rang de fusion GFN). L'onglet ne décode rien
+// et n'appelle jamais opencode : un dossier %XX (ici le nom même de la faille mesurée par A22) y est listé et lisible comme un dossier
+// ordinaire, sans aucune requête vers les deux instances ni ligne `usage` ; il n'est JAMAIS proposé pour une conversation (absent de
+// /api/projects, refusé en 403 forbidden-directory par le proxy et /api/chat/resolve avant toute requête : PERCENT_ESCAPE
+// d'isAllowedDirectory). Le dossier piège de R106-a (« secret » dans son nom) reste protégé par son nom, sans accès disque.
+const DOSSIER_XX_NAV = "a%2F..%2F..%2Fhome%2Fnode%2F.local%2Fshare%2Fopencode";
+
+describe("croisements v106, section NAV : onglet « Fichiers » × 1.0.6 (fiche §8, D14 (b))", () => {
+  it("dossier %XX listé et lisible dans « Fichiers », zéro requête aux deux instances ni ligne usage ; jamais proposé pour une conversation", async (t) => {
+    const { h, root } = await start(t, { modules: "tous", equipes: "tous", omo: true });
+    assert.ok(h.omo, "harnais avec la salle (coupée)");
+    fs.mkdirSync(path.join(root, DOSSIER_XX_NAV));
+    fs.writeFileSync(path.join(root, DOSSIER_XX_NAV, "a.txt"), `lu dans Fichiers${NL}`);
+    const fichiers = (route: keyof typeof FICHIERS_ROUTES, body: Record<string, string>) =>
+      h.call("POST", FICHIERS_ROUTES[route], { headers: h.headers.mutating, body });
+    const avant = { principale: h.fake.requests.length, salle: h.omo.fake.requests.length };
+    const lignes = usageRows(h);
+
+    const racine = await fichiers("dossier", { projet: "", chemin: "" });
+    assert.equal(racine.status, 200, racine.body);
+    const entrees = racine.json<{ entrees: Array<{ nom: string; type: string }> }>().entrees;
+    assert.equal(entrees.find((e) => e.nom === DOSSIER_XX_NAV)?.type, "dossier", "dossier %XX listé sous « Tout le workspace »");
+    assert.equal(entrees.some((e) => e.nom === TRAP), false, "dossier piège de R106-a : protégé par son nom, jamais listé");
+    for (const [projet, chemin] of [["", `${DOSSIER_XX_NAV}/a.txt`], [DOSSIER_XX_NAV, "a.txt"]] as const) {
+      const lu = await fichiers("contenu", { projet, chemin });
+      assert.equal(lu.status, 200, `${projet || "racine"} : ${lu.body}`);
+      assert.equal(lu.json<{ texte: string }>().texte, "lu dans Fichiers");
+    }
+    const protege = await fichiers("contenu", { projet: "", chemin: `${TRAP}/a.txt` });
+    assert.deepEqual([protege.status, protege.json<{ error: string }>().error], [403, "protege"]);
+    assert.deepEqual(h.fake.requests.slice(avant.principale).map((r) => `${r.method} ${r.pathname}`), [], "aucune requête vers opencode");
+    assert.deepEqual(h.omo.fake.requests.slice(avant.salle).map((r) => `${r.method} ${r.pathname}`), [], "aucune requête vers la salle");
+    assert.equal(usageRows(h), lignes, "rien de facturé");
+
+    // Jamais proposé pour une conversation : absent des projets (projects.list() écarte les noms %XX), refusé avant toute requête.
+    const projets = await h.call("GET", "/api/projects", { headers: h.headers.authed });
+    assert.equal(projets.status, 200, projets.body);
+    const noms = projets.json<Array<{ name: string }>>().map((p) => p.name);
+    assert.ok(noms.includes("proj"), `témoin : projet ordinaire proposé (${noms.join(", ")})`);
+    assert.deepEqual(noms.filter((n) => PERCENT.test(n)), [], "aucun projet %XX proposé");
+    const depuis = h.fake.requests.length;
+    assertForbidden(
+      await h.call("POST", `/api/oc/session?directory=${q(dirOf(DOSSIER_XX_NAV))}`, { headers: h.headers.mutating, body: { title: "Depuis Fichiers" } }),
+      "POST /session (dossier %XX de l'onglet)",
+    );
+    assertForbidden(
+      await h.call("POST", "/api/chat/resolve", { headers: h.headers.mutating, body: { directory: dirOf(DOSSIER_XX_NAV), agent: "build" } }),
+      "POST /api/chat/resolve (dossier %XX de l'onglet)",
+    );
+    assert.deepEqual(h.fake.requests.slice(depuis).map((r) => `${r.method} ${r.pathname}`), [], "aucune requête vers opencode");
+    assertSentinel(h, "NAV");
+    assert.deepEqual(h.omo.fake.instancesHors(), [], "aucune instance de la salle hors de /workspace");
+  });
+});
+// </nav:v106>
