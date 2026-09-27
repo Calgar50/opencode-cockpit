@@ -8,8 +8,10 @@
 // requête SQL), jamais le texte. Une erreur n'arrête pas le processeur.
 // Salle OMO (itération « 3s », L3s-a ; U2, D-3d-30, P11) : la même dérivation, pour `instance = "omo"`, est inscrite AUSSI sur le
 // processeur de l'instance de la salle (section [3d] d'app-factory.ts, seulement si cette instance existe : salle coupée, rien ne
-// change). Cloison des instances : la session qui confie le travail ET sa racine doivent être suivies par l'instance du processeur
-// (`sessions.instance`) — un événement de la salle n'est jamais appliqué à une racine principale, ni l'inverse. Seul le texte de
+// change). Cloison des instances : la session qui confie le travail doit être suivie par l'instance du processeur
+// (`sessions.instance`), et sa racine aussi dès qu'elle est suivie — un événement de la salle n'est jamais appliqué à une racine
+// principale, ni l'inverse. Une racine encore provisoire (sans ligne dans `sessions`) n'empêche pas l'écriture : la session qui
+// confie fait foi, et la ligne est retrouvée par l'arbre après rattachement, comme sur l'instance principale. Seul le texte de
 // `state.input.prompt` est gardé, celui que l'assistant a écrit en confiant le travail : une partie qu'un crochet de l'extension
 // ajoute ensuite au premier message de l'enfant n'est jamais lue ici (L25a n'en garde que les identifiants et le drapeau `hook`),
 // ce que dit la phrase `copie` de « Revoir » (copie gardée au moment de l'envoi). Mêmes bornes, même masquage, même purge.
@@ -64,8 +66,11 @@ export function createConsignesDerivation(deps: Salle3dDeps, instance: SessionIn
         callId = appel;
         const rootId = deps.sessions.rootOf(parent);
         if (rootId === null) return;
-        // P11 (L3s-a) : la session qui confie et sa racine sont de l'instance de ce processeur, lue dans `sessions`, sinon rien.
-        if (deps.sessions.instanceOf(parent) !== instance || deps.sessions.instanceOf(rootId) !== instance) return;
+        // P11 (L3s-a) : la session qui confie est de l'instance de ce processeur, lue dans `sessions`, sinon rien. Sa racine aussi
+        // quand elle est suivie ; une racine PROVISOIRE (session suivie avant sa mère, racine encore sans ligne : null) ne refuse
+        // pas l'écriture, que consignes-store.ts retrouve par l'arbre après rattachement (D-3d-30 ; relecture « 3s-vague-5 »).
+        const instanceRacine = deps.sessions.instanceOf(rootId);
+        if (deps.sessions.instanceOf(parent) !== instance || (instanceRacine !== null && instanceRacine !== instance)) return;
         store.enregistrer({ rootId, parent, enfant, callId: appel, brut: prompt, at: eventTime(event.id, Date.now()) });
       } catch (err: unknown) {
         deps.log.warn("consignes gardées : enregistrement abandonné", { callId, erreur: nomErreur(err) });

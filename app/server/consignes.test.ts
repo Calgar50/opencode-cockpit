@@ -514,6 +514,88 @@ describe("consignes gardées : capture (faux opencode, processeur réel)", () =>
     h.assertNoGlobalRestart();
   });
 
+  // Relecture « 3s-vague-5 » : la garde P11 de L3s-a lisait aussi l'instance de la racine PROVISOIRE (session connue avant sa mère,
+  // mère encore inconnue : instanceOf = null) et abandonnait la consigne, alors que D-3d-30 et consignes-store.ts prévoient
+  // l'écriture sous cette racine, retrouvée par l'ARBRE (TREE_SQL) après rattachement. La session qui confie le travail est
+  // suivie par l'instance du processeur : c'est elle qui fait foi tant que la racine n'est pas connue.
+  it("racine provisoire (session suivie avant sa mère) : le processeur principal garde la consigne, retrouvée par la VRAIE racine après rattachement", async (t: TestContext) => {
+    const h = await startCockpit(t);
+    h.sessions.upsert(session(ROOT));
+    h.sessions.upsert(session(PETITE_FILLE, FILLE)); // racine provisoire : FILLE, que le cockpit ne suit pas encore
+    assert.equal(h.sessions.rootOf(PETITE_FILLE), FILLE, "racine provisoire avant rattachement");
+    assert.equal(h.sessions.instanceOf(FILLE), null, "la racine provisoire n'a aucune ligne dans sessions");
+    const vus: string[] = [];
+    h.processor.addDerivation({
+      name: "temoin-consignes",
+      onEvent: (e) => void vus.push(String((e.payload.properties as { part?: { callID?: string } }).part?.callID)),
+    });
+    const prompt = "[synthétique] consigne confiée sous une racine provisoire";
+    evenementTask(h, { parent: PETITE_FILLE, callId: "call_racine_provisoire", enfant: "ses_arriere_petite_fille", prompt });
+    await until(() => vus.includes("call_racine_provisoire"), 5_000);
+    assert.deepEqual(
+      lignes(h).map((l) => [l.root_id, l.parent_session_id, l.enfant_session_id, l.call_id, l.texte]),
+      [[FILLE, PETITE_FILLE, "ses_arriere_petite_fille", "call_racine_provisoire", prompt]],
+      "écrite sous la racine provisoire, comme le prévoit consignes-store.ts",
+    );
+
+    h.sessions.upsert(session(FILLE, ROOT)); // rattachement
+    assert.equal(h.sessions.rootOf(PETITE_FILLE), ROOT);
+    const store = createConsignesStore(h.db);
+    assert.equal(store.lire(ROOT, "call_racine_provisoire")?.texte, prompt, "« Revoir » la retrouve par la vraie racine");
+    assert.deepEqual(store.parEnfant(ROOT, "ses_arriere_petite_fille").map((c) => c.callId), ["call_racine_provisoire"]);
+    h.assertNoGlobalRestart();
+  });
+
+  it("racine provisoire posée par ensure (GET de la mère en échec) : la dérivation principale garde la consigne sans aucune requête, retrouvée après rattachement", async () => {
+    const db = openMemoryDb();
+    const demandes: string[] = [];
+    // Faux client : connaît la petite-fille, échoue sur sa mère. ensure() la suit donc sous la racine provisoire FILLE.
+    const client = {
+      request: async (method: string, pathname: string): Promise<unknown> => {
+        demandes.push(`${method} ${pathname}`);
+        if (pathname === `/session/${PETITE_FILLE}`) return session(PETITE_FILLE, FILLE);
+        throw new Error("[synthétique] opencode injoignable");
+      },
+    } as unknown as OpencodeClient;
+    const sessions = new SessionTracker(db, client);
+    sessions.upsert(session(ROOT));
+    const suivie = await sessions.ensure(PETITE_FILLE);
+    assert.equal(suivie?.root_id, FILLE, "racine provisoire : la mère n'a pas pu être lue");
+    assert.equal(suivie?.instance, "principale");
+    assert.equal(sessions.instanceOf(FILLE), null);
+    assert.deepEqual(demandes, [`GET /session/${PETITE_FILLE}`, `GET /session/${FILLE}`]);
+
+    const espion = journalEspion();
+    const derivation = createConsignesDerivation({ db, log: espion.log, sessions } as unknown as Parameters<typeof createConsignesDerivation>[0]);
+    assert.equal(derivation.name, CONSIGNES_DERIVATION);
+    const prompt = "[synthétique] consigne confiée après un ensure incomplet";
+    derivation.onEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            type: "tool",
+            tool: "task",
+            sessionID: PETITE_FILLE,
+            callID: "call_ensure_provisoire",
+            state: { status: "running", input: { prompt }, metadata: { sessionId: "ses_arriere_petite_fille" } },
+          },
+        },
+      },
+    } as never);
+    assert.equal(demandes.length, 2, "la dérivation ne part jamais en réseau");
+    assert.deepEqual(espion.lignes, [], "rien de journalisé");
+    assert.deepEqual(
+      (db.prepare("SELECT root_id, parent_session_id, call_id FROM revoir_consignes").all() as Array<Record<string, string>>).map((l) => [l.root_id, l.parent_session_id, l.call_id]),
+      [[FILLE, PETITE_FILLE, "call_ensure_provisoire"]],
+    );
+
+    sessions.upsert(session(FILLE, ROOT)); // rattachement
+    const store = createConsignesStore(db);
+    assert.equal(store.lire(ROOT, "call_ensure_provisoire")?.texte, prompt, "retrouvée par la vraie racine");
+    db.close();
+  });
+
   it("seul l'envoi d'une consigne est gardé : sans enfant, hors de l'état `running`, ou hors de l'outil `task`, rien n'est écrit", async (t: TestContext) => {
     const h = await startCockpit(t);
     h.db.prepare("INSERT INTO sessions (id, parent_id, root_id, created_at, updated_at) VALUES (?, ?, ?, 1, 1)").run(ROOT, null, ROOT);
@@ -721,6 +803,42 @@ describe("consignes gardées : salle branchée (L3s-a)", () => {
         [SALLE_RACINE, "call_temoin_s"],
       ].sort(),
     );
+  });
+
+  it("racine provisoire (relecture « 3s-vague-5 ») : le processeur de la SALLE garde la consigne d'un parent suivi « omo », retrouvée par la vraie racine ; P11 tenu dans les deux sens quand la racine est inconnue", async (t: TestContext) => {
+    const SALLE_FILLE = "ses_salle_fille_3sv5";
+    const SALLE_PETITE_FILLE = "ses_salle_petite_fille_3sv5";
+    const PRINCIPALE_FILLE = "ses_principale_fille_3sv5";
+    const PRINCIPALE_PETITE_FILLE = "ses_principale_petite_fille_3sv5";
+    const h = await startCockpit(t, { omo: true });
+    h.sessions.upsert(session(SALLE_RACINE), undefined, { instance: "omo" });
+    h.sessions.upsert(session(SALLE_PETITE_FILLE, SALLE_FILLE), undefined, { instance: "omo" }); // racine provisoire de la salle
+    h.sessions.upsert(session(PRINCIPALE));
+    h.sessions.upsert(session(PRINCIPALE_PETITE_FILLE, PRINCIPALE_FILLE)); // racine provisoire de l'instance principale
+    assert.equal(h.sessions.rootOf(SALLE_PETITE_FILLE), SALLE_FILLE);
+    assert.equal(h.sessions.instanceOf(SALLE_FILLE), null);
+    assert.equal(h.sessions.instanceOf(PRINCIPALE_FILLE), null);
+
+    // P11, racine inconnue : la session qui confie décide. Le processeur principal n'écrit jamais pour une session de la salle…
+    const vus: string[] = [];
+    h.processor.addDerivation({ name: "temoin-consignes", onEvent: (e) => void vus.push(String((e.payload.properties as { part?: { callID?: string } }).part?.callID)) });
+    evenementTask(h, { parent: SALLE_PETITE_FILLE, callId: "call_prov_croise_1", enfant: "ses_x5", prompt: "[synthétique] croisée sous une racine provisoire 1" });
+    await until(() => vus.includes("call_prov_croise_1"), 5_000);
+    // … ni la salle pour une session principale.
+    await tacheSalle(h, { id: "evt_3sv5_croise", parent: PRINCIPALE_PETITE_FILLE, callId: "call_prov_croise_2", enfant: "ses_x6", prompt: "[synthétique] croisée sous une racine provisoire 2" });
+    assert.deepEqual(lignes(h), [], "aucune consigne croisée, même sous une racine inconnue");
+
+    const prompt = "[synthétique] consigne de la salle sous une racine provisoire";
+    await tacheSalle(h, { id: "evt_3sv5_salle", parent: SALLE_PETITE_FILLE, callId: "call_salle_provisoire", enfant: "ses_salle_arriere_3sv5", prompt });
+    assert.deepEqual(
+      lignes(h).map((l) => [l.root_id, l.parent_session_id, l.enfant_session_id, l.call_id]),
+      [[SALLE_FILLE, SALLE_PETITE_FILLE, "ses_salle_arriere_3sv5", "call_salle_provisoire"]],
+      "gardée par le processeur de la salle sous la racine provisoire",
+    );
+    h.sessions.upsert(session(SALLE_FILLE, SALLE_RACINE), undefined, { instance: "omo" }); // rattachement
+    assert.equal(h.sessions.rootOf(SALLE_PETITE_FILLE), SALLE_RACINE);
+    assert.equal(createConsignesStore(h.db).lire(SALLE_RACINE, "call_salle_provisoire")?.texte, prompt, "retrouvée par la vraie racine de la salle");
+    assert.equal(createConsignesStore(h.db).lire(PRINCIPALE, "call_salle_provisoire"), null, "jamais par une racine principale");
   });
 
   it("inscription : aucune salle coupée ; une fois sur le processeur de la salle quand elle existe, jamais sur le principal ; retirée par close()", async (t: TestContext) => {
