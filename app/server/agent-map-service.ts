@@ -11,6 +11,11 @@
 //   délégation demandée, note de profondeur en Avancé seulement) est porté par deriveAgentMap.
 // - Profondeur : `subagent_depth` absent, illisible ou hors de portée = 1 (défaut d'opencode) ; 0 est traité comme 1 (report
 //   MX-EQ §4.2 : la valeur n'a pas été vérifiée dans les sources d'opencode, et 1 est la lecture prudente).
+// <l39o:salle-omo>
+// - Onglet « Salle OMO » (L39o, grande fusion F2 · V2) : buildSalle lit les agents de l'instance de la SALLE par sa propre
+//   recherche d'agents (c11.instances.omo.lookup), en lecture seule, rôles par clé (shared/agent-map-omo.ts) ; mode Avancé
+//   seulement (403 mode-avance), salle coupée = 409 salle-coupee, dossier contrôlé par l'instance de la salle avant tout envoi.
+// </l39o:salle-omo>
 import type { DatabaseSync } from "node:sqlite";
 import type { EqContext, EqModule } from "./contracts-eq.ts";
 import { subagentDepth } from "./diagnostics-11.ts";
@@ -31,6 +36,9 @@ import { planSteps } from "./shared/team-limits.ts";
 import type { Flow, FlowStep } from "./shared/team-types.ts";
 import { INTERNAL_AGENTS } from "./studio.ts";
 import { createTeamStore } from "./team-store.ts";
+// <l39o:salle-omo>
+import { type AgentMapSalleResult, vueDeLaSalle } from "./shared/agent-map-omo.ts";
+// </l39o:salle-omo>
 
 /**
  * Élément demandé par la route (?element=) : identifiant de nœud de mapNodeId (L39a), jamais un nom seul. MÊME règle que
@@ -61,9 +69,34 @@ export interface AgentMapQuery {
   element: string | null;
 }
 
+// <l39o:salle-omo>
+/**
+ * Onglet « Salle OMO » (L39o ; spéc. §5.2 l.892, P11, P2 ; fiche-fusion-v106 §7) : refus, dans l'ordre où ils sont décidés, tous
+ * AVANT toute lecture de la salle. `mode-avance` (403) : mode Simple ; `salle-coupee` (409) : `c11.instances.omo` nul, donc tant
+ * que SALLE_OUVERTE est faux ou COCKPIT_OMO=off ; `forbidden-directory` (403) : dossier refusé par le contrôle de l'instance de
+ * la salle ; `opencode-injoignable` (502) : agents de la salle illisibles.
+ */
+export type AgentMapSalleRefusal = {
+  ok: false;
+  status: 403 | 409 | 502;
+  code: "mode-avance" | "salle-coupee" | "forbidden-directory" | "opencode-injoignable";
+};
+
+export type AgentMapSalleOutcome = { ok: true; result: AgentMapSalleResult } | AgentMapSalleRefusal;
+
+export interface AgentMapSalleQuery {
+  /** Dossier de la conversation ; null : lecture globale de la salle (aucun dossier transmis). */
+  directory: string | null;
+}
+// </l39o:salle-omo>
+
 export interface AgentMapService {
   /** Carte du dossier demandé. N'écrit rien, nulle part. */
   build(query: AgentMapQuery): Promise<AgentMapOutcome>;
+  // <l39o:salle-omo>
+  /** Agents de la Salle OMO, rôles lus par clé (L39o). N'écrit rien, nulle part ; en mode Simple, ne demande rien à la salle. */
+  buildSalle(query: AgentMapSalleQuery): Promise<AgentMapSalleOutcome>;
+  // </l39o:salle-omo>
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -238,6 +271,29 @@ export function createAgentMapService(eq: EqContext): AgentMapService {
       };
       return { ok: true, result: deriveAgentMap(input) };
     },
+    // <l39o:salle-omo>
+    async buildSalle({ directory }) {
+      // P2, P11 : la salle est réservée au mode Avancé, et le mode Simple ne lui envoie rien — refus AVANT toute lecture.
+      if (c11.settings.get().ui.mode !== "avance") return { ok: false, status: 403, code: "mode-avance" };
+      // Instance lue à l'appel (routeur posé par app-factory) : null tant que la salle est coupée. Un montage sans routeur (tests
+      // de cadre) se lit comme une salle coupée, ainsi que le dit Cockpit11Deps.instances.
+      const salle = c11.instances?.omo ?? null;
+      if (salle === null) return { ok: false, status: 409, code: "salle-coupee" };
+      // fiche-fusion-v106 §7 : un dossier n'est transmis à la recherche d'agents de la salle qu'après le contrôle de SON instance
+      // (délégation à projects.isAllowedDirectory : dossier du workspace, aucune séquence %XX) ; sans dossier, lecture globale.
+      if (directory !== null && !salle.isAllowedDirectory(directory)) return { ok: false, status: 403, code: "forbidden-directory" };
+      let snapshot;
+      try {
+        // Recherche d'agents de la salle (son client : GET /agent et GET /command), en lecture seule ; jamais celle de l'instance
+        // principale (P11).
+        snapshot = await salle.lookup.get(directory);
+      } catch (err) {
+        c11.log.warn("carte des assistants : agents de la salle illisibles", { error: errorMessage(err) });
+        return { ok: false, status: 502, code: "opencode-injoignable" };
+      }
+      return { ok: true, result: vueDeLaSalle(snapshot.agents.map((agent) => agent.name), INTERNAL_AGENTS) };
+    },
+    // </l39o:salle-omo>
   };
 }
 

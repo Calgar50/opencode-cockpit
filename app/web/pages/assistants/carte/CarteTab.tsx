@@ -11,6 +11,12 @@
 // - « Vue d'ensemble » (spéc. §5.2 l.890) : LIVRÉE par l'itération 5b (L48), en mode AVANCÉ seulement. En mode Simple, elle
 //   n'est ni proposée ni montée — aucun libellé ne l'annonce (P3). Sous 900 px, la Liste reste le défaut (overview.css).
 // </c5:vue-ensemble>
+// <l39o:salle-omo>
+// - Onglet « Salle OMO » (spéc. §5.2 l.892 ; plan it4, fiche L39o) : en mode AVANCÉ seulement, deux boutons (ChoixCarte)
+//   choisissent la carte montrée — celle de l'instance principale ou les agents de la salle (CarteSalleOmo.tsx). En mode Simple,
+//   l'onglet n'est ni proposé ni monté, la carte de l'instance principale est montrée, et rien n'est demandé à la salle (P11).
+//   Les boutons gardent leur place (deuxième enfant de l'onglet) dans les deux rendus : le focus reste sur le bouton pressé.
+// </l39o:salle-omo>
 // - Élément : lu dans l'adresse, choisi par le sélecteur ou par un clic sur un nœud ; un élément inconnu de la carte ne vide
 //   jamais la vue (repli sur « Vous »).
 // Aucun texte écrit ici : tout vient d'agent-map-texts.ts (T4t). Aucune animation, aucun raccourci clavier, aucun focus pris.
@@ -29,6 +35,9 @@ import { TEXTES as TEXTES_C5 } from "../../../../server/shared/construction-text
 import { OverviewMap } from "./OverviewMap.tsx";
 // </c5:vue-ensemble>
 import "./carte.css";
+// <l39o:salle-omo>
+import { CarteSalleOmo, ChoixCarte } from "./CarteSalleOmo.tsx";
+// </l39o:salle-omo>
 
 const P = TEXTES.partout;
 // <c5:vue-ensemble>
@@ -98,6 +107,12 @@ export function CarteTab({ directory, advanced, element }: CarteTabProps) {
   const vue: Vue = vueChoisie === "ensemble" && !advanced ? "centree" : vueChoisie;
   // </c5:vue-ensemble>
   const [recherche, setRecherche] = useState("");
+  // <l39o:salle-omo>
+  // Onglet CHOISI par ses boutons ; MONTRÉ en Avancé seulement : si le mode repasse en Simple, la carte de l'instance principale
+  // revient, et CarteSalleOmo, démonté, ne demande plus rien à la salle. Aucune constante, aucun réglage : le mode suffit.
+  const [salleChoisie, setSalle] = useState(false);
+  const salleMontree = advanced && salleChoisie;
+  // </l39o:salle-omo>
 
   // Un dossier ou un élément qui change repart d'une recherche vide : la liste du sélecteur suit toujours ce qui est affiché.
   useEffect(() => setRecherche(""), [directory]);
@@ -109,12 +124,30 @@ export function CarteTab({ directory, advanced, element }: CarteTabProps) {
 
   const choisir = (id: string) => openAssistants({ mode: "carte", element: id });
 
+  // <l39o:salle-omo>
+  // Onglet « Salle OMO » montré (Avancé seulement) : titre de la carte, les mêmes boutons au même rang, puis les agents de la salle.
+  if (salleMontree) {
+    return (
+      <div className="ca-onglet stack loose">
+        <header className="ca-entete">
+          <h2 className="ca-titre">{P.titre}</h2>
+        </header>
+        <ChoixCarte salle={true} onChoisir={setSalle} />
+        <CarteSalleOmo directory={directory} />
+      </div>
+    );
+  }
+  // </l39o:salle-omo>
+
   return (
     <div className="ca-onglet stack loose">
       <header className="ca-entete">
         <h2 className="ca-titre">{P.titre}</h2>
         <p className="ca-intro">{P.intro}</p>
       </header>
+      {/* <l39o:salle-omo> */}
+      {advanced ? <ChoixCarte salle={false} onChoisir={setSalle} /> : null}
+      {/* </l39o:salle-omo> */}
       <CarteComprendre titleId={`${baseId}-comprendre`} />
 
       {loading && data === null ? <Spinner label={P.titre} /> : null}
