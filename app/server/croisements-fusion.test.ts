@@ -4,6 +4,8 @@
 // (modules 1.1 « tous », les cinq modules d'équipes réels, option `omo` du harnais : seconde instance réelle, salle coupée).
 //   1. équipes × autonomie : `doom_loop` d'une étape laissé à l'utilisateur dans une racine « Autonome avec contrôle » ; injection
 //      sans ligne `autonomy_requests` ; plafond d'autonomie aveugle au coût d'une équipe ; « Plan d'abord » ; ACTIVATION_OUVERTE ;
+//   1 bis. équipes × garde des délégations lancées sans demande (L1e) : le coût des étapes n'entre pas dans la demande qui a
+//      compté une délégation (relecture de F2, vague 0) ; témoin : une vraie délégation au-delà du plafond arrête toujours l'arbre ;
 //   2. équipes × salle : racine de la salle refusée (409 `instance-salle`, zéro requête aux deux instances) ; aucun événement de la
 //      salle ne parvient aux équipes ; verrou sans effet sur le proxy de la salle ; cloison P11 ; Simple ; jamais `opencode-omo` ;
 //   3. équipes × 3D : « différé = direct » sur `equipe-avis.jsonl`, rôle `etape` dessiné en délégation, messages injectés rendus
@@ -450,6 +452,101 @@ describe("croisements-fusion : équipes × autonomie (spéc. §4.11 l.772)", () 
     }
   });
 });
+
+// === 1 bis. Équipes × garde des délégations lancées sans demande (L1e) =============================================================
+// <gf3:plafond-delegations> début : relecture de F2, vague 0. Une demande qui a compté une délégation lancée sans demande reste
+// ouverte jusqu'à l'envoi suivant (delegation-watch.ts) ; un lancement d'équipe n'écrit aucune ligne chat_turns. Le coût des étapes
+// ne doit pas entrer dans le coût de cette demande : l'équipe a son propre plafond d'arrêt (même famille que <gf3:plafond-autonomie>).
+
+/** Délégation lancée sans demande (agent du Studio `task: allow`, spéc. §3.14) : un sous-agent au coût donné, compté par L1e. */
+const delegationSansDemande = (description: string, cost: number): FakeToolScript => ({
+  tool: "task",
+  input: { description, prompt: `[synthétique] Consigne : ${description}`, subagent_type: "general" },
+  ask: { permission: "task", patterns: ["general"], metadata: { description, subagent_type: "general" } },
+  agentRules: [{ permission: "task", pattern: "*", action: "allow" }],
+  child: { agent: "general", workMs: 20, cost },
+});
+
+const evenementsDe = (h: CockpitHarness, type: string): unknown[] => h.cockpitEvents().filter((e) => e.type === type).map((e) => e.data);
+
+/** Arrêts de l'arbre décidés par la garde des délégations (stop-tree : conversation.arretee {cause: plafond-delegations}). */
+const arretsDelegations = (h: CockpitHarness, rootId: string): unknown[] =>
+  evenementsDe(h, "conversation.arretee").filter((data) => isRecord(data) && data.rootId === rootId && data.cause === "plafond-delegations");
+
+const coutDesEtapes = (h: CockpitHarness, rootId: string): number =>
+  (h.db.prepare("SELECT COALESCE(SUM(cost), 0) AS c FROM usage u JOIN sessions s ON s.id = u.session_id WHERE s.purpose = 'equipe' AND u.root_id = ?").get(rootId) as { c: number }).c;
+
+/** Conversation dont la demande a lancé une délégation sans demande : racine et sous-agent au repos, coût du sous-agent enregistré. */
+async function demandeAvecDelegation(h: Banc, titre: string, cout: number): Promise<FakeSession> {
+  const root = await conversation(h, titre);
+  await envoyer(h, root, [delegationSansDemande("[synthétique] Analyse", cout)]);
+  await within(h.fake.settled(root.id), "racine au repos", 5_000);
+  const [enfant, ...autres] = h.sessions.descendants(root.id);
+  assert.ok(enfant, "sous-agent lancé sans demande, suivi");
+  assert.deepEqual(autres, [], "une seule délégation");
+  await within(h.fake.settled(enfant), "sous-agent au repos", 5_000);
+  assert.equal(h.sessions.get(enfant)?.purpose, "chat", "travail délégué par l'IA (usage chat) : compté par la garde");
+  await until(() => h.ledger.spentSince(root.id, 0) >= cout - 1e-9, 5_000);
+  return root;
+}
+
+/** Équipe « Revue SQL sur réplica » lancée dans la conversation, étapes au coût donné ; rend la vue dès que le lancement est fini. */
+async function equipeDans(h: Banc, rootId: string, coutEtape: number): Promise<TeamRunView> {
+  await installer(h);
+  scripterEtapes(h, "[synthétique] Constat de l'étape.", coutEtape);
+  const estimation = await estimer(h, rootId);
+  const { runId } = await lancer(h, estimation.estimateSha256, { rootId });
+  return attendre(h, runId, (v) => v.state !== "preparation" && v.state !== "en-cours" && !v.state.startsWith("attente"), "équipe finie", 15_000);
+}
+
+describe("croisements-fusion : équipes × garde des délégations lancées sans demande (L1e, spéc. §3.14, §4.11)", () => {
+  it("délégation lancée sans demande, puis équipe dans la même conversation (plafond par demande à 0,05 $, étapes à 0,02 $) : l'équipe va au bout, aucun plafond des délégations, aucun arrêt de l'arbre", async (t) => {
+    const h = await banc(t, { settings: { budget: { delegation: { maxUsdPerRequest: 0.05, maxPerRequest: 5 } } } });
+    const root = await demandeAvecDelegation(h, "Délégation puis équipe", 0.001);
+    assert.deepEqual([evenementsDe(h, "delegation.plafond"), arretsDelegations(h, root.id)], [[], []], "aucun plafond avant l'équipe");
+
+    const finie = await equipeDans(h, root.id, 0.02);
+    assert.equal(finie.state, "terminee", `équipe ${finie.state} (cause ${String(finie.cause)}) : la garde des délégations a compté le coût des étapes`);
+    // Archives rafraîchies, instance au calme : un usage.updated tardif aurait déjà été vu par la garde.
+    await auRepos(h, root.id);
+    // Sans l'exclusion, le coût de la demande aurait dépassé le plafond : 0,001 $ + 4 × 0,02 $ > 0,05 $.
+    const etapes = coutDesEtapes(h, root.id);
+    assert.ok(etapes >= 0.08 - 1e-9, `coût des étapes enregistré : ${etapes}`);
+    assert.ok(h.ledger.spentSince(root.id, 0) > 0.05, "le coût de tout l'arbre dépasse le plafond par demande");
+    assert.deepEqual(evenementsDe(h, "delegation.plafond"), [], "plafond des délégations atteint par le coût des étapes");
+    assert.deepEqual(arretsDelegations(h, root.id), [], "arbre arrêté par la garde des délégations pendant l'équipe");
+    assert.ok(finie.steps.every((step) => step.state === "terminee"), `étapes : ${finie.steps.map((s) => `${s.stepId}=${s.state}`).join(", ")}`);
+    h.assertNoGlobalRestart();
+    assertNoLooseRules(h);
+  });
+
+  it("réglages par défaut (1,00 $ par demande) : délégation à 0,95 $, puis équipe à 0,02 $ par étape : l'équipe va au bout, aucun arrêt", async (t) => {
+    const h = await banc(t);
+    assert.equal(h.settings.get().budget.delegation.maxUsdPerRequest, 1, "plafond par demande par défaut");
+    const root = await demandeAvecDelegation(h, "Délégation coûteuse puis équipe", 0.95);
+    assert.deepEqual([evenementsDe(h, "delegation.plafond"), arretsDelegations(h, root.id)], [[], []], "aucun plafond avant l'équipe");
+
+    const finie = await equipeDans(h, root.id, 0.02);
+    assert.equal(finie.state, "terminee", `équipe ${finie.state} (cause ${String(finie.cause)}) : la garde des délégations a compté le coût des étapes`);
+    // Archives rafraîchies, instance au calme : un usage.updated tardif aurait déjà été vu par la garde.
+    await auRepos(h, root.id);
+    assert.ok(h.ledger.spentSince(root.id, 0) >= 1, "le coût de tout l'arbre atteint le plafond par demande");
+    assert.deepEqual(evenementsDe(h, "delegation.plafond"), []);
+    assert.deepEqual(arretsDelegations(h, root.id), []);
+    h.assertNoGlobalRestart();
+  });
+
+  it("témoin : une délégation lancée sans demande qui dépasse seule le plafond par demande arrête toujours l'arbre (delegation.plafond « cout », plafond-delegations)", async (t) => {
+    const h = await banc(t, { settings: { budget: { delegation: { maxUsdPerRequest: 0.05, maxPerRequest: 5 } } } });
+    const root = await conversation(h, "Délégation au-delà du plafond");
+    await envoyer(h, root, [delegationSansDemande("[synthétique] Analyse coûteuse", 0.06)]);
+    const arret = await until(() => arretsDelegations(h, root.id)[0], 10_000);
+    assert.deepEqual(arret, { rootId: root.id, cause: "plafond-delegations", unconfirmed: [] });
+    assert.deepEqual(evenementsDe(h, "delegation.plafond"), [{ rootId: root.id, kind: "cout" }]);
+    h.assertNoGlobalRestart();
+  });
+});
+// </gf3:plafond-delegations> fin
 
 // === 2. Équipes × salle =============================================================================================================
 

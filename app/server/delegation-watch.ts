@@ -22,7 +22,8 @@
 // - Demande : du dernier envoi du proxy (ligne chat_turns de la racine, écrite avant le relais) à l'envoi suivant ; seul un envoi
 //   remet les compteurs à zéro, jamais un message produit par l'IA. Sans envoi connu : fenêtre ouverte à la première délégation vue.
 // - Plafonds (budget.delegation, lus à chaque décision) : plus de maxPerRequest délégations comptées → « nombre » ; coût de la
-//   demande (ledger.spentSince : racine, enfants, contrôles, étapes) non nul et au moins égal à maxUsdPerRequest → « cout ».
+//   demande (ledger.spentSinceSansEtapes : racine, enfants, contrôles ; sans les étapes d'une équipe, qui ont leur propre plafond
+//   d'arrêt) non nul et au moins égal à maxUsdPerRequest → « cout ».
 //   Le coût n'est surveillé que pour une demande qui compte au moins une délégation lancée sans demande : dès qu'elle est
 //   comptée, puis à chaque usage.updated (une étape close = un message : mesure MX1 §7). Dépassement annoncé : l'appel en vol de
 //   chaque session occupée ; l'appel du titre n'est porté par aucun message (MX1 §5).
@@ -142,7 +143,7 @@ interface RequestWatch {
   rootId: string;
   /** « envoi:<chat_turns.id> », ou « sans-envoi ». */
   request: string;
-  /** Début de la demande (ms) : borne de ledger.spentSince. */
+  /** Début de la demande (ms) : borne de ledger.spentSinceSansEtapes. */
   since: number;
   counted: Set<string>;
   notified: Set<DelegationCapKind>;
@@ -157,7 +158,7 @@ export interface DelegationWatchDeps {
   db: DatabaseSync;
   sessions: Pick<SessionTracker, "get">;
   settings: Pick<SettingsStore, "get">;
-  ledger: Pick<Ledger, "spentSince">;
+  ledger: Pick<Ledger, "spentSinceSansEtapes">;
   gate: Pick<PermissionGate, "emitted">;
   hub: Pick<EventHub, "cockpit">;
   log: Logger;
@@ -249,7 +250,12 @@ export function createDelegationWatch(deps: DelegationWatchDeps, options: Delega
 
   const spentOf = (watch: RequestWatch): number | null => {
     try {
-      return deps.ledger.spentSince(watch.rootId, watch.since);
+      // <gf3:plafond-delegations> début : une demande qui a compté une délégation reste ouverte jusqu'à l'envoi suivant, et un
+      // lancement d'équipe n'écrit aucune ligne chat_turns : le coût des étapes (sessions « equipe ») n'appartient pas à cette
+      // demande. Il relève du plafond d'arrêt de l'équipe (team-run-guards.ts) ; le compter ici arrêtait l'équipe à tort, à l'état
+      // « plafond ». Même règle que la dépense d'une demande autonome (<gf3:plafond-autonomie>). Relecture de F2, vague 0.
+      return deps.ledger.spentSinceSansEtapes(watch.rootId, watch.since);
+      // </gf3:plafond-delegations> fin
     } catch (err) {
       log.warn("délégations lancées sans demande : coût de la demande illisible", { rootId: watch.rootId, error: errorMessage(err) });
       return null;

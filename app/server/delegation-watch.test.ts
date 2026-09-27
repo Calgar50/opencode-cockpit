@@ -49,10 +49,11 @@ function unit(t: TestContext, caps: UnitOptions = {}) {
   const sessions = new SessionTracker(db, client);
   const settings = new SettingsStore(db);
   settings.update({ budget: { delegation: { maxPerRequest: caps.maxPerRequest ?? 5, maxUsdPerRequest: caps.maxUsdPerRequest ?? 1 } } });
+  // Port réel de la garde : coût de la demande sans les étapes d'équipe (<gf3:plafond-delegations>, relecture de F2, vague 0).
   const ledger = {
     spent: 0,
     calls: [] as Array<[string, number]>,
-    spentSince(rootId: string, since: number): number {
+    spentSinceSansEtapes(rootId: string, since: number): number {
       this.calls.push([rootId, since]);
       return this.spent;
     },

@@ -154,8 +154,15 @@ export function createTeamService(eq: EqContext): TeamService {
    * Assistants lus pour l'instance par défaut : les assistants d'une équipe sont globaux (portée Studio), et le dossier d'un
    * lancement n'intervient qu'à l'estimation (L37p). Une lecture impossible remonte à l'appelant (502 par le onError).
    */
-  const assistantsMap = (): Promise<ReadonlyMap<string, StepAssistant>> =>
-    eq.ports.preflight.assistants(c11.settings.get().chat.defaultDirectory ?? "");
+  const assistantsMap = (): Promise<ReadonlyMap<string, StepAssistant>> => {
+    // <gf3:v106> début : le dossier par défaut des réglages s'écrit en mode Simple et peut venir d'une base d'avant la 1.0.6 ;
+    // opencode décode `directory` deux fois (A22) : un dossier %XX y ouvrirait une instance hors de /workspace. Transmis
+    // seulement s'il passe isAllowedDirectory ; sinon "" : aucun paramètre directory, instance par défaut (même règle que
+    // rescanNow d'autonomy.ts pour un dossier gardé en base). Relecture de F2, vague 0 (fiche-fusion-v106 §5).
+    const dossier = c11.settings.get().chat.defaultDirectory;
+    return eq.ports.preflight.assistants(dossier !== null && c11.projects.isAllowedDirectory(dossier) ? dossier : "");
+    // </gf3:v106> fin
+  };
 
   const niveauDisponible = (niveau: Tier): boolean => {
     const resolution = c11.tiers.resolve(niveau);

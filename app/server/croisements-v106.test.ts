@@ -1425,5 +1425,57 @@ describe("croisements v106 <gf3:v106> : équipes × 1.0.6 (fiche §5)", () => {
     assert.deepEqual(h.fake.instancesHors(), [], "instance hors de /workspace");
     assertSentinel(h, "T-EQ3");
   });
+
+  // Relecture de F2, vague 0 : la liste, l'aperçu, l'enregistrement et l'installation d'un exemple lisent les assistants par
+  // assistantsMap (team-service.ts), avec le dossier par défaut des réglages. Ce réglage s'écrit en mode Simple (PUT /api/settings)
+  // et peut venir d'une base d'avant la 1.0.6 : il n'est transmis à opencode que s'il passe isAllowedDirectory ; sinon, instance
+  // par défaut (aucun paramètre directory).
+  it("T-EQ4 : dossier par défaut des réglages %XX ou hors du workspace → GET /api/teams (Simple), aperçu, enregistrement et installation d'un exemple (Avancé) lisent l'instance par défaut ; « Remise 20% » transmis à l'octet", async (t) => {
+    const { h, omo } = await demarrerEquipes(t, { settings: { ui: { mode: "simple" } } });
+    // Équipe posée = équipe de l'exemple : l'installation, idempotente, relit les assistants sans rien écrire (Studio non appelé).
+    h.db.prepare("UPDATE teams SET origine = 'exemple', exemple_id = ?, exemple_version = 1 WHERE id = ?").run(EQUIPE, EQUIPE);
+    const flow = JSON.parse((h.db.prepare("SELECT flow FROM teams WHERE id = ?").get(EQUIPE) as { flow: string }).flow) as Flow;
+    const lectures = async (label: string): Promise<void> => {
+      const liste = await h.call("GET", "/api/teams", { headers: h.headers.authed });
+      assert.equal(liste.status, 200, `${label} : GET /api/teams : ${liste.body}`);
+      if (h.settings.get().ui.mode !== "avance") return;
+      const apercu = await h.call("POST", "/api/teams/preview", { headers: h.headers.mutating, body: { flow } });
+      assert.equal(apercu.status, 200, `${label} : aperçu : ${apercu.body}`);
+      const enregistre = await h.call("PUT", "/api/teams/revue-sql-bis", {
+        headers: h.headers.mutating,
+        body: { titre: "[synthétique] Revue SQL bis", description: "", flow },
+      });
+      assert.equal(enregistre.status, 200, `${label} : PUT /api/teams/:id : ${enregistre.body}`);
+      const installe = await h.call("POST", `/api/teams/examples/${EQUIPE}/install`, { headers: h.headers.mutating, body: {} });
+      assert.equal(installe.status, 200, `${label} : installation : ${installe.body}`);
+    };
+
+    for (const valeur of [TRAP_DIR, "/etc"]) {
+      h.settings.update({ ui: { mode: "simple" } });
+      const reglage = await h.call("PUT", "/api/settings", { headers: h.headers.mutating, body: { chat: { defaultDirectory: valeur } } });
+      assert.equal(reglage.status, 200, `réglage écrit en Simple : ${reglage.body}`);
+      assert.equal(h.settings.get().chat.defaultDirectory, valeur);
+      const principale = h.fake.requests.length;
+      const salle = omo.fake.requests.length;
+      await lectures(`${valeur}, Simple`);
+      h.settings.update({ ui: { mode: "avance" } });
+      await lectures(`${valeur}, Avancé`);
+      assert.deepEqual(
+        directoriesSent(h, principale).filter((d) => d === valeur || !h.cockpit.c11.projects.isAllowedDirectory(d)),
+        [],
+        `${valeur} : dossier refusé transmis à opencode`,
+      );
+      assert.deepEqual(omo.fake.requests.slice(salle).map((r) => `${r.method} ${r.pathname}`).filter((r) => r !== "GET /session/status"), [], `${valeur} : requête à la salle`);
+      assertSentinel(h, `T-EQ4 ${valeur}`);
+    }
+
+    // Témoin : un dossier par défaut légitime est transmis tel quel, à l'octet.
+    const legitime = dirOf(LEGIT[0]);
+    h.settings.update({ chat: { defaultDirectory: legitime } });
+    const depuis = h.fake.requests.length;
+    await lectures("Remise 20%, Avancé");
+    assert.ok(directoriesSent(h, depuis).includes(legitime), `« ${LEGIT[0]} » non transmis : ${JSON.stringify(directoriesSent(h, depuis))}`);
+    assertSentinel(h, "T-EQ4 témoin");
+  });
 });
 // </gf3:v106>
