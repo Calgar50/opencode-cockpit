@@ -13,20 +13,26 @@
 //      identiques à H2″ (P8) ; les suites textes, pureté, web-animations et fichiers-balises tournent dans npm test ;
 //   plus D14 (b) : un dossier %XX est lisible par l'onglet sans aucune requête à opencode, mais jamais proposé pour une conversation
 //   (absent de /api/projects, 403 forbidden-directory au proxy, projects.ts intact).
-// Au rang de FUSION (après GF5) : harnais avec equipes et omo, PROXY_RULES_OMO, omo-compose.test.ts, construction-balises.test.ts,
-// SALLE_OUVERTE fausse et dépendances de la tête de GF5 (plan NAV, « à faire au rang de fusion », points 2 et 3). Aucun appel facturé :
-// faux opencode seulement.
+// Complété au rang de FUSION (GFN, après GF5 ; décisions A30 (1), A34 (2)) : harnais de production complet (modules « tous »,
+// equipes « tous » et salle, option omo), place de « fichiers » dans STEP_ORDER.routes (juste avant la construction, que GF4
+// colle au groupe de la salle, dernier), PROXY_RULES_OMO sans /file, faux opencode de la salle muet, point 6 « Salle » (SALLE_OUVERTE
+// fausse ; /projets-lecture jamais donné à opencode-omo, à egress ni à omo-init, ni par le contrat de la salle, ni par la surcharge
+// de ses projets), constantes de fermeture et dépendances de la tête de GF5 (three@0.186.0, P8). omo-compose.test.ts,
+// construction-balises.test.ts, fichiers-balises.test.ts, textes.test.ts, core.test.ts (pureté) et web-animations.test.ts tournent
+// dans npm test (point 7). Aucun appel facturé : faux opencode seulement.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { parse as parseYaml } from "yaml";
 import { PROXY_RULES } from "./http.ts";
+import { PROXY_RULES_OMO } from "./oc-proxy.ts";
 import { CSRF_HEADER } from "./security.ts";
 import { FICHIERS_ROUTES } from "./shared/fichiers-regles.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
-import * as wiring11 from "./wiring-11.ts";
-import { ACTIVATION_OUVERTE, MODULE_ORDER, STEP_ORDER } from "./wiring-11.ts";
+import { ACTIVATION_OUVERTE, MODULE_ORDER, SALLE_OUVERTE, STEP_ORDER } from "./wiring-11.ts";
+import { CONSTRUCTION_MODULE_ORDER, CONSTRUCTION_ROUTES } from "./wiring-construction.ts";
+import { EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
 
 type Route = keyof typeof FICHIERS_ROUTES;
 const ROUTES = Object.keys(FICHIERS_ROUTES) as Route[];
@@ -47,9 +53,12 @@ function ecrire(racine: string, relatif: string, contenu: string): void {
   fs.writeFileSync(chemin, contenu);
 }
 
-/** Harnais de PRODUCTION (modules: « tous » = MODULE_ORDER entier, comme main.ts) et projet de démonstration. */
+/**
+ * Harnais de PRODUCTION (modules « tous » = MODULE_ORDER entier, comme main.ts ; equipes « tous » ; salle présente et COUPÉE, option
+ * omo) et projet de démonstration.
+ */
 async function demarrer(t: TestContext, options: CockpitHarnessOptions = {}): Promise<CockpitHarness & { travail: string }> {
-  const h = await startCockpit(t, { modules: "tous", ...options });
+  const h = await startCockpit(t, { modules: "tous", equipes: "tous", omo: true, ...options });
   const travail = h.deps.env.workspaceDir;
   ecrire(travail, "proj/scripts/a.ps1", "Write-Output 'bonjour'\n");
   ecrire(travail, "proj/.env", "SECRET=valeur-factice\n");
@@ -69,7 +78,14 @@ describe("croisements NAV V5 : onglet « Fichiers » sur le câblage de producti
       couples.filter((couple) => couple.includes("fichiers")),
       [["fichiers", "fichiers"]],
     );
+    // Rang de fusion (GFN) : la salle garde le dernier rang et GF4 y colle la construction (croisements-c5a-v0,
+    // croisements-construction-fusion) ; « fichiers » est juste avant ce bloc, dans les routes comme dans MODULE_ORDER.
+    assert.deepEqual(STEP_ORDER.routes.at(-1), ["omo", "omoRoom"]);
+    const rang = couples.findIndex((couple) => couple[0] === "fichiers");
+    assert.deepEqual(STEP_ORDER.routes.slice(rang + 1, -1), CONSTRUCTION_ROUTES.map((couple) => [...couple]));
+    assert.deepEqual(MODULE_ORDER.slice(MODULE_ORDER.indexOf("fichiers") + 1), [...CONSTRUCTION_MODULE_ORDER]);
     const h = await demarrer(t);
+    assert.ok(h.omo, "harnais avec la salle (option omo)");
     assert.ok(h.cockpit.wiring.modules.includes("fichiers"));
     assert.deepEqual(
       h.cockpit.wiring.registrations.filter((r) => r.module === "fichiers"),
@@ -97,21 +113,29 @@ describe("croisements NAV V5 : onglet « Fichiers » sur le câblage de producti
 
   it("2. aucune requête /file*, /find* ni POST reçue par le faux opencode, aucune ligne usage, pendant les 4 routes", async (t) => {
     const h = await demarrer(t);
+    assert.ok(h.omo);
     const avant = h.fake.requests.length;
+    const avantSalle = h.omo.fake.requests.length;
     const lignes = lignesUsage(h);
     for (const route of ROUTES) assert.equal((await post(h, route, CORPS[route])).status, 200, route);
     assert.equal((await post(h, "contenu", { projet: "proj", chemin: ".env" })).status, 403);
     const recues = h.fake.requests.slice(avant);
     assert.deepEqual(recues.filter((r) => /^\/(file|find)/.test(r.pathname)).map((r) => r.pathname), []);
     assert.deepEqual(recues.filter((r) => r.method === "POST").map((r) => r.pathname), []);
+    // Rang de fusion : le faux opencode de la salle ne reçoit rien non plus, et la salle coupée n'écrit rien.
+    assert.deepEqual(h.omo.fake.requests.slice(avantSalle).map((r) => `${r.method} ${r.pathname}`), []);
+    assert.deepEqual(h.omo.fichiers(), []);
     assert.equal(lignesUsage(h), lignes);
     h.assertNoGlobalRestart();
   });
 
-  it("3. proxy inchangé : aucune règle de PROXY_RULES ne sert /file* ; GET /api/oc/file/content → 404 sans requête", async (t) => {
-    assert.equal(PROXY_RULES.some((r) => r.pattern.source.startsWith("^/file")), false);
-    for (const sub of ["/file", "/file/content", "/file/status", "/file/list"]) {
-      assert.equal(PROXY_RULES.some((r) => r.pattern.test(sub)), false, sub);
+  it("3. proxy inchangé : aucune règle de PROXY_RULES ni de PROXY_RULES_OMO ne sert /file* ; GET /api/oc/file/content → 404 sans requête", async (t) => {
+    for (const [nom, regles] of [["PROXY_RULES", PROXY_RULES], ["PROXY_RULES_OMO", PROXY_RULES_OMO]] as const) {
+      assert.ok(regles.length > 0, nom);
+      assert.equal(regles.some((r) => r.pattern.source.startsWith("^/file")), false, nom);
+      for (const sub of ["/file", "/file/content", "/file/status", "/file/list"]) {
+        assert.equal(regles.some((r) => r.pattern.test(sub)), false, `${nom} ${sub}`);
+      }
     }
     const h = await demarrer(t);
     const avant = h.fake.requests.length;
@@ -211,11 +235,31 @@ describe("croisements NAV V5 : montages, constantes et dépendances", () => {
     for (const s of sections) assert.equal(/omo/i.test(s[2] ?? ""), false, s[1]);
   });
 
-  it("7. ACTIVATION_OUVERTE inchangée, SALLE_OUVERTE absente ou fausse, dépendances de app/package.json identiques à H2″ (P8)", () => {
+  it("6 bis. Salle (rang de fusion GFN) : SALLE_OUVERTE fausse ; /projets-lecture jamais donné à opencode-omo, egress ni omo-init, ni par le contrat ni par la surcharge des projets", () => {
+    assert.equal(SALLE_OUVERTE, false);
+    // Services de la salle présents (profil omo) : le contrôle ci-dessus les a donc parcourus.
+    for (const service of ["opencode-omo", "egress", "omo-init"]) {
+      const s = compose.services[service];
+      assert.ok(s, `service ${service} présent`);
+      assert.equal((s.volumes ?? []).some((v) => String(typeof v === "string" ? v : JSON.stringify(v)).includes("projets-lecture")), false, service);
+      assert.equal(Object.keys(s.environment ?? {}).some((cle) => cle.startsWith("COCKPIT_FICHIERS")), false, service);
+    }
+    // Aucun montage de la salle sous /projets-lecture : ni dans son contrat (docker/opencode-omo/contrat-salle.json), ni dans la
+    // surcharge de ses projets, générée par install.ps1 (ConvertTo-OmoProjectsYaml) et lue par CockpitTls.ps1.
+    for (const fichier of [["docker", "opencode-omo", "contrat-salle.json"], ["install.ps1"], ["CockpitTls.ps1"]]) {
+      assert.equal(fs.readFileSync(path.join(REPO_DIR, ...fichier), "utf8").includes("projets-lecture"), false, fichier.join("/"));
+    }
+  });
+
+  it("7. constantes de fermeture (ACTIVATION_OUVERTE, SALLE_OUVERTE, EQUIPES_SIMPLE_OUVERTES), dépendances de la tête de GF5 (P8), suites générales présentes", () => {
     assert.equal(ACTIVATION_OUVERTE, true);
-    const exporte = wiring11 as Record<string, unknown>;
-    assert.ok(!("SALLE_OUVERTE" in exporte) || exporte.SALLE_OUVERTE === false, "salle fermée");
-    // H2″ (913cb81). Au rang de fusion : dépendances de la tête de GF5 (three y arrive avec la 3D).
+    assert.equal(SALLE_OUVERTE, false, "salle fermée");
+    assert.equal(EQUIPES_SIMPLE_OUVERTES, false, "équipes fermées en mode Simple (U1)");
+    // Suites générales, jouées par npm test sur tout le dépôt (croisements NAV §6, point 7).
+    for (const suite of ["textes", "core", "web-animations", "construction-balises", "fichiers-balises", "omo-compose"]) {
+      assert.ok(fs.existsSync(path.join(import.meta.dirname, `${suite}.test.ts`)), suite);
+    }
+    // Tête de GF5 (chantier/1.1 avant GFN) : H2″ + three@0.186.0, seul ajout de la liste fermée P8 (arrivé avec la 3D).
     const pkg = JSON.parse(fs.readFileSync(path.join(REPO_DIR, "app", "package.json"), "utf8")) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
@@ -237,6 +281,7 @@ describe("croisements NAV V5 : montages, constantes et dépendances", () => {
       marked: "18.0.13",
       react: "19.3.0",
       "react-dom": "19.3.0",
+      three: "0.186.0",
       typescript: "7.0.2",
       vite: "8.3.0",
     });
