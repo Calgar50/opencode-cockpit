@@ -480,7 +480,7 @@ describe("croisements 3d-fusion : salle × « Revoir » sur le cockpit réel (Q6
     assert.deepEqual(requetes(h.omo.fake.requests, avantSalle), [], "aucune requête à la salle");
   });
 
-  it("consignes (U2) : capture sur le processeur PRINCIPAL malgré le filtre d'instance de T3b ; événements de la salle non capturés (L3s-a) ; purge → faits et consignes ensemble", async (t) => {
+  it("consignes (U2) : capture sur le processeur PRINCIPAL malgré le filtre d'instance de T3b ; événements de la salle capturés par le processeur de la salle seulement (L3s-a) ; purge → faits et consignes ensemble", async (t) => {
     const h = await startCockpit(t, { modules: "tous", omo: true });
     assert.ok(h.omo);
     const PRINCIPALE = "ses_gf2_principale";
@@ -505,10 +505,11 @@ describe("croisements 3d-fusion : salle × « Revoir » sur le cockpit réel (Q6
 
     h.fake.emit(tache(PRINCIPALE, "call_gf2_principale", ENFANT), "/workspace/proj");
     await until(() => compter(h, "revoir_consignes", PRINCIPALE) === 1 || null, 5_000);
-    // Même événement sur l'instance de la salle, traité par SON processeur : la dérivation 3D n'y est pas inscrite (L3s-a la
-    // branchera) ; rien n'est gardé, et rien ne passe par le processeur principal.
+    // Même événement sur l'instance de la salle, traité par SON processeur : depuis « 3s » (L3s-a), la dérivation y est inscrite
+    // aussi ; la consigne est gardée sous la racine de la salle, et rien ne passe par le processeur principal (adaptation de
+    // L3s-a : avant, rien n'était gardé pour la salle).
     await h.emitOmo({ directory: "/workspace/proj", payload: { id: "evt_gf2_salle", ...tache(SALLE, "call_gf2_salle", "ses_gf2_enfant_salle") } });
-    assert.equal(compter(h, "revoir_consignes", SALLE), 0);
+    assert.equal(compter(h, "revoir_consignes", SALLE), 1);
     assert.equal(compter(h, "revoir_consignes", PRINCIPALE), 1);
 
     // Purge (conversation-purge.ts, ligne [3d]) : faits et consignes partent ensemble, pour la principale comme pour la salle.

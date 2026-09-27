@@ -7,11 +7,15 @@
 //   la différence ;
 // - une racine ordinaire en mode Simple garde le mode « simple » (différé = direct de la bande 2D) ;
 // - P12 : les `faits` de chaque signe sont les mêmes avant et après le renommage.
+// Salle branchée (« 3s », L3s-a) : nom Simple par roleDeAgent(clé de l'agent), jamais le secteur de hasard d'une scène qui n'a pas
+// rangé la salle par rôle (discriminant) ; `horsBornes` gardé (« Déroulé partiel », A36 point 1).
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { ActivityFact } from "./shared/activity-types.ts";
 import { libelleNoeud, lignesTableau, nomAssistant } from "./shared/neon-band.ts";
 import { moments, NEON_SECTEURS, type NeonScene, scene } from "./shared/neon-scene.ts";
 import { libelleSecteur } from "./shared/neon-texts.ts";
+import { roleDeAgent } from "./shared/omo-roles.ts";
 import { TEXTES } from "./shared/revoir-texts.ts";
 import { modeSceneRevoir, nomsSimples, vueSimple } from "./shared/vue-simple.ts";
 import { DEMO_P1_CAPTURE, DEMO_P1_ROOT, DEMO_P1_SENT, demoFacts } from "./test-support/gen-demo.ts";
@@ -122,6 +126,66 @@ describe("vue Simple d'une racine de la Salle OMO (D-3d-20, décision n° 7)", (
     const montre = vue.noeuds.find((n) => n.sessionId === enfant.sessionId);
     assert.ok(montre !== undefined);
     assert.equal(nomAssistant(montre), libelleSecteur(enfant.secteur ?? "autres"));
+  });
+});
+
+describe("vue Simple de la salle branchée (« 3s », L3s-a ; D-3d-20)", () => {
+  const R = "ses_salle_vs";
+  /** Racine de la salle et trois délégations : clés d'agent connues de la salle (hors SECTEURS_OPENCODE) et une clé inconnue. */
+  const faitsSalle = (): ActivityFact[] => {
+    const faits: ActivityFact[] = [];
+    let at = 1_000;
+    const add = (sessionId: string, kind: ActivityFact["kind"], data: ActivityFact["data"], ref: string | null = null) => {
+      at += 10;
+      faits.push({ rootId: R, sessionId, kind, ref, data, at });
+    };
+    add(R, "statut", { etat: "creee", role: "conversation", parent: null, agent: "sisyphus", instance: "omo" });
+    add(R, "origine", { origine: "demande", cas: 1, messageId: "msg_d" }, "msg_d");
+    add(R, "statut", { etat: "occupee" });
+    for (const [i, agent] of ["sisyphus-junior", "librarian", "agent-maison"].entries()) {
+      const enfant = `ses_vs_${i}`;
+      add(enfant, "statut", { etat: "creee", role: "delegation", parent: R, agent, instance: "omo" });
+      add(R, "consigne", { etat: "envoyee", callId: `call_${i}`, messageId: "msg_a", enfant, agent, source: "ia", commande: null, reprise: false, fond: false }, `call_${i}`);
+      add(enfant, "statut", { etat: "occupee" });
+    }
+    return faits;
+  };
+
+  it("nom Simple = libellé du RÔLE lu par roleDeAgent(clé), même quand la scène n'a pas rangé l'assistant par rôle ; clé inconnue : « Autres »", () => {
+    // Scène calculée SANS rôles de la salle : sisyphus-junior et librarian tombent dans « Autres » (SECTEURS_OPENCODE ne les
+    // connaît pas). Le nom Simple, lui, suit le rôle : c'est ce qui distingue roleDeAgent du secteur dessiné (discriminant).
+    const brute = scene(faitsSalle(), null, { zoom: 2, mode: "avance" });
+    assert.deepEqual(
+      brute.noeuds.map((n) => n.secteur),
+      [null, "autres", "autres", "autres"],
+    );
+    const vue = vueSimple(brute, nomsSimples(brute, true));
+    assert.deepEqual(
+      vue.noeuds.map((n) => n.agent),
+      [TEXTES.simple.assistantPrincipal, libelleSecteur(roleDeAgent("sisyphus-junior")), libelleSecteur(roleDeAgent("librarian")), libelleSecteur("autres")],
+    );
+    assert.deepEqual([roleDeAgent("sisyphus-junior"), roleDeAgent("librarian"), roleDeAgent("agent-maison")], ["executer", "chercher", "autres"]);
+    const montre = [...lignesTableau(vue).flatMap((ligne) => [ligne.nom, ligne.secteur ?? "", ligne.etat, ...ligne.signes]), ...vue.noeuds.map((n) => libelleNoeud(n))].join(" | ");
+    for (const nom of ["sisyphus", "sisyphus-junior", "librarian", "agent-maison"]) assert.equal(montre.includes(nom), false, `${nom} montré : ${montre}`);
+    assert.equal(/agent|orchestrateur/i.test(montre), false, montre);
+  });
+
+  it("scène rangée par rôle (roleSalle, comme la bande) : nom Simple et secteur dessiné disent le même rôle ; positions et faits recopiés", () => {
+    const brute = scene(faitsSalle(), null, { zoom: 2, mode: "avance", roleSalle: roleDeAgent });
+    const vue = vueSimple(brute, nomsSimples(brute, true));
+    for (const noeud of vue.noeuds.filter((n) => n.role === "delegation")) assert.equal(noeud.agent, libelleSecteur(noeud.secteur ?? "autres"), noeud.sessionId);
+    assert.deepEqual(refsDeLaVue(vue), refsDeLaVue(brute));
+    assert.deepEqual(
+      vue.noeuds.map((n) => n.position),
+      brute.noeuds.map((n) => n.position),
+    );
+  });
+
+  it("« Déroulé partiel » : vueSimple garde `horsBornes` (A36 point 1)", () => {
+    const brute = scene(faitsSalle(), null, { zoom: 2, mode: "avance" });
+    const bornee: NeonScene = { ...brute, horsBornes: 11 };
+    assert.equal(vueSimple(bornee, nomsSimples(bornee, true)).horsBornes, 11);
+    assert.equal(vueSimple(brute, nomsSimples(brute, true)).horsBornes, brute.horsBornes);
   });
 });
 

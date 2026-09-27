@@ -206,11 +206,26 @@ export interface Plan3dMark {
   faits: number[];
 }
 
-/** Tuiles de fichiers d'un dossier (InstancedMesh, zoom 3). */
+/**
+ * Tuiles de fichiers d'un dossier (InstancedMesh, zoom 3). Salle OMO (« 3s », L3s-a) : les tuiles de la station « Carnet partagé et
+ * plan » (JP-6) sont des lots de même forme, au dossier `carnet` (jamais une clé de fichier, qui a 16 chiffres hexadécimaux).
+ */
 export interface Plan3dTileBatch {
   dossier: string;
   etat: "lu" | "modifie" | "refuse" | "en-cours";
   positions: Point3[];
+  faits: number[];
+}
+
+/**
+ * Lien de la station « Carnet partagé et plan » vers un assistant dessiné qui a lu ou modifié le carnet (JP-6 ; « 3s », L3s-a) :
+ * trait fin, jamais un faisceau (aucune consigne ni aucun résultat n'y passe). Porte ses faits (P12).
+ */
+export interface Plan3dLienCarnet {
+  /** Session de l'assistant relié. */
+  id: string;
+  de: Point3;
+  vers: Point3;
   faits: number[];
 }
 
@@ -255,4 +270,9 @@ export interface Plan3d {
   enceinte: { projets: string[] } | null;
   /** Station « Carnet partagé et plan » vide (salle). */
   carnetVide: boolean;
+  /**
+   * Salle OMO (« 3s », L3s-a ; ajout facultatif, changement de contrat annoncé) : liens de la station « Carnet partagé et plan » vers
+   * les assistants dessinés qui l'ont touché. Absent ou vide : aucun lien (zoom 1, hors de la salle, carnet vide).
+   */
+  liensCarnet?: Plan3dLienCarnet[];
 }

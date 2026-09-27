@@ -6,6 +6,8 @@
 // - Lecture seule (spéc. l.1169) : aucune écriture en base, AUCUNE ligne `usage` créée et ZÉRO requête reçue par le faux opencode
 //   pendant tous les appels ; les faits ne sont lus que lorsque la décision ou la réponse en a besoin.
 // - Titre masqué par redactSecrets.
+// - Salle branchée (« 3s », L3s-a) : racine de la salle reconnue par `omo_rooms` en plus de `sessions.instance` ; désaccord ou
+//   table illisible → traitée comme la salle (fermé en cas de doute).
 // Le faits de la conversation viennent d'un port `facts` de doublure (surcharge du harnais) : les faits partiels de la borne des
 // 20 000 sont ainsi simulés sans écrire 20 000 lignes.
 import assert from "node:assert/strict";
@@ -245,6 +247,54 @@ describe("« Revoir » (L28b) : racine de la Salle OMO simulée, mode Simple (D-
     b.demande(SALLE, "req_1", 100, true);
     const vue = (await b.get(`/api/revoir/${SALLE}`)).body as RevoirResponse;
     assert.equal(vue.instance, "omo");
+  });
+});
+
+describe("« Revoir » (L3s-a) : racine de la salle reconnue par omo_rooms EN PLUS de sessions.instance", () => {
+  /** Salle ouverte par le cockpit (ligne `omo_rooms`, migration 6). */
+  const ouvrirSalle = (b: Banc, rootId: string) => b.h.db.prepare("INSERT INTO omo_rooms (root_id, projet, created_at) VALUES (?, 'proj', 1)").run(rootId);
+
+  it("désaccord (`sessions` dit « principale », omo_rooms connaît la racine) : traitée comme la salle en Simple ; témoin sans omo_rooms → principale", async (t) => {
+    const b = await banc(t);
+    b.session(PRINCIPALE);
+    b.faits.poser(PRINCIPALE, [statut(PRINCIPALE, PRINCIPALE, "repos", 20)]);
+    // Témoin : aucune ligne omo_rooms, racine principale servie sans demande enregistrée.
+    const temoin = await b.get(`/api/revoir/${PRINCIPALE}?etat=1`);
+    assert.deepEqual(temoin.body, { rootId: PRINCIPALE, acces: true, raison: null, instance: "principale" });
+    ouvrirSalle(b, PRINCIPALE);
+    const refus1 = await b.get(`/api/revoir/${PRINCIPALE}`);
+    assert.equal(refus1.status, 403, "fermé en cas de doute : règle de la salle en Simple");
+    assert.equal(refus(refus1.body).code, "salle-fin-inconnue", "aucune demande enregistrée");
+    assert.deepEqual((await b.get(`/api/revoir/${PRINCIPALE}?etat=1`)).body, { rootId: PRINCIPALE, acces: false, raison: "salle-fin-inconnue", instance: "omo" });
+    // Demande terminée, arbre au repos : servie, et annoncée comme la salle (jamais « principale » par défaut).
+    b.demande(PRINCIPALE, "req_1", 100, true);
+    const vue = await b.get(`/api/revoir/${PRINCIPALE}`);
+    assert.equal(vue.status, 200);
+    assert.equal((vue.body as RevoirResponse).instance, "omo");
+  });
+
+  it("accord des deux sources (omo + omo_rooms) : mêmes règles qu'avant ; Avancé : servie", async (t) => {
+    const b = await banc(t);
+    salleSimulee(b);
+    ouvrirSalle(b, SALLE);
+    b.demande(SALLE, "req_1", 100, false);
+    assert.equal(refus((await b.get(`/api/revoir/${SALLE}`)).body).code, "salle-demande-en-cours");
+    const avance = await banc(t, "avance");
+    avance.session(PRINCIPALE);
+    ouvrirSalle(avance, PRINCIPALE);
+    const servie = await avance.get(`/api/revoir/${PRINCIPALE}`);
+    assert.equal(servie.status, 200, "la salle est servie en Avancé");
+    assert.equal((servie.body as RevoirResponse).instance, "omo");
+  });
+
+  it("omo_rooms illisible : racine traitée comme la salle (fermé en cas de doute)", async (t) => {
+    const b = await banc(t);
+    b.session(PRINCIPALE);
+    assert.deepEqual((await b.get(`/api/revoir/${PRINCIPALE}?etat=1`)).body, { rootId: PRINCIPALE, acces: true, raison: null, instance: "principale" });
+    // Base jetable du harnais : la table est masquée pour ce seul test.
+    b.h.db.exec("ALTER TABLE omo_rooms RENAME TO omo_rooms_masquee");
+    const reponse = await b.get(`/api/revoir/${PRINCIPALE}?etat=1`);
+    assert.deepEqual(reponse.body, { rootId: PRINCIPALE, acces: false, raison: "salle-fin-inconnue", instance: "omo" });
   });
 });
 

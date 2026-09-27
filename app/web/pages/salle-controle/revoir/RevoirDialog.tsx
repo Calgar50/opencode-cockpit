@@ -13,10 +13,14 @@
 //   commandes de lecture.
 // - Accessibilité : boîte modale (role="dialog", aria-modal), focus piégé dans la boîte, Échap ferme, focus rendu à l'appelant.
 //   Aucune région aria-live : les légendes passent par la région unique de la page (D-3d-29).
+// - Salle branchée (« 3s », L3s-a) : rôles des assistants de la salle lus sur la clé de l'agent (roleDeAgent, comme la bande :
+//   positions de la carte et noms Simples de vueSimple disent le même rôle) ; « Déroulé partiel : {n} assistants non dessinés »
+//   (A36 point 1, spéc. l.356) pour une scène bornée, lu sur la vue montrée (après vueSimple, qui garde `horsBornes`).
 import { type KeyboardEvent, type MouseEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { legendesAuMoment } from "../../../../server/shared/legendes.ts";
 import { type NeonScene, scene, visibleCount } from "../../../../server/shared/neon-scene.ts";
 import { remplir, TEXTES as NEON } from "../../../../server/shared/neon-texts.ts";
+import { roleDeAgent } from "../../../../server/shared/omo-roles.ts";
 import { type Demande, demandes, instant } from "../../../../server/shared/revoir.ts";
 import { formatHeure, libelleRefus, TEXTES } from "../../../../server/shared/revoir-texts.ts";
 import type { RevoirRefus, RevoirResponse } from "../../../../server/shared/salle3d-types.ts";
@@ -24,6 +28,7 @@ import { modeSceneRevoir, nomsSimples, vueSimple } from "../../../../server/shar
 import { useApp } from "../../../app/AppContext.tsx";
 import { salle3dApi } from "../../../lib/api-salle3d.ts";
 import { NeonCarte, NeonTableau } from "../../chat/activity/NeonBand.tsx";
+import { DeroulePartiel } from "../DeroulePartiel.tsx";
 import type { ConsigneRevoirProps, RevoirDialogProps } from "../slots-3d.ts";
 import { ConsigneRevoir } from "./ConsigneRevoir.tsx";
 import { LegendeBulle } from "./LegendeBulle.tsx";
@@ -125,7 +130,7 @@ function Boite({ rootId, onFermer, demande: demandeVoulue }: RevoirDialogProps) 
   const simpleSalle = salle && !advanced;
   const zoom = focus === null ? 2 : 3;
   const vue = useMemo<NeonScene>(() => {
-    const brute = scene(faits.slice(0, visibleCount(faits, t)), null, { zoom, mode: modeSceneRevoir({ salle, advanced }), focus });
+    const brute = scene(faits.slice(0, visibleCount(faits, t)), null, { zoom, mode: modeSceneRevoir({ salle, advanced }), focus, roleSalle: roleDeAgent });
     return simpleSalle ? vueSimple(brute, nomsSimples(brute, true)) : brute;
   }, [faits, t, zoom, focus, salle, advanced, simpleSalle]);
 
@@ -166,6 +171,8 @@ function Boite({ rootId, onFermer, demande: demandeVoulue }: RevoirDialogProps) 
         <p className="revoir-bandeau">{T.rienRelance}</p>
         {simpleSalle ? <p className="revoir-note">{TEXTES.simple.salle}</p> : null}
         {reponse?.partial === true ? <p className="revoir-note">{T.partiel}</p> : null}
+        {/* Scène bornée (A36 point 1) : phrase de la bande, lue sur la vue montrée (vueSimple garde horsBornes). */}
+        <DeroulePartiel horsBornes={vue.horsBornes} className="revoir-note" />
         <div className="revoir-corps" aria-busy={reponse === null && refus === null}>
           {refus === null ? null : <p className="revoir-refus">{libelleRefus(refus as RevoirRefus)}</p>}
           {vide ? <p className="revoir-vide">{T.vide}</p> : null}

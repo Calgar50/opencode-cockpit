@@ -17,6 +17,15 @@
 //   d'arrêt (gris).
 // - **Étiquettes** (D-3d-19) : 60 au plus, dans l'ordre de priorité conversation, « travaille », attente de votre accord, puis rang
 //   d'apparition ; leur texte est écrit par la page (`libelleBouton`), jamais ici.
+// - **Salle OMO** (itération « 3s », L3s-a ; §5.7.3 l.973, §5.7.4 l.987, JP-6, JP-10), seulement si la scène les porte (L25b :
+//   mode Avancé, conversation de la salle) :
+//   - tuiles de la station « Carnet partagé et plan » (`carnet.tuiles` placées) en lots de tuiles au dossier `carnet`, un par
+//     état (modifié l'emporte sur lu, comme la bande) ; une tuile au-delà de la rangée n'est pas dessinée (elle reste comptée par
+//     la liste et le tableau) ;
+//   - liens de la station vers les assistants dessinés qui ont touché le carnet (`carnet.liens`) : `liensCarnet`, trait fin ;
+//   - actions de l'extension vues sans demande (`extensions`) : une marque d'anneau au trait orange de l'extension, par
+//     assistant — la boucle « par l'extension », dont le nombre et « non contrôlé avant exécution » sont écrits par le tableau ;
+//   chacun avec ses faits, recopiés de la scène.
 // Module pur (server/shared) : aucun module node, aucun accès à l'environnement, ni horloge ni aléa.
 import { NEON_GRAMMAIRE, NEON_SIGNE_FAISCEAU, type NeonTheme, type NeonToken } from "./neon-palette.ts";
 import {
@@ -30,7 +39,19 @@ import {
   type NeonScene,
   type NeonTile,
 } from "./neon-scene.ts";
-import type { Plan3d, Plan3dBeam, Plan3dCamera, Plan3dLabel, Plan3dMark, Plan3dNode, Plan3dStation, Plan3dTileBatch, Plan3dZoom, Point3 } from "./salle3d-types.ts";
+import type {
+  Plan3d,
+  Plan3dBeam,
+  Plan3dCamera,
+  Plan3dLabel,
+  Plan3dLienCarnet,
+  Plan3dMark,
+  Plan3dNode,
+  Plan3dStation,
+  Plan3dTileBatch,
+  Plan3dZoom,
+  Point3,
+} from "./salle3d-types.ts";
 
 /**
  * Constantes de la mise en scène 3D : échelle du plan 2D vers le monde, hauteur de chaque genre d'élément, courbure d'un faisceau
@@ -42,6 +63,16 @@ export const PLAN3D = Object.freeze({
   arc: 1.2,
   arcParAnneau: 0.2,
   etiquettesMax: 60,
+});
+
+/**
+ * Salle OMO (« 3s », L3s-a) : dossier des lots de tuiles du carnet partagé (un code, jamais une clé de fichier de 16 chiffres
+ * hexadécimaux), et décalage de la boucle « par l'extension » par rapport à son assistant, dans le plan 2D : le même que la bande
+ * (NeonBand.tsx, Extension), pour qu'elle ne recouvre pas la marque d'origine posée sur l'assistant.
+ */
+export const PLAN3D_SALLE = Object.freeze({
+  dossierCarnet: "carnet",
+  decalageExtension: Object.freeze({ x: -15, y: 13 }),
 });
 
 /** Caméra perspective (§5.8) : 35° d'ouverture, inclinée de 55°, distance fixe par zoom. Constantes elles aussi. */
@@ -211,7 +242,43 @@ function planMarques(vue: NeonScene, positionDuNoeud: (id: string) => Point3): P
   if (vue.arret !== null && vue.rootId !== null) {
     marques.push({ id: "arret", kind: "arret", position: { ...positionDuNoeud(vue.rootId), y: H.marque }, jeton: NEON_GRAMMAIRE.arret.trait, faits: refs(vue.arret.faits) });
   }
+  // Salle OMO (L3s-a) : boucle orange « par l'extension », une par assistant dessiné ; jamais un bouclier ni une croix du cockpit.
+  const { x: dx, y: dy } = PLAN3D_SALLE.decalageExtension;
+  for (const extension of vue.extensions) {
+    marques.push({
+      id: `extension:${extension.sessionId}`,
+      kind: "origine",
+      position: position3({ x: extension.position.x + dx, y: extension.position.y + dy }, H.marque),
+      jeton: NEON_GRAMMAIRE.extension.trait,
+      faits: refs(extension.faits),
+    });
+  }
   return marques;
+}
+
+/**
+ * Tuiles de la station « Carnet partagé et plan » (salle, L3s-a) : lots au dossier `carnet`, modifiées puis lues ; seules les
+ * tuiles placées par la scène sont dessinées (au-delà de la rangée, la liste et le tableau les comptent).
+ */
+function planTuilesCarnet(vue: NeonScene): Plan3dTileBatch[] {
+  const placees = vue.carnet.tuiles.filter((tuile) => tuile.position !== null);
+  const lots: Plan3dTileBatch[] = [];
+  for (const etat of ["modifie", "lu"] as const) {
+    const tuiles = placees.filter((tuile) => (tuile.modifie ? "modifie" : "lu") === etat);
+    if (tuiles.length === 0) continue;
+    lots.push({
+      dossier: PLAN3D_SALLE.dossierCarnet,
+      etat,
+      positions: tuiles.map((tuile) => position3(tuile.position as NeonPoint, H.tuile)),
+      faits: [...new Set(tuiles.flatMap((tuile) => tuile.faits))].sort((a, b) => a - b),
+    });
+  }
+  return lots;
+}
+
+/** Liens de la station « Carnet partagé et plan » vers les assistants dessinés qui l'ont touché (salle, L3s-a). */
+function planLiensCarnet(vue: NeonScene): Plan3dLienCarnet[] {
+  return vue.carnet.liens.map((lien) => ({ id: lien.sessionId, de: position3(lien.depart, H.station), vers: position3(lien.arrivee, H.noeud), faits: refs(lien.faits) }));
 }
 
 /** Tuiles du zoom 3, par dossier puis par état : un lot par couple dessiné, dans l'ordre des colonnes et des états. */
@@ -266,6 +333,7 @@ export function planConversation(vue: NeonScene, options: PlanConversationOption
   const noeuds = planNoeuds(vue);
   const faisceaux = planFaisceaux(vue, anneaux);
   const marques = planMarques(vue, positionDuNoeud);
+  const liensCarnet = planLiensCarnet(vue);
   return {
     zoom,
     theme: options.theme,
@@ -278,11 +346,13 @@ export function planConversation(vue: NeonScene, options: PlanConversationOption
     noeuds,
     faisceaux,
     marques,
-    tuiles: planTuiles(vue),
+    tuiles: [...planTuiles(vue), ...planTuilesCarnet(vue)],
     etiquettes: planEtiquettes(noeuds, vue),
     camera: planCamera(zoom),
     anime: faisceaux.some((faisceau) => faisceau.ouvert) || noeuds.some((noeud) => noeud.halo === "travaille") || marques.some((marque) => marque.kind === "impulsion"),
     enceinte: null,
     carnetVide: vue.carnet.vide,
+    // Champ facultatif du contrat (L3s-a) : posé seulement quand la scène porte des liens du carnet.
+    ...(liensCarnet.length > 0 ? { liensCarnet } : {}),
   };
 }

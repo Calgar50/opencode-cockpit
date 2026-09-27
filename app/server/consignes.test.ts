@@ -5,13 +5,18 @@
 // publié dans un événement du cockpit.
 // Textes des fixtures : « [synthétique] », jamais un extrait réel. Le jeton factice des tests est CONSTRUIT À L'EXÉCUTION : aucun
 // secret, même factice, n'est écrit en clair dans le dépôt.
+// Salle branchée (« 3s », L3s-a) : capture sur le processeur de la SALLE (h.emitOmo), mêmes bornes et masquage, partie ajoutée par
+// un crochet jamais lue, cloison des instances (P11) dans les deux sens, inscription seulement quand la salle existe, journal.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { describe, it, type TestContext } from "node:test";
+import { CONSIGNES_DERIVATION, CONSIGNES_DERIVATION_SALLE, createConsignesDerivation } from "./consignes-capture.ts";
 import { type ConsigneAGarder, createConsignesStore, PAR_ENFANT_MAX, purgeConsignes } from "./consignes-store.ts";
+import type { EventDerivation } from "./contracts-11.ts";
 import { openMemoryDb } from "./db.ts";
 import type { Logger } from "./log.ts";
 import type { OcSession, OpencodeClient } from "./opencode.ts";
+import { EventProcessor } from "./processor.ts";
 import { redactSecrets } from "./redact.ts";
 import { SessionTracker } from "./sessions.ts";
 import { bornerConsigne, CONSIGNES, pointsDeCode } from "./shared/consignes.ts";
@@ -609,5 +614,182 @@ describe("consignes gardées : capture (faux opencode, processeur réel)", () =>
       false,
       "aucun événement du cockpit publié par la capture",
     );
+  });
+});
+
+// --- Salle OMO branchée (itération « 3s », L3s-a ; U2, D-3d-30, P11) ----------------------------------------------------------------
+
+const SALLE_RACINE = "ses_salle_racine_l3sa";
+const SALLE_ENFANT = "ses_salle_enfant_l3sa";
+const PRINCIPALE = "ses_principale_l3sa";
+
+/** Partie `task` à l'état `running`, émise sur l'instance de la SALLE (processeur réel de la salle, h.emitOmo). */
+const tacheSalle = (h: CockpitHarness, options: { id: string; parent: string; callId: string; enfant: string; prompt: string }) =>
+  h.emitOmo({
+    directory: "/workspace/app",
+    payload: {
+      id: options.id,
+      type: "message.part.updated",
+      properties: {
+        sessionID: options.parent,
+        part: {
+          id: `prt_${options.callId}`,
+          messageID: `msg_${options.callId}`,
+          sessionID: options.parent,
+          type: "tool",
+          tool: "task",
+          callID: options.callId,
+          state: {
+            status: "running",
+            title: "[synthétique]",
+            input: { description: "[synthétique]", prompt: options.prompt, subagent_type: "sisyphus-junior" },
+            metadata: { parentSessionId: options.parent, sessionId: options.enfant },
+          },
+        },
+      },
+    },
+  });
+
+describe("consignes gardées : salle branchée (L3s-a)", () => {
+  it("consigne d'un enfant de la salle gardée par le processeur de la SALLE, sous sa racine ; masquée avant la coupe ; la partie ajoutée par un crochet n'est jamais lue ; jamais journalisée ni publiée", async (t: TestContext) => {
+    const espion = journalEspion();
+    const h = await startCockpit(t, { omo: true, log: espion.log });
+    h.sessions.upsert(session(SALLE_RACINE), undefined, { instance: "omo" });
+    const jeton = jetonFactice();
+    const prompt = `[synthétique] consigne confiée dans la salle, clé ${jeton} à ne jamais garder en clair`;
+    await tacheSalle(h, { id: "evt_l3sa_1", parent: SALLE_RACINE, callId: "call_salle_1", enfant: SALLE_ENFANT, prompt });
+    const gardees = lignes(h, SALLE_RACINE);
+    assert.deepEqual(
+      gardees.map((l) => [l.root_id, l.parent_session_id, l.enfant_session_id, l.call_id]),
+      [[SALLE_RACINE, SALLE_RACINE, SALLE_ENFANT, "call_salle_1"]],
+    );
+    assert.equal(gardees[0]?.texte, bornerConsigne(prompt, redactSecrets).texte, "mêmes bornes et même masquage que l'instance principale");
+    assert.equal(gardees[0]?.texte.includes(jeton), false, "masqué avant d'être gardé");
+    assert.equal(gardees[0]?.longueur, pointsDeCode(prompt));
+
+    // Premier message de l'enfant, préfixé par un crochet de l'extension (JP-4, `.omo/notepads/`) : jamais lu par la capture.
+    await h.emitOmo({
+      directory: "/workspace/app",
+      payload: { id: "evt_l3sa_2", type: "message.updated", properties: { sessionID: SALLE_ENFANT, info: { id: "msg_l3sa_enfant", sessionID: SALLE_ENFANT, role: "user" } } },
+    });
+    await h.emitOmo({
+      directory: "/workspace/app",
+      payload: {
+        id: "evt_l3sa_3",
+        type: "message.part.updated",
+        properties: {
+          sessionID: SALLE_ENFANT,
+          part: { id: "prt_l3sa_enfant", sessionID: SALLE_ENFANT, messageID: "msg_l3sa_enfant", type: "text", text: "[synthétique] .omo/notepads/ ajouté par un crochet" },
+        },
+      },
+    });
+    assert.deepEqual(
+      lignes(h).map((l) => [l.call_id, l.texte]),
+      [["call_salle_1", bornerConsigne(prompt, redactSecrets).texte]],
+      "seule la consigne écrite par l'assistant est gardée",
+    );
+    assert.equal(lignes(h).some((l) => l.texte.includes(".omo/notepads")), false);
+    assertAucunMorceau(espion.texte(), [prompt], "journal");
+    assertAucunMorceau(JSON.stringify(h.cockpitEvents()), [prompt], "événements du cockpit");
+  });
+
+  it("P11 : un événement de la salle n'est jamais appliqué à une racine principale, ni l'inverse ; témoins gardés", async (t: TestContext) => {
+    const h = await startCockpit(t, { omo: true });
+    h.sessions.upsert(session(PRINCIPALE));
+    h.sessions.upsert(session(SALLE_RACINE), undefined, { instance: "omo" });
+    // Salle → racine principale : ignoré (la session qui confie n'est pas de la salle).
+    await tacheSalle(h, { id: "evt_l3sa_p11_1", parent: PRINCIPALE, callId: "call_croise_1", enfant: "ses_x1", prompt: "[synthétique] consigne croisée 1" });
+    // Principale → racine de la salle : ignoré aussi, par le processeur principal.
+    const vus: string[] = [];
+    h.processor.addDerivation({ name: "temoin-consignes", onEvent: (e) => void vus.push(String((e.payload.properties as { part?: { callID?: string } }).part?.callID)) });
+    evenementTask(h, { parent: SALLE_RACINE, callId: "call_croise_2", enfant: "ses_x2", prompt: "[synthétique] consigne croisée 2" });
+    await until(() => vus.includes("call_croise_2"), 5_000);
+    // Lignes incohérentes (base abîmée) : une session de la salle rattachée à une racine principale. La racine décide aussi : rien.
+    h.db
+      .prepare("INSERT INTO sessions (id, parent_id, root_id, directory, title, purpose, instance, created_at, updated_at) VALUES (?, ?, ?, '/workspace/app', '', 'chat', 'omo', 1, 1)")
+      .run("ses_melange_l3sa", PRINCIPALE, PRINCIPALE);
+    await tacheSalle(h, { id: "evt_l3sa_p11_3", parent: "ses_melange_l3sa", callId: "call_croise_3", enfant: "ses_x3", prompt: "[synthétique] consigne croisée 3" });
+    assert.deepEqual(lignes(h), [], "aucune consigne croisée entre les instances");
+    // Témoins : chaque instance garde les consignes de SES racines.
+    evenementTask(h, { parent: PRINCIPALE, callId: "call_temoin_p", enfant: "ses_tp", prompt: "[synthétique] consigne principale" });
+    await until(() => lignes(h, PRINCIPALE).length === 1, 5_000);
+    await tacheSalle(h, { id: "evt_l3sa_p11_2", parent: SALLE_RACINE, callId: "call_temoin_s", enfant: "ses_ts", prompt: "[synthétique] consigne de la salle" });
+    assert.deepEqual(
+      lignes(h).map((l) => [l.root_id, l.call_id]).sort(),
+      [
+        [PRINCIPALE, "call_temoin_p"],
+        [SALLE_RACINE, "call_temoin_s"],
+      ].sort(),
+    );
+  });
+
+  it("inscription : aucune salle coupée ; une fois sur le processeur de la salle quand elle existe, jamais sur le principal ; retirée par close()", async (t: TestContext) => {
+    const inscrites: Array<{ nom: string; processeur: EventProcessor; retiree: boolean }> = [];
+    const addDerivation = EventProcessor.prototype.addDerivation;
+    t.mock.method(EventProcessor.prototype, "addDerivation", function (this: EventProcessor, derivation: EventDerivation) {
+      const retirer = addDerivation.call(this, derivation);
+      const entree = { nom: derivation.name, processeur: this, retiree: false };
+      inscrites.push(entree);
+      return () => {
+        entree.retiree = true;
+        retirer();
+      };
+    });
+    const coupee = await startCockpit(t);
+    assert.deepEqual(
+      inscrites.filter((e) => e.nom === CONSIGNES_DERIVATION_SALLE),
+      [],
+      "salle coupée : rien d'inscrit",
+    );
+    assert.equal(inscrites.filter((e) => e.nom === CONSIGNES_DERIVATION && e.processeur === coupee.processor).length, 1);
+    await coupee.close();
+    inscrites.length = 0;
+    const h = await startCockpit(t, { omo: true });
+    assert.ok(h.omo);
+    const salle = inscrites.filter((e) => e.nom === CONSIGNES_DERIVATION_SALLE);
+    assert.equal(salle.length, 1);
+    assert.equal(salle[0]?.processeur, h.omo.deps.processor, "sur le processeur de la salle");
+    assert.equal(inscrites.filter((e) => e.nom === CONSIGNES_DERIVATION_SALLE && e.processeur === h.processor).length, 0, "jamais sur le principal");
+    assert.equal(inscrites.filter((e) => e.nom === CONSIGNES_DERIVATION && e.processeur === h.omo?.deps.processor).length, 0);
+    h.cockpit.close();
+    assert.equal(salle[0]?.retiree, true, "retirée par close()");
+  });
+
+  it("erreur dans la dérivation de la salle : journal = nom de l'erreur et callId seulement ; le processeur continue", (t: TestContext) => {
+    const espion = journalEspion();
+    const texte = "[synthétique] consigne de la salle à ne jamais journaliser, assez longue pour être reconnue";
+    const db = openMemoryDb();
+    t.after(() => db.close());
+    const deps = {
+      db,
+      log: espion.log,
+      sessions: {
+        rootOf: () => {
+          throw new TypeError(texte);
+        },
+        instanceOf: () => "omo",
+      },
+    } as unknown as Parameters<typeof createConsignesDerivation>[0];
+    const derivation = createConsignesDerivation(deps, "omo");
+    assert.equal(derivation.name, CONSIGNES_DERIVATION_SALLE);
+    derivation.onEvent({
+      payload: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            type: "tool",
+            tool: "task",
+            sessionID: SALLE_RACINE,
+            callID: "call_erreur_salle",
+            state: { status: "running", input: { prompt: texte }, metadata: { sessionId: SALLE_ENFANT } },
+          },
+        },
+      },
+    } as never);
+    assert.deepEqual(
+      espion.lignes.map((l) => l.champs),
+      [{ callId: "call_erreur_salle", erreur: "TypeError" }],
+    );
+    assertAucunMorceau(espion.texte(), [texte], "journal");
   });
 });

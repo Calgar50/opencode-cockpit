@@ -25,6 +25,12 @@
 // - ACCESSIBILITÉ : le canevas 3D est aria-hidden (Scene3d) ; la vérité reste la liste et le tableau, qui sont toujours là.
 //   AUCUNE région aria-live ici : la page n'en a qu'une (D-3d-29), et les légendes passent par elle (LegendeBulle).
 // - LIBÉRATION (D-3d-28) : changer de zoom remonte Scene3d, qui libère son moteur ; ce n'est jamais une bascule en 2D.
+// - SALLE BRANCHÉE (« 3s », L3s-a) : les assistants d'une conversation de la salle sont rangés par leur RÔLE, lu sur la clé de
+//   l'agent (roleDeAgent, comme la bande : différé = direct) ; en Avancé, le bandeau de l'enceinte de la salle (JP-10) est écrit
+//   au-dessus de la vue, en 3D comme en 2D.
+// - DÉROULÉ PARTIEL (A36 point 1, spéc. l.356) : au-delà de 3 niveaux ou de 50 assistants, la scène ne dessine pas le surplus ;
+//   « Déroulé partiel : {n} assistants non dessinés » est écrit au-dessus de la vue, en 3D comme en repli 2D (DeroulePartiel),
+//   distinct de la note des faits partiels (borne du magasin).
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActivityFact } from "../../../server/shared/activity-types.ts";
 import { TEXTES as ACTIVITE } from "../../../server/shared/activity-texts.ts";
@@ -34,6 +40,7 @@ import { planConversation } from "../../../server/shared/neon-plan3d.ts";
 import type { NeonDetail, NeonScene } from "../../../server/shared/neon-scene.ts";
 import { scene, visibleCount } from "../../../server/shared/neon-scene.ts";
 import { libelleEtat, libelleOutil, remplir, TEXTES as NEON } from "../../../server/shared/neon-texts.ts";
+import { roleDeAgent } from "../../../server/shared/omo-roles.ts";
 import { cibleASuivre, instant } from "../../../server/shared/revoir.ts";
 import { TEXTES as REVOIR } from "../../../server/shared/revoir-texts.ts";
 import { TEXTES as SALLE } from "../../../server/shared/salle3d-texts.ts";
@@ -42,6 +49,7 @@ import { useApp } from "../../app/AppContext.tsx";
 import { oc } from "../../lib/api.ts";
 import { salle3dApi } from "../../lib/api-salle3d.ts";
 import { NeonCarte, NeonTableau } from "../chat/activity/NeonBand.tsx";
+import { DeroulePartiel } from "./DeroulePartiel.tsx";
 import { ConsigneRevoir } from "./revoir/ConsigneRevoir.tsx";
 import { LegendeBulle } from "./revoir/LegendeBulle.tsx";
 import { PanneauRevoir } from "./revoir/PanneauRevoir.tsx";
@@ -119,7 +127,8 @@ function Zoom({ rootId, sessionId, mode, theme, salle, vue3d, mouvementReduit, o
 
   const t = direct ? null : instant(lecteur.etat);
   const montres = useMemo(() => liste.slice(0, visibleCount(liste, t)), [liste, t]);
-  const vue = useMemo<NeonScene>(() => scene(montres, null, optionsScene({ salle, mode }, sessionId)), [montres, salle, mode, sessionId]);
+  // Rôles de la salle lus par clé de configuration, comme la bande (L3s-a) : sans effet hors de la salle (neon-scene.ts).
+  const vue = useMemo<NeonScene>(() => scene(montres, null, { ...optionsScene({ salle, mode }, sessionId), roleSalle: roleDeAgent }), [montres, salle, mode, sessionId]);
   const plan = useMemo<Plan3d | null>(() => (vue3d ? planConversation(vue, { theme, mode: vue.mode }) : null), [vue, vue3d, theme]);
   useMarquePlan(vue, zoom, vue3d ? "3d" : "2d");
 
@@ -167,6 +176,10 @@ function Zoom({ rootId, sessionId, mode, theme, salle, vue3d, mouvementReduit, o
       <div className="zoom-conv-tete">
         {conversations === null ? null : <ChoixConversation projet={conversations} rootId={rootId} onChoisir={(autre) => onZoom({ zoom: 2, rootId: autre })} />}
         {partiel ? <p className="zoom-conv-note">{REVOIR.partout.partiel}</p> : null}
+        {/* Scène bornée (A36 point 1) : même phrase que la bande, en 3D comme en repli 2D. */}
+        <DeroulePartiel horsBornes={vue.horsBornes} className="zoom-conv-note" />
+        {/* Enceinte de la Salle OMO (JP-10, mode Avancé) : son bandeau, écrit en toutes lettres comme dans la bande. */}
+        {vue.enceinte === null ? null : <p className="zoom-conv-note">{SALLE.avance.enceinte}</p>}
         {direct ? null : <p className="zoom-conv-bandeau">{REVOIR.partout.rienRelance}</p>}
       </div>
       <ReplayBar

@@ -5,11 +5,27 @@
 // Les libérations sont comptées par des espions posés sur les `dispose()` des prototypes de three : ils voient CHAQUE appel, y
 // compris sur une ressource que la scène ne porte plus (M3D-5 : sans `InstancedMesh.dispose()`, 5 tampons restent vivants alors
 // que `renderer.info.memory` affiche 0/0).
+// Salle branchée (« 3s », L3s-a) : liens du carnet partagé (tube fin, sans texture), tuiles du carnet et boucle de l'extension,
+// faits recopiés, libération complète.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { BufferGeometry, Color, DataTexture, InstancedMesh, LineBasicMaterial, type Material, MeshBasicMaterial, type Object3D, ShaderMaterial, SpriteMaterial, Texture } from "three";
+import {
+  BufferGeometry,
+  Color,
+  DataTexture,
+  InstancedMesh,
+  LineBasicMaterial,
+  type Material,
+  Mesh,
+  MeshBasicMaterial,
+  type Object3D,
+  ShaderMaterial,
+  SpriteMaterial,
+  Texture,
+  TubeGeometry,
+} from "three";
 import {
   creerGraphe,
   type Graphe,
@@ -17,13 +33,15 @@ import {
   HALO_OPACITE_STATIQUE,
   JETON_ENCEINTE,
   JETON_FIGE,
+  JETON_LIEN_CARNET,
   JETON_NOEUD,
   JETON_STATION,
   JETONS_TUILE,
   PERIODE_HALO_S,
+  RAYON_LIEN_CARNET,
   VITESSE_DEFILEMENT,
 } from "../web/pages/salle-controle/three/graphe.ts";
-import { COTES_HEXAGONE, courbeFaisceau, HAUTEURS_TUILE, segmentsTube } from "../web/pages/salle-controle/three/formes.ts";
+import { COTES_HEXAGONE, courbeFaisceau, HAUTEURS_TUILE, segmentsTube, TAILLES } from "../web/pages/salle-controle/three/formes.ts";
 import {
   HAUTEUR_FAISCEAU,
   LARGEUR_FAISCEAU,
@@ -34,7 +52,7 @@ import {
   TAILLE_MARQUE,
 } from "../web/pages/salle-controle/three/textures.ts";
 import { NEON_PALETTES } from "./shared/neon-palette.ts";
-import type { Plan3d, Plan3dBeam, Plan3dMark, Plan3dNode, Plan3dStation, Plan3dTerritoire, Plan3dTileBatch, Point3 } from "./shared/salle3d-types.ts";
+import type { Plan3d, Plan3dBeam, Plan3dLienCarnet, Plan3dMark, Plan3dNode, Plan3dStation, Plan3dTerritoire, Plan3dTileBatch, Point3 } from "./shared/salle3d-types.ts";
 
 const PALETTE = NEON_PALETTES.sombre;
 const DOSSIER_THREE = path.join(import.meta.dirname, "..", "web", "pages", "salle-controle", "three");
@@ -512,6 +530,92 @@ describe("graphe 3D : libération", () => {
     assert.deepEqual([...comptes.values()], []);
     assert.equal(graphe.nombreObjets(), 0);
     assert.equal(graphe.animer(1, false), false);
+  });
+});
+
+// --- Salle OMO branchée (itération « 3s », L3s-a) : carnet partagé et boucle de l'extension ------------------------------------------
+
+describe("graphe 3D : salle OMO — carnet partagé et boucle de l'extension (L3s-a)", () => {
+  const lien = (id: string, faits: number[] = [5]): Plan3dLienCarnet => ({ id, de: point(-10, 0.4, -5), vers: point(3, 0.6, 2), faits });
+  const planSalle = (liens: Plan3dLienCarnet[] = [lien("n1"), lien("n2", [6, 7])]): Plan3d =>
+    plan({
+      stations: [station("carnet", -10)],
+      noeuds: [noeud("n1", "aucun"), noeud("n2", "aucun")],
+      marques: [marque("extension:n1", "origine", "extension")],
+      tuiles: [lot("carnet", "modifie", 2), lot("carnet", "lu", 1)],
+      liensCarnet: liens,
+      carnetVide: false,
+    });
+  const rayonDe = (objet: Object3D | undefined): number => (porteur(objet ?? new Mesh()).geometry as unknown as { parameters: { radius: number } }).parameters.radius;
+
+  it("liens : un tube FIN et droit par lien, au jeton territoire, sans texture, portant ses faits ; tuiles du carnet en InstancedMesh ; boucle au jeton extension", () => {
+    const graphe = creerGraphe(planSalle(), PALETTE);
+    try {
+      // sol 1 · station 3 · 2 nœuds sans halo (2 + 2) · marque 1 · 2 lots de tuiles · 2 liens.
+      assert.equal(graphe.nombreObjets(), 1 + 3 + 4 + 1 + 2 + 2);
+      for (const [id, faits] of [
+        ["n1", [5]],
+        ["n2", [6, 7]],
+      ] as const) {
+        const objet = parNom(graphe.racine, `lien-carnet:${id}`);
+        assert.ok(objet instanceof Mesh, `lien ${id} dessiné`);
+        assert.ok(porteur(objet).geometry instanceof TubeGeometry);
+        assert.equal(porteur(objet).material?.map ?? null, null, "un lien du carnet ne défile pas et n'a aucune texture : jamais un faisceau");
+        assert.equal(couleurDe(graphe.racine, `lien-carnet:${id}`), hex("territoire"));
+        assert.deepEqual(objet.userData.faits, faits);
+        assert.equal(objet.userData.famille, "lien-carnet");
+      }
+      assert.equal(JETON_LIEN_CARNET, "territoire");
+      assert.equal(rayonDe(parNom(graphe.racine, "lien-carnet:n1")), RAYON_LIEN_CARNET);
+      assert.ok(RAYON_LIEN_CARNET * 3 <= TAILLES.faisceauRayon, "trait fin : trois fois plus mince au moins qu'un faisceau");
+      assert.ok(parNom(graphe.racine, "tuiles:carnet:modifie") instanceof InstancedMesh);
+      assert.equal(couleurDe(graphe.racine, "tuiles:carnet:modifie"), hex("consigne"));
+      assert.equal(couleurDe(graphe.racine, "tuiles:carnet:lu"), hex("resultat"));
+      assert.equal(couleurDe(graphe.racine, "marque:extension:n1"), hex("extension"));
+      // P12 : tout ce qui n'est pas du décor porte des faits.
+      for (const objet of objets(graphe.racine)) {
+        if (objet.userData.decor === true) continue;
+        assert.ok(Array.isArray(objet.userData.faits) && objet.userData.faits.length > 0, `${objet.name} porte des faits`);
+      }
+      assert.equal(graphe.animer(1, false), false, "rien de la salle ne s'anime");
+    } finally {
+      graphe.liberer();
+    }
+  });
+
+  it("libération : chaque ressource des liens libérée une fois ; un lien retiré libère sa géométrie, le matériau partagé part avec le dernier", () => {
+    const graphe = creerGraphe(planSalle(), PALETTE);
+    const geometrieN2 = porteur(parNom(graphe.racine, "lien-carnet:n2") ?? graphe.racine).geometry;
+    const materiau = porteur(parNom(graphe.racine, "lien-carnet:n1") ?? graphe.racine).material;
+    assert.ok(geometrieN2 !== undefined && materiau !== undefined);
+    const retrait = pendant(() => graphe.maj(planSalle([lien("n1")])));
+    assert.equal(retrait.get(geometrieN2), 1, "géométrie du lien retiré libérée");
+    assert.equal(retrait.get(materiau), undefined, "matériau encore porté par l'autre lien");
+    assert.equal(parNom(graphe.racine, "lien-carnet:n2"), undefined);
+    const dernier = pendant(() => graphe.maj(planSalle([])));
+    assert.equal(dernier.get(materiau), 1, "le dernier lien parti, son matériau partagé part aussi");
+
+    const complet = creerGraphe(planSalle(), PALETTE);
+    const attendues = ressources(complet.racine);
+    const comptes = pendant(() => complet.liberer());
+    assert.equal(complet.nombreObjets(), 0);
+    for (const ressource of attendues) assert.equal(comptes.get(ressource), 1, "chaque ressource libérée une fois");
+    assert.equal(comptes.size, attendues.size, "aucune ressource oubliée ni créée hors de la scène");
+    graphe.liberer();
+  });
+
+  it("champ facultatif : un plan sans `liensCarnet` (zoom 1, hors de la salle) ne dessine aucun lien", () => {
+    const sans = planSalle();
+    delete sans.liensCarnet;
+    const graphe = creerGraphe(sans, PALETTE);
+    try {
+      assert.equal(
+        objets(graphe.racine).some((objet) => objet.name.startsWith("lien-carnet:")),
+        false,
+      );
+    } finally {
+      graphe.liberer();
+    }
   });
 });
 

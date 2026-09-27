@@ -23,6 +23,10 @@ import { type BuildCockpit11Options, buildCockpit11, type Cockpit11Wiring, serve
 import { buildSalle3dDerivations, buildSalle3dRoutes } from "./wiring-3d.ts";
 // [3d] fin
 
+// [3d] début : consignes de la salle sur le processeur de sa propre instance (itération 3s, L3s-a)
+import { createConsignesDerivation } from "./consignes-capture.ts";
+// [3d] fin
+
 export interface CockpitAppDeps extends Omit<AppDeps, "gate" | "proxyHooks" | "internalAgents" | "reloadBusy" | "configQueue"> {
   /** Suivi des sessions (arbre d'une conversation pour le portillon, modules 1.1). */
   sessions: SessionTracker;
@@ -154,6 +158,13 @@ export function createCockpitApp(deps: CockpitAppDeps, options: CockpitAppOption
 
   // Port lu au moment de l'appel (jamais en copie) : un module ou une surcharge qui le pose après reste pris en compte.
   const internalAgents: Pick<InternalAgentsPort, "ensureAll"> = { ensureAll: () => built.c11.ports.internalAgents.ensureAll() };
+
+  // [3d] début : consignes de la salle sur le processeur de sa propre instance (itération 3s, L3s-a)
+  // U2, D-3d-30, P11 : la capture des consignes lit aussi le flux de la salle, sur SON processeur, jamais le principal. Salle
+  // coupée (omo === null) : rien n'est inscrit. Retirée par close(), comme la dérivation principale ci-dessous.
+  if (omo !== null) detach.push(omo.processor.addDerivation(createConsignesDerivation(built.c11, "omo")));
+  // [3d] fin
+
   // [3d] début : routes et dérivation de la salle de contrôle 3D, hors du registre 1.1 (itération 3, T3d-a)
   // Toujours montées (wiring-3d.ts), jamais inscrites dans wiring-11 ; la dérivation des consignes est retirée par close().
   const routes3d = buildSalle3dRoutes(built.c11);

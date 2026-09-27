@@ -529,12 +529,16 @@ describe("pureté et aucune chaîne affichable (D-3d-21, D-3d-27)", () => {
     for (const file of MODULES) assert.deepEqual(problemes(lire_(file)), [], file);
   });
 
-  it("imports : activity-types.ts, neon-scene.ts et les types partagés de salle3d-types.ts seulement, jamais un module de textes (D-3d-27)", () => {
+  it("imports : activity-types.ts, neon-scene.ts et les types partagés de salle3d-types.ts seulement (plus, pour legendes.ts, les prédicats de legendes-salle.ts), jamais un module de textes (D-3d-27)", () => {
+    // « 3s » (L3s-a) : legendes.ts branche les prédicats de la salle de legendes-salle.ts, module pur et sans texte (contrôle de
+    // source dans croisements-3d-salle.test.ts). Adaptation de L3s-a : aucun autre import n'est permis, aucun module de textes.
+    const permis = (file: string, spec: string) =>
+      spec === "./activity-types.ts" || spec === "./neon-scene.ts" || spec === "./salle3d-types.ts" || (file === "legendes.ts" && spec === "./legendes-salle.ts");
     for (const file of MODULES) {
       const source = lire_(file);
       const imports = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1] ?? "");
       assert.ok(imports.length > 0, file);
-      for (const spec of imports) assert.ok(spec === "./activity-types.ts" || spec === "./neon-scene.ts" || spec === "./salle3d-types.ts", `${file} : ${spec}`);
+      for (const spec of imports) assert.ok(permis(file, spec), `${file} : ${spec}`);
       assert.doesNotMatch(source, /^\s*import\s+(?!type\b)[^;]*from\s*["']\.\/salle3d-types\.ts["']/m, `${file} : salle3d-types.ts en types seulement`);
     }
   });

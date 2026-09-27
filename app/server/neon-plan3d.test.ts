@@ -6,11 +6,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { PLAN3D, PLAN3D_CAMERA, planConversation, type PlanConversationOptions } from "./shared/neon-plan3d.ts";
+import { PLAN3D, PLAN3D_CAMERA, PLAN3D_SALLE, planConversation, type PlanConversationOptions } from "./shared/neon-plan3d.ts";
+import { roleDeAgent } from "./shared/omo-roles.ts";
 import { EventMemory, type FactContext, FactDeduper, type FactEvent, factsFromEvent, type FactSession } from "./shared/activity-facts.ts";
 import type { ActivityFact, ActivityFactKind, FactValue } from "./shared/activity-types.ts";
 import { NEON_GRAMMAIRE, NEON_SIGNE_FAISCEAU } from "./shared/neon-palette.ts";
-import { moments, NEON_CADRE, NEON_SESSIONS_MAX, type NeonScene, type NeonSceneOptions, scene, visibleCount } from "./shared/neon-scene.ts";
+import { moments, NEON_CADRE, NEON_CARNET_TUILES, NEON_SESSIONS_MAX, type NeonScene, type NeonSceneOptions, scene, visibleCount } from "./shared/neon-scene.ts";
 import type { Plan3d } from "./shared/salle3d-types.ts";
 import { readCapture } from "./test-support/fake-opencode.ts";
 
@@ -173,6 +174,8 @@ function signes(p: Plan3d): { quoi: string; faits: readonly number[] }[] {
     ...p.faisceaux.map((f) => ({ quoi: `faisceau ${f.id}`, faits: f.faits })),
     ...p.marques.map((m) => ({ quoi: `marque ${m.id}`, faits: m.faits })),
     ...p.tuiles.map((t) => ({ quoi: `tuiles ${t.dossier}/${t.etat}`, faits: t.faits })),
+    // Salle OMO (« 3s », L3s-a) : liens du carnet partagé.
+    ...(p.liensCarnet ?? []).map((l) => ({ quoi: `lien du carnet ${l.id}`, faits: l.faits })),
   ];
 }
 
@@ -518,5 +521,136 @@ describe("pureté du plan 3D", () => {
     assert.equal(p.anime, false);
     assert.equal(p.stations.length, 3);
     assert.equal(p.camera.fovDeg, 35);
+  });
+});
+
+// --- Salle OMO branchée (itération « 3s », L3s-a) : carnet partagé et actions de l'extension ---------------------------------------
+
+const SALLE_VUE: NeonSceneOptions = { zoom: 2, mode: "avance", roleSalle: roleDeAgent };
+
+/** Conversation de la salle : une délégation, le carnet modifié par l'assistant et lu par la conversation, une action de l'extension. */
+function histoireSalle(): ActivityFact[] {
+  const s = new Story();
+  s.add(R, "statut", { etat: "creee", role: "conversation", parent: null, agent: "sisyphus", instance: "omo" });
+  s.demande("msg_1");
+  s.occupee(R);
+  s.add(R, "consigne", { etat: "prepare", callId: "call_j", messageId: "msg_1" }, "call_j");
+  s.add("ses_j", "statut", { etat: "creee", role: "delegation", parent: R, agent: "sisyphus-junior", instance: "omo" });
+  s.add(
+    R,
+    "consigne",
+    { etat: "envoyee", callId: "call_j", messageId: "msg_1", enfant: "ses_j", agent: "sisyphus-junior", source: "ia", commande: null, reprise: false, categorie: "deep", ia: null, competences: 1, fond: false },
+    "call_j",
+  );
+  s.occupee("ses_j");
+  s.add("ses_j", "carnet", { etat: "modifie", chemin: ".omo/notepads/n.md", fichier: "00000000000000c1", dossier: "00000000000000d0", callId: "call_c1", messageId: "msg_c" }, "call_c1");
+  s.add(R, "carnet", { etat: "lu", chemin: ".omo/plans/p.md", fichier: "00000000000000c2", dossier: "00000000000000d1", callId: "call_c2", messageId: "msg_c" }, "call_c2");
+  s.add("ses_j", "decision", { verdict: "auto", regle: "A-grep", par: "extension" }, "call_g");
+  return s.facts;
+}
+
+/** Position 3D attendue d'un point du plan 2D, recalculée ici (constantes de L29a, écrites en toutes lettres). */
+const attendu3 = (p: { x: number; y: number }, hauteur: number) => ({ x: Math.round((p.x - 280) * 0.05 * 1e6) / 1e6, y: hauteur, z: Math.round((p.y - 110) * 0.05 * 1e6) / 1e6 });
+
+describe("salle branchée (L3s-a) : carnet partagé et boucle de l'extension en 3D", () => {
+  it("tuiles du carnet en lots au dossier `carnet` (modifié puis lu), aux positions de la scène ; liens vers les assistants ; boucle orange décalée ; faits recopiés", () => {
+    const facts = histoireSalle();
+    const vue = scene(facts, null, SALLE_VUE);
+    assert.equal(vue.carnet.vide, false, "la scène porte le carnet (L25b)");
+    const p = planConversation(vue, PLAN);
+    assert.equal(p.carnetVide, false);
+    const lots = p.tuiles.filter((lot) => lot.dossier === PLAN3D_SALLE.dossierCarnet);
+    assert.deepEqual(
+      lots.map((lot) => `${lot.etat}:${lot.positions.length}`),
+      ["modifie:1", "lu:1"],
+    );
+    for (const lot of lots) {
+      const tuiles = vue.carnet.tuiles.filter((tuile) => (tuile.modifie ? "modifie" : "lu") === lot.etat);
+      assert.deepEqual(
+        lot.positions,
+        tuiles.map((tuile) => attendu3(tuile.position ?? { x: 0, y: 0 }, PLAN3D.hauteurs.tuile)),
+      );
+      assert.deepEqual(lot.faits, [...new Set(tuiles.flatMap((tuile) => tuile.faits))].sort((a, b) => a - b));
+    }
+    assert.deepEqual(
+      (p.liensCarnet ?? []).map((lien) => lien.id),
+      vue.carnet.liens.map((lien) => lien.sessionId),
+    );
+    for (const lien of p.liensCarnet ?? []) {
+      const source = vue.carnet.liens.find((l) => l.sessionId === lien.id);
+      assert.ok(source !== undefined);
+      assert.deepEqual(lien.faits, source.faits);
+      assert.deepEqual(lien.de, attendu3(source.depart, PLAN3D.hauteurs.station));
+      assert.deepEqual(lien.vers, p.noeuds.find((n) => n.id === lien.id)?.position, "le lien arrive sur le nœud de l'assistant");
+    }
+    const boucles = p.marques.filter((marque) => marque.id.startsWith("extension:"));
+    assert.equal(vue.extensions.length, 1);
+    assert.deepEqual(boucles, [
+      {
+        id: "extension:ses_j",
+        kind: "origine",
+        position: attendu3({ x: (vue.extensions[0]?.position.x ?? 0) - 15, y: (vue.extensions[0]?.position.y ?? 0) + 13 }, PLAN3D.hauteurs.marque),
+        jeton: NEON_GRAMMAIRE.extension.trait,
+        faits: vue.extensions[0]?.faits ?? [],
+      },
+    ]);
+    assert.equal(NEON_GRAMMAIRE.extension.trait, "extension");
+    assert.deepEqual(PLAN3D_SALLE, { dossierCarnet: "carnet", decalageExtension: { x: -15, y: 13 } });
+    // Le chemin du carnet, écrit par l'IA, n'entre jamais dans le plan (P12, aucun texte).
+    assert.equal(JSON.stringify(p).includes(".omo/"), false);
+  });
+
+  it("au-delà de la rangée de la station (NEON_CARNET_TUILES), les tuiles du carnet ne sont pas dessinées : aucune position inventée", () => {
+    const s = new Story();
+    s.add(R, "statut", { etat: "creee", role: "conversation", parent: null, agent: "sisyphus", instance: "omo" });
+    s.demande("msg_1");
+    for (let i = 0; i < NEON_CARNET_TUILES + 2; i++) {
+      s.add(R, "carnet", { etat: "lu", chemin: `.omo/notepads/n${i}.md`, fichier: `00000000000000${String(i).padStart(2, "0")}`, dossier: "00000000000000d0", callId: `call_k${i}`, messageId: "msg_c" }, `call_k${i}`);
+    }
+    const vue = scene(s.facts, null, SALLE_VUE);
+    assert.equal(vue.carnet.tuiles.length, NEON_CARNET_TUILES + 2);
+    const lots = planConversation(vue, PLAN).tuiles.filter((lot) => lot.dossier === PLAN3D_SALLE.dossierCarnet);
+    assert.equal(lots.reduce((n, lot) => n + lot.positions.length, 0), NEON_CARNET_TUILES, "seules les tuiles placées par la scène");
+    const placees = vue.carnet.tuiles.filter((tuile) => tuile.position !== null);
+    assert.deepEqual(lots.flatMap((lot) => lot.faits), [...new Set(placees.flatMap((tuile) => tuile.faits))].sort((a, b) => a - b));
+  });
+
+  it("DISCRIMINANT : hors de la salle, ou en mode Simple, ni tuile du carnet, ni lien, ni boucle ; champ facultatif absent", () => {
+    const simple = planConversation(scene(histoireSalle(), null, { ...SALLE_VUE, mode: "simple" }), PLAN);
+    const hors = plan(histoire(), null, AVANCE);
+    for (const p of [simple, hors]) {
+      assert.equal(p.carnetVide, true);
+      assert.equal(p.tuiles.some((lot) => lot.dossier === PLAN3D_SALLE.dossierCarnet), false);
+      assert.equal("liensCarnet" in p, false, "contrat : champ facultatif absent sans lien");
+      assert.equal(p.marques.some((marque) => marque.id.startsWith("extension:")), false);
+    }
+  });
+
+  it("P12 et différé = direct : à chaque fait, chaque tuile, lien et boucle porte des faits visibles ; relu depuis la base, même plan ; positions stables", () => {
+    const facts = histoireSalle();
+    const relus = stored(facts);
+    const vus = new Map<string, unknown>();
+    for (let k = 0; k <= facts.length; k++) {
+      for (const vue of [SALLE_VUE, { ...SALLE_VUE, zoom: 3 as const, focus: "ses_j" }]) {
+        const direct = planConversation(scene(facts.slice(0, k), null, vue), PLAN);
+        assert.deepEqual(planConversation(scene(relus.slice(0, k), null, vue), PLAN), direct, `différé k=${k}`);
+        for (const signe of signes(direct)) {
+          assert.ok(signe.faits.length > 0, `${signe.quoi} sans fait`);
+          for (const i of signe.faits) assert.ok(i >= 0 && i < k, `${signe.quoi} : fait ${i} sur ${k}`);
+        }
+        if (vue.zoom !== 2) continue;
+        // Positions stables : un élément de la salle déjà placé ne bouge plus quand un fait s'ajoute.
+        const positions = [
+          ...direct.tuiles.filter((l) => l.dossier === PLAN3D_SALLE.dossierCarnet).map((l) => [`tuiles:${l.etat}`, l.positions[0]] as const),
+          ...(direct.liensCarnet ?? []).map((l) => [`lien:${l.id}`, [l.de, l.vers]] as const),
+          ...direct.marques.filter((m) => m.id.startsWith("extension:")).map((m) => [m.id, m.position] as const),
+        ];
+        for (const [cle, position] of positions) {
+          if (vus.has(cle)) assert.deepEqual(position, vus.get(cle), `${cle} déplacé au fait ${k}`);
+          else vus.set(cle, position);
+        }
+      }
+    }
+    assert.ok(vus.size >= 4, `éléments de la salle suivis : ${[...vus.keys()].join(", ")}`);
   });
 });

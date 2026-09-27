@@ -3,7 +3,8 @@
 // territoire par projet, trois compteurs, enceinte de la Salle OMO.
 // Lecture seule : aucune écriture en base, aucune écriture de configuration ; la seule requête à opencode est
 // GET /session/status?directory=… sur l'INSTANCE PRINCIPALE, et seulement pour un dossier qui porte au moins une racine de cette
-// instance (P11 : rien n'est demandé au client principal pour la Salle OMO).
+// instance (P11 : rien n'est demandé au client principal pour la Salle OMO) — plus, en Avancé et salle présente, la même requête
+// sur l'INSTANCE DE LA SALLE pour ses propres dossiers (L3s-a, ci-dessous).
 // - projets : deps.projects.list() plus les dossiers des racines récentes, chacun filtré par deps.projects.isAllowedDirectory ;
 // - racines récentes : `sessions` sans parent, non supprimées, purpose = 'chat', updated_at dans les 24 h, 200 au plus ;
 // - travaillent : sessionsQuiTravaillent (règle de statusBusy, shared/territoires.ts) sur l'arbre de la racine ; échec de la
@@ -13,7 +14,18 @@
 //   (« Coût des demandes en cours dans ce projet », salle3d-texts.ts) ;
 // - salle (sessions.instance = 'omo', D-3d-14) : en Avancé, compteurs par les faits (occupeesSelonFaits) et statutVerifie: false ;
 //   en Simple, ni compteurs ni titre en direct, et seulement les conversations dont revoirAcces est ok, avec revoir: true.
+// Salle OMO branchée (itération « 3s », L3s-a ; P11, D-3d-13, D-3d-14) :
+// - une racine connue d'`omo_rooms` (salle ouverte par le cockpit) est rangée dans l'enceinte même si `sessions` dit « principale »
+//   (désaccord : fermé en cas de doute) ; elle n'est donc jamais demandée au client principal ;
+// - en Avancé, quand l'instance de la salle existe (routeur d'instances, `instances.omo`), `travaillent` d'une racine de la salle
+//   vient de GET /session/status?directory=… sur le CLIENT DE LA SALLE, jamais sur le client principal (P11), avec la règle de
+//   statusBusy ; `statutVerifie` n'est vrai que si chaque réponse, principale et de la salle, est arrivée ; une réponse en échec
+//   rend `travaillent` null (« état non vérifiable », jamais 0) ;
+// - salle coupée (`instances.omo` null ou absent : cas de production tant que SALLE_OUVERTE est faux) : rien ne change,
+//   compteurs par les faits et `statutVerifie` faux ;
+// - en Simple : AUCUNE requête, ni au client principal ni à celui de la salle, pour une racine de la salle (D-3d-14).
 // Titres passés par redactSecrets. Requêtes SQL paramétrées seulement ; identifiants validés par shared/ids.ts.
+import type { Cockpit11 } from "./contracts-11.ts";
 import type { Salle3dDeps, TerritoiresPort } from "./contracts-3d.ts";
 import { redactSecrets } from "./redact.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
@@ -42,13 +54,26 @@ export interface TerritoiresOptions {
   now?: () => number;
   /** Lecture du statut d'un dossier de l'instance principale (tests) ; absente : deps.client.request. */
   statut?: (directory: string) => Promise<unknown>;
+  /**
+   * Lecture du statut d'un dossier de l'instance de la SALLE (tests) ; absente : client de `instances.omo`. N'est lue qu'en Avancé
+   * et seulement si l'instance de la salle existe : salle coupée, rien ne change (L3s-a).
+   */
+  statutSalle?: (directory: string) => Promise<unknown>;
 }
+
+/**
+ * Dépendances du service : celles des services 3d, plus le routeur d'instances (Cockpit11.instances), que wiring-3d.ts passe déjà
+ * avec le cockpit entier. Élargies ICI (L3s-a) : contracts-3d.ts et wiring-3d.ts, propriétés de l'intégrateur, ne changent pas.
+ */
+export type TerritoiresDeps = Salle3dDeps & Partial<Pick<Cockpit11, "instances">>;
 
 type RacineRow = {
   id: string;
   directory: string;
   title: string;
   instance: string;
+  /** 1 si `omo_rooms` connaît la racine (salle ouverte par le cockpit), 0 sinon. */
+  salle_ouverte: number;
   updated_at: number;
 };
 
@@ -62,6 +87,12 @@ interface Racine {
 }
 
 const estInstance = (valeur: unknown): valeur is SessionInstance => valeur === "principale" || valeur === "omo";
+
+/** Instance d'une racine : salle ouverte par le cockpit (`omo_rooms`) → enceinte, même si `sessions` dit autre chose (L3s-a). */
+function instanceDeLaLigne(row: RacineRow): SessionInstance {
+  if (row.salle_ouverte === 1) return "omo";
+  return estInstance(row.instance) ? row.instance : "principale";
+}
 
 /**
  * Chemin d'un dossier relatif à la racine du workspace vue par opencode (TerritoireView.projet) ; la racine elle-même rend la
@@ -83,6 +114,20 @@ export function nomDeProjet(racineWorkspace: string, dossier: string, projet: st
   return segments.at(-1) ?? projet;
 }
 
+/**
+ * Réponse de GET /session/status par dossier, lue par `lire` (client principal ou client de la salle) ; une requête en échec, même
+ * levée tout de suite, laisse le dossier absent de la table : « non vérifiable » (null), jamais 0.
+ */
+async function statutsParDossier(dossiers: readonly string[], lire: (directory: string) => Promise<unknown>): Promise<Map<string, unknown>> {
+  const reponses = await Promise.allSettled(dossiers.map((directory) => Promise.resolve().then(() => lire(directory))));
+  const statuts = new Map<string, unknown>();
+  dossiers.forEach((directory, index) => {
+    const resultat = reponses[index];
+    if (resultat?.status === "fulfilled") statuts.set(directory, resultat.value);
+  });
+  return statuts;
+}
+
 /** Somme des compteurs d'un groupe de conversations ; `travaillent` reste null dès qu'une conversation n'est pas vérifiable. */
 function compteurs(conversations: readonly ConversationTerritoire[]): TerritoireView["compteurs"] {
   let travaillent: number | null = 0;
@@ -97,16 +142,26 @@ function compteurs(conversations: readonly ConversationTerritoire[]): Territoire
   return { travaillent, attendent, cout };
 }
 
-export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOptions = {}): TerritoiresPort {
+export function createTerritoiresPort(deps: TerritoiresDeps, options: TerritoiresOptions = {}): TerritoiresPort {
   const horloge = options.now ?? Date.now;
   const statutDuDossier =
     options.statut ?? ((directory: string) => deps.client.request<unknown>("GET", "/session/status", { directory, timeoutMs: STATUT_TIMEOUT_MS }));
+  /**
+   * Statut d'un dossier sur l'instance de la SALLE (P11 : jamais le client principal) ; null quand la salle est coupée. Relu à
+   * chaque appel : le routeur est celui du cockpit, posé par app-factory.
+   */
+  const statutSalleDuDossier = (): ((directory: string) => Promise<unknown>) | null => {
+    const salle = deps.instances?.omo ?? null;
+    if (salle === null) return null;
+    return options.statutSalle ?? ((directory: string) => salle.client.request<unknown>("GET", "/session/status", { directory, timeoutMs: STATUT_TIMEOUT_MS }));
+  };
 
   /** Racines de conversation actives dans les 24 h, bornées, identifiants et dossiers validés. */
   const racinesRecentes = (maintenant: number): Racine[] => {
     const rows = deps.db
       .prepare(
-        `SELECT id, directory, title, instance, updated_at FROM sessions
+        `SELECT id, directory, title, instance, EXISTS (SELECT 1 FROM omo_rooms WHERE omo_rooms.root_id = sessions.id) AS salle_ouverte, updated_at
+         FROM sessions
          WHERE parent_id IS NULL AND deleted_at IS NULL AND purpose = 'chat' AND directory != '' AND updated_at >= ?
          ORDER BY updated_at DESC LIMIT ?`,
       )
@@ -119,7 +174,7 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
         id: row.id,
         directory: row.directory,
         titre: redactSecrets(typeof row.title === "string" ? row.title : ""),
-        instance: estInstance(row.instance) ? row.instance : "principale",
+        instance: instanceDeLaLigne(row),
         derniereActivite: typeof row.updated_at === "number" ? row.updated_at : 0,
       });
     }
@@ -173,21 +228,33 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
     return occupeesSelonFaits(reponse.facts, reponse.partial);
   };
 
+  /**
+   * « travaillent » d'une racine de la salle en Avancé (L3s-a) : lu dans la réponse de l'INSTANCE DE LA SALLE quand elle existe
+   * (`statutsSalle` non null ; dossier absent = requête en échec → null, jamais 0), avec la règle de statusBusy ; salle coupée :
+   * les faits, comme avant.
+   */
+  const travaillentDansLaSalle = (racine: Racine, occupees: number | null, statutsSalle: ReadonlyMap<string, unknown> | null): number | null => {
+    if (statutsSalle === null) return occupees;
+    if (!statutsSalle.has(racine.directory)) return null;
+    return sessionsQuiTravaillent(statutsSalle.get(racine.directory), [racine.id, ...deps.sessions.descendants(racine.id)]);
+  };
+
   const lire = async (mode: NeonMode, now: number): Promise<TerritoiresResponse> => {
     const maintenant = Number.isFinite(now) ? now : horloge();
     const racines = racinesRecentes(maintenant);
     const racinesPrincipales = racines.filter((racine) => racine.instance === "principale");
     const racinesSalle = racines.filter((racine) => racine.instance === "omo");
 
-    // P11 : un dossier n'est interrogé que s'il porte au moins une racine de l'instance principale.
+    const simple = mode === "simple";
+    // P11 : un dossier n'est interrogé sur l'instance principale que s'il porte au moins une racine de cette instance ; un dossier
+    // de la salle ne l'est que sur l'instance de la salle, en Avancé, et seulement si elle existe (L3s-a).
     const dossiersInterroges = [...new Set(racinesPrincipales.map((racine) => racine.directory))];
-    const reponses = await Promise.allSettled(dossiersInterroges.map((directory) => statutDuDossier(directory)));
-    const statuts = new Map<string, unknown>();
-    dossiersInterroges.forEach((directory, index) => {
-      const resultat = reponses[index];
-      if (resultat?.status === "fulfilled") statuts.set(directory, resultat.value);
-      // Requête en échec : le dossier reste absent de la table, donc « non vérifiable » (null), jamais 0.
-    });
+    const lireSalle = simple ? null : statutSalleDuDossier();
+    const dossiersSalle = lireSalle === null ? [] : [...new Set(racinesSalle.map((racine) => racine.directory))];
+    const [statuts, statutsSalle] = await Promise.all([
+      statutsParDossier(dossiersInterroges, statutDuDossier),
+      lireSalle === null ? new Map<string, unknown>() : statutsParDossier(dossiersSalle, lireSalle),
+    ]);
 
     const conversationsPrincipales = racinesPrincipales.map((racine) => {
       const arbre = [racine.id, ...deps.sessions.descendants(racine.id)];
@@ -211,7 +278,6 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
       };
     });
 
-    const simple = mode === "simple";
     const conversationsSalle: Array<{ directory: string; conversation: ConversationTerritoire }> = [];
     for (const racine of racinesSalle) {
       const occupees = occupeesDeLaSalle(racine.id);
@@ -219,7 +285,7 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
       // D-3d-14 : en Simple, seules les demandes terminées sont listées.
       if (simple && !acces.ok) continue;
       const attendent = simple ? 0 : attentes(racine.id);
-      const travaillent = simple ? null : occupees;
+      const travaillent = simple ? null : travaillentDansLaSalle(racine, occupees, lireSalle === null ? null : statutsSalle);
       const demandeEnCours = simple ? false : (travaillent ?? 0) > 0 || attendent > 0;
       conversationsSalle.push({
         directory: racine.directory,
@@ -267,9 +333,11 @@ export function createTerritoiresPort(deps: Salle3dDeps, options: TerritoiresOpt
     const salle =
       racinesSalle.length > 0 ? { projets: grouper(conversationsSalle, new Set(conversationsSalle.map((e) => e.directory))) } : null;
 
-    // statutVerifie : faux dès qu'un statut n'a pas pu être lu, et toujours faux quand une enceinte est montrée (ses compteurs
-    // viennent des faits en Avancé, et n'existent pas en Simple : ils ne sont jamais un état vérifié de l'instance principale).
-    const statutVerifie = salle === null && projets.every((territoire) => territoire.compteurs.travaillent !== null);
+    // statutVerifie : faux dès qu'un statut n'a pas pu être lu. Enceinte montrée : vrai seulement en Avancé, quand l'instance de la
+    // salle a répondu pour chacune de ses conversations (L3s-a) ; sinon faux (compteurs par les faits, salle coupée ; aucun
+    // compteur en Simple) : ce ne sont jamais des états vérifiés de l'instance principale.
+    const salleVerifiee = salle === null || (lireSalle !== null && conversationsSalle.every(({ conversation }) => conversation.travaillent !== null));
+    const statutVerifie = salleVerifiee && projets.every((territoire) => territoire.compteurs.travaillent !== null);
 
     return { genereLe: maintenant, mode, projets, salle, statutVerifie };
   };
