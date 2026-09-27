@@ -1747,10 +1747,13 @@ async function verifierMediasOnglet(essai) {
  * d'office sur un poste en animations réduites, « reduce » demandé sur un poste normal, réglage changé en cours de scénario), et
  * la garde de R106-b l'accepte ; une seconde fermeture ne renvoie rien. Contre-épreuve : la connexion détachée sans la fermeture
  * du banc laisse la page au réglage du poste, et la garde refuse (c'était le défaut : 5 scénarios it3-* sur 6).
+ * Grande fusion (GF5, plan it5 §2.8) : emuler passe par l'onglet du banc, la seconde connexion ne pose plus AUCUN réglage de média
+ * (compté ici : zéro). La contre-épreuve rejoue donc l'ancien défaut à la main (surcharge posée au nom de la seconde session, comme
+ * avant GF5, par la page simulée et non par un envoi), et un cas neuf prouve que, sans elle, la détachée ne change plus rien.
  */
 async function verifierFermetureSeconde() {
   const { preparer3d } = await import(pathToFileURL(path.join(RACINE, "e2e", "lib", "webgl.mjs")).href);
-  const essai = async (poste, { options = {}, changer = null, fermer = true } = {}) => {
+  const essai = async (poste, { options = {}, changer = null, fermer = true, ancienDefaut = false } = {}) => {
     const surcharges = new Map();
     const poses = new Map();
     const emuler = (session, features) => {
@@ -1786,9 +1789,13 @@ async function verifierFermetureSeconde() {
     };
     const onglet = await creerOnglet(client, "session-banc", "cible-essai");
     let detachee = false;
+    let mediasSeconde = 0;
     const ouvrir = async () => ({
       envoyer: async (methode, params = {}) => {
-        if (methode === "Emulation.setEmulatedMedia") emuler("session-seconde", params.features ?? []);
+        if (methode === "Emulation.setEmulatedMedia") {
+          mediasSeconde++;
+          emuler("session-seconde", params.features ?? []);
+        }
         return {};
       },
       ecouter: () => () => {},
@@ -1803,6 +1810,8 @@ async function verifierFermetureSeconde() {
     onglet.suivreMouvement();
     const contexte = await preparer3d({ navigateur: onglet, url: "https://127.0.0.1:1" }, options, { ouvrir });
     if (changer !== null) await contexte.mouvement(changer);
+    // Ancien défaut (avant GF5), rejoué par la page simulée : la seconde session porte sa propre surcharge de mouvement.
+    if (ancienDefaut) emuler("session-seconde", [{ name: "prefers-reduced-motion", value: "no-preference" }]);
     await onglet.evaluer("document.title");
     if (fermer) {
       await contexte.cdp.fermer();
@@ -1814,7 +1823,7 @@ async function verifierFermetureSeconde() {
       detacher("session-seconde");
     }
     const suivi = onglet.finSuiviMouvement();
-    return { verdict: verdictMouvement(suivi, pageDit()), page: pageDit() };
+    return { verdict: verdictMouvement(suivi, pageDit()), page: pageDit(), mediasSeconde };
   };
   const cas = [
     ["poste en animations réduites, réglage d'office", "reduce", {}, "no-preference"],
@@ -1822,10 +1831,16 @@ async function verifierFermetureSeconde() {
     ["poste en animations réduites, réglage levé en cours de scénario", "reduce", { options: { mouvementReduit: true }, changer: "no-preference" }, "no-preference"],
   ];
   for (const [nom, poste, reglages, attendu] of cas) {
-    const { verdict, page } = await essai(poste, reglages);
+    const { verdict, page, mediasSeconde } = await essai(poste, reglages);
     if (verdict !== null || page !== attendu) throw new Error(`${nom} : page en ${page} au lieu de ${attendu}${verdict === null ? "" : ` (${verdict})`}`);
+    if (mediasSeconde !== 0) throw new Error(`${nom} : la seconde connexion a posé ${mediasSeconde} réglage(s) de média (GF5 : l'onglet seul)`);
   }
-  const brute = await essai("reduce", { fermer: false });
+  // GF5 : sans surcharge propre, la seconde connexion détachée sans la fermeture du banc ne change plus le réglage de la page.
+  const detacheeSeule = await essai("reduce", { fermer: false });
+  if (detacheeSeule.page !== "no-preference" || detacheeSeule.verdict !== null) {
+    throw new Error(`seconde connexion détachée : la page change (${detacheeSeule.page}, ${detacheeSeule.verdict ?? "accepté"})`);
+  }
+  const brute = await essai("reduce", { fermer: false, ancienDefaut: true });
   if (brute.page !== "reduce" || !String(brute.verdict).includes("la page rapporte")) {
     throw new Error(`contre-épreuve : la page simulée ne retombe pas sur le réglage du poste (${brute.page}, ${brute.verdict ?? "accepté"})`);
   }

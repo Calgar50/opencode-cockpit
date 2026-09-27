@@ -14,10 +14,13 @@
 // connexion au protocole du navigateur déjà lancé par le banc et s'attache à l'onglet du scénario (`flatten`). Le port de
 // pilotage est celui que le navigateur écrit dans son profil (`DevToolsActivePort`), profil rangé par le banc à côté du
 // dossier des captures (`ctx.dossierCaptures`) : rien n'est lu dans le dépôt, aucun secret n'est lu ni affiché.
-// À la grande fusion, GF5 ramène la partie MÉDIA d'`emuler` (isolée dans la seule fonction `envoyerMedias`) à
-// `onglet.medias` de l'it4 (L41), seule aide d'émulation de média du chantier.
+// Grande fusion (GF5, plan it5 §2.8) : la partie MÉDIA d'`emuler` passe par l'ONGLET du banc, `onglet.medias` (cdp.mjs, it4 L41),
+// dont emulerMedias est le SEUL envoi de `Emulation.setEmulatedMedia` ; la vision des couleurs par `emulerVision` d'a11y.mjs, seul
+// envoi de `Emulation.setEmulatedVisionDeficiency`. La seconde connexion ne pose donc plus AUCUN réglage de média ; sa fermeture
+// unique (fermetureUnique) est gardée et repose toujours le réglage de mouvement de l'onglet.
 import fs from "node:fs";
 import path from "node:path";
+import { emulerVision } from "./a11y.mjs";
 
 /** Images forcées par la sonde de fluidité (server/shared/fluidity.ts, FLUIDITE.sonde.images). */
 export const IMAGES_SONDE = 90;
@@ -336,22 +339,14 @@ export async function ressources(cdp) {
 }
 
 /**
- * Émulation des réglages du poste par l'envoi brut : `Emulation.setEmulatedMedia` (thème, couleurs forcées, mouvement réduit,
- * dans un MÊME appel : le protocole remplace la liste entière à chaque envoi) et `Emulation.setEmulatedVisionDeficiency`.
- * `e2e/lib/cdp.mjs` n'est pas touché (it4 et it5 y travaillent) ; GF5 ramènera `envoyerMedias` à `onglet.medias` de l'it4.
+ * Émulation des réglages du poste (GF5, plan it5 §2.8) : thème, couleurs forcées et mouvement réduit par l'ONGLET du banc
+ * (`onglet.medias` de cdp.mjs, demandés ensemble : le protocole remplace la liste entière à chaque envoi) ; vision des couleurs
+ * par `emulerVision` d'a11y.mjs, sur la seconde connexion. `cdp.onglet` est posé par preparer3d.
  */
 export async function emuler(cdp, { theme = "clair", mouvementReduit = false, couleursForcees = false, vision = null } = {}) {
-  await envoyerMedias(cdp, [
-    { name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" },
-    { name: "prefers-reduced-motion", value: mouvementReduit ? "reduce" : "no-preference" },
-    { name: "forced-colors", value: couleursForcees ? "active" : "none" },
-  ]);
-  if (vision !== null) await cdp.envoyer("Emulation.setEmulatedVisionDeficiency", { type: vision });
-}
-
-/** SEUL envoi de `Emulation.setEmulatedMedia` de ce module (point de reprise de GF5, plan it5 §2.8). */
-async function envoyerMedias(cdp, features) {
-  await cdp.envoyer("Emulation.setEmulatedMedia", { features });
+  if (!cdp.onglet) throw new Error("emuler : onglet du banc absent (preparer3d le pose sur la seconde connexion).");
+  await cdp.onglet.medias({ theme, forcedColors: couleursForcees ? "active" : "none", reducedMotion: mouvementReduit ? "reduce" : "no-preference" });
+  if (vision !== null) await emulerVision(cdp, vision);
 }
 
 // --- Mode 3D du banc (M3D-1, relu à CHAQUE exécution) ------------------------------------------------------------------------
@@ -401,7 +396,8 @@ export async function modeBanc(cdp) {
  * fixé. Sur un poste normal, la retombée donne « no-preference » et ne se voit pas ; sur un poste en animations réduites (sessions
  * RDP, A20), la garde relisait « reduce » à la fin du scénario, alors que toutes ses vérifications étaient passées. La
  * connexion fermée, l'onglet du banc repose donc son réglage (`reglage.mouvement`) ; le thème qu'il porte part avec lui
- * (emulerMedias de `cdp.mjs` envoie toujours les deux ensemble). Un second appel ne renvoie rien.
+ * (emulerMedias de `cdp.mjs` envoie toujours les deux ensemble). Un second appel ne renvoie rien. Depuis GF5, la seconde connexion
+ * ne pose plus aucun réglage de média (emuler passe par l'onglet) : la fermeture reste la garde de sa retombée, gardée telle quelle.
  */
 export function fermetureUnique(onglet, fermerConnexion, reglage) {
   let fermeture = null;
@@ -434,6 +430,8 @@ export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouv
   await ctx.navigateur.theme(theme);
   const cdp = await ouvrir(ctx);
   cdp.fermer = fermetureUnique(ctx.navigateur, cdp.fermer, reglage);
+  // GF5 : l'émulation de média passe par l'onglet du banc (emuler), jamais par cette seconde connexion.
+  cdp.onglet = ctx.navigateur;
   const journal = await reseau(cdp);
   await emuler(cdp, { theme, mouvementReduit, couleursForcees });
   const mode = await modeBanc(cdp);

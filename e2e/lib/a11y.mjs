@@ -57,7 +57,16 @@ async function emulerMedias(navigateur, onglet, { theme, forcedColors, reducedMo
  */
 export async function emuler(navigateur, onglet, { theme = "clair", forcedColors = false, reducedMotion = false, grayscale = false } = {}) {
   await emulerMedias(navigateur, onglet, { theme, forcedColors, reducedMotion });
-  await navigateur.client.envoyer("Emulation.setEmulatedVisionDeficiency", { type: grayscale ? "achromatopsia" : "none" }, onglet.sessionId);
+  await emulerVision({ envoyer: (methode, params) => navigateur.client.envoyer(methode, params, onglet.sessionId) }, grayscale ? "achromatopsia" : "none");
+}
+
+/**
+ * Vision des couleurs émulée (`Emulation.setEmulatedVisionDeficiency`) par une connexion qui sait envoyer pour la page : la
+ * seconde connexion de la salle de contrôle 3D (webgl.mjs, it3-captures). SEUL envoi de cette commande du banc hors d'`emuler`
+ * ci-dessus (GF5, plan it5 §2.8 : une aide par commande CDP). `type` : « none », « achromatopsia », « deuteranopia »…
+ */
+export async function emulerVision(connexion, type) {
+  await connexion.envoyer("Emulation.setEmulatedVisionDeficiency", { type });
 }
 
 /** Rétablit l'affichage ordinaire : aucun réglage émulé, aucune taille forcée. */

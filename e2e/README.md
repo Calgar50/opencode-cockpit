@@ -417,10 +417,15 @@ banc, attachée au même onglet — `e2e/lib/cdp.mjs` n'est pas touché. Deux fa
 (`simulerWebgl` : refus du contexte demandé avec `failIfMajorPerformanceCaveat`, nom de moteur logiciel) et le
 **« moteur simulé »** (`moteurSimule` : drapeau retiré, nom matériel fictif, horloge de la sonde avancée de 12 ms par
 image pendant ses 90 images). S'y ajoutent l'écouteur des violations de la CSP, les compteurs d'objets WebGL vivants,
-la lecture des marques `salle3d:*`, le journal réseau et l'émulation des réglages du poste (`emuler`).
+la lecture des marques `salle3d:*`, le journal réseau et l'émulation des réglages du poste (`emuler`). Depuis la grande
+fusion (GF5, plan it5 §2.8), `emuler` passe par l'**onglet du banc** : `onglet.medias` de `cdp.mjs` pour le thème, les couleurs
+forcées et le mouvement, `emulerVision` d'`a11y.mjs` pour la vision des couleurs. `Emulation.setEmulatedMedia` n'est donc
+ENVOYÉ que par `emulerMedias` de `cdp.mjs`, et `Emulation.setEmulatedVisionDeficiency` que par `a11y.mjs` ; dans
+`docker-e2e.mjs`, ces noms ne sont que des données et des relevés des auto-vérifications de la garde du mouvement.
 
 **Seconde connexion et garde du mouvement.** `preparer3d` fixe d'abord le réglage de l'onglet du banc (garde de R106-b),
-puis la seconde connexion pose le jeu complet. Chromium retire l'émulation d'une session qui se détache : la page
+puis `emuler` pose le jeu complet, par l'onglet lui aussi depuis GF5 : la seconde connexion ne porte plus aucun réglage
+de média. Avant GF5, elle le portait, et Chromium retire l'émulation d'une session qui se détache : la page
 retombe alors sur le réglage du **poste**. `cdp.fermer()` repose donc, la connexion fermée, le réglage de l'onglet du
 banc : celui fixé par `preparer3d`, ou celui qu'un scénario a changé par `mouvement(…)` du contexte rendu. Un second
 appel ne renvoie rien. Sans cela, sur un poste en animations réduites (sessions RDP), la garde relisait `reduce` à la
