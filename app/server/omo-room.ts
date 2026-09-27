@@ -32,6 +32,7 @@ import type { InstanceDeps, OmoRoomOpenResult, OmoRoomPort } from "./omo-contrac
 import { OMO_PRECHECK_REASONS } from "./omo-contracts.ts";
 import { analyserProjetsPrepares, OMO_PROJETS_MAX_OCTETS } from "./omo-control.ts";
 import { type OcSession, OpencodeError } from "./opencode.ts";
+import { ProjectsService } from "./projects.ts";
 import { registerOmoRoutes } from "./routes-omo.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
@@ -153,8 +154,11 @@ const refus = (status: 400 | 403 | 409, code: OmoActivationRefusalCode | OmoPrec
   precheck,
 });
 
+/** Séquence %XX que le second décodage d'opencode transformerait (même motif que PERCENT_ESCAPE de projects.ts). */
+const SEQUENCE_ECHAPPEE = /%[0-9A-Fa-f]{2}/;
+
 /** Chemin de projet accepté : relatif au dossier de travail, en séparateurs « / ». */
-type CheminProjet = { ok: true; relatif: string; local: string } | { ok: false; code: Extract<OmoPrecheckReason, "hors-workspace" | "lien-symbolique" | "illisible"> };
+type CheminProjet = { ok: true; relatif: string; local: string; racine: string } | { ok: false; code: Extract<OmoPrecheckReason, "hors-workspace" | "lien-symbolique" | "illisible"> };
 
 /**
  * Lit au plus `max` octets d'un fichier ordinaire, sans suivre de lien au dernier composant (O_NOFOLLOW) ni rester bloqué sur un
@@ -206,6 +210,10 @@ async function validerChemin(workspace: string, projet: unknown): Promise<Chemin
   if (typeof projet !== "string" || projet.length === 0 || projet.length > OMO_PROJET_MAX_CARACTERES || projet.includes("\0")) {
     return { ok: false, code: "hors-workspace" };
   }
+  // 1.0.6 × salle (décision D4 de la grande fusion) : opencode 1.18.30 décode `directory` DEUX fois. « a%2F..%2F..%2Fhome » est
+  // un seul segment ici, mais un chemin qui sort du dossier de travail chez la salle (son dossier de données, auth.json réduit).
+  // Même règle que projects.ts (PERCENT_ESCAPE), même code que tout chemin hors du dossier de travail ; « Remise 20% » reste permis.
+  if (SEQUENCE_ECHAPPEE.test(projet)) return { ok: false, code: "hors-workspace" };
   if (projet.split(/[\\/]/).includes("..")) return { ok: false, code: "hors-workspace" };
   if (path.isAbsolute(projet) || path.posix.isAbsolute(projet) || /^[A-Za-z]:/.test(projet)) return { ok: false, code: "hors-workspace" };
   const relatif = normaliserProjet(projet);
@@ -227,7 +235,7 @@ async function validerChemin(workspace: string, projet: unknown): Promise<Chemin
     // Le chemin lexical restait dedans, le chemin réel n'y est plus : un lien en est sorti.
     if (depuisReel === "" || depuisReel.startsWith("..") || path.isAbsolute(depuisReel)) return { ok: false, code: "lien-symbolique" };
   }
-  return { ok: true, relatif, local };
+  return { ok: true, relatif, local, racine };
 }
 
 /** Résultats de pré-contrôle relus dans `omo_room_starts.precheck` : ce que le cockpit y a écrit, jamais davantage. */
@@ -287,6 +295,12 @@ export function createOmoRoom(deps: OmoRoomDeps): OmoRoomService {
     if (coupure !== null) return refus(403, coupure);
     const chemin = await validerChemin(deps.workspace, (body as { projet?: unknown } | null | undefined)?.projet);
     if (!chemin.ok) return refus(400, chemin.code);
+    // Défense en profondeur (D4) : le dossier transmis au serveur de la salle (`chemin.local`) passe AUSSI la règle de
+    // projects.ts (ni %XX, ni octet nul, dans le dossier de travail). Vue de la salle : le compose y monte le dossier de travail au
+    // MÊME chemin que chez le cockpit, d'où une racine identique des deux côtés. Refusé : aucune requête, ni ici ni plus loin.
+    if (!new ProjectsService({ workspaceDir: chemin.racine, opencodeWorkspaceDir: chemin.racine }).isAllowedDirectory(chemin.local)) {
+      return refus(400, "hors-workspace");
+    }
     const prepares = await projetsPrepares();
     if (!prepares?.projets.some((entree) => normaliserProjet(entree.chemin) === chemin.relatif)) return refus(409, "non-prepare");
     const verdict = await deps.ports().omoPrecheck.check(chemin.relatif);

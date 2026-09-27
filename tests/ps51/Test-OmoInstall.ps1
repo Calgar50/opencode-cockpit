@@ -306,6 +306,31 @@ try {
     Assert-Test 'surcharge : dollar double et espace conserve, source et cible' ($result.ExitCode -eq 0 -and $lignesDollar.Count -eq 1 -and $lignesDollar[0] -ceq $attenduDollar) (($lignesDollar -join ' | ') + ' / attendu ' + $attenduDollar)
     Assert-Test 'omo-projets.json : le chemin garde le dollar tel quel' ((Get-ProjectState (Read-Projects $RootDollar) 'pro jet $test') -ceq 'dossier')
 
+    # --- 2 bis. Projets %XX ecartes (grande fusion, decision D4) -----------------------------------------------------
+    # opencode 1.18.30 decode le dossier deux fois : un projet nomme a%2F..%2F..%2Fhome%2Fnode ouvrirait la salle dans son
+    # dossier de donnees. install.ps1 l'ecarte avec un avertissement ; son .git reste protege ; un % isole reste un projet.
+    Write-Section 'Projets %XX ecartes de la salle (D4)'
+    $WsPourcent = New-Folder (Join-Path $Work 'ws-pourcent')
+    New-GitFolder (Join-Path $WsPourcent 'a%2F..%2F..%2Fhome%2Fnode\.git')
+    New-TextFile (Join-Path $WsPourcent 'a%2F..%2F..%2Fhome%2Fnode\src\a.txt') "a`n"
+    New-TextFile (Join-Path $WsPourcent 'taux%41\notes.txt') "b`n"
+    New-TextFile (Join-Path $WsPourcent 'Remise 20%\src\a.txt') "c`n"
+    $rootPourcent = New-InstallRoot $Work $RepoRoot 'cockpit-pourcent'
+    $result = Invoke-Install -Root $rootPourcent -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsPourcent }
+    Assert-Test 'D4 : code de sortie 0, fichiers ecrits' ($result.ExitCode -eq 0 -and (Test-Path -LiteralPath (Get-ProjectsFile $rootPourcent))) (Get-Extract ($result.Host + ' ' + $result.Error))
+    $ProjetsPourcent = Read-Projects $rootPourcent
+    Assert-Test 'D4 : projet %XX avec .git ecarte' ((Get-ProjectState $ProjetsPourcent 'a%2F..%2F..%2Fhome%2Fnode') -ceq '')
+    Assert-Test 'D4 : projet %XX sans git ecarte' ((Get-ProjectState $ProjetsPourcent 'taux%41') -ceq '')
+    Assert-Test 'D4 : un % isole reste un projet (Remise 20%)' ((Get-ProjectState $ProjetsPourcent 'Remise 20%') -ceq 'absent')
+    Assert-Test 'D4 : le .git du projet ecarte reste protege' ((Get-ProtectedForm $ProjetsPourcent 'a%2F..%2F..%2Fhome%2Fnode/.git') -ceq 'dossier')
+    $ciblesPourcent = @(Get-OverlayTargets $rootPourcent)
+    Assert-Test 'D4 : aucune entree d un projet ecarte ouverte en ecriture' (@($ciblesPourcent | Where-Object { $_ -cmatch '%[0-9A-Fa-f]{2}' }).Count -eq 0) ($ciblesPourcent -join ' | ')
+    Assert-Test 'D4 : Remise 20% ouvre son entree de premier niveau' ($ciblesPourcent -ccontains '/workspace/Remise 20%/src') ($ciblesPourcent -join ' | ')
+    Assert-Test 'D4 : avertissement qui nomme les projets ecartes' ($result.Host.Contains('Projets ecartes de la salle') -and $result.Host.Contains('- a%2F..%2F..%2Fhome%2Fnode') -and $result.Host.Contains('- taux%41') -and -not $result.Host.Contains('- Remise 20%')) (Get-Extract $result.Host 600)
+    # Temoin : sans dossier %XX, aucun avertissement.
+    $result = Invoke-Install -Root $rootPourcent -Parameters @{ OmoProjetsSeulement = $true; WorkspacePath = $WsDollar }
+    Assert-Test 'D4 temoin : sans dossier %XX, aucun avertissement' ($result.ExitCode -eq 0 -and -not $result.Host.Contains('Projets ecartes de la salle')) (Get-Extract $result.Host)
+
     # --- 2 ter. Montages inverses (L16c, decision A16, option E1) ----------------------------------------------------
     # Le dossier de travail est monte ENTIER en lecture seule par docker-compose.yml ; la surcharge ne rouvre l'ecriture que
     # par exception : un montage par entree de premier niveau (dossier ET fichier) de chaque projet prepare, jamais sur .git
@@ -594,13 +619,16 @@ try {
             COCKPIT_APP_IMAGE = 'opencode-cockpit/app:essai'; COCKPIT_INSTALL_MODE = 'Pull'; COCKPIT_VERSION = $Version }
     }
     $Version = (Get-Content -LiteralPath (Join-Path $Root 'VERSION') -TotalCount 1).Trim()
-    function Set-ArchiveScenario([string]$Nom, [string]$Identifiant, [string]$ImageChargee = '') {
+    # Grande fusion, D7 c : ENV de l'image de la salle (lignes CLE=VALEUR) ; par defaut, celui d'une base 1.0.6.
+    $EnvSalle106 = "PATH=/usr/bin`nOPENCODE_DISABLE_MODELS_FETCH=1`nOPENCODE_MODELS_URL=http://127.0.0.1:9`nnpm_config_offline=true`n"
+    function Set-ArchiveScenario([string]$Nom, [string]$Identifiant, [string]$ImageChargee = '', [string]$EnvSalle = $EnvSalle106) {
         # Les regles de la salle passent AVANT celles du banc, qui repondent a tout 'image inspect'.
         $toutes = New-Object System.Collections.Generic.List[object]
         $chargee = $Etiquette
         if ($ImageChargee -cne '') { $chargee = $ImageChargee }
         $toutes.Add((New-DockerRule '^load --input .*salle-ok\.tar\.gz\z' ('Loaded image: ' + $chargee + "`n")))
         $toutes.Add((New-DockerRule ('^image inspect --format \{\{\.Id\}\} ' + [regex]::Escape($Etiquette) + '\z') ($Identifiant + "`n")))
+        $toutes.Add((New-DockerRule ('^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} ' + [regex]::Escape($Etiquette) + '\z') $EnvSalle))
         foreach ($regle in (New-InstallDockerRules -ImageVersion $Version)) { $toutes.Add($regle) }
         return (Set-InstallDockerScenario $Work $Nom $toutes.ToArray())
     }
@@ -625,6 +653,8 @@ try {
     Assert-Test 'archive conforme : installation terminee' ($null -eq $result.Error -and $result.Host.Contains('identifiant conforme au fichier .sha256')) (Get-Extract ($result.Error + ' ' + $result.Host))
     $envPlein = Read-TestEnvFile $rootPlein
     Assert-Test 'archive conforme : etiquette de l image ecrite dans .env' ((Get-TestEnvValue $envPlein $NomVariableImage) -ceq $Etiquette)
+    Assert-Test 'D7 c : image de la salle sur une base 1.0.6, aucun avertissement de base' (-not $result.Host.Contains('base anterieure a la 1.0.6')) (Get-Extract $result.Host)
+    Assert-Test 'D7 c : ENV de l image de la salle lu une fois' (@(Get-DockerCalls $journalOk | Where-Object { (@($_.args) -join ' ') -cmatch ('^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} ' + [regex]::Escape($Etiquette) + '\z') }).Count -eq 1)
     Assert-Test 'archive conforme : la salle reste coupee' ((Get-TestEnvValue $envPlein 'COCKPIT_OMO') -ceq 'off')
     $motDePasse = Get-TestEnvValue $envPlein 'OPENCODE_OMO_PASSWORD'
     Assert-Test 'archive conforme : mot de passe tire au hasard, 64 caracteres hexadecimaux' ($motDePasse -cmatch '^[0-9a-f]{64}\z')
@@ -648,6 +678,13 @@ try {
     Assert-Test 'relance : le profil de la salle est passe aux commandes compose' ($profils.Count -gt 0)
     $surcharges = @(Get-DockerCalls $journalOk | Where-Object { (@($_.args) -join ' ') -cmatch [regex]::Escape($CockpitOmoOverlay) })
     Assert-Test 'relance : la surcharge est passee aux commandes compose' ($surcharges.Count -gt 0)
+
+    # Grande fusion, D7 c : image de la salle construite sur une base anterieure a la 1.0.6 : avertissement, jamais un refus.
+    $journalAncienne = Set-ArchiveScenario 'archive-base-ancienne' $IdentifiantVrai '' "PATH=/usr/bin`nCOCKPIT_VERSION=1.0.5`n"
+    $result = Invoke-Install -Root $rootPlein -Parameters @{ OmoArchive = $Archive; SkipCertificates = $true; NoStart = $true; NoBrowser = $true }
+    Assert-Test 'D7 c : base anterieure a la 1.0.6, installation menee a son terme' ($null -eq $result.Error -and (Get-TestEnvValue (Read-TestEnvFile $rootPlein) $NomVariableImage) -ceq $Etiquette) (Get-Extract ($result.Error + ' ' + $result.Host))
+    Assert-Test 'D7 c : base anterieure a la 1.0.6, avertissement qui donne le remede' ($result.Host.Contains('base anterieure a la 1.0.6') -and $result.Host.Contains(('build-' + 'omo' + '-image.ps1'))) (Get-Extract $result.Host 600)
+    Assert-Test 'D7 c : ENV de l image de la salle lu une fois (base ancienne)' (@(Get-DockerCalls $journalAncienne | Where-Object { (@($_.args) -join ' ') -cmatch ('^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} ' + [regex]::Escape($Etiquette) + '\z') }).Count -eq 1)
 
     # Sans image de la salle dans .env, rien n'est parcouru ni ecrit : une installation ordinaire ne change pas.
     $rootSansSalle = New-InstallRoot $Work $RepoRoot 'cockpit-sans-salle'

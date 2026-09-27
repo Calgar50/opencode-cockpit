@@ -11,6 +11,8 @@ $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $ForbiddenWords = @('Invoke-WebRequest', 'Invoke-RestMethod', 'ServicePointManager', 'DefaultWebProxy', 'SecurityProtocol', 'SkipCertificateCheck',
     'Import-Certificate', 'certutil', 'X509Store', 'Invoke-Expression')
 $ForbiddenCommands = @('iwr', 'irm', 'iex', 'curl', 'curl.exe', 'git', 'git.exe', 'wget')
+# Lecteurs de l'ENV d'une IMAGE admis, un par script (en plus de Get-CockpitImageVersion) : jamais l'ENV d'un conteneur.
+$ImageEnvReaders = @{ 'install.ps1' = 'Test-OmoImageEnvFlags'; ('build-' + 'omo' + '-image.ps1') = 'Assert-OmoBaseFlags' }
 $DockerFunctions = @('Invoke-Docker', 'Get-DockerOutput', 'Invoke-DockerTimeout', 'Get-ArchiveDir', 'Invoke-CockpitDocker')
 $ReadHostPrompts = @{
     'install.ps1' = @('Dossier de vos projets', "Le dossier '", 'Continuer quand meme ?')
@@ -107,7 +109,10 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         if ($text.IndexOf('Cert:\', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and $function -cne 'Export-WindowsCertificates' -and -not (Test-InExtent $certsClause $offset)) {
             $found.Add(('interdit : Cert:\ hors de l export des autorites (ligne {0})' -f $line))
         }
-        if ($text.IndexOf('.Config.Env', [System.StringComparison]::Ordinal) -ge 0 -and $function -cne 'Get-CockpitImageVersion') {
+        # ENV d'une IMAGE seulement, par une fonction nommee (grande fusion, decisions D7 b et c : drapeaux de la 1.0.6 lus sur
+        # l'image de base de la salle et sur l'image de la salle chargee). Le nom n'est admis que dans SON script.
+        if ($text.IndexOf('.Config.Env', [System.StringComparison]::Ordinal) -ge 0 -and $function -cne 'Get-CockpitImageVersion' -and
+            -not ($ImageEnvReaders.ContainsKey($Kind) -and $function -ceq $ImageEnvReaders[$Kind])) {
             $found.Add(('docker-inspect : .Config.Env hors de Get-CockpitImageVersion (ligne {0})' -f $line))
         }
         # Desinstallation en masse : --volumes emporterait les conversations de la salle et --rmi son image, que
@@ -287,6 +292,9 @@ function Invoke-SelfTest([string]$ComposeFile) {
             @('install.ps1', 'docker-isolation', 'replace', '$saved = Clear-CockpitComposeEnv; |'),
             @('CockpitTls.ps1', 'compose-variables', 'replace', "'COCKPIT_PORT', |"),
             @('CockpitTls.ps1', 'docker-inspect', 'append', ($append -f "Invoke-CockpitDocker '' @('inspect', '--format', '{{range .Config.Env}}{{println .}}{{end}}', 'c')")),
+            # Grande fusion (D7 c) : le lecteur admis d'install.ps1 ne l'est ni ailleurs dans ce script, ni sous son nom dans un autre.
+            @('install.ps1', 'docker-inspect', 'append', '$e = Get-DockerOutput inspect --format ''{{range .Config.Env}}{{println .}}{{end}}'' c'),
+            @('cockpit.ps1', 'docker-inspect', 'append', "function Test-OmoImageEnvFlags { Invoke-Docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' c }"),
             @('install.ps1', 'parametres', 'replace', '[switch]$AcceptBrowserBlock,|[switch]$AcceptBrowserBlock, [switch]$ConfirmHttp,'),
             @('install.ps1', 'parametres', 'replace', ' [switch]$Http,|'),
             @('cockpit.ps1', 'parametres', 'replace', ', ''rollback''|'),

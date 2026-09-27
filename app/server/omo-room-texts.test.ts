@@ -83,7 +83,8 @@ function auPlusHorsGaranties(feuillesLues: readonly Feuille[]): string[] {
 }
 
 /** {n} : nombre de fichiers relevés non affichés (`signalesFin.masques`, relecture 2ter-vague-5), seul dans sa phrase. */
-const GABARITS_CONNUS = ["projet", "date", "x", "montant", "plafondMaxUsd", "categorie", "liste", "chemin", "n"];
+// « adresse » : grande fusion, décision D5 (avance.adresseAImposer, adresse Copilot vérifiée par le cockpit).
+const GABARITS_CONNUS = ["projet", "date", "x", "montant", "plafondMaxUsd", "categorie", "liste", "chemin", "n", "adresse"];
 
 /** Gabarits « {nom} » hors de la liste connue, ou gabarit de gabarit `${…}` (interdit par la convention TEXTES). */
 function gabaritsInconnus(feuillesLues: readonly Feuille[]): string[] {
@@ -185,6 +186,7 @@ describe("T3a : une phrase par code, sections et honnêteté", () => {
       ["avance.interdits.message", ["{categorie}"]],
       ["avance.signales.git-quarantaine", ["{chemin}"]],
       ["avance.signalesFin.masques", ["{n}"]],
+      ["avance.adresseAImposer", ["{adresse}"]],
     ];
     for (const [chemin, gabarits] of exige) for (const gabarit of gabarits) assert.ok(TEXTE(chemin).includes(gabarit), `${chemin} : ${gabarit}`);
     // Un gabarit ne s'écrit jamais dans une phrase qui ne le remplit pas : {liste} et {chemin} restent dans leurs phrases.

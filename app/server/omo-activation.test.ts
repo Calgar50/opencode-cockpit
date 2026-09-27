@@ -44,7 +44,7 @@ import type { OmoAutonomyView } from "./shared/api-types.ts";
 import { ecrireArret, ecrireBattement, ecrirePrecheckOk, OMO_DELAIS, OMO_FICHIERS_CONTROLE } from "./shared/omo-control-protocol.ts";
 import { OMO_LIMITES } from "./shared/omo-limits.ts";
 import type { PrecheckBornes } from "./shared/omo-precheck-rules.ts";
-import { TEXTES } from "./shared/omo-room-texts.ts";
+import { phraseAdresseAImposer, TEXTES } from "./shared/omo-room-texts.ts";
 import type { OmoActivationRefusalCode, OmoPreparedProjects, OmoSupervisorState } from "./shared/omo-types.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 
@@ -398,9 +398,10 @@ function phrase(code: OmoActivationRefusalCode, valeurs: { projet?: string; list
     .trim();
 }
 
-const refusAttendu = (code: OmoActivationRefusalCode, liste: readonly string[] = []) => ({
+// `suite` (grande fusion, D5) : phrase qui suit celle du code, séparée par un point (celle d'« adresse-copilot-changee » n'en a pas).
+const refusAttendu = (code: OmoActivationRefusalCode, liste: readonly string[] = [], suite?: string) => ({
   error: code === "mode-avance" ? "mode-avance" : "autonomie-indisponible",
-  message: phrase(code, { liste }),
+  message: suite === undefined ? phrase(code, { liste }) : `${phrase(code, { liste })}. ${suite}`,
   raison: code,
   ...(liste.length > 0 ? { liste: [...liste] } : {}),
 });
@@ -606,6 +607,8 @@ interface CasCondition {
   nom: string;
   code: OmoActivationRefusalCode;
   liste?: string[];
+  /** Suite de la phrase (D5) : commande qui impose l'adresse vérifiée, quand aucune adresse n'est imposée. */
+  suite?: string;
   casser(s: Salle): void;
 }
 
@@ -720,6 +723,8 @@ const CONDITIONS: CasCondition[] = [
   {
     nom: "adresse Copilot du compte ≠ adresse autorisée à la salle",
     code: "adresse-copilot-changee",
+    // Grande fusion, D5 : sans adresse imposée, la phrase donne la commande qui impose l'adresse vérifiée.
+    suite: phraseAdresseAImposer("https://api.business.githubcopilot.com"),
     casser: (s) => void (s.monde.catalogue.endpoint = "https://api.business.githubcopilot.com"),
   },
   { nom: "adresse Copilot du compte inconnue", code: "adresse-copilot-changee", casser: (s) => void (s.monde.catalogue.endpoint = null) },
@@ -733,7 +738,7 @@ describe("L22c : conditions du §4.14.2, 409 et phrase, rien n'est envoyé", () 
       cas.casser(s);
       const put = await activer(s, { choix: "omo", plafondUsd: "1" });
       assert.equal(put.status, 409, `${cas.nom} (activation) : ${put.body}`);
-      assert.deepEqual(put.json(), refusAttendu(cas.code, cas.liste), `${cas.nom} (activation)`);
+      assert.deepEqual(put.json(), refusAttendu(cas.code, cas.liste, cas.suite), `${cas.nom} (activation)`);
 
       s.reparer();
       const confirme = await activer(s, { choix: "omo", plafondUsd: "1" });
@@ -741,7 +746,7 @@ describe("L22c : conditions du §4.14.2, 409 et phrase, rien n'est envoyé", () 
       cas.casser(s);
       const envoi = await envoyer(s);
       assert.equal(envoi.status, 409, `${cas.nom} (envoi) : ${JSON.stringify(envoi.body)}`);
-      assert.deepEqual(envoi.body, refusAttendu(cas.code, cas.liste), `${cas.nom} (envoi)`);
+      assert.deepEqual(envoi.body, refusAttendu(cas.code, cas.liste, cas.suite), `${cas.nom} (envoi)`);
       assert.equal(envoisRecus(s), 0, `${cas.nom} : rien n'est envoyé`);
       assert.equal(s.service().activeRequest(), null, cas.nom);
     }
@@ -774,6 +779,37 @@ describe("L22c : conditions du §4.14.2, 409 et phrase, rien n'est envoyé", () 
     const vue = await vueSalle(s);
     assert.equal(vue.interrupteur, false);
     assert.deepEqual(vue.disponibles, [{ choix: "omo", disponible: false, raison: "autonomie-coupee" }]);
+  });
+
+  // Grande fusion, décision D5 (fiche v106 §3.6) : egress n'ouvre que l'adresse imposée, sinon celle d'office. Sans adresse
+  // imposée et avec une adresse vérifiée d'abonnement, chaque envoi de la salle partirait vers api.githubcopilot.com, refusé et
+  // journalisé par le proxy de l'entreprise (A19) : refus, avec la commande qui impose l'adresse vérifiée.
+  it("D5 : COCKPIT_COPILOT_API_URL vide et adresse vérifiée ≠ adresse d'office → 409, phrase avec -CopilotApiUrl ; permis dans les autres cas", async (t) => {
+    const BUSINESS = "https://api.business.githubcopilot.com";
+    const s = await salle(t);
+    s.monde.catalogue.endpoint = `${BUSINESS}/`;
+    const refus = await activer(s, { choix: "omo", plafondUsd: "1" });
+    assert.equal(refus.status, 409, refus.body);
+    assert.deepEqual(refus.json(), refusAttendu("adresse-copilot-changee", [], phraseAdresseAImposer(BUSINESS)));
+    assert.match(refus.json<{ message: string }>().message, /\.\\install\.ps1 -CopilotApiUrl https:\/\/api\.business\.githubcopilot\.com$/);
+    assert.equal(envoisRecus(s), 0);
+    // Permis : adresse vérifiée = adresse d'office, sans adresse imposée.
+    s.monde.catalogue.endpoint = ENDPOINT_PAR_DEFAUT;
+    assert.equal((await activer(s, { choix: "omo", plafondUsd: "1" })).status, 200);
+
+    // Adresse imposée (celle de l'abonnement) et vérifiée identique : permis, egress l'ouvre.
+    const imposee = await salle(t, { env: { copilotApiUrl: BUSINESS } });
+    imposee.monde.catalogue.endpoint = BUSINESS;
+    const permis = await activer(imposee, { choix: "omo", plafondUsd: "1" });
+    assert.equal(permis.status, 200, permis.body);
+    // Adresse imposée mais une autre vérifiée : refus « Adresse Copilot changée » SANS la suite D5 (l'adresse est déjà imposée).
+    imposee.monde.catalogue.endpoint = "https://api.enterprise.githubcopilot.com";
+    const change = await activer(imposee, { choix: "omo", plafondUsd: "1" });
+    assert.equal(change.status, 409, change.body);
+    assert.deepEqual(change.json(), refusAttendu("adresse-copilot-changee"));
+    // Adresse vérifiée hors des hôtes Copilot connus : aucune commande proposée (install.ps1 la refuserait), refus sans suite.
+    s.monde.catalogue.endpoint = "https://copilot.exemple.test";
+    assert.deepEqual((await activer(s, { choix: "omo", plafondUsd: "1" })).json(), refusAttendu("adresse-copilot-changee"));
   });
 
   it("vue de l'écran : toutes les conditions relevées, première fausse en raison ; salle coupée : rien d'autre n'est lu", async (t) => {

@@ -117,6 +117,13 @@ export const TEXTES = {
        */
       "workspace-non-verifie": "L'historique git de ces dossiers n'est pas protégé : relancez `install.ps1`. {liste}",
     } satisfies Record<Exclude<OmoActivationRefusalCode, "mode-avance">, string>,
+    /**
+     * Grande fusion, décision D5 (fiche v106 §3.6) : suite du refus « adresse-copilot-changee » quand aucune adresse n'est imposée
+     * (COCKPIT_COPILOT_API_URL vide) et que l'adresse vérifiée par le cockpit n'est pas celle d'office. `egress` n'ouvrirait que
+     * l'adresse d'office : chaque envoi de la salle serait refusé et journalisé par le proxy de l'entreprise (A19). {adresse} :
+     * l'adresse vérifiée, acceptée par install.ps1.
+     */
+    adresseAImposer: "Imposez l'adresse de votre abonnement : .\\install.ps1 -CopilotApiUrl {adresse}",
     /** Arrêt de la salle (stopTreeOmo), par cause. */
     arrets: {
       vous: "Arrêtée par vous : la salle est relancée à neuf.",
@@ -267,6 +274,11 @@ export const TEXTES = {
 /** Phrase d'un refus d'activation (gabarit : {projet}, {plafondMaxUsd}, {liste} selon le code). */
 export function phraseRefusActivation(code: OmoActivationRefusalCode): string {
   return code === "mode-avance" ? TEXTES.partout.refus[code] : TEXTES.avance.refus[code];
+}
+
+/** Suite du refus « adresse-copilot-changee » sans adresse imposée (D5) : la commande qui impose l'adresse vérifiée. */
+export function phraseAdresseAImposer(adresse: string): string {
+  return TEXTES.avance.adresseAImposer.replace("{adresse}", adresse);
 }
 
 /** Phrase d'un arrêt de la salle (gabarit : {x} et {montant} pour plafond-cout). */

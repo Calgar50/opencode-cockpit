@@ -14,6 +14,7 @@ import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { EGRESS_JOURNAL_DOSSIER_DEFAUT, type EgressRefus, hotePourJournal, JournalRefus } from "./egress-journal.ts";
+import { parseEnterpriseDomain } from "./egress-policy.ts";
 import { errorMessage, type Logger, createLogger } from "./log.ts";
 import { decoupeCibleConnect, EGRESS_PORT_AUTORISE, egressAllow, egressHoteAutorise, type EgressRefusalReason } from "./shared/egress-allow.ts";
 
@@ -142,6 +143,19 @@ function cibleRequete(url: string): { hote: string; port: number } {
   } catch {
     return { hote: "", port: 0 };
   }
+}
+
+/**
+ * Hôte autorisé, lu une fois dans l'environnement d'egress. Grande fusion (fiche-fusion-v106 §3.6, vecteurs GHE de T-S8) : le
+ * domaine GitHub Enterprise est lu COMME PAR LE COCKPIT (parseEnterpriseDomain d'egress-policy.ts, invariant I10 : schéma, barre et
+ * point finals retirés, casse ignorée). Sans cela, « https://entreprise.ghe.com/ » ou « entreprise.ghe.com. », acceptés par le
+ * cockpit et son relais, fermaient egress (hôte null). Un domaine que le cockpit refuse (il ne démarre pas) ferme egress aussi.
+ * La règle de décision n'est pas partagée (D2) : seule la lecture du domaine l'est, par ce module du serveur.
+ */
+export function hoteAutoriseDeLEnvironnement(env: NodeJS.ProcessEnv): string | null {
+  const domaine = parseEnterpriseDomain(env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN);
+  if (domaine === undefined) return null;
+  return egressHoteAutorise(env.COCKPIT_COPILOT_API_URL, domaine ?? undefined);
 }
 
 export interface ProxySortieOptions {
@@ -365,10 +379,10 @@ export async function lancer(d: DependancesLancement): Promise<void> {
     return;
   }
 
-  const hoteAutorise = egressHoteAutorise(d.env.COCKPIT_COPILOT_API_URL, d.env.COCKPIT_GITHUB_ENTERPRISE_DOMAIN);
+  const hoteAutorise = hoteAutoriseDeLEnvironnement(d.env);
   if (hoteAutorise === null) {
     log.error(
-      "proxy de sortie : COCKPIT_COPILOT_API_URL refusée, rien ne sort. Valeurs acceptées : https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com, https://api.githubcopilot.com (ou copilot-api.<domaine GitHub Enterprise déclaré>).",
+      "proxy de sortie : COCKPIT_COPILOT_API_URL refusée, rien ne sort. Valeurs acceptées : https://api.business.githubcopilot.com, https://api.enterprise.githubcopilot.com, https://api.githubcopilot.com (ou copilot-api.<domaine GitHub Enterprise déclaré>). COCKPIT_GITHUB_ENTERPRISE_DOMAIN, s'il est posé : un nom de domaine, comme pour le cockpit.",
     );
     d.sortir(1);
     return;

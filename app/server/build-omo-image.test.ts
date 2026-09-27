@@ -64,6 +64,11 @@ const EXIGES: ReadonlyArray<{ nom: string; re: RegExp }> = [
   { nom: "-AcceptManifest", re: /\[switch\]\$AcceptManifest\b/ },
   { nom: "--ignore-scripts", re: /'--ignore-scripts'/ },
   { nom: "--package-lock-only", re: /'--package-lock-only'/ },
+  // Grande fusion, D7 a : npm n'est plus hors ligne dans le seul conteneur du lockfile (base 1.0.6 : npm_config_offline=true).
+  { nom: "lockfile : -e npm_config_offline=false avant l'image de base (D7 a)", re: /'-e', 'npm_config_offline=false', '--entrypoint', 'npm', \$BaseImage,/ },
+  // Grande fusion, D7 b : ENV de la base lu avant toute construction, refus sans les drapeaux de la 1.0.6.
+  { nom: "ENV de la base lu (D7 b)", re: /'image', 'inspect', '--format', '\{\{json \.Config\.Env\}\}', \$BaseImage/ },
+  { nom: "drapeaux de la base vérifiés juste après Docker (D7 b)", re: /^ {4}Assert-OmoDocker\n {4}Assert-OmoBaseFlags\n/m },
   { nom: "--network none", re: /'--network', 'none'/ },
   { nom: "Get-FileHash", re: /\bGet-FileHash -(LiteralPath|InputStream)\b/ },
   { nom: "construction sans cache", re: /'build', '--no-cache'/ },
@@ -321,6 +326,8 @@ const PS51 = process.platform === "win32" ? path.join(process.env.SystemRoot ?? 
 const SAUT_PS = PS51 === null || !fs.existsSync(PS51) ? "Windows PowerShell 5.1 absent (CI Linux) : joué au FIN local sous Windows" : false;
 const EMPREINTE = "0123456789abcdef".repeat(4);
 const BASE = `ghcr.io/exemple/opencode-cockpit-opencode:1.0.5@sha256:${EMPREINTE}`;
+/** ENV d'une image opencode du cockpit 1.0.6 (docker/opencode/Dockerfile), tel que docker image inspect le rend. */
+const ENV_BASE_106 = ["PATH=/usr/local/bin:/usr/bin", "OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_MODELS_URL=http://127.0.0.1:9", "npm_config_offline=true"];
 const INTEGRITE = `sha512-${crypto.createHash("sha512").update("[synthétique] oh-my-openagent").digest("base64")}`;
 const RESOLU = "https://registry.npmjs.org/oh-my-openagent/-/oh-my-openagent-4.19.4.tgz";
 
@@ -478,6 +485,15 @@ function suiteDryRun(): void {
         `a b@sha256:${EMPREINTE}`,
         `opencode@sha256:${EMPREINTE}\n`,
         `sha256:${EMPREINTE}`,
+      ],
+      // Grande fusion, D7 b : ENV de l'image de base (sortie de docker image inspect --format '{{json .Config.Env}}').
+      baseFlags: [
+        JSON.stringify(ENV_BASE_106),
+        JSON.stringify(["PATH=/usr/bin", "NODE_VERSION=24"]),
+        JSON.stringify(["OPENCODE_DISABLE_MODELS_FETCH=1", "npm_config_offline=false"]),
+        JSON.stringify(["opencode_disable_models_fetch=1", "NPM_CONFIG_OFFLINE=true"]),
+        "null",
+        "pas du JSON",
       ],
       inside: [
         { path: "C:\\depot", root: "C:\\depot" },
@@ -676,6 +692,17 @@ function suiteDryRun(): void {
 
   it("-BaseImage : empreinte @sha256 en minuscules obligatoire, nom docker valide, rien d'autre", () => {
     assert.deepEqual(valeur<boolean[]>("baseImage"), [true, true, true, false, false, false, false, false, false, false]);
+  });
+
+  it("D7 b : ENV de la base sans OPENCODE_DISABLE_MODELS_FETCH=1 et npm_config_offline=true (noms sensibles à la casse) → refus ; ENV illisible → refus", () => {
+    assert.deepEqual(valeur<string[]>("baseFlags"), [
+      "",
+      "OPENCODE_DISABLE_MODELS_FETCH=1 absent de l ENV de l image de base | npm_config_offline=true absent de l ENV de l image de base",
+      "npm_config_offline vaut false dans l image de base, true attendu",
+      "OPENCODE_DISABLE_MODELS_FETCH=1 absent de l ENV de l image de base | npm_config_offline=true absent de l ENV de l image de base",
+      "OPENCODE_DISABLE_MODELS_FETCH=1 absent de l ENV de l image de base | npm_config_offline=true absent de l ENV de l image de base",
+      "ENV de l image de base illisible",
+    ]);
   });
 
   it("contrat lu à l'exécution : chemins égaux à contrat-salle.json ; chemin relatif, .., périmètre vide ou JSON invalide refusés", () => {
@@ -989,6 +1016,8 @@ const MANIFESTE_RE = CONTRAT.cheminsImage.manifeste.replaceAll(".", "\\.");
 const SORTIE_SAVE = "[synthétique] contenu de docker save\n".repeat(200);
 const regle = (motif: string, reponse: Omit<Regle, "motif"> = {}): Regle => ({ motif, ...reponse });
 const VERSION = regle("^version ", { stdout: "29.8.0\n" });
+/** D7 b : ENV d'une base 1.0.6, lu par docker image inspect avant toute construction ; en tête de chaque scénario. */
+const BASE_ENV = regle("^image inspect --format \\{\\{json \\.Config\\.Env\\}\\} ", { stdout: `${JSON.stringify(ENV_BASE_106)}\n` });
 const IMAGE_RM = regle("^image rm ");
 const CONSTRUCTIONS_AMORCAGE = [
   regle("^build .*-construction1 ", { stderr: JOURNAL_OK }),
@@ -1031,7 +1060,14 @@ function suiteFauxDocker(): void {
   const resultats = new Map<string, ExecutionReelle>();
 
   /** `sansDocker` : PATH réduit au dossier système de Windows, où aucun docker n'est installé. */
-  async function lancerReel(nom: string, args: readonly string[], regles: readonly Regle[], options: { reference?: string; lock?: string | null; sansDocker?: boolean } = {}): Promise<void> {
+  async function lancerReel(
+    nom: string,
+    args: readonly string[],
+    reglesScenario: readonly Regle[],
+    options: { reference?: string; lock?: string | null; sansDocker?: boolean; baseEnv?: Regle } = {},
+  ): Promise<void> {
+    // D7 b : la lecture de l'ENV de la base répond d'abord (une base 1.0.6, sauf scénario qui en donne une autre).
+    const regles = [options.baseEnv ?? BASE_ENV, ...reglesScenario];
     const dossier = path.join(racine, nom);
     const depot = depotSynthetique(dossier, options);
     const omo = path.join(depot, "docker", "opencode-omo");
@@ -1122,6 +1158,14 @@ function suiteFauxDocker(): void {
       ]),
       lancerReel("docker-muet", [], [regle("^version ", { stderr: "[synthétique] moteur arrêté\n", code: 1 })], ref),
       lancerReel("docker-absent", [], [], { ...ref, sansDocker: true }),
+      lancerReel("base-sans-drapeaux", [], deroule(), {
+        ...ref,
+        baseEnv: regle("^image inspect --format \\{\\{json \\.Config\\.Env\\}\\} ", { stdout: `${JSON.stringify(["PATH=/usr/bin", "OPENCODE_DISABLE_MODELS_FETCH=1"])}\n` }),
+      }),
+      lancerReel("base-sans-drapeaux-lock", ["-UpdateLock"], lock({ montage: { "package-lock.json": LOCK_REGENERE } }), {
+        baseEnv: regle("^image inspect --format \\{\\{json \\.Config\\.Env\\}\\} ", { stdout: `${JSON.stringify(["PATH=/usr/bin"])}\n` }),
+      }),
+      lancerReel("base-introuvable", [], deroule(), { ...ref, baseEnv: regle("^image inspect --format \\{\\{json \\.Config\\.Env\\}\\} ", { stderr: "Error: No such image\n", code: 1 }) }),
       lancerReel("selftest-mutation-acceptee", ["-SelfTest"], selfTest({ "valeur-retiree": { stderr: JOURNAL_OK } })),
       lancerReel("selftest-vert", ["-SelfTest"], selfTest()),
       lancerReel("selftest-temoin-casse", ["-SelfTest"], selfTest({}, 1)),
@@ -1181,7 +1225,9 @@ function suiteFauxDocker(): void {
     const empreinte = crypto.createHash("sha256").update(octets).digest("hex");
     const tag = archive.replace(/^opencode-cockpit-omo-4\.19\.4-/, "opencode-cockpit/opencode-omo:4.19.4-").replace(/\.tar\.gz$/, "");
     assert.equal(fs.readFileSync(path.join(r.dossierSortie, `${archive}.sha256`), "utf8"), `${empreinte}  ${archive}\nimage-id ${ID_2}\nimage ${tag}\n`);
-    assert.equal(appel(r, /^image inspect /).length, 3, "identifiant relu après la construction, avant et après docker save");
+    // D7 b : un « image inspect » de plus, celui de l'ENV de la base ; l'identifiant, lui, est toujours relu trois fois.
+    assert.equal(appel(r, /^image inspect --format \{\{\.Id\}\} /).length, 3, "identifiant relu après la construction, avant et après docker save");
+    assert.equal(appel(r, /^image inspect --format \{\{json \.Config\.Env\}\} /).length, 1, "ENV de la base lu une fois");
     assert.equal(r.reference, REFERENCE_VALIDE);
   });
 
@@ -1238,7 +1284,28 @@ function suiteFauxDocker(): void {
   it("journal de construction avec un script de cycle de vie → arrêt juste après la construction", () => {
     const r = arret("journal-cycle-de-vie", /ARRET : Journal de npm ci refuse/);
     assert.match(r.sortie, /script de cycle de vie au journal/);
-    assert.deepEqual(r.appels.map((a) => a[0]), ["version", "build"]);
+    // D7 b : l'ENV de la base est lu entre la version et la construction.
+    assert.deepEqual(r.appels.map((a) => a[0]), ["version", "image", "build"]);
+  });
+
+  it("D7 b : base sans les drapeaux de la 1.0.6 → arrêt avant toute construction et avant le lockfile ; base absente du poste → arrêt, docker pull conseillé", () => {
+    const sans = arret("base-sans-drapeaux", /ARRET : -BaseImage refusee : l image de base ne porte pas les drapeaux de la 1\.0\.6/);
+    assert.match(sans.sortie, /npm_config_offline=true absent de l ENV de l image de base/);
+    assert.deepEqual(sans.appels.map((a) => a.slice(0, 2).join(" ")), ["version --format", "image inspect"]);
+    assert.deepEqual(sans.sortieFichiers, []);
+    const lock = arret("base-sans-drapeaux-lock", /ARRET : -BaseImage refusee : l image de base ne porte pas les drapeaux de la 1\.0\.6/);
+    assert.equal(appel(lock, / install --package-lock-only /).length, 0, "aucun npm lancé");
+    const introuvable = arret("base-introuvable", /ARRET : Image de base introuvable sur ce poste : docker pull /);
+    assert.equal(appel(introuvable, /^build /).length, 0);
+  });
+
+  it("D7 a : lockfile régénéré dans un conteneur de la base où npm n'est plus hors ligne (-e npm_config_offline=false), ENV de la base intact", () => {
+    const r = res("lock-ok");
+    assert.equal(r.code, 0, r.sortie);
+    const run = appel(r, / install --package-lock-only /)[0] ?? [];
+    const e = run.indexOf("-e");
+    assert.ok(e > 0 && run[e + 1] === "npm_config_offline=false", run.join(" "));
+    assert.ok(e < run.indexOf("--entrypoint"), "variable posée pour ce seul conteneur, avant l'image");
   });
 
   it("arrêts sans archive : Docker absent ou muet, construction en échec, identifiant d'image illisible, calcul du manifeste en échec", () => {
@@ -1246,7 +1313,8 @@ function suiteFauxDocker(): void {
     assert.deepEqual(absent.appels, []);
     assert.deepEqual(arret("docker-muet", /ARRET : Docker ne repond pas/).appels.map((a) => a[0]), ["version"]);
     const construction = arret("construction-echec", /ARRET : Construction opencode-cockpit\/opencode-omo:4\.19\.4-\d{8}-\d{6} en echec \(code 1\)/);
-    assert.deepEqual(construction.appels.map((a) => a[0]), ["version", "build"]);
+    // D7 b : l'ENV de la base est lu (« image inspect ») entre la version et la construction.
+    assert.deepEqual(construction.appels.map((a) => a[0]), ["version", "image", "build"]);
     arret("identifiant-illisible", /ARRET : Identifiant d image illisible : opencode-cockpit\/opencode-omo:4\.19\.4-/);
     const manifeste = arret("normal-manifeste-code", /ARRET : Calcul du manifeste en echec \(code 1\)/);
     for (const r of [construction, res("identifiant-illisible"), manifeste]) assert.equal(appel(r, /^save /).length, 0);
@@ -1338,6 +1406,7 @@ const HARNAIS = [
   "$out['contract'] = [ordered]@{ valider = $contract.Valider; manifeste = $contract.Manifeste; extension = $contract.Extension; reference = $contract.Reference; perimetre = [object[]]$contract.Perimetre }",
   "$out['contractBad'] = @(foreach ($v in @($c.contractBad)) { Invoke-Cas { Read-OmoContract $v | Out-Null; 'accepte' } })",
   "$out['baseImage'] = @(foreach ($v in @($c.baseImage)) { [bool](Test-OmoBaseImage $v) })",
+  "$out['baseFlags'] = @(foreach ($v in @($c.baseFlags)) { (@(Get-OmoBaseFlagProblems $v) -join ' | ') })",
   "$out['inside'] = @(foreach ($v in @($c.inside)) { [bool](Test-OmoInside $v.path $v.root) })",
   "$out['argText'] = @(foreach ($v in @($c.argText)) { [string](ConvertTo-OmoArgText $v) })",
   "$out['safeText'] = @(foreach ($v in @($c.safeText)) { [string](Get-OmoSafeText $v 20) })",

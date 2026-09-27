@@ -522,3 +522,53 @@ describe("configurations de la salle : omo.jsonc et G3 statique", () => {
     assert.equal(omo.hashline_edit, false);
   });
 });
+
+// --- Grande fusion, décision D7 a (fiche v106 §3.4, T-S10) --------------------------------------------------------------------------
+// Une base 1.0.6 ou plus récente porte npm_config_offline=true dans son ENV : npm ci échouerait sur place (cache vide). La salle le
+// neutralise pour ses SEULES étapes npm de construction, et ne redéfinit jamais l'ENV hérité : à l'exécution, les drapeaux de la
+// 1.0.6 (catalogue des modèles coupé, npm hors ligne) s'appliquent aussi à la salle.
+
+/** Appels npm qui installent (ci, install, i) dans une étape RUN, chacun avec sa position dans l'étape. */
+function installationsNpm(instructions: readonly Instruction[]): Array<{ etape: string; position: number }> {
+  return instructions
+    .filter((i) => i.cmd === "RUN")
+    .flatMap((i) => [...i.args.matchAll(/\bnpm\s+(?:ci|install|i)\b/g)].map((m) => ({ etape: i.args, position: m.index ?? 0 })));
+}
+
+/** Vrai si chaque installation npm est précédée, dans la même étape, de « export npm_config_offline=false; ». */
+function npmJamaisHorsLigne(instructions: readonly Instruction[]): boolean {
+  const installations = installationsNpm(instructions);
+  return installations.length > 0 && installations.every(({ etape, position }) => {
+    const neutre = etape.indexOf("export npm_config_offline=false;");
+    return neutre >= 0 && neutre < position;
+  });
+}
+
+describe("GF12 (D7 a, T-S10) : npm de la construction jamais hors ligne, ENV de la base jamais redéfini", () => {
+  it("chaque npm ci ou npm install de la construction est précédé, dans la même étape, de export npm_config_offline=false", () => {
+    assert.equal(installationsNpm(DOCKERFILE).length, 1, "une seule installation : npm ci de l'extension");
+    assert.equal(npmJamaisHorsLigne(DOCKERFILE), true);
+  });
+
+  it("l'ENV de la salle ne redéfinit aucun drapeau de la base 1.0.6 ; npm_config_offline n'apparaît que dans une étape RUN", () => {
+    const declarations = DOCKERFILE.filter((i) => i.cmd === "ENV" || i.cmd === "ARG")
+      .map((i) => i.args)
+      .join(" ");
+    for (const drapeau of ["npm_config_offline", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_MODELS_URL", "npm_config_audit", "npm_config_fund", "npm_config_update_notifier"]) {
+      assert.doesNotMatch(declarations, new RegExp(`(?<![\\w])${drapeau}(?![\\w])`, "i"), drapeau);
+    }
+    assert.deepEqual(
+      DOCKERFILE.filter((i) => i.args.includes("npm_config_offline")).map((i) => i.cmd),
+      ["RUN"],
+    );
+  });
+
+  it("témoins : la règle refuse une installation sans la neutralisation, ou neutralisée APRÈS npm", () => {
+    const etape = (args: string): Instruction[] => [{ cmd: "RUN", args }];
+    assert.equal(npmJamaisHorsLigne(etape("set -eu; cd /opt/omo; npm ci --ignore-scripts;")), false);
+    assert.equal(npmJamaisHorsLigne(etape("set -eu; npm ci --ignore-scripts; export npm_config_offline=false;")), false);
+    assert.equal(npmJamaisHorsLigne(etape("set -eu; export npm_config_offline=false; npm ci; npm install autre;")), true);
+    assert.equal(npmJamaisHorsLigne([...etape("export npm_config_offline=false; npm ci;"), ...etape("npm install x;")]), false);
+    assert.equal(npmJamaisHorsLigne(etape("echo rien;")), false, "aucune installation : rien n'est prouvé");
+  });
+});

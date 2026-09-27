@@ -650,14 +650,17 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> => type
  */
 export function corpsRefusSalle(
   code: OmoActivationRefusalCode,
-  valeurs: { projet: string | null; plafondMaxUsd: number; liste?: readonly string[] },
+  valeurs: { projet: string | null; plafondMaxUsd: number; liste?: readonly string[]; suite?: string },
 ): OmoAutonomyErrorBody {
   const liste = [...(valeurs.liste ?? [])];
-  const message = phraseRefus(code, {
+  const phrase = phraseRefus(code, {
     plafondMaxUsd: montantAffiche(valeurs.plafondMaxUsd),
     liste: liste.join(SEPARATEUR_LISTE),
     ...(valeurs.projet === null ? {} : { projet: valeurs.projet }),
   }).trim();
+  // Suite de la phrase (grande fusion, D5 : commande qui impose l'adresse Copilot vérifiée), phrase de omo-room-texts.ts.
+  const suite = valeurs.suite?.trim() ?? "";
+  const message = suite === "" ? phrase : `${phrase}${/[.!?…]$/u.test(phrase) ? "" : "."} ${suite}`;
   return { error: code === "mode-avance" ? "mode-avance" : "autonomie-indisponible", message, raison: code, ...(liste.length > 0 ? { liste } : {}) };
 }
 
@@ -680,10 +683,10 @@ export function projetDeSalle(db: DatabaseSync, rootId: string): string | null {
 
 export function createSalleAutonomy(c11: Cockpit11, store = new ConversationAutonomyStore(c11.db)): SalleAutonomy {
   const plafondMaxUsd = () => c11.settings.get().budget.autonomie.plafondMaxUsd;
-  const refus = (code: OmoActivationRefusalCode, projet: string | null, liste?: readonly string[]): SalleAutonomyResult => ({
+  const refus = (code: OmoActivationRefusalCode, projet: string | null, liste?: readonly string[], suite?: string): SalleAutonomyResult => ({
     ok: false,
     status: statutRefusSalle(code),
-    body: corpsRefusSalle(code, { projet, plafondMaxUsd: plafondMaxUsd(), ...(liste === undefined ? {} : { liste }) }),
+    body: corpsRefusSalle(code, { projet, plafondMaxUsd: plafondMaxUsd(), ...(liste === undefined ? {} : { liste }), ...(suite === undefined ? {} : { suite }) }),
   });
   const { erreurs, raisons } = TEXTES_CHOIX.partout;
 
@@ -749,7 +752,14 @@ export function createSalleAutonomy(c11: Cockpit11, store = new ConversationAuto
       if (result.code === "not-found") return { ok: false, status: 404, body: { error: "not-found", message: erreurs.inconnue } };
       // `liste` : chemins en cause, joints par le port d'activation à un refus git (champ en plus du contrat, lu prudemment).
       const liste = (result as { liste?: unknown }).liste;
-      return refus(result.code, projetDeSalle(c11.db, rootId), Array.isArray(liste) ? liste.filter((c): c is string => typeof c === "string") : undefined);
+      // `suite` : phrase qui suit celle du code (D5), jointe par le port d'activation, lue prudemment comme `liste`.
+      const suite = (result as { suite?: unknown }).suite;
+      return refus(
+        result.code,
+        projetDeSalle(c11.db, rootId),
+        Array.isArray(liste) ? liste.filter((c): c is string => typeof c === "string") : undefined,
+        typeof suite === "string" ? suite : undefined,
+      );
     },
   };
 }

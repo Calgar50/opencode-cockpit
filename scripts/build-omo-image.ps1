@@ -19,6 +19,8 @@
 #   -DryRun         affiche chaque commande docker (dont les deux constructions de l'amorcage) sans lancer Docker et sans
 #                   rien ecrire dans le depot ni dans le dossier de sortie.
 # -BaseImage : image opencode du cockpit, epinglee par empreinte (<nom>[:etiquette]@sha256:<64 hex>) ; refusee sinon.
+#              Son ENV doit porter les drapeaux de la 1.0.6 (OPENCODE_DISABLE_MODELS_FETCH=1, npm_config_offline=true) :
+#              une base plus ancienne est refusee (decision D7 b de la grande fusion), relue par docker image inspect.
 # -OutDir : archive, .sha256, audit, SBOM et journaux (defaut : %USERPROFILE%\opencode-cockpit-omo). Jamais dans le depot, qui
 #   est public : rien de tout cela n'y est publie.
 # Fichier <archive>.sha256 (LF), lu par install.ps1 -OmoArchive :
@@ -113,6 +115,28 @@ function Test-OmoBaseImage([string]$Value) {
     $pattern = '^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?/)?' + $component + '(?:/' + $component + ')*' +
         '(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}\z'
     return ($Value -cmatch $pattern)
+}
+
+# Drapeaux de la 1.0.6 exiges dans l'ENV de l'image de base (decision D7 b de la grande fusion) : sans eux, la salle
+# heriterait d'une image qui telecharge le catalogue des modeles et laisse npm sortir a l'execution. Entree : sortie de
+# docker image inspect --format '{{json .Config.Env}}' (tableau JSON de chaines CLE=VALEUR ; noms sensibles a la casse).
+function Get-OmoBaseFlagProblems([string]$EnvJson) {
+    $problems = New-Object System.Collections.Generic.List[string]
+    $entries = $null
+    try { $entries = ConvertFrom-Json $EnvJson } catch { $problems.Add('ENV de l image de base illisible'); return $problems.ToArray() }
+    $values = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([System.StringComparer]::Ordinal)
+    foreach ($entry in @($entries)) {
+        if ($entry -isnot [string]) { continue }
+        $at = $entry.IndexOf('=')
+        if ($at -gt 0) { $values[$entry.Substring(0, $at)] = $entry.Substring($at + 1) }
+    }
+    foreach ($flag in @(@('OPENCODE_DISABLE_MODELS_FETCH', '1'), @('npm_config_offline', 'true'))) {
+        $name = $flag[0]
+        $wanted = $flag[1]
+        if (-not $values.ContainsKey($name)) { $problems.Add(('{0}={1} absent de l ENV de l image de base' -f $name, $wanted)) }
+        elseif ($values[$name] -cne $wanted) { $problems.Add(('{0} vaut {1} dans l image de base, {2} attendu' -f $name, (Get-OmoSafeText $values[$name] 40), $wanted)) }
+    }
+    return $problems.ToArray()
 }
 
 # Chemins de l'image et perimetre du manifeste, lus dans le contrat machine (D-2b-39) : absolus, sans .. ni //.
@@ -616,6 +640,19 @@ function Assert-OmoDocker {
     if ((Invoke-OmoDocker -Arguments @('version', '--format', '{{.Server.Version}}')).ExitCode -ne 0) { throw 'Docker ne repond pas : demarrez Docker Desktop, puis relancez.' }
 }
 
+# D7 b : la base doit porter les drapeaux de la 1.0.6, lus sans reseau dans sa configuration (docker image inspect).
+function Assert-OmoBaseFlags {
+    $result = Invoke-OmoDocker -Arguments @('image', 'inspect', '--format', '{{json .Config.Env}}', $BaseImage)
+    if ($DryRun) { Write-OmoLine '[simulation] drapeaux 1.0.6 de l image de base non verifies'; return }
+    if ($result.ExitCode -ne 0) { throw ('Image de base introuvable sur ce poste : docker pull ' + $BaseImage + ', puis relancez.') }
+    $problems = @(Get-OmoBaseFlagProblems ([string]$result.StdOut))
+    if ($problems.Count -gt 0) {
+        Write-OmoProblems $problems
+        throw '-BaseImage refusee : l image de base ne porte pas les drapeaux de la 1.0.6 (OPENCODE_DISABLE_MODELS_FETCH=1, npm_config_offline=true). Construisez la salle sur l image opencode du cockpit 1.0.6 ou plus recente.'
+    }
+    Write-OmoLine 'image de base : drapeaux 1.0.6 presents (OPENCODE_DISABLE_MODELS_FETCH=1, npm_config_offline=true)'
+}
+
 function Assert-OmoFile([string]$Name) {
     $path = Join-Path $OmoDir $Name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ('Fichier absent : docker\opencode-omo\' + $Name) }
@@ -648,7 +685,8 @@ function Invoke-OmoUpdateLock {
         if (Test-Path -LiteralPath $lockFile -PathType Leaf) { Copy-OmoFileVerified $lockFile (Join-Path $work 'package-lock.json') }
         $packageHash = Get-OmoSha256 (Join-Path $work 'package.json')
     }
-    $result = Invoke-OmoDocker -Stream -Arguments (@('run', '--rm') + $Hardening + @('-v', ($work + ':/omo-lock'), '-w', '/omo-lock', '--entrypoint', 'npm', $BaseImage,
+    # D7 a : l'ENV d'une base 1.0.6 porte npm_config_offline=true ; neutralise pour ce seul conteneur (cache vide, sinon echec).
+    $result = Invoke-OmoDocker -Stream -Arguments (@('run', '--rm') + $Hardening + @('-v', ($work + ':/omo-lock'), '-w', '/omo-lock', '-e', 'npm_config_offline=false', '--entrypoint', 'npm', $BaseImage,
         'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'))
     if ($DryRun) { Write-OmoLine ('[simulation] controle du lockfile produit, puis recopie verifiee vers ' + $lockFile); return }
     if ($result.ExitCode -ne 0) { throw ('npm install --package-lock-only en echec (code {0}).' -f $result.ExitCode) }
@@ -816,6 +854,7 @@ function Invoke-OmoMain {
     }
     if ($DryRun) { Write-Host '[simulation] aucune commande docker n est lancee ; rien n est ecrit dans le depot ni dans le dossier de sortie.' -ForegroundColor Yellow }
     Assert-OmoDocker
+    Assert-OmoBaseFlags
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
     if ($UpdateLock) { Invoke-OmoUpdateLock; return }
     $contract = Read-OmoContract (Read-OmoText (Assert-OmoFile 'contrat-salle.json'))

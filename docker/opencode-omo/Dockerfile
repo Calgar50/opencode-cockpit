@@ -38,9 +38,13 @@ RUN set -eu; \
 # Extension : npm ci contre le lockfile versionné (intégrité SHA-512 de chaque paquet vérifiée par npm), AUCUN script
 # d'installation (postinstall.mjs de l'extension ne tourne pas), sans dépendance de développement. Puis /opt/omo passe à root
 # et perd tout droit d'écriture ; l'avis de licence est copié dans l'image (G11). Cache npm hors de l'image.
+# Base 1.0.6 ou plus récente (décision D7 a de la grande fusion) : son ENV porte npm_config_offline=true, qui ferait échouer ce
+# npm ci sur place (cache vide). Neutralisé pour CETTE étape seulement, par export ; l'ENV final n'est jamais redéfini ici, et
+# les drapeaux de la base (OPENCODE_DISABLE_MODELS_FETCH=1, npm hors ligne…) restent hérités par la salle à l'exécution.
 COPY package.json package-lock.json /opt/omo/
 RUN set -eu; \
     export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt; \
+    export npm_config_offline=false; \
     cd /opt/omo; \
     npm ci --ignore-scripts --no-audit --no-fund --omit=dev --cache /tmp/npm-cache; \
     rm -rf /tmp/npm-cache; \

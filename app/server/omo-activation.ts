@@ -48,7 +48,7 @@ import { analyserProjetsPrepares, OMO_PROJETS_MAX_OCTETS } from "./omo-control.t
 import { releverGitsWorkspace } from "./omo-precheck-reader.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { SettingsStore } from "./settings.ts";
-import type { UiMode } from "./shared/assistant-rules.ts";
+import { normalizeCopilotApiUrl, type UiMode } from "./shared/assistant-rules.ts";
 import type { ChoiceCause, RequestEnd } from "./shared/autonomy-types.ts";
 import { egressHoteAutorise } from "./shared/egress-allow.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
@@ -64,6 +64,7 @@ import {
   OMO_FICHIERS_CONTROLE,
 } from "./shared/omo-control-protocol.ts";
 import { gitsHorsProtection, type PrecheckBornes } from "./shared/omo-precheck-rules.ts";
+import { phraseAdresseAImposer } from "./shared/omo-room-texts.ts";
 import type { OmoActivationBody, OmoActivationRefusalCode, OmoActivationView, OmoSupervisorState } from "./shared/omo-types.ts";
 
 export function neutralOmoActivation(_deps: Cockpit11Deps): OmoActivationPort {
@@ -89,8 +90,11 @@ export const OMO_IMAGE_ID_PREFIXE = `oh-my-openagent@${OMO_VERSION} `;
 
 // --- Types -----------------------------------------------------------------------------------------------------------------------
 
-/** Refus d'une activation : code du contrat, et chemins en cause pour un refus git (gabarit {liste}), en plus du contrat de T3a. */
-export type OmoActivationRefus = Extract<OmoActivationPutResult, { ok: false }> & { liste?: string[] };
+/**
+ * Refus d'une activation : code du contrat, et chemins en cause pour un refus git (gabarit {liste}), en plus du contrat de T3a ;
+ * `suite` : phrase qui suit celle du code (D5 : commande qui impose l'adresse Copilot vérifiée), champ en plus lu prudemment.
+ */
+export type OmoActivationRefus = Extract<OmoActivationPutResult, { ok: false }> & { liste?: string[]; suite?: string };
 
 /** Refus d'un envoi : code, statut HTTP et chemins en cause. */
 type RefusEnvoi = { ok: false; code: OmoActivationRefusalCode; liste: string[] };
@@ -353,6 +357,31 @@ export function createOmoActivation(deps: OmoActivationDeps): OmoActivationServi
   };
 
   /**
+   * Grande fusion, décision D5 (fiche v106 §3.6) : sans adresse imposée (COCKPIT_COPILOT_API_URL vide), egress n'ouvre que l'adresse
+   * d'office. Si l'adresse vérifiée par le cockpit en est une autre (pare-feu à routage par abonnement), l'activation est refusée
+   * (« adresse-copilot-changee », code existant) et sa phrase donne la commande qui impose l'adresse vérifiée ; sinon chaque envoi
+   * de la salle partirait vers l'adresse d'office, refusé et journalisé par le proxy de l'entreprise (A19). L'adresse proposée est
+   * celle que le cockpit a vérifiée, normalisée comme par install.ps1 (hôte Copilot connu seulement) ; tout doute : aucune suite.
+   */
+  const suiteAdresse = (): string | undefined => {
+    try {
+      if ((deps.env.copilotApiUrl ?? "").trim() !== "") return undefined;
+      const retenue = deps.catalogue().sources.endpoint?.url;
+      if (typeof retenue !== "string" || retenue === "") return undefined;
+      const domaine = deps.env.githubEnterpriseDomain ?? null;
+      const adresse = normalizeCopilotApiUrl(retenue, domaine);
+      const office = egressHoteAutorise(undefined, domaine ?? undefined);
+      if (adresse === null || office === null || new URL(adresse).host.toLowerCase() === office.toLowerCase()) return undefined;
+      return phraseAdresseAImposer(adresse);
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** Suite de la phrase d'un refus, selon son code (seul « adresse-copilot-changee » en a une, D5). */
+  const suiteDe = (code: OmoActivationRefusalCode): string | undefined => (code === "adresse-copilot-changee" ? suiteAdresse() : undefined);
+
+  /**
    * Garde-fou budgétaire (§4.8.2 : « refus si guardRuns refuse la demande ») : budget mensuel épuisé avec blocage, ou, quand
    * l'envoi dit son modèle, la décision du garde-fou pour ce modèle sans confirmation. Erreur de lecture → refus.
    */
@@ -432,12 +461,16 @@ export function createOmoActivation(deps: OmoActivationDeps): OmoActivationServi
     };
   };
 
-  const refusPut = (status: OmoActivationRefus["status"], code: OmoActivationRefus["code"], liste?: string[]): OmoActivationRefus => ({
-    ok: false,
-    status,
-    code,
-    ...(liste !== undefined && liste.length > 0 ? { liste } : {}),
-  });
+  const refusPut = (status: OmoActivationRefus["status"], code: OmoActivationRefus["code"], liste?: string[]): OmoActivationRefus => {
+    const suite = code === "invalid" || code === "not-found" ? undefined : suiteDe(code);
+    return {
+      ok: false,
+      status,
+      code,
+      ...(liste !== undefined && liste.length > 0 ? { liste } : {}),
+      ...(suite === undefined ? {} : { suite }),
+    };
+  };
 
   const put: OmoActivationService["put"] = async (rootId, body, options) => {
     if (options.mode !== "avance") return refusPut(403, "mode-avance");
@@ -515,7 +548,11 @@ export function createOmoActivation(deps: OmoActivationDeps): OmoActivationServi
     if (verdict.ok) return null;
     log.info("salle : envoi refusé, rien n'est envoyé", { code: verdict.code });
     const projet = rootId === null ? null : projetDeSalle(db, rootId);
-    return ctx.c.json(corpsRefusSalle(verdict.code, { projet, plafondMaxUsd: plafondMaxUsd(), liste: verdict.liste }), statutRefusSalle(verdict.code));
+    const suite = suiteDe(verdict.code);
+    return ctx.c.json(
+      corpsRefusSalle(verdict.code, { projet, plafondMaxUsd: plafondMaxUsd(), liste: verdict.liste, ...(suite === undefined ? {} : { suite }) }),
+      statutRefusSalle(verdict.code),
+    );
   };
 
   return {

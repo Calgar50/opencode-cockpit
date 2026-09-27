@@ -385,6 +385,10 @@ function Test-OmoNomGitOuCourt([string]$Nom) {
 }
 
 # Dossier des carnets de l'extension (.omo) : jamais cree dans un projet, jamais ouvert en ecriture s'il existe (A16 point 2).
+# Grande fusion, decision D4 : sequence %XX qu'opencode 1.18.30 decoderait (meme motif que PERCENT_ESCAPE de projects.ts) ;
+# un % isole ("Remise 20%") n'en est pas une.
+function Test-OmoSequenceEchappee([string]$Chemin) { return ($Chemin -cmatch '%[0-9A-Fa-f]{2}') }
+
 function Test-OmoNomCarnets([string]$Nom) { return ((ConvertTo-OmoNomNormalise $Nom) -ceq '.omo') }
 
 # Depot nu (git clone --bare, .bare d'un montage bare + worktrees, x.git servant de depot local) : un fichier HEAD,
@@ -423,6 +427,20 @@ function Resolve-OmoGitdirTarget([string]$GitFile, [string]$Workspace) {
         if (-not $current) { return $null }
     }
     return $target
+}
+
+# Grande fusion, decision D7 c : drapeaux de la 1.0.6 dans l'ENV d'une image (docker image inspect, une ligne CLE=VALEUR
+# par variable ; noms sensibles a la casse). Une image de la salle construite sur une base plus ancienne ne les porte pas.
+function Test-OmoImageFlags([string]$EnvText) {
+    return ($EnvText -cmatch '(?m)^OPENCODE_DISABLE_MODELS_FETCH=1\r?$' -and $EnvText -cmatch '(?m)^npm_config_offline=true\r?$')
+}
+
+# ENV d'une IMAGE (jamais d'un conteneur, dont l'environnement contient les secrets) : seule lecture de .Config.Env de ce
+# script, admise nommement par tests/ps51/Validate-Scripts.ps1. Faux si l'image est illisible.
+function Test-OmoImageEnvFlags([string]$Image) {
+    if (-not $Image -or $Image.StartsWith('-')) { return $false }
+    $read = Get-DockerOutput image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $Image
+    return ($read.ExitCode -eq 0 -and (Test-OmoImageFlags ([string]$read.Output)))
 }
 
 # Parcours du dossier de travail (D-2b-28) : liens et jonctions jamais suivis, node_modules et interieurs de .git
@@ -524,6 +542,15 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
         if ($estProjet) { $entreesProjets[$relatif] = @($entries) }
         foreach ($sous in $sousDossiers) { $pile.Push($sous) }
     }
+    # Grande fusion, decision D4 : un projet dont le chemin porte une sequence %XX (par exemple a%2F..%2Fx) est ecarte de la
+    # preparation. opencode 1.18.30 decode le dossier DEUX fois et ouvrirait la salle ailleurs, hors du dossier de travail ; le
+    # cockpit le refuse de toute facon. Ecarte, il reste en lecture seule pour la salle, et ses .git restent proteges.
+    $ecartes = New-Object System.Collections.Generic.List[string]
+    $prepares = New-Object System.Collections.Generic.List[object]
+    foreach ($projet in $projets.ToArray()) {
+        $chemin = [string]$projet.Chemin
+        if (Test-OmoSequenceEchappee $chemin) { $ecartes.Add($chemin); [void]$entreesProjets.Remove($chemin) } else { $prepares.Add($projet) }
+    }
     # Un meme dossier peut etre vu deux fois (cible d'un .git fichier qui est aussi un depot nu) : un seul montage.
     # .ToArray() avant tout tri ou filtre : PowerShell 5.1 se trompe de liaison sur @(<List[object]> | ...).
     $uniques = New-Object System.Collections.Generic.List[object]
@@ -532,7 +559,8 @@ function Get-OmoWorkspaceScan([string]$Workspace) {
         if (-not $vus.ContainsKey($item.Chemin)) { $vus[$item.Chemin] = $true; $uniques.Add($item) }
     }
     return [pscustomobject]@{ Racine = $root
-        Projets = @($projets.ToArray() | Sort-Object -Property Chemin)
+        Projets = @($prepares.ToArray() | Sort-Object -Property Chemin)
+        Ecartes = @($ecartes.ToArray() | Sort-Object)
         Proteges = @($uniques.ToArray())
         Problemes = @($problemes.ToArray())
         Entrees = $entrees
@@ -678,6 +706,12 @@ function Write-OmoFrictionNotice {
 function Write-OmoProjectFiles([string]$Workspace, [string]$Destination) {
     $scan = Get-OmoWorkspaceScan $Workspace
     $ouverture = Get-OmoEcritures $scan
+    $ecartes = @($scan.Ecartes)
+    if ($ecartes.Count -gt 0) {
+        Write-Attention 'Projets ecartes de la salle : leur nom porte une sequence %XX (par exemple %2F), qu opencode decoderait en un autre chemin, hors du dossier de travail. Renommez-les, puis relancez install.ps1 :'
+        foreach ($ecarte in ($ecartes | Select-Object -First $OmoListeMax)) { Write-Host ('    - ' + $ecarte) -ForegroundColor Yellow }
+        if ($ecartes.Count -gt $OmoListeMax) { Write-Host ('    - ... et {0} de plus' -f ($ecartes.Count - $OmoListeMax)) -ForegroundColor Yellow }
+    }
     $overlay = Join-Path $Destination $CockpitOmoOverlay
     $projectsFile = Join-Path $Destination $OmoFichierProjets
     $problemes = New-Object System.Collections.Generic.List[string]
@@ -1117,6 +1151,12 @@ try {
         $omoId = ([string]$omoIdRead.Output).Trim()
         if ($omoIdRead.ExitCode -ne 0 -or $omoId -cne $omoChecksum.ImageId) {
             throw ("Archive refusee : l identifiant de l image chargee differe de celui du fichier .sha256. L image n est pas utilisee (COCKPIT_OMO_IMAGE n est pas ecrite) ; supprimez-la avec docker image rm {0}, puis recopiez l archive depuis le PC ou elle a ete construite." -f $omoChecksum.Image)
+        }
+        # Grande fusion, decision D7 c : une salle construite sur une base anterieure a la 1.0.6 n'herite pas de ses drapeaux
+        # (catalogue des modeles coupe, npm hors ligne). Elle ne fuit pas (egress refuse tout sur place), mais remplit le journal
+        # des sorties refusees : l'installation l'avertit, sans refuser.
+        if (-not (Test-OmoImageEnvFlags $omoChecksum.Image)) {
+            Write-Attention 'Image de la salle construite sur une base anterieure a la 1.0.6 (OPENCODE_DISABLE_MODELS_FETCH=1 et npm_config_offline=true absents) : ses sorties refusees par egress rempliront son journal. Reconstruisez-la sur le PC personnel avec scripts\build-omo-image.ps1, sur l image opencode du cockpit 1.0.6 ou plus recente.'
         }
         $config['COCKPIT_OMO_IMAGE'] = $omoChecksum.Image
         # L'interrupteur n'est jamais mis sur "on" par l'installation : la salle s'active depuis l'interface.
