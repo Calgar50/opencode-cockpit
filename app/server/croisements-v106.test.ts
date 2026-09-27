@@ -1711,9 +1711,32 @@ describe("croisements v106 <gf4:v106> : construction × 1.0.6 (fiche §6)", () =
 // </gf4:v106>
 
 // <gf5:v106> début : grande fusion, croisements (GF5) × 1.0.6 — sentinelle complétée (fiche-fusion-v106 §9.3, §11 ligne GF5 ; A32 (5))
-// Familles ajoutées par GF5 : relecture proactive de la table des attentes (D11 : un dossier d'enveloppe refusé n'est jamais relu),
-// suppression d'une conversation (refus préalable, D11).
+// Familles ajoutées par GF5 : arrêt de l'arbre (stop-tree, racine héritée au dossier %XX : A32 (5)), relecture proactive de la table
+// des attentes (D11 : un dossier d'enveloppe refusé n'est jamais relu), suppression d'une conversation (refus préalable, D11).
 describe("croisements v106 <gf5:v106> : grande fusion × 1.0.6 (sentinelle complète)", () => {
+  it("T-GF5-1 (A32 (5)) : « Arrêter » une racine héritée au dossier %XX → 404, ZÉRO requête ; racines légitimes : arrêt dans leur dossier, à l'octet", async (t) => {
+    const { h } = await start(t, { modules: ["stopTree", "facts", "requests"] });
+    const legacy = await conversation(h, dirOf("proj"), "Héritée");
+    h.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(TRAP_DIR, legacy.id);
+    const avant = h.fake.requests.length;
+    const refus = await h.call("POST", `/api/conversations/${legacy.id}/stop`, { headers: h.headers.mutating });
+    assert.equal(refus.status, 404, refus.body);
+    await assert.rejects(h.cockpit.c11.ports.stopTree.run(legacy.id, "plafond-cout"), /racine inconnue/, "port : même refus, pour un plafond aussi");
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}`),
+      [],
+      "rien n'est demandé à opencode pour la racine %XX",
+    );
+    for (const name of LEGIT) {
+      const root = await conversation(h, dirOf(name), name);
+      const depuis = h.fake.requests.length;
+      const arret = await h.call("POST", `/api/conversations/${root.id}/stop`, { headers: h.headers.mutating });
+      assert.equal(arret.status, 200, `${name} : ${arret.body}`);
+      assert.deepEqual([...new Set(directoriesSent(h, depuis))], [dirOf(name)], `${name} : arrêt dans ce dossier seulement`);
+    }
+    assertSentinel(h, "T-GF5-1");
+  });
+
   it("T-GF5-2 (D11) : relecture proactive de la table des attentes — enveloppe d'un dossier refusé (%XX, ou instance hors de /workspace) jamais relue ; dossiers légitimes relus à l'octet", async (t) => {
     const { h } = await start(t, { modules: ["pending"] });
     const lectures = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission");
