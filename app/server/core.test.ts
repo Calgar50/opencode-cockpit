@@ -1673,7 +1673,7 @@ describe("profils de droits et catalogue partagés", () => {
 });
 
 describe("base", () => {
-  it("openMemoryDb atteint user_version 6 avec item_meta et chat_turns", () => {
+  it("openMemoryDb atteint la dernière migration (user_version = MIGRATIONS.length) avec item_meta et chat_turns", () => {
     const db = openMemoryDb();
     assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
     const names = (

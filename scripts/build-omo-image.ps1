@@ -784,7 +784,9 @@ function Invoke-OmoAudit([object[]]$Accepted, [string]$AuditFile) {
     if (-not $DryRun) {
         foreach ($name in @('package.json', 'package-lock.json')) { Copy-OmoFileVerified (Join-Path $OmoDir $name) (Join-Path $work $name) }
     }
-    $result = Invoke-OmoDocker -Arguments (@('run', '--rm') + $Hardening + @('-v', ($work + ':/omo-audit:ro'), '-w', '/omo-audit', '--entrypoint', 'npm', $BaseImage,
+    # D7 a : l'ENV d'une base 1.0.6 porte npm_config_offline=true ; hors ligne, npm audit n'interroge pas le registre et rend un
+    # rapport valide et VIDE en code 0, que le verdict accepterait. Neutralise pour ce seul conteneur, comme pour le lockfile.
+    $result = Invoke-OmoDocker -Arguments (@('run', '--rm') + $Hardening + @('-v', ($work + ':/omo-audit:ro'), '-w', '/omo-audit', '-e', 'npm_config_offline=false', '--entrypoint', 'npm', $BaseImage,
         'audit', '--omit=dev', '--json'))
     if ($DryRun) { return }
     Write-OmoFileVerified $AuditFile ([string]$result.StdOut)

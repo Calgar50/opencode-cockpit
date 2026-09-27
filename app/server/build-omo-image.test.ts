@@ -64,8 +64,11 @@ const EXIGES: ReadonlyArray<{ nom: string; re: RegExp }> = [
   { nom: "-AcceptManifest", re: /\[switch\]\$AcceptManifest\b/ },
   { nom: "--ignore-scripts", re: /'--ignore-scripts'/ },
   { nom: "--package-lock-only", re: /'--package-lock-only'/ },
-  // Grande fusion, D7 a : npm n'est plus hors ligne dans le seul conteneur du lockfile (base 1.0.6 : npm_config_offline=true).
-  { nom: "lockfile : -e npm_config_offline=false avant l'image de base (D7 a)", re: /'-e', 'npm_config_offline=false', '--entrypoint', 'npm', \$BaseImage,/ },
+  // Grande fusion, D7 a : npm n'est plus hors ligne dans les seuls conteneurs de la base qui ont besoin du registre (base 1.0.6 :
+  // npm_config_offline=true) : le lockfile, et l'audit, qui rendrait sinon un rapport valide et vide en code 0 (F1-vague-0).
+  // Chaque entrée est liée à SA commande npm : l'une ne peut pas satisfaire l'autre.
+  { nom: "lockfile : -e npm_config_offline=false avant l'image de base (D7 a)", re: /'-e', 'npm_config_offline=false', '--entrypoint', 'npm', \$BaseImage,\n\s+'install', '--package-lock-only'/ },
+  { nom: "audit : -e npm_config_offline=false avant l'image de base (D7 a)", re: /'-e', 'npm_config_offline=false', '--entrypoint', 'npm', \$BaseImage,\n\s+'audit', '--omit=dev', '--json'/ },
   // Grande fusion, D7 b : ENV de la base lu avant toute construction, refus sans les drapeaux de la 1.0.6.
   { nom: "ENV de la base lu (D7 b)", re: /'image', 'inspect', '--format', '\{\{json \.Config\.Env\}\}', \$BaseImage/ },
   { nom: "drapeaux de la base vérifiés juste après Docker (D7 b)", re: /^ {4}Assert-OmoDocker\n {4}Assert-OmoBaseFlags\n/m },
@@ -1143,6 +1146,9 @@ function suiteFauxDocker(): void {
       lancerReel("normal-sbom-code", [], deroule([regle(" ls --all --json --omit=dev --prefix ", { stdout: SBOM_OK, code: 1 })]), ref),
       lancerReel("normal-sbom-version", [], deroule([regle(" ls --all --json --omit=dev --prefix ", { stdout: SBOM_OK.replace("4.19.4", "4.19.3") })]), ref),
       lancerReel("normal-audit-illisible", [], deroule([regle(" audit --omit=dev --json$", { stdout: "npm ERR! [synthétique]\n", code: 1 })]), ref),
+      // D7 a : le faux imite npm 11 (mesuré) : remis en ligne, l'audit voit l'alerte ; hors ligne (ENV de la base 1.0.6), il ne
+      // demande rien au registre et rend un rapport valide et VIDE en code 0.
+      lancerReel("normal-audit-hors-ligne", [], deroule([], [regle(" -e npm_config_offline=false --entrypoint npm \\S+ audit --omit=dev --json$", { stdout: auditHaut, code: 1 })]), ref),
       lancerReel("normal-etiquette-avant", [], deroule([], [regle("^image inspect ", { stdout: `${ID_2}\n`, max: 1 }), regle("^image inspect ", { stdout: `${ID_1}\n` })]), ref),
       lancerReel("normal-etiquette-apres", [], deroule([], [regle("^image inspect ", { stdout: `${ID_2}\n`, max: 2 }), regle("^image inspect ", { stdout: `${ID_1}\n` })]), ref),
       lancerReel("journal-cycle-de-vie", [], [VERSION, regle("^build ", { stderr: `${JOURNAL_OK}#5 2.10 > esbuild@0.25.0 postinstall\n` })], ref),
@@ -1206,6 +1212,12 @@ function suiteFauxDocker(): void {
         assert.ok(a.join(" ").includes("--cap-drop ALL --security-opt no-new-privileges:true"), `${nom} : ${a.join(" ")}`);
         if (!a.includes(BASE)) assert.deepEqual(a.slice(2, 4), ["--network", "none"], `${nom} : ${a.join(" ")}`);
         if (a.includes("audit")) assert.match(a[a.indexOf("-v") + 1] ?? "", /:\/omo-audit:ro$/, "lockfile monté en lecture seule pour l'audit");
+        // D7 a (T-S10) : tout conteneur npm de l'image de base (lockfile, audit) a besoin du registre ; npm y est remis en ligne
+        // pour lui seul, par une variable posée avant l'image (après elle, ce serait un argument de npm).
+        if (a.includes(BASE) && a[a.indexOf("--entrypoint") + 1] === "npm") {
+          const e = a.indexOf("npm_config_offline=false");
+          assert.ok(e > 0 && a[e - 1] === "-e" && e < a.indexOf("--entrypoint"), `${nom} : ${a.join(" ")}`);
+        }
       }
       for (const b of appel(r, /^build /)) {
         assert.deepEqual(b.slice(0, 6), ["build", "--no-cache", "--progress=plain", "--provenance=false", "--build-arg", `OPENCODE_BASE=${BASE}`], nom);
@@ -1306,6 +1318,18 @@ function suiteFauxDocker(): void {
     const e = run.indexOf("-e");
     assert.ok(e > 0 && run[e + 1] === "npm_config_offline=false", run.join(" "));
     assert.ok(e < run.indexOf("--entrypoint"), "variable posée pour ce seul conteneur, avant l'image");
+  });
+
+  it("D7 a : audit dans un conteneur de la base où npm n'est plus hors ligne ; hors ligne, un rapport vide en code 0 passerait la porte d'audit sans rien dire", () => {
+    const r = arret("normal-audit-hors-ligne", /ARRET : Alerte haute nouvelle : construction arretee/);
+    assert.match(r.sortie, /exemple GHSA-abcd-efgh-ijkm \(high\)/);
+    assert.equal(appel(r, / ls --all | save /).length, 0, "arrêt avant le SBOM et l'archive");
+    for (const nom of ["normal-succes", "amorcage-audit", "normal-audit-hors-ligne"]) {
+      const run = appel(res(nom), / audit --omit=dev --json$/)[0] ?? [];
+      const e = run.indexOf("-e");
+      assert.ok(e > 0 && run[e + 1] === "npm_config_offline=false", `${nom} : ${run.join(" ")}`);
+      assert.ok(e < run.indexOf("--entrypoint"), `${nom} : variable posée pour ce seul conteneur, avant l'image`);
+    }
   });
 
   it("arrêts sans archive : Docker absent ou muet, construction en échec, identifiant d'image illisible, calcul du manifeste en échec", () => {

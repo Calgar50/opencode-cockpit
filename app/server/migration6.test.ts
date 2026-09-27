@@ -80,7 +80,7 @@ function runEntry(db: DatabaseSync, entry: SqlFixtureEntry): void {
 }
 
 describe("migration 6 (Salle OMO) : schéma", () => {
-  it("D-2b-42 : openMemoryDb atteint user_version 6 = MIGRATIONS.length ; omo_rooms, omo_room_starts.start_id et son index", () => {
+  it("D-2b-42 : openMemoryDb atteint la dernière migration (user_version = MIGRATIONS.length, la 6 comprise) ; omo_rooms, omo_room_starts.start_id et son index", () => {
     const db = openMemoryDb();
     // Règle d'assertion unique (A2 bis) : la version de la base est le nombre d'entrées du tableau, jamais un compte à part.
     // Grande fusion (GF2) : les 7 et 8 de la 3D suivent la 6 ; ce test ne vise que la 6 (`>= N`, plan it5 §8.5).

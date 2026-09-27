@@ -527,6 +527,35 @@ describe("configurations de la salle : omo.jsonc et G3 statique", () => {
 // Une base 1.0.6 ou plus récente porte npm_config_offline=true dans son ENV : npm ci échouerait sur place (cache vide). La salle le
 // neutralise pour ses SEULES étapes npm de construction, et ne redéfinit jamais l'ENV hérité : à l'exécution, les drapeaux de la
 // 1.0.6 (catalogue des modèles coupé, npm hors ligne) s'appliquent aussi à la salle.
+// Étapes npm qui ont besoin du registre, toutes couvertes : `npm ci` du Dockerfile ; dans scripts/build-omo-image.ps1, les
+// conteneurs npm de l'image de base, `install --package-lock-only` (lockfile) et `audit`. Hors ligne, npm audit ne demande rien au
+// registre et rend un rapport valide et VIDE en code 0 (mesuré, npm 11.12.1) : la porte d'audit ne verrait plus aucune alerte, sans
+// rien signaler (relecture F1-vague-0). Le déroulé avec un faux docker est dans build-omo-image.test.ts.
+
+const SCRIPT_CONSTRUCTION = path.join(RACINE_DEPOT, "scripts", "build-omo-image.ps1");
+/** Code du script sans BOM ni lignes de commentaire entières : un commentaire ne satisfait jamais la règle. */
+const CODE_CONSTRUCTION = fs
+  .readFileSync(SCRIPT_CONSTRUCTION)
+  .subarray(3)
+  .toString("latin1")
+  .split(/\r?\n/)
+  .filter((ligne) => !ligne.trimStart().startsWith("#"))
+  .join("\n");
+
+/**
+ * Conteneurs npm lancés sur l'image de base (`'--entrypoint', 'npm', $BaseImage`), chacun avec sa commande npm ; fautif si la
+ * variable `'-e', 'npm_config_offline=false'` ne précède pas immédiatement l'entrée (après l'image, ce serait un argument de npm).
+ */
+function npmDeLaBase(code: string): { commandes: string[]; fautifs: string[] } {
+  const commandes: string[] = [];
+  const fautifs: string[] = [];
+  for (const m of code.matchAll(/'--entrypoint', 'npm', \$BaseImage,\s*'([^']+)'/g)) {
+    const commande = m[1] ?? "";
+    commandes.push(commande);
+    if (!code.slice(0, m.index).endsWith("'-e', 'npm_config_offline=false', ")) fautifs.push(commande);
+  }
+  return { commandes, fautifs };
+}
 
 /** Appels npm qui installent (ci, install, i) dans une étape RUN, chacun avec sa position dans l'étape. */
 function installationsNpm(instructions: readonly Instruction[]): Array<{ etape: string; position: number }> {
@@ -570,5 +599,21 @@ describe("GF12 (D7 a, T-S10) : npm de la construction jamais hors ligne, ENV de 
     assert.equal(npmJamaisHorsLigne(etape("set -eu; export npm_config_offline=false; npm ci; npm install autre;")), true);
     assert.equal(npmJamaisHorsLigne([...etape("export npm_config_offline=false; npm ci;"), ...etape("npm install x;")]), false);
     assert.equal(npmJamaisHorsLigne(etape("echo rien;")), false, "aucune installation : rien n'est prouvé");
+  });
+
+  it("build-omo-image.ps1 : chaque conteneur npm de l'image de base (lockfile, audit) remet npm en ligne pour lui seul", () => {
+    const { commandes, fautifs } = npmDeLaBase(CODE_CONSTRUCTION);
+    assert.deepEqual([...commandes].sort(), ["audit", "install"], "conteneurs npm de la base : lockfile et audit");
+    assert.deepEqual(fautifs, [], "npm hors ligne dans un conteneur qui a besoin du registre");
+  });
+
+  it("témoins : la règle refuse un conteneur npm de la base sans la variable, ou avec la variable APRÈS l'image", () => {
+    const sans = "@('-v', 'x:/omo-audit:ro', '-w', '/omo-audit', '--entrypoint', 'npm', $BaseImage,\n        'audit', '--omit=dev', '--json')";
+    assert.deepEqual(npmDeLaBase(sans), { commandes: ["audit"], fautifs: ["audit"] });
+    const apres = "@('--entrypoint', 'npm', $BaseImage, 'audit', '-e', 'npm_config_offline=false')";
+    assert.deepEqual(npmDeLaBase(apres).fautifs, ["audit"]);
+    const avec = "@('-w', '/omo-lock', '-e', 'npm_config_offline=false', '--entrypoint', 'npm', $BaseImage,\n        'install', '--package-lock-only')";
+    assert.deepEqual(npmDeLaBase(avec), { commandes: ["install"], fautifs: [] });
+    assert.deepEqual(npmDeLaBase(`${avec}\n${sans}`).fautifs, ["audit"], "un conteneur correct ne couvre pas l'autre");
   });
 });

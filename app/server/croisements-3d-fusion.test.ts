@@ -540,6 +540,20 @@ const instructions = (sql: string): string[] =>
     .filter(Boolean);
 const tables = (db: DatabaseSync): string[] =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
+/**
+ * Titres de tests (`it`, `describe`, `test`) qui écrivent un numéro de `user_version`. La règle d'assertion unique (A2 bis) vaut
+ * aussi pour eux : un titre qui annonce la version 6 sur une assertion à `MIGRATIONS.length` (8 après GF2) envoie le diagnostic
+ * d'un échec vers la mauvaise migration (relecture F1-vague-0). Le contrôle `git grep -nE "user_version [0-9]"` sur les tests
+ * reste vide : les témoins ci-dessous composent leur nombre.
+ */
+function titresAVersionEcrite(source: string): string[] {
+  const titres: string[] = [];
+  for (const m of source.matchAll(/\b(?:it|describe|test)\(\s*(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g)) {
+    const titre = m[2] ?? "";
+    if (/user_version\s*=?\s*\d/.test(titre)) titres.push(titre);
+  }
+  return titres;
+}
 
 describe("croisements 3d-fusion : migrations après GF2 (A2, A2 bis)", () => {
   it("MIGRATIONS : 1 à 5, vraie 6 de la salle, 7 réservée vide, 8 de la 3D ; base neuve à MIGRATIONS.length, omo_rooms et revoir_consignes ensemble", () => {
@@ -591,6 +605,20 @@ describe("croisements 3d-fusion : migrations après GF2 (A2, A2 bis)", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("aucun titre de test n'écrit un numéro de user_version : il dirait une version que l'assertion ne vérifie plus (A2 bis)", () => {
+    const serveur = path.join(APP_DIR, "server");
+    const fautifs: string[] = [];
+    for (const relatif of fs.readdirSync(serveur, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".test.ts"))) {
+      for (const titre of titresAVersionEcrite(fs.readFileSync(path.join(serveur, relatif), "utf8"))) fautifs.push(`${relatif} : ${titre}`);
+    }
+    assert.deepEqual(fautifs, []);
+    // Témoins : la règle voit le défaut, et laisse passer un titre sans nombre.
+    const six = String(6);
+    assert.deepEqual(titresAVersionEcrite(`it(${DQ}openMemoryDb atteint user_version ${six} avec item_meta${DQ}, () => {`), [`openMemoryDb atteint user_version ${six} avec item_meta`]);
+    assert.deepEqual(titresAVersionEcrite(`describe('base', () => { it(${DQ}l'ENV : user_version = 7${DQ}, f); });`), ["l'ENV : user_version = 7"]);
+    assert.deepEqual(titresAVersionEcrite(`it(${DQ}openMemoryDb atteint la dernière migration (user_version = MIGRATIONS.length)${DQ}, f)`), []);
   });
 });
 
