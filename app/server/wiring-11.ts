@@ -51,6 +51,9 @@ import { neutralTaskGuard, taskGuardModule } from "./task-once-guard.ts";
 // <c5:import>
 import { CONSTRUCTION_MODULE_ORDER, CONSTRUCTION_MODULES, CONSTRUCTION_ROUTES } from "./wiring-construction.ts";
 // </c5:import>
+// <nav:import>
+import { fichiersModule } from "./routes-fichiers.ts";
+// </nav:import>
 
 /**
  * Porte I1 tenue par le code (plan §2.6). Tant qu'elle valait false, le port activation réel répondait comme le port neutre
@@ -104,6 +107,7 @@ export const MODULE_ORDER = [
   "omoDetections",
   "omoResponder",
   "omoCaps",
+  "fichiers", // nav : avant la construction, que croisements-c5a-v0 garde au bout (GFN)
   ...CONSTRUCTION_MODULE_ORDER, // c5
 ] as const satisfies readonly ModuleName[];
 
@@ -169,6 +173,7 @@ export const STEP_ORDER = {
     ["autonomy", "conversationAutonomy"],
     ["plans", "plans"],
     ["diagnostic-11", "diagnostics"],
+    ["fichiers", "fichiers"], // nav : juste avant [construction ×4, omo], rangs que la salle et GF4 figent en fin (GFN)
     ...CONSTRUCTION_ROUTES, // c5
     // Salle : monté en dernier, juste avant le 404 de /api/*.
     ["omo", "omoRoom"],
@@ -225,6 +230,7 @@ export const MODULES: { readonly [N in ModuleName]: Cockpit11Module } = {
   omoDetections: omoDetectionsModule,
   omoResponder: omoResponderModule,
   omoCaps: omoCapsModule,
+  fichiers: fichiersModule, // nav
   ...CONSTRUCTION_MODULES, // c5
 };
 

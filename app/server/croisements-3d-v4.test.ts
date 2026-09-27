@@ -184,6 +184,10 @@ const SCENARIOS_ARRIVES_PAR_LA_FUSION: readonly string[] = [
   // Migration du web (MW-a, A37) : scénario de la pile « --reel-hors-ligne --volume-1-0-6 », « non joué » en « --faux ».
   "mw-api-volume-106.mjs",
   // </mw:scenarios-arrives>
+  // <nav:scenarios-arrives>
+  // Grande fusion (GFN) : scénario de l'onglet « Fichiers » (NAV-4), arrivé avec HN (bf41191).
+  "nav-fichiers.mjs",
+  // </nav:scenarios-arrives>
 ];
 
 /**

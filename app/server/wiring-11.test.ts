@@ -393,6 +393,9 @@ describe("câblage 1.1 : ordre figé", () => {
       "internalAgents",
       "diagnostics",
       ...OMO_MODULE_NAMES,
+      // <nav:ordre>
+      "fichiers",
+      // </nav:ordre>
       // <c5:ordre>
       "methods",
       "secondReading",
@@ -427,6 +430,9 @@ describe("câblage 1.1 : ordre figé", () => {
         ["autonomy", "conversationAutonomy"],
         ["plans", "plans"],
         ["diagnostic-11", "diagnostics"],
+        // <nav:ordre>
+        ["fichiers", "fichiers"],
+        // </nav:ordre>
         // <c5:routes>
         ["construction", "methods"],
         ["construction", "secondReading"],
@@ -471,7 +477,7 @@ describe("câblage 1.1 : ordre figé", () => {
     for (const name of MODULE_ORDER) assert.equal(MODULES[name].name, name);
     // <c5:ports>
     // La construction n'ajoute aucun port (D-5-04) : ses modules n'ont pas de port neutre, comme « gate ».
-    const SANS_PORT: readonly ModuleName[] = ["gate", "pending", ...CONSTRUCTION_MODULE_ORDER]; // gf5:d11 : « pending » sans port, comme « gate »
+    const SANS_PORT: readonly ModuleName[] = ["gate", "pending", ...CONSTRUCTION_MODULE_ORDER, "fichiers"]; // gf5:d11 : « pending » sans port, comme « gate » ; nav : « fichiers » (NAV-2) aussi
     assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => !SANS_PORT.includes(name)).sort());
     // </c5:ports>
   });
@@ -574,6 +580,9 @@ describe("câblage 1.1 : ordre figé", () => {
       { name: "chronologie", install: () => undefined },
       { name: "teamCosts", install: () => undefined },
       // </c5:factices>
+      // <nav:ordre>
+      { name: "fichiers", install: (reg) => reg.routes("fichiers", () => void trace.push("fichiers")) },
+      // </nav:ordre>
     ];
     const wiring = buildCockpit11(s.deps, { modules: [...factices].reverse() });
     // Modules du cockpit seuls : ceux de la salle ont leur propre test d'ordre (§4.1.2), plus bas.
@@ -604,7 +613,7 @@ describe("câblage 1.1 : ordre figé", () => {
     );
     assert.deepEqual(
       await run(() => wiring.routes.forEach((register) => register(stub<Hono>()))),
-      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11"],
+      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11", "fichiers"], // nav
     );
     assert.deepEqual(
       wiring.registrations.filter((r) => r.kind === "hook").map((r) => `${r.key}/${r.module}`),
@@ -821,6 +830,11 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <nav:ordre>
+      // NAV-2 : onglet « Fichiers », quatre routes POST de lecture seule (aucun crochet, aucune dérivation) ; au rang de fusion
+      // (GFN), juste avant la construction, que GF4 garde collée au groupe de la salle.
+      { kind: "routes", key: "fichiers", module: "fichiers" },
+      // </nav:ordre>
       // <c5:production>
       // Construction (itération 5), en fin de MODULE_ORDER et de STEP_ORDER.routes : L44c inscrit le crochet de la Seconde
       // lecture, PREMIER de beforeBilledSend, et sa route ; L44b et L46a montent les leurs dans le groupe
@@ -862,8 +876,11 @@ describe("câblage 1.1 : ports neutres", () => {
     // <c5:production>
     // 7 groupes (les six du cockpit, puis « omo »), plus les quatre inscriptions du groupe « construction » (L44b, L44c, L47b,
     // L46a), montées juste avant « omo », qui reste le dernier.
-    assert.equal(wiring.routes.length, 11);
     // </c5:production>
+    // <nav:ordre>
+    // Plus le groupe « fichiers » (NAV-2), monté juste avant la construction (GFN : construction puis salle restent en fin).
+    assert.equal(wiring.routes.length, 12);
+    // </nav:ordre>
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts. Un choix inconnu reste invalide quelle que soit la salle ; la réponse
     // à « omo » (409 « autonomie-indisponible », raison « racine-hors-salle ») est contrôlée par conversation-autonomy.test.ts (L22c).

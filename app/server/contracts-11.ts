@@ -259,7 +259,7 @@ export interface HubEventMap {
 export type HubEventType = keyof HubEventMap;
 
 /** Groupes de routes 1.1, montés dans cet ordre juste avant le 404 de /api/* ; « omo » (T3a) en dernier. */
-export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11" | OmoRouteGroup | ConstructionRouteGroup; // c5
+export type RouteGroup = "conversations" | "delegations" | "activity" | "autonomy" | "plans" | "diagnostic-11" | OmoRouteGroup | ConstructionRouteGroup | "fichiers"; // c5 ; nav
 
 /** Registre remis à install() : chaque inscription est rangée par STEP_ORDER ; un couple absent de la table est refusé. */
 export interface Registrar {
@@ -574,6 +574,6 @@ export type PortName = keyof Cockpit11Ports;
  * « gate » : module sans port (le portillon est une dépendance). Les autres modules portent le nom de leur port, ceux de la
  * salle compris (`OmoModuleName` ⊂ `PortName`, par OmoPorts).
  */
-export type ModuleName = "gate" | "pending" | PortName | ConstructionModuleName; // c5 ; gf5:d11 (« pending » : table des attentes, sans port)
+export type ModuleName = "gate" | "pending" | PortName | ConstructionModuleName | "fichiers"; // c5 ; gf5:d11 (« pending » : table des attentes, sans port) ; nav
 
 export type { OmoModuleName } from "./omo-contracts.ts";

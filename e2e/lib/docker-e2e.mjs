@@ -772,6 +772,232 @@ export function correspond(nom, motif) {
   return regex.test(nom);
 }
 
+// <nav:travail>
+// Onglet « Fichiers » (1.1, NAV-4 ; fiche NAV §7) : préparation du dossier de travail de la pile jetable, et émulation d'accessibilité
+// des captures. Remis au scénario sous `ctx.travail` :
+//   - ecrire(cheminRelatif, contenu) : écrit un fichier NEUF sous <dossier du banc>/workspace, depuis l'hôte. Refusés : chemin vide,
+//     absolu (POSIX, lecteur Windows, UNC), segment « . » ou « .. », caractère NUL ; chemin résolu, puis chemin réel du dossier parent,
+//     hors du dossier de travail ; fichier déjà présent (création exclusive : jamais d'écriture à travers un lien posé avant) ;
+//   - dansLeConteneur(argv) : « docker compose -p <projet du banc> exec -T cockpit … », par les commandes Compose du banc (projet
+//     revérifié juste avant). Liste FERMÉE : « ln -s <cible> <lien> », « ln <cible> <lien> », « mkfifo <chemin> » ; lien, chemin et
+//     cible d'un lien physique sous /workspace seulement ; aucune option passée par l'appelant (« -- » ajouté avant les opérandes).
+//     Rend { code, sortie } sans lever : un montage qui refuse un tube ou un lien est une MESURE (M-NAV-1, M-NAV-2), pas un échec ;
+//   - emulation.appliquer({ theme, contraste, gris, mouvementReduit }) et emulation.retirer() : contraste forcé (forced-colors: active),
+//     mouvement réduit (prefers-reduced-motion: reduce) et niveaux de gris (achromatopsie), par Emulation.setEmulatedMedia et
+//     Emulation.setEmulatedVisionDeficiency, envoyés par le client du navigateur sur la session de l'onglet (cdp.mjs n'est pas touché) ;
+//   - verifierGardes() : les vérifications des deux gardes ci-dessus, sans Docker ni navigateur. Le scénario nav-fichiers.mjs les joue
+//     à son début ; elles ne font pas partie de « --gardes », dont le nombre est annoncé par le RECAPITULATIF.
+
+/** Dossier de travail vu par le cockpit dans son conteneur (montage en écriture de docker-compose.yml). */
+const TRAVAIL_CONTENEUR = "/workspace";
+
+/** Chemin absolu sous /workspace, sans segment « . », « .. » ni vide, sans NUL ni saut de ligne. */
+function sousTravailConteneur(chemin) {
+  if (typeof chemin !== "string" || /[\0\r\n]/.test(chemin) || !chemin.startsWith(`${TRAVAIL_CONTENEUR}/`)) return false;
+  const segments = chemin.slice(TRAVAIL_CONTENEUR.length + 1).split("/");
+  return segments.every((s) => s !== "" && s !== "." && s !== "..");
+}
+
+/**
+ * Commande permise dans le conteneur du cockpit (liste fermée), rendue avec « -- » avant les opérandes ; lève sinon. La cible d'un
+ * lien symbolique n'est que le texte du lien (elle peut désigner /proc/self/environ : c'est l'attaque que le scénario rejoue).
+ */
+export function commandeConteneurPermise(argv) {
+  if (!Array.isArray(argv) || argv.some((a) => typeof a !== "string" || a === "" || /[\0\r\n]/.test(a))) refuser("commande du conteneur refusée : arguments invalides.");
+  const [outil, ...reste] = argv;
+  if (outil === "ln" && reste.length === 3 && reste[0] === "-s") {
+    const [, cible, lien] = reste;
+    if (!cible.startsWith("-") && sousTravailConteneur(lien)) return ["ln", "-s", "--", cible, lien];
+  } else if (outil === "ln" && reste.length === 2) {
+    const [cible, lien] = reste;
+    if (sousTravailConteneur(cible) && sousTravailConteneur(lien)) return ["ln", "--", cible, lien];
+  } else if (outil === "mkfifo" && reste.length === 1) {
+    if (sousTravailConteneur(reste[0])) return ["mkfifo", "--", reste[0]];
+  }
+  return refuser(`commande du conteneur refusée : « ${argv.join(" ").slice(0, 120)} » (seuls ln -s, ln et mkfifo sous ${TRAVAIL_CONTENEUR}).`);
+}
+
+/** Chemin d'un fichier à écrire sous `dossierTravail` (hôte) ; lève si le chemin demandé ou résolu en sort. */
+export function cheminDansTravail(dossierTravail, cheminRelatif) {
+  if (typeof cheminRelatif !== "string" || cheminRelatif === "" || cheminRelatif.includes("\0")) refuser("chemin du dossier de travail refusé : vide ou invalide.");
+  if (path.posix.isAbsolute(cheminRelatif) || path.win32.isAbsolute(cheminRelatif) || /^[A-Za-z]:/.test(cheminRelatif)) {
+    refuser(`chemin du dossier de travail refusé : « ${cheminRelatif} » est absolu.`);
+  }
+  if (cheminRelatif.split(/[\\/]/).some((s) => s === "" || s === "." || s === "..")) refuser(`chemin du dossier de travail refusé : « ${cheminRelatif} » (segment vide, « . » ou « .. »).`);
+  const base = path.resolve(dossierTravail);
+  const resolu = path.resolve(base, cheminRelatif);
+  const relatif = path.relative(base, resolu);
+  if (relatif === "" || relatif.startsWith("..") || path.isAbsolute(relatif)) refuser(`chemin du dossier de travail refusé : « ${cheminRelatif} » sort du dossier.`);
+  return resolu;
+}
+
+/** Écrit un fichier neuf sous le dossier de travail : parent réel vérifié après sa création, création exclusive (« wx »). */
+export function ecrireDansTravail(dossierTravail, cheminRelatif, contenu) {
+  const cible = cheminDansTravail(dossierTravail, cheminRelatif);
+  const parent = path.dirname(cible);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const baseReelle = fs.realpathSync(dossierTravail);
+  const relatifReel = path.relative(baseReelle, fs.realpathSync(parent));
+  if (relatifReel.startsWith("..") || path.isAbsolute(relatifReel)) refuser(`chemin du dossier de travail refusé : « ${cheminRelatif} » passe par un lien qui sort du dossier.`);
+  fs.writeFileSync(cible, contenu, { flag: "wx" });
+  return cible;
+}
+
+/** Émulation d'accessibilité d'un onglet, par le client du navigateur (session de l'onglet). */
+function creerEmulation(client, sessionId) {
+  const envoyer = (methode, params) => client.envoyer(methode, params, sessionId);
+  return {
+    async appliquer({ theme = "clair", contraste = false, gris = false, mouvementReduit = false } = {}) {
+      const features = [{ name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" }];
+      if (contraste) features.push({ name: "forced-colors", value: "active" });
+      if (mouvementReduit) features.push({ name: "prefers-reduced-motion", value: "reduce" });
+      await envoyer("Emulation.setEmulatedMedia", { features });
+      await envoyer("Emulation.setEmulatedVisionDeficiency", { type: gris ? "achromatopsia" : "none" });
+    },
+    async retirer() {
+      await envoyer("Emulation.setEmulatedMedia", { features: [] });
+      await envoyer("Emulation.setEmulatedVisionDeficiency", { type: "none" });
+    },
+  };
+}
+
+/** `ctx.travail` d'un scénario : dossier de travail de la pile jetable, commandes permises dans le cockpit, émulation. */
+export function creerTravail(plan, { client, onglet }) {
+  const dossier = path.join(plan.dossier, "workspace");
+  return {
+    dossier,
+    ecrire: (cheminRelatif, contenu) => ecrireDansTravail(dossier, cheminRelatif, contenu),
+    dansLeConteneur: async (argv) => {
+      const commande = commandeConteneurPermise(argv);
+      const { code, sortie } = await compose(plan, ["exec", "-T", "cockpit", ...commande], { silencieux: true, tolerant: true });
+      return { code, sortie: String(sortie ?? "").slice(0, 400) };
+    },
+    emulation: creerEmulation(client, onglet.sessionId),
+    verifierGardes: () => verifierGardesTravail(),
+  };
+}
+
+/**
+ * Vérifications des gardes de `ctx.travail`, sans Docker ni navigateur : chacune échoue si sa garde est retirée. Rend la liste des
+ * vérifications tombées (vide : toutes tiennent).
+ */
+export async function verifierGardesTravail() {
+  const tombees = [];
+  const refusAttendu = async (nom, fn, extrait) => {
+    let erreur = null;
+    try {
+      await fn();
+    } catch (err) {
+      erreur = err;
+    }
+    if (!(erreur instanceof ErreurBanc) || (extrait && !erreur.message.includes(extrait))) tombees.push(`${nom} : ${erreur?.message ?? "aucun refus"}`);
+  };
+  const tient = async (nom, fn) => {
+    try {
+      await fn();
+    } catch (err) {
+      tombees.push(`${nom} : ${err?.message ?? err}`);
+    }
+  };
+  const essai = fs.mkdtempSync(path.join(path.dirname(DOSSIER_BANC), "opencode-cockpit-e2e-travail-"));
+  const travail = path.join(essai, "workspace");
+  const jonction = path.join(travail, "sortie");
+  // Jonction (lien sous Linux) retirée seule, sans récursion : jamais un effacement qui passerait par elle.
+  const retirerJonction = () => {
+    if (fs.lstatSync(jonction, { throwIfNoEntry: false }) === undefined) return;
+    if (process.platform === "win32") fs.rmdirSync(jonction);
+    else fs.unlinkSync(jonction);
+  };
+  try {
+    fs.mkdirSync(travail);
+    await refusAttendu("écriture : « .. » refusé", () => ecrireDansTravail(travail, "a/../../dehors.txt", "x"), "« .. »");
+    await refusAttendu("écriture : « .. » seul refusé", () => ecrireDansTravail(travail, "..", "x"), "« .. »");
+    await refusAttendu("écriture : chemin absolu POSIX refusé", () => ecrireDansTravail(travail, "/etc/x", "x"), "absolu");
+    await refusAttendu("écriture : lecteur Windows refusé", () => ecrireDansTravail(travail, "C:/x", "x"), "absolu");
+    await refusAttendu("écriture : chemin UNC refusé", () => ecrireDansTravail(travail, "\\\\serveur\\partage\\x", "x"), "absolu");
+    await refusAttendu("écriture : chemin vide refusé", () => ecrireDansTravail(travail, "", "x"), "vide");
+    await refusAttendu("écriture : racine du dossier refusée", () => cheminDansTravail(travail, "."), "« . »");
+    await tient("écriture : fichier déjà présent jamais réécrit (création exclusive)", () => {
+      ecrireDansTravail(travail, "p/f.txt", "un");
+      let refus = null;
+      try {
+        ecrireDansTravail(travail, "p/f.txt", "deux");
+      } catch (err) {
+        refus = err;
+      }
+      if (refus?.code !== "EEXIST") throw new Error(`seconde écriture : ${refus?.message ?? "acceptée"}`);
+      if (fs.readFileSync(path.join(travail, "p", "f.txt"), "utf8") !== "un") throw new Error("fichier réécrit");
+    });
+    await tient("écriture : chemin résolu sous le dossier (%XX gardé littéral)", () => {
+      const ecrit = ecrireDansTravail(travail, "a%2F..%2F..%2Fx/f.txt", "x");
+      if (path.relative(travail, ecrit) !== path.join("a%2F..%2F..%2Fx", "f.txt")) throw new Error(`écrit ailleurs : ${ecrit}`);
+    });
+    await tient("écriture : dossier parent remplacé par une jonction vers l'extérieur refusé", () => {
+      const dehors = path.join(essai, "dehors");
+      fs.mkdirSync(dehors);
+      fs.symlinkSync(dehors, jonction, "junction");
+      let refus = null;
+      try {
+        ecrireDansTravail(travail, "sortie/f.txt", "x");
+      } catch (err) {
+        refus = err;
+      }
+      if (!(refus instanceof ErreurBanc) || !refus.message.includes("lien")) throw new Error(`écriture à travers la jonction : ${refus?.message ?? "acceptée"}`);
+      if (fs.readdirSync(dehors).length !== 0) throw new Error("fichier écrit hors du dossier");
+    });
+  } finally {
+    retirerJonction();
+    fs.rmSync(essai, { recursive: true, force: true });
+  }
+
+  await refusAttendu("conteneur : autre commande refusée", () => commandeConteneurPermise(["rm", "-rf", "/workspace/x"]), "refusée");
+  await refusAttendu("conteneur : option ajoutée à ln refusée", () => commandeConteneurPermise(["ln", "-sf", "/proc/self/environ", "/workspace/x"]), "refusée");
+  await refusAttendu("conteneur : lien hors de /workspace refusé", () => commandeConteneurPermise(["ln", "-s", "/proc/self/environ", "/data/x"]), "refusée");
+  await refusAttendu("conteneur : lien qui remonte par « .. » refusé", () => commandeConteneurPermise(["ln", "-s", "x", "/workspace/a/../../tls/x"]), "refusée");
+  await refusAttendu("conteneur : cible d'option refusée", () => commandeConteneurPermise(["ln", "-s", "--help", "/workspace/x"]), "refusée");
+  await refusAttendu("conteneur : lien physique vers l'extérieur refusé", () => commandeConteneurPermise(["ln", "/oc-data/auth.json", "/workspace/x"]), "refusée");
+  await refusAttendu("conteneur : tube hors de /workspace refusé", () => commandeConteneurPermise(["mkfifo", "/tmp/tube"]), "refusée");
+  await refusAttendu("conteneur : saut de ligne refusé", () => commandeConteneurPermise(["mkfifo", "/workspace/a\nb"]), "invalides");
+  await refusAttendu("conteneur : arguments qui ne sont pas une liste refusés", () => commandeConteneurPermise("ln -s x /workspace/x"), "invalides");
+  await tient("conteneur : les trois commandes permises, avec « -- » avant les opérandes", () => {
+    const vues = [
+      commandeConteneurPermise(["ln", "-s", "/proc/self/environ", "/workspace/nav-banc/lien-environ.txt"]).join(" "),
+      commandeConteneurPermise(["ln", "/workspace/nav-banc/.env", "/workspace/nav-banc/double.txt"]).join(" "),
+      commandeConteneurPermise(["mkfifo", "/workspace/nav-banc/tube"]).join(" "),
+    ];
+    const attendues = ["ln -s -- /proc/self/environ /workspace/nav-banc/lien-environ.txt", "ln -- /workspace/nav-banc/.env /workspace/nav-banc/double.txt", "mkfifo -- /workspace/nav-banc/tube"];
+    if (JSON.stringify(vues) !== JSON.stringify(attendues)) throw new Error(`commandes : ${vues.join(" | ")}`);
+  });
+  const planEssai = { projet: "nav11-e2e-essai", dossier: path.join(DOSSIER_BANC, "nav11-e2e-essai"), fichierEnv: "/tmp/banc.env", profils: ["faux"], dryRun: true, journal: [] };
+  const clientEssai = { envoyer: async () => ({}) };
+  await tient("conteneur : commande passée par Compose, dans le projet du banc, service cockpit", async () => {
+    await sansConsole(() => creerTravail(planEssai, { client: clientEssai, onglet: { sessionId: "essai" } }).dansLeConteneur(["mkfifo", "/workspace/nav-banc/tube"]));
+    const [ligne, ...reste] = planEssai.journal;
+    if (reste.length > 0 || !ligne?.startsWith("docker compose -p nav11-e2e-essai ") || !ligne.endsWith(" exec -T cockpit mkfifo -- /workspace/nav-banc/tube")) {
+      throw new Error(`commande : ${planEssai.journal.join(" | ")}`);
+    }
+  });
+  await refusAttendu(
+    "conteneur : pile de l'utilisateur refusée",
+    () => sansConsole(() => creerTravail({ ...planEssai, projet: "opencode-cockpit" }, { client: clientEssai, onglet: { sessionId: "essai" } }).dansLeConteneur(["mkfifo", "/workspace/x"])),
+    "pile de l'utilisateur",
+  );
+  await tient("émulation : forced-colors, prefers-reduced-motion et achromatopsie envoyés sur la session de l'onglet, puis retirés", async () => {
+    const envois = [];
+    const client = { envoyer: async (methode, params, sessionId) => envois.push({ methode, params, sessionId }) };
+    const emulation = creerTravail(planEssai, { client, onglet: { sessionId: "onglet-1" } }).emulation;
+    await emulation.appliquer({ theme: "sombre", contraste: true, gris: true, mouvementReduit: true });
+    await emulation.retirer();
+    const texte = JSON.stringify(envois);
+    for (const attendu of ['"forced-colors","value":"active"', '"prefers-reduced-motion","value":"reduce"', '"prefers-color-scheme","value":"dark"', '"type":"achromatopsia"', '"features":[]', '"type":"none"']) {
+      if (!texte.includes(attendu)) throw new Error(`envoi sans ${attendu} : ${texte}`);
+    }
+    if (envois.some((e) => e.sessionId !== "onglet-1")) throw new Error("envoi hors de la session de l'onglet");
+  });
+  return tombees;
+}
+// </nav:travail>
+
 // --- Déroulé ----------------------------------------------------------------------------------
 
 async function attendreDemarrage(plan, service, delaiMs = 240_000) {
@@ -1044,6 +1270,9 @@ export async function executer(options) {
       const prefixe = path.join(plan.captures, scenario.nom.replace(/\.mjs$/, ""));
       try {
         const ctx = await construireContexte({ plan, onglet, urlCockpit, epinglage, faux, fournisseur, salle, secrets, scenario, prefixe });
+        // <nav:travail>
+        ctx.travail = creerTravail(plan, { client: etat.navigateur.client, onglet });
+        // </nav:travail>
         const module = await import(pathToFileURL(scenario.chemin).href);
         if (typeof module.run !== "function") refuser(`le scénario « ${scenario.nom} » n'exporte pas run(ctx).`);
         // Garde de R106-b : toute action du scénario sur la page est relevée ; elle doit suivre un réglage de mouvement fixé.

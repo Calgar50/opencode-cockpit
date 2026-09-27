@@ -1,5 +1,9 @@
 // Affichage d'un appel d'outil opencode (commande, lecture, modification, sous-agent…).
 import { memo, type ReactNode, useState } from "react";
+// <nav:import>
+import { adresseDepuisOutil } from "../../../server/shared/fichiers-regles.ts";
+import { TEXTES as TEXTES_FICHIERS } from "../../../server/shared/fichiers-texts.ts";
+// </nav:import>
 import { countDiff, DiffView } from "../../components/DiffView.tsx";
 import { Icon, type IconName } from "../../components/Icon.tsx";
 import { Markdown } from "../../components/Markdown.tsx";
@@ -102,6 +106,10 @@ function ToolCardImpl({ part, root, onOpenSession }: { part: OcToolPart; root: s
   const duration = state.status === "completed" || state.status === "error" ? state.time.end - state.time.start : null;
   const output = state.status === "completed" ? state.output : str(metadata.output);
   const childSession = str(metadata.sessionId);
+  // <nav:ouvrir>
+  // Lien « Ouvrir dans Fichiers » : read, write, edit ou multiedit terminés, sur un fichier du dossier de travail (lecture seule).
+  const ouvrirDansFichiers = adresseDepuisOutil({ outil: part.tool, statut: state.status, fichier: str(input.filePath) || str(input.path), racine: root });
+  // </nav:ouvrir>
 
   let body: ReactNode = null;
   if (open) {
@@ -193,6 +201,14 @@ function ToolCardImpl({ part, root, onOpenSession }: { part: OcToolPart; root: s
           <Icon name="check" size={15} className="status-ok" title="Terminé" />
         )}
       </button>
+      {/* <nav:ouvrir> */}
+      {ouvrirDansFichiers !== null ? (
+        <a className="tool-open-files small" href={ouvrirDansFichiers}>
+          <Icon name="folder" size={14} />
+          {TEXTES_FICHIERS.partout.ouvrirDansFichiers}
+        </a>
+      ) : null}
+      {/* </nav:ouvrir> */}
       {open ? (
         <div className="tool-body">
           {state.status === "error" ? <div className="callout critical">{state.error}</div> : null}

@@ -34,6 +34,10 @@ SCOPES.push("pages/chat/team", "pages/assistants/teams", "pages/assistants/carte
 /** Fichiers soumis aux mêmes règles hors de ces dossiers (relatifs à web/) : onglets de la page Assistants. */
 const SCOPE_FILES = new Set(["pages/assistants/assistants-tabs.css", "pages/assistants/AssistantsTabs.tsx"]);
 // --- équipes (it4) : fin ---
+// <nav:perimetre>
+// Onglet « Fichiers » (NAV-3) : aucune animation du tout (fiche NAV §5, instruction 9) ; web-fichiers.test.ts le vérifie aussi.
+SCOPES.push("pages/fichiers");
+// </nav:perimetre>
 
 /** Dossiers qui doivent exister : un périmètre effacé ferait passer le test pour rien. « pages/omo » y entre avec L26a. */
 const SCOPES_REQUIS = SCOPES.filter((scope) => scope !== "pages/omo");
