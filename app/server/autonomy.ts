@@ -754,8 +754,11 @@ export function createAutonomyService(c11: Cockpit11, options: AutonomyOptions =
       log.warn("autonomie : demandes en attente non relues, dossier de la conversation refusé", { rootId });
       return;
     }
-    const list = await c11.client.request<unknown>("GET", "/permission", { query: { directory }, timeoutMs: AUTONOMY_READ_TIMEOUT_MS });
-    if (!Array.isArray(list)) throw new Error("liste des demandes d'autorisation illisible");
+    // <gf5:d11>
+    // Par le portillon (D11 §6.3) : GET /permission, ou la table des attentes quand opencode ne sait pas encoder sa liste (demande
+    // sans argument facultatif en attente) ; l'accord éventuel relira toujours en direct (checkOnce). Erreur : levée comme avant.
+    const list = await c11.gate.pending(directory);
+    // </gf5:d11>
     for (const item of list.slice(0, RESCAN_MAX)) {
       const asked = readAsked(item, directory);
       const known = asked === null ? undefined : claimed.get(asked.permissionId);

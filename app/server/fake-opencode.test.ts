@@ -336,13 +336,16 @@ describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (op
     }
   }
 
-  it("option coupée : liste servie ; posée : 400 BadRequest de la couche de schéma tant qu'une demande webfetch sans timeout attend dans l'instance ; autre instance servie ; réponses toujours acceptées", async (t) => {
+  it("option POSÉE PAR DÉFAUT (GF5, A32 (4)) : 400 BadRequest de la couche de schéma tant qu'une demande webfetch sans timeout attend dans l'instance ; coupée : liste servie ; autre instance servie ; réponses toujours acceptées", async (t) => {
     const { fake, oc } = await startFake(t);
-    assert.equal(fake.permissionListeRejetee, false);
+    assert.equal(fake.permissionListeRejetee, true, "défaut : comme opencode 1.18.30 réel");
+    assert.equal(new FakeOpencode({ permissionListeRejetee: false }).permissionListeRejetee, false, "coupée seulement si le test le dit");
     const session = await newSession(oc);
     fake.script(session.id, { tools: [webfetch()], followUp: { text: "Fini." } });
     await promptAsync(oc, session.id, "Lis la page");
     const asked = await fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id);
+    await assert.rejects(oc.request("GET", "/permission"), rejectedWith400);
+    fake.permissionListeRejetee = false;
     assert.equal((await oc.request<unknown[]>("GET", "/permission")).length, 1, "option coupée : liste servie");
     fake.permissionListeRejetee = true;
     await assert.rejects(oc.request("GET", "/permission"), rejectedWith400);
@@ -353,7 +356,10 @@ describe("faux opencode : GET /permission rejeté comme par opencode 1.18.30 (op
     await fake.settled(session.id);
   });
 
-  it("bash : servi (métadonnées {command} seules, délai ou non : mesures T1 et T2) ; webfetch avec timeout, glob avec path, grep avec path et include, websearch complet, edit : servis ; option passée au constructeur", async (t) => {
+  it("bash : servi PAR DÉFAUT (métadonnées {command} seules, délai ou non : mesures T1 et T2) ; webfetch avec timeout, glob avec path, grep avec path et include, websearch complet, edit : servis ; option passée au constructeur", async (t) => {
+    const parDefaut = await startFake(t);
+    await waitingIn(parDefaut.fake, parDefaut.oc, "/workspace", bash("ls"));
+    assert.equal((await parDefaut.oc.request<unknown[]>("GET", "/permission")).length, 1, "bash servi avec l'option par défaut");
     const { fake, oc } = await startFake(t, { permissionListeRejetee: true });
     await waitingIn(
       fake,

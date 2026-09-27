@@ -18,8 +18,14 @@ import type { AppEnv } from "./env.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import type { InstanceDeps } from "./omo-contracts.ts";
 import type { ProjectsService } from "./projects.ts";
+// <gf5:d11>
+import { auFormatOpencode } from "./pending-table.ts";
+// </gf5:d11>
 import type { SessionInstance } from "./shared/activity-types.ts";
 import { MESSAGES, type UiMode } from "./shared/assistant-rules.ts";
+// <gf5:d11>
+import { phraseListeBloquee, phraseListeIllisible, phraseSuppressionImpossible } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 import { ID } from "./shared/ids.ts";
 import type { Cockpit11Wiring } from "./wiring-11.ts";
 
@@ -200,6 +206,15 @@ export const PERMISSION_MESSAGES = Object.freeze({
     "Cette demande vient d'une réponse arrêtée. La refuser maintenant refuserait aussi les demandes de la réponse en cours : rien n'a été envoyé, réessayez quand celle-ci sera terminée.",
   verificationImpossible:
     "opencode ne répond pas : impossible de vérifier que cette demande est encore active. Rien n'a été envoyé, réessayez dans un instant.",
+  // <gf5:d11>
+  /**
+   * GF5 (D11) : opencode RÉPOND, mais une demande en attente l'empêche de lister ses demandes et la table des attentes n'est pas
+   * prouvée complète. Variante web (la plus courante) ; les autres par phraseListeBloquee(outil) (shared/attentes-texts.ts).
+   */
+  listeBloquee: phraseListeBloquee("web"),
+  /** 503 de GET /permission dans le même cas : la liste n'est pas servie, rien n'est deviné. */
+  listeIllisible: phraseListeIllisible("web"),
+  // </gf5:d11>
 });
 
 export interface PermissionReply {
@@ -451,6 +466,12 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
             const verdict = await gate.checkOnce(replyTo, directory);
             if (!verdict.ok) {
               releaseGate();
+              // <gf5:d11>
+              // Liste bloquée par une demande en attente (D11) : phrase dédiée, jamais « opencode ne répond pas ».
+              if (verdict.status === 503 && verdict.bloquee !== undefined) {
+                return fail(c, 503, "liste-bloquee", phraseListeBloquee(verdict.bloquee), { outil: verdict.bloquee });
+              }
+              // </gf5:d11>
               if (verdict.status === 503) return fail(c, 503, "verification-impossible", PERMISSION_MESSAGES.verificationImpossible);
               log.info("demande d'autorisation qui n'est plus active : « once » non relayé", { requestId: replyTo, found: verdict.request !== null });
               // Demande orpheline d'une conversation au repos : refusée, pour qu'elle ne redevienne pas autorisable plus tard.
@@ -510,6 +531,20 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
         }
       }
 
+      // <gf5:d11>
+      // Suppression d'une conversation (DELETE /session/:id) : ses demandes en attente, et celles de ses sous-conversations, sont
+      // refusées AVANT (mesure D11 : une demande orpheline d'une conversation supprimée bloquerait la liste de tout le dossier, et ni
+      // l'arrêt ni DELETE /session ne la retirent). Demandes illisibles : rien n'est supprimé (fermé en cas de doute).
+      const deleteId = method === "DELETE" && routedSession !== undefined && sub === `/session/${routedSession}` ? routedSession : undefined;
+      if (deleteId !== undefined && gate.rejectBeforeDelete !== undefined) {
+        const avant = await gate.rejectBeforeDelete(deleteId, directory);
+        if (!avant.ok) {
+          return avant.bloquee === null
+            ? fail(c, 503, "verification-impossible", phraseSuppressionImpossible())
+            : fail(c, 503, "liste-bloquee", phraseListeBloquee(avant.bloquee), { outil: avant.bloquee });
+        }
+      }
+      // </gf5:d11>
       const abortId = method === "POST" ? SESSION_ABORT_ROUTE.exec(sub)?.[1] : undefined;
       if (abortId !== undefined && proxyHooks && proxyHooks.hooks.abort.length > 0) {
         // Avant la file des réponses : l'arrêt de l'arbre (stopTree) la prend lui-même.
@@ -542,6 +577,23 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
       const contentType = upstream.headers.get("content-type");
       // Jamais de document ni de script servi sous l'origine du cockpit, même si opencode (ou un faux serveur) le demandait.
       if (contentType) headers.set("content-type", PROXY_CONTENT_TYPE.test(contentType) ? contentType : "application/json");
+      // <gf5:d11>
+      // Liste des demandes (GET /permission) refusée par opencode avec la signature EXACTE du défaut (D11) : la table des attentes au
+      // format d'opencode si elle est fiable et cohérente avec l'erreur ; sinon 503 et sa phrase, rien n'est deviné. Autre 400 : relayé.
+      if (method === "GET" && sub === "/permission" && upstream.status === 400 && gate.repliListe !== undefined) {
+        const texte = await upstream.text();
+        let corps: unknown = null;
+        try {
+          corps = texte ? JSON.parse(texte) : null;
+        } catch {
+          corps = null;
+        }
+        const repli = gate.repliListe(directory, upstream.status, corps);
+        if (repli === null) return new Response(texte, { status: upstream.status, headers });
+        if (repli.repli === "bloquee") return fail(c, 503, "liste-bloquee", phraseListeIllisible(repli.outil), { outil: repli.outil });
+        return c.json(repli.demandes.map(auFormatOpencode), 200);
+      }
+      // </gf5:d11>
       if (method === "POST" && sub === "/session" && upstream.ok && proxyHooks && proxyHooks.hooks.sessionCreated.length > 0) {
         // Corps de la réponse lu seulement ici : vérification de la conversation créée (écart : supprimée, 502).
         const text = await upstream.text();

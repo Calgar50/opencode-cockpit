@@ -131,7 +131,10 @@ export interface FakeOpencodeOptions {
   syncTwins?: boolean;
   /** Configuration globale (GET /global/config) ; sa clé « permission » donne les règles des agents natifs. Défaut : profil Prudent. */
   config?: Record<string, unknown>;
-  /** GET /permission rejeté comme par opencode 1.18.30 quand un argument facultatif manque à une demande (voir `permissionListeRejetee`). */
+  /**
+   * GET /permission rejeté comme par opencode 1.18.30 quand un argument facultatif manque à une demande (voir `permissionListeRejetee`).
+   * Absent : vrai (GF5, A32 (4)).
+   */
   permissionListeRejetee?: boolean;
 }
 
@@ -721,7 +724,9 @@ export class FakeOpencode {
    * `undefined` : 400 BadRequest de la couche de schéma d'opencode (schema-error.ts:25-40, route hors /api/), corps mesuré
    * {name:"BadRequest", data:{message:"Expected JSON value, got undefined\n  at [i][\"metadata\"][\"<clé>\"]", kind:"Body"}}, i =
    * indice de la première demande fautive dans la liste de l'instance. Les autres instances sont servies ; POST
-   * /permission/:id/reply n'est pas touché. Faux par défaut (liste servie), alors qu'opencode 1.18.30 réel rejette toujours.
+   * /permission/:id/reply n'est pas touché. VRAI PAR DÉFAUT depuis GF5 (décision A32 (4)), comme opencode 1.18.30 réel : un test qui
+   * pose une demande webfetch, glob ou grep sans argument facultatif passe par la table des attentes du cockpit (pending-table.ts),
+   * jamais en coupant l'option sans raison écrite.
    */
   permissionListeRejetee: boolean;
   /** Configuration globale (GET /global/config), fusionnée par PATCH. */
@@ -772,7 +777,7 @@ export class FakeOpencode {
     this.#heartbeatMs = options.heartbeatMs ?? 10_000;
     this.syncTwins = options.syncTwins ?? true;
     this.globalConfig = jsonClone(options.config ?? DEFAULT_CONFIG);
-    this.permissionListeRejetee = options.permissionListeRejetee ?? false;
+    this.permissionListeRejetee = options.permissionListeRejetee ?? true;
   }
 
   get url(): string {

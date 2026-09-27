@@ -180,7 +180,9 @@ export const TEXTES = {
     },
     /**
      * opencode n'a pas répondu pendant la vérification : 503, rien n'est relayé. Générique : la garde ne sait pas encore s'il s'agit
-     * d'une délégation quand la liste des demandes est illisible.
+     * d'une délégation quand la liste des demandes est illisible. GF5 (D11) : quand opencode RÉPOND mais ne sait pas lister ses
+     * demandes (demande en attente sans argument facultatif) et que la table des attentes n'est pas fiable, la phrase est une autre,
+     * « liste bloquée » (shared/attentes-texts.ts, phraseListeBloquee) : jamais celle-ci.
      */
     verificationImpossible: "opencode ne répond pas : impossible de vérifier cette demande d'autorisation. Rien n'a été envoyé, réessayez dans un instant.",
     /** Route GET /api/conversations/:rootId/delegations/:permissionId. */

@@ -23,6 +23,10 @@ import type { Logger } from "./log.ts";
 import type { OcLookup } from "./oc-lookup.ts";
 import type { InstanceRouter, OmoPorts, OmoRouteGroup } from "./omo-contracts.ts";
 import type { OcGlobalEvent, OcSession, OpencodeClient } from "./opencode.ts";
+// <gf5:d11>
+import type { DemandeEnAttente } from "./pending-table.ts";
+import type { OutilBloquant } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 import type { ProjectsService } from "./projects.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { SettingsStore } from "./settings.ts";
@@ -58,10 +62,38 @@ export interface PendingPermission {
   sessionID: string;
   /** null : demande posée hors d'un appel d'outil ; « invalid » : champ présent mais illisible (rien n'est vérifiable). */
   tool: PermissionTool | "invalid" | null;
+  // <gf5:d11>
+  // GF5 (D11, A31 a ; mesures/D11-permission.md §6.2) : ce que la demande porte, lu de GET /permission ou de la table des attentes
+  // (pending-table.ts), pour que les lectures directes (autonomy.ts rescanNow, task-once-guard.ts readPermission) passent par le
+  // portillon. Absents d'une doublure de test : lus comme « "" », [] et {}.
+  permission?: string;
+  patterns?: string[];
+  metadata?: Record<string, unknown>;
+  always?: string[];
+  // </gf5:d11>
 }
 
 /** Vérification avant de relayer « once » (comportement 1.0 de checkOnceReply). */
-export type OnceVerdict = { ok: true } | { ok: false; status: 409 | 503; request: PendingPermission | null; orphan: boolean };
+export type OnceVerdict =
+  | { ok: true }
+  | {
+      ok: false;
+      status: 409 | 503;
+      request: PendingPermission | null;
+      orphan: boolean;
+      // <gf5:d11>
+      /** 503 seulement : liste d'opencode bloquée par une demande en attente (outil en cause) ; absent : opencode ne répond pas. */
+      bloquee?: OutilBloquant;
+      // </gf5:d11>
+    };
+
+// <gf5:d11>
+/**
+ * Repli de la liste des demandes (GF5, D11) : sur la signature EXACTE du défaut d'opencode 1.18.30, la table des attentes si elle est
+ * prouvée complète et cohérente avec l'erreur (« table »), sinon « bloquee » (rien n'est deviné) ; null : autre erreur.
+ */
+export type RepliListe = { repli: "table"; demandes: DemandeEnAttente[] } | { repli: "bloquee"; outil: OutilBloquant } | null;
+// </gf5:d11>
 
 /** Réponse inscrite au registre AVANT son envoi à opencode. */
 export interface EmittedReply {
@@ -105,6 +137,22 @@ export interface PermissionGate {
    * pour qu'aucun paquet n'édite wiring-11.ts ; absente = rien à installer.
    */
   install?(reg: Registrar, c11: Cockpit11): void;
+  // <gf5:d11>
+  /**
+   * Installation du module « pending » (GF5, D11) : dérivation « pending » de la table des attentes de CETTE instance (STEP_ORDER,
+   * avant « gate »), abonnement à la connexion de son flux, relecture proactive. Celui de l'instance principale installe ensuite
+   * celui de la salle. Absente : aucune table (repli jamais fiable, comportement d'avant GF5).
+   */
+  installPending?(reg: Registrar, c11: Cockpit11): void;
+  /** Repli de la liste (proxy GET /permission) à partir d'une réponse d'erreur d'opencode ; voir RepliListe. */
+  repliListe?(directory: string | null, status: number, corps: unknown): RepliListe;
+  /**
+   * Suppression d'une conversation (proxy DELETE /session/:id) : refus PRÉALABLE de ses demandes en attente et de celles de ses
+   * sous-conversations, dans la file des réponses (une demande orpheline d'une conversation supprimée bloquerait la liste de tout
+   * le dossier, mesure D11). « illisible » : demandes en attente illisibles, rien n'est refusé (le proxy ne supprime pas).
+   */
+  rejectBeforeDelete?(sessionId: string, directory: string | null): Promise<{ ok: true; rejected: number } | { ok: false; bloquee: OutilBloquant | null }>;
+  // </gf5:d11>
 }
 
 export interface PermissionGateDeps {
@@ -526,6 +574,6 @@ export type PortName = keyof Cockpit11Ports;
  * « gate » : module sans port (le portillon est une dépendance). Les autres modules portent le nom de leur port, ceux de la
  * salle compris (`OmoModuleName` ⊂ `PortName`, par OmoPorts).
  */
-export type ModuleName = "gate" | PortName | ConstructionModuleName; // c5
+export type ModuleName = "gate" | "pending" | PortName | ConstructionModuleName; // c5 ; gf5:d11 (« pending » : table des attentes, sans port)
 
 export type { OmoModuleName } from "./omo-contracts.ts";

@@ -411,7 +411,9 @@ async function salleReelle(t: TestContext) {
     activeRequest: () => etat.demande,
     endRequest: () => undefined,
   };
-  const h = await startCockpit(t, { omo: true, modules: ["gate", moduleRepondeur], ports: { omoActivation, omoPrecheck: precheckAvecReferences() } });
+  // gf5:d11 : « pending » (table des attentes de chaque instance) avec le portillon. Le faux rejette GET /permission comme opencode
+  // 1.18.30 réel (A32 (4)) tant qu'une demande du corpus sans argument facultatif attend : le répondeur passe par la table.
+  const h = await startCockpit(t, { omo: true, modules: ["pending", "gate", moduleRepondeur], ports: { omoActivation, omoPrecheck: precheckAvecReferences() } });
   const salle = h.omo;
   assert.ok(salle);
   // Chaque réponse envoyée au faux de la salle est relevée au moment de l'envoi, avec l'état du registre (P9, JS-6).

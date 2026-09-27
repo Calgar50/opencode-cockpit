@@ -5,7 +5,8 @@
 // - dossier piège : refus, aucune requête dont le dossier porte une séquence %XX, aucune ligne `usage` ;
 // - noms légitimes : relayés à l'octet, instance ouverte dans ce dossier ;
 // - aucune instance hors de /workspace (fake.instancesHors ; le harnais le revérifie au nettoyage de chaque test).
-// Sections que chaque fusion ajoute ici (fiche §3.10 à §8) : <gf1:v106>, <gf2:v106>, <gf3:v106>, <gf4:v106>, L39o, NAV.
+// Sections que chaque fusion ajoute ici (fiche §3.10 à §8) : <gf1:v106>, <gf2:v106>, <gf3:v106>, <gf4:v106>, L39o, <gf5:v106> (GF5 :
+// arrêt de l'arbre, table des attentes, suppression), NAV.
 // L39o : sa sentinelle T-L39 est dans agent-map-omo.test.ts (fiche §7 et tableau du §11), avec ce même faux à double décodage
 // (train de V2 de F2) ; aucune section ici.
 // Aucun appel facturé : faux opencode seulement.
@@ -26,6 +27,10 @@ import { decideConnect, egressAllowedHosts, type LoginWindow, splitConnectTarget
 import { hoteAutoriseDeLEnvironnement } from "./egress-proxy.ts";
 import { parseCopilotApiUrl, parseGithubEnterpriseDomain } from "./env.ts";
 import { forbiddenCommandArguments, forbiddenProxyBody, PERMISSION_MESSAGES } from "./http.ts";
+// <gf5:d11>
+import { OpencodeError } from "./opencode.ts";
+import { phraseListeIllisible } from "./shared/attentes-texts.ts";
+// </gf5:d11>
 import { createLogger } from "./log.ts";
 import { createOcProxy, PROXY_RULES_OMO } from "./oc-proxy.ts";
 import type { OmoActivationPort, OmoControlPort, OmoPrecheckPort, OmoRoomPort, OmoStopPort } from "./omo-contracts.ts";
@@ -532,14 +537,15 @@ describe("croisements v106 : autonomie (relecture de GET /permission, faits edit
   });
 });
 
-// --- GET /permission rejeté par opencode 1.18.30 (fiche §10.3, A23) : état actuel figé ---------------------------------------------
-// Option `permissionListeRejetee` du faux : GET /permission répond 400 (« schema rejection ») tant qu'une demande de l'instance a un
-// argument facultatif omis recopié dans ses métadonnées (METADONNEES_FACULTATIVES : webfetch sans timeout, glob ou grep sans path,
-// etc. ; jamais bash), comme opencode 1.18.30 réel (mesure D11, A31). Ces tests FIGENT ce que fait le cockpit aujourd'hui avec un
-// webfetch sans délai ; GF5 les RETOURNE (repli sur la table des attentes alimentée par permission.asked/replied, A31 a). Un
-// changement de comportement doit les modifier ici, en le disant.
+// --- GET /permission rejeté par opencode 1.18.30 (fiche §10.3, A23, A31 a) : corrigé par GF5 (table des attentes, D11) -------------
+// Option `permissionListeRejetee` du faux, VRAIE PAR DÉFAUT depuis GF5 (A32 (4)) : GET /permission répond 400 (« schema rejection »)
+// tant qu'une demande de l'instance a un argument facultatif omis recopié dans ses métadonnées (METADONNEES_FACULTATIVES : webfetch
+// sans timeout, glob ou grep sans path, etc. ; jamais bash), comme opencode 1.18.30 réel (mesure D11, A31). Ces trois tests
+// figeaient l'état défectueux (R106-a) ; GF5 les RETOURNE : avec la table des attentes (module « pending »), le « once », la
+// décision automatique et l'arrêt passent. Les TÉMOINS « table non fiable → 503 » sont gardés : sans table, ou flux coupé depuis la
+// dernière lecture, rien n'est deviné (503 « liste-bloquee », phrase dédiée), et le refus reste relayé.
 
-describe("croisements v106 : GET /permission rejeté par opencode (option permissionListeRejetee) — état actuel, correction à GF5 (D11)", () => {
+describe("croisements v106 : GET /permission rejeté par opencode (option permissionListeRejetee) — corrigé à GF5 (D11, table des attentes)", () => {
   const URL_DOC = "https://exemple.test/doc";
   /** Demande webfetch sans délai : ses métadonnées n'ont pas de `timeout` (tool/webfetch.ts:43-47). */
   const webfetch: FakeToolScript = {
@@ -562,53 +568,88 @@ describe("croisements v106 : GET /permission rejeté par opencode (option permis
     });
     assert.equal(sent.status, 204, sent.body);
     const event = await h.fake.waitForEvent("permission.asked", (p) => p.sessionID === session.id, { since });
+    await h.processor.settled();
     return { session, asked: event.properties as unknown as FakePermissionRequest };
   }
 
-  it("portillon et liste des approbations : liste relayée en 400 ; « once » refusé en 503 sans rien relayer (la demande reste ouverte) ; « reject » relayé ; témoin sans l'option : « once » relayé", async (t) => {
-    const { h } = await start(t);
+  it("« once » RELAYÉ (table fiable) : liste des approbations servie (200, forme d'opencode) ; « once » sur le bash d'une autre conversation ET sur le webfetch ; témoins sans table : 503 « liste-bloquee », rien relayé, refus relayé", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
+    assert.equal(h.fake.permissionListeRejetee, true, "option du faux posée par défaut (A32 (4))");
     const dir = dirOf("proj");
-    const { session, asked } = await waitingFor(h, dir, "Web", webfetch);
-    h.fake.permissionListeRejetee = true;
+    const web = await waitingFor(h, dir, "Web", webfetch);
+    const autre = await waitingFor(h, dir, "Commande", bash("ls -la"));
+    await h.attentesAuRepos();
+    // Le faux rejette bien la liste de l'instance (poison webfetch sans délai), comme opencode 1.18.30.
+    await assert.rejects(h.deps.client.request("GET", "/permission", { query: { directory: dir } }), (err) => err instanceof OpencodeError && err.status === 400);
 
-    // Liste des approbations de l'interface (ChatPage : oc.permissions) : 400 d'opencode relayé tel quel.
+    // Liste des approbations (ChatPage : oc.permissions) : la table, au format d'opencode, à la place du 400.
     const list = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
-    assert.equal(list.status, 400, list.body);
-    assert.match(list.json<{ data: { message: string } }>().data.message, /\["metadata"\]\["timeout"\]/);
+    assert.equal(list.status, 200, list.body);
+    assert.deepEqual(list.json(), JSON.parse(JSON.stringify(h.fake.pendingPermissions())), "même forme et même ordre que la liste d'opencode");
 
-    const answer = (reply: string) => h.call("POST", `/api/oc/permission/${asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply } });
-    const once = await answer("once");
-    assert.equal(once.status, 503, once.body);
-    assert.deepEqual(once.json(), { error: "verification-impossible", message: PERMISSION_MESSAGES.verificationImpossible });
-    assert.deepEqual(replies(h), [], "« once » jamais relayé");
-    assert.deepEqual(
-      h.fake.pendingPermissions().map((p) => p.id),
-      [asked.id],
-      "la demande reste ouverte",
-    );
-
-    // Le refus n'autorise rien : relayé sans vérification.
-    const reject = await answer("reject");
-    assert.equal(reject.status, 200, reject.body);
+    const answer = (id: string, reply: string) => h.call("POST", `/api/oc/permission/${id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply } });
+    const onceBash = await answer(autre.asked.id, "once");
+    assert.equal(onceBash.status, 200, onceBash.body);
+    await within(h.fake.settled(autre.session.id), "commande exécutée");
+    const onceWeb = await answer(web.asked.id, "once");
+    assert.equal(onceWeb.status, 200, onceWeb.body);
+    await within(h.fake.settled(web.session.id), "page lue");
     assert.deepEqual(
       replies(h).map((r) => r.body),
+      [{ reply: "once" }, { reply: "once" }],
+    );
+    assertSentinel(h, "once relayé");
+
+    // TÉMOIN « table non fiable → 503 » : cockpit sans le module « pending » (aucune table), même poison.
+    const temoin = await start(t);
+    const poison = await waitingFor(temoin.h, dir, "Web", webfetch);
+    const liste = await temoin.h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: temoin.h.headers.authed });
+    assert.equal(liste.status, 503, liste.body);
+    assert.deepEqual(liste.json(), { error: "liste-bloquee", message: phraseListeIllisible("web"), outil: "web" });
+    const once = await temoin.h.call("POST", `/api/oc/permission/${poison.asked.id}/reply?directory=${q(dir)}`, { headers: temoin.h.headers.mutating, body: { reply: "once" } });
+    assert.equal(once.status, 503, once.body);
+    assert.deepEqual(once.json(), { error: "liste-bloquee", message: PERMISSION_MESSAGES.listeBloquee, outil: "web" });
+    assert.notEqual(PERMISSION_MESSAGES.listeBloquee, PERMISSION_MESSAGES.verificationImpossible, "jamais « opencode ne répond pas »");
+    assert.deepEqual(replies(temoin.h), [], "« once » jamais relayé sans table fiable");
+    const reject = await temoin.h.call("POST", `/api/oc/permission/${poison.asked.id}/reply?directory=${q(dir)}`, { headers: temoin.h.headers.mutating, body: { reply: "reject" } });
+    assert.equal(reject.status, 200, reject.body);
+    assert.deepEqual(
+      replies(temoin.h).map((r) => r.body),
       [{ reply: "reject" }],
     );
-    await within(h.fake.settled(session.id), "réponse close par le refus");
-
-    // Témoin : liste lisible, « once » relayé.
-    h.fake.permissionListeRejetee = false;
-    const other = await waitingFor(h, dir, "Témoin", webfetch);
-    const relayed = await h.call("POST", `/api/oc/permission/${other.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
-    assert.equal(relayed.status, 200, relayed.body);
-    assert.deepEqual(replies(h).at(-1)?.body, { reply: "once" });
-    await within(h.fake.settled(other.session.id), "réponse du témoin terminée");
+    await within(temoin.h.fake.settled(poison.session.id), "réponse close par le refus");
+    const guerie = await temoin.h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: temoin.h.headers.authed });
+    assert.equal(guerie.status, 200, "un refus guérit la liste (mesure D11, S3)");
   });
 
-  it("autonomie : décision automatique (grep) impossible à relayer, journal « attente » avec relais « echec », la demande reste à l'utilisateur", async (t) => {
+  it("TÉMOIN « flux coupé depuis la dernière lecture » : table non fiable → 503 « liste-bloquee » et nouveau message ; le refus guérit, la liste repasse à 200", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
+    const dir = dirOf("proj");
+    const web = await waitingFor(h, dir, "Web", webfetch);
+    await h.attentesAuRepos();
+    const avant = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(avant.status, 200, "table fiable avant la coupure");
+    h.fake.disconnectStreams();
+    await until(() => h.processor.status.connected === false || h.cockpitEvents().some((e) => e.type === "opencode.connection" && (e.data as { connected?: boolean }).connected === false));
+    await until(() => h.processor.status.connected, 10_000);
+    await h.attentesAuRepos();
+    const apres = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(apres.status, 503, `reconnexion : la relecture proactive échoue sur le poison, rien n'est deviné (${apres.body})`);
+    const once = await h.call("POST", `/api/oc/permission/${web.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
+    assert.equal(once.status, 503, once.body);
+    assert.equal(once.json<{ error: string }>().error, "liste-bloquee");
+    assert.deepEqual(replies(h), [], "rien relayé");
+    const reject = await h.call("POST", `/api/oc/permission/${web.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "reject" } });
+    assert.equal(reject.status, 200, reject.body);
+    await within(h.fake.settled(web.session.id), "réponse close par le refus");
+    const guerie = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(guerie.status, 200, guerie.body);
+  });
+
+  it("autonomie : décision automatique (grep) RELAYÉE malgré un webfetch sans délai en attente dans le même dossier (journal « auto », relais « ok »)", async (t) => {
     const choices = new Map<string, AutonomyChoice>();
     const { h } = await start(t, {
-      modules: ["autonomy", "requests", "facts", "floors"],
+      modules: ["pending", "autonomy", "requests", "facts", "floors"],
       settings: { budget: { autonomie: { controleIa: false } } },
       ports: {
         conversationAutonomy: {
@@ -621,8 +662,7 @@ describe("croisements v106 : GET /permission rejeté par opencode (option permis
     });
     const dir = dirOf("proj");
     // Une demande webfetch sans délai attend dans le même dossier (conversation en « Demander ») : la liste de l'instance est rejetée.
-    await waitingFor(h, dir, "Demander", webfetch);
-    h.fake.permissionListeRejetee = true;
+    const web = await waitingFor(h, dir, "Demander", webfetch);
     const auto = await conversation(h, dir, "Autonome");
     choices.set(auto.id, "autonome");
     const since = h.fake.emitted.length;
@@ -638,35 +678,56 @@ describe("croisements v106 : GET /permission rejeté par opencode (option permis
         h.db.prepare("SELECT verdict, regle, par, relais FROM autonomy_decisions WHERE permission_id = ?").get(asked.id) as
           | { verdict: string; regle: string; par: string; relais: string | null }
           | undefined,
+      10_000,
     );
-    assert.deepEqual({ ...decision }, { verdict: "attente", regle: "A-grep", par: "regles", relais: "echec" });
+    assert.deepEqual({ ...decision }, { verdict: "auto", regle: "A-grep", par: "regles", relais: "ok" });
     assert.deepEqual(
-      replies(h).filter((r) => r.pathname.includes(asked.id)),
-      [],
-      "aucun « once » envoyé",
+      replies(h)
+        .filter((r) => r.pathname.includes(asked.id))
+        .map((r) => r.body),
+      [{ reply: "once" }],
+      "« once » envoyé par l'autonomie",
     );
+    await within(h.fake.settled(auto.id), "réponse autonome terminée");
     assert.ok(
-      h.fake.pendingPermissions().some((p) => p.id === asked.id),
-      "la demande reste à l'utilisateur",
+      h.fake.pendingPermissions().some((p) => p.id === web.asked.id),
+      "la demande web reste à l'utilisateur",
     );
+    assertSentinel(h, "décision automatique");
   });
 
-  it("arrêt par le proxy : la conversation s'arrête, mais les demandes en attente ne sont pas refusées (liste illisible) et restent ouvertes", async (t) => {
-    const { h } = await start(t);
+  it("arrêt par le proxy : la conversation s'arrête ET sa demande orpheline est refusée ; GET /permission du faux repasse à 200 ; témoin sans table : rien refusé", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
     const dir = dirOf("proj");
     const { session, asked } = await waitingFor(h, dir, "Web", webfetch);
-    h.fake.permissionListeRejetee = true;
+    await h.attentesAuRepos();
     const before = h.fake.requests.length;
     const stopped = await h.call("POST", `/api/oc/session/${session.id}/abort?directory=${q(dir)}`, { headers: h.headers.mutating });
     assert.equal(stopped.status, 200, stopped.body);
-    // Nettoyage de l'arrêt tenté : sa lecture de GET /permission est partie, puis rien.
-    await until(() => h.fake.requests.slice(before).some((r) => r.method === "GET" && r.pathname === "/permission"));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual(replies(h), [], "aucun refus envoyé");
+    await until(() => replies(h).some((r) => r.pathname === `/permission/${asked.id}/reply`), 5_000);
     assert.deepEqual(
-      h.fake.pendingPermissions().map((p) => p.id),
-      [asked.id],
-      "la demande reste ouverte jusqu'à une réponse ou un redémarrage",
+      replies(h).map((r) => r.body),
+      [{ reply: "reject" }],
+      "orpheline refusée par le nettoyage de l'arrêt",
+    );
+    assert.deepEqual(h.fake.pendingPermissions(), [], "plus rien en attente");
+    assert.ok(h.fake.requests.slice(before).some((r) => r.method === "GET" && r.pathname === "/permission"));
+    const liste = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(liste.status, 200, "la liste d'opencode repasse à 200");
+    assert.deepEqual(liste.json(), []);
+
+    // TÉMOIN : sans table, l'arrêt ne refuse rien et l'orpheline reste (comportement d'avant GF5, gardé comme témoin).
+    const temoin = await start(t);
+    const orpheline = await waitingFor(temoin.h, dir, "Web", webfetch);
+    const avant = temoin.h.fake.requests.length;
+    const arret = await temoin.h.call("POST", `/api/oc/session/${orpheline.session.id}/abort?directory=${q(dir)}`, { headers: temoin.h.headers.mutating });
+    assert.equal(arret.status, 200, arret.body);
+    await until(() => temoin.h.fake.requests.slice(avant).some((r) => r.method === "GET" && r.pathname === "/permission"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(replies(temoin.h), [], "aucun refus envoyé sans table");
+    assert.deepEqual(
+      temoin.h.fake.pendingPermissions().map((p) => p.id),
+      [orpheline.asked.id],
     );
   });
 });
@@ -1219,6 +1280,8 @@ describe("croisements v106 <gf2:v106> : 3D × 1.0.6 (fiche §4)", () => {
     for (const rootId of [legitime.id, RACINE_PIEGE]) {
       assert.equal(store.enregistrer({ rootId, parent: rootId, enfant: "ses_gf2_enfant", callId: "call_gf2", brut: "[synthétique] consigne", at: 1 }), "enregistree");
     }
+    // gf5:d11 : relecture proactive de la table des attentes (première apparition du dossier), déclenchée par la création ci-dessus.
+    await h.attentesAuRepos();
     const avant = h.fake.requests.length;
     const usageAvant = usageRows(h);
 
@@ -1646,3 +1709,53 @@ describe("croisements v106 <gf4:v106> : construction × 1.0.6 (fiche §6)", () =
   });
 });
 // </gf4:v106>
+
+// <gf5:v106> début : grande fusion, croisements (GF5) × 1.0.6 — sentinelle complétée (fiche-fusion-v106 §9.3, §11 ligne GF5 ; A32 (5))
+// Familles ajoutées par GF5 : relecture proactive de la table des attentes (D11 : un dossier d'enveloppe refusé n'est jamais relu),
+// suppression d'une conversation (refus préalable, D11).
+describe("croisements v106 <gf5:v106> : grande fusion × 1.0.6 (sentinelle complète)", () => {
+  it("T-GF5-2 (D11) : relecture proactive de la table des attentes — enveloppe d'un dossier refusé (%XX, ou instance hors de /workspace) jamais relue ; dossiers légitimes relus à l'octet", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
+    const lectures = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission");
+    const avant = lectures().length;
+    for (const directory of [TRAP_DIR, "/secret", "/workspace/../secret"]) {
+      h.fake.emit({ type: "session.status", properties: { sessionID: "ses_gf5_piege", status: { type: "busy" } } }, directory);
+    }
+    for (const name of LEGIT) h.fake.emit({ type: "session.status", properties: { sessionID: "ses_gf5_legitime", status: { type: "busy" } } }, dirOf(name));
+    await until(() => lectures().length - avant >= LEGIT.length);
+    await h.attentesAuRepos();
+    assert.deepEqual(
+      lectures()
+        .slice(avant)
+        .map((r) => r.query.directory)
+        .sort(),
+      LEGIT.map(dirOf).sort(),
+      "seuls les dossiers légitimes sont relus",
+    );
+    assertSentinel(h, "T-GF5-2");
+  });
+
+  it("T-GF5-3 (D11) : suppression d'une conversation au dossier %XX → 403 avant tout refus préalable, zéro requête ; « Remise 20% » : refus préalable puis suppression, dans ce dossier", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
+    const avant = h.fake.requests.length;
+    const refus = await h.call("DELETE", `/api/oc/session/ses_gf5_piege?directory=${q(TRAP_DIR)}`, { headers: h.headers.mutating });
+    assertForbidden(refus, "suppression %XX");
+    assert.deepEqual(h.fake.requests.slice(avant), [], "zéro requête");
+    const dir = dirOf(LEGIT[0]);
+    const session = await conversation(h, dir, "À supprimer");
+    await h.attentesAuRepos();
+    const depuis = h.fake.requests.length;
+    const suppression = await h.call("DELETE", `/api/oc/session/${session.id}?directory=${q(dir)}`, { headers: h.headers.mutating });
+    assert.equal(suppression.status, 200, suppression.body);
+    assert.deepEqual(
+      h.fake.requests
+        .slice(depuis)
+        .filter((r) => r.pathname === "/permission" || r.method === "DELETE")
+        .map((r) => `${r.method} ${r.pathname} ${r.query.directory}`),
+      [`GET /permission ${dir}`, `DELETE /session/${session.id} ${dir}`],
+      "demandes lues (refus préalable) puis suppression, dans ce dossier",
+    );
+    assertSentinel(h, "T-GF5-3");
+  });
+});
+// </gf5:v106> fin
