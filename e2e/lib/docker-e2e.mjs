@@ -1305,7 +1305,7 @@ export async function verifierGardes() {
 
   // Réglage de mouvement (R106-b) : aucun scénario ne dépend du réglage d'animations du poste.
   await verifier("réglage de mouvement : action sur la page avant de l'avoir fixé, ou réglage rendu au poste, refusés (R106-b)", () => verifierGardeMouvement());
-  await verifier("réglage de mouvement : theme(), fin de captureSuite et preparerPage le gardent fixé (R106-b)", () => avecDossierEssai((essai) => verifierMediasOnglet(essai)));
+  await verifier("réglage de mouvement : theme(), medias() par emulerMedias (A33), fin de captureSuite et preparerPage le gardent fixé (R106-b)", () => avecDossierEssai((essai) => verifierMediasOnglet(essai)));
   await verifier("--poste-mouvement : drapeau du navigateur qui simule le réglage du poste (R106-b)", () => {
     if (analyserArguments([]).posteMouvement !== null) throw new Error("réglage du poste simulé sans l'option");
     if (analyserArguments(["--poste-mouvement", "reduce"]).posteMouvement !== "reduce") throw new Error("option sans effet");
@@ -1681,6 +1681,21 @@ async function verifierMediasOnglet(essai) {
     refus = err;
   }
   if (!refus) throw new Error("réglage de mouvement inconnu accepté");
+
+  // Grande fusion (GF4, A33) : medias() de l'it4 (it4-captures, a11y.mjs de la construction, c5b-demonstration) passe par
+  // emulerMedias. Dans le fichier, un SEUL envoi de Emulation.setEmulatedMedia ; sur l'onglet, chaque envoi de medias() porte
+  // le mouvement, et medias({}) rend l'état du banc (mouvement fixé par le scénario), jamais une liste vide.
+  const codeCdp = fs.readFileSync(path.join(RACINE, "e2e", "lib", "cdp.mjs"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const envoisDirects = codeCdp.match(/envoyer\("Emulation\.setEmulatedMedia"/g) ?? [];
+  if (envoisDirects.length !== 1) throw new Error(`cdp.mjs envoie Emulation.setEmulatedMedia à ${envoisDirects.length} endroit(s) : un seul, emulerMedias`);
+  const avantMedias = medias().length;
+  await onglet.medias({ forcedColors: "active", reducedMotion: "no-preference", theme: "sombre" });
+  await onglet.medias({});
+  const parMedias = medias().slice(avantMedias);
+  if (parMedias.length !== 2 || parMedias[0]["forced-colors"] !== "active" || parMedias[0]["prefers-reduced-motion"] !== "no-preference") {
+    throw new Error(`medias() : ${JSON.stringify(parMedias)}`);
+  }
+  if (JSON.stringify(parMedias[1]) !== JSON.stringify({ "prefers-reduced-motion": "reduce" })) throw new Error(`medias({}) : ${JSON.stringify(parMedias[1])}`);
 
   const { preparerPage } = await import(pathToFileURL(path.join(RACINE, "e2e", "scenarios", "it1-ui-commun.mjs")).href);
   const page = await creerOnglet(client, "session-essai-2", "cible-essai-2");

@@ -454,11 +454,14 @@ Trois modes, parce que ce sont les trois qui changent le dessin : `normal`, `con
 `<scénario>-<vue>-<mode>-<taille>-<thème>.png`.
 
 Les trois réglages de média (`prefers-color-scheme`, `forced-colors`, `prefers-reduced-motion`) passent depuis FE4 par
-`onglet.medias({theme, forcedColors, reducedMotion})` de `cdp.mjs`, la seule aide d'émulation de média du banc
-(itération 4, L41), qui les envoie EN UN SEUL APPEL (`Emulation.setEmulatedMedia` remplace toute la liste). Les
-couleurs restent dans `a11y.mjs`, par l'envoi brut de `cdp.mjs`
+`onglet.medias({theme, forcedColors, reducedMotion})` de `cdp.mjs` (itération 4, L41), demandés ensemble
+(`Emulation.setEmulatedMedia` remplace toute la liste). Depuis la grande fusion (GF4, A33), `medias()` ne fait plus son
+propre envoi : il pose l'état, puis passe par `emulerMedias` (R106-b), SEUL envoi de `Emulation.setEmulatedMedia` de
+l'onglet, qui porte TOUJOURS le réglage de mouvement ; `medias({})` rend la page à l'état du banc (mouvement fixé par le
+scénario, ni thème ni contraste forcé), jamais à une liste vide. La garde du mouvement accepte donc les captures de
+`a11y.mjs`, d'`it4-captures` et de `c5b-demonstration`. Les couleurs restent dans `a11y.mjs`, par l'envoi brut de `cdp.mjs`
 (`navigateur.client.envoyer("Emulation.setEmulatedVisionDeficiency", …, onglet.sessionId)`).
-`e2e/lib/cdp.mjs` n'est jamais écrit par l'itération 5.
+`e2e/lib/cdp.mjs` n'est écrit par aucun paquet de l'itération 5 : seule la grande fusion l'a touché (A33).
 Le contexte d'un scénario ne porte que l'ONGLET : `ouvrirNavigateurEpingle(ctx)` ouvre un navigateur propre au
 scénario, avec le même épinglage et la même isolation, fermé dans un `finally`.
 
