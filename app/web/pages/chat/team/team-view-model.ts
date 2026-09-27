@@ -619,12 +619,14 @@ function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
  *    relecture dans le déroulé : une étape placée après une relecture pouvait faire passer son texte pour des notes du cockpit ;
  * 3. les TOURS du relecteur terminés dans ce bloc (clôture 5b, tour 4), mêmes conditions que `relectureDeliverable` :
  *    - le journal n'est écrit que si au moins un tour est terminé. Une relecture arrêtée ou interrompue après le premier jet rend
- *      un livrable COMPLET (message « resultat ») qui n'est que ce premier jet, sans journal ni note ;
- *    - les deux notes ne sont écrites que si tous les tours déclarés sont faits et que le dernier verdict n'est pas « rien à
- *      reprendre » (un verdict illisible n'est jamais concluant) ; elles valent alors, à l'octet, « Non relue après la dernière
- *      correction. » et « Relecture non conclue après {toursMax} tours… ». Sans bornes déclarées (vue qui ne les connaît pas),
- *      le nombre de tours déclarés n'est connu que d'une équipe TERMINÉE, qui n'a pu finir sur « à reprendre » qu'au dernier
- *      tour : ailleurs, aucune note n'est signée.
+ *      un livrable COMPLET (message « resultat ») qui n'est que ce premier jet, sans journal — et, depuis GF4 (A27, §6.2 c), avec
+ *      la seule note « Non relue après la dernière correction. » ;
+ *    - « Non relue après la dernière correction. » (GF4) dès que l'auteur a écrit plus de versions que le relecteur n'a relu de
+ *      tours, tentative courante (`versionsEcrites`) ; « Relecture non conclue après {toursMax} tours… » seulement si tous les
+ *      tours déclarés sont faits et que le dernier verdict n'est pas « rien à reprendre » (un verdict illisible n'est jamais
+ *      concluant) ; à l'octet, dans cet ordre. Sans bornes déclarées (vue qui ne les connaît pas), le nombre de tours déclarés
+ *      n'est connu que d'une équipe TERMINÉE, qui n'a pu finir sur « à reprendre » qu'au dernier tour : ailleurs, « Relecture
+ *      non conclue… » n'est jamais signée.
  */
 function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: boolean; notes: string[] } {
   const rien = { journal: false, notes: [] };
@@ -649,12 +651,42 @@ function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: b
     run.blocs === undefined ? run.steps.some((step) => step.blocIndex === dernierBloc && (step.tour > 1 || step.verdict !== undefined)) : bornes?.type === "relecture";
   if (!relecture) return rien;
   const tours = toursRelus(run, dernierBloc);
-  if (tours.length === 0) return rien;
+  // <c5:non-relue>
+  // Grande fusion (GF4, A27, §6.2 c) : « Non relue après la dernière correction. » dès que l'auteur a écrit plus de versions que
+  // le relecteur n'a relu de tours (tentative courante), comme `relectureDeliverable` — premier jet seul compris, sans journal.
+  const relus = bornes?.toursMax === undefined ? tours.length : Math.min(tours.length, bornes.toursMax);
+  const nonRelue = versionsEcrites(run, dernierBloc) > relus;
+  if (tours.length === 0) return nonRelue ? { journal: false, notes: [C5.relecture.nonRelue] } : rien;
+  // </c5:non-relue>
   const toursMax = bornes?.toursMax ?? (run.blocs === undefined && run.state === "terminee" ? tours.length : undefined);
   const comptes = toursMax === undefined ? [] : tours.slice(0, toursMax);
   const nonConclue = toursMax !== undefined && comptes.length > 0 && comptes.length >= toursMax && comptes.at(-1)?.verdict !== "rien-a-reprendre";
-  return { journal: true, notes: nonConclue ? [C5.relecture.nonRelue, remplir(C5.relecture.nonConclue, { n: String(toursMax) })] : [] };
+  // <c5:non-relue>
+  const notes = [...(nonRelue ? [C5.relecture.nonRelue] : []), ...(nonConclue ? [remplir(C5.relecture.nonConclue, { n: String(toursMax) })] : [])];
+  return { journal: true, notes };
+  // </c5:non-relue>
 }
+
+// <c5:non-relue>
+/**
+ * Grande fusion (GF4, A27, §6.2 c) : versions de l'AUTEUR terminées dans le bloc `blocIndex`, comptées comme l'exécuteur compte
+ * les passages qu'il donne à `relectureDeliverable` (`toursTermines`) : une par tour, tentative courante seulement. L'auteur est
+ * la PREMIÈRE étape déclarée du bloc par son rang (le relecteur, la seconde : `toursRelus`). Un bloc qui n'a pas exactement ces
+ * deux étapes n'a aucune version comptée.
+ */
+function versionsEcrites(run: TeamRunView, blocIndex: number): number {
+  const lignes = run.steps.filter((step) => step.blocIndex === blocIndex);
+  const rangs = new Map<string, number>();
+  for (const ligne of lignes) rangs.set(ligne.stepId, Math.min(rangs.get(ligne.stepId) ?? ligne.ordre, ligne.ordre));
+  const [auteur, relecteur] = [...rangs.entries()].sort((a, b) => a[1] - b[1]);
+  if (rangs.size !== 2 || auteur === undefined || relecteur === undefined || auteur[1] === relecteur[1]) return 0;
+  const siennes = lignes.filter((ligne) => ligne.stepId === auteur[0]);
+  const courante = Math.max(0, ...siennes.map((ligne) => ligne.tentative));
+  const parTour = new Map<number, StepRunView>();
+  for (const ligne of siennes) if (ligne.tentative === courante) parTour.set(ligne.tour, ligne);
+  return [...parTour.values()].filter((ligne) => ligne.state === "terminee").length;
+}
+// </c5:non-relue>
 
 /**
  * Le lancement a-t-il réellement pris le chemin « aucun ne convient » ? Seule VOTRE réponse l'écrit, dans la colonne `choix` de
@@ -677,7 +709,8 @@ export function modeleResultat(run: TeamRunView, texteResultat: string, advanced
   // (`ecritParLeCockpit`) : ailleurs, le texte est rendu entier, sans repli ni note du cockpit.
   const livrable = texte(texteResultat, FLOW_LIMITS.relaisCaracteres);
   const ecrit = ecritParLeCockpit(run, genre);
-  const journal = ecrit.journal ? journalRelecture(livrable, ecrit.notes) : { resultat: livrable, titre: null, texte: "", notes: [] };
+  // GF4 (A27, §6.2 c) : des notes SANS journal (premier jet jamais relu) sortent aussi de la fin du texte, sans rien replier.
+  const journal = ecrit.journal || ecrit.notes.length > 0 ? journalRelecture(livrable, ecrit.notes, { journal: ecrit.journal }) : { resultat: livrable, titre: null, texte: "", notes: [] };
   return {
     titre: remplir(P.resultat.titre, { equipe: texte(run.titre, TITRE_MAX) }),
     redige: remplir(P.resultat.redige, {

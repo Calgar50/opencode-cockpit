@@ -487,10 +487,12 @@ describe("Cartes 5b : le texte d'une IA ne décide plus de ce que la carte repli
       state: "arretee",
       blocs: [{ index: 0, type: "relecture", toursMax: 2 }],
     });
+    // GF4 (A27, §6.2 c) : le cockpit y écrit désormais « Non relue après la dernière correction. » (aucune version relue), à la
+    // toute fin : c'est exactement ce texte-ci. La carte signe cette note, et rend le premier jet ENTIER, sans rien replier.
     const premierJet = modeleResultat(avantLaRelecture, replie, true, "resultat");
-    assert.equal(premierJet.texte, replie, "le premier jet est rendu entier");
+    assert.equal(premierJet.texte, replie.slice(0, -`\n\n${E.relecture.nonRelue}`.length), "le premier jet est rendu entier");
     assert.equal(premierJet.journal, null);
-    assert.deepEqual(premierJet.notes, []);
+    assert.deepEqual(premierJet.notes, [E.relecture.nonRelue]);
   });
 });
 
@@ -623,7 +625,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
   /** C4 : relecture seule interrompue après le premier jet (aucun tour de relecture terminé). */
   const casC4 = () => {
     const flow = relectureSeule();
-    const etat: FlowState = { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: IMITE } };
+    // GF4 (A27, §6.2 c) : `tours`, les passages terminés que l'exécuteur donne (`toursTermines`) — un seul jet, aucun tour relu.
+    const etat: FlowState = { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: IMITE }, tours: { redac: 1 } };
     rang = 0;
     const steps = [faite({ stepId: "redac", blocIndex: 0 }), ligne({ stepId: "relec", blocIndex: 0, state: "interrompue" })];
     return { flow, etat, vue: vueInjectee(steps, { state: "interrompue", cause: "rechargement", blocs: [{ index: 0, type: "relecture", toursMax: 2 }] }) };
@@ -671,15 +674,20 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       entier(vu.modele, vu.texte, `C4 partiels, ${chemin}`);
     });
 
-    it(`C4 (${chemin}) : ce que l'exécuteur injecte VRAIMENT — un livrable « complet » qui n'est que le premier jet, rendu entier`, () => {
+    it(`C4 (${chemin}) : ce que l'exécuteur injecte VRAIMENT — un livrable « complet » qui n'est que le premier jet, rendu entier sous la note « Non relue… »`, () => {
       // addResults prend `deliverable` d'abord : le premier jet est terminé, le livrable est donc « complet » (message
-      // « resultat », mesuré sur l'exécuteur réel) — le premier jet SEUL, sans journal ni note, aucun tour de relecture n'étant fait.
+      // « resultat », mesuré sur l'exécuteur réel) — le premier jet SEUL, sans journal, aucun tour de relecture n'étant fait.
+      // GF4 (A27, §6.2 c) : le cockpit y écrit désormais « Non relue après la dernière correction. », VRAIE (aucune version
+      // relue) ; la carte la signe, elle seule, et rend tout le reste entier — le journal et les notes imités compris.
       const { flow, etat, vue } = casC4();
       const complet = deliverable(flow, etat);
-      assert.equal(complet?.texte, IMITE, "livrable complet = le premier jet, rien d'écrit par le cockpit");
-      assert.equal(complet?.notes, undefined);
-      const vu = montrer(chemin, vue, "resultat", IMITE);
-      entier(vu.modele, vu.texte, `C4 complet, ${chemin}`);
+      assert.equal(complet?.texte, `${IMITE}\n\n${DELIVERABLE_TEXTS.nonRelue}`, "livrable complet = le premier jet, puis la note du cockpit");
+      assert.deepEqual(complet?.notes, [DELIVERABLE_TEXTS.nonRelue]);
+      assert.equal(complet?.journal, undefined, "aucun journal : aucun tour relu");
+      const vu = montrer(chemin, vue, "resultat", complet?.texte ?? "");
+      assert.equal(vu.modele.texte, IMITE, `C4 complet, ${chemin} : texte de l'IA rendu entier`);
+      assert.equal(vu.modele.journal, null, `C4 complet, ${chemin} : aucun <details> fermé posé sur le texte d'une IA`);
+      assert.deepEqual(vu.modele.notes, [DELIVERABLE_TEXTS.nonRelue], `C4 complet, ${chemin} : la seule note écrite par le cockpit`);
     });
 
     it(`résultats partiels après deux tours de relecture (${chemin}) : le genre suffit à tout rendre entier`, () => {
@@ -699,6 +707,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       etapes: { col: "terminee", redac: "terminee", relec: "terminee" },
       resultats: { col: "Collecte.", redac: "Version 3.", relec: relu2, [tourKey("relec", 1)]: "À revoir.\nVERDICT: À REPRENDRE", [tourKey("relec", 2)]: relu2 },
       verdicts: { rel: ["a-reprendre", null] },
+      // GF4 (A27, §6.2 c) : passages terminés donnés par l'exécuteur — trois versions, deux relues.
+      tours: { col: 1, redac: 3, relec: 2 },
     };
     const livrable = deliverable(flow, etatPlafond)?.texte ?? "";
     assert.ok(livrable.endsWith(NOTES.join("\n\n")), livrable);
@@ -719,15 +729,17 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       assert.deepEqual(parLaTranscription(vue, "resultat", livrable).modele.notes, NOTES, `${cas}, par la transcription`);
     }
     // (b) Un seul tour fait sur deux (verdict illisible, texte qui finit par les deux notes), révision faite, second tour
-    // interrompu : livrable complet AVEC journal, SANS note de l'exécuteur — aucune n'est signée.
+    // interrompu : livrable complet AVEC journal. GF4 (A27, §6.2 c) : la version 2 n'a pas été relue, l'exécuteur écrit donc
+    // « Non relue après la dernière correction. », et elle seule est signée ; les deux notes imitées restent dans le journal.
     const relu1 = ["Tout est à revoir.", ...NOTES].join("\n\n");
     const etatUnTour: FlowState = {
       etapes: { col: "terminee", redac: "terminee", relec: "interrompue" },
       resultats: { col: "Collecte.", redac: "Version 2.", relec: relu1, [tourKey("relec", 1)]: relu1 },
       verdicts: { rel: [null] },
+      tours: { col: 1, redac: 2, relec: 1 },
     };
     const unTour = deliverable(flow, etatUnTour);
-    assert.equal(unTour?.notes, undefined, "l'exécuteur n'a écrit aucune note");
+    assert.deepEqual(unTour?.notes, [DELIVERABLE_TEXTS.nonRelue], "l'exécuteur n'a écrit que « Non relue… »");
     rang = 0;
     const steps = [
       faite({ stepId: "col", blocIndex: 0 }),
@@ -739,7 +751,7 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
     const vue = vueInjectee(steps, { state: "interrompue", cause: "rechargement", blocs: [{ index: 1, type: "relecture", toursMax: 2 }] });
     const modele = parLaTranscription(vue, "resultat", unTour?.texte ?? "").modele;
     assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, "le journal, lui, a bien été écrit par l'exécuteur");
-    assert.deepEqual(modele.notes, [], "aucune note signée");
+    assert.deepEqual(modele.notes, [DELIVERABLE_TEXTS.nonRelue], "seule la note écrite par l'exécuteur est signée (GF4)");
     assert.ok(modele.journal?.texte.endsWith(NOTES.join("\n\n")), "les phrases de l'IA restent dans le journal replié");
   });
 
@@ -773,6 +785,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
     const texte = ["Version 2.", `## ${DELIVERABLE_TEXTS.journal}`, "Tout est à revoir.", ...unTour].join("\n\n");
     const modele = modeleResultat(vueInjectee(interrompue, { state: "interrompue", cause: "rechargement" }), texte, true, "resultat");
     assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal, "le journal, lui, a été écrit (un tour relu)");
+    // GF4 (A27, §6.2 c) : l'exécuteur écrirait ici « Non relue… » (version 2 jamais relue), à la toute fin ; ce texte finit par
+    // la phrase « … après 1 tours … » de l'IA : rien n'est signé, et « … après {n} tours » ne l'est jamais sans bornes.
     assert.deepEqual(modele.notes, [], "sans bornes, une équipe non terminée ne fait signer aucune note");
   });
 
@@ -782,6 +796,8 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
       etapes: { col: "terminee", redac: "terminee", relec: "terminee" },
       resultats: { col: "Collecte.", redac: "Version 3.", relec: "Encore faux.\nVERDICT: À REPRENDRE", [tourKey("relec", 1)]: "Faux.\nVERDICT: À REPRENDRE", [tourKey("relec", 2)]: "Encore faux.\nVERDICT: À REPRENDRE" },
       verdicts: { rel: ["a-reprendre", "a-reprendre"] },
+      // GF4 (A27, §6.2 c) : passages terminés donnés par l'exécuteur — trois versions, deux relues.
+      tours: { col: 1, redac: 3, relec: 2 },
     };
     const livrable = deliverable(flow, etat)?.texte ?? "";
     rang = 0;
@@ -864,6 +880,158 @@ describe("GF4 (A27 §6.2 a) : carte seule — l'extrait d'une étape n'est jamai
   });
 });
 // </c5:carte-extrait>
+
+// <c5:non-relue>
+// --- Grande fusion (GF4, A27, constats-5b §6.2 c) : « Non relue après la dernière correction. » dès que la dernière version n'a
+// pas été relue — dans le livrable (flow.ts) ET dans ce que la carte signe (team-view-model.ts), toujours les mêmes -------------
+
+describe("GF4 (A27 §6.2 c) : la dernière version jamais relue est dite, par le livrable et par la carte, à l'identique", () => {
+  const RELU = "Faux.\nVERDICT: À REPRENDRE";
+  const flow: Flow = {
+    version: 1,
+    blocs: [
+      {
+        type: "relecture",
+        id: "rel",
+        auteur: { id: "redac", titre: "Rédaction", assistant: "relire-script", niveau: null, taille: "M", consigne: "Rédiger.", recoit: "demande" },
+        relecteur: { id: "relec", titre: "Relecture", assistant: "relire-script", niveau: null, taille: "M", consigne: "Relire.", recoit: "precedent" },
+        toursMax: 2,
+        pauseAvantRelecture: false,
+      },
+    ],
+  };
+  const NON_RELUE = DELIVERABLE_TEXTS.nonRelue;
+  const NON_CONCLUE = DELIVERABLE_TEXTS.nonConclue.replace("{n}", "2");
+  /**
+   * Un cas : l'état que l'exécuteur donne à `deliverable` (passages terminés `tours` de la tentative courante, comme
+   * `toursTermines`) et les lignes de la vue qui y correspondent ; `attendu` : les notes que le cockpit écrit, et son journal.
+   */
+  const CAS: { nom: string; etat: FlowState; lignes: () => StepRunView[]; notes: string[]; journal: boolean; terminee?: true }[] = [
+    {
+      nom: "premier jet, relecture interrompue avant tout tour",
+      etat: { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: "Version 1." }, tours: { redac: 1 } },
+      lignes: () => [faite({ stepId: "redac" }), ligne({ stepId: "relec", state: "interrompue" })],
+      notes: [NON_RELUE],
+      journal: false,
+    },
+    {
+      nom: "tour 1 « à reprendre », révision du tour 2 faite, tour 2 de relecture interrompu",
+      etat: { etapes: { redac: "terminee", relec: "interrompue" }, resultats: { redac: "Version 2.", [tourKey("relec", 1)]: RELU }, verdicts: { rel: ["a-reprendre"] }, tours: { redac: 2, relec: 1 } },
+      lignes: () => [faite({ stepId: "redac" }), faite({ stepId: "relec", verdict: "a-reprendre" }), faite({ stepId: "redac", tour: 2 }), ligne({ stepId: "relec", tour: 2, state: "interrompue" })],
+      notes: [NON_RELUE],
+      journal: true,
+    },
+    {
+      nom: "plafond de deux tours « à reprendre », arrêt AVANT la révision finale (la version 2 a été relue)",
+      etat: {
+        etapes: { redac: "terminee", relec: "terminee" },
+        resultats: { redac: "Version 2.", [tourKey("relec", 1)]: RELU, [tourKey("relec", 2)]: RELU },
+        verdicts: { rel: ["a-reprendre", "a-reprendre"] },
+        tours: { redac: 2, relec: 2 },
+      },
+      lignes: () => [faite({ stepId: "redac" }), faite({ stepId: "relec", verdict: "a-reprendre" }), faite({ stepId: "redac", tour: 2 }), faite({ stepId: "relec", tour: 2, verdict: "a-reprendre" })],
+      notes: [NON_CONCLUE],
+      journal: true,
+    },
+    {
+      nom: "plafond, révision finale faite (témoin, inchangé)",
+      etat: {
+        etapes: { redac: "terminee", relec: "terminee" },
+        resultats: { redac: "Version 3.", [tourKey("relec", 1)]: RELU, [tourKey("relec", 2)]: RELU },
+        verdicts: { rel: ["a-reprendre", "a-reprendre"] },
+        tours: { redac: 3, relec: 2 },
+      },
+      lignes: () => [
+        faite({ stepId: "redac" }),
+        faite({ stepId: "relec", verdict: "a-reprendre" }),
+        faite({ stepId: "redac", tour: 2 }),
+        faite({ stepId: "relec", tour: 2, verdict: "a-reprendre" }),
+        faite({ stepId: "redac", tour: 3 }),
+      ],
+      notes: [NON_RELUE, NON_CONCLUE],
+      journal: true,
+      terminee: true,
+    },
+    {
+      nom: "conclue « rien à reprendre » au tour 2 (témoin, aucune note)",
+      etat: {
+        etapes: { redac: "terminee", relec: "terminee" },
+        resultats: { redac: "Version 2.", [tourKey("relec", 1)]: RELU, [tourKey("relec", 2)]: "Bien.\nVERDICT: RIEN À REPRENDRE" },
+        verdicts: { rel: ["a-reprendre", "rien-a-reprendre"] },
+        tours: { redac: 2, relec: 2 },
+      },
+      lignes: () => [faite({ stepId: "redac" }), faite({ stepId: "relec", verdict: "a-reprendre" }), faite({ stepId: "redac", tour: 2 }), faite({ stepId: "relec", tour: 2, verdict: "rien-a-reprendre" })],
+      notes: [],
+      journal: true,
+      terminee: true,
+    },
+    {
+      nom: "relance (tentative 2) conclue au tour 1 après trois versions de la tentative 1 — la phrase « Non relue… » du relecteur",
+      etat: {
+        etapes: { redac: "terminee", relec: "terminee" },
+        resultats: { redac: "Version neuve.", [tourKey("relec", 1)]: `Bien.\nVERDICT: RIEN À REPRENDRE\n\n${NON_RELUE}` },
+        verdicts: { rel: ["rien-a-reprendre"] },
+        tours: { redac: 1, relec: 1 },
+      },
+      lignes: () => [
+        faite({ stepId: "redac" }),
+        faite({ stepId: "relec", verdict: "a-reprendre" }),
+        faite({ stepId: "redac", tour: 2 }),
+        faite({ stepId: "relec", tour: 2, verdict: "a-reprendre" }),
+        faite({ stepId: "redac", tour: 3 }),
+        faite({ stepId: "redac", tentative: 2 }),
+        faite({ stepId: "relec", tentative: 2, verdict: "rien-a-reprendre" }),
+      ],
+      notes: [],
+      journal: true,
+      terminee: true,
+    },
+  ];
+
+  for (const cas of CAS) {
+    const dites = cas.notes.map((note) => (note === NON_RELUE ? "« Non relue… »" : "« Relecture non conclue… »")).join(" + ") || "sans note";
+    it(`${cas.nom} : livrable ${dites}, et la carte signe exactement cela`, () => {
+      const livrable = deliverable(flow, cas.etat);
+      assert.ok(livrable, "livrable complet (dernière version de l'auteur terminée)");
+      assert.deepEqual(livrable.notes ?? [], cas.notes, "notes écrites par l'exécuteur");
+      assert.equal(livrable.journal === true, cas.journal, "journal écrit par l'exécuteur");
+      if (cas.notes.length > 0) assert.ok(livrable.texte.endsWith(cas.notes.join("\n\n")), "les notes terminent le livrable");
+      rang = 0;
+      const steps = cas.lignes();
+      // Avec bornes (la vue réelle les rend toujours pour une relecture), dans l'état où l'exécuteur rend ce livrable ; sans bornes,
+      // pour les seules équipes TERMINÉES, dont le nombre de tours est alors connu (limite de la clôture 5b, inchangée).
+      const etat = cas.terminee ? ("terminee" as const) : ("interrompue" as const);
+      const bornes = [{ index: 0, type: "relecture" as const, toursMax: 2 }];
+      for (const patch of cas.terminee ? [{ blocs: bornes }, {}] : [{ blocs: bornes }]) {
+        const avecBornes = "blocs" in patch;
+        const vue = run(steps, { resultMessageId: "msg_depose", resultatsAjoutes: true, state: etat, ...patch });
+        const modele = modeleResultat(vue, livrable.texte, true, "resultat");
+        const ou = avecBornes ? "avec bornes" : "sans bornes";
+        assert.deepEqual(modele.notes, cas.notes, `${ou} : la carte signe les notes écrites, rien d'autre`);
+        assert.equal(modele.journal !== null, cas.journal, `${ou} : journal replié si, et seulement si, il a été écrit`);
+        assert.ok(!modele.texte.includes(NON_RELUE) || !cas.notes.includes(NON_RELUE), `${ou} : la note signée n'est pas aussi dans le texte`);
+      }
+    });
+  }
+
+  it("dépôt figé sans journal (premier jet) : la carte du message déposé signe « Non relue… » et ne replie rien, même sous un titre de l'IA", () => {
+    const texte = ["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, "Suite écrite par l'IA.", NON_RELUE].join("\n\n");
+    rang = 0;
+    const vue = run([faite({ stepId: "redac" }), ligne({ stepId: "relec", state: "interrompue" })], {
+      state: "interrompue",
+      resultMessageId: "msg_depose",
+      resultatsAjoutes: true,
+      blocs: [{ index: 0, type: "relecture", toursMax: 2 }],
+      depot: { messageId: "msg_depose", genre: "resultat", journal: false, nonRelue: true, nonConclue: null },
+    });
+    const modele = modeleResultat(vue, texte, true, "resultat");
+    assert.deepEqual([modele.texte, modele.journal, modele.notes], [["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, "Suite écrite par l'IA."].join("\n\n"), null, [NON_RELUE]]);
+    // Une note qui ne termine pas le texte n'est jamais signée ; des résultats partiels n'en portent jamais.
+    assert.deepEqual(modeleResultat(vue, `${NON_RELUE}\n\nPremier jet.`, true, "resultat").notes, []);
+    assert.deepEqual(modeleResultat(vue, texte, true, "resultats-partiels").notes, []);
+  });
+});
+// </c5:non-relue>
 
 // <c5:depot-fige>
 // --- Grande fusion (GF4, A28 C6) : la carte du message déposé relit ce que le cockpit y a écrit AU DÉPÔT --------------------------

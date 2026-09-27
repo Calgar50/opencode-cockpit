@@ -265,8 +265,11 @@ export function estNoteRelecture(ligne: string): boolean {
  * si elles le TERMINENT, à l'octet et dans cet ordre ; une phrase qui leur ressemble, écrite par une IA (« Relecture non
  * conclue après 7 tours… » à la fin d'une relecture au verdict illisible, les deux notes recopiées sous un premier jet),
  * reste dans le texte, rendue comme le reste du travail des assistants — le cockpit ne la signe jamais.
+ * Grande fusion (GF4, A27, §6.2 c) : `options.journal` à false dit que le cockpit n'a écrit AUCUN journal sous ce livrable (premier
+ * jet jamais relu, seule la note « Non relue… » en dessous) : les notes sortent de la fin, et rien d'autre n'est découpé — un
+ * titre « ## Journal de relecture » écrit par l'IA reste dans le texte. Absent : comportement d'avant (journal écrit).
  */
-export function journalRelecture(livrable: string, notesEcrites: readonly string[]): JournalRelecture {
+export function journalRelecture(livrable: string, notesEcrites: readonly string[], options: { journal?: boolean } = {}): JournalRelecture {
   const texte = typeof livrable === "string" ? livrable : "";
   const blocs = texte.split("\n\n");
   const attendues: readonly string[] = Array.isArray(notesEcrites) ? notesEcrites : [];
@@ -275,6 +278,7 @@ export function journalRelecture(livrable: string, notesEcrites: readonly string
   const terminent = attendues.length > 0 && attendues.length < blocs.length && attendues.every((note, i) => estNoteRelecture(note) && propre(fin[i]) === note);
   const notes = terminent ? [...attendues] : [];
   if (terminent) blocs.splice(blocs.length - notes.length);
+  if (options.journal === false) return { resultat: blocs.join("\n\n"), titre: null, texte: "", notes };
   const entete = `## ${E.relecture.journal}`;
   const debut = blocs.findIndex((bloc) => bloc.trim() === entete);
   if (debut === -1) return { resultat: blocs.join("\n\n"), titre: null, texte: "", notes };

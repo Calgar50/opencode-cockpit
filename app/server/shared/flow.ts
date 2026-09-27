@@ -867,8 +867,9 @@ function dernierBlocDeTravail(flow: Flow): FlowBlock | null {
 
 /**
  * Livrable d'un bloc « relecture » : la DERNIÈRE version de l'auteur, suivie du journal de relecture (un tour par section,
- * verdict en toutes lettres) et des notes d'honnêteté — « Non relue après la dernière correction. » quand la révision finale
- * n'a pas été relue, « Relecture non conclue après {n} tours » quand le dernier verdict disait encore « à reprendre ».
+ * verdict en toutes lettres) et des notes d'honnêteté — « Non relue après la dernière correction. » quand la dernière version
+ * n'a pas été relue (GF4 : toute version, pas seulement la révision finale), « Relecture non conclue après {n} tours » quand le
+ * dernier verdict disait encore « à reprendre ».
  */
 function relectureDeliverable(block: Extract<FlowBlock, { type: "relecture" }>, state: FlowState): FlowDeliverable | null {
   const texte = state.resultats?.[block.auteur.id];
@@ -888,9 +889,16 @@ function relectureDeliverable(block: Extract<FlowBlock, { type: "relecture" }>, 
   }
   const notes: string[] = [];
   const dernier = verdicts.at(-1);
-  if (verdicts.length >= tours && dernier !== "rien-a-reprendre" && verdicts.length > 0) {
-    notes.push(DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", String(tours)));
-  }
+  // <c5:non-relue>
+  // Grande fusion (GF4, A27, constats-5b §6.2 c) : « Non relue après la dernière correction. » dès que la DERNIÈRE version de
+  // l'auteur n'a pas été relue — plus de versions écrites (`faits`, tentative courante) que de tours relus : premier jet d'une
+  // relecture arrêtée avant tout tour du relecteur, révision d'un tour que la relecture n'a pas encore lue, révision finale au
+  // plafond. Avant, elle n'était écrite qu'au plafond, et un livrable complet se taisait sur une version jamais relue (P3) ; au
+  // plafond sans révision finale (arrêt juste après le dernier tour relu), elle était écrite à tort. « Relecture non conclue
+  // après {n} tours » reste écrite au plafond seul, dans cet ordre.
+  if (faits(state, block.auteur.id) > verdicts.length) notes.push(DELIVERABLE_TEXTS.nonRelue);
+  if (verdicts.length >= tours && dernier !== "rien-a-reprendre" && verdicts.length > 0) notes.push(DELIVERABLE_TEXTS.nonConclue.replace("{n}", String(tours)));
+  // </c5:non-relue>
   if (notes.length > 0) morceaux.push(...notes);
   return {
     texte: morceaux.join("\n\n"),

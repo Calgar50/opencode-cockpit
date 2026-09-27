@@ -934,6 +934,8 @@ describe("L42a livrables (C §6.7)", () => {
         [tourKey("relecteur", 2)]: "Relecture 2.",
       },
       verdicts: { "b-relecture": ["a-reprendre", "a-reprendre"] },
+      // GF4 (A27, §6.2 c) : les passages terminés, comme l'exécuteur les donne (`toursTermines`) — trois versions, deux relues.
+      tours: { auteur: 3, relecteur: 2 },
     };
     const livrable = deliverable(flow, state);
     assert.ok(livrable);

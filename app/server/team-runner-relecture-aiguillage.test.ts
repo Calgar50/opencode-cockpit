@@ -2074,6 +2074,33 @@ describe("GF4 (A27 §6.2 b) : étape inconnue de l'instantané à un tour ≥ 2 
 });
 // </c5:ligne-avant-refus>
 
+// <c5:non-relue>
+// --- Grande fusion (GF4, A27, constats-5b §6.2 c) : le livrable d'une relecture dit sa dernière version jamais relue ----------
+
+describe("GF4 (A27 §6.2 c) : sur l'exécuteur réel, [Ajouter les résultats] d'une relecture interrompue dit « Non relue… »", () => {
+  it("relecture interrompue pendant le premier tour du relecteur : livrable « complet » = premier jet + « Non relue… », dépôt figé sans journal", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow(), guardsReels: true });
+    const { h } = ctx;
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "redac", { text: "Version 1 du compte rendu.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec", { text: "Relecture longue.", cost: 0.01, stepMs: 400 });
+    const started = await ctx.run();
+    const { runId, rootId } = started.json<TeamRunStarted>();
+    await ctx.waitRun(runId, (v) => v.steps.some((step) => step.stepId === "relec" && step.state === "en-cours"), "relecteur en cours");
+    ctx.runner.interrupt(runId, "rechargement");
+    await ctx.waitRun(runId, (v) => v.state === "interrompue", "équipe interrompue");
+    const ajout = await h.call("POST", `/api/team-runs/${runId}/ajouter-resultats`, { headers: h.headers.mutating, body: {} });
+    assert.equal(ajout.status, 200, ajout.body);
+    const texte = livraison(h, rootId);
+    assert.ok(texte.includes(`Version 1 du compte rendu.\n\n${DELIVERABLE_TEXTS.nonRelue}`), texte);
+    assert.equal(texte.includes(DELIVERABLE_TEXTS.journal), false, "aucun journal : aucun tour relu");
+    assert.equal(texte.includes("après 2 tours"), false, "« non conclue » n'est écrite qu'au plafond");
+    const vue = ctx.view(runId);
+    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultat", journal: false, nonRelue: true, nonConclue: null });
+    h.assertNoGlobalRestart();
+  });
+});
+// </c5:non-relue>
+
 describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
   it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {
     // Sonde K2b de la contre-vérification : « L'étape « Supervision et seuils » attend votre confirmation… » alors que seul le
