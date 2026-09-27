@@ -22,6 +22,8 @@
 //      (captureAccessibilite d'e2e/lib/a11y.mjs par ctx.travail.emulation : médias par l'onglet, garde du mouvement de R106-b) ; focus
 //      visible en contraste forcé (focusVisible), aucune animation en mouvement réduit ; vue à 400 px avec « Retour aux fichiers » ;
 //   7. aucun appel : aucune requête facturable, aucune requête /file* ni /find* reçue par opencode pendant les étapes de l'onglet ;
+//      le classement automatique du cockpit (travail de fond sur les conversations des scénarios précédents, deux minutes après
+//      leur repos) est mis de côté le temps du scénario, comme dans it4-prelancement et c5b-demonstration, puis rendu comme trouvé ;
 //   8. chat (« --faux ») : un outil `write` terminé sur /workspace/nav-banc/scripts/nouveau.ps1 porte « Ouvrir dans Fichiers », qui
 //      ouvre ce fichier (sous le témoin P6 et P4) ;
 //   9. console muette, sauf le refus voulu de l'adresse du fichier protégé (403 de la route contenu, vérifié au journal réseau) et les
@@ -47,6 +49,7 @@ import {
   releve,
   resume,
 } from "./it1-ui-commun.mjs";
+import { classementAutomatique } from "./it4-commun.mjs";
 
 const NL = String.fromCharCode(10);
 const CRLF = String.fromCharCode(13, 10);
@@ -427,6 +430,20 @@ async function capturesEtAccessibilite(ctx, page) {
 // --- Scénario ----------------------------------------------------------------------------------------------------------------------
 
 export async function run(ctx) {
+  // Classement automatique mis de côté le temps du scénario (it4-commun.mjs, classementAutomatique) : deux minutes après le repos
+  // d'une conversation d'un scénario précédent, ou plus tard s'il a été reporté pendant un rechargement d'opencode, le cockpit la
+  // classe par une IA (POST /session/:id/message) ; ce travail de fond tombait dans la mesure de l'étape 7 (train de F2, vague 4 :
+  // « 2 appel(s) facturable(s) » au banc complet, jamais seul). `classifier.mode` n'est pas ouvert en Simple : écriture en Avancé.
+  const classementAvant = await enModeAvance(ctx, () => classementAutomatique(ctx, "off"));
+  try {
+    await parcourir(ctx);
+  } finally {
+    // Rendu comme trouvé, quoi qu'il arrive : il n'appartient pas à ce scénario.
+    if (classementAvant !== null) await enModeAvance(ctx, () => classementAutomatique(ctx, classementAvant));
+  }
+}
+
+async function parcourir(ctx) {
   // 0. Gardes de ctx.travail (sans Docker ni navigateur), puis préparation du projet.
   const tombees = await ctx.travail.verifierGardes();
   exiger(tombees.length === 0, `gardes de ctx.travail tombées : ${resume(tombees, 600)}`);
@@ -565,8 +582,10 @@ export async function run(ctx) {
     const pendant = (await ctx.opencodeRequests()).slice(requetesAvant);
     const fichiersOuRecherche = pendant.filter((r) => /^\/(?:file|find)(?:\/|$)/.test(r.pathname ?? ""));
     exiger(fichiersOuRecherche.length === 0, `requête(s) /file* ou /find* reçue(s) par opencode : ${resume(fichiersOuRecherche.map((r) => r.pathname))}`);
-    const factures = (await ctx.billedCalls()).length;
-    exiger(factures === facturesAvant, `${factures - facturesAvant} appel(s) facturable(s) pendant les étapes de l'onglet Fichiers.`);
+    const facturesApres = await ctx.billedCalls();
+    const factures = facturesApres.length;
+    const nouvelles = facturesApres.slice(facturesAvant).map((r) => `${r.pathname}${r.body?.agent ? ` (${r.body.agent})` : ""}`);
+    exiger(factures === facturesAvant, `${factures - facturesAvant} appel(s) facturable(s) pendant les étapes de l'onglet Fichiers : ${resume(nouvelles)}`);
     releve(ctx, `aucun appel : ${pendant.length} requête(s) reçue(s) par opencode pendant l'onglet, aucune /file* ni /find*, aucune facturable`);
   } else {
     nonJoue(ctx, "relevé des requêtes reçues par opencode", "observable en « --faux » seulement");
