@@ -13,11 +13,29 @@
 //   MÊME profil (legacyPresetOf), rendu 409 pour tout autre réglage (integration.test.ts) ;
 // - « En enregistrant, Internet sera fermé pour lui » : buildAssistantFile écrit toujours web=false (core.test.ts, assistants.test.ts) ;
 // - « peuvent encore le demander » : webAskAgents sur les règles EFFECTIVES de GET /agent (web-rules.test.ts) ; rien n'est affiché
-//   quand opencode ne répond pas (security.webIssues null).
+//   quand opencode ne répond pas (security.webIssues null) ;
+// - « Ouvrez chacun (Assistants › Modifier) » : seulement pour les assistants titrés, les seuls qui ont ce bouton ; un signalé sans
+//   titre est renvoyé au mode Avancé, Studio ou Paramètres › opencode (web-rules.test.ts, relecture F2-vague-2).
 
 export const TEXTES = {
-  simple: {},
+  simple: {
+    /**
+     * Assistants signalés SANS titre (sous-agent ou agent du Studio, agent de la configuration globale), en mode Simple : jamais leur
+     * nom technique. Ils n'ont aucun bouton « Modifier » dans Assistants et un sous-agent n'est pas dans « À compléter » : le seul
+     * recours est le mode Avancé (Studio pour un fichier, Paramètres › opencode pour la configuration globale).
+     */
+    sansTitre:
+      "1 assistant créé hors de l'assistant de création peut encore vous demander d'aller sur Internet. Pour lui fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
+    sansTitres:
+      "{n} assistants créés hors de l'assistant de création peuvent encore vous demander d'aller sur Internet. Pour leur fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
+  },
   avance: {
+    /**
+     * Agents signalés SANS titre, en mode Avancé ; {noms} : noms techniques. Libellés des lignes web du Studio (PermissionsEditor) ;
+     * un agent déclaré dans opencode.jsonc (agent.<nom>) n'est pas un fichier du Studio.
+     */
+    sansTitre:
+      "Ces agents peuvent encore vous demander d'aller sur Internet : {noms}. Dans le Studio, ouvrez chacun, mettez « Lire une page web » et « Recherche web » sur « Refuser », puis Enregistrer. Un agent déclaré dans la configuration globale se corrige dans Paramètres › opencode.",
     /** Point « Web » des trois cartes de profil (Paramètres › opencode). */
     cartesWeb: "Web : refusé",
     resumeEquilibre: "Modifications de fichiers libres ; commandes et sous-agents sur confirmation ; web refusé.",
@@ -57,12 +75,12 @@ export const TEXTES = {
     prudentMessage:
       "Les règles globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier, lancer une commande ou déléguer, et n'ira jamais sur Internet. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
     prudentReussite: "L'assistant demande de nouveau avant chaque action sensible. Internet est fermé.",
-    /** Assistants signalés (écran Sécurité, quand la règle générale ne demande plus) ; {titres} : titres, séparés par des virgules. */
+    /**
+     * Assistants signalés TITRÉS (écran Sécurité, quand la règle générale ne demande plus) ; {titres} : titres, séparés par des
+     * virgules. Seuls les titrés ont « Modifier » dans Assistants ; les autres ont leur propre consigne (simple et avance.sansTitre).
+     */
     assistantsSignales:
       "Ces assistants peuvent encore vous demander d'aller sur Internet : {titres}. Ouvrez chacun (Assistants › Modifier), puis Enregistrer : Internet sera fermé pour lui.",
-    /** Assistants signalés sans titre, en mode Simple (jamais leur nom technique). */
-    autre: "1 autre créé hors de l'assistant de création",
-    autres: "{n} autres créés hors de l'assistant de création",
     /** Assistant de création, à la place de la case « Consulter Internet » (deux modes). */
     creationFerme: "Internet : fermé. L'assistant ne consulte jamais Internet : au travail, seul GitHub Copilot est joignable.",
     /** Assistant d'une version précédente (ouverture et « Compléter ») : detectRights rend web: true. */
@@ -113,17 +131,21 @@ export function texteStudioInternet(cle: string): string {
 
 /**
  * Assistants qui peuvent encore demander Internet (écran Sécurité), seulement quand la règle générale ne le demande plus (sinon
- * l'encadré du profil suffit) ; null : rien à signaler ou état inconnu. Mode Simple : titres seulement, les autres comptés.
+ * l'encadré du profil suffit) ; null : rien à signaler ou état inconnu. Les titrés reçoivent « Assistants › Modifier » ; les autres
+ * (sans titre : aucun « Modifier » dans Assistants) leur propre consigne, qui renvoie au Studio ou à Paramètres › opencode : comptés
+ * en mode Simple (jamais leur nom technique), nommés en mode Avancé (relecture F2-vague-2).
  */
 export function texteAssistantsSignales(issues: WebIssuesLite | null, avance: boolean): string | null {
   if (issues === null || issues.global || issues.assistants.length === 0) return null;
-  const titres = avance
-    ? issues.assistants.map((a) => a.title ?? a.name)
-    : issues.assistants.flatMap((a) => (a.title === null ? [] : [a.title]));
-  const sansTitre = avance ? 0 : issues.assistants.filter((a) => a.title === null).length;
-  if (sansTitre === 1) titres.push(TEXTES.partout.autre);
-  else if (sansTitre > 1) titres.push(remplir(TEXTES.partout.autres, { n: sansTitre }));
-  return remplir(TEXTES.partout.assistantsSignales, { titres: titres.join(", ") });
+  const titres = issues.assistants.flatMap((a) => (a.title === null ? [] : [a.title]));
+  const sansTitre = issues.assistants.flatMap((a) => (a.title === null ? [a.name] : []));
+  const phrases: string[] = [];
+  if (titres.length > 0) phrases.push(remplir(TEXTES.partout.assistantsSignales, { titres: titres.join(", ") }));
+  if (sansTitre.length > 0) {
+    if (avance) phrases.push(remplir(TEXTES.avance.sansTitre, { noms: sansTitre.join(", ") }));
+    else phrases.push(sansTitre.length === 1 ? TEXTES.simple.sansTitre : remplir(TEXTES.simple.sansTitres, { n: sansTitre.length }));
+  }
+  return phrases.join(" ");
 }
 
 /** Ligne du Diagnostic ; null : opencode n'a pas répondu (aucun état inventé). */

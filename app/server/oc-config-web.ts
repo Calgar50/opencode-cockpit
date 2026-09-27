@@ -88,10 +88,14 @@ export interface PlanMigrationWeb {
 // legacyPresetOf (R4) et peutDemander (R6) sont IMPORTÉES de shared/assistant-rules.ts (MW-b, seul écrivain de ce module en V2) :
 // les copies locales posées par MW-a sont retirées au train, pour une seule source des profils et de l'évaluation. La clause
 // « clé hors bornes → peut demander » de peutDemander n'est jamais atteinte ici : lireArbre refuse avant toute évaluation une clé
-// piégée (clePiegee, mêmes bornes que cleHorsBornes, plus « __proto__ »), et les défauts d'opencode sont dans les bornes. Les deux
-// évaluations sont donc identiques à celles des copies (croisements-f2-v2.test.ts). Le mémo facultatif (memoRegles) remplace le
-// cache de wildcardMatch des copies : sur un fichier de 254 000 unités (7 000 règles globales, 2 000 agents), mesure du train,
-// 78 s sans lui contre 25 s avec les copies et 22 s avec lui, loin du délai de 120 s d'Invoke-CockpitWebMigration.
+// BRUTE piégée (clePiegee, mêmes bornes que cleHorsBornes, plus « __proto__ »), les défauts d'opencode sont dans les bornes, et
+// peutDemander mesure lui aussi les bornes sur la clé brute (motifBrut de shared/assistant-rules.ts) : le dossier personnel
+// qu'expandHome met à la place de « ~ » ou de « $HOME » n'est pas compté. Relecture F2-vague-2 : avant cette mesure, une clé
+// « ~/ » + 248 caractères (250, dans les bornes ; 259 une fois développée) faisait abandonner toutes les bascules (« conforme
+// restes=2 » au lieu de « migre ») ; oc-config-web.test.ts (p) et croisements-f2-v2.test.ts le tiennent désormais, avec une
+// référence qui mesure la clé brute. Le mémo facultatif (memoRegles) remplace le cache de wildcardMatch des copies : sur un
+// fichier de 254 000 unités (7 000 règles globales, 2 000 agents), mesure du train, 78 s sans lui contre 25 s avec les copies et
+// 22 s avec lui, loin du délai de 120 s d'Invoke-CockpitWebMigration.
 
 // --- Valeurs, lues sur l'arbre seulement ----------------------------------------------------------------------------------------
 

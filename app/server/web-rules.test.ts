@@ -29,6 +29,7 @@ import {
   peutDemander,
   presetPermission,
   type Rule,
+  rulesFromConfig,
   SECURITY_TEXTS,
   securiteProfil,
   webAFermer,
@@ -271,6 +272,40 @@ describe("assistants qui peuvent encore demander Internet (§5.3, webAskAgents)"
     );
     assert.equal(webAskAgents([], { [`${"?".repeat(20)}`]: "deny" }).global, true);
   });
+
+  it("bornes R3 mesurées sur la clé BRUTE (relecture F2-vague-2) : un motif « ~/ » dans les bornes, développé par expandHome, n'est pas un doute", () => {
+    // « ~/ » + 248 caractères = 250 : dans les bornes ; 259 une fois développé (/home/node/…) par rulesFromConfig, comme opencode
+    // le développe dans les règles de GET /agent. Avant la correction : Diagnostic « la règle générale le demande encore » (faux),
+    // liste des assistants masquée, et le Studio ne proposait plus « Hérité » (« La règle globale ne refuse pas cet outil », faux).
+    const cle = `~/${"a".repeat(248)}`;
+    const ferme = { edit: "ask", bash: { "*": "ask", [cle]: "allow" }, webfetch: "deny", websearch: "deny" };
+    assert.ok(rulesFromConfig(ferme).some((r) => r.pattern.length > 256), "le motif développé dépasse 256 caractères");
+    assert.deepEqual(webAskAgents([], ferme), { global: false, assistants: [] });
+    for (const outil of ["webfetch", "websearch"]) {
+      assert.equal(masque(effectiveAgentRules(ferme, undefined), outil), true, outil);
+      assert.equal(masque(effectiveAgentRules(ferme, {}), outil), true, `${outil} (appel du Studio)`);
+      assert.equal(peutDemander(effectiveAgentRules(ferme, undefined), outil), false, outil);
+    }
+    // $HOME, développé de même.
+    const fermeHome = { ...ferme, bash: { "*": "ask", [`$HOME/${"a".repeat(250)}`]: "allow" } };
+    assert.deepEqual(webAskAgents([], fermeHome), { global: false, assistants: [] });
+    assert.equal(masque(effectiveAgentRules(fermeHome, undefined), "webfetch"), true);
+    // Règles de GET /agent, déjà développées : l'agent qui porte ce motif n'est pas signalé pour autant ; sa demande propre l'est.
+    const lecteur = agent("lecteur", { bash: { [cle]: "allow" } }, PRUDENT_11);
+    const veille = agent("veille", { bash: { [cle]: "allow" }, webfetch: "ask" }, PRUDENT_11);
+    assert.deepEqual(webAskAgents([lecteur, veille], PRUDENT_11, titreDe), { global: false, assistants: [{ name: "veille", title: "Veille des failles" }] });
+    // Toujours fermé en cas de doute : une clé BRUTE hors bornes (257 caractères), même sous « ~/ ».
+    const trop = { ...ferme, bash: { "*": "ask", [`~/${"a".repeat(255)}`]: "allow" } };
+    assert.equal(webAskAgents([], trop).global, true);
+    assert.equal(masque(effectiveAgentRules(trop, undefined), "webfetch"), false);
+    assert.equal(peutDemander(effectiveAgentRules(trop, undefined), "webfetch"), true);
+    const piegeAgent = agent("piege", { bash: { [`~/${"a".repeat(255)}`]: "allow" } }, PRUDENT_11);
+    assert.deepEqual(webAskAgents([piegeAgent], PRUDENT_11).assistants, [{ name: "piege", title: null }]);
+    // « $HOME » sans barre (257 caractères bruts) : sa forme brute la plus courte garde « $HOME », il reste hors bornes.
+    const tropHome = { ...ferme, bash: { "*": "ask", [`$HOME${"a".repeat(252)}`]: "allow" } };
+    assert.equal(webAskAgents([], tropHome).global, true);
+    assert.equal(masque(effectiveAgentRules(tropHome, undefined), "websearch"), false);
+  });
 });
 
 describe("écran Sécurité (T5, §5.2) : securiteProfil", () => {
@@ -384,21 +419,50 @@ describe("textes de l'accès à Internet (§7, à la lettre)", () => {
 
   it("assistants signalés : titres en mode Simple (jamais le nom technique), rien quand la règle générale demande encore", () => {
     const issues = { global: false, assistants: [{ name: "veille", title: "Veille des failles" }, { name: "a-la-main", title: null }, { name: "b", title: null }] };
+    const titres =
+      "Ces assistants peuvent encore vous demander d'aller sur Internet : Veille des failles. Ouvrez chacun (Assistants › Modifier), puis Enregistrer : Internet sera fermé pour lui.";
     assert.equal(
       texteAssistantsSignales(issues, false),
-      "Ces assistants peuvent encore vous demander d'aller sur Internet : Veille des failles, 2 autres créés hors de l'assistant de création. Ouvrez chacun (Assistants › Modifier), puis Enregistrer : Internet sera fermé pour lui.",
+      `${titres} 2 assistants créés hors de l'assistant de création peuvent encore vous demander d'aller sur Internet. Pour leur fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.`,
     );
     assert.equal(
       texteAssistantsSignales(issues, true),
-      "Ces assistants peuvent encore vous demander d'aller sur Internet : Veille des failles, a-la-main, b. Ouvrez chacun (Assistants › Modifier), puis Enregistrer : Internet sera fermé pour lui.",
+      `${titres} Ces agents peuvent encore vous demander d'aller sur Internet : a-la-main, b. Dans le Studio, ouvrez chacun, mettez « Lire une page web » et « Recherche web » sur « Refuser », puis Enregistrer. Un agent déclaré dans la configuration globale se corrige dans Paramètres › opencode.`,
     );
     assert.equal(
       texteAssistantsSignales({ global: false, assistants: [{ name: "x", title: null }] }, false),
-      "Ces assistants peuvent encore vous demander d'aller sur Internet : 1 autre créé hors de l'assistant de création. Ouvrez chacun (Assistants › Modifier), puis Enregistrer : Internet sera fermé pour lui.",
+      "1 assistant créé hors de l'assistant de création peut encore vous demander d'aller sur Internet. Pour lui fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
     );
     assert.equal(texteAssistantsSignales({ global: true, assistants: [{ name: "x", title: "X" }] }, false), null);
     assert.equal(texteAssistantsSignales({ global: false, assistants: [] }, false), null);
     assert.equal(texteAssistantsSignales(null, false), null);
+  });
+
+  it("assistants signalés (relecture F2-vague-2) : « Assistants › Modifier » pour les seuls assistants titrés ; un signalé sans titre reçoit la consigne du Studio", () => {
+    // Un agent sans titre (sous-agent du Studio, agent de la configuration globale) n'a aucun bouton « Modifier » dans Assistants,
+    // un sous-agent n'est pas dans « À compléter », et le Studio n'existe qu'en mode Avancé.
+    const titre = { name: "veille", title: "Veille des failles" };
+    const sans = { name: "chercheur", title: null };
+    for (const avance of [false, true]) {
+      const seulsTitres = texteAssistantsSignales({ global: false, assistants: [titre] }, avance) ?? "";
+      assert.match(seulsTitres, /Assistants › Modifier/);
+      assert.match(seulsTitres, /Veille des failles/);
+      assert.doesNotMatch(seulsTitres, /Studio/);
+      const seulsSans = texteAssistantsSignales({ global: false, assistants: [sans] }, avance) ?? "";
+      assert.ok(seulsSans.length > 0);
+      assert.doesNotMatch(seulsSans, /Assistants › Modifier/, "un agent sans titre n'a aucun bouton « Modifier » dans Assistants");
+      assert.doesNotMatch(seulsSans, /Internet sera fermé pour lui/);
+      assert.match(seulsSans, /Studio/);
+      assert.match(seulsSans, /Paramètres › opencode/, "agent déclaré dans la configuration globale : absent du Studio");
+      const mixte = texteAssistantsSignales({ global: false, assistants: [titre, sans] }, avance) ?? "";
+      const phraseAssistants = mixte.slice(0, mixte.indexOf("Internet sera fermé pour lui."));
+      assert.match(phraseAssistants, /Veille des failles/);
+      assert.doesNotMatch(phraseAssistants, /chercheur|créé hors/, "la consigne d'Assistants ne vise que les titrés");
+      assert.match(mixte.slice(phraseAssistants.length), /Studio/);
+    }
+    assert.match(texteAssistantsSignales({ global: false, assistants: [sans] }, true) ?? "", /: chercheur\./, "nom technique en mode Avancé");
+    assert.doesNotMatch(texteAssistantsSignales({ global: false, assistants: [sans] }, false) ?? "", /chercheur/, "jamais le nom technique en mode Simple");
+    assert.match(texteAssistantsSignales({ global: false, assistants: [sans] }, false) ?? "", /mode Avancé/);
   });
 
   it("mode Avancé : cartes, refus 422 et Studio", () => {

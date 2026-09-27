@@ -72,9 +72,19 @@ function apres(texte: string): Objet {
   return config;
 }
 
-/** Référence R6, écrite depuis la fiche (§2 R6) et non depuis le code : une clé hors bornes → vrai sans rien évaluer. */
-function peutDemanderReference(regles: readonly Rule[], outil: string): boolean {
-  if (regles.some((r) => cleHorsBornes(r.permission) || cleHorsBornes(r.pattern))) return true;
+/** Clés BRUTES d'un bloc `permission` (clés de permission et de motif), telles qu'écrites dans la configuration. */
+function clesBrutes(bloc: unknown): string[] {
+  if (!isObjet(bloc)) return [];
+  return Object.entries(bloc).flatMap(([cle, valeur]) => [cle, ...(isObjet(valeur) ? Object.keys(valeur) : [])]);
+}
+
+/**
+ * Référence R6, écrite depuis la fiche (§2 R3 et R6) et non depuis le code : une clé hors bornes → vrai sans rien évaluer. Les bornes
+ * se mesurent sur les clés BRUTES (`brutes`), comme lireArbre, jamais sur les motifs développés par expandHome (relecture
+ * F2-vague-2 : une clé « ~/ » + 248 caractères, dans les bornes, fait 259 caractères une fois développée).
+ */
+function peutDemanderReference(regles: readonly Rule[], brutes: readonly string[], outil: string): boolean {
+  if (brutes.some(cleHorsBornes)) return true;
   return regles.some(
     (r, i) =>
       wildcardMatch(outil, r.permission) &&
@@ -102,6 +112,10 @@ const BLOCS: ReadonlyArray<[string, unknown]> = [
   ["permission en texte « ask »", "ask"],
   ["permission en texte « allow »", "allow"],
   ["bloc vide", {}],
+  // Clés « ~/ » et « $HOME » dans les bornes (250 et 256 caractères bruts), plus longues que 256 une fois développées.
+  ["motif « ~/ » dans les bornes, web à ask", { edit: "ask", bash: { "*": "ask", [`~/${"a".repeat(248)}`]: "allow" }, webfetch: "ask", websearch: "ask" }],
+  ["motif « ~/ » dans les bornes, web fermé", { edit: "ask", bash: { "*": "ask", [`~/${"a".repeat(248)}`]: "allow" }, webfetch: "deny", websearch: "deny" }],
+  ["motif « $HOME/ » dans les bornes, web à ask", { bash: { [`$HOME/${"b".repeat(250)}`]: "allow" }, webfetch: "ask" }],
 ];
 
 /** Agents du croisement (par-dessus chaque bloc global) : demande propre fermée, joker seul, joker puis webfetch. */
@@ -126,20 +140,28 @@ describe("croisements F2 · V2 (1) : une seule source pour legacyPresetOf et peu
 
   it("peutDemander : même réponse avec ou sans mémo (un seul mémo pour tout le corpus), et conforme à la règle R6 de la fiche", () => {
     const memo = memoRegles();
-    const corpus: Rule[][] = [];
+    const corpus: Array<{ regles: Rule[]; brutes: string[] }> = [];
+    const defauts = clesBrutes(opencodeDefaultPermission());
     for (const [, bloc] of BLOCS) {
-      corpus.push(rulesFromConfig(bloc));
-      corpus.push(effectiveAgentRules(bloc, undefined));
-      for (const agent of Object.values(AGENTS)) corpus.push(effectiveAgentRules(bloc, agent));
+      corpus.push({ regles: rulesFromConfig(bloc), brutes: clesBrutes(bloc) });
+      corpus.push({ regles: effectiveAgentRules(bloc, undefined), brutes: [...defauts, ...clesBrutes(bloc)] });
+      for (const agent of Object.values(AGENTS)) corpus.push({ regles: effectiveAgentRules(bloc, agent), brutes: [...defauts, ...clesBrutes(bloc), ...clesBrutes(agent)] });
+      // Règles d'un agent qui porte lui-même le motif « ~/ » dans les bornes (GET /agent les rend développées).
+      const agentLong = { bash: { [`~/${"c".repeat(254)}`]: "allow" }, webfetch: "ask" };
+      corpus.push({ regles: effectiveAgentRules(bloc, agentLong), brutes: [...defauts, ...clesBrutes(bloc), ...clesBrutes(agentLong)] });
     }
     // Clés hors bornes (fermé en cas de doute) : vrai sans rien évaluer, avec ou sans mémo.
-    corpus.push([{ permission: `${"*".repeat(17)}x`, pattern: "*", action: "deny" }]);
-    corpus.push([{ permission: "webfetch", pattern: "y".repeat(257), action: "deny" }]);
-    corpus.push([]);
+    const bruteRegles = (regles: Rule[]) => ({ regles, brutes: regles.flatMap((r) => [r.permission, r.pattern]) });
+    corpus.push(bruteRegles([{ permission: `${"*".repeat(17)}x`, pattern: "*", action: "deny" }]));
+    corpus.push(bruteRegles([{ permission: "webfetch", pattern: "y".repeat(257), action: "deny" }]));
+    corpus.push(bruteRegles([]));
+    // Clé BRUTE hors bornes sous « ~/ » (257 caractères) : toujours un doute une fois développée.
+    const blocTrop = { bash: { [`~/${"d".repeat(255)}`]: "allow" }, webfetch: "deny" };
+    corpus.push({ regles: rulesFromConfig(blocTrop), brutes: clesBrutes(blocTrop) });
     let vrais = 0;
-    for (const regles of corpus) {
+    for (const { regles, brutes } of corpus) {
       for (const outil of [...WEB_TOOLS, "bash", "read"]) {
-        const attendu = peutDemanderReference(regles, outil);
+        const attendu = peutDemanderReference(regles, brutes, outil);
         assert.equal(peutDemander(regles, outil), attendu, `${outil} sans mémo : ${JSON.stringify(regles).slice(0, 200)}`);
         assert.equal(peutDemander(regles, outil, memo), attendu, `${outil} avec mémo : ${JSON.stringify(regles).slice(0, 200)}`);
         if (attendu) vrais++;

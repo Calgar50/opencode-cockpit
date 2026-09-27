@@ -1737,8 +1737,24 @@ export function cleHorsBornes(cle: string): boolean {
   return jokers > WEB_JOKERS_MAX;
 }
 
+/**
+ * Motif mesuré par les bornes R3 : la clé BRUTE, comme lireArbre (oc-config-web.ts) et webOpenings la mesurent, jamais le motif
+ * développé. rulesFromConfig (expandHome), comme opencode pour les règles de GET /agent, remplace « ~ » ou « $HOME » en tête par
+ * OPENCODE_PATHS.home : un motif qui commence par ce dossier est mesuré sous sa forme brute la plus courte (« ~ » devant « / » ou
+ * rien, sinon « $HOME »). Jamais plus long que la clé écrite et avec les mêmes jokers : une clé brute dans les bornes le reste une
+ * fois développée (relecture F2-vague-2 : « ~/ » + 248 caractères, 259 une fois développé, faisait rendre « conforme restes=2 » à
+ * la migration et « la règle générale le demande encore » au Diagnostic). Au pire (dossier écrit en clair), 9 caractères sans joker
+ * sont évalués en plus : aucun coût.
+ */
+function motifBrut(pattern: string): string {
+  const home = OPENCODE_PATHS.home;
+  if (!pattern.startsWith(home)) return pattern;
+  const reste = pattern.slice(home.length);
+  return reste === "" || reste.startsWith("/") ? `~${reste}` : `$HOME${reste}`;
+}
+
 function regleHorsBornes(rule: Rule): boolean {
-  return cleHorsBornes(rule.permission) || cleHorsBornes(rule.pattern);
+  return cleHorsBornes(rule.permission) || cleHorsBornes(motifBrut(rule.pattern));
 }
 
 /**
@@ -1803,10 +1819,10 @@ function demandesDecisives(rules: readonly Rule[], tool: string): number[] {
 }
 
 /**
- * R6 : l'outil peut encore poser une demande avec ces règles (dans l'ordre d'opencode). Une clé hors bornes rend vrai sans rien
- * évaluer (fermé en cas de doute). Même réponse que « demandesDecisives non vide », en s'arrêtant à la première règle de l'outil
- * lue depuis la fin : « ask » → une demande est possible ; motif « * » → tout ce qui précède est masqué. `memo` (facultatif) ne
- * sert qu'à la vitesse.
+ * R6 : l'outil peut encore poser une demande avec ces règles (dans l'ordre d'opencode). Une clé hors bornes (mesurée brute, voir
+ * motifBrut) rend vrai sans rien évaluer (fermé en cas de doute). Même réponse que « demandesDecisives non vide », en s'arrêtant
+ * à la première règle de l'outil lue depuis la fin : « ask » → une demande est possible ; motif « * » → tout ce qui précède est
+ * masqué. `memo` (facultatif) ne sert qu'à la vitesse.
  */
 export function peutDemander(rules: readonly Rule[], tool: string, memo?: MemoRegles): boolean {
   if (porteHorsBornes(rules, memo)) return true;
@@ -1821,7 +1837,8 @@ export function peutDemander(rules: readonly Rule[], tool: string, memo?: MemoRe
 
 /**
  * R6 : l'outil est refusé pour toute entrée — la dernière règle dont la permission lui correspond a le motif « * » et l'action
- * « deny » (permission/index.ts:204-213). Une clé hors bornes rend faux (jamais « masqué » en cas de doute).
+ * « deny » (permission/index.ts:204-213). Une clé hors bornes (mesurée brute, voir motifBrut) rend faux (jamais « masqué » en cas
+ * de doute).
  */
 export function masque(rules: readonly Rule[], tool: string): boolean {
   if (rules.some(regleHorsBornes)) return false;

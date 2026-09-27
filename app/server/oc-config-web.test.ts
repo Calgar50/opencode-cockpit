@@ -491,6 +491,37 @@ describe("T1 (k, l, m, o, p, q) : refus de sûreté, rien n'est écrit", () => {
     assert.equal(plan(`{ "permission": { ${JSON.stringify("*".repeat(16))}: "deny", ${JSON.stringify("b".repeat(256))}: "ask", "webfetch": "ask" } }`).etat, "migre");
   });
 
+  it("(p) bornes mesurées sur la clé BRUTE : un motif « ~ » ou « $HOME » dans les bornes, plus long une fois développé (/home/node), ne bloque pas la migration (relecture F2-vague-2)", () => {
+    // « ~/ » + 248 caractères = 250 : dans les bornes, mais 259 une fois développé par rulesFromConfig (expandHome), comme opencode
+    // le développe. Avant la correction, peutDemander le comptait hors bornes et le planificateur rendait « conforme restes=2 ».
+    const cles = [`~/${"a".repeat(248)}`, `~/${"a".repeat(254)}`, `$HOME/${"a".repeat(250)}`, `$HOME${"a".repeat(251)}`];
+    for (const cle of cles) {
+      assert.ok(cle.length <= 256, cle.slice(0, 10));
+      assert.ok((rulesFromConfig({ bash: { [cle]: "allow" } })[0]?.pattern.length ?? 0) > 256, "le motif développé dépasse 256 caractères");
+      const source = `{ "permission": { "edit": "ask", "bash": { "*": "ask", ${JSON.stringify(cle)}: "allow" }, "webfetch": "ask", "websearch": "ask" } }`;
+      const p = plan(source);
+      assert.deepEqual(
+        { etat: p.etat, raison: p.raison, profil: p.profil, blocs: p.blocs, restes: p.restes },
+        { etat: "migre", raison: "-", profil: "-", blocs: 1, restes: 0 },
+        cle.slice(0, 10),
+      );
+      assert.deepEqual(p.bascules, [
+        ["permission", "webfetch"],
+        ["permission", "websearch"],
+      ]);
+      assert.equal(p.texte, avecJetons(source, [['"webfetch": "ask"', '"webfetch": "deny"'], ['"websearch": "ask"', '"websearch": "deny"']]));
+      exigerConformeAuSecondPassage(p.texte ?? "");
+      // Même motif dans un agent : sa bascule est efficace, elle est gardée.
+      const agent = `{ "agent": { "x": { "permission": { "bash": { ${JSON.stringify(cle)}: "allow" }, "webfetch": "ask" } } } }`;
+      const pa = plan(agent);
+      assert.deepEqual({ etat: pa.etat, blocs: pa.blocs, restes: pa.restes }, { etat: "migre", blocs: 1, restes: 0 }, cle.slice(0, 10));
+      assert.deepEqual(pa.bascules, [["agent", "x", "permission", "webfetch"]]);
+    }
+    // Toujours fermé en cas de doute : une clé BRUTE hors bornes reste inhabituelle, même sous « ~/ ».
+    const trop = plan(`{ "permission": { "bash": { ${JSON.stringify(`~/${"a".repeat(255)}`)}: "allow" }, "webfetch": "ask" } }`);
+    assert.deepEqual({ etat: trop.etat, raison: trop.raison, texte: trop.texte }, { etat: "non-migre", raison: "inhabituel", texte: null });
+  });
+
   it("(p) valeur de permission ni texte ni objet → inhabituel", () => {
     for (const source of ['{ "permission": 5 }', '{ "permission": null }', '{ "permission": ["ask"] }', '{ "agent": { "x": { "permission": true } } }']) {
       assert.equal(plan(source).raison, "inhabituel", source);
