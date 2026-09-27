@@ -1,6 +1,9 @@
 // Contrat 1.1 « Qui travaille ? » et carte néon : TYPES UNIQUEMENT (aucun code exécuté), partagés par le serveur et l'interface.
 // Spécification §3.5 (migration 5), §3.9, §3.10, §5.7.2, §5.7.3 ; plan d'exécution §4.2 (T0, D-01).
 import type { AutonomyChoice, AutonomyRequestView, ChoiceCause, DecisionVerdict, DecisionView, RepliedBy } from "./autonomy-types.ts";
+// --- équipes (it4) : début ---
+import type { TeamRunSummary } from "./team-types.ts";
+// --- équipes (it4) : fin ---
 
 /**
  * Nature d'un fait persisté (`activity_facts.kind`, colonne TEXT). « decision » (D-01) : un fait par ligne de
@@ -297,7 +300,9 @@ export interface UsageSpan {
 /** Réponse de GET /api/conversations/:rootId/activity (L4b). */
 export interface ActivityResponse {
   /** Équipes : itération 4. */
-  runs: never[];
+  // --- équipes (it4) : début ---
+  runs: TeamRunSummary[];
+  // --- équipes (it4) : fin ---
   delegations: DelegationView[];
   waits: PermissionWaitView[];
   decisions: DecisionView[];

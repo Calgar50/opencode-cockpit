@@ -31,6 +31,9 @@ import {
   estRose,
   exiger,
   exigerAucuneViolationCsp,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   occupees,
@@ -51,12 +54,22 @@ export async function run(ctx) {
     ctx.expectNoConsoleErrors();
     return;
   }
+  // --- équipes (it4) : début ---
+  // Racines créées ici ; le `finally` de fin de scénario les rend au repos, même si une assertion tombe pendant une demande
+  // d'autorisation (sans quoi la session reste comptée occupée par opencode pour tous les scénarios suivants de la passe).
+  // Le corps garde son indentation : les lignes de l'itération 1 restent lisibles telles quelles dans la grande fusion.
+  const racines = [];
+  try {
+  // --- équipes (it4) : fin ---
   await avecTemoinP6(ctx, async (temoin) => {
     await enModeAvance(ctx, async () => {
       await attendreModeAffiche(page, "avance");
       const ia = await attendreIa(ctx);
       const client = oc(ctx);
       const racine = await client.creerConversation("it1-ui-arreter");
+      // --- équipes (it4) : début ---
+      racines.push(racine.id);
+      // --- équipes (it4) : fin ---
       await ctx.faux.scripter(racine.id, { tools: [delegation(DESCRIPTION, "general", { workMs: 60_000 })], followUp: { text: "Analyse faite." } });
       await ouvrirConversation(ctx, racine.id);
       const envoi = await client.envoyer(racine.id, "Fais analyser les journaux de la nuit.", ia);
@@ -111,6 +124,11 @@ export async function run(ctx) {
       await exigerAucuneViolationCsp(page);
     });
   });
+  // --- équipes (it4) : début ---
+  } finally {
+    await libererLesDemandes(ctx, racines);
+  }
+  // --- équipes (it4) : fin ---
   ctx.expectNoConsoleErrors();
 }
 

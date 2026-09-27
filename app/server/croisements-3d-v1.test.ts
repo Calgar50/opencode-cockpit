@@ -450,6 +450,9 @@ describe("train V1 : migration 8 (A2, D-3d-23)", () => {
       const source = lire(path.join("server", nom)).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
       for (const ligne of source.split("\n")) {
         if (!/assert\./.test(ligne)) continue;
+        // Grande fusion (GF3) : les contrôles discriminants de la règle jumelle des équipes (croisements-eq-v1.test.ts) passent
+        // les formes interdites, écrites en toutes lettres, à `asserteUnNombre(…)` ; ce ne sont pas des assertions de version.
+        if (/asserteUnNombre\(/.test(ligne)) continue;
         if (/user_version|MIGRATIONS\.length/.test(ligne) && /,\s*\d+\s*[),]|===\s*\d+/.test(ligne)) fautifs.push(`${nom} : ${ligne.trim()}`);
       }
     }

@@ -21,6 +21,12 @@ const WEB_DIR = path.join(import.meta.dirname, "..", "web");
  * (itération 2 ter, L26a) : la règle l'attend, le dossier arrive avec son paquet, et le train de la vague 2 le voit apparaître.
  */
 const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics", "pages/omo"];
+// --- équipes (it4) : début ---
+// Itération 4 (T4w) : dossiers des équipes et de la carte des assistants.
+SCOPES.push("pages/chat/team", "pages/assistants/teams", "pages/assistants/carte");
+/** Fichiers soumis aux mêmes règles hors de ces dossiers (relatifs à web/) : onglets de la page Assistants. */
+const SCOPE_FILES = new Set(["pages/assistants/assistants-tabs.css", "pages/assistants/AssistantsTabs.tsx"]);
+// --- équipes (it4) : fin ---
 
 /** Dossiers qui doivent exister : un périmètre effacé ferait passer le test pour rien. « pages/omo » y entre avec L26a. */
 const SCOPES_REQUIS = SCOPES.filter((scope) => scope !== "pages/omo");
@@ -42,7 +48,9 @@ interface Violation {
   regle: string;
 }
 
-const inScope = (fichier: string) => SCOPES.some((scope) => fichier.startsWith(`${scope}/`));
+// --- équipes (it4) : début ---
+const inScope = (fichier: string) => SCOPES.some((scope) => fichier.startsWith(`${scope}/`)) || SCOPE_FILES.has(fichier);
+// --- équipes (it4) : fin ---
 const isNoLoop = (fichier: string) => NO_LOOP_FILES.has(path.posix.basename(fichier));
 const lineAt = (text: string, index: number) => text.slice(0, index).split("\n").length;
 const blank = (text: string) => text.replace(/[^\n]/g, " ");
@@ -316,3 +324,28 @@ describe("web-animations : interface 1.1", () => {
     assert.deepEqual(checkAnimations(webSources()), []);
   });
 });
+// --- équipes (it4) : début ---
+
+describe("web-animations : périmètre des équipes et de la carte (it4, T4w)", () => {
+  it("dossiers des équipes et de la carte et onglets de la page Assistants : présents et contrôlés, le reste de la page non", () => {
+    for (const fichier of SCOPE_FILES) assert.ok(fs.statSync(path.join(WEB_DIR, fichier)).isFile(), fichier);
+    for (const fichier of ["pages/chat/team/x.css", "pages/assistants/teams/x.tsx", "pages/assistants/carte/x.ts", ...SCOPE_FILES]) {
+      assert.ok(inScope(fichier), fichier);
+    }
+    for (const fichier of ["pages/assistants/assistants.css", "pages/assistants/AssistantWizard.tsx", "pages/chat/teamx/x.css"]) {
+      assert.ok(!inScope(fichier), fichier);
+    }
+  });
+
+  it("mutation de la feuille des onglets : une animation infinie hors prefers-reduced-motion fait échouer le test", () => {
+    const fichier = "pages/assistants/assistants-tabs.css";
+    const texte = fs.readFileSync(path.join(WEB_DIR, fichier), "utf8");
+    assert.deepEqual(checkAnimations([{ fichier, texte }]), []);
+    const mutated = `${texte}\n.ast-tab { animation: pulse 1s linear infinite; }\n`;
+    assert.deepEqual(rules(checkAnimations([{ fichier, texte: mutated }])), [
+      "animation CSS hors @media (prefers-reduced-motion: no-preference)",
+      "animation infinie (infinite)",
+    ]);
+  });
+});
+// --- équipes (it4) : fin ---

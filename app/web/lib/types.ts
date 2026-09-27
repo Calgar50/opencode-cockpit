@@ -100,6 +100,9 @@ import type { SessionInstance } from "../../server/shared/activity-types.ts";
 export type * from "../../server/shared/activity-types.ts";
 export type * from "../../server/shared/autonomy-types.ts";
 export type * from "../../server/shared/cockpit-event-types.ts";
+// --- équipes (it4) : début ---
+export type * from "../../server/shared/team-types.ts";
+// --- équipes (it4) : fin ---
 
 export interface PriceRates {
   input: number;

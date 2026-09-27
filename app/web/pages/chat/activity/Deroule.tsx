@@ -43,6 +43,9 @@ import { ControlJournal, DecisionMarks, useControlDecisions } from "../autonomy/
 import type { DerouleProps } from "../slots.ts";
 import { builtinTitle, gapsText, type Planned, plannedOf } from "../turn.ts";
 import "./deroule.css";
+// --- équipes (it4) : début ---
+import { TeamDeroule } from "../team/TeamDeroule.tsx";
+// --- équipes (it4) : fin ---
 
 // --- État partagé d'une conversation -------------------------------------------------------------------------------------------
 
@@ -647,6 +650,9 @@ export function DerouleContent({ activity, rootId, placement, advanced, journalN
         ) : null}
       </div>
 
+      {/* --- équipes (it4) : début --- */}
+      <TeamDeroule rootId={rootId} placement={placement} advanced={advanced} />
+      {/* --- équipes (it4) : fin --- */}
       {activity.error ? <div className="callout critical small">Déroulé indisponible : {activity.error}</div> : null}
       {!state && !activity.error ? <p className="small muted">Lecture du déroulé…</p> : null}
 

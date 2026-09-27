@@ -296,6 +296,14 @@ describe("croisements V5 : constantes au train", () => {
     const declarations = sources.filter((f) => /SALLE_OUVERTE\s*=/.test(lire(f)));
     assert.deepEqual(declarations, ["server/wiring-11.ts"]);
     assert.match(lire("server/wiring-11.ts"), /^export const SALLE_OUVERTE = false;$/m);
-    assert.deepEqual(sources.filter((f) => lire(f).includes("EQUIPES_SIMPLE_OUVERTES")), []);
+    // Grande fusion (GF3) : l'interrupteur des équipes en Simple (U1) est arrivé avec H4. Comme SALLE_OUVERTE : une seule
+    // déclaration, dans wiring-eq.ts, à false ; aucune affectation ailleurs (commentaires retirés : deux d'entre eux citent la
+    // ligne d'ouverture « = true » pour l'expliquer).
+    const code = (f: string): string => lire(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    assert.deepEqual(
+      sources.filter((f) => /EQUIPES_SIMPLE_OUVERTES\s*=(?!=)/.test(code(f))),
+      ["server/wiring-eq.ts"],
+    );
+    assert.match(lire("server/wiring-eq.ts"), /^export const EQUIPES_SIMPLE_OUVERTES = false;$/m);
   });
 });

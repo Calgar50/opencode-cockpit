@@ -292,7 +292,8 @@ describe("salle de contrôle 3D (T3d-a) : contrôles statiques", () => {
   it("sections balisées [3d] : app-factory.ts (routes en dernier, dérivation) et App.tsx (page sans entrée de navigation)", () => {
     const factory = lire("server/app-factory.ts");
     assert.equal(sectionsEquilibrees(factory), true);
-    assert.match(factory, /routes: \[\.\.\.\(deps\.routes \?\? \[\]\), \.\.\.built\.routes, \.\.\.routes3d\],/);
+    // Grande fusion (GF3) : les routes des équipes s'insèrent après celles de la 1.1 ; celles de la 3D restent en DERNIER.
+    assert.match(factory, /routes: \[\.\.\.\(deps\.routes \?\? \[\]\), \.\.\.built\.routes, \.\.\.equipes\.routes, \.\.\.routes3d\],/);
     assert.match(
       factory,
       /\/\/ \[3d\] début[^\n]*\n(?:[ \t]*\/\/[^\n]*\n)*\s*const routes3d = buildSalle3dRoutes\(built\.c11\);\n\s*for \(const derivation of buildSalle3dDerivations\(built\.c11\)\) detach\.push\(deps\.processor\.addDerivation\(derivation\)\);\n\s*\/\/ \[3d\] fin\n\s*const app = createApp\(\{/,

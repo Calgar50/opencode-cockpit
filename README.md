@@ -707,6 +707,112 @@ La 3D est dessinée par **three.js 0.186.0** (licence MIT), la seule bibliothèq
 
 <!-- [3d] fin -->
 
+<!-- équipes (it4) : début -->
+
+## Équipes et carte des assistants
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que le code du chantier contient déjà : faire travailler plusieurs assistants sur une même demande (**une équipe**), et voir sur une **carte** qui peut faire travailler qui. Les équipes s'utilisent aujourd'hui en **mode Avancé** ; en mode Simple, elles ne sont pas encore proposées : voir « Équipes en mode Simple » plus bas. La carte des assistants, elle, est ouverte dans les deux modes.
+
+Les phrases entre guillemets de cette section sont celles de l'interface. Elles sont écrites dans `app/server/shared/team-texts.ts` (équipes) et dans `app/server/shared/agent-map-texts.ts` (carte des assistants) ; l'avis affiché quand l'IA veut déléguer est dans `app/server/shared/delegation-texts.ts`.
+
+### Ce qu'est une équipe
+
+« Une équipe fait travailler plusieurs assistants sur votre demande, dans un ordre fixé à l'avance. » Chaque étape est confiée à un assistant du catalogue, avec sa consigne ; le cockpit tient l'ordre, les pauses, la lecture seule et le plafond de coût. La phrase d'accueil rappelle que ce que vous appeliez « modèle de réflexion » s'appelle ici Équipe ou Méthode (`team-texts.ts`).
+
+- **Assistants › Équipes** : la galerie des exemples à installer, vos équipes installées, et l'éditeur guidé en quatre écrans (« Partir d'un exemple », « Les étapes », « Coût et plafond », « Vérifier et nommer »).
+- Deux exemples sont livrés, avec les assistants déjà au catalogue (`relire-requete-sql`, `relire-script`) : « Revue SQL sur réplica » (trois avis et une synthèse) et « Chaîne de relecture de script » (quatre étapes à la suite, avec une pause).
+- **Lancer une équipe** apparaît à côté de la saisie du chat : vous écrivez votre demande, vous choisissez l'équipe, et une feuille récapitule ce qui part et ce que cela coûtera avant tout envoi.
+
+### Les formes d'une équipe
+
+- « À la suite » : « Chaque assistant reprend le travail du précédent. »
+- « Avis indépendants » : « Plusieurs assistants examinent la même demande sans voir le travail des autres, puis un dernier rassemble leurs avis. »
+- « Étapes et avis » : « Des étapes à la suite et des avis indépendants, dans l'ordre choisi. »
+- **Une pause pour vérifier** se place entre deux blocs de travail : vous relisez le résultat obtenu, vous pouvez corriger le résumé transmis et ajouter une précision pour la suite. « Rien n'est facturé pendant la pause. »
+
+Bornes d'une équipe : 5 blocs de travail au maximum, 12 étapes, 2 à 5 avis par bloc d'avis, 4 000 caractères de consigne par étape, 20 fichiers joints par lancement (`app/server/shared/team-limits.ts`).
+
+Deux formes prévues par la conception, la rédaction suivie d'une relecture en deux tours, et l'aiguillage, **ne sont pas dans cette version** : elles arrivent à l'itération suivante du chantier.
+
+### Ce qu'une étape peut faire : lire, rien d'autre
+
+« Aucune étape ne modifie, ne lance de commande, ne va sur Internet ni ne délègue. » « Toutes les étapes peuvent lire le projet. » « N'ouvre jamais les fichiers de clés ; une recherche dans le projet peut en afficher une ligne. » « Chaque avis ne voit pas le travail des autres. » (`team-texts.ts`)
+
+Ces phrases sont tenues par le code, pas seulement affichées : chaque étape travaille dans une conversation séparée, fille de la vôtre, créée par le cockpit avec des règles de sécurité que le cockpit **vérifie à l'écho**. Si opencode ne les renvoie pas à l'identique, la conversation d'étape est supprimée et l'étape échoue, **avant** tout envoi facturé. Les fichiers que vous joignez sont transmis par leur chemin, dans le dossier de la conversation seulement ; l'étape les ouvre avec ses propres outils de lecture.
+
+### L'IA de chaque étape
+
+- **Mode Simple** : chaque étape utilise l'IA de son assistant, affichée « IA : {ia} (celle de l'assistant) ».
+- **Mode Avancé** : vous pouvez choisir une IA par étape, affichée « IA de l'étape : {ia} (choisie par l'équipe) ». L'éditeur le conseille : « Pour des avis plus indépendants, donnez-leur des IA différentes. »
+- **Étapes en même temps** : 3 au maximum, réglable en mode Avancé dans **Paramètres › Budget**, bloc « Équipes ».
+
+### Ce que coûte un lancement
+
+La feuille de lancement annonce « Coût : ≈ {typique} $ en général · {maximum} $ au plus (arrêt automatique) · {n} étapes facturées », puis le détail par étape (`team-texts.ts`).
+
+- **« En général »** est une estimation par la taille habituelle de chaque étape, remplacée par la moyenne de vos lancements dès que le cockpit en a cinq — l'éditeur l'écrit sous le tableau des coûts (`team-texts.ts`, aide de la colonne « En général »).
+- **« Au plus »** est le plafond d'arrêt : « Arrêt automatique à {plafond} $ ; un appel en cours peut le dépasser d'environ {depassement} $. » Le dépassement annoncé est chiffré : c'est **un appel d'IA par étape en cours**, pas un appel pour toute l'équipe.
+- L'écran du coût de l'éditeur le dit en titre : « Coût d'un lancement (estimation, pas une facture) ».
+- Le plafond maximum d'un lancement se règle en mode Avancé (**Paramètres › Budget**) ; laissé vide, il vaut 5 % du budget du mois. Le garde-fou budgétaire du cockpit s'applique aussi aux étapes.
+
+### Avant de lancer : l'estimation lit opencode, le lancement n'envoie rien
+
+L'**estimation** est le seul point du lancement qui interroge opencode : elle lit les assistants et les raccourcis du dossier, la configuration globale et les conversations en cours, puis garde ces lectures en mémoire pendant dix minutes.
+
+Le **lancement**, lui, n'émet **aucune** requête avant sa décision : il ne relit que votre demande, la base du cockpit, les fichiers joints, les réglages et l'instantané de l'estimation. Tout refus le dit : « Rien n'a été envoyé ni facturé. » Si l'estimation n'est plus à jour, la feuille en affiche une nouvelle (« L'estimation n'était plus à jour : voici la nouvelle. Rien n'a été envoyé ni facturé. »).
+
+Une fois le lancement accepté, le cockpit **refait ses lectures** avant d'écrire quoi que ce soit dans la conversation et avant le premier appel d'IA. Si la situation a changé depuis l'estimation, l'équipe **se met en pause** au lieu d'être refusée : « À vérifier avant le début de l'équipe », avec la raison (une réponse en cours, une extension ou un outil MCP déclaré depuis, une IA devenue indisponible, un assistant dont les droits ont changé…) et, là aussi, « Rien n'a été envoyé ni facturé. » Vous continuez ou vous arrêtez.
+
+La feuille demande votre confirmation quand elle doit la demander : travail sur tout le workspace, secret repéré dans votre demande, plafond au-dessus du budget restant ou du plafond maximum d'un lancement.
+
+### Pendant l'équipe : ce qui est verrouillé
+
+Tant qu'une équipe travaille (préparation, étapes en cours, pause) :
+
+- **envoyer un message dans la conversation** est refusé : « Une équipe travaille dans cette conversation : attendez sa fin ou arrêtez-la. » ;
+- **le travail d'une étape se consulte seulement** : aucun envoi, aucune modification, aucune suppression ni aucun arrêt ne peut lui être adressé de l'extérieur (« Cette partie du travail d'une équipe se consulte seulement. ») ;
+- **supprimer la conversation** est refusé, depuis le chat comme depuis les Archives : « Une équipe travaille dans cette conversation : arrêtez-la avant de la supprimer. » ;
+- **arrêter** la conversation et la renommer restent possibles ;
+- les changements qui rechargent opencode (créer ou modifier un assistant, enregistrer dans le Studio, réaligner les assistants, **Redémarrer opencode**) sont refusés avec le même message que pendant une réponse : ils couperaient les étapes en cours.
+
+Une équipe en pause pour vérifier ne verrouille plus le rechargement, mais garde le verrou de la conversation.
+
+### Arrêter, relancer, ajouter les résultats
+
+- **Arrêter l'équipe** : « Les étapes en cours sont interrompues. Les résultats déjà obtenus restent visibles ; le coût déjà engagé reste facturé. »
+- **Plafond atteint** : le cockpit arrête l'équipe lui-même et le dit, dépassement compris : « Équipe arrêtée : plafond d'arrêt atteint ({depense} $ sur {plafond} $). Un appel en cours peut l'avoir dépassé ; GitHub Copilot peut facturer un appel interrompu. »
+- **Relancer la suite (≈ {suite} $)** reprend une équipe interrompue par un rechargement d'opencode, arrêtée à son plafond ou dont une étape a échoué — pas une équipe que vous avez arrêtée vous-même, qui est close —, en annonçant « Déjà dépensé : {deja} $. Suite : ≈ {suite} $, plafond {plafond} $. » La relance est refusée quand le cockpit n'a plus de quoi la reconstituer (conversation purgée, aucune étape envoyée) : « La suite de cette équipe ne peut pas être relancée : relancez l'équipe depuis la saisie. »
+- **Ajouter les résultats obtenus à la conversation** recopie une seule fois, sous l'en-tête « Résultats partiels », ce que les étapes terminées ont rendu.
+- Le résultat d'une équipe terminée est présenté par sa carte, jamais comme un message que vous auriez écrit : « Recopié ici par le cockpit, sans appel d'IA. » Il se termine par « À vérifier par vous : ce résultat ne remplace pas la relecture par un collègue. »
+
+### La carte des assistants
+
+**Assistants › Carte** répond à la question « Qui peut faire travailler qui, avec quelle IA et quels droits. » (`agent-map-texts.ts`)
+
+- Deux vues : « Centrée » sur un élément (qui le fait travailler, qui il fait travailler et ce qu'il consulte) et « Liste », où **chaque lien est aussi écrit en toutes lettres**. Les deux se parcourent au clavier.
+- Chaque lien dit qui l'applique : « règle d'opencode » ou « imposé par le cockpit ». Une équipe installée y apparaît avec une étape par assistant, imposée par le cockpit.
+- La carte est dérivée des **règles**, jamais de l'historique : « La carte montre ce que les règles permettent, pas ce qui s'est passé. » Pour ce qui s'est réellement passé, elle renvoie au Déroulé du chat (`agent-map-texts.ts`).
+- Elle est ouverte en mode Simple comme en mode Avancé. L'onglet de la Salle OMO arrivera avec la salle.
+
+### Équipes en mode Simple
+
+Tant que les recettes d'accessibilité ne sont pas faites, les équipes ne sont **pas** proposées en mode Simple :
+
+- l'onglet Équipes, l'éditeur et le lanceur du chat affichent « Les équipes arrivent bientôt en mode Simple. En mode Avancé, vous pouvez déjà les essayer. » ;
+- quand l'IA veut déléguer, l'avis garde son texte court : « En mode Simple, l'IA ne délègue pas : elle continue seule. » (`delegation-texts.ts`) — le cockpit n'annonce pas une fonction qu'il refuserait ;
+- une équipe lancée en mode Avancé reste consultable, arrêtable, et ses pauses restent actionnables en mode Simple : seul le lancement est fermé.
+
+L'ouverture tient en **une ligne** du code (`app/server/wiring-eq.ts`), posée après les recettes décrites dans le récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)). Elle ne se fait jamais par une variable d'environnement.
+
+### Limites à connaître
+
+- **Un résultat transmis peut influencer les étapes suivantes.** L'éditeur le dit avant d'enregistrer : « Pas garanti : la qualité des réponses. Une étape peut se tromper ou oublier un point, et un texte piégé dans un fichier du projet peut influencer les étapes suivantes. Relisez le résultat. »
+- **Une recherche peut afficher une ligne d'un fichier de clés.** Une étape ne peut pas ouvrir ces fichiers, mais un `grep` dans le projet peut en montrer une ligne : c'est dit tel quel dans l'interface.
+- **L'estimation est faite par profils de taille**, pas sur votre demande réelle, jusqu'à ce que le cockpit ait assez de lancements pour prendre votre moyenne. Seul le plafond d'arrêt est une borne.
+- **Une étape ne relit pas une sortie trop longue : demandez-lui de chercher plus précisément.** Mesuré hors ligne sur opencode 1.18.30 : une recherche s'arrête d'elle-même à 100 correspondances, un fichier se lit par morceaux d'environ 50 Ko, et les sorties complètes qu'opencode enregistre pour les conversations sont **refusées** à une étape. Des recherches précises donnent de meilleurs avis que des recherches larges.
+- Le comportement sur GitHub Copilot réel (messages ajoutés sans réponse, limites de débit, facturation d'un appel interrompu) reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
+<!-- équipes (it4) : fin -->
+
 ## Suivi des coûts
 
 Depuis le **1er juin 2026**, Copilot facture **au token**, en crédits IA (1 crédit = 0,01 $). Le compteur est remis à zéro le 1er de chaque mois à 00:00 UTC, et un budget utilisateur épuisé bloque les requêtes, sans repli sur un modèle gratuit.

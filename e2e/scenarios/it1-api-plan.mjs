@@ -31,6 +31,9 @@ import {
   exigerPlancherHerite,
   exigerSansEcrivain,
   iaDuBanc,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   outilsDuFaux,
@@ -43,6 +46,12 @@ import {
 const DESCRIPTION = "Lire a.txt pour le plan";
 
 export async function run(ctx) {
+  // --- équipes (it4) : début ---
+  // Racine créée ici ; le `finally` la rend au repos même si une assertion tombe pendant une demande d'autorisation (sans quoi
+  // la session reste comptée occupée par opencode pour tous les scénarios suivants de la passe, dossier partagé).
+  const racines = [];
+  try {
+  // --- équipes (it4) : fin ---
   await avecTemoinP6(ctx, async (temoin) => {
     const ia = iaDuBanc(await ctx.api.get("/api/bootstrap"));
     const client = oc(ctx);
@@ -52,6 +61,9 @@ export async function run(ctx) {
     exiger(creation.code === 200, `POST /api/plans refusé (${creation.code}) : ${resume(creation.corps)}`);
     const { rootId } = corpsJson(creation, "POST /api/plans");
     exiger(typeof rootId === "string", `POST /api/plans sans rootId : ${resume(creation.corps)}`);
+    // --- équipes (it4) : début ---
+    racines.push(rootId);
+    // --- équipes (it4) : fin ---
     const racine = await client.session(rootId);
     exigerPlancher(racine.permission, PLANCHER_PLAN, "conversation de plan");
     const autonomie = await ctx.api.get(`/api/conversations/${encodeURIComponent(rootId)}/autonomie`);
@@ -79,6 +91,11 @@ export async function run(ctx) {
     // 4. Plancher PLAN encore tenu après les envois.
     exigerPlancher((await client.session(rootId)).permission, PLANCHER_PLAN, "conversation de plan après les envois");
   });
+  // --- équipes (it4) : début ---
+  } finally {
+    await libererLesDemandes(ctx, racines);
+  }
+  // --- équipes (it4) : fin ---
 }
 
 async function delegationDansLePlan(ctx, client, temoin, rootId, agents, ia) {
