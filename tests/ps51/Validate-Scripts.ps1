@@ -185,7 +185,7 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         $expected = @([regex]::Matches([System.IO.File]::ReadAllText($ComposeFile), '\$\{([A-Z_][A-Z0-9_]*)') | ForEach-Object { $_.Groups[1].Value }) + @('COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'COMPOSE_PROFILES')
         foreach ($name in ($expected | Sort-Object -Unique)) { if ($listed -cnotcontains $name) { $found.Add(('compose-variables : {0} absent de $CockpitComposeEnvNames' -f $name)) } }
         $lines = [System.IO.File]::ReadAllLines($File).Count
-        if ($lines -gt 700) { $found.Add(('taille : {0} lignes (700 au plus)' -f $lines)) }
+        if ($lines -gt 800) { $found.Add(('taille : {0} lignes (800 au plus)' -f $lines)) }
     }
     if ($null -ne $ast.ParamBlock -and @('install.ps1', 'cockpit.ps1') -contains $Kind) {
         $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })

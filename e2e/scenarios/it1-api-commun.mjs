@@ -15,7 +15,8 @@
 // n'expose pas toolsFor : on applique donc les mêmes fonctions du faux (builtinTools, disabledTools) aux règles lues par le proxy
 // du cockpit (GET /session/:id, GET /agent). En « --reel-hors-ligne », aucun oracle : la liste est celle que le vrai opencode a
 // envoyée au faux fournisseur. Les listes de M2 sont prises pour la configuration que sert la pile (casM2) : depuis R106-a, le
-// profil livré, que sert le faux, refuse webfetch et websearch, que la configuration de M2 laissait sur « ask ».
+// profil livré, que sert le faux, refuse webfetch et websearch, que la configuration de M2 laissait sur « ask ». En
+// « --reel-hors-ligne --volume-1-0-6 » (migration du web, A37), la pile sert le volume 1.0.6 migré : web refusé aussi.
 //
 // Limite du mode « --reel-hors-ligne » : le faux fournisseur (e2e/lib/faux-fournisseur.mjs) ne sait répondre que du texte, jamais
 // un appel d'outil. Ce qui demande qu'une IA appelle un outil (lecture d'un fichier, délégation) n'y est donc pas joué ; chaque
@@ -519,13 +520,30 @@ let m2 = null;
 /**
  * Configuration d'opencode que sert la pile, par mode du banc, lue dans le DÉPÔT (jamais dans la pile : l'oracle ne se nourrit
  * pas de ce qu'il vérifie). « --faux » : le faux opencode sert son DEFAULT_CONFIG, le profil livré depuis R106-a
- * (docker/opencode/opencode.default.jsonc). « --reel-hors-ligne » : la configuration de la mesure M-B1, posée dans le volume.
+ * (docker/opencode/opencode.default.jsonc). « --reel-hors-ligne » : la configuration de la mesure M-B1, posée dans le volume ; avec
+ * « --volume-1-0-6 » (migration du web, A37), l'attendu migré du volume 1.0.6 (e2e/lib/docker-e2e.mjs, section mw:), le seul que
+ * cette pile serve. Sans l'option, la pile par défaut garde le Prudent 1.0 (répétition D11 de GF5).
  */
 const CONFIGURATION_DE_LA_PILE = {
   faux: ["docker", "opencode", "opencode.default.jsonc"],
   "reel-hors-ligne": ["e2e", "lib", "opencode-hors-ligne.jsonc"],
+  // <mw:volume-1-0-6>
+  "reel-hors-ligne --volume-1-0-6": ["e2e", "lib", "opencode-volume-1.0.6.migre.jsonc"],
+  // </mw:volume-1-0-6>
   reel: ["docker", "opencode", "opencode.default.jsonc"],
 };
+
+/**
+ * Clé de CONFIGURATION_DE_LA_PILE : le mode du banc, ou le contexte d'un scénario (ctx), qui porte aussi l'option
+ * « --volume-1-0-6 » (ctx.volume106). Un mode seul désigne toujours la pile SANS l'option.
+ */
+function pileDu(pile) {
+  if (typeof pile === "string") return pile;
+  // <mw:volume-1-0-6>
+  if (pile?.volume106 === true) return `${pile.mode} --volume-1-0-6`;
+  // </mw:volume-1-0-6>
+  return pile?.mode;
+}
 
 /** Texte JSONC sans ses commentaires de ligne et de bloc (hors des chaînes), prêt pour JSON.parse. */
 export function sansCommentairesJsonc(texte) {
@@ -557,16 +575,18 @@ function refusesParLaConfiguration(permission) {
 
 /**
  * Cas de la mesure M2 (opencode 1.18.30 réel, fixture m2-tools.json) : liste d'outils mesurée, et IA de la mesure, pour la
- * configuration que sert la pile dans `mode`. M2 a été mesurée sous `configPermission` de la fixture (web sur « ask ») ; la règle
- * qu'elle établit (un outil dont la dernière règle est « * deny » n'est pas proposé à l'IA) retire aussi un outil que la
- * configuration de la pile refuse et que celle de M2 ne refusait pas. Depuis R106-a (A31 c), le profil livré refuse webfetch et
- * websearch : en « --faux », ils sortent donc des listes attendues ; en « --reel-hors-ligne » (web sur « ask »), rien ne change.
- * `retiresParLaPile` dit ce qui a été retiré, pour que le relevé le montre.
+ * configuration que sert la pile `pile` (le contexte du scénario, ou un mode du banc). M2 a été mesurée sous `configPermission` de
+ * la fixture (web sur « ask ») ; la règle qu'elle établit (un outil dont la dernière règle est « * deny » n'est pas proposé à l'IA)
+ * retire aussi un outil que la configuration de la pile refuse et que celle de M2 ne refusait pas. Depuis R106-a (A31 c), le profil
+ * livré refuse webfetch et websearch : en « --faux », ils sortent donc des listes attendues ; en « --reel-hors-ligne » (web sur
+ * « ask »), rien ne change, sauf avec « --volume-1-0-6 » (volume migré, web refusé). `retiresParLaPile` dit ce qui a été retiré,
+ * pour que le relevé le montre.
  */
-export function casM2(nom, mode = "faux") {
+export function casM2(nom, pile = "faux") {
   m2 ??= JSON.parse(fs.readFileSync(path.join(RACINE, "app", "server", "test-support", "fixtures", "m2-tools.json"), "utf8"));
   const cas = m2.cases.find((c) => c.name === nom);
   exiger(cas, `cas M2 inconnu : ${nom}`);
+  const mode = pileDu(pile);
   const fichier = CONFIGURATION_DE_LA_PILE[mode];
   exiger(fichier, `mode du banc inconnu pour la mesure M2 : ${mode}`);
   const permission = JSON.parse(sansCommentairesJsonc(fs.readFileSync(path.join(RACINE, ...fichier), "utf8"))).permission;
@@ -627,17 +647,17 @@ export async function run(ctx) {
   // Oracle des outils du faux, sur les agents que sert la pile : il rend les listes mesurées par M2 (racine, enfant general).
   if (ctx.mode === "faux") {
     // Seul écart entre la configuration de M2 et celle que sert le faux : le web refusé par le profil livré (R106-a, A31 c).
-    exigerListe(casM2("sans-regle", ctx.mode).retiresParLaPile, ["webfetch", "websearch"], "outils refusés par le profil livré et pas par la configuration de M2");
+    exigerListe(casM2("sans-regle", ctx).retiresParLaPile, ["webfetch", "websearch"], "outils refusés par le profil livré et pas par la configuration de M2");
     const agents = await oc(ctx).agents();
     for (const nom of ["sans-regle", "racine-edit-bash-refuses", "tout-refuse-sauf-lecture", "patch-bash-refuse"]) {
-      const cas = casM2(nom, ctx.mode);
+      const cas = casM2(nom, ctx);
       const obtenus = outilsDuFaux({ agent: cas.agent, permission: cas.sessionPermission ?? [] }, agents, { modelID: cas.modelID });
       exigerListe(obtenus, cas.tools, `oracle des outils, cas M2 « ${nom} »`);
     }
-    const enfant = casM2("enfant-general", ctx.mode);
+    const enfant = casM2("enfant-general", ctx);
     const general = agents.find((a) => a.name === "general");
     exiger(general, "assistant « general » absent du faux.");
-    const regles = deriveChildRules(casM2(enfant.parent, ctx.mode).sessionPermission ?? [], general.permission);
+    const regles = deriveChildRules(casM2(enfant.parent, ctx).sessionPermission ?? [], general.permission);
     exigerListe(outilsDuFaux({ agent: "general", permission: regles }, agents, { modelID: enfant.modelID }), enfant.tools, "oracle des outils, cas M2 « enfant-general »");
   } else {
     nonJoue(ctx, "oracle des outils du faux", "aucun faux opencode : les listes viennent du vrai opencode");

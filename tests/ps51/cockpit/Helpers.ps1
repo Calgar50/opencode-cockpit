@@ -58,9 +58,11 @@ function Get-DockerCallCount([string]$Pattern) {
 
 # Regles standard : conteneur cockpit en marche, nom de projet, certificat publie, schema servi.
 # -ImageVersion '' : version de l'image illisible ; -Health starting : conteneur pas encore sain.
+# -Migration : ligne rendue par le conteneur jetable de la migration du web (A37, restore) ; defaut : rien a migrer.
 function New-CockpitDockerRules {
     param([string]$CrtFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.0.5', [string]$Health = 'healthy',
-        [string]$Served = 'https', [string]$Project = 'rg105-l7', [object[]]$Extra)
+        [string]$Served = 'https', [string]$Project = 'rg105-l7', [object[]]$Extra,
+        [string]$Migration = 'migration-web etat=absent profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=-', [int]$MigrationCode = 0)
     $id = '0123456789abcdef'
     $rules = @()
     if ($Extra) { $rules += @($Extra) }
@@ -76,6 +78,9 @@ function New-CockpitDockerRules {
         (New-Rule '^compose -f \S.* exec -T cockpit printenv COCKPIT_LOCAL_SCHEME$' ($Served + "`n")),
         (New-Rule '^compose -f \S.* ps$' "NAME  STATUS`ncockpit  Up`n"),
         (New-Rule '^compose -f \S.* (up|stop|start)\b' ''),
+        # Migration du web (A37) : AVANT la regle generique '^run --rm ', qui rendrait une sortie vide.
+        (New-Rule ('^run --rm --pull never --name ' + $Project + '-migration-web-[0-9a-f]{8} ') ($Migration + "`n") $MigrationCode),
+        (New-Rule ('^rm -f ' + $Project + '-migration-web-[0-9a-f]{8}$') ''),
         (New-Rule '^run --rm ' ''))
     if ($CrtFile) { $rules += (New-Rule '^compose -f \S.* exec -T cockpit cat /tls/public/cockpit\.crt$' '' 0 $null $CrtFile) }
     if ($JsonFile) { $rules += (New-Rule '^compose -f \S.* exec -T cockpit cat /tls/public/cockpit-tls\.json$' '' 0 $null $JsonFile) }

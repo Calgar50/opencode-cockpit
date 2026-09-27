@@ -180,6 +180,10 @@ const SCENARIOS_ARRIVES_PAR_LA_FUSION: readonly string[] = [
   "c5b-schema.mjs",
   "c5b-vue-ensemble.mjs",
   // </c5:scenarios-arrives>
+  // <mw:scenarios-arrives>
+  // Migration du web (MW-a, A37) : scénario de la pile « --reel-hors-ligne --volume-1-0-6 », « non joué » en « --faux ».
+  "mw-api-volume-106.mjs",
+  // </mw:scenarios-arrives>
 ];
 
 /**

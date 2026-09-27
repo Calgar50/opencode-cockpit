@@ -405,6 +405,12 @@ export async function preparerPlan(options) {
   if (posteMouvement !== null && !MOUVEMENTS.includes(posteMouvement)) refuser(`réglage de mouvement du poste inconnu : « ${posteMouvement} » (${MOUVEMENTS.join(", ")}).`);
   const salle = options.salle === true;
   if (salle && mode !== "faux") refuser("« --salle » n'existe qu'en « --faux » : la salle y est FACTICE (aucune extension, aucune IA, aucun appel facturé).");
+  // <mw:volume-1-0-6>
+  const volume106 = options.volume106 === true;
+  if (volume106 && mode !== "reel-hors-ligne") {
+    refuser("« --volume-1-0-6 » n'existe qu'en « --reel-hors-ligne » : ni l'image opencode ni son superviseur ne tournent en « --faux », et « --reel » facturerait.");
+  }
+  // </mw:volume-1-0-6>
   const id = options.id ?? identifiantExecution();
   const projet = verifierProjet(`${options.prefixe}-${id}`);
   // Salle : l'image du cockpit porte SALLE_OUVERTE basculée (copie du contexte seulement) ; elle a donc son propre nom, pour
@@ -421,6 +427,9 @@ export async function preparerPlan(options) {
     posteMouvement,
     // Côté coupé de l'interrupteur COCKPIT_AUTONOMY (décision n° 13, « --autonomie-coupee ») : écrit dans le fichier du banc.
     autonomieCoupee: options.autonomieCoupee === true,
+    // <mw:volume-1-0-6> Volume d'une installation 1.0.6 migré avant le démarrage (« --volume-1-0-6 », « --reel-hors-ligne » seul).
+    volume106,
+    // </mw:volume-1-0-6>
     id,
     projet,
     salle,
@@ -943,6 +952,11 @@ export async function executer(options) {
   if (plan.autonomieCoupee) {
     console.log("Autonomie coupée (--autonomie-coupee) : COCKPIT_AUTONOMY=off est écrit dans le fichier d'environnement du banc ; seul it2-api-interrupteur a un sens sur cette pile.");
   }
+  // <mw:volume-1-0-6>
+  if (plan.volume106) {
+    console.log(`Volume 1.0.6 (--volume-1-0-6) : ${GRAINE_VOLUME_106} posée dans oc-config, puis migrée par le conteneur jetable de l'image app avant le démarrage.`);
+  }
+  // </mw:volume-1-0-6>
   if (plan.dryRun) {
     console.log("À blanc : les commandes ci-dessous ne sont pas exécutées.");
     for (const sous of [
@@ -955,6 +969,9 @@ export async function executer(options) {
       ["down", "-v", "--remove-orphans", "-t", "20"],
     ]) {
       await compose(plan, sous);
+      // <mw:volume-1-0-6> Graine 1.0.6, migration et leurre, juste après la préparation (liste à blanc comprise).
+      if (sous[0] === "run" && sous.at(-1) === "preparation") await jouerEtapesVolume106(plan);
+      // </mw:volume-1-0-6>
     }
     return 0;
   }
@@ -975,6 +992,9 @@ export async function executer(options) {
 
     await compose(plan, ["build", ...plan.aBatir]);
     if (plan.mode === "reel-hors-ligne") await compose(plan, ["run", "--rm", "--no-deps", "preparation"]);
+    // <mw:volume-1-0-6> Sans l'option : aucune étape, la pile garde le Prudent 1.0 (répétition D11 de GF5).
+    await jouerEtapesVolume106(plan);
+    // </mw:volume-1-0-6>
     if (plan.salle) {
       // Salle : préparation (certificat du faux catalogue, auth.json factice, omo-state), puis les faux AVANT le cockpit : son
       // premier relevé du catalogue du compte doit trouver le faux catalogue Copilot déjà à l'écoute.
@@ -1091,6 +1111,12 @@ async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, f
       arreter: (service) => servicePile(plan, "arreter", service),
       demarrer: (service) => servicePile(plan, "demarrer", service),
     },
+    // <mw:volume-1-0-6>
+    // Pile « --volume-1-0-6 » : casM2 (it1-api-commun.mjs) lit alors la configuration migrée. migrerVolume() : second passage de
+    // la migration (arrêt d'opencode, conteneur jetable, relance), refusé sans l'option ; rend { ligne } (verdict, sans contenu).
+    volume106: plan.volume106 === true,
+    migrerVolume: () => secondPassageVolume106(plan),
+    // </mw:volume-1-0-6>
     nom: scenario.nom,
     dossierCaptures: plan.captures,
     screenshot: (nom, options) => onglet.captureSuite(`${prefixe}-${nom}`, options),
@@ -1479,7 +1505,10 @@ export async function verifierGardes() {
   // Gardes de la pile de la salle (« --salle », L26c) : comptées et annoncées À PART des gardes d'isolation ci-dessus, dont le
   // RECAPITULATIF donne le nombre (croisements-it2-v4) ; leur total est imprimé par verifierGardesSalle.
   const echecsSalle = await verifierGardesSalle();
-  return echecs.length + echecsSalle;
+  // <mw:volume-1-0-6> Gardes de l'option « --volume-1-0-6 », comptées à part comme celles de la salle.
+  const echecsMw = await verifierGardesMw();
+  // </mw:volume-1-0-6>
+  return echecs.length + echecsSalle + echecsMw;
 }
 
 /**
@@ -1934,10 +1963,234 @@ async function verifierGardesHttps(verifier, refuse) {
   });
 }
 
+// <mw:volume-1-0-6>
+// --- Migration du web 1.0.x → 1.1.0 (décision A37, fiche MW §6 T7) : option « --volume-1-0-6 » ---------------------------------
+//
+// Réservée à « --reel-hors-ligne » : en « --faux », ni l'image opencode ni son superviseur ne tournent, il n'y a pas de volume
+// d'opencode à migrer ; « --reel » facturerait. Après « run --rm preparation » (Prudent 1.0 d'opencode-hors-ligne.jsonc), le service
+// « preparation » de la surcharge, dont seul le point d'entrée est remplacé le temps d'un run (e2e/docker-compose.e2e.yml n'est pas
+// touché), pose la graine e2e/lib/opencode-volume-1.0.6.jsonc (fichier livré de la 1.0.0 à la 1.0.6, fournisseur du banc en plus)
+// dans oc-config ; puis la migration la traite par le conteneur jetable de l'image app du banc, avec la MÊME liste d'options que
+// CockpitTls.ps1 (Get-CockpitWebMigrationArgs ; test statique : app/server/migrate-oc-config.test.ts). Le banc exige la ligne
+// « migré, Prudent, copie créée » AVANT « up ». Enfin un leurre : un temporaire laissé par un arrêt brutal (graine NON migrée, web
+// sur « ask ») ; opencode, qui ne lit que config.json, opencode.json, opencode.jsonc et config, doit l'ignorer comme la copie.
+// Sans l'option, aucune de ces étapes : la pile par défaut garde le Prudent 1.0 pour la répétition D11 de GF5.
+
+/** Graine du volume 1.0.6 et attendu migré (e2e/lib, monté en lecture seule sur /seed par le service « preparation »). */
+export const GRAINE_VOLUME_106 = "opencode-volume-1.0.6.jsonc";
+export const ATTENDU_VOLUME_106 = "opencode-volume-1.0.6.migre.jsonc";
+/** Ligne exigée de la première migration, avant « up ». */
+export const LIGNE_PREMIERE_MIGRATION = "migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-";
+/** Temporaire laissé par un arrêt brutal de la migration (<fichier>.<12 hex>.tmp), posé comme leurre. */
+export const LEURRE_VOLUME_106 = "opencode.jsonc.0123456789ab.tmp";
+
+const posePreparation = (commande) => ["run", "--rm", "--no-deps", "--entrypoint", "sh", "preparation", "-c", commande];
+
+/** Options du conteneur jetable : la liste de Get-CockpitWebMigrationArgs (CockpitTls.ps1), élément pour élément. */
+export function argumentsMigration(projet, image, nom) {
+  return [
+    "run",
+    "--rm",
+    "--pull",
+    "never",
+    "--name",
+    nom,
+    "--network",
+    "none",
+    "--user",
+    "1000:1000",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "32",
+    "-v",
+    `${projet}_oc-config:/oc-config`,
+    "--entrypoint",
+    "node",
+    image,
+    "--no-warnings",
+    "server/migrate-oc-config.ts",
+    "/oc-config",
+  ];
+}
+
+/** Étapes jouées juste après « run --rm preparation » : aucune sans l'option. */
+export function etapesVolume106(plan) {
+  if (plan.volume106 !== true || plan.mode !== "reel-hors-ligne") return [];
+  return [
+    { compose: posePreparation(`cp /seed/${GRAINE_VOLUME_106} /cfg/opencode.jsonc && chown 1000:1000 /cfg/opencode.jsonc`) },
+    { migration: LIGNE_PREMIERE_MIGRATION },
+    { compose: posePreparation(`cp /seed/${GRAINE_VOLUME_106} /cfg/${LEURRE_VOLUME_106} && chown 1000:1000 /cfg/${LEURRE_VOLUME_106}`) },
+  ];
+}
+
+/**
+ * Migration du volume oc-config de la pile jetable, par le conteneur jetable de l'image app du banc : projet et image revérifiés
+ * juste avant ; délai de 120 s, puis « docker rm -f » du conteneur nommé ; rend { ligne } (seule ligne non vide de stdout, qui ne
+ * porte aucun contenu du fichier). À blanc : la commande est seulement affichée.
+ */
+export async function migrerVolumeDuBanc(plan) {
+  if (plan.volume106 !== true || plan.mode !== "reel-hors-ligne") refuser("la migration du volume n'existe qu'avec « --reel-hors-ligne --volume-1-0-6 ».");
+  verifierProjet(plan.projet);
+  verifierImage(plan.imageApp);
+  const nom = `${plan.projet}-migration-web-${crypto.randomBytes(4).toString("hex")}`;
+  const args = argumentsMigration(plan.projet, plan.imageApp, nom);
+  if (plan.interrompu) refuser(`exécution interrompue : la commande « ${texteCommande(args)} » n'est pas lancée.`);
+  if (plan.dryRun) {
+    plan.journal.push(texteCommande(args));
+    console.log(`  à blanc : ${texteCommande(args)}`);
+    return { ligne: null };
+  }
+  const retirer = () => spawnSync("docker", ["rm", "-f", nom], { cwd: RACINE, env: environnementDocker(), stdio: "ignore", timeout: 30_000 });
+  const resultat = spawnSync("docker", args, { cwd: RACINE, env: environnementDocker(), encoding: "utf8", timeout: 120_000 });
+  if (resultat.error || resultat.signal) {
+    retirer();
+    refuser(`migration du volume : conteneur ${nom} arrêté (délai de 120 s dépassé ou docker introuvable).`);
+  }
+  const lignes = String(resultat.stdout ?? "")
+    .split(/\r?\n/)
+    .filter((ligne) => ligne.trim() !== "");
+  if (lignes.length !== 1) {
+    retirer();
+    refuser(`migration du volume : ${lignes.length} ligne(s) sur stdout au lieu d'une (code ${resultat.status}).`);
+  }
+  return { ligne: lignes[0], code: resultat.status };
+}
+
+/** Joue les étapes de l'option (à blanc compris) ; la première migration doit rendre LIGNE_PREMIERE_MIGRATION, sinon rien ne démarre. */
+export async function jouerEtapesVolume106(plan) {
+  for (const etape of etapesVolume106(plan)) {
+    if (etape.compose) {
+      await compose(plan, etape.compose, { silencieux: true });
+      continue;
+    }
+    const { ligne } = await migrerVolumeDuBanc(plan);
+    if (plan.dryRun) continue;
+    if (ligne !== etape.migration) refuser(`migration du volume 1.0.6 : « ${ligne} » au lieu de « ${etape.migration} » ; la pile ne démarre pas.`);
+    console.log(`Volume 1.0.6 migré avant le démarrage : ${ligne}`);
+  }
+}
+
+/** ctx.migrerVolume() : second passage (arrêt d'opencode, migration, relance), seulement avec l'option. */
+export async function secondPassageVolume106(plan) {
+  if (plan.volume106 !== true) refuser("ctx.migrerVolume n'existe qu'avec « --reel-hors-ligne --volume-1-0-6 ».");
+  await servicePile(plan, "arreter", "opencode");
+  try {
+    return await migrerVolumeDuBanc(plan);
+  } finally {
+    await servicePile(plan, "demarrer", "opencode");
+  }
+}
+
+/** Liste de Get-CockpitWebMigrationArgs, lue dans CockpitTls.ps1 : les deux listes doivent rester égales. */
+function listeCockpitTls() {
+  const source = fs.readFileSync(path.join(RACINE, "CockpitTls.ps1"), "utf8");
+  const debut = source.indexOf("function Get-CockpitWebMigrationArgs");
+  if (debut < 0) throw new Error("Get-CockpitWebMigrationArgs absent de CockpitTls.ps1");
+  const corps = source.slice(source.indexOf("return @(", debut) + "return @(".length, source.indexOf("\n}", debut)).replace(/\)\s*$/, "");
+  return corps.split(/,\s*/).map((element) => {
+    const e = element.trim();
+    if (/^'[^']*'$/.test(e)) return e.slice(1, -1);
+    const volume = /^\(\$Project \+ '([^']*)'\)$/.exec(e);
+    return e === "$Name" ? "<nom>" : e === "$Image" ? "<image>" : volume ? `<projet>${volume[1]}` : `?${e}`;
+  });
+}
+
+/**
+ * Gardes de l'option « --volume-1-0-6 » (A37), sans Docker ni navigateur, comptées à part comme celles de la salle : chacune tombe
+ * si sa garde est retirée (option lue, réservée à « --reel-hors-ligne », pile par défaut ni ensemencée ni migrée, liste d'options de
+ * CockpitTls.ps1, projet de l'utilisateur refusé, capacité du contexte refusée sans l'option, étapes dans la liste à blanc).
+ */
+export async function verifierGardesMw() {
+  const echecs = [];
+  const gardeMw = async (nom, fn) => {
+    try {
+      await fn();
+      console.log(`  ok    [mw] ${nom}`);
+    } catch (err) {
+      echecs.push(nom);
+      console.error(`  ÉCHEC [mw] ${nom} : ${err?.message ?? err}`);
+    }
+  };
+  const refusAttendu = async (fn, extrait) => {
+    let erreur = null;
+    try {
+      await fn();
+    } catch (err) {
+      erreur = err;
+    }
+    if (!(erreur instanceof ErreurBanc)) throw new Error(erreur ? `refus inattendu : ${erreur.message}` : `aucun refus (attendu : « ${extrait} »)`);
+    if (!erreur.message.includes(extrait)) throw new Error(`message sans « ${extrait} » : ${erreur.message}`);
+  };
+  const planEssai = (volume106, mode = "reel-hors-ligne", projet = "gf11-e2e-essai") => ({
+    mode,
+    volume106,
+    projet,
+    imageApp: "gf11-e2e/app:essai",
+    fichierEnv: "/tmp/banc.env",
+    profils: [mode],
+    services: SERVICES[mode],
+    dryRun: true,
+    journal: [],
+  });
+
+  await gardeMw("--volume-1-0-6 : lu, et sans effet sans l'option", () => {
+    if (analyserArguments([]).volume106 !== false) throw new Error("option posée sans être demandée");
+    if (analyserArguments(["--reel-hors-ligne", "--volume-1-0-6"]).volume106 !== true) throw new Error("option sans effet");
+  });
+  await gardeMw("--volume-1-0-6 : réservée à --reel-hors-ligne (refus en --faux et en --reel, avant tout démarrage)", async () => {
+    for (const mode of ["faux", "reel"]) await refusAttendu(() => preparerPlan({ mode, volume106: true, prefixe: "gf11-e2e", tag: "essai" }), "n'existe qu'en « --reel-hors-ligne »");
+    const plan = await preparerPlan({ mode: "reel-hors-ligne", volume106: true, prefixe: "gf11-e2e", tag: "essai", id: "essai", fichierEnv: path.join(DOSSIER_BANC, "gf11-e2e-essai-mw", "b.env") });
+    if (plan.volume106 !== true) throw new Error("option perdue entre les arguments et le plan");
+  });
+  await gardeMw("sans l'option, la pile par défaut n'est ni ensemencée ni migrée (Prudent 1.0 pour la répétition D11 de GF5)", () => {
+    for (const plan of [planEssai(false), planEssai(false, "faux"), planEssai(true, "faux")]) {
+      if (etapesVolume106(plan).length !== 0) throw new Error(`étapes pour ${plan.mode} sans la pile de l'option`);
+    }
+    const etapes = etapesVolume106(planEssai(true));
+    const texte = etapes.map((e) => e.compose?.join(" ") ?? `migration ${e.migration}`);
+    if (etapes.length !== 3 || !etapes[0]?.compose || etapes[1]?.migration !== LIGNE_PREMIERE_MIGRATION || !etapes[2]?.compose) throw new Error(texte.join(" | "));
+    if (!texte[0]?.endsWith(`cp /seed/${GRAINE_VOLUME_106} /cfg/opencode.jsonc && chown 1000:1000 /cfg/opencode.jsonc`)) throw new Error(`graine : ${texte[0]}`);
+    if (!texte[2]?.includes(`/cfg/${LEURRE_VOLUME_106}`)) throw new Error(`leurre : ${texte[2]}`);
+  });
+  await gardeMw("conteneur jetable : la liste d'options de CockpitTls.ps1 (Get-CockpitWebMigrationArgs), élément pour élément", () => {
+    const ps = listeCockpitTls();
+    const banc = argumentsMigration("<projet>", "<image>", "<nom>");
+    if (JSON.stringify(ps) !== JSON.stringify(banc)) throw new Error(`CockpitTls.ps1 : ${ps.join(" ")} ; banc : ${banc.join(" ")}`);
+    for (const option of ["--pull", "--network", "--read-only", "--cap-drop", "--security-opt", "--pids-limit"]) if (!banc.includes(option)) throw new Error(`${option} absente`);
+    if (banc.some((a) => a === "-e" || a === "--env" || a.startsWith("--env-file"))) throw new Error("variable transmise au conteneur");
+  });
+  await gardeMw("migration du banc : pile de l'utilisateur, image de l'utilisateur et pile sans l'option refusées", async () => {
+    await refusAttendu(() => sansConsole(() => migrerVolumeDuBanc(planEssai(true, "reel-hors-ligne", "opencode-cockpit"))), "pile de l'utilisateur");
+    await refusAttendu(() => sansConsole(() => migrerVolumeDuBanc({ ...planEssai(true), imageApp: "opencode-cockpit/app:local" })), "images de l'utilisateur");
+    await refusAttendu(() => sansConsole(() => migrerVolumeDuBanc(planEssai(false))), "--volume-1-0-6");
+    await refusAttendu(() => secondPassageVolume106(planEssai(false)), "--volume-1-0-6");
+  });
+  await gardeMw("liste à blanc : graine, migration (options de CockpitTls.ps1) puis leurre, après la préparation, seulement avec l'option", async () => {
+    const avec = planEssai(true);
+    await sansConsole(() => jouerEtapesVolume106(avec));
+    const [graine, migration, leurre, ...reste] = avec.journal;
+    if (reste.length > 0 || !graine || !migration || !leurre) throw new Error(avec.journal.join(" | "));
+    if (!graine.includes(" -p gf11-e2e-essai ") || !graine.includes(" --entrypoint sh preparation -c ")) throw new Error(`graine : ${graine}`);
+    const attendu = texteCommande(argumentsMigration("gf11-e2e-essai", "gf11-e2e/app:essai", "NOM")).replace(" NOM ", " ");
+    if (migration.replace(/ gf11-e2e-essai-migration-web-[0-9a-f]{8} /, " ") !== attendu) throw new Error(`migration : ${migration}`);
+    const sans = planEssai(false);
+    await sansConsole(() => jouerEtapesVolume106(sans));
+    if (sans.journal.length !== 0) throw new Error(`sans l'option : ${sans.journal.join(" | ")}`);
+  });
+
+  console.log(echecs.length === 0 ? "Gardes de --volume-1-0-6 : aucune n'est tombée." : `Gardes de --volume-1-0-6 : ${echecs.length} vérification(s) en échec.`);
+  return echecs.length;
+}
+// </mw:volume-1-0-6>
+
 // --- Arguments --------------------------------------------------------------------------------
 
 export function analyserArguments(argv) {
-  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null, salle: false, autonomieCoupee: false };
+  const options = { mode: "faux", schema: "https", prefixe: "cockpit-e2e", tag: null, motif: null, dryRun: false, gardes: false, garderPile: false, fichierEnv: null, posteMouvement: null, salle: false, autonomieCoupee: false, volume106: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const suivant = () => {
@@ -1964,6 +2217,9 @@ export function analyserArguments(argv) {
     else if (arg === "--poste-mouvement") options.posteMouvement = suivant();
     // Côté coupé de l'interrupteur (décision n° 13) : COCKPIT_AUTONOMY=off dans le fichier du banc, jamais depuis le shell.
     else if (arg === "--autonomie-coupee") options.autonomieCoupee = true;
+    // <mw:volume-1-0-6> Volume d'une installation 1.0.6, migré avant le démarrage (« --reel-hors-ligne » seulement).
+    else if (arg === "--volume-1-0-6") options.volume106 = true;
+    // </mw:volume-1-0-6>
     else refuser(`option inconnue : « ${arg} ».`);
   }
   if (!options.tag) options.tag = "local";

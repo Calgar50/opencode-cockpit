@@ -1,0 +1,59 @@
+{
+  // Configuration initiale posée par opencode-cockpit au premier démarrage.
+  // Modifiable ensuite depuis l'interface (Paramètres > opencode).
+  "$schema": "https://opencode.ai/config.json",
+
+  // Aucune mise à jour automatique : la version est épinglée dans l'image.
+  "autoupdate": false,
+
+  // Jamais de partage public des conversations (opencode.ai).
+  "share": "disabled",
+
+  // Seul GitHub Copilot est autorisé : aucun code n'est envoyé à un autre fournisseur,
+  // en particulier pas aux modèles gratuits « OpenCode Zen » activés par défaut par opencode.
+  "enabled_providers": ["banc"],
+  // Seconde barrière : fournisseurs gratuits d'opencode explicitement désactivés (leurs chargeurs ne tournent pas).
+  "disabled_providers": ["opencode", "opencode-go"],
+  // Banc e2e, option « --volume-1-0-6 » (migration du web, MW) : volume d'une installation 1.0.0 à 1.0.6. Seuls
+  // enabled_providers et ce fournisseur diffèrent du fichier livré (levier de M-B1, comme opencode-hors-ligne.jsonc) ;
+  // tout le reste est celui de la 1.0.6 à l'octet, commentaires compris.
+  "provider": {
+    "banc": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Banc e2e",
+      "options": {
+        "baseURL": "http://faux-fournisseur:8080/v1",
+        // Valeur factice, exigée par le client compatible OpenAI : le faux fournisseur ne la lit pas (même valeur que
+        // opencode-hors-ligne.jsonc ; ce n'est pas un secret).
+        "apiKey": "banc-hors-ligne"
+      },
+      "models": {
+        "banc-1": {
+          "name": "Banc 1",
+          "cost": { "input": 3, "output": 15 }
+        }
+      }
+    }
+  },
+
+  // Serveurs de langage et formateurs : téléchargements à la volée désactivés.
+  "lsp": false,
+  "formatter": false,
+
+  // Permissions posées à l'installation : profil « Prudent » de Paramètres > opencode. Appliquer un autre
+  // profil remplace le bloc ci-dessous sans toucher à ce commentaire : seules les règles qui suivent font foi.
+  // Pourquoi aucune commande « de consultation » (git status, git diff...) n'est autorisée d'office :
+  // opencode ne vérifie pas les affectations de variables (export GIT_CONFIG_...), qui suffisent à en
+  // détourner une pour exécuter du code. Sous-agents (task) sur confirmation : leur consigne peut désigner
+  // un fichier (@chemin) qu'opencode lit sans autre contrôle.
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "pwd": "allow"
+    },
+    "task": "ask",
+    "webfetch": "deny",
+    "websearch": "deny"
+  }
+}

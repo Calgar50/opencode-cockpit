@@ -26,6 +26,7 @@
 #   --garder-pile            laisse la pile debout après l'exécution (pour regarder un échec)
 #   --poste-mouvement <v>    simule le réglage d'animations du poste pour le navigateur (reduce ou no-preference)
 #   --autonomie-coupee       COCKPIT_AUTONOMY=off dans le fichier du banc (côté coupé de it2-api-interrupteur)
+#   --volume-1-0-6           avec --reel-hors-ligne seulement : volume oc-config d'une installation 1.0.6, migré avant le démarrage
 #   --gardes                 vérifie les refus d'isolation, sans Docker ni navigateur
 #   --help                   cette aide
 #
@@ -44,7 +45,7 @@ cd "$racine"
 export MSYS_NO_PATHCONV=1
 
 aide() {
-  sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 gardes_seules=0

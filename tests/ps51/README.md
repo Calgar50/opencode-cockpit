@@ -45,7 +45,7 @@ Un nom de commande qualifié compte comme le nom seul : `Microsoft.PowerShell.Ut
 | `docker-inspect` | `.Config.Env` seulement dans `Get-CockpitImageVersion` |
 | `parametres` | `install.ps1` : paramètres de la 1.0.4 + `Http`, `Https`, `TlsPreflight`, `AcceptBrowserBlock`, rien d'autre ; `cockpit.ps1` : `Command`, `Target`, `Purge`, `[switch]Renew`, `ValidateSet` de la 1.0.4 + `tls`, `rollback` |
 | `sauvegarde` | aucun montage `cockpit-tls:` dans le cas `'backup'` |
-| `taille` | `CockpitTls.ps1` : 660 lignes au plus |
+| `taille` | `CockpitTls.ps1` : 800 lignes au plus (700 avant la migration du web de la 1.1.0, A37) |
 
 ## `CockpitTls.ps1` : signatures utilisées par les lots 6 et 7
 
@@ -103,6 +103,7 @@ Motifs types pour les commandes des scripts (chaînes PowerShell entre apostroph
 | santé du conteneur | `'^inspect --format \{\{\.State\.Health\.Status\}\} '` |
 | variables et identifiant d'une image | `'^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} '`, `'^image inspect --format \{\{\.Id\}\} '` |
 | `load`, `run`, `volume` | `'^load '`, `'^run '`, `'^volume '` |
+| migration du web (A37) : conteneur jetable, retrait, arrêt et contrôle d'opencode | `'^run --rm --pull never --name <projet>-migration-web-[0-9a-f]{8} '` (ligne de verdict en `stdout`), `'^rm -f <projet>-migration-web-[0-9a-f]{8}$'`, `'^compose -f \S.* stop opencode$'`, `'^compose -f \S.* ps -q --status running opencode$'`, `'^volume inspect --format \{\{\.Name\}\} <projet>_oc-config$'` — **avant** la règle générique `'^run '`, dont la sortie vide serait lue comme une sortie inattendue (`New-MigrationDockerRules`, `New-InstallDockerRules`, `New-CockpitDockerRules`) |
 | appel qui ne doit jamais avoir lieu | `{ "match": "^load ", "fail": true }` |
 
 ## Espions (`Spies.ps1`)

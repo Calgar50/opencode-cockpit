@@ -871,7 +871,8 @@ try {
             try {
                 Write-Step "Sauvegarde vers backups\cockpit-$stamp.tar.gz"
                 # Conversations de la salle comprises (decision du 17/09 n. 3) ; les deux auth.json restent exclus.
-                Invoke-Docker run --rm --entrypoint tar `
+                # --pull never : l'image du cockpit n'est jamais tiree d'un registre (fiche MW 1.2).
+                Invoke-Docker run --rm --pull never --entrypoint tar `
                     -v "${project}_cockpit-data:/src/cockpit-data:ro" `
                     -v "${project}_oc-config:/src/oc-config:ro" `
                     -v "${project}_oc-data:/src/oc-data:ro" `
@@ -895,7 +896,7 @@ try {
             $archiveDir = Get-ArchiveDir
             # Verification AVANT tout arret : une archive illisible ne coupe pas le cockpit.
             Write-Step "Verification de $($backup.Name)"
-            Invoke-Docker run --rm --entrypoint tar -v "$($backup.DirectoryName):/backup:ro" $image tzf "/backup/$($backup.Name)" | Out-Null
+            Invoke-Docker run --rm --pull never --entrypoint tar -v "$($backup.DirectoryName):/backup:ro" $image tzf "/backup/$($backup.Name)" | Out-Null
             Write-Attention 'La restauration REMPLACE les reglages, couts, archives indexees et la configuration opencode actuels.'
             Write-Attention 'Le dossier archives\ est complete : les fichiers absents de la sauvegarde restent, ceux de meme nom sont remplaces. La connexion GitHub Copilot est conservee.'
             $answer = Read-Host 'Tapez RESTAURER pour confirmer'
@@ -908,7 +909,7 @@ try {
                 $script = "set -e; " +
                     "for d in cockpit-data oc-config oc-data $OmoDataVolume; do find /dst/`$d -mindepth 1 -maxdepth 1 ! -name auth.json -exec rm -rf {} +; done; " +
                     "tar xzf /backup/$($backup.Name) --no-same-owner -C /dst; chown -R 1000:1000 /dst/cockpit-data /dst/oc-config /dst/oc-data /dst/$OmoDataVolume"
-                Invoke-Docker run --rm --user 0 --entrypoint sh `
+                Invoke-Docker run --rm --pull never --user 0 --entrypoint sh `
                     -v "${project}_cockpit-data:/dst/cockpit-data" `
                     -v "${project}_oc-config:/dst/oc-config" `
                     -v "${project}_oc-data:/dst/oc-data" `
@@ -916,6 +917,10 @@ try {
                     -v "${archiveDir}:/dst/archives" `
                     -v "$($backup.DirectoryName):/backup:ro" `
                     $image -c $script
+                # Migration du web (A37, fiche MW 1.1 point 3) : regles Internet de la sauvegarde restauree, apres l'extraction reussie
+                # (en echec, l'exception ci-dessus saute cet appel), conteneurs arretes. Jamais bloquante, redemarrage dans le finally.
+                $webMigration = Invoke-CockpitWebMigration -Root $Root -Project $project -Image $image -Contexte 'restore'
+                Write-CockpitLines (Get-CockpitWebMigrationLines $webMigration 'restore')
             } finally {
                 # Redemarrage dans tous les cas, meme si la restauration a echoue.
                 Write-Step 'Redemarrage des conteneurs'
