@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
 import { knownDirectories, probeSessionsBusyStrict } from "./assistants.ts";
 import { requestPendingRescan } from "./autonomy-requests.ts";
+import { createConsignesStore } from "./consignes-store.ts";
 import type { ActivationPort, Cockpit11, Cockpit11Module, ControlAiInput, ConversationAutonomyPort, RequestsPort } from "./contracts-11.ts";
 import { CONTROL_AGENT_PROMPT, createControlAiModule } from "./control-ai.ts";
 import { collectEditFacts } from "./edit-facts.ts";
@@ -36,6 +37,7 @@ import { CONTROL_AGENT_NAME } from "./shared/control-ai-output.ts";
 import { decoupeCibleConnect, egressAllow } from "./shared/egress-allow.ts";
 import { ecrireEtat } from "./shared/omo-control-protocol.ts";
 import type { OmoPreparedProjects, OmoSupervisorState } from "./shared/omo-types.ts";
+import type { RevoirConsignesEnfantResponse, RevoirEtatResponse, RevoirResponse, TerritoiresResponse } from "./shared/salle3d-types.ts";
 import { classifyCommand } from "./shared/shell-gate.ts";
 import { collectShellContext } from "./shell-facts.ts";
 import { StudioService } from "./studio.ts";
@@ -1139,3 +1141,93 @@ describe("croisements v106 <gf1:v106> : salle × 1.0.6 (fiche §3.10)", () => {
   });
 });
 // </gf1:v106>
+
+// <gf2:v106>
+// --- Grande fusion, GF2 : 3D × 1.0.6 (fiche-fusion-v106 §4) -------------------------------------------------------------------
+// La 3D n'ajoute qu'un appel à opencode avec un dossier : GET /session/status {directory} des territoires (territoires-service.ts),
+// sur les dossiers des racines récentes filtrés par projects.isAllowedDirectory (refus %XX de la 1.0.6). « Revoir » et ses
+// consignes gardées ne parlent jamais à opencode. Câblage complet (modules « tous »), faux à double décodage.
+
+/** Racine de conversation récente posée en base, comme une conversation héritée d'une version antérieure, dans `directory`. */
+function racineRecente(h: CockpitHarness, id: string, directory: string): void {
+  const maintenant = Date.now();
+  h.db
+    .prepare(
+      "INSERT INTO sessions (id, parent_id, root_id, directory, title, purpose, instance, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, 'chat', 'principale', ?, ?)",
+    )
+    .run(id, id, directory, "[synthétique] conversation héritée", maintenant, maintenant);
+}
+
+const RACINE_PIEGE = "ses_gf2_piege";
+const racineLegitime = (index: number) => `ses_gf2_legitime_${index}`;
+
+describe("croisements v106 <gf2:v106> : 3D × 1.0.6 (fiche §4)", () => {
+  it("T-3D1 : racine au dossier %XX → absente des territoires, aucun GET /session/status avec ce dossier ; noms légitimes interrogés à l'octet", async (t) => {
+    const { h } = await start(t, { modules: "tous" });
+    racineRecente(h, RACINE_PIEGE, TRAP_DIR);
+    LEGIT.forEach((nom, index) => racineRecente(h, racineLegitime(index), dirOf(nom)));
+    const avant = h.fake.requests.length;
+    const usageAvant = usageRows(h);
+
+    const reponse = await h.call("GET", "/api/salle-controle/territoires", { headers: h.headers.authed });
+    assert.equal(reponse.status, 200, reponse.body);
+    const vue = reponse.json<TerritoiresResponse>();
+    const territoires = [...vue.projets, ...(vue.salle?.projets ?? [])];
+    const racines = territoires.flatMap((territoire) => territoire.conversations.map((c) => c.rootId));
+    assert.equal(racines.includes(RACINE_PIEGE), false, "une racine au dossier %XX n'est jamais un territoire");
+    assert.equal(
+      territoires.some((territoire) => PERCENT.test(territoire.projet)),
+      false,
+      "aucun territoire au nom %XX (projets du workspace filtrés comme les racines)",
+    );
+    for (const [index, nom] of LEGIT.entries()) {
+      const territoire = vue.projets.find((candidat) => candidat.projet === nom);
+      assert.ok(territoire, `territoire « ${nom} »`);
+      assert.deepEqual(
+        territoire.conversations.map((c) => c.rootId),
+        [racineLegitime(index)],
+      );
+    }
+    const statuts = h.fake.requests.slice(avant).filter((r) => r.method === "GET" && r.pathname === "/session/status");
+    assert.deepEqual(statuts.map((r) => r.query.directory ?? "").sort(), LEGIT.map(dirOf).sort(), "un statut par dossier légitime, à l'octet");
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}`),
+      statuts.map(() => "GET /session/status"),
+      "aucune autre requête",
+    );
+    assert.equal(usageRows(h), usageAvant);
+    assertSentinel(h, "T-3D1");
+  });
+
+  it("T-3D2 : « Revoir » (route, état, consigne, consignes d'un enfant) → zéro requête à opencode, racine %XX comprise, avec le faux à double décodage", async (t) => {
+    const { h } = await start(t, { modules: "tous" });
+    const legitime = await conversation(h, dirOf("Remise 20%"), "Remise");
+    racineRecente(h, RACINE_PIEGE, TRAP_DIR);
+    const store = createConsignesStore(h.db);
+    for (const rootId of [legitime.id, RACINE_PIEGE]) {
+      assert.equal(store.enregistrer({ rootId, parent: rootId, enfant: "ses_gf2_enfant", callId: "call_gf2", brut: "[synthétique] consigne", at: 1 }), "enregistree");
+    }
+    const avant = h.fake.requests.length;
+    const usageAvant = usageRows(h);
+
+    for (const rootId of [legitime.id, RACINE_PIEGE]) {
+      const revoir = await h.call("GET", `/api/revoir/${rootId}`, { headers: h.headers.authed });
+      assert.equal(revoir.status, 200, revoir.body);
+      assert.equal(revoir.json<RevoirResponse>().instance, "principale");
+      const etat = await h.call("GET", `/api/revoir/${rootId}?etat=1`, { headers: h.headers.authed });
+      assert.equal(etat.json<RevoirEtatResponse>().acces, true);
+      const consigne = await h.call("GET", `/api/revoir/${rootId}/consignes/call_gf2`, { headers: h.headers.authed });
+      assert.equal(consigne.status, 200, consigne.body);
+      const parEnfant = await h.call("GET", `/api/revoir/${rootId}/consignes?enfant=ses_gf2_enfant`, { headers: h.headers.authed });
+      assert.equal(parEnfant.json<RevoirConsignesEnfantResponse>().consignes.length, 1);
+    }
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}`),
+      [],
+      "« Revoir » ne parle jamais à opencode",
+    );
+    assert.equal(usageRows(h), usageAvant, "aucune ligne usage pendant « Revoir »");
+    assertSentinel(h, "T-3D2");
+  });
+});
+// </gf2:v106>
