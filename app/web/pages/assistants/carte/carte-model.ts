@@ -90,8 +90,13 @@ export interface CarteLien {
   etape: MapEdge["etape"] | null;
 }
 
+// <c5:vue-ensemble>
+// Itération 5b (L48) : le seul changement de ce fichier est le mot-clé `export` ci-dessous, le corps est celui de L39b. La vue
+// d'ensemble écrit les mêmes phrases de lien que les vues Centrée et Liste et doit passer par ici : sans cela elle appellerait
+// phraseArete elle-même et pourrait oublier edge.kind, ce que la garde « aucune vue n'appelle phraseArete » de L39b interdit.
+// </c5:vue-ensemble>
 /** Lien d'une arête vue depuis `source` vers `cible`. Le genre de l'arête est TOUJOURS passé à phraseArete (train de V0). */
-function lienDe(edge: MapEdge, source: MapNode, cible: MapNode, autre: MapNode, avance: boolean): CarteLien {
+export function lienDe(edge: MapEdge, source: MapNode, cible: MapNode, autre: MapNode, avance: boolean): CarteLien {
   const trait = traitArete(edge);
   const appliquePar = edge.appliquePar === "cockpit" ? P.appliquePar.cockpit : P.appliquePar.opencode;
   const mot = trait === null ? null : motTrait(trait);

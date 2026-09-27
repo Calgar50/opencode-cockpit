@@ -117,6 +117,14 @@ export interface UpdateItem {
   ratio: number | null;
 }
 
+// <c5:roles>
+/**
+ * Rôle d'un assistant : « equipier » pour un assistant d'équipe (il travaille dans une étape d'équipe, jamais seul dans le chat),
+ * « assistant » pour tous les autres. Absent = « assistant ».
+ */
+export type AssistantRole = "assistant" | "equipier";
+// </c5:roles>
+
 export interface AssistantView {
   /** Nom technique = nom du fichier agents/<name>.md. */
   name: string;
@@ -127,6 +135,10 @@ export interface AssistantView {
   origin: AssistantOrigin;
   catalogId: string | null;
   catalogVersion: number | null;
+  // <c5:roles>
+  /** Rôle lu dans item_meta (colonne `role`) : « equipier » pour un assistant d'équipe, « assistant » sinon. */
+  role?: AssistantRole;
+  // </c5:roles>
   /** null = IA précise (ou aucune). */
   tier: Tier | null;
   taskSize: TaskSize;
@@ -137,6 +149,13 @@ export interface AssistantView {
   examples: string[];
   /** Consignes sans le bloc de règles communes (stripCommonRules). */
   instructions: string;
+  // <c5:methodes>
+  /**
+   * Méthodes attachées, lues dans le FICHIER d'agent (`methodIdsIn`), qui fait foi (D-5-07) : `item_meta.methods` n'en est
+   * que le miroir. Les blocs sont retirés des `instructions` ci-dessus. Absent quand le service ne les rend pas encore.
+   */
+  methods?: string[];
+  // </c5:methodes>
   /** `model:` du fichier. */
   model: string | null;
   modelName: string | null;
@@ -224,6 +243,10 @@ export interface CatalogueItem {
   web: boolean;
   tier: Tier;
   taskSize: TaskSize;
+  // <c5:roles>
+  /** Rôle de l'entrée du catalogue : « equipier » pour un assistant d'équipe, « assistant » sinon. */
+  role?: AssistantRole;
+  // </c5:roles>
   fiches: string[];
   examples: string[];
   instructions: string;

@@ -386,6 +386,75 @@ describe("L36b · suiteEstimate (pause, relance)", () => {
     const reste = suiteEstimate(SUITE, { etapes: [{ stepId: "standards", state: "echec" }] }, contexte());
     assert.equal(reste.etapesFacturees, 3);
   });
+
+  // --- Passages d'une relecture (L42a) : le filtre porte sur les PASSAGES, jamais sur les identifiants ---------------------------
+
+  /** Relecture à `toursMax` tours : le chemin maximal repasse par l'auteur à chaque tour, révision finale comprise. */
+  const relectureDe = (toursMax: 1 | 2): Flow => ({
+    version: 1,
+    blocs: [
+      {
+        type: "relecture",
+        id: "b-relecture",
+        auteur: etape("auteur", "Rédaction", "M", "demande"),
+        relecteur: etape("relecteur", "Relecture", "M", "precedent", "relire-requete-sql"),
+        toursMax,
+        pauseAvantRelecture: true,
+      },
+    ],
+  });
+
+  it("relecture à 2 tours, auteur terminé au tour 1 : le reste garde 2 passages de relecteur ET 2 passages d'auteur", () => {
+    const flow = relectureDe(2);
+    assert.deepEqual(
+      planSteps(flow).map((planned) => planned.stepId),
+      ["auteur", "relecteur", "auteur", "relecteur", "auteur"],
+      "le même identifiant revient à chaque tour",
+    );
+    const reste = suiteEstimate(
+      flow,
+      { etapes: [{ stepId: "auteur", state: "terminee", tours: 1 }, { stepId: "relecteur", state: "prevue" }] },
+      contexte(),
+    );
+    // Un seul passage d'auteur est fait : retirer tous ceux de l'étape ferait disparaître les deux révisions à venir, donc la
+    // moitié des appels restants, du « Coût du reste » comme du plafond d'une relance.
+    assert.deepEqual(
+      reste.parEtape.map((ligne) => ligne.stepId),
+      ["relecteur", "auteur", "relecteur", "auteur"],
+    );
+    assert.equal(reste.etapesFacturees, 4);
+  });
+
+  it("relecture à 1 tour, auteur terminé : il reste le relecteur et la révision finale", () => {
+    const reste = suiteEstimate(relectureDe(1), { etapes: [{ stepId: "auteur", state: "terminee" }] }, contexte());
+    assert.deepEqual(
+      reste.parEtape.map((ligne) => ligne.stepId),
+      ["relecteur", "auteur"],
+    );
+    assert.equal(reste.etapesFacturees, 2);
+  });
+
+  it("propriété : le reste d'une relecture ne perd qu'UN passage d'auteur, jamais tous", () => {
+    const flow = relectureDe(2);
+    const complet = estimateFlow(flow, contexte());
+    const reste = suiteEstimate(flow, { etapes: [{ stepId: "auteur", state: "terminee" }] }, contexte());
+    const unAuteur = complet.parEtape.find((ligne) => ligne.stepId === "auteur")?.maximum ?? 0;
+    assert.ok(unAuteur > 0, "l'auteur est estimé");
+    assert.ok(reste.maximum + 1e-9 >= complet.maximum - unAuteur, `${reste.maximum} < ${complet.maximum} − ${unAuteur}`);
+  });
+
+  it("un compte de tours plus élevé retire bien plusieurs passages", () => {
+    const flow = relectureDe(2);
+    const reste = suiteEstimate(
+      flow,
+      { etapes: [{ stepId: "auteur", state: "terminee", tours: 2 }, { stepId: "relecteur", state: "terminee", tours: 1 }] },
+      contexte(),
+    );
+    assert.deepEqual(
+      reste.parEtape.map((ligne) => ligne.stepId),
+      ["relecteur", "auteur"],
+    );
+  });
 });
 
 // --- Texte canonique de l'empreinte (D-eq-19) -----------------------------------------------------------------------------------

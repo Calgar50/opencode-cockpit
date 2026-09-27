@@ -1,0 +1,294 @@
+/* Propriétaire : L47b.
+   Chronologie du Déroulé (itération 5, D-5-09 ; spécification §5.1, §5.5, §5.6) : bascule « Déroulé | Chronologie », barres des
+   appels d'IA en GRILLE CSS décorative, repères d'outils, de tentatives et de décisions en icône + mot au focus, curseur
+   « maintenant » STATIQUE et tableau des appels.
+   AUCUNE animation, ni transition de mouvement : les barres sont replacées au rendu, jamais animées (web-animations.test.ts).
+   Sous 400 px, la figure disparaît et le tableau reste seul (§5.6). Mode contrasté (forced-colors) : bordures et hachures, la
+   couleur ne dit jamais rien à elle seule. */
+
+/* --- Bascule « Déroulé | Chronologie » ------------------------------------------------------------------------------------ */
+
+.chrono-bascule {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.chrono-bascule-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.chrono-bascule-btn + .chrono-bascule-btn {
+  border-left: 1px solid var(--border);
+}
+.chrono-bascule-btn:hover {
+  background: var(--surface-2);
+}
+.chrono-bascule-btn.selected {
+  background: var(--accent-soft);
+  color: var(--text-1);
+  font-weight: 600;
+}
+.chrono-bascule-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* --- Figure : lignes, barres, repères, curseur ----------------------------------------------------------------------------- */
+
+.chrono-note {
+  margin: 0;
+}
+.chrono-figure {
+  margin: 0;
+  min-width: 0;
+}
+.chrono-axe {
+  position: relative;
+  height: 14px;
+  margin-left: 40%;
+}
+/* Curseur « maintenant » : un trait posé à sa place au rendu, jamais animé. */
+.chrono-now {
+  position: absolute;
+  top: 0;
+  bottom: -4px;
+  width: 0;
+  border-left: 1px dashed var(--warning-ink);
+}
+/* Le mot va à GAUCHE du trait : « maintenant » est la borne de fin de la vue, donc toujours près du bord droit. */
+.chrono-now-mot {
+  position: absolute;
+  top: 0;
+  right: 3px;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.chrono-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chrono-row {
+  display: grid;
+  grid-template-columns: minmax(0, 40%) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chrono-row--groupe {
+  grid-template-columns: minmax(0, 1fr);
+}
+.chrono-who {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+.chrono-name {
+  min-width: 0;
+  font-weight: 600;
+}
+.chrono-deplier {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.chrono-deplier:hover {
+  background: var(--surface-2);
+}
+.chrono-deplier:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chrono-track {
+  position: relative;
+  height: 16px;
+  min-width: 0;
+}
+/* Barres : une grille de colonnes égales ; chaque appel occupe les siennes (`grid-column` posé au rendu). */
+.chrono-bars {
+  display: grid;
+  grid-auto-rows: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.chrono-span,
+.chrono-bar,
+.chrono-bar--encours {
+  grid-row: 1;
+}
+/* Étendue de la ligne : un filet clair sous les appels. */
+.chrono-span {
+  align-self: center;
+  height: 4px;
+  background: var(--accent-soft);
+}
+/* Appel d'IA terminé : barre pleine. */
+.chrono-bar {
+  height: 16px;
+  background: var(--series-1);
+}
+/* Appel encore en cours : hachure, pour ne pas montrer une fin qui n'existe pas. */
+.chrono-bar--encours {
+  background: repeating-linear-gradient(135deg, var(--series-1) 0 4px, var(--surface-1) 4px 8px);
+}
+/* Repères : hors de la partie décorative, donc focusables et lus. */
+.chrono-marks {
+  position: absolute;
+  inset: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+.chrono-mark {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.chrono-tick {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-1);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.chrono-tick--tentative {
+  color: var(--warning-ink);
+}
+.chrono-tick--decision {
+  color: var(--accent);
+}
+.chrono-tick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Le mot : lu par le lecteur d'écran en tout temps, montré au survol et au focus. */
+.chrono-mot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.chrono-tick:hover .chrono-mot,
+.chrono-tick:focus-visible .chrono-mot {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  height: auto;
+  clip-path: none;
+  z-index: 2;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* --- Tableau --------------------------------------------------------------------------------------------------------------- */
+
+/* Dix colonnes (§4.3) : le tableau garde une largeur lisible et c'est son cadre (.table-wrap) qui défile, jamais la page. */
+.chrono-table {
+  min-width: 760px;
+}
+.chrono-table th,
+.chrono-table td {
+  font-size: 12px;
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.chrono-cell-qui {
+  font-weight: 600;
+  text-align: left;
+}
+.chrono-cell-ia {
+  white-space: nowrap;
+}
+
+/* --- 400 px : le tableau seul (§5.6) --------------------------------------------------------------------------------------- */
+
+@media (max-width: 400px) {
+  .chronologie .chrono-figure {
+    display: none;
+  }
+  .chrono-table th,
+  .chrono-table td {
+    padding: 5px 6px;
+  }
+}
+
+/* --- Mode contrasté --------------------------------------------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .chrono-bascule,
+  .chrono-bascule-btn + .chrono-bascule-btn {
+    border-color: CanvasText;
+  }
+  .chrono-bascule-btn.selected {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .chrono-bars {
+    border-color: CanvasText;
+  }
+  .chrono-bar {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .chrono-bar--encours {
+    forced-color-adjust: none;
+    background: repeating-linear-gradient(135deg, CanvasText 0 1px, Canvas 1px 5px);
+  }
+  .chrono-span {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .chrono-now {
+    border-left-color: CanvasText;
+  }
+  .chrono-tick,
+  .chrono-deplier {
+    border-color: CanvasText;
+  }
+  .chrono-tick:hover .chrono-mot,
+  .chrono-tick:focus-visible .chrono-mot {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+}

@@ -78,7 +78,7 @@ export function TeamRunCards({ rootId, advanced, onOpenSession, onLockChange }: 
         <div key={run.id} className="team-cards-item">
           <TeamRunCard run={run} modele={modele} onOpenSession={onOpenSession} onChanged={relire} />
           {modele.resultat === null ? null : (
-            <TeamResultCard run={run} texte={etapeResultat(run)?.extrait ?? ""} advanced={advanced} onAdd={run.resultatsAjoutes ? undefined : () => ajouter(run.id)} />
+            <TeamResultCard run={run} texte={etapeResultat(run)?.extrait ?? ""} genre="extrait" advanced={advanced} onAdd={run.resultatsAjoutes ? undefined : () => ajouter(run.id)} />
           )}
         </div>
       ))}

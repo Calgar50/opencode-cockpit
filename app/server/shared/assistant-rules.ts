@@ -9,6 +9,10 @@
 // Le bundle web l'importe par chemin relatif : toute dépendance ajoutée ici doit rester pure (pricing.ts l'est).
 // Toute mise à jour d'opencode impose de relire les citations « fichier:ligne » et de relancer core.test.ts.
 import { COPILOT_PRICES, computeCost, type ModelPrice, roundUsd } from "../pricing.ts";
+// <c5:methodes-import>
+// methods.ts est pur lui aussi (il n'importe que construction-constants.ts) : le bundle web ne gagne aucune dépendance.
+import { stripMethodBlocks } from "./methods.ts";
+// </c5:methodes-import>
 
 export type { ModelPrice } from "../pricing.ts";
 
@@ -1077,7 +1081,39 @@ export interface AssistantDraft {
   icon: AssistantIcon;
   /** Nom technique imposé (sinon dérivé du titre). */
   name?: string;
+  // <c5:methodes>
+  /**
+   * Méthodes attachées (D-5-07) : identifiants du catalogue des méthodes, 2 au plus (METHODS_PER_ASSISTANT), uniques et
+   * attachables (`kind: "consigne"`). Le contrôle et le rendu des blocs vivent côté serveur (assistants.ts) : ce module
+   * ne connaît pas le catalogue, il ne reçoit que les blocs déjà rendus (assistantBody).
+   */
+  methods?: string[];
+  // </c5:methodes>
 }
+
+// <c5:methodes-niveau>
+/**
+ * Niveau d'IA d'un assistant DÉJÀ installé, tel qu'un enregistrement doit le poser (itération 5, corrections de la relecture de
+ * 5a V2). Une seule règle pour tous les chemins qui réenregistrent un assistant : l'assistant de création (`draftFromView`) et
+ * l'ajout d'une méthode depuis la bibliothèque (`requestWithMethod`).
+ *
+ * Un assistant créé en mode Avancé avec une IA précise n'a AUCUN niveau (`tier` null) et garde son IA. Repris en mode Simple, il
+ * ne peut pas être renvoyé tel quel : `PUT /api/assistants/:name` refuse une IA précise hors du mode Avancé (« Action réservée au
+ * mode Avancé »). On retombe alors sur le niveau dont l'IA est justement celle de l'assistant, et, à défaut, sur « equilibre ».
+ * Ainsi l'ajout d'une méthode ne change jamais l'IA en Avancé, et n'échoue jamais en Simple.
+ *
+ * `null` en retour veut dire « IA précise conservée » : l'appelant envoie alors `model`, et lui seul.
+ */
+export function tierOfView(
+  view: { tier: Tier | null; model: string | null },
+  advanced: boolean,
+  tiers: readonly { id: Tier; model: string | null }[],
+): Tier | null {
+  if (view.tier !== null) return view.tier;
+  if (advanced && view.model) return null;
+  return tiers.find((niveau) => niveau.model !== null && niveau.model === view.model)?.id ?? "equilibre";
+}
+// </c5:methodes-niveau>
 
 /** Nom technique opencode (identique à studio-schema.ts NAME_RE). */
 export const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -1329,10 +1365,22 @@ export function ficheSentence(fiche: string): string {
 }
 
 /** Corps du fichier : consignes, phrases des fiches manquantes, puis un seul bloc de règles communes. */
-export function assistantBody(instructions: string, fiches: readonly string[]): string {
-  let text = stripCommonRules(instructions);
+// <c5:methodes-corps>
+// `methodBlocks` : blocs de méthode DÉJÀ rendus (renderMethodBlock), séparés d'une ligne vide, dans l'ordre demandé. Ils
+// s'insèrent entre les consignes (phrases de fiches comprises) et les règles communes, qui restent le DERNIER bloc du corps
+// (D-5-07). Les consignes reçues sont d'abord débarrassées de tout bloc de méthode, comme du bloc de règles communes : un
+// texte recollé depuis le fichier ne les écrit donc jamais deux fois.
+// </c5:methodes-corps>
+export function assistantBody(instructions: string, fiches: readonly string[], methodBlocks = ""): string { // c5
+  // <c5:methodes-strip>
+  let text = stripMethodBlocks(stripCommonRules(instructions));
+  // </c5:methodes-strip>
   const missing = checkFiches(fiches).map(ficheSentence).filter((sentence) => !text.includes(sentence));
   if (missing.length > 0) text = text ? `${text}\n\n${missing.join("\n")}` : missing.join("\n");
+  // <c5:methodes-blocs>
+  const blocs = methodBlocks.trim();
+  if (blocs !== "") text = text ? `${text}\n\n${blocs}` : blocs;
+  // </c5:methodes-blocs>
   return `${text}\n\n${COMMON_RULES_BLOCK}\n`;
 }
 

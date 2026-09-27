@@ -24,7 +24,7 @@
 // (écrivain unique : fact-store.ts).
 import type { Hono } from "hono";
 import type { EventDerivation, StopTreePort, UsageUpdatedData } from "./contracts-11.ts";
-import type { EqContext, EqModule, PreflightInput, RunRow, TeamGuardsPort, TeamProxyGuardRequest, TeamRow } from "./contracts-eq.ts";
+import type { EqContext, EqModule, PreflightInput, RunRow, StepRow, TeamGuardsPort, TeamProxyGuardRequest, TeamRow } from "./contracts-eq.ts";
 import { errorMessage } from "./log.ts";
 import { isAdvanced } from "./mode.ts";
 import type { OcGlobalEvent } from "./opencode.ts";
@@ -34,7 +34,7 @@ import { requestFromStepMessage } from "./shared/flow.ts";
 import { ID } from "./shared/ids.ts";
 import { planSteps } from "./shared/team-limits.ts";
 import { phraseErreur, refusLancement, TEXTES } from "./shared/team-texts.ts";
-import type { Flow, TeamEstimateResponse, TeamErrorCode, TeamRunBody, TeamRunState, TeamRunView } from "./shared/team-types.ts";
+import type { Flow, FlowBlock, FlowStep, TeamEstimateResponse, TeamErrorCode, TeamRunBody, TeamRunState, TeamRunView, TeamStepState } from "./shared/team-types.ts";
 import { ACTIVE_RUN_STATES, createTeamStore, type TeamStore } from "./team-store.ts";
 
 export function neutralGuards(): TeamGuardsPort {
@@ -111,7 +111,7 @@ interface RouteRefusal {
 // --- Reconstitution locale d'un lancement (D-eq-27) --------------------------------------------------------------------------------
 
 /** Lancements relançables : la suite repart en « preparation » (D-eq-16, transitions de T4). */
-const RELAUNCHABLE: readonly TeamRunState[] = Object.freeze(["interrompue", "echec", "plafond"]);
+export const RELAUNCHABLE: readonly TeamRunState[] = Object.freeze(["interrompue", "echec", "plafond"]); // c5 (GF4) : lue aussi par l'estimation d'une relance
 
 /** Identifiant de lancement : UUID tiré au lancement (§4.1.5, « lancement UUID »). */
 const RUN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -174,13 +174,247 @@ function teamRowOfRun(eq: EqContext, run: RunRow): TeamRow {
   };
 }
 
-/** Étapes non terminées, dans l'ordre de planSteps (chemin restant d'une relance, §4.1.2). */
+// <c5:chemin-relance>
+/**
+ * Chemin restant d'une relance (§4.1.2) : celui que l'exécuteur va vraiment faire (`cheminDeRelance`, plus bas). Grande fusion
+ * (GF4, A27/A28 §3) : il retirait toute étape terminée une fois (`remainingSteps`), alors que l'estimation montrée comptait par
+ * passage — la confirmation d'une relance dont une relecture avait commencé était refusée « estimation-perimee » à chaque fois.
+ */
 function remainingSteps(store: TeamStore, run: RunRow): string[] {
   const flow = parseJson<Flow | null>(run.flow, null);
-  const ordre = flow === null ? [] : planSteps(flow).map((step) => step.stepId);
-  const finies = new Set(store.steps.ofRun(run.id).filter((step) => step.state === "terminee").map((step) => step.step_id));
-  return ordre.filter((stepId) => !finies.has(stepId));
+  return flow === null ? [] : cheminDeRelance(flow, store.steps.ofRun(run.id));
 }
+// </c5:chemin-relance>
+
+// <c5:reprise-redemarrage>
+/**
+ * Clôture 5b (D-5b-1) : chemin restant d'une PAUSE reprise après un redémarrage du cockpit, compté PAR PASSAGE, exactement comme
+ * POST …/estimate le compte pour une relance (team-preflight.ts, `estimate`) : une ligne par (étape, tour), sa dernière tentative
+ * faisant foi, et chaque passage terminé retiré une fois du chemin maximal de `planSteps`. La reprise ne refait rien de déjà
+ * fait, donc ce chemin est bien celui qui reste, et l'empreinte recalculée par `check` tombe sur celle de l'estimation montrée.
+ * `remainingSteps`, lui, retire toute étape terminée une fois : pour une relecture dont le premier jet est fait, il perd les
+ * révisions à venir, et la confirmation était refusée « estimation-perimee » à chaque fois (mesuré sur le vrai pré-lancement).
+ * Grande fusion (GF4, A27/A28 §3) : seule la reprise d'une pause compte encore ainsi ; une relance compte ce qu'elle refait
+ * (`cheminDeRelance`, section c5:chemin-relance), et `remainingSteps` lit ce chemin-là.
+ */
+export function cheminParPassages(store: TeamStore, run: RunRow): string[] {
+  const flow = parseJson<Flow | null>(run.flow, null);
+  if (flow === null) return [];
+  // Grande fusion (GF4, A27/A28 §3) : passages de la tentative COURANTE seulement (`passagesTermines`), comme l'exécuteur les
+  // compte (`toursTermines`) ; un passage d'une tentative précédente, laissé en base par une relance, n'est plus « fait ».
+  return resteParPassages(flow, passagesTermines(store.steps.ofRun(run.id)));
+}
+
+/**
+ * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
+ * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
+ * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
+ * (400 invalid, sans aucune requête, A4). GF4 (A27) : lus aussi pour une relance, que la boîte de [Relancer la suite] annonce.
+ */
+export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const brut = (parsed as Record<string, unknown>).confirmations;
+  if (brut === undefined) return {};
+  if (typeof brut !== "object" || brut === null || Array.isArray(brut)) return null;
+  const accords: { budget?: true; plafond?: true } = {};
+  for (const [cle, valeur] of Object.entries(brut)) {
+    if ((cle !== "budget" && cle !== "plafond") || valeur !== true) return null;
+    accords[cle] = true;
+  }
+  return accords;
+}
+// </c5:reprise-redemarrage>
+
+// <c5:chemin-relance>
+/**
+ * Grande fusion (GF4, A27/A28, constats-5b §3) — UN SEUL chemin pour la relance d'un lancement interrompu, en échec ou au
+ * plafond : celui que l'exécuteur va VRAIMENT faire (P3). L'estimation montrée (POST …/estimate), le contrôle de la confirmation
+ * (POST …/relancer, `check`), le libellé [Relancer la suite (≈ x $)] et l'exécution (`relaunch`) le lisent tous ici. Avant, la
+ * relance d'une relecture commencée était refusée « estimation-perimee » à chaque fois (l'estimation comptait par passage,
+ * la route retirait toute étape terminée une fois), et le compte par passage aurait sous-estimé une relance qui REFAIT le bloc
+ * entier au tour 1 avec des sessions neuves (D-5-14, `relectureQuiRepart`).
+ * Fonctions pures sur les lignes `team_run_steps` : aucune lecture d'opencode (A4).
+ */
+type LigneDEtape = Pick<StepRow, "step_id" | "tour" | "tentative" | "state" | "verdict" | "choix">;
+
+/** Tentative COURANTE (la plus haute) de chaque étape. */
+function tentativesCourantes(lignes: readonly LigneDEtape[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const ligne of lignes) out.set(ligne.step_id, Math.max(out.get(ligne.step_id) ?? 0, ligne.tentative));
+  return out;
+}
+
+/**
+ * Passages TERMINÉS de chaque étape dans sa tentative courante, un par tour : la règle de `toursTermines` (team-runner.ts). Une
+ * relance repart du tour 1 avec une tentative de plus : les tours de la tentative précédente ne comptent plus.
+ */
+export function passagesTermines(lignes: readonly LigneDEtape[]): Map<string, number> {
+  const courantes = tentativesCourantes(lignes);
+  const out = new Map<string, number>();
+  for (const ligne of lignes) {
+    if (ligne.state !== "terminee" || ligne.tentative !== courantes.get(ligne.step_id)) continue;
+    out.set(ligne.step_id, (out.get(ligne.step_id) ?? 0) + 1);
+  }
+  return out;
+}
+
+/**
+ * Verdicts d'un relecteur dans sa tentative COURANTE, du tour 1 au premier tour non terminé ; `null` = verdict illisible. Les
+ * lignes d'une tentative précédente n'y entrent jamais : mêlées, un « rien à reprendre » du tour 1 relancé pouvait être suivi du
+ * « à reprendre » d'un ancien tour 2, et la relecture repartait pour un tour de trop.
+ */
+export function verdictsCourants(lignes: readonly LigneDEtape[], relecteurId: string): Array<"a-reprendre" | "rien-a-reprendre" | null> {
+  const courante = tentativesCourantes(lignes).get(relecteurId);
+  const parTour = new Map<number, LigneDEtape>();
+  for (const ligne of lignes) if (ligne.step_id === relecteurId && ligne.tentative === courante) parTour.set(ligne.tour, ligne);
+  const out: Array<"a-reprendre" | "rien-a-reprendre" | null> = [];
+  for (let tour = 1; parTour.get(tour)?.state === "terminee"; tour++) {
+    const verdict = parTour.get(tour)?.verdict;
+    out.push(verdict === "a-reprendre" || verdict === "rien-a-reprendre" ? verdict : null);
+  }
+  return out;
+}
+
+/** Dernière ligne de chaque étape : tentative la plus haute, puis tour le plus haut (`lastRows`, team-runner.ts). */
+function dernieresLignes(lignes: readonly LigneDEtape[]): Map<string, LigneDEtape> {
+  const out = new Map<string, LigneDEtape>();
+  for (const ligne of lignes) {
+    const kept = out.get(ligne.step_id);
+    if (!kept || ligne.tentative > kept.tentative || (ligne.tentative === kept.tentative && ligne.tour >= kept.tour)) out.set(ligne.step_id, ligne);
+  }
+  return out;
+}
+
+/** Étapes déclarées d'un bloc qui n'est pas une relecture (une pause n'en a aucune). */
+function stepsOfFlowBlock(bloc: FlowBlock): FlowStep[] {
+  switch (bloc.type) {
+    case "etape":
+      return [bloc.etape];
+    case "avis":
+      return [...bloc.avis, bloc.synthese];
+    case "aiguillage":
+      return [bloc.aiguilleur, ...(Array.isArray(bloc.specialistes) ? bloc.specialistes : []), ...(bloc.synthese ? [bloc.synthese] : [])];
+    default:
+      return [];
+  }
+}
+
+/** Choix CONFIRMÉ relu dans la colonne `choix` de l'aiguilleur (même lecture que `lireChoixConfirme`, team-runner.ts). */
+function choixTient(brut: string | null): boolean {
+  if (brut === null || brut === "") return false;
+  if (brut === "aucun") return true;
+  try {
+    const value: unknown = JSON.parse(brut);
+    return Array.isArray(value) && value.some((id) => typeof id === "string" && id !== "");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bloc « relecture » qui REPART à la relance (`relectureQuiRepart`) : une de ses deux étapes n'est pas terminée et son dernier
+ * verdict, lu dans la tentative courante, ne l'a pas clos. Il repart alors ENTIER au tour 1, sessions neuves des deux côtés.
+ */
+function relectureRepart(bloc: Extract<FlowBlock, { type: "relecture" }>, dernieres: Map<string, LigneDEtape>, lignes: readonly LigneDEtape[]): boolean {
+  if (verdictsCourants(lignes, bloc.relecteur.id).at(-1) === "rien-a-reprendre") return false;
+  return [bloc.auteur.id, bloc.relecteur.id].some((id) => dernieres.get(id)?.state !== "terminee");
+}
+
+/**
+ * Étapes qu'une relance REFAIT — nouvelle ligne au tour 1, tentative + 1 — dans l'ordre des étapes déclarées : toute étape non
+ * terminée, sauf un spécialiste « Non choisi » dont VOTRE choix tient (aiguilleur terminé, choix lisible) ; plus les deux étapes
+ * d'une relecture qui repart. C'est la règle de `relaunch` (team-runner.ts), qui la lit ici.
+ */
+export function etapesARefaire(flow: Flow, lignes: readonly LigneDEtape[]): Set<string> {
+  const dernieres = dernieresLignes(lignes);
+  const out = new Set<string>();
+  flow.blocs.forEach((bloc) => {
+    if (bloc.type === "relecture") {
+      if (relectureRepart(bloc, dernieres, lignes)) {
+        out.add(bloc.auteur.id);
+        out.add(bloc.relecteur.id);
+      }
+      return;
+    }
+    const arbitre = bloc.type === "aiguillage" && dernieres.get(bloc.aiguilleur.id)?.state === "terminee" && choixTient(dernieres.get(bloc.aiguilleur.id)?.choix ?? null);
+    for (const step of stepsOfFlowBlock(bloc)) {
+      const derniere = dernieres.get(step.id);
+      if (derniere?.state === "terminee") continue;
+      if (derniere?.state === "non-choisi" && arbitre) continue;
+      out.add(step.id);
+    }
+  });
+  return out;
+}
+
+/**
+ * Chemin qu'une relance EXÉCUTE AU PLUS, en passages de `planSteps` (le chemin maximal, celui que le plafond couvre) :
+ * - une relecture qui REPART (`relectureRepart`) reprend TOUS ses passages : le bloc entier, au tour 1, sessions neuves ;
+ * - une relecture close par « rien à reprendre » n'en reprend aucun ;
+ * - une relecture qui ne repart pas poursuit ses tours là où la tentative courante les a laissés : ses passages terminés sont
+ *   retirés du chemin maximal ;
+ * - toute autre étape compte si elle n'est pas terminée. Un spécialiste « Non choisi » dont votre choix tient n'est pas refait
+ *   (`etapesARefaire`), mais il garde sa place dans le compte : l'estimation d'un aiguillage paie ses `choixMax` places les plus
+ *   chères parmi les spécialistes proposés (flow-estimate.ts), et retirer les écartés ferait sortir du compte un retenu placé
+ *   au-delà des premiers. L'estimation reste ainsi un PLAFOND de ce que la relance fait (P3), jamais un minimum.
+ */
+export function cheminDeRelance(flow: Flow, lignes: readonly LigneDEtape[]): string[] {
+  const dernieres = dernieresLignes(lignes);
+  const faits = passagesTermines(lignes);
+  const relectures = new Map<string, "repart" | "close" | "poursuit">();
+  for (const bloc of flow.blocs) {
+    if (bloc.type !== "relecture") continue;
+    let mode: "repart" | "close" | "poursuit" = "poursuit";
+    if (relectureRepart(bloc, dernieres, lignes)) mode = "repart";
+    else if (verdictsCourants(lignes, bloc.relecteur.id).at(-1) === "rien-a-reprendre") mode = "close";
+    relectures.set(bloc.auteur.id, mode);
+    relectures.set(bloc.relecteur.id, mode);
+  }
+  const restants = new Map<string, number>();
+  return planSteps(flow)
+    .map((planned) => planned.stepId)
+    .filter((stepId) => {
+      const mode = relectures.get(stepId);
+      if (mode === undefined) return dernieres.get(stepId)?.state !== "terminee";
+      if (mode === "repart") return true;
+      if (mode === "close") return false;
+      const deja = restants.get(stepId) ?? faits.get(stepId) ?? 0;
+      restants.set(stepId, Math.max(0, deja - 1));
+      return deja <= 0;
+    });
+}
+
+/** Chemin restant compté PAR PASSAGE (pause reprise, qui ne refait rien) : chaque passage terminé retiré une fois. */
+function resteParPassages(flow: Flow, faits: Map<string, number>): string[] {
+  const restants = new Map(faits);
+  return planSteps(flow)
+    .map((planned) => planned.stepId)
+    .filter((stepId) => {
+      const restant = restants.get(stepId) ?? 0;
+      if (restant <= 0) return true;
+      restants.set(stepId, restant - 1);
+      return false;
+    });
+}
+
+/**
+ * État des étapes rendu par un chemin (estimation d'une suite, `suiteEstimate`) : `tours` = passages prévus moins passages du
+ * chemin. Compter par identifiant ferait passer une relecture dont le premier jet est fini pour une étape entièrement terminée.
+ */
+export function etatDuChemin(flow: Flow, chemin: readonly string[]): Array<{ stepId: string; state: TeamStepState; tours: number }> {
+  const compter = (ids: readonly string[]) => {
+    const out = new Map<string, number>();
+    for (const id of ids) out.set(id, (out.get(id) ?? 0) + 1);
+    return out;
+  };
+  const prevus = compter(planSteps(flow).map((planned) => planned.stepId));
+  const restants = compter(chemin);
+  return [...prevus].map(([stepId, total]) => {
+    const reste = restants.get(stepId) ?? 0;
+    return { stepId, state: (reste > 0 ? "prevue" : "terminee") as TeamStepState, tours: Math.max(0, total - reste) };
+  });
+}
+// </c5:chemin-relance>
 
 // --- Module -----------------------------------------------------------------------------------------------------------------------
 
@@ -358,6 +592,15 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       return run ?? { status: 404, code: "not-found" };
     };
     const isRefusal = (value: RunRow | RouteRefusal): value is RouteRefusal => "code" in value;
+    // <c5:reprise-redemarrage>
+    /**
+     * Clôture 5b (D-5b-1) : une pause qui a survécu à un redémarrage du cockpit sans l'instantané de son estimation passe aussi par
+     * ces deux routes — estimation MONTRÉE, puis confirmation. C'est la vue du runner qui le dit (`pause.reestimation`), calculée
+     * sur la base seule : aucune requête à opencode avant la décision (A4). Une pause dont l'instantané est là (lancée par ce
+     * processus) reste hors de ces routes : seule VOTRE réponse (POST …/continue) la fait repartir.
+     */
+    const repriseAttendue = (run: RunRow): boolean => run.state.startsWith("attente-") && eq.ports.runner.view(run.id)?.pause?.reestimation !== undefined;
+    // </c5:reprise-redemarrage>
 
     app.post("/api/team-runs/:runId/stop", async (c) => {
       const run = runOf(c.req.param("runId"));
@@ -373,7 +616,9 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       const run = runOf(c.req.param("runId"));
       if (isRefusal(run)) return c.json(body(run), run.status);
       if (simpleFermees()) return c.json(body({ status: 403, code: "equipes-simple-fermees" }), 403);
-      if (!RELAUNCHABLE.includes(run.state)) return c.json(body({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      if (!RELAUNCHABLE.includes(run.state) && !repriseAttendue(run)) return c.json(body({ status: 409, code: "pas-relancable" }), 409);
+      // </c5:reprise-redemarrage>
       // Seule route de la relance qui lit opencode (D-eq-17) : elle garde l'instantané que POST …/relancer réutilise.
       const outcome = await eq.ports.preflight.estimate(teamRowOfRun(eq, run), { directory: run.directory, rootId: run.root_session_id }, modeOf(), {
         runId: run.id,
@@ -389,21 +634,52 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       if (isRefusal(run)) return c.json(body(run), run.status);
       if (simpleFermees()) return c.json(body({ status: 403, code: "equipes-simple-fermees" }), 403);
       if (c.req.header(CONFIRM_HEADER) !== "1") return c.json(body({ status: 428, code: "confirmation-requise" }), 428);
-      const empreinte = relaunchEmpreinte(await c.req.json().catch(() => null));
+      const corps: unknown = await c.req.json().catch(() => null);
+      const empreinte = relaunchEmpreinte(corps);
       if (empreinte === null) return c.json(body({ status: 400, code: "invalid" }), 400);
-      if (!RELAUNCHABLE.includes(run.state)) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      const reprise = !RELAUNCHABLE.includes(run.state) && repriseAttendue(run);
+      if (!RELAUNCHABLE.includes(run.state) && !reprise) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // Tour 3 : les accords (budget P7, plafond P8) que la boîte de la reprise vous a montrés. Grande fusion (GF4, A27, constat
+      // neuf de constats-5b §5) : ceux de la boîte de [Relancer la suite] aussi — sans eux, une relance dont la suite dépasse le
+      // budget restant du mois, ou le plafond maximum en Avancé, était refusée à chaque confirmation, sans issue.
+      const accords = accordsDeReprise(corps);
+      if (accords === null) return c.json(body({ status: 400, code: "invalid" }), 400);
+      // </c5:reprise-redemarrage>
       const rebuilt = rebuildRunBody(eq, store, run, empreinte);
       // D-eq-27 : textes purgés avec la conversation → la demande n'est plus reconstituable, la suite ne repart pas.
       if (rebuilt === null) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      // Clôture 5b (D-5b-1, tour 3) : ce que la boîte a montré et que vous avez confirmé vaut accord, comme sur la feuille de
+      // lancement. Sans cela, une pause « garde-fou budgétaire » reprise avec un budget du mois épuisé était refusée
+      // « budget-insuffisant » à chaque confirmation, et seul [Arrêter l'équipe] en sortait. Toutes les autres gardes du
+      // pré-lancement restent (P6 par l'en-tête, empreinte, grammaire, configuration, trop d'équipes). GF4 (A27) : de même pour une
+      // relance ; l'accord n'est jamais écrit dans le lancement (seul le pré-lancement de CETTE confirmation le lit).
+      rebuilt.confirmations = { ...rebuilt.confirmations, ...accords };
+      // </c5:reprise-redemarrage>
       const input: PreflightInput = {
         team: teamRowOfRun(eq, run),
         body: rebuilt,
         mode: modeOf(),
         confirmed: true,
-        relance: { runId: run.id, restantes: remainingSteps(store, run), depense: store.spentOfRun(run.id) },
+        // <c5:reprise-redemarrage>
+        // Une pause reprise ne refait rien : son reste est compté par passage, comme l'estimation qui vous a été montrée.
+        relance: { runId: run.id, restantes: reprise ? cheminParPassages(store, run) : remainingSteps(store, run), depense: store.spentOfRun(run.id) },
+        // </c5:reprise-redemarrage>
       };
       const checked = await eq.ports.preflight.check(input);
       if (!checked.ok) return c.json(relaunchRefusal(checked), checked.status);
+      // <c5:reprise-redemarrage>
+      // L'état a pu changer pendant le pré-lancement (deux confirmations presque simultanées, arrêt) : il est relu avant la
+      // relance, pour qu'une pause déjà reprise ne passe jamais par la relance complète et que rien ne soit relu pour rien.
+      const actuel = store.runs.get(run.id);
+      if (actuel === null || (!RELAUNCHABLE.includes(actuel.state) && !repriseAttendue(actuel))) {
+        // Tour 3 : une reprise devancée par une autre réponse (deux onglets) trouve l'équipe encore active — sa pause revenue avec
+        // son estimation, ou la suite repartie. « … relancez l'équipe depuis la saisie » était faux ici : la phrase dit l'état.
+        const devancee = reprise && actuel !== null && ACTIVE_RUN_STATES.includes(actuel.state);
+        return c.json(relaunchRefusal({ status: 409, code: devancee ? "etat-incompatible" : "pas-relancable" }), 409);
+      }
+      // </c5:reprise-redemarrage>
       const relaunched = await eq.ports.runner.relaunch(run.id, checked.plan);
       if ("ok" in relaunched && relaunched.ok === false) return c.json(relaunchRefusal(relaunched), relaunched.status);
       return c.json(relaunched);

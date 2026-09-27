@@ -71,12 +71,17 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     // délégations (L1d, dont le crochet laisse passer le « once » d'une autre demande qu'une délégation) et plans (L6b, crochet
     // d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0 inchangé
     // ci-dessous.
+    // <c5:inscriptions>
+    // Construction (itération 5, V1 et V2) : les six inscriptions de l'it1 gagnent les quatre routes du groupe « construction »
+    // (L44b methods, L44c secondReading, L47b chronologie, L46a teamCosts). La section couvre la liste attendue de la salle,
+    // que la construction complète ici (grande fusion, GF4) ; le groupe de la salle reste écarté par sertPrincipale.
     const groupes = h.cockpit.wiring.registrations.filter((r) => r.kind === "routes");
     assert.deepEqual(
       groupes.filter(sertPrincipale).map((r) => r.key),
-      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11"],
-      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic",
+      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11", "construction", "construction", "construction", "construction"],
+      "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic, construction ×4",
     );
+    // </c5:inscriptions>
     assert.equal(h.cockpit.wiring.routes.length, groupes.length, "une fonction de routes câblée par inscription");
     // Non-régression de l'ouverture 2bis-V2 : le groupe de routes de la salle sort de la liste comparée, un groupe de l'instance
     // principale y reste.

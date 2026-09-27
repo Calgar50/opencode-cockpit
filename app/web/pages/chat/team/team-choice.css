@@ -1,0 +1,120 @@
+/* Propriétaire : L42c. Carte de choix d'un aiguillage, verdicts d'une relecture et journal replié (5b ; C §9.5, §9.6 ;
+   spécification §2.3, §5.5). Aucune animation ni transition (test « web-animations » : périmètre chat/team/**). L'état et le
+   verdict sont TOUJOURS dits par le mot à côté de l'icône, jamais par la couleur seule (§2.3 l.107-117) : cette feuille ne fait
+   que la mise en page. Textes secondaires en --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes). */
+
+.team-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-choice-illisible {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.team-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.team-choice-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-choice-item input {
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.team-choice-item label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+
+/* Verdict d'une relecture sur une ligne d'étape : mot ET icône, jamais la couleur seule. */
+.team-step-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* Chemin « aucun ne convient » : les deux phrases restent dans le livrable ; seul [Envoyer à cet assistant] s'ajoute. */
+.team-aucun-actions {
+  margin-top: -2px;
+}
+
+/* Journal de relecture, replié sous le résultat. */
+.team-journal {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  background: var(--surface-2);
+}
+
+.team-journal-titre {
+  cursor: pointer;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.team-journal-titre:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Déroulé d'équipe : « ×{n} » du bloc, écart Prévu / Réel en gras, note d'honnêteté. */
+.team-deroule-repetition {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.team-deroule-ecart {
+  margin: 0;
+  color: var(--text-1);
+}
+
+.team-deroule-note {
+  margin: 0;
+}
+
+@media (forced-colors: active) {
+  .team-choice-item label,
+  .team-step-verdict,
+  .team-deroule-repetition,
+  .team-deroule-ecart,
+  .team-deroule-note {
+    color: CanvasText;
+  }
+  .team-journal {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+  .team-journal-titre {
+    color: CanvasText;
+  }
+  .team-journal-titre:focus-visible,
+  .team-choice-item input:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .team-choice-item input {
+    accent-color: CanvasText;
+  }
+}

@@ -6,6 +6,14 @@ import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
 import { Button } from "../../components/ui.tsx";
 import { oc } from "../../lib/api.ts";
+// <c5:methodes-import>
+// Itération 5 (L44e) : puce « + Méthode », méthodes retenues et aperçu modifiable du bloc ajouté au message (D-5-08).
+// Les phrases de refus viennent du module pur (§4.3) : aucune n'est réécrite ici.
+import { methodChipReason } from "../../../server/shared/chat-methods-view.ts";
+// L44f : phrase « Les méthodes d'une équipe se règlent sur ses étapes. » (§4.3), prise au module de textes, jamais réécrite.
+import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
+import { type ChosenMethod, MethodChip, MethodChipList } from "./methods/MethodChip.tsx";
+// </c5:methodes-import>
 import type { ComposerSlots } from "./slots.ts";
 import type { CommandOption } from "./turn.ts";
 // --- équipes (it4) : début ---
@@ -138,6 +146,10 @@ export function Composer({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [menu, setMenu] = useState<Menu | null>(null);
+  // <c5:methodes-etat>
+  // Méthodes retenues pour CE message (2 au plus, D-5-07) : elles ne vivent que le temps de l'envoi, comme le texte.
+  const [methodes, setMethodes] = useState<ChosenMethod[]>([]);
+  // </c5:methodes-etat>
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -160,6 +172,35 @@ export function Composer({
   // --- équipes (it4) : fin ---
 
   const commandName = /^\/([\w-]+)(?=\s|$)/.exec(text)?.[1] ?? null;
+  // --- équipes (it4) : début ---
+  /**
+   * L44f : une ÉQUIPE tient la saisie. Le lanceur (emplacement figé, propriété `team`) n'est posé que par la page du chat, et
+   * celle-ci ne met `disabled` QUE par le verrou d'équipe (`TeamRunCardsProps.onLockChange` → `teamLockProps` de ChatPage.tsx,
+   * D-eq-16) : les deux ensemble disent « une équipe est choisie dans cette conversation ». Ce que vous écrirez ira alors aux
+   * ÉTAPES de l'équipe, qui portent leurs propres méthodes (L42a) : la puce est éteinte et la phrase du §4.3 dit pourquoi. Rien
+   * n'est retiré en silence — les méthodes déjà retenues restent visibles et retirables.
+   * Ligne de la CONSTRUCTION dans un bloc de l'itération 4 : elle lit la propriété de l'emplacement, que web-equipes-slots.test.ts
+   * (contrat de T4w) n'admet qu'entre ces balises. Clôture 5b (A20) : le bloc est désormais VOISIN de la section
+   * c5:methodes-raccourci, jamais dedans ; l'exception est consignée pour la grande fusion (constats-5b.md).
+   */
+  const equipeChoisie = team !== undefined && disabled;
+  // --- équipes (it4) : fin ---
+  // <c5:methodes-raccourci>
+  // Le raccourci se repère sur le texte RÉELLEMENT ENVOYÉ (`text.trim()`, plus bas), comme ChatPage.tsx le fait de son côté :
+  // « ␣/resume » est un raccourci pour l'envoi, alors que la ligne d'origine ci-dessus, qui lit le texte brut, ne le voit pas.
+  // Sans cette ligne, le bloc de méthode partait en ARGUMENTS du raccourci, sans qu'aucune phrase le dise (C §9.4).
+  const raccourci = /^\/([\w-]+)(?=\s|$)/.exec(text.trimStart())?.[1] ?? null;
+  // Message sans texte : le bloc seul ne serait une demande pour personne. Le refus est annoncé, comme celui du raccourci.
+  const sansTexte = text.trim() === "";
+  /** Phrase affichée sous la saisie quand les méthodes retenues ne partiront pas : l'équipe d'abord, puis les refus de L44e. */
+  const raisonMethodes = equipeChoisie
+    ? TEXTES_C5.partout.methodes.limites.equipe
+    : raccourci !== null
+      ? methodChipReason("raccourci")
+      : sansTexte
+        ? methodChipReason("sans-texte")
+        : null;
+  // </c5:methodes-raccourci>
   const onCommandChangeRef = useRef(onCommandChange);
   onCommandChangeRef.current = onCommandChange;
   useEffect(() => {
@@ -274,16 +315,39 @@ export function Composer({
     const trimmed = text.trim();
     const kept = attachments.filter((a) => a.kind === "image" || trimmed.includes(`@${a.filename}`));
     if (!trimmed && kept.length === 0) return;
-    const snapshot = { text, attachments };
+    // <c5:methodes-instantane>
+    // La ligne d'origine (`const snapshot = { text, attachments };`) garde aussi les méthodes retenues : elles reviennent avec
+    // le texte quand rien n'est parti.
+    const snapshot = { text, attachments, methodes };
+    // </c5:methodes-instantane>
     // Rien n'a été envoyé : on remet le message, sauf si l'utilisateur a déjà recommencé à écrire.
     const restore = () => {
       setText((current) => (current ? current : snapshot.text));
       setAttachments((current) => (current.length > 0 ? current : snapshot.attachments));
+      // <c5:methodes-restore>
+      setMethodes((current) => (current.length > 0 ? current : snapshot.methodes));
+      // </c5:methodes-restore>
     };
+    // <c5:methodes-envoi>
+    // Une méthode est un TEXTE (D-5-08) : son bloc est ajouté à la FIN du message, tel que l'aperçu le montre, et rien d'autre
+    // ne change — aucun champ `system`, aucun appel d'IA en plus. Deux cas n'emportent aucun bloc : un message sans texte (le
+    // bloc seul ne serait une demande pour personne) et un RACCOURCI (C §9.4) — dans les deux, la phrase du refus est affichée
+    // sous les méthodes retenues AVANT l'envoi, et les méthodes retenues restent là après : rien n'est retiré en silence.
+    const blocs = trimmed === "" || raccourci !== null ? "" : methodes.map((methode) => methode.texte).join("");
+    const envoye = `${trimmed}${blocs}`;
+    // </c5:methodes-envoi>
     setText("");
     setAttachments([]);
     setMenu(null);
-    const result = onSubmit({ text: trimmed, attachments: kept });
+    // <c5:methodes-vide>
+    // Les méthodes ne sont vidées que si leurs blocs sont VRAIMENT partis : après l'envoi d'une image seule ou d'un raccourci,
+    // elles restent retenues, avec leur phrase, et la personne peut écrire son message puis renvoyer.
+    if (blocs !== "") setMethodes([]);
+    // </c5:methodes-vide>
+    // <c5:methodes-envoi-appel>
+    // La ligne d'origine envoyait `text: trimmed` : c'est le même texte, avec les blocs de méthode ajoutés à la fin (D-5-08).
+    const result = onSubmit({ text: envoye, attachments: kept });
+    // </c5:methodes-envoi-appel>
     if (result instanceof Promise) {
       setSending(true);
       result
@@ -415,6 +479,20 @@ export function Composer({
           </div>
         ) : null}
 
+        {/* <c5:methodes-retenues> */}
+        {/* Itération 5 (L44e) : méthodes retenues et aperçu MODIFIABLE du texte ajouté, sur leur propre ligne, comme les
+            fichiers joints. Ce que l'aperçu montre est ce qui part. Les cas qui n'emportent aucun bloc — raccourci, message
+            sans texte, et depuis L44f une équipe qui tient la saisie — affichent leur phrase ICI, avant l'envoi.
+            Une équipe choisie sans aucune méthode retenue n'a pas de ligne de puces : la phrase se pose alors seule, pour que
+            la puce éteinte ne reste jamais sans explication. */}
+        {equipeChoisie && methodes.length === 0 ? (
+          <div className="methodes-choisies">
+            <p className="methodes-item-raison">{raisonMethodes}</p>
+          </div>
+        ) : null}
+        <MethodChipList valeur={methodes} onChange={setMethodes} raison={raisonMethodes} />
+        {/* </c5:methodes-retenues> */}
+
         <textarea
           ref={area}
           rows={1}
@@ -456,6 +534,13 @@ export function Composer({
           {team}
           {/* --- équipes (it4) : fin --- */}
           {autonomy}
+          {/* <c5:methodes-puce> */}
+          {/* Itération 5 (L44e) : puce « + Méthode », avant « Envoyer » (C §9.4). Désactivée pour un raccourci, repéré sur le
+              texte réellement envoyé (`raccourci`) : aucune méthode ne s'y ajoute.
+              L44f : désactivée aussi quand une équipe tient la saisie (`equipeChoisie`) — les méthodes d'une équipe se règlent
+              sur ses étapes. Les deux raisons sont écrites, même si `equipeChoisie` implique déjà `disabled` aujourd'hui. */}
+          <MethodChip agent={agent} estRaccourci={raccourci !== null} desactive={disabled || equipeChoisie} valeur={methodes} onChange={setMethodes} />
+          {/* </c5:methodes-puce> */}
           {/* 1.1 : « Arrêter » aussi quand l'arbre travaille (stopVisible) ; « Envoyer » tant que la racine ne travaille pas. */}
           {busy || stopVisible ? (
             <Button size="sm" variant="danger" icon="stop" onClick={onAbort}>

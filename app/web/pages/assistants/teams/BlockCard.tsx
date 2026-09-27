@@ -6,7 +6,11 @@
 // StepForm, sur l'étape concernée.
 // Un bouton impossible reste focalisable (aria-disabled) et ne fait rien : la liste des commandes ne change pas de taille d'un
 // bloc à l'autre. Aucun texte écrit ici : tout vient du modèle pur (server/shared/flow-edit.ts). Aucune animation.
-import { useId } from "react";
+// L42d (5b) : une carte de RELECTURE porte en plus « Nombre de tours au maximum » (1 · 2, avec « Un tour = … ») et
+// « Me laisser vérifier le premier jet avant la relecture » ; une carte d'AIGUILLAGE porte « Spécialistes à consulter au plus »
+// (1 · 2) et le groupe « Spécialistes » avec [Ajouter un spécialiste] ; [Retirer ce spécialiste] est rendu par StepForm, sur le
+// spécialiste concerné, tant qu'il en reste plus de 2.
+import { Fragment, useId } from "react";
 import type { BlockCardModel, StepPatch } from "../../../../server/shared/flow-edit.ts";
 import { Icon } from "../../../components/Icon.tsx";
 import { StepForm } from "./StepForm.tsx";
@@ -21,7 +25,57 @@ export interface BlockCardProps {
   onRetirerAvis: (stepId: string) => void;
   onPatchEtape: (stepId: string, patch: StepPatch) => void;
   onPause: (message: string) => void;
+  // <c5:props-l42d>
+  /** [Ajouter un spécialiste] ; appelé seulement quand `bloc.specialistes.ajouter` n'est pas nul. */
+  onAjouterSpecialiste: () => void;
+  /** [Retirer ce spécialiste] ; appelé seulement quand l'étape porte un libellé de retrait. */
+  onRetirerSpecialiste: (stepId: string) => void;
+  /** « Nombre de tours au maximum » (1 · 2). */
+  onTours: (tours: 1 | 2) => void;
+  /** « Me laisser vérifier le premier jet avant la relecture ». */
+  onPauseAvantRelecture: (valeur: boolean) => void;
+  /** « Spécialistes à consulter au plus » (1 · 2). */
+  onChoixMax: (choixMax: 1 | 2) => void;
+  /** Méthodes retenues par une étape. */
+  onMethodesEtape: (stepId: string, methodes: readonly string[]) => void;
+  /** Étapes dont une étape reçoit le résultat (mode Avancé). */
+  onRecoitEtapes: (stepId: string, etapes: readonly string[]) => void;
+  // </c5:props-l42d>
 }
+
+// <c5:nombres-l42d>
+/**
+ * Choix d'un nombre par boutons radio (« Nombre de tours au maximum », « Spécialistes à consulter au plus ») : les valeurs
+ * viennent du modèle, jamais d'un nombre écrit ici. Le groupe porte son libellé, l'aide est rendue à côté par l'appelant.
+ */
+function ChoixNombre({
+  libelle,
+  valeur,
+  choix,
+  nom,
+  onChoisir,
+}: {
+  libelle: string;
+  valeur: number;
+  choix: readonly number[];
+  nom: string;
+  onChoisir: (valeur: 1 | 2) => void;
+}) {
+  return (
+    <fieldset className="tm-ed-nombre">
+      <legend>{libelle}</legend>
+      <div className="row wrap">
+        {choix.map((option) => (
+          <label key={option} className="tm-ed-nombre-choix">
+            <input type="radio" name={nom} checked={option === valeur} onChange={() => onChoisir(option as 1 | 2)} />
+            <span>{option}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+// </c5:nombres-l42d>
 
 /** Bouton de commande d'un bloc : désactivé, il garde le focus et sa place, et ne déclenche rien. */
 function Commande({ libelle, possible, onClick }: { libelle: string; possible: boolean; onClick: () => void }) {
@@ -83,13 +137,50 @@ export function BlockCard(props: BlockCardProps) {
         </div>
       ) : null}
 
-      {bloc.etapes.map((etape) => (
-        <StepForm
-          key={etape.stepId}
-          etape={etape}
-          onPatch={(patch) => props.onPatchEtape(etape.stepId, patch)}
-          onRetirer={() => props.onRetirerAvis(etape.stepId)}
-        />
+      {/* <c5:reglages-l42d> */}
+      {bloc.tours === null ? null : (
+        <div className="stack tight tm-ed-bloc-reglage">
+          <ChoixNombre libelle={bloc.tours.libelle} valeur={bloc.tours.valeur} choix={bloc.tours.choix} nom={`${pauseId}-tours`} onChoisir={props.onTours} />
+          <p className="secondary small tm-ed-bloc-reglage-aide">{bloc.tours.aide}</p>
+        </div>
+      )}
+
+      {bloc.pauseAvantRelecture === null ? null : (
+        <label className="tm-ed-bloc-case">
+          <input type="checkbox" checked={bloc.pauseAvantRelecture.valeur} onChange={(event) => props.onPauseAvantRelecture(event.target.checked)} />
+          <span>{bloc.pauseAvantRelecture.libelle}</span>
+        </label>
+      )}
+
+      {bloc.choixMax === null ? null : (
+        <div className="stack tight tm-ed-bloc-reglage">
+          <ChoixNombre
+            libelle={bloc.choixMax.libelle}
+            valeur={bloc.choixMax.valeur}
+            choix={bloc.choixMax.choix}
+            nom={`${pauseId}-choix`}
+            onChoisir={props.onChoixMax}
+          />
+        </div>
+      )}
+
+      {/* </c5:reglages-l42d> */}
+
+      {bloc.etapes.map((etape, rang) => (
+        <Fragment key={etape.stepId}>
+          {/* c5 (L42d) : « Spécialistes » titre le GROUPE, donc juste avant le premier d'entre eux (après l'aiguilleur). */}
+          {bloc.specialistes !== null && etape.role === "specialiste" && bloc.etapes[rang - 1]?.role !== "specialiste" ? (
+            <h4 className="tm-ed-role">{bloc.specialistes.libelle}</h4>
+          ) : null}
+          <StepForm
+            etape={etape}
+            onPatch={(patch) => props.onPatchEtape(etape.stepId, patch)}
+            /* c5 (L42d) : un spécialiste se retire par son opération propre, un avis par la sienne. */
+            onRetirer={() => (etape.role === "specialiste" ? props.onRetirerSpecialiste(etape.stepId) : props.onRetirerAvis(etape.stepId))}
+            onMethodes={(methodes) => props.onMethodesEtape(etape.stepId, methodes)}
+            onRecoitEtapes={(etapes) => props.onRecoitEtapes(etape.stepId, etapes)}
+          />
+        </Fragment>
       ))}
 
       {bloc.ajouterAvis === null ? null : (
@@ -100,6 +191,17 @@ export function BlockCard(props: BlockCardProps) {
           </button>
         </div>
       )}
+
+      {/* <c5:ajout-specialiste-l42d> */}
+      {bloc.specialistes?.ajouter == null ? null : (
+        <div className="row wrap tm-ed-bloc-ajout">
+          <button type="button" className="btn sm" onClick={props.onAjouterSpecialiste}>
+            <Icon name="plus" size={14} />
+            {bloc.specialistes.ajouter}
+          </button>
+        </div>
+      )}
+      {/* </c5:ajout-specialiste-l42d> */}
     </section>
   );
 }

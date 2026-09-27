@@ -22,6 +22,9 @@ import type { Flow, TeamEstimateResponse, TeamRunBody } from "./shared/team-type
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import { type FakeAgent, nativeAgents, type PermissionRule } from "./test-support/fake-opencode.ts";
 import { canonicalAgentRules, createTeamPreflight, rulesSha256, SNAPSHOT_MAX, SNAPSHOT_TTL_MS } from "./team-preflight.ts";
+// <c5:reprise-redemarrage>
+import { cheminParPassages } from "./team-run-guards.ts";
+// </c5:reprise-redemarrage>
 import { createTeamStore } from "./team-store.ts";
 
 const IA = "github-copilot/gpt-5-mini";
@@ -398,6 +401,19 @@ describe("L37p : groupe A (aucune requête)", () => {
     lancement("run_2", "ses_autre");
     const sansRacine = await corpsEstime(b);
     assert.deepEqual(await refusDe(b, b.entree(sansRacine)), { status: 409, code: "trop-d-equipes" });
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : la relance d'un lancement ENCORE ACTIF — une pause reprise après un redémarrage du cockpit — ne
+    // compte pas ce lancement lui-même : il occupe déjà sa place. Sans cela, deux équipes en pause suffisaient à rendre la
+    // reprise impossible (« trop d'équipes »), alors qu'aucune équipe de plus ne démarrait.
+    const reprise = await refusDe(b, { ...b.entree(corps), relance: { runId: "run_1", restantes: ["e1", "e2"], depense: 0 } });
+    assert.notEqual(reprise.code, "trop-d-equipes");
+    // Non-régression : la relance d'un lancement FINI (interrompu) prend une place de plus, et la limite tient.
+    lancement("run_3", "ses_trois");
+    store.runs.setState("run_3", "interrompue", { cause: "rechargement" });
+    const trois = b.racine("ses_trois");
+    const finie = await refusDe(b, { ...b.entree({ ...sansRacine, rootId: trois }), relance: { runId: "run_3", restantes: ["e1", "e2"], depense: 0 } });
+    assert.deepEqual(finie, { status: 409, code: "trop-d-equipes" });
+    // </c5:reprise-redemarrage>
   });
 
   it("A6 et A7 : dossier = racine du workspace (P9) et secret probable (P10)", async (t) => {
@@ -819,3 +835,60 @@ describe("L37p : « check » ne touche ni lookup ni client (A4), vérifiable par
     }
   });
 });
+
+// <c5:reprise-redemarrage>
+describe("Clôture 5b (D-5b-1) : la confirmation d'une pause reprise retombe sur l'estimation montrée", () => {
+  it("relecture au premier jet fait : l'estimation de relance et `check`, avec le reste que la route transmet, ont la même empreinte", async (t) => {
+    const b = await banc(t, { agents: [...agentsParDefaut(), agent("relire-bis")] });
+    b.h.db
+      .prepare("INSERT INTO item_meta (kind, name, title, rights, task_size, origin, created_at, updated_at) VALUES ('agents', ?, ?, 'lecture', 'M', 'catalogue', 0, 0)")
+      .run("relire-bis", "Relire encore");
+    const racine = b.racine();
+    const flow: Flow = {
+      version: 1,
+      blocs: [
+        {
+          type: "relecture",
+          id: "rel",
+          auteur: { id: "redac", titre: "Rédaction", assistant: "relire-script", niveau: null, taille: "M", consigne: "Rédige.", recoit: "demande" },
+          relecteur: { id: "relec", titre: "Relecture", assistant: "relire-bis", niveau: null, taille: "M", consigne: "Relis.", recoit: "precedent" },
+          toursMax: 2,
+          pauseAvantRelecture: true,
+        },
+      ],
+    };
+    const equipe: TeamRow = { ...EQUIPE, id: "relecture-reprise", flow: JSON.stringify(flow) };
+    // Lancement en pause d'avant la relecture, comme après un redémarrage : premier jet terminé, relecture pas commencée.
+    const store = createTeamStore({ db: b.h.db, now: () => T0 });
+    store.runs.create({ id: "run_r", teamId: null, teamTitre: "Relecture", flow, flowSha256: "flow", estimateSha256: null, modeUi: "avance", rootId: racine, directory: b.directory, estimate: null, plafond: null });
+    store.steps.create({ runId: "run_r", stepId: "redac", tour: 1, tentative: 1, ordre: 1, blocIndex: 0, titre: "Rédaction", agent: "relire-script", state: "prevue" });
+    store.steps.create({ runId: "run_r", stepId: "relec", tour: 1, tentative: 1, ordre: 2, blocIndex: 0, titre: "Relecture", agent: "relire-bis", state: "prevue" });
+    const premierJet = { runId: "run_r", stepId: "redac", tour: 1, tentative: 1 };
+    assert.ok(store.steps.setState(premierJet, "en-cours") && store.steps.setState(premierJet, "terminee"));
+
+    const estimation = await b.preflight.estimate(equipe, { directory: b.directory, rootId: racine }, "avance", { runId: "run_r" });
+    assert.equal(estimation.ok, true, JSON.stringify(estimation));
+    const montree = (estimation as { ok: true; response: TeamEstimateResponse }).response;
+
+    const row = store.runs.get("run_r");
+    assert.ok(row);
+    // Le reste que POST …/relancer transmet pour une pause reprise : le premier jet retiré UNE fois, les révisions gardées.
+    const restantes = cheminParPassages(store, row);
+    assert.deepEqual(restantes, ["relec", "redac", "relec", "redac"]);
+    const entree: PreflightInput = {
+      team: equipe,
+      body: b.corps({ rootId: racine, estimateSha256: montree.estimateSha256 }),
+      mode: "avance",
+      confirmed: true,
+      relance: { runId: "run_r", restantes, depense: 0 },
+    };
+    const accepte = await b.sansRequete(() => b.preflight.check(entree));
+    assert.equal(accepte.ok, true, `la confirmation retombe sur l'estimation montrée : ${JSON.stringify(accepte)}`);
+    assert.equal(accepte.ok && accepte.plan.estimateSha256, montree.estimateSha256);
+    assert.equal(accepte.ok && accepte.plan.plafond, montree.plafond, "le plafond confirmé est celui qui a été montré");
+
+    // Contrôle discriminant : compté par identifiant d'étape, le même reste perd les révisions et ne tombe plus sur l'empreinte.
+    assert.deepEqual(await refusDe(b, { ...entree, relance: { runId: "run_r", restantes: ["relec", "relec"], depense: 0 } }), { status: 409, code: "estimation-perimee" });
+  });
+});
+// </c5:reprise-redemarrage>

@@ -21,6 +21,13 @@ const WEB_DIR = path.join(import.meta.dirname, "..", "web");
  * (itération 2 ter, L26a) : la règle l'attend, le dossier arrive avec son paquet, et le train de la vague 2 le voit apparaître.
  */
 const SCOPES = ["pages/chat/activity", "pages/chat/autonomy", "pages/chat/delegation", "pages/chat/plan", "pages/diagnostics", "pages/omo"];
+// <c5:perimetre>
+// Itération 5 (T5a) : dossiers de la construction déjà présents, où les coûts par équipe (L46b) et les archives d'équipe (L46b,
+// L44f) ajoutent des vues. Ce sont des PRÉFIXES de dossiers, seule forme reconnue par inScope. Les dossiers neufs
+// pages/assistants/methods (L44d) et pages/chat/methods (L44e) ont été ajoutés par l'intégrateur du train de V2, une fois créés ;
+// pages/chat/activity couvre déjà la chronologie (L47b).
+SCOPES.push("pages/costs", "pages/archives", "pages/assistants/methods", "pages/chat/methods");
+// </c5:perimetre>
 // --- équipes (it4) : début ---
 // Itération 4 (T4w) : dossiers des équipes et de la carte des assistants.
 SCOPES.push("pages/chat/team", "pages/assistants/teams", "pages/assistants/carte");

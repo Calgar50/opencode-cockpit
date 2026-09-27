@@ -18,8 +18,21 @@
 //   fermées en mode Simple, et aucun texte ne propose d'équipe).
 // - Accessibilité : boîte de dialogue (Modal) nommée par l'étiquette ; aucune région aria-live ajoutée (les légendes passent par
 //   la région unique de la page).
+// <c5:demonstration-passee-doc>
+// Itération 5 (fiche L49, D-5-15) : la propriété `demo` passe une AUTRE démonstration enregistrée (ses faits, ses moments, son
+// titre et son contenu propre) ; sans elle, le lecteur complet ci-dessus reste exactement tel quel. Le choix de la démonstration
+// à ouvrir appartient à l'appelant : ce lecteur ne lit jamais `ouvertesEnSimple` ni aucun autre réglage (D-5-24).
+// Grande fusion (GF4) : la démonstration passée garde son lecteur pas à pas (DemonstrationPassee, plus bas) — ouvert sur son
+// PREMIER moment, sans aucune lecture automatique, avec le vocabulaire de « Revoir » (« n / N », [Moment précédent], [Moment
+// suivant]) et la même règle du mode Simple (scène calculée en mode Avancé, puis vueSimple). Deux composants plutôt qu'un
+// retour anticipé : chacun appelle toujours les mêmes crochets. L'entrée de la démonstration d'équipe dans le CHOIX du lecteur
+// complet est posée par GF5, pas ici.
+// </c5:demonstration-passee-doc>
 // Composant interne : ses propriétés restent libres pour son propriétaire.
 import { useId, useMemo, useState } from "react";
+// <c5:demonstration-passee-import>
+import type { ReactNode } from "react";
+// </c5:demonstration-passee-import>
 import { factProblem } from "../../../../server/shared/activity-facts.ts";
 import type { ActivityFact } from "../../../../server/shared/activity-types.ts";
 import { legendesAuMoment } from "../../../../server/shared/legendes.ts";
@@ -36,10 +49,39 @@ import demoP1 from "./demo-p1.json" with { type: "json" };
 import demoPlafond from "./demos/arret-plafond.json" with { type: "json" };
 import demoAttente from "./demos/attente-accord.json" with { type: "json" };
 import { NeonCarte, NeonTableau } from "./NeonBand.tsx";
+// <c5:demonstration-passee-import-lecteur>
+// Grande fusion (GF4) : ce que le lecteur de la démonstration passée prend en plus, APRÈS les imports du lecteur complet (les
+// contrôles qui cherchent le premier import de neon-texts.ts y trouvent ainsi celui qui porte TEXTES).
+import { resumeBande } from "../../../../server/shared/neon-band.ts";
+import { remplir } from "../../../../server/shared/neon-texts.ts";
+import { formatHeure } from "../../../../server/shared/revoir-texts.ts";
+// </c5:demonstration-passee-import-lecteur>
 
+// <c5:demonstration-passee-contrat>
+/**
+ * Démonstration enregistrée par un AUTRE paquet, rejouée par ce lecteur (itération 5, fiche L49 ; D-5-15) : ses faits et ses
+ * moments remplacent la capture p1, et son contenu propre est dessiné sous la bande. Tout est déjà enregistré : le lecteur
+ * n'appelle rien et ne lit aucun réglage — c'est l'appelant qui décide de l'ouvrir ou non.
+ */
+export interface DemoSource {
+  /** Titre montré à la place de celui de la capture p1. */
+  titre: string;
+  /** Faits rejoués, dans l'ordre ; la bande les dessine par la même scene(t) que le direct. */
+  faits: readonly ActivityFact[];
+  /** Heures des moments du lecteur, croissantes : « Moment n / N » les parcourt. */
+  moments: readonly number[];
+  /** Contenu propre de la démonstration, dessiné sous la bande à chaque moment. */
+  rendre?: (moment: { rang: number; total: number; at: number | null }) => ReactNode;
+}
+
+// </c5:demonstration-passee-contrat>
 export interface DemoPlayerProps {
   /** Mode de l'utilisateur : en mode Simple, vocabulaire du mode Simple et avis sur la délégation. */
   advanced: boolean;
+  // <c5:demonstration-passee-propriete>
+  /** Démonstration à rejouer ; absente : le lecteur complet et ses trois démonstrations. */
+  demo?: DemoSource;
+  // </c5:demonstration-passee-propriete>
   onClose: () => void;
 }
 
@@ -70,7 +112,15 @@ function dessineUneDelegation(faits: readonly ActivityFact[]): boolean {
   return scene(faits, null, SCENE).noeuds.some((noeud) => noeud.role !== "conversation");
 }
 
-export function DemoPlayer({ advanced, onClose }: DemoPlayerProps) {
+// <c5:demonstration-passee-aiguillage>
+// Grande fusion (GF4) : sans `demo`, le lecteur complet de L34 (LecteurComplet, son code d'avant la fusion) ; avec `demo`, le
+// lecteur pas à pas de la démonstration passée (L49).
+export function DemoPlayer({ advanced, demo: passee, onClose }: DemoPlayerProps) {
+  return passee === undefined ? <LecteurComplet advanced={advanced} onClose={onClose} /> : <DemonstrationPassee advanced={advanced} demo={passee} onClose={onClose} />;
+}
+
+function LecteurComplet({ advanced, onClose }: Omit<DemoPlayerProps, "demo">) {
+  // </c5:demonstration-passee-aiguillage>
   const choixId = useId();
   const [cle, setCle] = useState(P1.cle);
   const [tableau, setTableau] = useState(false);
@@ -149,3 +199,70 @@ export function DemoPlayer({ advanced, onClose }: DemoPlayerProps) {
     </Modal>
   );
 }
+
+// <c5:demonstration-passee-lecteur>
+/** Décalage du fuseau du poste à appliquer à un instant (l'opposé de getTimezoneOffset, comme l'attend formatHeure). */
+const decalageLocal = (ms: number): number => -new Date(ms).getTimezoneOffset();
+
+/**
+ * Lecteur d'une démonstration passée (L49) : pas à pas, ouvert sur le PREMIER moment, sans aucune lecture automatique (ni
+ * minuteur ni effet ici). Les moments sont ceux que la démonstration a enregistrés ; `rendre` reçoit leur rang. La scène suit la
+ * règle du lecteur complet (D-3d-20) : calculée en mode Avancé, puis renommée en vocabulaire du mode Simple. Aucune phrase
+ * demoAvance : une démonstration passée porte la sienne, dans son contenu propre.
+ */
+function DemonstrationPassee({ advanced, demo: passee, onClose }: { advanced: boolean; demo: DemoSource; onClose: () => void }) {
+  const curseurId = useId();
+  const [rang, setRang] = useState(0);
+  const [tableau, setTableau] = useState(false);
+  const faits = passee.faits;
+  const instants = passee.moments;
+  const total = instants.length;
+  const t = instants[rang] ?? null;
+  const vue = useMemo<NeonScene>(() => {
+    const brute = scene(faits, t, SCENE);
+    return advanced ? brute : vueSimple(brute, nomsSimples(brute, true));
+  }, [faits, t, advanced]);
+  const max = Math.max(total, 1);
+  const heure = t ?? faits[0]?.at ?? 0;
+  const aller = (cible: number) => setRang(Math.min(Math.max(cible, 0), Math.max(total - 1, 0)));
+
+  return (
+    <Modal open title={TEXTES.partout.demonstrationEnregistree} onClose={onClose} wide>
+      <div className="neon-band">
+        <div className="neon-head">
+          <h3 className="neon-title">{passee.titre}</h3>
+          {/* Résumé d'une ligne : seulement à 400 px, où la carte laisse la place (neon.css). */}
+          <p className="neon-summary is-deplie">{resumeBande(vue)}</p>
+        </div>
+        {/* Premier élément focalisable de la boîte : le curseur (Modal le focalise à l'ouverture). */}
+        <div className="row wrap">
+          <label htmlFor={curseurId} className="small tabular">
+            {remplir(T.moments, { n: rang + 1, total: max })}
+          </label>
+          <input
+            id={curseurId}
+            type="range"
+            min={1}
+            max={max}
+            step={1}
+            value={rang + 1}
+            aria-valuetext={remplir(T.momentsAria, { n: rang + 1, total: max, heure: formatHeure(heure, decalageLocal(heure)) })}
+            onChange={(event) => aller(Number(event.currentTarget.value) - 1)}
+          />
+          <button type="button" className="btn sm" disabled={rang === 0} onClick={() => aller(rang - 1)}>
+            {T.precedent}
+          </button>
+          <button type="button" className="btn sm" disabled={rang >= total - 1} onClick={() => aller(rang + 1)}>
+            {T.suivant}
+          </button>
+          <button type="button" className="btn sm ghost" aria-pressed={tableau} onClick={() => setTableau((v) => !v)}>
+            {TEXTES.partout.commandes.tableau}
+          </button>
+        </div>
+        <div className="neon-body">{tableau ? <NeonTableau vue={vue} /> : <NeonCarte vue={vue} />}</div>
+        {passee.rendre ? passee.rendre({ rang, total, at: t }) : null}
+      </div>
+    </Modal>
+  );
+}
+// </c5:demonstration-passee-lecteur>

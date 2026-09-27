@@ -53,7 +53,8 @@ const flow = (...blocs: FlowBlock[]): Flow => ({ version: FLOW_VERSION, blocs })
 describe("équipes : listes des unions fermées", () => {
   it("chaque liste est figée, sans doublon, et égale à la fiche T4", () => {
     const expected: Record<string, readonly string[]> = {
-      FLOW_BLOCK_TYPES: ["etape", "avis", "pause"],
+      // 5b (L42a) : « relecture » et « aiguillage » s'ajoutent aux trois formes de l'itération 4, avant « pause ».
+      FLOW_BLOCK_TYPES: ["etape", "avis", "relecture", "aiguillage", "pause"],
       STEP_INPUTS: ["demande", "precedent", "tous"],
       TEAM_CONFIRMATIONS: ["workspace", "secret", "plafond", "budget"],
       FLOW_PROBLEM_CODES: [
@@ -78,6 +79,15 @@ describe("équipes : listes des unions fermées", () => {
         "personnalise",
         "niveau-avance",
         "niveau-indisponible",
+        // 5b (L42a) : relecture, aiguillage, liens entre étapes et méthodes des étapes.
+        "aiguillage-premier",
+        "specialistes",
+        "relecteur-distinct",
+        "meme-famille",
+        "lien-arriere",
+        "lien-avis",
+        "lien-avance",
+        "methodes",
       ],
       TEAM_RUN_STATES: [
         "preparation",
@@ -85,13 +95,16 @@ describe("équipes : listes des unions fermées", () => {
         "attente-verification",
         "attente-budget",
         "attente-modification",
+        // 5b (L42a) : l'aiguilleur a proposé, le lancement attend VOTRE confirmation.
+        "attente-choix",
         "terminee",
         "arretee",
         "echec",
         "interrompue",
         "plafond",
       ],
-      TEAM_STEP_STATES: ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee"],
+      // 5b (L42a) : « non-choisi », état final d'un spécialiste ou d'une synthèse écarté par le choix.
+      TEAM_STEP_STATES: ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee", "non-choisi"],
       TEAM_RUN_CAUSES: ["vous", "equipe", "plafond", "echec", "rechargement", "redemarrage-cockpit", "budget", "modification", "pause", "changement"],
       TEAM_ERROR_CODES: [
         "invalid",
@@ -121,6 +134,13 @@ describe("équipes : listes des unions fermées", () => {
         "plancher-etape",
         "etape-consultable",
         "etat-incompatible",
+        // <c5:choix-invalide> Ajouté par le train de la vague 2 de la 5b (demande de contrat de L42b).
+        "choix-invalide",
+        // </c5:choix-invalide>
+        // <c5:reprise-redemarrage>
+        // Ajouté par la clôture de la 5b (D-5b-1) : réponse à une pause dont l'estimation a été perdue au redémarrage du cockpit.
+        "reestimation-requise",
+        // </c5:reprise-redemarrage>
         "pas-relancable",
         "deja-ajoute",
         "confirmation-requise",
@@ -166,6 +186,12 @@ describe("équipes : listes des unions fermées", () => {
         demande: 20000,
         fichiers: 20,
         precision: 1000,
+        // 5b (L42a) : bornes des méthodes d'étape, de l'aiguillage et de la relecture (comparées à construction-constants.ts).
+        methodesParEtape: 2,
+        specialistesMin: 2,
+        specialistesMax: 8,
+        toursMax: 2,
+        choixMax: 2,
       },
     );
     assert.throws(() => {
@@ -219,7 +245,8 @@ describe("équipes : transitions", () => {
       assert.equal(canTransition(kind, "__proto__", "toString"), false);
     };
     check("run", TEAM_RUN_TRANSITIONS, TEAM_RUN_STATES, ["terminee", "arretee"]);
-    check("step", TEAM_STEP_TRANSITIONS, TEAM_STEP_STATES, ["terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee"]);
+    // 5b (L42a) : « non-choisi » est final comme « non-lancee » — une étape écartée n'a rien envoyé, rien à reprendre.
+    check("step", TEAM_STEP_TRANSITIONS, TEAM_STEP_STATES, ["terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee", "non-choisi"]);
     for (const stopped of ["echec", "interrompue", "plafond"]) assert.deepEqual([...(TEAM_RUN_TRANSITIONS[stopped as "echec"] ?? [])], ["preparation", "arretee"]);
     // Parcours attendus par les fiches L37b et L37c.
     for (const [from, to] of [

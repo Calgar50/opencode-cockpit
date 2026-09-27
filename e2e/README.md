@@ -195,6 +195,13 @@ sortie est le nombre d'échecs.
 | `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
 | `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même ; `010-reprise-apres-coupure.mjs` vérifie que l'interface se rétablit seule après un rechargement de l'amorçage en échec (coupure réseau, retour de l'onglet, focus sur « Réessayer », onglet caché, redémarrage réel du conteneur, amorçage lent puis deux changements rapprochés, 401) |
 
+<!-- c5:fichiers -->
+`e2e/lib/a11y.mjs` (itération 5) est le banc de captures d'accessibilité : réglages système émulés, 3 modes × 2 thèmes ×
+3 tailles, animations en cours (toute la page, ou la seule carte de la bande néon), réglages vus par la page, focus visible.
+Il est décrit ici, sous le tableau et non dedans : un commentaire HTML posé entre deux lignes d'un tableau ouvre un bloc
+HTML et coupe le tableau au rendu (GitHub, VS Code). Détails à la section « Banc de captures d'accessibilité », plus bas.
+<!-- /c5:fichiers -->
+
 `e2e/fake-opencode-server.ts` n'ajoute rien au faux : il l'enveloppe. Le faux écoute sur la boucle locale (le bon
 choix dans les tests) ; un relais d'octets l'expose sur 4096 pour le cockpit, sans toucher aux en-têtes ni au flux
 d'événements. Les sources sont montées en lecture seule, parce que l'image finale du cockpit ne contient ni les tests
@@ -409,8 +416,131 @@ La route de pilotage `POST /banc/emettre` (section `[3d]` de `e2e/fake-opencode-
 aucun appel n'est facturé. La recette réelle de M20 (capture d'une demande de la Salle OMO) reste en attente.
 <!-- [3d] fin -->
 
-<!-- équipes (it4) : début -->
+<!-- c5:scenarios -->
+## Scénarios de l'itération 5 (construction : méthodes, Seconde lecture, chronologie, équipes de la 5b)
 
+```sh
+scripts/run-e2e.sh --faux --scenarios c5 --project-prefix c511-e2e --image-tag c511
+scripts/run-e2e.sh --faux --scenarios c5a- --project-prefix c511-e2e --image-tag c511
+scripts/run-e2e.sh --faux --scenarios c5b- --project-prefix c511-e2e --image-tag c511
+scripts/run-e2e.sh --reel-hors-ligne --dry-run --scenarios c5a- --project-prefix c511-e2e --image-tag c511
+# Répétition générale, MC5-1 sur le code réel (projets c511-rg-*, E2E_MESURES_DIR = dossier des mesures) :
+scripts/run-e2e.sh --reel-hors-ligne --scenarios c5a-mc5-reel --project-prefix c511-rg --image-tag c511
+# Grande fusion : MC5-1 et MC5-2 sur le code réel, préfixe du travail en cours (ici gf11) :
+scripts/run-e2e.sh --reel-hors-ligne --scenarios mc5-reel --project-prefix gf11-e2e --image-tag gf11
+```
+
+**Le préfixe `c511-e2e` était obligatoire pendant la construction** : le préfixe par défaut `cockpit-e2e` était celui du
+banc de l'itération 1-2, qui tournait en même temps sur une autre branche. Le nettoyage ne vise que le préfixe donné
+(`c511-e2e-*` et les images `c511-e2e/*` pour la construction ; `gf11-e2e-*` et `gf11-e2e/*` pour la grande fusion).
+
+En `--reel-hors-ligne`, `ctx.fournisseur.tourParDefaut(tour)` règle la réponse par défaut du faux fournisseur
+(`{ texte, cout }`, comme `ctx.faux.tourParDefaut`) ; `ctx.fournisseur` vaut `null` dans les autres modes. Seul
+`c5b-mc5-reel` s'en sert, et il remet la réponse du banc à la fin, même en échec.
+
+| Scénario | Ce qu'il établit |
+|---|---|
+| `c5a-methodes.mjs` | un assistant avec deux méthodes : « Utilisée par » au catalogue, troisième méthode refusée dans la bibliothèque (« 2 méthodes au maximum … »), ligne « Méthodes : … » sur sa fiche d'identité ; la puce « + Méthode » AU CLAVIER SEUL (APG : flèche bas ouvre, Entrée coche et décoche, Échap ferme et rend le focus au bouton), méthodes déjà dans l'assistant désactivées ; à l'envoi, le faux opencode reçoit le BLOC à la fin du texte écrit ; bulle repliée « Méthode demandée : … » sans le marqueur ; « Méthode appliquée » puis « Méthode non détectée dans la réponse » ; raccourci « /… » : puce désactivée avec sa raison |
+| `c5a-seconde-lecture.mjs` | Relecteur absent : la phrase et [Installer], aucun montant ; installation au clic par le catalogue ; bouton « Seconde lecture (≈ … $) » sans « au moins », infobulle qui nomme l'IA du Relecteur puis la base de l'estimation ; au clic, UN seul envoi, avec l'agent du Relecteur et la phrase exacte du §4.3 ; pied « Relecture par un autre assistant … » ; à la réouverture, le composeur a gardé l'assistant précédent |
+| `c5a-chronologie.mjs` | en Avancé : bascule « Déroulé \| Chronologie » (radiogroup, un seul bouton dans l'ordre de tabulation), lignes, colonne « Jetons (entrée / sortie / cache) », repères d'outil, curseur « maintenant » PENDANT le travail ; à 400 px la figure disparaît et le tableau reste seul ; en Simple : aucune bascule, aucune chronologie, et le mot « jeton » nulle part |
+| `c5a-a11y.mjs` | banc de captures d'accessibilité : six vues (bibliothèque, écran « Consignes et fiches », popover de la puce, bulle, chronologie, Coûts par équipe vides) × 3 modes × 2 thèmes × 3 tailles = 108 fichiers ; mouvement réduit vérifié par un relevé DISCRIMINANT sur la transition de la carte de la bande néon (la seule animation que le réglage commande) : la même action, un second tour envoyé pendant que la carte est affichée, anime la carte en mode normal (au moins une animation en cours, relevée sans délai) et ne l'anime plus en mouvement réduit (zéro, le réglage vu par `matchMedia` dans la page), puis plus rien ne tourne au repos ; en contraste forcé, focus visible, c'est-à-dire un contour réellement dessiné (`:focus-visible` seul ne suffit pas) |
+| `c5b-relecture.mjs` | forme RELECTURE de bout en bout sur « Compte rendu d'incident relu » (`postmortem`) : premier jet, pause avant la relecture (aucun envoi pendant), verdict lu sur la DERNIÈRE ligne à l'octet, second tour, PLAFOND de tours respecté (le relecteur ne relit pas trois fois ; la dernière correction part sans être relue) et notes « Relecture non conclue après 2 tours … » et « Non relue après la dernière correction. » ; sessions REPRISES (D-5-14) : exactement deux `POST /session` pour le bloc, cinq envois dedans ; journal de relecture REPLIÉ sous le résultat (rien de rendu à l'écran tant qu'il est replié) avec ses deux tours et leurs relectures ; coût égal à la somme des cinq appels scriptés, sous le plafond d'arrêt du lancement |
+| `c5b-aiguillage.mjs` | forme AIGUILLAGE sur « Tri d'une alerte » (`tri-alerte`), deux lancements : (1) l'aiguilleur propose, le lancement attend, AUCUN spécialiste n'est lancé et aucun envoi ne part avant la confirmation ; la carte de choix se tient au clavier (case cochée puis décochée par la barre d'espace, [Continuer] actionné au clavier) ; les écartés passent à « Non choisi », sans coût ; (2) chemin « aucun ne convient », choisi AU CLAVIER sur la carte : rien n'est envoyé, le livrable porte la phrase du refus, et [Envoyer à cet assistant] PRÉREMPLIT le composeur — la demande ET l'assistant de repli — sans rien envoyer ni facturer |
+| `c5b-schema.mjs` | SCHÉMA MODIFIABLE, dans un navigateur propre au scénario (frappes et pointeur réels, par CDP) : bascule ouverte au clavier ; Alt+↓ et Alt+↑ VRAIS déplacent un bloc (suivi dans [Voir le JSON]) ; un lien se pose par le menu « Reçoit le résultat de… » (Entrée ouvre, barre d'espace coche : `recoit: {etapes}`) ; lien VERS LE HAUT : au clavier il ne peut pas être demandé (chaque menu ne propose que des étapes plus hautes, mesuré sur tous les menus), et le seul geste qui le demande — le glisser depuis le port de sortie d'une étape vers une étape plus haut, joué au pointeur — est REFUSÉ avec la phrase « Le cockpit exécute les étapes de haut en bas … » écrite près de la cible avec son icône, pendant le survol et après la relâche, ANNONCÉE par la région polie de la page, sans rien écrire dans le déroulé ; un déplacement qui rendrait un lien arrière ne le garde jamais en silence ; [Voir le JSON] en lecture seule ; à 899 px la phrase de la spécification, à 900 px le schéma ; rien n'est enregistré |
+| `c5b-vue-ensemble.mjs` | VUE D'ENSEMBLE de la carte des assistants : absente en mode Simple ; huit puces de filtre, une par groupe et le même libellé pour les deux ; une puce éteinte RETIRE son groupe (elle ne l'estompe pas) et le rend au rallumage, dans le même ordre ; un nœud est un vrai bouton : Entrée donne le focus à un nœud qui ne l'avait pas (un seul nœud le porte), Échap le retire ; tout ce qui est estompé — nœuds et liens — dit « (hors sujet) », et rien d'autre ne le dit ; connecteurs SVG décoratifs, liens repris en toutes lettres |
+| `c5b-demonstration.mjs` | ÉQUIPES FERMÉES EN SIMPLE sans aucune bascule : phrase de l'itération 4, pas de galerie, pas de [Voir une démonstration], liste des équipes installées en LECTURE SEULE (aucune commande vers l'éditeur ni l'installation), pas d'éditeur, pas de lanceur, avis de délégation COURT ; les six exemples livrés passent la grammaire du mode Simple ; l'ouverture en UNE ligne est jouée quand la pile est bâtie depuis la copie jetable (`ouvertesEnSimple`) : lanceur, galerie, démonstration (ouverte), éditeur guidé et avis complet — sinon dite et non jouée ; DÉMONSTRATION d'équipe en Avancé, mouvement réduit posé AVANT l'ouverture : lecteur pas à pas, carte et Déroulé sous la bande, « Déroulé enregistré avec des données fictives. », AUCUNE lecture automatique ni animation perceptible, un moment de plus au clavier ; ZÉRO requête de la page et ZÉRO requête reçue par opencode hors le fond permanent (journal du faux, mesure de `sansRequete` reprise si une relecture d'archive du cockpit tombe dans la fenêtre, classement automatique coupé le temps de la mesure) |
+| `c5b-couts-archives.mjs` | ce qu'une équipe laisse derrière elle : Déroulé d'équipe d'une relecture faite en un tour (« Prévu : jusqu'à 2 tours · Réel : 1 tour ») ; aiguillage à un choix, spécialistes non retenus « Non choisi », sans coût, dans le Déroulé d'équipe du panneau de contexte, dans celui de la fiche d'Archives ET dans la ligne d'étape de la section « Équipes lancées dans cette conversation » ; filtre « Avec une équipe » ; ligne « Par équipe » des Coûts avec ses cinq colonnes ; colonnes `lancement_equipe` et `etape` à la fin de l'en-tête du CSV, et au moins une ligne qui les porte ; Seconde lecture d'un RÉSULTAT D'ÉQUIPE, chiffrée, sans « au moins », EN DERNIER sous la carte, et son clic au clavier : UN envoi au Relecteur critique, dans la conversation de l'équipe, avec la phrase exacte de la cible « équipe » ; onglet Méthodes et sa bibliothèque. Un écart du produit relevé en chemin n'arrête pas le scénario : le reste est éprouvé, puis il tombe en le nommant |
+| `c5b-a11y.mjs` | banc de captures d'accessibilité de la 5b : dix vues (galerie, éditeur en « Étapes » puis en « Schéma modifiable », carte de choix, carte d'exécution, carte de résultat, Déroulé d'équipe, chronologie d'un lancement, vue d'ensemble, onglet Méthodes) × 3 modes × 2 thèmes × 3 tailles = 180 fichiers, chaque vue RELEVÉE juste avant sa capture (sous 900 px, le schéma montre sa phrase et c'est elle qui est exigée) ; en mouvement réduit, zéro animation perceptible à CHAQUE capture de ce mode (dix vues × 2 thèmes × 3 tailles), puis au repos ; en contraste forcé, focus visible sur une puce de filtre et sur une ligne du schéma ; console muette |
+| `c5a-mc5-reel.mjs` | **répétition générale, `--reel-hors-ligne` seulement** (non joué en `--faux`) : MC5-1 rejouée sur le CODE RÉEL avec un vrai opencode 1.18.30 et le faux fournisseur hors ligne. Dans une seule conversation : envoi à « Analyser un incident » (204 sans corps), puis au « Relecteur critique » — invite système différente et tout l'historique transmis —, puis de nouveau au premier assistant, qui retrouve SON invite système (le Relecteur ne colle pas à la session) ; `agent` sur chaque message de `GET /session/:id/message`, messages `user` compris ; `GET /api/chat/choices/:id` rend l'assistant précédent (ligne `chat_turns` requalifiée, D-5-06). Les parties d'outil de MC5-1 ne sont pas rejouées ici : le faux fournisseur ne répond que du texte — ce point reste tenu par la mesure MC5 elle-même. |
+| `c5b-mc5-reel.mjs` | **répétition générale, `--reel-hors-ligne` seulement** (non joué en `--faux`), versé au dépôt par la grande fusion (GF4, A20) : MC5-2 rejouée sur le CODE RÉEL avec un vrai opencode 1.18.30 et le faux fournisseur hors ligne, dont chaque réponse se termine par la ligne `VERDICT: À REPRENDRE`. A : deux envois dans la même conversation au repos — le second appel reçu par le fournisseur porte tout l'historique (deux messages de plus au moins) et la même invite système, et la dernière ligne du tour 1 est rendue À L'OCTET, accents compris, avant comme après le tour 2. B : le VRAI exécuteur sur « Compte rendu d'incident relu » (`postmortem`) — rien n'est envoyé pendant la pause avant la relecture, trois jets et deux relectures (plafond de 2 tours), cinq appels en deux familles d'invite système dont chaque appel porte l'historique du précédent, EXACTEMENT deux sessions d'étape sous la racine (sessions reprises, D-5-14), et les deux verdicts relus à l'octet dans la session du relecteur. |
+
+### Banc de captures d'accessibilité (`e2e/lib/a11y.mjs`)
+
+Trois modes, parce que ce sont les trois qui changent le dessin : `normal`, `contraste-force`
+(`forced-colors: active`, mode contrasté de Windows) et `gris-mouvement-reduit`
+(`prefers-reduced-motion: reduce` avec une vue sans couleurs). Chacun dans les deux thèmes et aux trois tailles :
+`<scénario>-<vue>-<mode>-<taille>-<thème>.png`.
+
+Les trois réglages de média (`prefers-color-scheme`, `forced-colors`, `prefers-reduced-motion`) passent depuis FE4 par
+`onglet.medias({theme, forcedColors, reducedMotion})` de `cdp.mjs` (itération 4, L41), demandés ensemble
+(`Emulation.setEmulatedMedia` remplace toute la liste). Depuis la grande fusion (GF4, A33), `medias()` ne fait plus son
+propre envoi : il pose l'état, puis passe par `emulerMedias` (R106-b), SEUL envoi de `Emulation.setEmulatedMedia` de
+l'onglet, qui porte TOUJOURS le réglage de mouvement ; `medias({})` rend la page à l'état du banc (mouvement fixé par le
+scénario, ni thème ni contraste forcé), jamais à une liste vide. La garde du mouvement accepte donc les captures de
+`a11y.mjs`, d'`it4-captures` et de `c5b-demonstration`. Les couleurs restent dans `a11y.mjs`, par l'envoi brut de `cdp.mjs`
+(`navigateur.client.envoyer("Emulation.setEmulatedVisionDeficiency", …, onglet.sessionId)`).
+`e2e/lib/cdp.mjs` n'est écrit par aucun paquet de l'itération 5 : seule la grande fusion l'a touché (A33).
+Le contexte d'un scénario ne porte que l'ONGLET : `ouvrirNavigateurEpingle(ctx)` ouvre un navigateur propre au
+scénario, avec le même épinglage et la même isolation, fermé dans un `finally`.
+
+### Ce que le banc dit au faux opencode
+
+Les réponses sont scriptées par les scénarios (`ctx.faux.scripter`, `ctx.faux.tourParDefaut`) : en-tête de méthode
+(« ### Méthode : … ») pour la détection, et lignes `usage` à jetons pour la chronologie et pour la base
+« conversation » de l'estimation de la Seconde lecture.
+
+Les AGENTS servis par `GET /agent` se déclarent par la conversation réservée `banc:agents`
+(`ctx.faux.scripter("banc:agents", { agents: [{ name, description, model }] })`, section `c5:agents-du-banc` de
+`e2e/fake-opencode-server.ts`) : le faux ne lit aucun fichier, alors que le cockpit ne propose une seconde lecture,
+et ne propose un assistant au composeur, que si opencode le lui rend. La déclaration se fait **après** l'installation :
+avant, le nom serait déjà pris et le cockpit en choisirait un autre (« relecteur-critique-2 »).
+
+### Les équipes de la 5b sur le banc (`c5b-*`)
+
+Les scénarios d'équipe tournent en **mode Avancé** : les équipes sont fermées en mode Simple tant que
+`EQUIPES_SIMPLE_OUVERTES` (`app/server/wiring-eq.ts`) vaut `false`, et elle vaut `false` **dans le dépôt** (décision U1).
+`c5b-demonstration.mjs` éprouve cette fermeture telle quelle, sans rien basculer. L'**ouverture en une ligne** se joue
+dans une **copie jetable** tirée de la tête par `git archive`, jamais dans le dépôt ni dans le dossier de travail : la copie
+reçoit son propre `git init` (le banc prépare son contexte par `git ls-files`), son arbre doit être EXACTEMENT celui de la
+tête, puis une seule ligne y est basculée et le diff doit n'en compter qu'une. Le banc est lancé depuis la copie, qui
+est supprimée à la sortie, réussite ou échec.
+
+La procédure s'arrête au **premier échec**, en le disant, et n'agit jamais sur le dossier courant : tout passe par
+`git -C "$copie"` et par des chemins sous `"$copie"`. La copie est un dossier **neuf** (`mktemp -d`, sous `$TEMP`, à
+défaut `$TMPDIR`, à défaut `/tmp`) : une copie laissée par un passage précédent n'est jamais reprise. Si le dossier ne
+peut pas être créé, rien d'autre ne se fait ; si la copie n'est pas la tête, si la bascule ne touche pas exactement une
+ligne, ou si l'état du dépôt a changé pendant la procédure, le banc n'est pas lancé. À lancer depuis le dépôt :
+
+```sh
+( set -euo pipefail
+  depot="$(git rev-parse --show-toplevel)"
+  etat_depot="$(git -C "$depot" status --porcelain=v1)"
+  arbre_tete="$(git -C "$depot" rev-parse 'HEAD^{tree}')"
+  copie="$(mktemp -d "${TEMP:-${TMPDIR:-/tmp}}/c511-ouverture-u1.XXXXXX")"   # dossier NEUF, hors du dépôt
+  trap 'cd / && rm -rf -- "$copie"' EXIT                                     # la copie est supprimée à la sortie
+  git -C "$depot" archive --format=tar HEAD | tar -x -C "$copie"
+  git -C "$copie" init -q
+  git -C "$copie" add -A
+  test "$(git -C "$copie" write-tree)" = "$arbre_tete" || { echo "copie différente de la tête" >&2; exit 1; }
+  sed -i 's/^export const EQUIPES_SIMPLE_OUVERTES = false;$/export const EQUIPES_SIMPLE_OUVERTES = true;/' "$copie/app/server/wiring-eq.ts"
+  test "$(git -C "$copie" diff --numstat)" = "$(printf '1\t1\tapp/server/wiring-eq.ts')" || { echo "la bascule ne touche pas exactement une ligne" >&2; exit 1; }
+  test "$(git -C "$depot" status --porcelain=v1)" = "$etat_depot" || { echo "le dépôt a changé : banc non lancé" >&2; exit 1; }
+  cd "$copie"
+  scripts/run-e2e.sh --faux --scenarios c5b-demonstration --project-prefix c511-e2e --image-tag c511
+)
+```
+
+Le scénario lit alors `ouvertesEnSimple` de `GET /api/teams` et éprouve, EN SIMPLE et sans autre changement, le lanceur,
+la galerie (les exemples, valides en Simple), la démonstration (ouverte), l'éditeur guidé et l'avis complet de
+délégation. Même avertissement que `it4-simple-ouvert.mjs` : sans la copie basculée, la partie « ouverture » ne vérifie
+rien tout en comptant vert — le scénario le **dit** dans son relevé. L'annonce de la 1.1.0 n'est pas vérifiée ici (L51).
+
+Les assistants d'un déroulé de la 5b sont déclarés au faux par `declarerLesAssistants` / `declarerNoms`
+(`c5b-relecture.mjs`, qui les exporte) : `declarerAssistants` de `it4-commun.mjs` ne connaît que les blocs `etape`,
+`avis` et `pause`, et un bloc `relecture` ou `aiguillage` ne lui montre aucune étape — le pré-lancement refuserait alors
+l'équipe en « assistant-absent ». L'aide de l'itération 4 est appelée telle quelle, avec un déroulé de la forme qu'elle
+connaît (une étape par assistant distinct) qui ne sert qu'à nommer les assistants ; le déroulé réel n'est jamais modifié.
+Un agent du déroulé que le faux sert SANS les règles de son fichier (lecture seule) y est redit avec elles, les autres
+agents restant tels quels : `c5a-seconde-lecture.mjs` déclare le « Relecteur critique » par `banc:agents` sans aucune
+règle, ce qui vaut « tout permis » pour opencode, et l'étape de relecture de `postmortem` serait alors refusée en
+« delegue » et « internet » quand les deux familles tournent sur la même pile (`--scenarios c5`). Le vrai opencode, lui,
+lit le fichier installé.
+Pour la même raison, la copie d'un exemple en équipe propre à un scénario (identifiants suffixés) est refaite dans les
+scénarios qui en ont besoin : `equipeDerivee` de l'itération 4 rendrait un bloc de la 5b en pause.
+
+<!-- /c5:scenarios -->
+
+<!-- équipes (it4) : début -->
 ## Scénarios de l'itération 4 — équipes et carte des assistants (chantier 1.1)
 
 ```sh
@@ -440,6 +570,7 @@ du Studio).
 
 
 <!-- équipes (it4) : fin -->
+
 ## Contrôle des types
 
 `e2e/fake-opencode-server.ts` est le seul fichier TypeScript du banc, et il vit hors de `app/` : `npm run typecheck`

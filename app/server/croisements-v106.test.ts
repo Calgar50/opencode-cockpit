@@ -50,6 +50,10 @@ import { exampleById, exampleFlow } from "./team-examples.ts";
 import { createTeamRunnerModule } from "./team-runner.ts";
 import { EQ_MODULES } from "./wiring-eq.ts";
 // </gf3:v106> fin
+// <gf4:v106> début : construction × 1.0.6 (fiche-fusion-v106 §6)
+import { SECOND_READING_CATALOG_ID } from "./shared/construction-constants.ts";
+import type { FlowStep } from "./shared/team-types.ts";
+// </gf4:v106> fin
 
 const OC = "/workspace";
 /** Nom créable par une IA, valide sous NTFS : opencode 1.18.30 l'ouvrirait en « /secret ». */
@@ -1479,3 +1483,164 @@ describe("croisements v106 <gf3:v106> : équipes × 1.0.6 (fiche §5)", () => {
   });
 });
 // </gf3:v106>
+
+// <gf4:v106>
+// --- Grande fusion, GF4 : construction × 1.0.6 (fiche-fusion-v106 §6) -------------------------------------------------------------
+// La construction ajoute un appel à opencode avec un dossier : l'estimation de la Seconde lecture (second-reading.ts,
+// `isAllowedDirectory` avant `lookup.get`). Et la relance d'une relecture commencée, refusée « estimation-perimee » à chaque fois
+// jusqu'au reste c2 de GF4 (constats-5b §3), part désormais : elle ne doit rien envoyer pour un dossier non contrôlé. Câblage
+// complet (modules « tous », construction comprise ; option `omo` : les DEUX instances comptées), faux à double décodage.
+
+const RELECTEUR_CRITIQUE = "relecteur-critique";
+const EQUIPE_RELECTURE = "relecture-v106";
+const AUTEUR_V106 = "redacteur-v106";
+const RELECTEUR_V106 = "relecteur-v106";
+
+/** Relecteur critique installé (ligne item_meta ET agent vu par opencode) : l'estimation lirait alors les assistants du dossier. */
+function relecteurInstalle(h: CockpitHarness): void {
+  h.fake.setAgents([...h.fake.agents(), { name: RELECTEUR_CRITIQUE, mode: "primary", description: RELECTEUR_CRITIQUE, model: MODEL, options: {}, permission: [], steps: 20 }]);
+  h.deps.lookup.invalidate();
+  const now = Date.now();
+  h.db
+    .prepare(
+      `INSERT INTO item_meta (kind, name, title, tier, task_size, origin, catalog_id, catalog_version, role, created_at, updated_at)
+       VALUES ('agents', ?, 'Relecteur critique', 'rapide', 'S', 'catalogue', ?, 1, 'equipier', ?, ?)`,
+    )
+    .run(RELECTEUR_CRITIQUE, SECOND_READING_CATALOG_ID, now, now);
+}
+
+/** Équipe « rédaction puis relecture » posée en base, ses deux assistants déclarés au faux (lecture seule, IA propre). */
+function relecturePosee(h: CockpitHarness): void {
+  const etape = (id: string, titre: string, assistant: string, recoit: FlowStep["recoit"]): FlowStep => ({
+    id,
+    titre,
+    assistant,
+    niveau: null,
+    taille: "M",
+    consigne: `[synthétique] ${titre}.`,
+    recoit,
+  });
+  const flow: Flow = {
+    version: 1,
+    blocs: [
+      {
+        type: "relecture",
+        id: "rel",
+        auteur: etape("redac", "Rédaction", AUTEUR_V106, "demande"),
+        relecteur: etape("relec", "Relecture", RELECTEUR_V106, "precedent"),
+        toursMax: 2,
+        pauseAvantRelecture: false,
+      },
+    ],
+  };
+  h.db
+    .prepare("INSERT INTO teams (id, titre, description, flow, origine, created_at, updated_at) VALUES (?, ?, '', ?, 'creee', 1, 1)")
+    .run(EQUIPE_RELECTURE, "[synthétique] Relecture", JSON.stringify(flow));
+  const lecture = [
+    { permission: "*", pattern: "*", action: "deny" },
+    { permission: "read", pattern: "*", action: "allow" },
+  ] as FakeAgent["permission"];
+  h.fake.setAgents([
+    ...h.fake.agents(),
+    ...[AUTEUR_V106, RELECTEUR_V106].map((name): FakeAgent => ({ name, mode: "all", description: name, model: MODEL, options: {}, permission: lecture, steps: 20 })),
+  ]);
+}
+
+/** Sessions d'étape d'UNE étape, d'UN dossier et d'UNE tentative : chaque inscription du faux vaut pour toute session qui lui correspond. */
+const etapeDe = (etape: string, directory: string, tentative: number) => (s: FakeSession) => {
+  const meta = s.metadata as { etape?: string; tentative?: number } | undefined;
+  return meta?.etape === etape && meta.tentative === tentative && s.directory === directory;
+};
+
+/**
+ * Relecture COMMENCÉE puis interrompue dans `directory` : le premier jet est fait, le relecteur travaille quand le cockpit
+ * « recharge ». C'est le cas du défaut §3 : la relance refait le bloc entier, sessions neuves. `bloquee` : le relecteur ne rend
+ * jamais la main (sa conversation reste occupée) ; sinon son tour, lent, finit après l'interruption et la conversation se libère
+ * (une relance n'est acceptée que sur une conversation au repos).
+ */
+async function relectureInterrompue(h: CockpitHarness, directory: string, bloquee: boolean): Promise<string> {
+  h.fake.scriptWhen(etapeDe("redac", directory, 1), { text: "[synthétique] Premier jet.", cost: 0.01, stepMs: 5 });
+  h.fake.scriptWhen(
+    etapeDe("relec", directory, 1),
+    bloquee
+      ? { tools: [{ tool: "read", input: { filePath: `${directory}/a.txt` }, beforeAsk: () => new Promise<void>(() => undefined) }], stepMs: 1 }
+      : { text: "[synthétique] Relecture lente.", cost: 0.01, stepMs: 400 },
+  );
+  const estimation = await h.call("POST", `/api/teams/${EQUIPE_RELECTURE}/estimate`, { headers: h.headers.mutating, body: { directory, rootId: null } });
+  assert.equal(estimation.status, 200, estimation.body);
+  const { estimateSha256 } = estimation.json<TeamEstimateResponse>();
+  const run = await h.call("POST", `/api/teams/${EQUIPE_RELECTURE}/run`, {
+    headers: h.headers.mutating,
+    body: { directory, rootId: null, demande: "[synthétique] Rédige puis relis.", fichiers: [], agentConversation: "build", estimateSha256, confirmations: {} },
+  });
+  assert.equal(run.status, 202, run.body);
+  const { runId } = run.json<TeamRunStarted>();
+  const auTravail = await vueDuLancement(h, runId, (v) => v.steps.some((s) => s.stepId === "relec" && s.state === "en-cours" && s.sessionId !== null), "relecteur au travail");
+  h.cockpit.equipes.eq.ports.runner.interrupt(runId, "rechargement");
+  await vueDuLancement(h, runId, (v) => v.relancable, "relecture interrompue, relançable");
+  if (!bloquee) {
+    const session = auTravail.steps.find((s) => s.stepId === "relec")?.sessionId ?? "";
+    await until(() => (h.fake.statusOf(session).type === "idle" ? true : undefined), 5_000);
+  }
+  return runId;
+}
+
+describe("croisements v106 <gf4:v106> : construction × 1.0.6 (fiche §6)", () => {
+  it("T-C1 : POST de l'estimation de la Seconde lecture avec un dossier %XX → 403 forbidden-directory, zéro requête aux deux instances ; « Remise 20% » lu à l'octet", async (t) => {
+    const { h } = await start(t, { settings: { ui: { mode: "avance" } }, modules: "tous", omo: true });
+    assert.ok(h.omo, "option « omo » du harnais");
+    const omo = h.omo;
+    relecteurInstalle(h);
+    const corps = (directory: string) => ({ directory, sessionId: "ses_seconde_lecture", cible: "reponse" });
+    const piege = await sansRequete(h, omo, "Seconde lecture %XX", () =>
+      h.call("POST", "/api/chat/second-reading/estimate", { headers: h.headers.mutating, body: corps(TRAP_DIR) }),
+    );
+    assertForbidden(piege, "POST /api/chat/second-reading/estimate");
+    assert.equal(usageRows(h), 0, "rien de facturé");
+    // Témoin : un nom légitime est lu dans son dossier, à l'octet (le relecteur installé y est cherché).
+    const depuis = h.fake.requests.length;
+    const legitime = await h.call("POST", "/api/chat/second-reading/estimate", { headers: h.headers.mutating, body: corps(dirOf(LEGIT[0])) });
+    assert.equal(legitime.status, 200, legitime.body);
+    assert.deepEqual([...new Set(directoriesSent(h, depuis))], [dirOf(LEGIT[0])], "dossier transmis tel quel");
+    assertSentinel(h, "T-C1");
+  });
+
+  it("T-C2 : relance d'une relecture commencée (constats-5b §3) — dossier %XX : estimation et relance 403, zéro requête ; « Remise 20% » : la relance part et refait le bloc DANS ce dossier", async (t) => {
+    const { h, omo } = await demarrerEquipes(t);
+    relecturePosee(h);
+
+    // Dossier non contrôlé : un lancement hérité d'une base d'avant la 1.0.6, relecture commencée.
+    const piege = await relectureInterrompue(h, dirOf("proj"), true);
+    h.db.prepare("UPDATE team_runs SET directory = ? WHERE id = ?").run(TRAP_DIR, piege);
+    const lignes = (h.db.prepare("SELECT COUNT(*) AS n FROM team_run_steps WHERE run_id = ?").get(piege) as { n: number }).n;
+    assertForbidden(
+      await sansRequete(h, omo, "estimation de la relance %XX", () => h.call("POST", `/api/team-runs/${piege}/estimate`, { headers: h.headers.mutating, body: {} })),
+      "POST /api/team-runs/:id/estimate",
+    );
+    assertForbidden(
+      await sansRequete(h, omo, "relance %XX", () => h.call("POST", `/api/team-runs/${piege}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: "a".repeat(64) } })),
+      "POST /api/team-runs/:id/relancer",
+    );
+    assert.equal((h.db.prepare("SELECT COUNT(*) AS n FROM team_run_steps WHERE run_id = ?").get(piege) as { n: number }).n, lignes, "aucune étape recréée");
+
+    // Témoin : dans « Remise 20% », la relance d'une relecture commencée PART (elle était refusée « estimation-perimee »), et
+    // le bloc refait crée ses sessions neuves dans ce dossier, à l'octet.
+    const directory = dirOf(LEGIT[0]);
+    const runId = await relectureInterrompue(h, directory, false);
+    h.fake.scriptWhen(etapeDe("redac", directory, 2), { text: "[synthétique] Version neuve.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen(etapeDe("relec", directory, 2), { text: "[synthétique] Rien à redire.\nVERDICT: RIEN À REPRENDRE", cost: 0.01, stepMs: 5 });
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const depuis = h.fake.requests.length;
+    const relance = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: estimation.json<TeamEstimateResponse>().estimateSha256 } });
+    assert.equal(relance.status, 200, relance.body);
+    const fini = await vueDuLancement(h, runId, (v) => v.state === "terminee" || v.state === "echec", "relance finie");
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    const neuves = fini.steps.filter((s) => s.tentative === 2);
+    assert.deepEqual(neuves.map((s) => s.stepId), ["redac", "relec"], "le bloc refait entier, tentative 2");
+    for (const step of neuves) assert.equal(h.fake.session(step.sessionId ?? "")?.directory, directory, `${step.stepId} : session neuve dans le dossier`);
+    assert.deepEqual([...new Set(directoriesSent(h, depuis))].filter((d) => d !== directory), [], "aucun autre dossier transmis par la relance");
+    assertSentinel(h, "T-C2");
+  });
+});
+// </gf4:v106>

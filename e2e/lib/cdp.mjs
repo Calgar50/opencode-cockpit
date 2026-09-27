@@ -284,7 +284,9 @@ export async function creerOnglet(client, sessionId, targetId) {
   let chargement = null;
   // Médias émulés (R106-b) : thème et mouvement partent TOUJOURS ensemble (emulerMedias), le protocole remplaçant toute la
   // liste à chaque envoi. `mouvement` null : aucun réglage demandé par le scénario, MOUVEMENT_DU_BANC est épinglé.
-  const medias = { theme: null, mouvement: null };
+  // Grande fusion (GF4, A33) : `medias()` de l'it4 passe lui aussi par emulerMedias. `forcedColors` et `reducedMotion` sont ce
+  // qu'il demande (null : rien) ; `reducedMotion` passe devant `mouvement` jusqu'au prochain medias() ou mouvement().
+  const medias = { theme: null, mouvement: null, forcedColors: null, reducedMotion: null };
   // Relevé du réglage de mouvement pendant un scénario (garde de R106-b) : null hors d'un scénario.
   let suivi = null;
 
@@ -346,11 +348,16 @@ export async function creerOnglet(client, sessionId, targetId) {
   await envoyer("Log.enable");
   await envoyer("Network.enable");
 
-  /** SEUL envoi de `Emulation.setEmulatedMedia` de l'onglet : thème (s'il est posé) et mouvement, toujours ensemble. */
+  /**
+   * SEUL envoi de `Emulation.setEmulatedMedia` de l'onglet : mouvement TOUJOURS (celui que medias() demande, sinon celui du
+   * scénario, sinon celui du banc), contraste forcé et thème s'ils sont posés. Rend la liste envoyée.
+   */
   const emulerMedias = async () => {
-    const features = [{ name: "prefers-reduced-motion", value: medias.mouvement ?? MOUVEMENT_DU_BANC }];
+    const features = [{ name: "prefers-reduced-motion", value: medias.reducedMotion ?? medias.mouvement ?? MOUVEMENT_DU_BANC }];
+    if (medias.forcedColors !== null) features.push({ name: "forced-colors", value: medias.forcedColors });
     if (medias.theme !== null) features.push({ name: "prefers-color-scheme", value: medias.theme === "sombre" ? "dark" : "light" });
     await envoyer("Emulation.setEmulatedMedia", { features });
+    return features;
   };
 
   const onglet = {
@@ -450,6 +457,8 @@ export async function creerOnglet(client, sessionId, targetId) {
     async mouvement(valeur) {
       if (!MOUVEMENTS.includes(valeur)) throw new Error(`réglage de mouvement refusé : « ${valeur} » (${MOUVEMENTS.join(", ")}).`);
       medias.mouvement = valeur;
+      // A33 : le réglage demandé par un medias() précédent est levé ; mouvement() reste la commande du réglage du scénario.
+      medias.reducedMotion = null;
       await emulerMedias();
     },
 
@@ -467,33 +476,32 @@ export async function creerOnglet(client, sessionId, targetId) {
 
     // --- équipes (it4) : début ---
     /**
-     * Émulation des requêtes de média de la page (`Emulation.setEmulatedMedia`), en UN SEUL envoi : `forced-colors`,
-     * `prefers-reduced-motion` et, si on le demande, `prefers-color-scheme`. C'est la SEULE aide d'émulation de média du
-     * banc (plan it4 §2.7) : `theme()` n'est pas touchée, et rien d'autre ici n'émule un média.
+     * Émulation des requêtes de média de la page : `forced-colors`, `prefers-reduced-motion` et `prefers-color-scheme`,
+     * demandés ensemble. C'est l'aide d'émulation de média des scénarios (plan it4 §2.7).
      *
-     * Le protocole remplace la liste entière à chaque envoi : un `theme()` posé avant efface donc `forced-colors`, et
-     * inversement. Pour une capture en contraste forcé dans un thème donné, tout se demande d'un coup :
+     * Grande fusion (GF4, A33) : medias() ne fait plus son propre envoi. Il POSE l'état (contraste forcé, mouvement demandé,
+     * thème), puis appelle emulerMedias, SEUL envoi de `Emulation.setEmulatedMedia` de l'onglet (R106-b) : le mouvement part
+     * donc toujours, et la garde du banc ne voit jamais la page rendue au réglage du poste. Chaque appel décrit l'état entier :
+     * ce qui n'est pas demandé n'est pas émulé, sauf le mouvement, qui revient au réglage fixé par le scénario (mouvement(),
+     * preparerPage), sinon à celui du banc. Pour une capture en contraste forcé dans un thème donné :
      *   `await onglet.medias({ forcedColors: "active", reducedMotion: "reduce", theme: "sombre" })`.
-     * `medias({})` rend la page à ses médias réels (liste vide), comme `captureSuite` le fait à la fin.
+     * `medias({})` rend la page à l'état du banc : mouvement fixé, ni thème ni contraste forcé — jamais une liste vide.
      *
      * Valeurs acceptées, celles de la spécification CSS : `forcedColors` « active » ou « none » ; `reducedMotion`
-     * « reduce » ou « no-preference » ; `theme` « sombre » ou « clair ». Une valeur inconnue est refusée ici plutôt
-     * qu'ignorée par le navigateur, qui rendrait une capture trompeuse.
+     * « reduce » ou « no-preference » ; `theme` « sombre » ou « clair ». Une valeur inconnue est refusée ici, avant tout
+     * changement et tout envoi, plutôt qu'ignorée par le navigateur, qui rendrait une capture trompeuse.
      */
     async medias({ forcedColors = null, reducedMotion = null, theme = null } = {}) {
-      const features = [];
-      const ajouter = (name, valeur, permises) => {
-        if (valeur === null) return;
-        if (!permises.includes(valeur)) throw new Error(`valeur refusée pour « ${name} » : « ${valeur} » (${permises.join(", ")}).`);
-        features.push({ name, value: valeur });
+      const verifier = (name, valeur, permises) => {
+        if (valeur !== null && !permises.includes(valeur)) throw new Error(`valeur refusée pour « ${name} » : « ${valeur} » (${permises.join(", ")}).`);
       };
-      ajouter("forced-colors", forcedColors, ["active", "none"]);
-      ajouter("prefers-reduced-motion", reducedMotion, ["reduce", "no-preference"]);
-      if (theme !== null) {
-        if (theme !== "sombre" && theme !== "clair") throw new Error(`thème refusé : « ${theme} » (sombre, clair).`);
-        features.push({ name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" });
-      }
-      await envoyer("Emulation.setEmulatedMedia", { features });
+      verifier("forced-colors", forcedColors, ["active", "none"]);
+      verifier("prefers-reduced-motion", reducedMotion, MOUVEMENTS);
+      if (theme !== null && theme !== "sombre" && theme !== "clair") throw new Error(`thème refusé : « ${theme} » (sombre, clair).`);
+      medias.forcedColors = forcedColors;
+      medias.reducedMotion = reducedMotion;
+      medias.theme = theme;
+      const features = await emulerMedias();
       return features.map((feature) => `${feature.name}: ${feature.value}`);
     },
 

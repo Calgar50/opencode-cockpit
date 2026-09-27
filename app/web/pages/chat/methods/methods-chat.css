@@ -1,0 +1,226 @@
+/* Propriétaire : L44e. Méthodes du chat et Seconde lecture (spécification §5.5, §5.6, §6 l.1051 ; conception C §9.4, §9.7 ;
+   plan d'exécution it5 §4.3, §5.3). Puce « + Méthode » du composeur, aperçu modifiable du bloc, bulle repliée du message,
+   présence de la méthode sous la réponse, bouton « Seconde lecture » et son pied.
+
+   Règles de la grille V2 tenues ici :
+   - AUCUNE animation, donc aucune animation infinie (web-animations.test.ts, périmètre posé par l'intégrateur du train de V2) ;
+   - la présence d'une méthode se lit au MOT et à l'ICÔNE, jamais à la couleur seule ; un refus se lit à sa phrase, jamais au gris ;
+   - 400 px : le popover défile et reste à 16 px des bords, les puces passent à la ligne, l'aperçu ne déborde jamais ;
+   - mode contrasté (forced-colors) : bordures et contours repris de CanvasText, GrayText pour les lignes désactivées ;
+   - contrastes : --text-2 pour un texte secondaire, jamais une opacité. */
+
+.methodes-puce {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* La puce est posée à DROITE de la barre du composeur : un menu ancré à gauche (`left: 0`) commençait au bord gauche de la
+   puce et se terminait hors de la fenêtre (380 px de large à ~1225 px sur 1440). Il est donc ancré au bord DROIT de la puce,
+   comme `.autonomy-menu` : la largeur le fait alors grandir vers l'intérieur. */
+.methodes-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: auto;
+  right: 0;
+  z-index: 40;
+  width: min(380px, calc(100vw - 32px));
+  max-height: 420px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.methodes-menu:focus {
+  outline: none;
+}
+
+.methodes-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.methodes-item:hover,
+.methodes-item:focus-visible {
+  background: var(--surface-2);
+}
+.methodes-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.methodes-item[aria-disabled="true"] {
+  cursor: default;
+}
+.methodes-item-titre {
+  font-weight: 600;
+}
+.methodes-item-detail {
+  color: var(--text-2);
+  font-size: 0.85rem;
+  margin-top: 2px;
+}
+/* Refus : la phrase le dit ; la couleur ne fait que l'accompagner. */
+.methodes-item-raison {
+  color: var(--text-2);
+  font-size: 0.85rem;
+  margin-top: 2px;
+}
+
+/* Puces retenues et aperçu, sous la barre d'outils du composeur. */
+.methodes-choisies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.methodes-apercu {
+  width: 100%;
+  min-width: 0;
+}
+.methodes-apercu > summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+.methodes-apercu textarea {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  margin-top: 6px;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+/* Bulle d'un message : le bloc envoyé, replié, tel qu'il a été écrit. */
+.methode-bulle {
+  margin-top: 6px;
+  min-width: 0;
+}
+.methode-bulle > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+.methode-bulle-bloc {
+  margin: 6px 0 0;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Présence de la méthode sous la réponse : mot + icône, jamais la couleur seule. */
+.methode-presence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-2);
+}
+.methode-presence + .methode-presence {
+  margin-top: 2px;
+}
+.methode-presence[data-presente="oui"] {
+  color: var(--good-ink);
+}
+.methode-presence[data-presente="non"] {
+  color: var(--warning-ink);
+}
+
+/* Seconde lecture : bouton sous la réponse, phrase d'absence et pied. */
+.seconde-lecture {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+.seconde-lecture-phrase {
+  color: var(--text-2);
+  font-size: 0.85rem;
+  min-width: 0;
+}
+.seconde-lecture-pied {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+/* La puce prend environ 100 px dans la barre du composeur, pris aux réglages d'IA, qui partagent la même ligne. Mesuré à
+   1440 × 900, une demande en attente en mode Avancé : le sélecteur de niveau passait de 82 à 122 px de haut et la ligne de
+   l'IA de 94 à 119, soit une barre de 196 à 260 px ; la colonne prend ces 64 px à la région « Qui travaille ? » (250 → 187),
+   dont la bande tombe de 104 à 40 px — l'attente de votre accord passait alors SOUS le bandeau, contre la clôture de
+   l'itération 1 (spéc. §5.7.1 ; scénarios it1-ui-mise-en-page et it1-ui-delegation).
+   Quand la puce est là, les réglages d'IA prennent donc toute la largeur de la barre, qui enroule déjà ses éléments
+   (`flex-wrap: wrap`, chat.css), et les boutons passent dessous : à pleine largeur ils enroulent moins, et la barre est plus
+   basse qu'avant la puce. Rien n'est retiré, rien n'est réduit. */
+.composer-toolbar:has(> .methodes-puce) > .composer-ia {
+  flex-basis: 100%;
+}
+
+/* Sous 480 px, la puce est trop près du bord droit pour porter le popover : ancré sur elle, il commencerait à 1 px du bord
+   gauche. Il se pose donc sur le COMPOSEUR (`position: relative` déjà posé dans chat.css), comme `.composer .popover`, et
+   reste à 16 px de ses deux bords. `.methodes-puce` redevient statique : le composeur devient le bloc conteneur. */
+@media (max-width: 480px) {
+  .methodes-puce {
+    position: static;
+  }
+  .methodes-menu {
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+}
+
+@media (forced-colors: active) {
+  .methodes-menu,
+  .methodes-apercu textarea,
+  .methode-bulle-bloc {
+    border-color: CanvasText;
+  }
+  .methodes-item:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .methodes-item[aria-checked="true"] {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+  .methodes-item[aria-checked="true"]:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .methodes-item[aria-disabled="true"] .methodes-item-titre,
+  .methodes-item[aria-disabled="true"] .methodes-item-detail,
+  .methodes-item[aria-disabled="true"] .methodes-item-raison {
+    color: GrayText;
+  }
+  /* La couleur disparaît en mode contrasté : le mot et l'icône portent seuls l'information. */
+  .methode-presence[data-presente="oui"],
+  .methode-presence[data-presente="non"],
+  .seconde-lecture-phrase,
+  .seconde-lecture-pied {
+    color: CanvasText;
+  }
+}

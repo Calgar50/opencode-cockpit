@@ -111,7 +111,8 @@ describe("croisement it4 V0 : clés de team-texts = unions de team-types", () =>
 
   it("autres listes fermées rangées par T4t : pauses, formes, états d'équipe installée, blocs, `recoit`, tailles, raisons", () => {
     // Listes des types sans valeur exécutable dans T4 : vérifiées par le compilateur (clé manquante ou en trop → typecheck rouge).
-    const pauseKinds = { verification: true, budget: true, modification: true, "redemarrage-cockpit": true, changement: true } satisfies Record<
+    // 5b (L42a) : `choix` s'ajoute aux cinq genres de l'itération 4 — la pause où VOUS confirmez le choix de l'aiguilleur.
+    const pauseKinds = { verification: true, budget: true, modification: true, "redemarrage-cockpit": true, changement: true, choix: true } satisfies Record<
       TeamPauseView["kind"],
       true
     >;

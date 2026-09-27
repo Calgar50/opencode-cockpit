@@ -300,6 +300,15 @@ const TEAM_ERROR_CODES = [
   "plancher-etape",
   "etape-consultable",
   "etat-incompatible",
+  // <c5:choix-invalide> Code ajouté par le train de la vague 2 de la 5b (demande de contrat de L42b) : un choix d'aiguillage
+  // qui ne correspond plus à la liste proposée est refusé en clair, jamais sous « invalid ».
+  "choix-invalide",
+  // </c5:choix-invalide>
+  // <c5:reprise-redemarrage>
+  // Code ajouté par la clôture de la 5b (D-5b-1) : sa phrase dit la vérité (le cockpit a redémarré, l'estimation est à refaire)
+  // là où `estimation-perimee` disait « une nouvelle estimation est affichée » sans que rien ne le soit.
+  "reestimation-requise",
+  // </c5:reprise-redemarrage>
   "pas-relancable",
   "deja-ajoute",
   "confirmation-requise",
@@ -328,9 +337,20 @@ const FLOW_PROBLEM_CODES = [
   "personnalise",
   "niveau-avance",
   "niveau-indisponible",
+  // 5b (L42a) : codes de la relecture, de l'aiguillage, des liens entre étapes et des méthodes des étapes. Leurs phrases sont
+  // en section c5: de team-texts.ts, parce que le croisement de V0 de l'it4 exige une phrase par membre de FlowProblemCode.
+  "aiguillage-premier",
+  "specialistes",
+  "relecteur-distinct",
+  "meme-famille",
+  "lien-arriere",
+  "lien-avis",
+  "lien-avance",
+  "methodes",
 ];
-const TEAM_RUN_STATES = ["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification", "terminee", "arretee", "echec", "interrompue", "plafond"];
-const TEAM_STEP_STATES = ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee"];
+// 5b (L42a) : « attente-choix » (vous confirmez le choix de l'aiguilleur) et « non-choisi » (spécialiste écarté).
+const TEAM_RUN_STATES = ["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification", "attente-choix", "terminee", "arretee", "echec", "interrompue", "plafond"];
+const TEAM_STEP_STATES = ["prevue", "en-file", "en-cours", "attente-accord", "terminee", "echec", "arretee", "interrompue", "plafond", "non-lancee", "non-choisi"];
 const TEAM_RUN_CAUSES = ["vous", "equipe", "plafond", "echec", "rechargement", "redemarrage-cockpit", "budget", "modification", "pause", "changement"];
 /** Codes rendus tels quels par la garde de rechargement de la 1.1 : aucune phrase dans les textes des équipes. */
 const TEAM_GUARD_CODES = ["sessions-busy", "redemarrage-en-cours", "reponses-non-verifiables"];
@@ -619,6 +639,22 @@ describe("textes des équipes et de la carte : fonctions de formatage", () => {
     assert.equal(carte.genre("inconnu", false), null);
   });
 });
+
+// <c5:reprise-redemarrage>
+// Clôture 5b (D-5b-1, contre-vérification) : `reestimation-requise` est aussi rendu pour la pause « Le cockpit a redémarré »,
+// que le redémarrage a CRÉÉE (recover de team-runner.ts). Sa phrase ne peut donc pas dire que le cockpit a redémarré « pendant
+// cette pause » : le message de cette pause, rendu au-dessus sur la même carte, dit « pendant l'équipe ».
+describe("textes des équipes : reprise d'une pause après un redémarrage du cockpit (clôture 5b)", () => {
+  it("reestimation-requise : phrase vraie pour toute pause, y compris celle que le redémarrage a créée", () => {
+    const phrase = E.erreurs["reestimation-requise"];
+    assert.match(E.pauses["redemarrage-cockpit"].message, /pendant l'équipe/, "le message de la pause dit QUAND le cockpit a redémarré");
+    assert.doesNotMatch(phrase, /pendant cette pause/, phrase);
+    assert.match(phrase, /redémarrage du cockpit/, "la phrase dit ce qui s'est passé");
+    assert.match(phrase, /refaites-la avant de continuer/, "et ce qu'il reste à faire");
+    assert.match(phrase, /Rien n'a été envoyé ni facturé\.$/, "le refus arrive avant toute écriture et toute requête");
+  });
+});
+// </c5:reprise-redemarrage>
 
 describe("textes des équipes et de la carte : modules", () => {
   it("imports de types seulement, rien d'autre exporté que TEXTES et des fonctions", async () => {

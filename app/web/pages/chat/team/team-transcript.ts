@@ -119,6 +119,16 @@ function genreResultat(contenu: string): TeamInjectionKind {
 }
 
 /**
+ * Demande recopiée par le cockpit, lue sur le message injecté d'un lancement dont l'appelant connaît déjà l'identifiant
+ * (`TeamRunView.requestMessageId`). Le marqueur `<!-- cockpit:… -->` est retiré et le texte borné, comme pour la transcription.
+ * Sert au préremplissage du composeur par [Envoyer à cet assistant] (chemin « aucun », D-5-13) : aucune requête, la
+ * transcription déjà chargée suffit.
+ */
+export function demandeRecopiee(message: TranscriptMessageLike, runId: string): string {
+  return borne(sansMarqueur(messageText(message), "equipe-demande", runId), FLOW_LIMITS.relaisCaracteres);
+}
+
+/**
  * Message injecté par une équipe de cette conversation, ou null. `runs` : les lancements de la racine (useTeamRuns, L38b) ; tant
  * qu'ils ne sont pas chargés, la liste est vide et le message reste une bulle ordinaire.
  */
@@ -127,7 +137,7 @@ export function teamInjectionOf(message: TranscriptMessageLike, runs: readonly T
   if (id === null) return null;
   const demande = runs.find((run) => run.requestMessageId === id);
   if (demande !== undefined) {
-    return { kind: "demande", run: demande, texte: borne(sansMarqueur(messageText(message), "equipe-demande", demande.id), FLOW_LIMITS.relaisCaracteres) };
+    return { kind: "demande", run: demande, texte: demandeRecopiee(message, demande.id) };
   }
   const resultat = runs.find((run) => run.resultMessageId === id);
   if (resultat === undefined) return null;
@@ -171,4 +181,112 @@ export function stepOpeningOf(message: TranscriptMessageLike, run: TeamRunView |
 /** Puce du tiroir : « Consigne envoyée par le cockpit à l'étape « {titre} » » (même règle de remplissage que puceInjection). */
 export function puceConsigne(titre: string): string {
   return remplir(P.transcription.consigne, { titre: borne(titre, TITRE_MAX) });
+}
+
+// --- Archives : transcription enregistrée (itération 5, L44f) -------------------------------------------------------------------
+
+/**
+ * La fiche d'Archives ne reçoit PAS les messages : `GET /api/archive/:id` rend la transcription déjà écrite en Markdown par
+ * `buildDigest` (archive.ts), où chaque message ouvre une section « ## 🧑 Vous · … » ou « ## 🤖 … ». Les deux messages qu'une
+ * équipe fait écrire au cockpit dans la conversation — la demande recopiée et le résultat injecté — y entrent donc sous
+ * « Vous », alors que vous ne les avez pas écrits (conception A §7.7).
+ *
+ * Le découpage ci-dessous les rend à leur auteur. Il reconnaît la LIGNE DE MARQUEUR que `injectionText` (flow.ts, it4) pose en
+ * tête de ces deux messages, et elle seule : les genres viennent de `PromptKind` (`ledger.ts`, it4), avec lesquels le cockpit
+ * marque les mêmes messages dans sa base. Aucune autre règle — un texte qui ressemble à une demande d'équipe reste une section
+ * ordinaire, et un marqueur écrit AILLEURS que sur une ligne à lui n'est pas reconnu (flow.ts n'en écrit pas d'autre).
+ *
+ * Ici, contrairement à la transcription du chat, l'identifiant du message n'existe plus : la fiche d'Archives n'a que du texte.
+ * Le marqueur est donc la seule preuve disponible, et il ne sert qu'à ÉTIQUETER une section de la copie écrite par le cockpit
+ * lui-même — jamais à décider ce qui est envoyé, ni à qui. Le risque 19 (un marqueur recopié par une IA) se limite donc à une
+ * section d'archive mal étiquetée, et il est borné : la ligne doit être seule sur sa ligne, en TÊTE de la section.
+ */
+export type ArchiveBlocGenre = "texte" | "equipe-demande" | "equipe-resultat";
+
+export interface ArchiveBloc {
+  genre: ArchiveBlocGenre;
+  /** Markdown du bloc, sans aucune ligne de marqueur du cockpit. */
+  texte: string;
+}
+
+/** Ligne de marqueur d'injection d'équipe, seule sur sa ligne : les deux genres de `PromptKind` (it4). */
+const LIGNE_MARQUEUR_EQUIPE = /^[ \t]*<!--[ \t]*cockpit:(equipe-demande|equipe-resultat)[ \t]+run=[^\n>]*-->[ \t]*$/;
+
+/** Début d'une section de la transcription enregistrée (`buildDigest` : « ## 🧑 Vous · … », « ## 🤖 … »). */
+const TITRE_SECTION = "## ";
+
+interface SectionArchive {
+  genre: ArchiveBlocGenre;
+  /**
+   * Ligne de titre de la section (« ## 🧑 Vous · … »), TENUE À PART : une carte d'équipe est là pour rendre le message à son
+   * auteur, elle ne recopie donc pas l'attribution que `buildDigest` a écrite. Vide pour ce qui précède le premier titre.
+   */
+  titre: string;
+  /** Corps de la section, titre exclu. */
+  lignes: string[];
+  /** Le corps de la section (tout sauf son titre) n'a encore aucune ligne non vide : un marqueur y est en tête. */
+  corpsVide: boolean;
+}
+
+/** Sections de la transcription, marqueurs du cockpit retirés et genre posé sur ceux qui ouvrent le corps d'une section. */
+function sectionsDArchive(lignes: readonly string[]): SectionArchive[] {
+  const sections: SectionArchive[] = [];
+  let courante: SectionArchive = { genre: "texte", titre: "", lignes: [], corpsVide: true };
+  sections.push(courante);
+  for (const ligne of lignes) {
+    if (ligne.startsWith(TITRE_SECTION)) {
+      courante = { genre: "texte", titre: ligne, lignes: [], corpsVide: true };
+      sections.push(courante);
+      continue;
+    }
+    if (LIGNE_MARQUEUR.test(ligne)) {
+      // Aucune ligne de marqueur du cockpit n'est rendue : elles ne sont pas faites pour être lues.
+      const trouve = courante.corpsVide ? LIGNE_MARQUEUR_EQUIPE.exec(ligne) : null;
+      if (trouve !== null) courante.genre = trouve[1] as ArchiveBlocGenre;
+      continue;
+    }
+    courante.lignes.push(ligne);
+    if (ligne.trim() !== "") courante.corpsVide = false;
+  }
+  return sections;
+}
+
+/**
+ * Sections de la transcription enregistrée, réunies par genre : les sections ordinaires restent collées entre elles (un seul
+ * rendu Markdown) et gardent leur titre, chaque message d'équipe forme son propre bloc et laisse derrière lui le titre
+ * « ## 🧑 Vous · … » que la carte est justement là pour corriger. Une transcription sans marqueur rend un bloc unique, à l'octet
+ * près : la très grande majorité des fiches d'archives ne change donc pas d'un cheveu.
+ *
+ * Les LIGNES sont accumulées, jamais le texte : recopier le bloc déjà écrit à chaque section coûtait le carré du nombre de
+ * sections (381 ms pour 2 000 sections, sur une transcription au plafond de `MAX_TRANSCRIPT`), sur un écran où l'on ne fait
+ * que lire. Le découpage est par ailleurs mémoïsé par la vue (`ArchiveDetail.tsx`), pour n'être pas rejoué à chaque rendu.
+ */
+export function blocsDArchive(transcript: string): ArchiveBloc[] {
+  const blocs: ArchiveBloc[] = [];
+  // Bloc en cours d'écriture : son genre et ses LIGNES, jamais son texte (voir le coût, plus haut).
+  let genreCourant: ArchiveBlocGenre | null = null;
+  let lignesCourantes: string[] = [];
+  const clore = () => {
+    const genre = genreCourant;
+    if (genre === null) return;
+    const texte = trimLignes(lignesCourantes).join("\n");
+    if (texte !== "" || genre !== "texte") blocs.push({ genre, texte });
+    genreCourant = null;
+    lignesCourantes = [];
+  };
+  for (const section of sectionsDArchive(transcript.split("\n"))) {
+    // Le titre revient dans les sections ordinaires, à la place exacte qu'il occupait ; il reste dehors pour une équipe.
+    const brutes = section.genre === "texte" && section.titre !== "" ? [section.titre, ...section.lignes] : section.lignes;
+    const lignes = trimLignes(brutes);
+    if (section.genre === "texte" && genreCourant === "texte") {
+      // Une seule ligne vide entre deux sections réunies : c'est le « \n\n » d'avant, à l'octet près.
+      if (lignes.length > 0) lignesCourantes.push(...(lignesCourantes.length > 0 ? [""] : []), ...lignes);
+      continue;
+    }
+    clore();
+    genreCourant = section.genre;
+    lignesCourantes = [...lignes];
+  }
+  clore();
+  return blocs.length > 0 ? blocs : [{ genre: "texte", texte: "" }];
 }

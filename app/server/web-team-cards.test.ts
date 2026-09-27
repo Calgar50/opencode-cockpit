@@ -475,7 +475,7 @@ describe("cartes d'équipe : carte de résultat", () => {
   });
 
   it("textes : titre, « Rédigé par l'étape … sans appel d'IA. », résumé chiffré, « À vérifier par vous … », [Ajouter à la conversation]", () => {
-    const modele = modeleResultat(terminee(), "# Rapport", true);
+    const modele = modeleResultat(terminee(), "# Rapport", true, "resultat");
     assert.equal(modele.titre, "Résultat de l'équipe « Chaîne de relecture de script »");
     assert.ok(modele.redige.includes("« Consolidation »"), modele.redige);
     assert.ok(modele.redige.toLowerCase().endsWith(P.honnetete.recopie.toLowerCase()), modele.redige);
@@ -488,15 +488,15 @@ describe("cartes d'équipe : carte de résultat", () => {
 
   it("l'IA choisie par l'équipe n'est nommée comme telle qu'en Avancé (§3.13 l.413)", () => {
     const equipe = terminee({ steps: [step({ stepId: "consolider", ordre: 2, ia: { model: "gpt-5", label: "Soigné", variant: null, choisieParEquipe: true } })] });
-    assert.equal(modeleResultat(equipe, "", true).iaEquipe, "IA de l'étape : Soigné (choisie par l'équipe)");
-    assert.equal(modeleResultat(equipe, "", false).iaEquipe, null);
-    assert.equal(modeleResultat(terminee(), "", true).iaEquipe, null);
+    assert.equal(modeleResultat(equipe, "", true, "resultat").iaEquipe, "IA de l'étape : Soigné (choisie par l'équipe)");
+    assert.equal(modeleResultat(equipe, "", false, "resultat").iaEquipe, null);
+    assert.equal(modeleResultat(terminee(), "", true, "resultat").iaEquipe, null);
   });
 
   it("le texte montré est celui de la dernière étape terminée qui porte un extrait, borné", () => {
     assert.equal(etapeResultat(terminee())?.stepId, "consolider");
     assert.equal(etapeResultat(run({ steps: [step({ state: "en-cours", extrait: null })] })), null);
-    assert.equal(modeleResultat(terminee(), "x".repeat(30_000), true).texte.length, 24_000);
+    assert.equal(modeleResultat(terminee(), "x".repeat(30_000), true, "resultat").texte.length, 24_000);
   });
 });
 
@@ -672,7 +672,11 @@ describe("cartes d'équipe : contrat des composants", () => {
     assert.match(code, /texte: string;/);
     assert.match(code, /advanced: boolean;/);
     assert.match(code, /onAdd\?: \(\) => void;/);
-    assert.match(code, /export function TeamResultCard\(\{ run, texte, advanced, onAdd \}: TeamResultCardProps\)/);
+    // Clôture 5b, tour 4 : le genre du texte (livrable complet ou résultats partiels) est une propriété OBLIGATOIRE, que chaque
+    // appelant dit, et la carte le transmet au modèle — des résultats partiels ne sont jamais découpés en journal et notes.
+    assert.match(code, /genre: GenreResultat;/);
+    assert.match(code, /export function TeamResultCard\(\{ run, texte, genre, advanced, onAdd \}: TeamResultCardProps\)/);
+    assert.match(code, /modeleResultat\(run, texte, advanced, genre\)/);
   });
 
   it("aucun texte d'IA inséré comme HTML : le résultat passe par le composant Markdown existant, jamais par dangerouslySetInnerHTML", () => {
@@ -710,8 +714,13 @@ describe("cartes d'équipe : contrat des composants", () => {
     const code = withoutComments(read(CARD));
     const estimate = code.indexOf("teamRunsApi.estimate(run.id)");
     const boite = code.indexOf("await confirm({ title: confirmation.titre");
-    const relaunch = code.indexOf("teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte })");
-    assert.ok(estimate > 0 && boite > estimate && relaunch > boite, `estimate=${estimate} boite=${boite} relaunch=${relaunch}`);
+    // GF4 (A27) : le corps porte l'empreinte confirmée et les accords que la boîte a écrits (`corpsDeReprise`), bâti APRÈS la boîte
+    // — cherché dans `relancer` seul, la reprise de la clôture 5b bâtissant le même corps plus bas.
+    const debutRelancer = code.indexOf("const relancer = useCallback(");
+    const finRelancer = code.indexOf("}, [confirm, relancerAvecEmpreinte, run]);", debutRelancer);
+    const corps = code.indexOf("const corps = corpsDeReprise(suite, confirmation);", debutRelancer);
+    const relaunch = code.indexOf("teamRunsApi.relaunch(run.id, corps)", debutRelancer);
+    assert.ok(estimate > 0 && boite > estimate && corps > boite && relaunch > corps && finRelancer > relaunch, `estimate=${estimate} boite=${boite} corps=${corps} relaunch=${relaunch} fin=${finRelancer}`);
     assert.match(code, /const suite = relanceApresConfirmation\(confirmation, ok\);\s*if \(suite === null\) return;/);
   });
 });

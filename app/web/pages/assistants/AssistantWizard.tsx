@@ -17,6 +17,12 @@ import {
   USE_CASES,
   VARIANT_HELP,
 } from "../../../server/shared/assistant-rules.ts";
+// <c5:methodes-import>
+import { TEXTES as TEXTES_C5 } from "../../../server/shared/construction-texts.ts";
+import { methodAttachable, methodLabels, texteQuand, wizardMethodState } from "../../../server/shared/methods-view.ts";
+import { getMethods } from "../../lib/api-construction.ts";
+import "./methods/methods.css";
+// </c5:methodes-import>
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
@@ -48,9 +54,13 @@ export type WizardMode = "nouveau" | "modifier" | "completer";
 const STEPS = ["Le besoin", "Les droits", "L'IA", "Consignes et fiches", "Vérifier"] as const;
 const LAST_STEP = STEPS.length - 1;
 
-type FieldKey = "title" | "description" | "tier" | "model" | "instructions" | "examples" | "confirm";
+// <c5:methodes-champ>
+// « methods » est ajouté par la construction (L44d) : les méthodes se choisissent dans l'écran « Consignes et fiches ».
+// Les deux formes d'origine tiennent chacune sur une ligne : la section les reprend en entier, avec cette seule clé en plus.
+type FieldKey = "title" | "description" | "tier" | "model" | "instructions" | "examples" | "confirm" | "methods";
 
-const FIELD_STEP: Readonly<Record<FieldKey, number>> = { title: 0, description: 0, tier: 2, model: 2, instructions: 3, examples: 3, confirm: 4 };
+const FIELD_STEP: Readonly<Record<FieldKey, number>> = { title: 0, description: 0, tier: 2, model: 2, instructions: 3, examples: 3, confirm: 4, methods: 3 };
+// </c5:methodes-champ>
 
 /** Écran où corriger une erreur du serveur (chemin zod « title », « tier », « fiches.0 »…). */
 function issueStep(path: string): number {
@@ -72,6 +82,10 @@ function issueStep(path: string): number {
     case "instructions":
     case "fiches":
     case "examples":
+    // <c5:methodes-ecran>
+    // Refus « methodes-trop » ou « methode-inconnue » du serveur (chemin « methods ») : retour à l'écran des méthodes.
+    case "methods":
+      // </c5:methodes-ecran>
       return 3;
     default:
       return LAST_STEP;
@@ -107,6 +121,10 @@ function draftFromView(view: AssistantView, advanced: boolean, tiers: readonly T
     fiches: view.fiches.slice(0, DRAFT_LIMITS.fichesMax),
     examples: view.examples.slice(0, DRAFT_LIMITS.examplesMax),
     icon: view.icon ?? USE_CASE_INFO[useCase].icon,
+    // <c5:methodes-brouillon>
+    // Méthodes lues dans le FICHIER d'agent (D-5-07) : sans cette ligne, « Modifier » les retirerait à chaque enregistrement.
+    methods: [...(view.methods ?? [])],
+    // </c5:methodes-brouillon>
   };
 }
 
@@ -167,6 +185,10 @@ function toRequest(d: AssistantDraft, previousName: string | null): AssistantSav
     fiches: d.fiches,
     examples: d.examples.map((e) => e.trim()).filter(Boolean),
     icon: d.icon,
+    // <c5:methodes-envoi>
+    // `draft.methods` part toujours, même vide : c'est ainsi qu'une méthode se retire d'un assistant existant.
+    methods: [...(d.methods ?? [])],
+    // </c5:methodes-envoi>
   };
   if (d.tier === null) request.model = d.model ?? null;
   if (previousName) request.previousName = previousName;
@@ -266,6 +288,12 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
   const [saveError, setSaveError] = useState<unknown>(null);
   const [saved, setSaved] = useState<SavedAssistant | null>(null);
   const fiches = useAsync(() => api.fiches(), []);
+  // <c5:methodes-etat>
+  // Catalogue des méthodes (GET /api/methods, L44b) : lecture seule, aucun appel d'IA. Rien n'est jamais pré-coché.
+  const methodes = useAsync(() => getMethods(), []);
+  const methodesAttachables = (methodes.data?.methods ?? []).filter(methodAttachable);
+  const limitesMethodes = methodes.data ? { parAssistant: methodes.data.limites.parAssistant } : undefined;
+  // </c5:methodes-etat>
 
   const request = useMemo(() => toRequest(draft, source.previousName), [draft, source.previousName]);
   const requestJson = JSON.stringify(request);
@@ -407,6 +435,18 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
       return { ...d, fiches: [...d.fiches, fiche], instructions: withFicheSentences(d.instructions, [fiche]) };
     });
 
+  // <c5:methodes-bascule>
+  // Coche ou décoche une méthode. La limite est tenue par l'état de la case (désactivée au-delà) ET revérifiée ici : une case
+  // désactivée peut être activée par un clavier ou un lecteur d'écran avant que l'état ne soit relu.
+  const toggleMethod = (id: string, on: boolean) =>
+    setDraft((d) => {
+      const choisies = d.methods ?? [];
+      if (!on) return { ...d, methods: choisies.filter((m) => m !== id) };
+      if (choisies.includes(id) || choisies.length >= (limitesMethodes?.parAssistant ?? 0)) return d;
+      return { ...d, methods: [...choisies, id] };
+    });
+  // </c5:methodes-bascule>
+
   const restoreExample = async () => {
     const example = withFicheSentences(USE_CASE_PRESETS[draft.useCase].instructions, draft.fiches);
     if (draft.instructions === example) return;
@@ -495,7 +535,16 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
               <span>« {saved.title} » est prêt.</span>
             </div>
           )}
-          <IdentityCard data={identityOfView(saved)} />
+          {/* <c5:methodes-enregistre> */}
+          {/* Itération 5 (L44d) : la carte de l'assistant enregistré montre aussi ses méthodes. L'appel d'origine
+              (<IdentityCard data={identityOfView(saved)} />) est repris ici avec ce seul champ en plus. */}
+          <IdentityCard
+            data={{
+              ...identityOfView(saved),
+              methods: methodLabels(saved.methods, methodes.data?.methods ?? null),
+            }}
+          />
+          {/* </c5:methodes-enregistre> */}
           <div className="row wrap">
             <Button variant="primary" icon="chat" onClick={() => openChatWithAssistant(saved.name)}>
               Essayer dans le chat
@@ -522,6 +571,9 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
     fiches: draft.fiches,
     usedBy: source.view?.usedBy ?? null,
     examples: draft.examples.map((e) => e.trim()).filter(Boolean),
+    // <c5:methodes-apercu>
+    methods: methodLabels(draft.methods, methodes.data?.methods ?? null),
+    // </c5:methodes-apercu>
   };
   const updating = !previewFresh && !previewError;
   const pageTitle = creating ? "Créer un assistant" : mode === "modifier" ? `Modifier « ${source.displayName} »` : `Compléter « ${source.displayName} »`;
@@ -870,6 +922,42 @@ function WizardForm({ mode, source }: { mode: WizardMode; source: WizardSource }
                     </div>
                   )}
                 </div>
+
+                {/* <c5:methodes-groupe> */}
+                {/* Méthodes (L44d) : cartes à cocher, RIEN n'est pré-coché, 2 au plus puis désactivées avec leur raison. */}
+                <div className="field">
+                  <span className="field-label">{TEXTES_C5.partout.methodes.creation.titre}</span>
+                  <span className="field-hint">{TEXTES_C5.partout.methodes.creation.phrase}</span>
+                  {methodes.loading && !methodes.data ? (
+                    <Spinner />
+                  ) : !methodes.data ? (
+                    <p className="small muted">Liste des méthodes indisponible pour le moment : les méthodes déjà choisies sont conservées.</p>
+                  ) : methodesAttachables.length === 0 ? (
+                    <p className="small muted">{TEXTES_C5.partout.methodes.vide}</p>
+                  ) : (
+                    <div className="met-choices">
+                      {methodesAttachables.map((method) => {
+                        const etat = wizardMethodState(draft, method, { assistant: source.previousName, limites: limitesMethodes });
+                        return (
+                          <label key={method.id} className={`check-row met-choice${etat.cochee ? " selected" : ""}`}>
+                            <input type="checkbox" checked={etat.cochee} disabled={!etat.active} onChange={(e) => toggleMethod(method.id, e.target.checked)} />
+                            <span className="stack tight" style={{ gap: 2, minWidth: 0 }}>
+                              <span className="met-choice-head">
+                                <span className="met-choice-titre">{method.titre}</span>
+                                {etat.conseillee ? <span className="badge accent">{TEXTES_C5.partout.methodes.creation.conseillee}</span> : null}
+                              </span>
+                              <span className="small secondary">{method.phrase}</span>
+                              <span className="small secondary">{texteQuand(method)}</span>
+                              {etat.raison ? <span className="small muted">{etat.raison}</span> : null}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {fieldError("methods") ? <span className="field-error">{fieldError("methods")}</span> : null}
+                </div>
+                {/* </c5:methodes-groupe> */}
 
                 <div className="field">
                   <span className="field-label">Exemples de demandes</span>

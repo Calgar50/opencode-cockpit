@@ -14,6 +14,12 @@ import { redactSecrets } from "./redact.ts";
 import type { SessionTracker } from "./sessions.ts";
 import type { Category, SettingsStore } from "./settings.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
+// <c5:methodes-import>
+import { splitMessageMethods } from "./shared/methods.ts";
+// </c5:methodes-import>
+// <c5:markdown>
+import { teamRunsMarkdown } from "./team-costs.ts";
+// </c5:markdown>
 
 export interface ConversationDigest {
   sessionId: string;
@@ -192,7 +198,13 @@ export function buildDigest(session: OcSession, messages: OcMessageWithParts[], 
       const attachments = parts.filter((p) => p.type === "file").map((p) => str(p.filename) || "fichier");
       if (!text && attachments.length === 0) continue;
       promptCount++;
-      prompts.push(text);
+      // <c5:methodes>
+      // Le bloc de méthode ajouté par le composeur (D-5-08) est une CONSIGNE, pas une demande : il ne doit ni ouvrir le résumé
+      // proposé aux Archives, ni peser sur le classement (deux conversations portant la même méthode recevraient le même biais
+      // de mots-clés). `prompts` nourrit `classifyHeuristic` et le classement par IA : le texte y entre sans ses blocs.
+      // La transcription, elle, garde le message tel qu'il est parti à opencode : c'est une transcription, pas un résumé.
+      prompts.push(splitMessageMethods(text).texte);
+      // </c5:methodes>
       lines.push(`## 🧑 Vous · ${when}`, "", text || "_(pièce jointe)_", "");
       if (attachments.length > 0) lines.push(`📎 ${attachments.join(", ")}`, "");
       continue;
@@ -607,7 +619,12 @@ export class ArchiveService {
       .sort((a, b) => b[1] - a[1])
       .map(([name, n]) => `${name} ×${n}`)
       .join(", ");
-    return [
+    // <c5:markdown-base>
+    // Seule ligne de l'itération 1 modifiée dans cette méthode : le corps était rendu directement (`return [`), il est nommé
+    // pour que la section `c5:markdown` ci-dessous puisse y ajouter le résumé des lancements d'équipe. Le contenu du tableau,
+    // lui, est celui de l'itération 1, à l'octet.
+    const base = [
+      // </c5:markdown-base>
       "---",
       header.trimEnd(),
       "---",
@@ -625,6 +642,16 @@ export class ArchiveService {
     ]
       .filter((line, i, all) => !(line === "" && all[i - 1] === ""))
       .join("\n");
+    // <c5:markdown>
+    // La construction (L46a, D-5-10) ajoute EN FIN D'EXPORT le résumé des lancements d'équipe de la conversation, quand il n'est
+    // pas vide. Le résumé est composé ICI, et non à l'écriture du fichier : l'export du dossier d'archives (`#writeMarkdown`) et
+    // le téléchargement de l'interface (`GET /api/archive/:id/export.md`, les deux boutons « Exporter en Markdown ») lisent la
+    // MÊME méthode, donc disent la même chose. Le résumé ne contient AUCUN extrait de résultat (`teamRunsMarkdown` ne lit même
+    // pas la colonne) : les extraits masqués restent visibles dans l'interface seulement. Sans lancement d'équipe,
+    // `teamRunsMarkdown` rend "" et l'export est celui de l'itération 1, à l'octet.
+    const equipes = teamRunsMarkdown(this.#d.db, sessionId);
+    return equipes === "" ? base : `${base}\n\n${equipes}`;
+    // </c5:markdown>
   }
 
   async #writeMarkdown(sessionId: string): Promise<void> {
@@ -639,6 +666,10 @@ export class ArchiveService {
       `${created.slice(0, 10)}_${slugify(conv.title, 50)}_${conv.sessionId.slice(-8)}.md`,
     );
     const target = await assertInside(this.#d.archiveDir, path.join(this.#d.archiveDir, relative));
+    // <c5:markdown-fichier>
+    // Le résumé des lancements d'équipe (L46a, D-5-10) est déjà dans `content` : il est composé par `markdown()`, section
+    // `c5:markdown`, pour que le fichier écrit ici et le téléchargement de l'interface soient identiques.
+    // </c5:markdown-fichier>
     await writeFileAtomic(target, content);
     const previous = this.#row(sessionId)?.archive_path;
     if (previous && previous !== relative) await this.#removeFile(previous);

@@ -12,6 +12,9 @@ import { stringifyFrontmatter } from "./frontmatter.ts";
 import type { EventHub } from "./hub.ts";
 import type { Ledger } from "./ledger.ts";
 import { errorMessage, type Logger } from "./log.ts";
+// <c5:methodes-import>
+import { METHODS } from "./methods-catalogue.ts";
+// </c5:methodes-import>
 import { isAdvanced } from "./mode.ts";
 import type { OcLookup, OcLookupSnapshot } from "./oc-lookup.ts";
 import type { OpencodeClient } from "./opencode.ts";
@@ -20,6 +23,9 @@ import type { SettingsStore } from "./settings.ts";
 import type {
   AssistantOrigin,
   AssistantPreview,
+  // <c5:role>
+  AssistantRole,
+  // </c5:role>
   AssistantState,
   AssistantsResponse,
   AssistantView,
@@ -44,6 +50,9 @@ import {
   ASSISTANT_ICONS,
   type AssistantDraft,
   type AssistantFile,
+  // <c5:methodes-import-corps>
+  assistantBody,
+  // </c5:methodes-import-corps>
   assistantPermission,
   BUILTIN_ASSISTANTS,
   buildAssistantFile,
@@ -91,6 +100,10 @@ import {
   uniqueName,
   variantLabel,
 } from "./shared/assistant-rules.ts";
+// <c5:methodes-import-partages>
+import { TEXTES } from "./shared/construction-texts.ts";
+import { METHOD_LIMITS, type Method, methodIdsIn, renderMethodBlock, stripMethodBlocks } from "./shared/methods.ts";
+// </c5:methodes-import-partages>
 import {
   INTERNAL_AGENTS,
   isInternalAgentName,
@@ -110,6 +123,63 @@ const ficheNameSchema = z
   .string()
   .max(64, "Nom de fiche trop long (64 caractères au plus).")
   .regex(FICHE_NAME_RE, "Nom de fiche invalide : minuscules, chiffres et tirets.");
+
+// <c5:methodes-controle>
+/** Identifiant de méthode : borné comme un nom d'agent ; au-delà, il n'est de toute façon dans aucun catalogue. */
+const methodIdSchema = z.string().max(64, TEXTES.partout.erreurs["methode-inconnue"]);
+
+/** Méthodes attachables à un assistant : celles du catalogue dont le `kind` est « consigne » (une relecture n'est pas du texte). */
+const METHODES_ATTACHABLES: ReadonlyMap<string, Method> = new Map(METHODS.filter((m) => m.kind === "consigne").map((m) => [m.id, m]));
+
+/** Refus d'un brouillon à cause de ses méthodes : code du contrat de la construction et phrase de `construction-texts.ts`. */
+export interface MethodDraftProblem {
+  code: "methodes-trop" | "methode-inconnue";
+  message: string;
+}
+
+const methodProblem = (code: MethodDraftProblem["code"]): MethodDraftProblem => ({ code, message: TEXTES.partout.erreurs[code] });
+
+/**
+ * Contrôle des méthodes d'un brouillon (D-5-07) : `METHOD_LIMITS.parAssistant` au plus, uniques, connues du catalogue et
+ * attachables (`kind: "consigne"`, donc jamais « seconde-lecture », qui est un autre assistant et non un bloc de texte).
+ * Rend le problème, ou null. Le NOMBRE est vérifié avant la liste : un tableau immense est refusé sans être parcouru. Un
+ * identifiant écrit deux fois demande plus de blocs distincts que la limite : c'est aussi « methodes-trop ».
+ */
+export function methodDraftProblem(ids: readonly string[] | undefined): MethodDraftProblem | null {
+  if (ids === undefined || ids.length === 0) return null;
+  if (ids.length > METHOD_LIMITS.parAssistant) return methodProblem("methodes-trop");
+  const vus = new Set<string>();
+  for (const id of ids) {
+    if (vus.has(id)) return methodProblem("methodes-trop");
+    vus.add(id);
+    if (!METHODES_ATTACHABLES.has(id)) return methodProblem("methode-inconnue");
+  }
+  return null;
+}
+
+/** Méthodes attachables d'un brouillon, dans l'ordre demandé ; liste vide pour un brouillon fautif ou sans méthode. */
+function draftMethods(ids: readonly string[] | undefined): Method[] {
+  if (methodDraftProblem(ids) !== null) return [];
+  return (ids ?? []).flatMap((id) => {
+    const method = METHODES_ATTACHABLES.get(id);
+    return method ? [method] : [];
+  });
+}
+
+/** Blocs rendus (renderMethodBlock), séparés d'une ligne vide : ce qu'`assistantBody` insère avant les règles communes. */
+function methodBlocksOf(methods: readonly Method[]): string {
+  return methods
+    .map(renderMethodBlock)
+    .filter((bloc) => bloc !== "")
+    .join("\n\n");
+}
+
+/** Miroir `item_meta.methods` (JSON, colonne déjà migrée) d'une ligne existante ; absent ou vide → « [] ». */
+function metaMethods(row: ItemMetaRow | undefined): string {
+  const raw = (row as { methods?: unknown } | undefined)?.methods;
+  return typeof raw === "string" && raw !== "" ? raw : "[]";
+}
+// </c5:methodes-controle>
 
 const DRAFT_SHAPE = {
   title: z
@@ -140,6 +210,11 @@ const DRAFT_SHAPE = {
     .max(DRAFT_LIMITS.examplesMax, "3 exemples au plus.")
     .transform((list) => list.filter((example) => example.length > 0)),
   icon: z.enum(ASSISTANT_ICONS, { error: "Icône inconnue." }),
+  // <c5:methodes-schema>
+  // Forme seulement : le nombre, l'unicité et l'appartenance au catalogue sont contrôlés par `methodDraftProblem`, qui rend
+  // un code du contrat (422 methodes-trop / methode-inconnue) plutôt qu'un refus « validation » sans code.
+  methods: z.array(methodIdSchema).optional(),
+  // </c5:methodes-schema>
   name: nameSchema.optional(),
 };
 
@@ -320,6 +395,13 @@ function lenientRequest(input: unknown): { draft: AssistantDraft; previousName: 
       : [],
     icon: pick(DRAFT_SHAPE.icon, raw.icon, "sparkle"),
   };
+  // <c5:methodes-lenient>
+  // Les méthodes lisibles sont gardées, bornées à une de plus que la limite : le refus « methodes-trop » reste visible dans
+  // l'aperçu, sans jamais parcourir ni afficher un tableau immense.
+  if (Array.isArray(raw.methods)) {
+    draft.methods = raw.methods.filter((m): m is string => typeof m === "string").slice(0, METHOD_LIMITS.parAssistant + 1);
+  }
+  // </c5:methodes-lenient>
   const name = nameSchema.safeParse(raw.name);
   if (name.success) draft.name = name.data;
   const previous = nameSchema.safeParse(raw.previousName);
@@ -407,7 +489,19 @@ export async function probeSessionsBusyStrict(deps: {
 
 // --- Service -----------------------------------------------------------------------------------
 
-type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at">;
+// <c5:role>
+/**
+ * `role` : colonne `item_meta.role` (déjà migrée), absente d'`ItemMetaRow` ; sans valeur, la ligne reste « assistant ».
+ * `methods` : colonne `item_meta.methods` (déjà migrée elle aussi), miroir JSON des méthodes écrites dans le FICHIER
+ * d'agent, qui fait foi (D-5-07) ; sans valeur, la ligne reste « [] ». Aucune migration n'est ajoutée par la construction.
+ */
+type MetaInput = Omit<ItemMetaRow, "created_at" | "updated_at"> & { role?: AssistantRole; methods?: string };
+
+/** Rôle d'une ligne item_meta : « equipier » pour un assistant d'équipe installé depuis le catalogue, « assistant » sinon. */
+function roleOf(row: Pick<ItemMetaRow, "name">): AssistantRole {
+  return (row as { role?: unknown }).role === "equipier" ? "equipier" : "assistant";
+}
+// </c5:role>
 
 interface ViewContext {
   rows: ItemMetaRow[];
@@ -461,17 +555,24 @@ export class AssistantService {
   }
 
   #upsert(row: MetaInput, now = Date.now()): void {
+    // <c5:role-sql>
+    // La construction a ajouté les colonnes `role` (L45a) puis `methods` (L44b) à trois endroits de cette requête, et nulle
+    // part ailleurs : la liste des colonnes, la liste des valeurs (`:role`, `:methods`) et la clause ON CONFLICT
+    // (`role = excluded.role`, `methods = excluded.methods`). Le reste est d'avant. Requête paramétrée, comme toutes celles
+    // de ce fichier : chaque appelant qui ne gère pas ces colonnes passe la valeur de la ligne existante, jamais un défaut
+    // qui l'écraserait.
     this.#d.db
       .prepare(
         `INSERT INTO item_meta (kind, name, title, use_case, icon, tier, rights, task_size, examples, origin, catalog_id,
-           catalog_version, applied_model, applied_variant, created_at, updated_at)
+           catalog_version, applied_model, applied_variant, role, methods, created_at, updated_at)
          VALUES (:kind, :name, :title, :use_case, :icon, :tier, :rights, :task_size, :examples, :origin, :catalog_id,
-           :catalog_version, :applied_model, :applied_variant, :now, :now)
+           :catalog_version, :applied_model, :applied_variant, :role, :methods, :now, :now)
          ON CONFLICT(kind, name) DO UPDATE SET
            title = excluded.title, use_case = excluded.use_case, icon = excluded.icon, tier = excluded.tier,
            rights = excluded.rights, task_size = excluded.task_size, examples = excluded.examples, origin = excluded.origin,
            catalog_id = excluded.catalog_id, catalog_version = excluded.catalog_version, applied_model = excluded.applied_model,
-           applied_variant = excluded.applied_variant, updated_at = excluded.updated_at`,
+           applied_variant = excluded.applied_variant, role = excluded.role, methods = excluded.methods,
+           updated_at = excluded.updated_at`,
       )
       .run(
         params({
@@ -489,9 +590,12 @@ export class AssistantService {
           catalog_version: row.catalog_version,
           applied_model: row.applied_model,
           applied_variant: row.applied_variant,
+          role: row.role ?? "assistant",
+          methods: row.methods ?? "[]",
           now,
         }),
       );
+    // </c5:role-sql>
   }
 
   // --- Lectures (fichiers, opencode) ----------------------------------------------------------
@@ -640,13 +744,22 @@ export class AssistantService {
       origin: row.origin,
       catalogId: row.catalog_id,
       catalogVersion: row.catalog_version,
+      // <c5:role>
+      role: roleOf(row),
+      // </c5:role>
       tier: isTier(row.tier) ? row.tier : null,
       taskSize,
       rights: detected.rights,
       web: detected.web,
       fiches: detected.fiches,
       examples: parseExamples(row.examples),
-      instructions: stripCommonRules(file.body),
+      // <c5:methodes-vue>
+      // La vérité des méthodes est le FICHIER (D-5-07) : ses blocs sont retirés des consignes affichées, et `methods` liste
+      // les identifiants réellement présents dans le corps — un bloc ajouté ou retiré à la main dans le Studio se voit ici,
+      // même si le miroir `item_meta.methods` n'a pas été réécrit.
+      instructions: stripMethodBlocks(stripCommonRules(file.body)),
+      methods: methodIdsIn(file.body).map((m) => m.id),
+      // </c5:methodes-vue>
       model,
       modelName: model ? modelName(model, ctx.catalog) : null,
       variant,
@@ -787,6 +900,9 @@ export class AssistantService {
         web: entry.web,
         tier: entry.tier,
         taskSize: entry.taskSize,
+        // <c5:role>
+        role: entry.role ?? "assistant",
+        // </c5:role>
         fiches: [...entry.fiches],
         examples: [...entry.examples],
         instructions: entry.instructions,
@@ -874,6 +990,15 @@ export class AssistantService {
       catalog_version: entry.version,
       applied_model: text(item.frontmatter.model),
       applied_variant: text(item.frontmatter.variant),
+      // <c5:role>
+      // `role` ne passe pas par le brouillon : il ne vit que dans item_meta.
+      role: entry.role ?? "assistant",
+      // </c5:role>
+      // <c5:methodes-install>
+      // Aucune méthode n'est attachée à l'installation depuis le catalogue (C §16 n° 5, D-5-07) : elles sont seulement
+      // CONSEILLÉES (`suggereePour`, rendu par GET /api/methods). Le fichier écrit ci-dessus n'a donc aucun bloc.
+      methods: "[]",
+      // </c5:methodes-install>
     });
     this.#d.lookup.invalidate();
     this.#d.hub.cockpit("studio.changed", { kind: "agents", name });
@@ -893,6 +1018,14 @@ export class AssistantService {
     } else {
       ({ draft, previousName } = lenientRequest(input));
     }
+
+    // <c5:methodes-prepare>
+    // Méthodes du brouillon (D-5-07) : contrôlées ici, donc AVANT toute écriture. Un brouillon fautif est rendu sans aucun
+    // bloc dans son aperçu, avec sa phrase dans `issues` ; `save` refuse en plus avec le code du contrat.
+    const methodesFautives = methodDraftProblem(draft.methods);
+    if (methodesFautives) issues.push({ path: "methods", message: methodesFautives.message });
+    const methodBlocks = methodBlocksOf(draftMethods(draft.methods));
+    // </c5:methodes-prepare>
 
     const { tiers, catalog, settings, env } = this.#d;
     const [agents, snapshot, global] = await Promise.all([this.#files("agents"), this.#snapshot(), this.#globalPermission()]);
@@ -948,13 +1081,25 @@ export class AssistantService {
     }
 
     let file: AssistantFile;
+    // <c5:methodes-corps>
+    /** Fiches réellement citées dans le corps : aucune quand le repli ci-dessous sert (nom ou nom de fiche invalide). */
+    let fichesDuCorps: readonly string[] = draft.fiches;
+    // </c5:methodes-corps>
     try {
       file = buildAssistantFile({ ...draft, name }, { model: model ?? "", variant });
     } catch (err) {
       if (!(err instanceof RangeError)) throw err;
       issues.push({ path: "name", message: err.message });
+      // <c5:methodes-corps-repli>
+      fichesDuCorps = [];
+      // </c5:methodes-corps-repli>
       file = buildAssistantFile({ ...draft, name: "assistant", fiches: [] }, { model: model ?? "", variant });
     }
+    // <c5:methodes-corps-blocs>
+    // Blocs insérés par `assistantBody` entre les consignes (phrases de fiches comprises) et les règles communes, qui
+    // restent le dernier bloc du corps (D-5-07). Sans méthode, le corps est celui de `buildAssistantFile`, inchangé.
+    if (methodBlocks !== "") file.body = assistantBody(draft.instructions, fichesDuCorps, methodBlocks);
+    // </c5:methodes-corps-blocs>
     if (!model) delete file.frontmatter.model;
 
     const steps = TASK_STEPS[draft.taskSize];
@@ -986,6 +1131,12 @@ export class AssistantService {
     assertName(name);
     const prepared = await this.#prepare(input, name);
     const { preview, previousName } = prepared;
+    // <c5:methodes-refus>
+    // Méthodes fautives : code du contrat de la construction (422 methodes-trop / methode-inconnue), rendu AVANT le refus
+    // général « validation » et avant toute écriture — le fichier d'agent n'est pas touché.
+    const methodesFautives = methodDraftProblem(prepared.draft.methods);
+    if (methodesFautives) throw new AssistantServiceError(422, methodesFautives.code, methodesFautives.message);
+    // </c5:methodes-refus>
     if (preview.issues.length > 0) throw new AssistantServiceError(422, "validation", "Contenu invalide.", { issues: preview.issues });
     // Un fichier existant ne peut être remplacé que par lui-même (Modifier, Compléter) ; un agent natif ou défini
     // dans opencode.jsonc ne peut pas être masqué par un fichier du même nom.
@@ -1028,6 +1179,15 @@ export class AssistantService {
         catalog_version: existing && existing.origin !== "studio" ? existing.catalog_version : null,
         applied_model: text(item.frontmatter.model),
         applied_variant: text(item.frontmatter.variant),
+        // <c5:role>
+        // « Modifier » ne change pas le rôle : un assistant d'équipe installé le garde, comme son origine.
+        role: existing && existing.origin !== "studio" ? roleOf(existing) : "assistant",
+        // </c5:role>
+        // <c5:methodes-miroir>
+        // Miroir des méthodes qui viennent d'être écrites dans le fichier : les mêmes identifiants, dans le même ordre, sans
+        // doublon. La vérité reste le fichier (la vue le relit) ; ce miroir sert aux lectures qui n'ouvrent pas les fichiers.
+        methods: JSON.stringify(draftMethods(draft.methods).map((m) => m.id)),
+        // </c5:methodes-miroir>
       });
     });
 
@@ -1070,6 +1230,10 @@ export class AssistantService {
       catalog_version: null,
       applied_model: model,
       applied_variant: text(file.frontmatter.variant),
+      // <c5:methodes-adopt>
+      // « Adopter » n'écrit pas le fichier : le miroir reprend les blocs que le fichier porte déjà, écrits à la main.
+      methods: JSON.stringify(methodIdsIn(file.body).map((m) => m.id)),
+      // </c5:methodes-adopt>
     });
     this.#d.hub.cockpit("studio.changed", { kind: "agents", name });
     return this.#viewOf(name);
@@ -1394,6 +1558,14 @@ export class AssistantService {
         catalog_version: row?.catalog_version ?? null,
         applied_model: model,
         applied_variant: variant,
+        // <c5:role>
+        role: row ? roleOf(row) : "assistant",
+        // </c5:role>
+        // <c5:methodes-lien>
+        // Liaison de niveau après un enregistrement du Studio : le miroir de la ligne existante est gardé tel quel. Le
+        // fichier vient d'être écrit à la main et fait foi (la vue le relit) ; rien n'est deviné ici.
+        methods: metaMethods(row),
+        // </c5:methodes-lien>
       });
     });
   };
