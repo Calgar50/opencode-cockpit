@@ -26,6 +26,29 @@ import { ACTIVATION_OUVERTE, buildCockpit11, type Cockpit11Wiring, MODULE_ORDER 
 
 type AskedShape = Pick<FakePermissionRequest, "permission" | "patterns" | "always" | "metadata">;
 
+/**
+ * Inscription du câblage, lue sans dépendre du champ `instances` que T3b ajoutera (plan 2 bis §4.2, D-2b-40) : une inscription
+ * qui ne le porte pas sert l'instance principale.
+ */
+interface Inscription {
+  kind: string;
+  key: string;
+  module: string;
+  instances?: readonly string[];
+}
+
+/**
+ * Ouverture 2bis-V2 : les listes exhaustives de ce fichier ne comparent que les inscriptions de l'instance PRINCIPALE. Sans ce
+ * filtre, la liste exhaustive ci-dessous tombait dès qu'un module de la salle s'inscrivait au câblage de production (T3b
+ * complète MODULE_ORDER et STEP_ORDER selon le §4.1.2), alors que ce fichier appartient à l'intégrateur et qu'aucun paquet de
+ * V2 n'a le droit de le corriger. L'assertion reste entière pour l'instance principale : mêmes entrées, même ordre.
+ */
+const sertPrincipale = (r: Inscription): boolean => (r.instances ?? ["principale"]).includes("principale");
+
+/** Nombre d'inscriptions d'une nature dans une liste (pour un crochet, d'une étape). */
+const compte = (list: readonly Inscription[], kind: string, key?: string): number =>
+  list.filter((r) => r.kind === kind && (key === undefined || r.key === key)).length;
+
 interface Mx1Fixture {
   files: Record<string, string>;
   metadata: Array<{
@@ -284,7 +307,8 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // Porte I1 basculée au train de la vague 3 (it2) : l'activation (L10d) inscrit son crochet d'envoi, entre les plans et les
     // demandes ; beforeBilledSend passe donc de 3 à 4.
     const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 4, beforeOnceRelay: 1, abort: 1 };
-    assert.deepEqual(wiring.registrations, [
+    const principales = wiring.registrations.filter(sertPrincipale);
+    assert.deepEqual(principales, [
       ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeBilledSend", module: "activation" },
@@ -308,8 +332,25 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
     ]);
-    for (const step of Object.keys(wiring.hooks) as HookStep[]) assert.equal(wiring.hooks[step].length, hooked[step] ?? 0, step);
-    assert.deepEqual([wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length], [5, 3, 2]);
+    // Non-régression de l'ouverture 2bis-V2 : une inscription de la salle sort de la liste comparée, une inscription de
+    // l'instance principale (champ absent ou « principale ») y reste — sinon le filtre affaiblirait l'assertion.
+    const avecSalle: Inscription[] = [...wiring.registrations, { kind: "hook", key: "abort", module: "omoStop", instances: ["omo"] }];
+    assert.deepEqual(avecSalle.filter(sertPrincipale), principales, "une inscription de la salle ne change pas la liste comparée");
+    assert.equal(
+      [...wiring.registrations, { kind: "hook", key: "abort", module: "autre" }].filter(sertPrincipale).length,
+      principales.length + 1,
+      "une inscription de l'instance principale, elle, est comparée",
+    );
+    // Comptes de l'instance principale ; le câblage lui-même reste aligné sur ses inscriptions, salle comprise.
+    for (const step of Object.keys(wiring.hooks) as HookStep[]) {
+      assert.equal(compte(principales, "hook", step), hooked[step] ?? 0, step);
+      assert.equal(wiring.hooks[step].length, compte(wiring.registrations, "hook", step), `${step} : un crochet câblé par inscription`);
+    }
+    assert.deepEqual([compte(principales, "derivation"), compte(principales, "hub"), compte(principales, "startup")], [5, 3, 2]);
+    assert.deepEqual(
+      [wiring.derivations.length, wiring.subscriptions.length, wiring.startup.length],
+      [compte(wiring.registrations, "derivation"), compte(wiring.registrations, "hub"), compte(wiring.registrations, "startup")],
+    );
     assert.equal(wiring.c11.activationOuverte, ACTIVATION_OUVERTE);
     assert.equal(ACTIVATION_OUVERTE, true, "porte I1 basculée au train de la vague 3 de l'itération 2");
     assert.equal(wiring.c11.reloadBusy(), false);

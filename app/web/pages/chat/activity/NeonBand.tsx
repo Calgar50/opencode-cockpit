@@ -1,6 +1,12 @@
-// Propriétaire : L5c.
+// Propriétaire : L5c, puis L25b (Salle OMO, D-2b-45).
 // Carte des agents en direct : bande néon 2D du chat (spécification §5.7.4, §5.5, §5.6, JP-13, P12 ; plan d'exécution, fiche
 // L5c), rendue par ActivityRegion au-dessus de la liste des acteurs, qui reste la vérité.
+// - Salle OMO (fiche L25b ; §5.7.3, §5.7.4, JP-6, JP-7, JP-10, JP-13) : enceinte STATIQUE (double trait, aucune clé de
+//   transition, rien ne pulse) et son nom écrit hors du dessin ; rôles lus par clé (roleDeAgent d'omo-roles.ts) ; boucle orange
+//   « par l'extension » sur chaque assistant qui a agi sans demande, dite « non contrôlé avant exécution » dans le tableau et le
+//   zoom 3 ; tuiles du carnet partagé sous sa station, reliées aux assistants ; métadonnées de la consigne (JP-7 : catégorie, IA
+//   choisie, compétences, attente ou tâche de fond) dans le panneau du zoom 3. Tout texte venu de l'IA, de l'extension, d'un
+//   fichier ou d'opencode (chemins, catégorie, IA) est écrit en TEXTE (échappé par React), jamais en HTML.
 // - Dessin : scene() de neon-scene.ts (L5a) sur les faits AFFICHÉS, en SVG 560 × 220 aria-hidden. Un vrai bouton par assistant
 //   ouvre le zoom 3 : anneau d'outils, tuiles de fichiers et panneau « Consigne reçue · Ce qu'il a fait · Résultat rendu », dont
 //   les textes sont relus dans la conversation par neon-band.ts (redactSecrets, puis coupe) et rendus en texte, donc échappés,
@@ -17,7 +23,7 @@
 //   900 px, mini-carte de 3 lignes ; à 400 px, liste seule ; hauteur bornée par la fenêtre (neon.css). Néon clair en thème clair
 //   (jetons de styles.css) ; couleurs forcées dans neon.css.
 // Composant interne : ses propriétés restent libres pour son propriétaire. NeonCarte et NeonTableau sont réutilisables (L5d).
-import { type KeyboardEvent, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   angle,
   avancer,
@@ -53,8 +59,12 @@ import {
   NEON_CADRE,
   NEON_TAILLES,
   type NeonBeam,
+  type NeonCarnet,
+  type NeonCarnetLink,
+  type NeonConsigneSalle,
   type NeonDecision,
   type NeonDetail,
+  type NeonExtensionMark,
   type NeonMode,
   type NeonNode,
   type NeonOriginMark,
@@ -66,7 +76,8 @@ import {
   type NeonWait,
   scene,
 } from "../../../../server/shared/neon-scene.ts";
-import { carnetVide, libelleEtat, libelleOutil, libelleSecteur, libelleStation, remplir, TEXTES, titreBande } from "../../../../server/shared/neon-texts.ts";
+import { carnetVide, libelleEtat, libelleOutil, libelleSecteur, libelleStation, remplir, TEXTES, texteHorsBornes, titreBande } from "../../../../server/shared/neon-texts.ts";
+import { roleDeAgent } from "../../../../server/shared/omo-roles.ts";
 import { activityApi } from "../../../lib/api-activity.ts";
 import { oc } from "../../../lib/api.ts";
 import type { ActivityFact } from "../../../lib/types.ts";
@@ -138,7 +149,8 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
 
   const { affiches, rattrape } = useAffichage(rootId, facts, deplie, fige);
   const zoom = focus === null ? 2 : 3;
-  const vue = useMemo(() => scene(affiches, null, { zoom, mode, focus }), [affiches, zoom, mode, focus]);
+  // Rôles de la salle par clé de configuration : appliqués par la scène aux seules conversations de la salle.
+  const vue = useMemo(() => scene(affiches, null, { zoom, mode, focus, roleSalle: roleDeAgent }), [affiches, zoom, mode, focus]);
   const ligne = useMemo(() => resumeBande(vue), [vue]);
 
   useEffect(() => {
@@ -210,7 +222,10 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
       </div>
       {deplie ? (
         <div className="neon-body" id={corpsId} ref={corpsRef}>
+          {/* Le dessin est aria-hidden : l'enceinte de la salle et les assistants non dessinés sont dits en toutes lettres. */}
+          {vue.enceinte === null ? null : <p className="neon-salle">{TEXTES.avance.salle}</p>}
           {contenu}
+          {vue.horsBornes > 0 ? <p className="neon-hors-bornes">{texteHorsBornes(vue.horsBornes)}</p> : null}
           {mode === "simple" ? (
             <div className="neon-note">
               <p>{vue.delegationsMasquees > 0 ? TEXTES.simple.travailConfieHorsCarte : TEXTES.simple.resume}</p>
@@ -366,6 +381,10 @@ export function NeonCarte({ vue, onOuvrir, noeudsRef }: { vue: NeonScene; onOuvr
     <div className="neon-map-wrap">
       <svg ref={svgRef} className="neon-map" viewBox={`0 0 ${L} ${H}`} aria-hidden="true" focusable="false">
         <Decor vue={vue} />
+        {vue.enceinte === null ? null : <Enceinte />}
+        {vue.carnet.liens.map((l) => (
+          <LienCarnet key={`c:${l.sessionId}`} lien={l} rayonArrivee={rayon(l.sessionId)} />
+        ))}
         {vue.faisceaux.map((f) => (
           <Faisceau key={f.id} faisceau={f} rayonDepart={rayon(f.de)} rayonArrivee={f.vers === null ? 0 : rayon(f.vers)} />
         ))}
@@ -384,6 +403,9 @@ export function NeonCarte({ vue, onOuvrir, noeudsRef }: { vue: NeonScene; onOuvr
         ))}
         {vue.origines.map((o) => (
           <Origine key={`o:${o.sessionId}`} origine={o} />
+        ))}
+        {vue.extensions.map((e) => (
+          <Extension key={`x:${e.sessionId}`} marque={e} />
         ))}
         {vue.arret === null ? null : (
           <g className="neon-arret" data-neon-cle="arret" data-neon-etat={String(vue.arret.depuis)} data-neon-anim="apparition">
@@ -431,30 +453,114 @@ function Decor({ vue }: { vue: NeonScene }) {
         );
       })}
       {vue.stations.map((s) => (
-        <Station key={s.id} station={s} mode={vue.mode} />
+        <Station key={s.id} station={s} mode={vue.mode} carnet={vue.carnet} />
       ))}
     </g>
   );
 }
 
-function Station({ station, mode }: { station: NeonStation; mode: NeonMode }) {
+function Station({ station, mode, carnet: contenu }: { station: NeonStation; mode: NeonMode; carnet: NeonCarnet }) {
   const { x, y } = station.position;
   const r = NEON_TAILLES.station;
   const carnet = station.id === "carnet";
   // Le carnet est dans le coin : son étiquette va dessous (à droite, elle toucherait le secteur Planifier).
   const tx = carnet ? x - r : x + r + 4;
   const ty = carnet ? y + r * 0.7 + 10 : y + 3;
+  let detail: ReactNode = null;
+  if (carnet && contenu.vide) {
+    detail = (
+      <text className="neon-etiquette" x={tx} y={ty + 10}>
+        {carnetVide(mode)}
+      </text>
+    );
+  } else if (carnet) {
+    detail = <TuilesCarnet carnet={contenu} />;
+  }
   return (
     <g className={`neon-station${carnet ? " is-carnet" : ""}`}>
       <rect x={x - r} y={y - r * 0.7} width={r * 2} height={r * 1.4} rx={3} />
       <text className="neon-etiquette" x={tx} y={ty}>
         {libelleStation(station.id)}
       </text>
-      {carnet ? (
-        <text className="neon-etiquette" x={tx} y={ty + 10}>
-          {carnetVide(mode)}
+      {detail}
+    </g>
+  );
+}
+
+/**
+ * Tuiles du carnet partagé et des plans (JP-6) sous leur station : contour bleu = lu, plein rose = modifié ; au-delà de la
+ * rangée, « +n ». Les chemins sont écrits dans le zoom 3 de chaque assistant, pas ici (place).
+ */
+function TuilesCarnet({ carnet }: { carnet: NeonCarnet }) {
+  const dessinees = carnet.tuiles.filter((t) => t.position !== null);
+  const enPlus = carnet.tuiles.length - dessinees.length;
+  const derniere = dessinees.at(-1)?.position ?? null;
+  const r = 5;
+  return (
+    <>
+      {dessinees.map((t) => {
+        const p = t.position as NeonPoint;
+        const classes = ["neon-carnet-tuile", t.lu ? "is-lu" : "", t.modifie ? "is-modifie" : ""].filter(Boolean).join(" ");
+        return (
+          <g key={t.fichier} className={classes} data-neon-cle={`k:${t.fichier}`} data-neon-etat={`${t.lu}|${t.modifie}`} data-neon-anim="apparition">
+            <rect x={p.x - r} y={p.y - r} width={r * 2} height={r * 2} rx={1.5} />
+          </g>
+        );
+      })}
+      {enPlus > 0 && derniere !== null ? (
+        <text className="neon-etiquette" x={derniere.x + r + 3} y={derniere.y + 3}>
+          {remplir(TEXTES.partout.tuiles.enPlus, { n: enPlus })}
         </text>
       ) : null}
+    </>
+  );
+}
+
+/** Lien de la station « Carnet partagé et plan » vers un assistant qui l'a lu ou modifié : pointillé fin, jamais un faisceau. */
+function LienCarnet({ lien, rayonArrivee }: { lien: NeonCarnetLink; rayonArrivee: number }) {
+  const trait = segment(lien.depart, lien.arrivee, NEON_TAILLES.station + 2, rayonArrivee + 3);
+  if (trait === null) return null;
+  return (
+    <g className="neon-lien-carnet" data-neon-cle={`c:${lien.sessionId}`} data-neon-etat="vif" data-neon-anim="trait">
+      <line x1={trait.a.x} y1={trait.a.y} x2={trait.b.x} y2={trait.b.y} />
+    </g>
+  );
+}
+
+/**
+ * Enceinte de la Salle OMO (JP-10) : double trait orange autour de la carte et nom de la salle. STATIQUE (JP-13) : aucune clé de
+ * transition (data-neon-cle), aucune animation, rien ne pulse ; elle est là dès le premier fait de la salle et y reste.
+ */
+function Enceinte() {
+  return (
+    <g className="neon-enceinte">
+      <rect className="neon-enceinte-trait" x={1.5} y={1.5} width={L - 3} height={H - 3} rx={6} />
+      <rect className="neon-enceinte-trait" x={5} y={5} width={L - 10} height={H - 10} rx={4} />
+      <text className="neon-etiquette" x={10} y={H - 9}>
+        {TEXTES.avance.signes.enceinte}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * Actions de l'extension vues sans demande (§5.7.1) : boucle orange et mention « Par l'extension » ; leur nombre et « non contrôlé
+ * avant exécution » sont écrits dans le tableau et le zoom 3.
+ */
+function Extension({ marque: e }: { marque: NeonExtensionMark }) {
+  const c = { x: e.position.x - 15, y: e.position.y + 13 };
+  const r = 5;
+  let ancre: "start" | "middle" | "end" = "middle";
+  if (c.x < 60) ancre = "start";
+  else if (c.x > L - 60) ancre = "end";
+  const tx = { start: c.x - r, middle: c.x, end: c.x + r }[ancre];
+  return (
+    <g className="neon-extension" data-neon-cle={`x:${e.sessionId}`} data-neon-etat={String(e.actions)} data-neon-anim="apparition">
+      <path className="neon-boucle" d={`M${c.x + r} ${c.y}A${r} ${r} 0 1 1 ${c.x} ${c.y - r}`} />
+      <path className="neon-fleche" d={`M${c.x - 2} ${c.y - r - 3}L${c.x + 2} ${c.y - r}L${c.x - 2} ${c.y - r + 3}Z`} />
+      <text className="neon-etiquette" x={tx} y={c.y + r + 9} textAnchor={ancre}>
+        {TEXTES.avance.signes.extension}
+      </text>
     </g>
   );
 }
@@ -672,6 +778,36 @@ const etatsTuile = (t: NeonTile) =>
     .filter((mot) => mot !== "")
     .join(", ");
 
+const etatsCarnet = (t: { lu: boolean; modifie: boolean }) =>
+  [t.lu ? TEXTES.partout.tuiles.lu : "", t.modifie ? TEXTES.partout.tuiles.modifie : ""].filter((mot) => mot !== "").join(", ");
+
+/**
+ * JP-7 : métadonnées de la consigne d'un assistant de la salle (catégorie, IA choisie, nombre de compétences, « attend le
+ * résultat » ou « en tâche de fond »), dans le panneau du zoom 3. Chaque valeur vient de l'extension ou de l'IA : elle est écrite
+ * en TEXTE (échappée par React), jamais en HTML ; absente ou refusée par la scène (forme d'un code seulement) : « non enregistré ».
+ */
+export function MetadonneesConsigne({ meta }: { meta: NeonConsigneSalle }) {
+  const T = TEXTES.avance.consigneSalle;
+  const valeur = (v: string | number | null) => (v === null ? TEXTES.partout.nonEnregistre : String(v));
+  return (
+    <>
+      <dt>{T.titre}</dt>
+      <dd>
+        <dl className="neon-consigne-salle">
+          <dt>{T.categorie}</dt>
+          <dd>{valeur(meta.categorie)}</dd>
+          <dt>{T.ia}</dt>
+          <dd>{valeur(meta.ia)}</dd>
+          <dt>{T.competences}</dt>
+          <dd>{valeur(meta.competences)}</dd>
+          <dt>{T.delegation}</dt>
+          <dd>{meta.attente === "fond" ? T.tacheDeFond : T.attendResultat}</dd>
+        </dl>
+      </dd>
+    </>
+  );
+}
+
 function NeonZoom3({
   vue,
   detail,
@@ -706,6 +842,10 @@ function NeonZoom3({
     .map((o) => ({ nom: o.nom, total: o.enCours + o.termines + o.echecs + o.interrompus }))
     .filter((o) => o.total > 0);
   const tuiles = detail.dossiers.flatMap((d) => d.tuiles);
+  // Salle OMO : actions de l'extension sans demande et fichiers du carnet touchés par cet assistant (mode Avancé seulement).
+  const extension = vue.extensions.find((e) => e.sessionId === detail.sessionId) ?? null;
+  const carnet = vue.carnet.tuiles.filter((t) => t.sessions.includes(detail.sessionId));
+  const rien = outilsUtilises.length === 0 && tuiles.length === 0 && extension === null && carnet.length === 0;
   return (
     <div className="neon-detail">
       <div className="neon-map-wrap">
@@ -777,9 +917,10 @@ function NeonZoom3({
           <dd>
             <TexteLu lecture={lecture} messageId={panneau.consigne?.messageId ?? null} />
           </dd>
+          {panneau.metadonnees === null ? null : <MetadonneesConsigne meta={panneau.metadonnees} />}
           <dt>{TEXTES.partout.panneau.actions}</dt>
           <dd>
-            {outilsUtilises.length === 0 && tuiles.length === 0 ? (
+            {rien ? (
               <p className="neon-panel-text">—</p>
             ) : (
               <ul>
@@ -788,6 +929,7 @@ function NeonZoom3({
                     {o.nom} : {o.total}
                   </li>
                 ))}
+                {extension === null ? null : <li className="neon-panel-extension">{remplir(TEXTES.avance.actionsExtension, { n: extension.actions })}</li>}
                 {tuiles.map((t) => {
                   const etats = etatsTuile(t);
                   return (
@@ -797,6 +939,12 @@ function NeonZoom3({
                     </li>
                   );
                 })}
+                {carnet.map((t) => (
+                  <li key={`carnet|${t.fichier}`}>
+                    {couper(t.chemin, 120)}
+                    {` (${etatsCarnet(t)})`}
+                  </li>
+                ))}
               </ul>
             )}
           </dd>
@@ -827,9 +975,22 @@ function Tuile({ tuile: t, chemin }: { tuile: NeonTile; chemin: string | undefin
 
 // --- Tableau ----------------------------------------------------------------------------------------------------------------------
 
+/**
+ * Signes de la Salle OMO d'un assistant, en toutes lettres (mode Avancé : la scène n'en porte pas ailleurs) : actions de
+ * l'extension sans demande, « non contrôlé avant exécution », et fichiers du carnet partagé qu'il a lus ou modifiés.
+ */
+function signesSalle(vue: NeonScene, sessionId: string): string[] {
+  const signes: string[] = [];
+  const extension = vue.extensions.find((e) => e.sessionId === sessionId);
+  if (extension !== undefined) signes.push(remplir(TEXTES.avance.actionsExtension, { n: extension.actions }));
+  const fichiers = vue.carnet.tuiles.filter((t) => t.sessions.includes(sessionId)).length;
+  if (fichiers > 0) signes.push(remplir(TEXTES.avance.carnetFichiers, { n: fichiers }));
+  return signes;
+}
+
 /** [Tableau] : une ligne par assistant dessiné, mêmes faits que la carte. */
 export function NeonTableau({ vue }: { vue: NeonScene }) {
-  const lignes = useMemo(() => lignesTableau(vue), [vue]);
+  const lignes = useMemo(() => lignesTableau(vue).map((l) => ({ ...l, signes: [...l.signes, ...signesSalle(vue, l.sessionId)] })), [vue]);
   const colonnes = TEXTES.partout.tableau;
   return (
     <div className="table-wrap">

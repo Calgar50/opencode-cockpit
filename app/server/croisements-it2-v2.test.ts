@@ -219,8 +219,29 @@ function assertNeverForbidden(h: CockpitHarness): void {
 const activationReads = (h: CockpitHarness): number =>
   h.fake.requests.filter((r) => r.method === "GET" && ["/agent", "/config", "/global/config"].includes(r.pathname)).length;
 
-const hooksOf = (h: CockpitHarness, step: string): string[] =>
-  h.cockpit.wiring.registrations.filter((r) => r.kind === "hook" && r.key === step).map((r) => r.module);
+/**
+ * Inscription du câblage, lue sans dépendre du champ `instances` que T3b ajoutera (plan 2 bis §4.2, D-2b-40) : une inscription
+ * qui ne le porte pas sert l'instance principale.
+ */
+interface Inscription {
+  kind: string;
+  key: string;
+  module: string;
+  instances?: readonly string[];
+}
+
+/**
+ * Ouverture 2bis-V2 : les listes de crochets de ce fichier ne comparent que les inscriptions de l'instance PRINCIPALE. Sans ce
+ * filtre, elles tombaient dès que la salle inscrivait omoActivation puis omoCaps sur `beforeBilledSend` (§4.1.2, L22c et L22d),
+ * dans un fichier de croisement qu'aucun paquet n'a le droit de corriger. Les listes attendues, elles, ne bougent pas.
+ */
+const sertPrincipale = (r: Inscription): boolean => (r.instances ?? ["principale"]).includes("principale");
+
+/** Modules inscrits sur une étape, instance principale seule, dans l'ordre du câblage. */
+const crochets = (list: readonly Inscription[], step: string): string[] =>
+  list.filter((r) => r.kind === "hook" && r.key === step && sertPrincipale(r)).map((r) => r.module);
+
+const hooksOf = (h: CockpitHarness, step: string): string[] => crochets(h.cockpit.wiring.registrations, step);
 
 const autonomyRequestCount = (h: CockpitHarness, rootId: string): number =>
   (h.db.prepare("SELECT COUNT(*) AS n FROM autonomy_requests WHERE root_id = ?").get(rootId) as { n: number }).n;
@@ -241,6 +262,19 @@ describe("croisements it2 V2 : porte I1 fermée sur le câblage complet (L10d ×
     // Le crochet d'envoi du paquet L10a (rang « requests ») est là ; celui de l'activation ne l'est pas tant que la porte est
     // fermée. À la bascule, « activation » s'insère entre « plans » et « requests » (avertissement en tête de fichier, point a).
     assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["floors", "plans", "requests"]);
+    // Non-régression de l'ouverture 2bis-V2 : un crochet de la salle sort de la liste, un crochet de l'instance principale y reste.
+    const inscriptions: readonly Inscription[] = h.cockpit.wiring.registrations;
+    assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "omoCaps", instances: ["omo"] }], "beforeBilledSend"), [
+      "floors",
+      "plans",
+      "requests",
+    ]);
+    assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "autre" }], "beforeBilledSend"), [
+      "floors",
+      "plans",
+      "requests",
+      "autre",
+    ]);
 
     const root = await withAgent(h, "Porte fermée");
     const lectures = activationReads(h);

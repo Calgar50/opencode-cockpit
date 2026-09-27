@@ -40,9 +40,27 @@ export const TEXTES = {
     signes: {
       /** §5.7.1 : action de l'extension sans demande. */
       extension: "Par l'extension",
+      /** §5.7.4, JP-10 : enceinte d'une conversation de la Salle OMO (L25b) ; le bandeau permanent est celui de la page (L26a). */
+      enceinte: "Salle OMO · extension active",
     },
     /** §5.7.4 : marque de toute action de l'extension sans demande. */
     nonControle: "Non contrôlé avant exécution",
+    /** JP-10 (L25b) : la salle dite en toutes lettres sous le titre de la bande, hors du dessin (aria-hidden). */
+    salle: "Salle OMO · extension active · actions non contrôlées avant exécution",
+    /** Tableau et panneau du zoom 3 (L25b) : actions de l'extension vues sans demande sur un assistant. */
+    actionsExtension: "Par l'extension ({n}) · non contrôlé avant exécution",
+    /** Tableau (L25b) : fichiers du carnet partagé ou des plans lus ou modifiés par un assistant (JP-6). */
+    carnetFichiers: "Carnet partagé et plan : {n}",
+    /** §5.7.3, JP-7 : consigne d'un assistant de la salle, dans le panneau du zoom 3 (L25b). */
+    consigneSalle: {
+      titre: "Consigne dans la salle",
+      categorie: "Catégorie",
+      ia: "IA choisie",
+      competences: "Compétences chargées",
+      delegation: "Délégation",
+      attendResultat: "attend le résultat",
+      tacheDeFond: "en tâche de fond",
+    },
   },
   partout: {
     commandes: {
@@ -158,12 +176,21 @@ export const TEXTES = {
     },
     /** Panneau du zoom 3 (L5c) : texte relu dans la conversation mais illisible (message absent, proxy injoignable). */
     texteIndisponible: "Texte indisponible.",
+    /** §3.10 : assistants au-delà des bornes de la carte (3 niveaux, 50 assistants), comptés sans être dessinés (L25b). */
+    horsBornes: "Déroulé partiel : {n} assistants non dessinés (plus de 3 niveaux ou de 50 assistants).",
+    /** La même phrase pour un seul assistant (relecture 2ter-vague-4 : « 1 assistants » était écrit, et lu tel quel). */
+    horsBornesUn: "Déroulé partiel : 1 assistant non dessiné (plus de 3 niveaux ou de 50 assistants).",
   },
 };
 
 /** Remplit un gabarit « {nom} » ; un nom absent des valeurs garde son gabarit. */
 export function remplir(gabarit: string, valeurs: Readonly<Record<string, string | number>>): string {
   return gabarit.replace(/\{(\w+)\}/g, (match: string, nom: string) => (Object.hasOwn(valeurs, nom) ? String(valeurs[nom]) : match));
+}
+
+/** Phrase des assistants non dessinés de la bande (§3.10), accordée : singulier pour un seul, pluriel au-delà. */
+export function texteHorsBornes(n: number): string {
+  return n === 1 ? TEXTES.partout.horsBornesUn : remplir(TEXTES.partout.horsBornes, { n });
 }
 
 export function libelleEtat(etat: NeonNodeState): string {
@@ -182,9 +209,9 @@ export function libelleStation(station: NeonStationId): string {
   return TEXTES.partout.stations[station];
 }
 
-/** Légende d'un signe ; null pour l'extension en mode Simple (Salle OMO réservée au mode Avancé). */
+/** Légende d'un signe ; null pour l'extension et l'enceinte en mode Simple (Salle OMO réservée au mode Avancé). */
 export function libelleSigne(signe: NeonSign, mode: NeonMode): string | null {
-  if (signe === "extension") return mode === "avance" ? TEXTES.avance.signes.extension : null;
+  if (signe === "extension" || signe === "enceinte") return mode === "avance" ? TEXTES.avance.signes[signe] : null;
   return TEXTES.partout.signes[signe];
 }
 

@@ -8,10 +8,15 @@
 //   comme fait `affichage` {etat: rattrape}, sans aucun texte (corps vide ou {}), au plus un par 2 s par conversation ; CSRF par
 //   createApp. 400 (identifiant, corps), 404 (conversation inconnue) ; 200 {enregistre} : false si la borne de 2 s ou « Déroulé
 //   partiel » l'a écarté.
-// Salle OMO (itération 2 bis, L28) : en Simple, les faits d'une racine de la salle ne seront rendus qu'après sa dernière demande.
+// Salle OMO (itération 2 bis, L18c) : en mode Simple, une racine de la salle reçoit 403 « mode-avance » sur `…/activity` et sur
+// `…/facts`. Ce refus est DÉFINITIF : la question Q7 (a) du plan de l'itération 3, tranchée par la décision A11 du 19/09, dit que
+// L28 ne modifie PAS ce fichier. « Revoir » en Simple ne passe donc jamais par ces deux routes, mais par les routes dédiées que
+// l'itération 3 pose ailleurs : `GET /api/revoir/:rootId` et `GET /api/revoir/:rootId/consignes/:callId` (lecture seule, sans
+// aucune requête à opencode ni aucune ligne `usage`, spécification §5.9 l.1019). Le 403 ci-dessous reste en place après elles.
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Cockpit11 } from "./contracts-11.ts";
+import { isAdvanced } from "./mode.ts";
 import { redactSecrets } from "./redact.ts";
 import { sessionRole } from "./shared/activity-facts.ts";
 import type {
@@ -37,6 +42,7 @@ import type {
   RequestEnd,
 } from "./shared/autonomy-types.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
+import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
 
 /** `data.etat` du fait « affichage » posé par la bande 2D quand sa file est vidée (« Affichage rattrapé »). */
 export const AFFICHAGE_RATTRAPE_ETAT: AffichageEtat = "rattrape";
@@ -155,6 +161,17 @@ function capsOf(raw: string, defaults: AutonomyCaps): AutonomyCaps {
 }
 
 const invalidId = (c: Context) => c.json({ error: "invalid", message: "Identifiant de conversation invalide." }, 400);
+
+/**
+ * Salle OMO en mode Simple (L18c, spécification §3.9 l.343, §5.9 l.1019) : une racine ouverte dans la salle n'est ni lue ni
+ * dérivée par ces deux routes, qui parlent le vocabulaire du mode Avancé. Refus DÉFINITIF (décision A11, question Q7 (a) de
+ * l'itération 3) : « Revoir » a ses propres routes, `GET /api/revoir/:rootId` et `…/consignes/:callId`. Le port neutre rend
+ * `isRoomRoot` faux : hors de la salle, rien ne change.
+ */
+function salleEnSimple(c: Context, c11: Cockpit11, rootId: string): Response | null {
+  if (isAdvanced(c11.settings) || !c11.ports.omoRoom.isRoomRoot(rootId)) return null;
+  return c.json({ error: "mode-avance", message: phraseRefusActivation("mode-avance") }, 403);
+}
 
 /** Vide, ou un objet JSON sans aucun champ. */
 function emptyBody(raw: string): boolean {
@@ -292,12 +309,14 @@ export function registerActivityRoutes(app: Hono, c11: Cockpit11, options: Activ
   app.get("/api/conversations/:rootId/activity", (c) => {
     const rootId = c.req.param("rootId");
     if (!SESSION_ID_RE.test(rootId)) return invalidId(c);
-    return c.json(readActivity(c11, rootId));
+    return salleEnSimple(c, c11, rootId) ?? c.json(readActivity(c11, rootId));
   });
 
   app.get("/api/conversations/:rootId/facts", (c) => {
     const rootId = c.req.param("rootId");
     if (!SESSION_ID_RE.test(rootId)) return invalidId(c);
+    const refusSalle = salleEnSimple(c, c11, rootId);
+    if (refusSalle !== null) return refusSalle;
     const raw = c.req.query("since");
     const since = raw !== undefined && SINCE_RE.test(raw) ? Number(raw) : Number.NaN;
     if (!Number.isSafeInteger(since)) return c.json({ error: "invalid", message: "Instant de départ invalide." }, 400);

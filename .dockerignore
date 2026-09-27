@@ -27,3 +27,10 @@ app/.tls-dev
 
 # --- Tests : jamais nécessaires à la construction des images ---
 tests/
+
+# --- Salle Oh My OpenAgent (P13 : l'extension n'entre dans aucune image publiée) ---
+# L'image de la salle se construit à part (scripts/build-omo-image.ps1), depuis une copie hors du dépôt : rien de ce dossier
+# n'a de raison d'entrer dans le contexte des images `app` et `opencode`, qui, elles, sont publiques.
+docker/opencode-omo/
+# Archive apportée au travail et ses sorties, si elles ont été déposées dans le dépôt par erreur.
+opencode-cockpit-omo-*

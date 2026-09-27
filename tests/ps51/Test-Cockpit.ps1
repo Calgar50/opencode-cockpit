@@ -462,6 +462,111 @@ try {
     $noPreviousResult = Invoke-CockpitScript $noPrevious @('rollback')
     Assert-Test 'A15-a : aucune version precedente memorisee' ($noPreviousResult.Host.Contains('Retour impossible : aucune version precedente memorisee dans .env (COCKPIT_PREVIOUS_VERSION).')) (Get-Extract $noPreviousResult.Host)
 
+    # --- Sauvegarde, restauration et desinstallation, salle comprise (decision du 17/09, point 3) ---------------------
+    # Les chaines que le test P13 de la CI interdit dans les scripts qu'elle appelle sont assemblees, jamais ecrites.
+    Write-Section 'Sauvegarde et desinstallation : la salle gardee, sauf -PurgeOmo'
+    $NomVariableImageSalle = 'COCKPIT_OMO' + '_IMAGE'
+    $ImageSalle = 'exemple/salle:essai'
+    $Contrat = ConvertFrom-Json ([System.IO.File]::ReadAllText((Join-Path $CockpitRepoRoot ('docker\opencode' + '-omo\contrat-salle.json'))))
+    $VolumesSalle = @($Contrat.volumes | ForEach-Object { [string]$_.nom })
+    # Volumes nommes du fichier compose, moins ceux du contrat : ceux du cockpit, quels qu'ils soient au moment du test.
+    $VolumesCompose = New-Object System.Collections.Generic.List[string]
+    $dansVolumes = $false
+    foreach ($ligne in [System.IO.File]::ReadAllLines((Join-Path $CockpitRepoRoot 'docker-compose.yml'))) {
+        if ($ligne -cmatch '^volumes:\s*\z') { $dansVolumes = $true; continue }
+        if ($dansVolumes -and $ligne -cmatch '^[^\s#]') { $dansVolumes = $false }
+        if ($dansVolumes -and $ligne -cmatch '^  ([a-z0-9][a-z0-9_-]*):\s*\z') { $VolumesCompose.Add($Matches[1]) }
+    }
+    $VolumesCockpit = @($VolumesCompose.ToArray() | Where-Object { $VolumesSalle -cnotcontains $_ })
+    Assert-Test 'banc : volumes du cockpit lus dans docker-compose.yml' ($VolumesCockpit.Count -ge 6) ($VolumesCockpit -join ', ')
+    Assert-Test 'contrat : volumes de la salle nommes' ($VolumesSalle.Count -ge 6 -and $VolumesSalle -ccontains 'oc-omo-data' -and $VolumesSalle -ccontains 'omo-config')
+
+    $SalleKeys = @{ COCKPIT_OMO = 'on'; OPENCODE_OMO_PASSWORD = (New-CockpitChallenge) }
+    $SalleKeys[$NomVariableImageSalle] = $ImageSalle
+    $SalleDir = New-TestInstallation $Work 'salle' (New-TestEnvValues $Ports.plain 'https' '' '1.0.5' 'Pull' $SalleKeys)
+    $ArchivesDir = Join-Path $Work 'salle-archives'
+    New-Item -ItemType Directory -Path $ArchivesDir -Force | Out-Null
+    $ConfigJson = '{"name":"rg105-l7","services":{"cockpit":{"volumes":[{"target":"/archives","source":"' + ($ArchivesDir -replace '\\', '/') + '"}]}}}'
+    function Set-SalleScenario {
+        Set-DockerScenario (New-CockpitDockerRules -Extra @((New-Rule '^compose -f \S.* config --format json$' $ConfigJson),
+                (New-Rule '^volume rm -f ' "supprimes`n"), (New-Rule '^image rm -f ' "supprimees`n"), (New-Rule '^compose -f \S.* down\b' '')))
+    }
+
+    Set-SalleScenario
+    $backupResult = Invoke-CockpitScript $SalleDir @('backup')
+    $tarCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^run --rm --entrypoint tar ' })
+    $tarArgs = ''
+    if ($tarCall.Count -gt 0) { $tarArgs = (@($tarCall[0].args) -join ' ') }
+    Assert-Test 'backup : les conversations de la salle sont montees en lecture seule' ($tarArgs -cmatch 'rg105-l7_oc-omo-data:/src/oc-omo-data:ro') (Get-Extract $tarArgs)
+    Assert-Test 'backup : auth.json de la salle exclu' ($tarArgs.Contains('--exclude=oc-omo-data/auth.json')) (Get-Extract $tarArgs)
+    Assert-Test 'backup : auth.json de l instance principale exclu' ($tarArgs.Contains('--exclude=oc-data/auth.json'))
+    Assert-Test 'backup : certificat local jamais sauvegarde' (-not $tarArgs.Contains('cockpit-tls'))
+    Assert-Test 'backup : rien de omo-config n est sauvegarde (recalcule a chaque demarrage)' (-not $tarArgs.Contains('omo-config'))
+    Assert-Test 'backup : message qui nomme les exclusions' ($backupResult.Host.Contains('celui de la salle compris')) (Get-Extract $backupResult.Host)
+
+    Set-SalleScenario
+    $purgeResult = Invoke-CockpitScript $SalleDir @('uninstall') { Add-SpyReadHostAnswer 'SUPPRIMER' } @{ Purge = $true }
+    $volumeCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^volume rm -f ' })
+    $volumeArgs = ''
+    if ($volumeCall.Count -gt 0) { $volumeArgs = (@($volumeCall[0].args) -join ' ') }
+    $imageCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^image rm -f ' })
+    $imageArgs = ''
+    if ($imageCall.Count -gt 0) { $imageArgs = (@($imageCall[0].args) -join ' ') }
+    Assert-Test 'uninstall -Purge : conteneurs et reseau retires avec le profil de la salle' (Test-DockerCall '^compose -f \S.* --profile omo down --remove-orphans\z') (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'uninstall -Purge : volumes du cockpit supprimes' (@($VolumesCockpit | Where-Object { $volumeArgs.Contains('rg105-l7_' + $_) }).Count -eq $VolumesCockpit.Count) (Get-Extract $volumeArgs)
+    Assert-Test 'uninstall -Purge : aucun volume de la salle supprime' (@($VolumesSalle | Where-Object { $volumeArgs.Contains('rg105-l7_' + $_) }).Count -eq 0) (Get-Extract $volumeArgs)
+    Assert-Test 'uninstall -Purge : images du cockpit supprimees' ($imageArgs.Contains('opencode-cockpit/app:rg105-l7') -and $imageArgs.Contains('opencode-cockpit/opencode:rg105-l7')) (Get-Extract $imageArgs)
+    Assert-Test 'uninstall -Purge : image de la salle gardee' (-not $imageArgs.Contains($ImageSalle)) (Get-Extract $imageArgs)
+    Assert-Test 'uninstall -Purge : la conservation de la salle est annoncee' ($purgeResult.Host.Contains('Conserves : l image de la salle')) (Get-Extract $purgeResult.Host)
+
+    Set-SalleScenario
+    $purgeOmoResult = Invoke-CockpitScript $SalleDir @('uninstall') { Add-SpyReadHostAnswer 'SUPPRIMER' } @{ Purge = $true; PurgeOmo = $true }
+    $volumeCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^volume rm -f ' })
+    $volumeArgs = ''
+    if ($volumeCall.Count -gt 0) { $volumeArgs = (@($volumeCall[0].args) -join ' ') }
+    $imageCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^image rm -f ' })
+    $imageArgs = ''
+    if ($imageCall.Count -gt 0) { $imageArgs = (@($imageCall[0].args) -join ' ') }
+    Assert-Test 'uninstall -PurgeOmo : volumes de la salle supprimes, configuration figee comprise' (@($VolumesSalle | Where-Object { $volumeArgs.Contains('rg105-l7_' + $_) }).Count -eq $VolumesSalle.Count -and $volumeArgs.Contains('rg105-l7_omo-config')) (Get-Extract $volumeArgs)
+    Assert-Test 'uninstall -PurgeOmo : image de la salle supprimee' ($imageArgs.Contains($ImageSalle)) (Get-Extract $imageArgs)
+    Assert-Test 'uninstall -PurgeOmo : avertissement sur l image a reconstruire' ($purgeOmoResult.Host.Contains('ET DE LA SALLE')) (Get-Extract $purgeOmoResult.Host)
+
+    Set-SalleScenario
+    $refusResult = Invoke-CockpitScript $SalleDir @('uninstall') $null @{ PurgeOmo = $true }
+    Assert-Test 'uninstall : -PurgeOmo seul refuse, rien n est supprime' ($null -ne $refusResult.Error -and $refusResult.Error.Contains('-PurgeOmo ne s utilise qu avec -Purge') -and -not (Test-DockerCall '^volume rm ')) (Get-Extract $refusResult.Error)
+
+    Set-SalleScenario
+    $simpleResult = Invoke-CockpitScript $SalleDir @('uninstall')
+    Assert-Test 'uninstall sans -Purge : les donnees restent' ($simpleResult.Host.Contains('Les donnees restent dans les volumes Docker') -and -not (Test-DockerCall '^volume rm ') -and -not (Test-DockerCall '^image rm ')) (Get-Extract $simpleResult.Host)
+
+    # --- Relecture 2ter-vague-3 : une entree de premier niveau supprimee apres install.ps1 ne fait jamais demarrer la salle ----
+    # Docker recreerait la source absente en DOSSIER vide sur le poste (un fichier devient un dossier) : cockpit.ps1 ne passe pas le
+    # profil de la salle a la creation ni au demarrage des conteneurs, le dit, et le garde pour l'arret.
+    Write-Section 'start et restart : la salle ne demarre pas quand une source de la surcharge manque'
+    $SourcesDir = New-TestInstallation $Work 'salle-sources' (New-TestEnvValues $Ports.plain 'https' '' '1.0.5' 'Pull' $SalleKeys)
+    $WsSources = Join-Path $Work 'ws-salle-sources'
+    New-Item -ItemType Directory -Path (Join-Path $WsSources 'app\src') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $WsSources 'app\README.md'), "lisez-moi`n")
+    $montage = { param([string]$Relatif, [string]$Forme) '      - { type: bind, source: "' + ((Join-Path $WsSources ($Relatif -replace '/', '\')) -replace '\\', '/') + '", target: "/workspace/' + $Relatif + '", bind: { create_host_path: false } } # ' + $Forme }
+    $surcharge = "services:`n  cockpit:`n    volumes: []`n  " + ('opencode' + '-omo') + ":`n    volumes:`n" + (& $montage 'app/README.md' 'fichier') + "`n" + (& $montage 'app/src' 'dossier') + "`n"
+    [System.IO.File]::WriteAllText((Join-Path $SourcesDir $CockpitOmoOverlay), $surcharge, (New-Object System.Text.UTF8Encoding $false))
+    Set-DockerScenario (New-CockpitDockerRules)
+    $temoinSources = Invoke-CockpitScript $SourcesDir @('start')
+    Assert-Test 'start, sources presentes : la salle demarre avec son profil (temoin)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo up -d\z') -and -not $temoinSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Remove-Item -LiteralPath (Join-Path $WsSources 'app\README.md') -Force
+    Set-DockerScenario (New-CockpitDockerRules)
+    $sansSource = Invoke-CockpitScript $SourcesDir @('start')
+    Assert-Test 'start, fichier supprime : up sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'start, fichier supprime : message qui nomme l entree et demande la relance d install.ps1' ($sansSource.Host.Contains('Salle non demarree') -and $sansSource.Host.Contains('app/README.md') -and $sansSource.Host.Contains('Relancez install.ps1')) (Get-Extract $sansSource.Host)
+    Assert-Test 'start, fichier supprime : rien n est recree sur le poste' (-not (Test-Path -LiteralPath (Join-Path $WsSources 'app\README.md')))
+    Set-DockerScenario (New-CockpitDockerRules)
+    $recree = Invoke-CockpitScript $SourcesDir @('restart')
+    Assert-Test 'restart, fichier supprime : recreation sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d --force-recreate\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'restart, fichier supprime : message' ($recree.Host.Contains('Salle non demarree')) (Get-Extract $recree.Host)
+    Set-DockerScenario (New-CockpitDockerRules)
+    $arretSources = Invoke-CockpitScript $SourcesDir @('stop')
+    Assert-Test 'stop, fichier supprime : profil garde, la salle s arrete aussi (MO-3)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo stop\z') -and -not $arretSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+
     $quoted = Invoke-CockpitProcess -FilePath (Get-TestGit) -Arguments @('-C', $full.Directory, 'rev-parse', '--sq-quote', '@{u}', '@{u}..HEAD') -TimeoutSec 60
     Assert-Test "P8 : '@{u}' transmis intact a git par Invoke-CockpitProcess" ($quoted.ExitCode -eq 0 -and $quoted.StdOut.Trim() -ceq "'@{u}' '@{u}..HEAD'") ($quoted.StdOut.Trim() + $quoted.StdErr.Trim())
 

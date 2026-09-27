@@ -28,6 +28,16 @@ services:
     depends_on: !reset {}
     environment:
       OPENCODE_URL: http://${E2E_OPENCODE_HOTE:?lancez scripts/run-e2e.sh}:4096
+      # Salle OMO (L26c) : sans « --salle », l'adresse du produit (http://opencode-omo:4096), inerte tant que COCKPIT_OMO est coupé ;
+      # avec « --salle », la salle FACTICE (faux-salle), jamais l'image de l'extension.
+      OPENCODE_OMO_URL: ${E2E_SALLE_URL:?lancez scripts/run-e2e.sh}
+    volumes:
+      # Sans « --salle » : `./certs` du dépôt, comme le produit. Avec : le volume `salle-ca`, qui ne porte que le certificat PUBLIC
+      # de l'autorité jetable du faux catalogue Copilot (la vérification TLS du cockpit n'est jamais coupée).
+      - ${E2E_CERTS_COCKPIT:?lancez scripts/run-e2e.sh}:/certs:ro
+      # Liste des projets préparés de la salle (omo-projets.json, écrite par le banc comme install.ps1 l'écrit sur un poste) : un
+      # dossier du banc, hors du dépôt, vide sans « --salle ».
+      - ${E2E_OMO_SOURCE:?lancez scripts/run-e2e.sh}:/omo-source:ro
     networks:
       default: {}
       e2e-front: {}
@@ -116,3 +126,115 @@ services:
     volumes:
       - oc-config:/cfg
       - ./e2e/lib:/seed:ro
+
+  # --- Salle OMO FACTICE (« --salle », L26c) ------------------------------------------------------------------------------------
+  # L'interface de la salle est éprouvée devant une salle FACTICE : le faux opencode en mode « --instance omo » et son superviseur
+  # factice, qui parle au cockpit par les fichiers du contrat (control-omo, omo-state). Tous ces services tournent dans l'image du
+  # BANC (E2E_IMAGE_APP : « <préfixe>/app-salle:<étiquette> » en « --salle », bâtie depuis les sources, `pull_policy: never`),
+  # JAMAIS dans l'image de l'extension. Aucune variable EXIGÉE ici qui ne soit écrite dans tous les modes (MO-3 point 1) : le
+  # mot de passe de la salle n'existe qu'en « --salle », et la salle factice refuse de démarrer sans lui.
+  #
+  # Préparation, jouée une fois avant le démarrage (`run --rm`) : root sans réseau, le temps de poser le certificat du faux
+  # catalogue (volumes salle-ca et salle-tls, jamais sur l'hôte), l'auth.json FACTICE du cockpit (oc-data) et de donner
+  # omo-state à `node`.
+  salle-preparation:
+    profiles: ["salle"]
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    user: "0:0"
+    network_mode: none
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    pids_limit: 32
+    healthcheck:
+      disable: true
+    command: ["node", "--disable-warning=ExperimentalWarning", "/e2e-src/e2e/fake-opencode-server.ts", "--preparer-salle"]
+    volumes:
+      - ./app/server:/e2e-src/app/server:ro
+      - ./e2e:/e2e-src/e2e:ro
+      - oc-data:/oc-data
+      - omo-state:/omo-state
+      - salle-ca:/salle-ca
+      - salle-tls:/salle-tls
+
+  # Faux catalogue du compte GitHub Copilot (P1) : GET /models en TLS sous `api.githubcopilot.com`, sur le réseau interne du banc
+  # seulement. Le cockpit le joint par l'alias ; il n'a aucun accès à Internet, le vrai catalogue n'est jamais appelé.
+  faux-copilot:
+    profiles: ["salle"]
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # Port 443 sans root ni capacité : réglage d'espace de noms réseau du seul conteneur.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      disable: true
+    command: ["node", "--disable-warning=ExperimentalWarning", "/e2e-src/e2e/fake-opencode-server.ts", "--copilot"]
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      E2E_COPILOT_CERT: /salle-tls/serveur.pem
+      E2E_COPILOT_CLE: /salle-tls/serveur.key
+    volumes:
+      - ./app/server:/e2e-src/app/server:ro
+      - ./e2e:/e2e-src/e2e:ro
+      - salle-tls:/salle-tls:ro
+    expose: ["443"]
+    networks:
+      default:
+        aliases: ["api.githubcopilot.com", "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com"]
+
+  # Salle factice : faux opencode (assistants de l'extension en fixtures) et superviseur factice. API sur le réseau interne (4096),
+  # jointe par le cockpit à OPENCODE_OMO_URL ; pilotage des scénarios (/banc/salle) sur 4097, publié sur 127.0.0.1 et protégé par
+  # le jeton du banc. Mêmes montages que la vraie salle pour le contrat : control-omo en lecture seule, omo-state en écriture.
+  faux-salle:
+    profiles: ["salle"]
+    image: ${E2E_IMAGE_APP:?lancez scripts/run-e2e.sh}
+    pull_policy: never
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    healthcheck:
+      disable: true
+    command: ["node", "--disable-warning=ExperimentalWarning", "/e2e-src/e2e/fake-opencode-server.ts", "--instance", "omo"]
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+      E2E_FAUX_MOT_DE_PASSE: ${OPENCODE_OMO_PASSWORD:-}
+      E2E_JETON_CONTROLE: ${E2E_JETON_CONTROLE:?lancez scripts/run-e2e.sh}
+      E2E_SALLE_CONTROLE: /control
+      E2E_SALLE_ETAT: /omo-state
+    volumes:
+      - ./app/server:/e2e-src/app/server:ro
+      - ./e2e:/e2e-src/e2e:ro
+      - control-omo:/control:ro
+      - omo-state:/omo-state
+    expose: ["4096"]
+    ports: ["127.0.0.1:${E2E_PORT_SALLE:?lancez scripts/run-e2e.sh}:4097"]
+    networks:
+      default: {}
+      e2e-front: {}
+
+  # La VRAIE salle ne démarre jamais dans le banc e2e, même si quelqu'un y ajoutait « --profile omo » : ses trois services
+  # changent de profil ici, pour un profil que le banc ne donne jamais. L'image de l'extension n'est ni tirée, ni lancée.
+  opencode-omo:
+    profiles: !override ["jamais-dans-le-banc-e2e"]
+  egress:
+    profiles: !override ["jamais-dans-le-banc-e2e"]
+  omo-init:
+    profiles: !override ["jamais-dans-le-banc-e2e"]
+
+volumes:
+  # Salle factice : certificat public de l'autorité jetable (cockpit) et certificat du faux catalogue (faux-copilot seul).
+  salle-ca:
+  salle-tls:

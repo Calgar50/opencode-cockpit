@@ -12,6 +12,8 @@ import {
   EVENT_TIME_MAX_LAG_MS,
   EventMemory,
   eventSessionId,
+  CARNET_CHEMIN_MAX,
+  carnetChemin,
   eventTime,
   FACT_DATA_MAX_KEYS,
   type FactContext,
@@ -47,6 +49,8 @@ class World {
   readonly memory = new EventMemory();
   readonly promptKinds: ReadonlyMap<string, string>;
   readonly instance: SessionInstance;
+  /** Messages que l'amont sait déposés sans tour (`noReply`, F-h) : le processeur de la salle est seul à le savoir. */
+  readonly noReply = new Set<string>();
 
   constructor(promptKinds: ReadonlyMap<string, string> = new Map(), roots: readonly string[] = [ROOT], instance: SessionInstance = "principale") {
     this.promptKinds = promptKinds;
@@ -77,6 +81,9 @@ class World {
       firstUserMessage: (id) => this.memory.firstUserMessage(id),
       userMessageParts: (id) => this.memory.userMessageParts(id),
       unansweredUserMessages: (id) => this.memory.unansweredUserMessages(id),
+      // Branché partout, y compris sur les captures de l'instance principale : elles prouvent qu'aucune de ces règles ne se
+      // déclenche sur un flux ordinaire (aucun `messageID` réutilisé, aucune tâche de fond).
+      amont: { ...this.memory.amont(), noReply: (id) => this.noReply.has(id) },
     };
   }
 
@@ -461,7 +468,7 @@ describe("origine classée sur le message entier (§5.7.2)", () => {
     let orders = 0;
     for (const { name, parts, instance, expected } of cases) {
       // Oracle indépendant : le classement du message entier, toutes parties connues.
-      const whole = originVerdict(parts satisfies readonly OriginPart[], { promptKind: null, firstUserOfChild: false, instance });
+      const whole = originVerdict(parts satisfies readonly OriginPart[], { promptKind: null, firstUserOfChild: false, instance, racine: true });
       assert.deepEqual({ origine: whole.origine, cas: whole.cas }, expected, name);
       for (const order of permutations(parts)) {
         const { facts } = play(order, instance, [busy, answered, answeredDone, idle]);
@@ -745,6 +752,272 @@ describe("fusion du direct et du différé", () => {
     // Fait identique (même heure, mêmes données) : un seul, dans le différé, dans le direct ou entre les deux.
     const copy = (f: ActivityFact): ActivityFact => JSON.parse(JSON.stringify(f));
     assert.deepEqual(mergeFacts([...stops, copy(stops[0] as ActivityFact)], [copy(stops[1] as ActivityFact), copy(stops[1] as ActivityFact)]), stops);
+  });
+});
+
+// --- Salle OMO (fiche L25a) -------------------------------------------------------------------------------------------------------
+
+const OMO_RACINE = "ses_jp_racine";
+const OMO_FOND = "ses_jp_fond";
+const OMO_JUNIOR = "ses_jp_junior";
+const OMO_FIXTURE = "omo-jp1-jp7.jsonl";
+
+/** Monde de la fixture : une racine de la Salle OMO, dont seule la demande de l'utilisateur figure dans `prompts`. */
+const omoWorld = () => new World(new Map([["msg_jp_demande", "message"]]), [OMO_RACINE], "omo");
+
+/** Rejoue la fixture synthétique de la salle et rend les faits dédoublonnés, comme le fait le magasin. */
+function rejoueOmo(world = omoWorld()): ActivityFact[] {
+  return dedupeFacts(replay(OMO_FIXTURE, world));
+}
+
+const faitsDe = (facts: readonly ActivityFact[], kind: string) => facts.filter((fact) => fact.kind === kind);
+const faitDe = (facts: readonly ActivityFact[], kind: string, ref: string) => facts.find((fact) => fact.kind === kind && fact.ref === ref);
+/** Consigne ENVOYÉE d'un appel (la consigne « prepare » porte la même référence). */
+const consigneEnvoyee = (facts: readonly ActivityFact[], ref: string) => facts.find((fact) => fact.kind === "consigne" && fact.ref === ref && fact.data.etat === "envoyee");
+
+describe("Salle OMO : faits de la fixture omo-jp1-jp7 (§5.7.2, §5.7.3, JP-1 à JP-7, JS-13)", () => {
+  it("T-L25-a : les sept cas d'origine, dont le réveil (cas 4) et la relance de l'extension (cas 5)", () => {
+    const origines = faitsDe(rejoueOmo(), "origine").map((fact) => [fact.sessionId, fact.ref, fact.data.origine, fact.data.cas, fact.data.relance ?? null]);
+    assert.deepEqual(origines, [
+      [OMO_RACINE, "msg_jp_demande", "demande", 1, null],
+      [OMO_FOND, "msg_jp_consigne_fond", "consigne", 3, null],
+      [OMO_JUNIOR, "msg_jp_consigne_junior", "consigne", 3, null],
+      [OMO_RACINE, "msg_jp_reveil", "reveil-sans-reponse", 4, null],
+      [OMO_RACINE, "msg_jp_relance", "relance-extension", 5, "todo-continuation"],
+      [OMO_RACINE, "msg_jp_inconnu", "origine-inconnue", 7, null],
+    ]);
+  });
+
+  it("T-L25-b (JP-2) : un réveil donne un fait « reveil » et AUCUN signe d'appel d'IA ni de coût", () => {
+    const facts = rejoueOmo();
+    const reveils = faitsDe(facts, "reveil");
+    assert.deepEqual(
+      reveils.map((fact) => [fact.sessionId, fact.ref, fact.data]),
+      [[OMO_RACINE, "msg_jp_reveil", { etat: "depose", messageId: "msg_jp_reveil" }]],
+    );
+    // Aucun appel d'IA ne porte le message du réveil : un appel ne vient que d'une partie `step-start`.
+    const appels = facts.filter((fact) => fact.kind === "statut" && (fact.data.etat === "appel" || fact.data.etat === "appel-fini"));
+    assert.deepEqual(appels.map((fact) => fact.data.messageId), ["msg_jp_reponse"]);
+    // Aucun coût : ni dans le réveil, ni ailleurs dans la fixture (aucun `step-finish`).
+    assert.deepEqual(facts.filter((fact) => fact.data.cout !== undefined && fact.data.cout !== null), []);
+  });
+
+  it("T-L25-c (JP-3) : « lancée » n'est pas « rendue » — le résultat d'une tâche de fond arrive au repos de l'enfant", () => {
+    const facts = rejoueOmo();
+    const consigne = consigneEnvoyee(facts, "call_jp_fond");
+    assert.equal(consigne?.data.fond, true);
+    const resultat = faitDe(facts, "resultat", "call_jp_fond");
+    assert.equal(resultat?.data.etat, "rendu");
+    // La partie `task` s'est close à 230 ; le repos de l'enfant est à 500. Le résultat suit l'enfant, jamais la clôture de l'outil.
+    const reposEnfant = facts.find((fact) => fact.sessionId === OMO_FOND && fact.kind === "statut" && fact.data.etat === "repos");
+    assert.equal(reposEnfant?.at, 500);
+    assert.equal(resultat?.at, 500);
+    assert.equal(resultat?.sessionId, OMO_RACINE, "le résultat est porté par la session qui a confié le travail");
+    assert.ok(facts.indexOf(resultat as ActivityFact) > facts.indexOf(reposEnfant as ActivityFact));
+    // La délégation qui ATTEND le résultat, elle, se clôt sur sa propre partie `task` (470), sans attendre le repos de l'enfant (460).
+    assert.equal(faitDe(facts, "resultat", "call_jp_junior")?.at, 470);
+  });
+
+  it("T-L25-d (JP-4) : la consigne réelle de l'enfant, et le préfixe ajouté par un hook", () => {
+    const facts = rejoueOmo();
+    assert.equal(faitDe(facts, "origine", "msg_jp_consigne_junior")?.data.hook, true, "consigne préfixée par la directive de carnet");
+    assert.equal(faitDe(facts, "origine", "msg_jp_consigne_fond")?.data.hook, false, "consigne sans préfixe de hook");
+    // Hors de la salle, la clé n'existe pas : les faits de l'instance principale ne bougent pas.
+    const principale = dedupeFacts(replay("p1-delegation-parallele.jsonl"));
+    for (const fact of faitsDe(principale, "origine")) assert.equal(fact.data.hook, undefined);
+  });
+
+  it("T-L25-e (JP-6) : carnet partagé et plans, en chemin relatif, jamais le contenu", () => {
+    const carnets = faitsDe(rejoueOmo(), "carnet").map((fact) => [fact.sessionId, fact.data.etat, fact.data.chemin]);
+    assert.deepEqual(carnets, [
+      [OMO_JUNIOR, "modifie", ".omo/notepads/plan/learnings.md"],
+      [OMO_JUNIOR, "lu", ".omo/plans/plan.md"],
+    ]);
+    // Hors de la Salle OMO, la station « Carnet partagé et plan » reste vide : aucun fait, même sur le même chemin.
+    const hors = new World(new Map(), [ROOT], "principale");
+    const event: FactEvent = {
+      type: "message.part.updated",
+      properties: { part: { sessionID: ROOT, messageID: "msg_a", type: "tool", tool: "write", callID: "call_c", state: { status: "completed", input: { filePath: "/workspace/p/.omo/notepads/x.md" } } } },
+    };
+    assert.deepEqual(factsFromEvent(event, hors.ctx(1)).filter((fact) => fact.kind === "carnet"), []);
+  });
+
+  it("JP-7 : catégorie, IA, compétences et « attend le résultat » ou « en tâche de fond » ; jamais un nom de compétence", () => {
+    const facts = rejoueOmo();
+    assert.deepEqual(consigneEnvoyee(facts, "call_jp_fond")?.data, {
+      etat: "envoyee",
+      callId: "call_jp_fond",
+      messageId: "msg_jp_reponse",
+      enfant: OMO_FOND,
+      agent: "explore",
+      source: "ia",
+      commande: null,
+      reprise: false,
+      categorie: "quick",
+      ia: "github-copilot/claude-sonnet-4.5",
+      competences: 2,
+      fond: true,
+    });
+    assert.deepEqual(consigneEnvoyee(facts, "call_jp_junior")?.data, {
+      etat: "envoyee",
+      callId: "call_jp_junior",
+      messageId: "msg_jp_reponse",
+      enfant: OMO_JUNIOR,
+      agent: "sisyphus-junior",
+      source: "ia",
+      commande: null,
+      reprise: true,
+      categorie: "deep",
+      ia: "github-copilot/gpt-5.6-luna",
+      competences: 1,
+      fond: false,
+    });
+    // Hors de la salle, aucune de ces clés n'est écrite (les captures de l'itération 1 ne bougent pas).
+    for (const fact of faitsDe(dedupeFacts(replay("p1-delegation-parallele.jsonl")), "consigne")) {
+      for (const cle of ["categorie", "ia", "competences", "fond"]) assert.equal(fact.data[cle], undefined, cle);
+    }
+  });
+
+  it("fait « reprise » : la tâche reprise est un identifiant, l'enfant n'est pas neuf", () => {
+    const reprises = faitsDe(rejoueOmo(), "reprise");
+    assert.deepEqual(
+      reprises.map((fact) => [fact.sessionId, fact.ref, fact.data]),
+      [[OMO_RACINE, "call_jp_junior", { callId: "call_jp_junior", messageId: "msg_jp_reponse", enfant: OMO_JUNIOR, tache: OMO_JUNIOR }]],
+    );
+    // `session_id` (délégation de l'extension) vaut `task_id` (task d'opencode) ; une chaîne qui n'est pas un identifiant ne compte pas.
+    const w = () => new World(new Map(), [ROOT], "omo");
+    const task = (input: Record<string, unknown>): FactEvent => ({
+      type: "message.part.updated",
+      properties: { part: { sessionID: ROOT, messageID: "msg_a", type: "tool", tool: "task", callID: "call_1", state: { status: "running", input, metadata: { sessionId: "ses_e" } } } },
+    });
+    assert.equal(factsFromEvent(task({ session_id: "ses_ancienne" }), w().ctx(1))[1]?.data.tache, "ses_ancienne");
+    assert.equal(factsFromEvent(task({ task_id: "tâche libre" }), w().ctx(1)).length, 1, "un task_id qui n'est pas un identifiant ne donne aucune reprise");
+    assert.equal(factsFromEvent(task({ task_id: "" }), w().ctx(1))[0]?.data.reprise, false);
+  });
+
+  it("T-L25-j : aucun texte de la fixture n'entre dans un fait, et chaque fait passe la garde", () => {
+    const facts = rejoueOmo();
+    assert.ok(facts.length > 20, `${facts.length} faits`);
+    for (const fact of facts) assert.equal(factProblem(fact), null, JSON.stringify(fact));
+    // Propriété : une chaîne libre ou en forme de secret plantée dans n'importe quel champ de la fixture n'entre jamais dans un fait.
+    const canaries = ["Texte planté : ne jamais stocker", ["gh", "p_", "Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8"].join("")];
+    const world = omoWorld();
+    let runs = 0;
+    for (const { recv, wire } of readCapture(OMO_FIXTURE)) {
+      const event = payloadOf(wire);
+      const ctx = world.ctx(recv);
+      const paths: Array<Array<string | number>> = [];
+      const walk = (value: unknown, at: Array<string | number>) => {
+        if (typeof value === "string") paths.push(at);
+        else if (Array.isArray(value)) value.forEach((item, i) => walk(item, [...at, i]));
+        else if (isRecord(value)) for (const [key, item] of Object.entries(value)) walk(item, [...at, key]);
+      };
+      walk(event, []);
+      for (const leaf of paths) {
+        for (const canary of canaries) {
+          const clone = structuredClone(event) as unknown as Record<string | number, unknown>;
+          let parent: Record<string | number, unknown> = clone;
+          for (const key of leaf.slice(0, -1)) parent = parent[key] as Record<string | number, unknown>;
+          parent[leaf.at(-1) as string | number] = canary;
+          const planted = factsFromEvent(clone as unknown as FactEvent, ctx);
+          runs++;
+          assert.equal(JSON.stringify(planted).includes(canary), false, `${leaf.join(".")}`);
+          for (const fact of planted) assert.equal(factProblem(fact), null, `${leaf.join(".")}`);
+        }
+      }
+      world.observe(event);
+    }
+    assert.ok(runs > 400, `${runs} essais`);
+  });
+});
+
+describe("Salle OMO : identité des messages (MO-1) et chemins du carnet", () => {
+  const message = (id: string, sessionID: string, role = "user", extra: Record<string, unknown> = {}): FactEvent => ({
+    type: "message.updated",
+    properties: { sessionID, info: { id, sessionID, role, ...extra } },
+  });
+  const partie = (messageID: string, sessionID: string, id: string, type = "text"): FactEvent => ({
+    type: "message.part.updated",
+    properties: { sessionID, part: { id, sessionID, messageID, type, text: "Texte" } },
+  });
+
+  it("EventMemory : un messageID vu pour une autre session, ou une partie ajoutée à un message clos, rendent l'identité douteuse", () => {
+    const memory = new EventMemory();
+    memory.observe(message("msg_1", "ses_a"));
+    memory.observe(message("msg_2", "ses_a"));
+    assert.equal(memory.identiteSuspecte("msg_1"), false);
+    // MO-1 c5 : le même identifiant annoncé pour une autre session.
+    memory.observe(message("msg_1", "ses_b"));
+    assert.equal(memory.identiteSuspecte("msg_1"), true);
+    // MO-1 c3 : une partie de contenu ajoutée après la réponse de l'assistant.
+    memory.observe(message("msg_r", "ses_a", "assistant", { parentID: "msg_2" }));
+    assert.equal(memory.identiteSuspecte("msg_2"), false);
+    memory.observe(partie("msg_2", "ses_a", "prt_tard"));
+    assert.equal(memory.identiteSuspecte("msg_2"), true);
+    // Une partie qui n'est pas du contenu (fichier) après la réponse n'est pas une réécriture de la demande.
+    const autre = new EventMemory();
+    autre.observe(message("msg_3", "ses_a"));
+    autre.observe(message("msg_r3", "ses_a", "assistant", { parentID: "msg_3" }));
+    autre.observe(partie("msg_3", "ses_a", "prt_fichier", "file"));
+    assert.equal(autre.identiteSuspecte("msg_3"), false);
+    // Une partie écrite dans une autre session que celle où le message a été vu.
+    autre.observe(message("msg_4", "ses_a"));
+    autre.observe(partie("msg_4", "ses_c", "prt_ailleurs"));
+    assert.equal(autre.identiteSuspecte("msg_4"), true);
+  });
+
+  it("un message à l'identité douteuse tombe en origine-inconnue, même s'il est dans prompts", () => {
+    const world = new World(new Map([["msg_1", "message"]]), [ROOT], "omo");
+    const events = [message("msg_1", ROOT), partie("msg_1", ROOT, "prt_1"), message("msg_1", "ses_autre")];
+    const facts: ActivityFact[] = [];
+    for (const event of events) {
+      world.observe(event);
+      facts.push(...factsFromEvent(event, world.ctx(1)));
+    }
+    // Avant le doute, le cockpit reconnaît sa propre demande ; après, la clôture du message la classe origine-inconnue.
+    assert.equal(facts.find((fact) => fact.kind === "origine")?.data.origine, "demande");
+    world.observe({ type: "session.status", properties: { sessionID: ROOT, status: { type: "idle" } } });
+    const apres = factsFromEvent({ type: "session.status", properties: { sessionID: ROOT, status: { type: "idle" } } }, world.ctx(2));
+    assert.equal(apres.find((fact) => fact.kind === "origine")?.data.origine, "origine-inconnue");
+    assert.equal(world.memory.identiteSuspecte("msg_1"), true);
+  });
+
+  it("EventMemory : une tâche de fond est retrouvée par la session de son enfant, jamais par « pending »", () => {
+    const memory = new EventMemory();
+    const task = (metadata: Record<string, unknown>, input: Record<string, unknown> = { run_in_background: true }): FactEvent => ({
+      type: "message.part.updated",
+      properties: { sessionID: ROOT, part: { sessionID: ROOT, messageID: "msg_a", type: "tool", tool: "task", callID: "call_1", state: { status: "running", input, metadata } } },
+    });
+    memory.observe(task({ sessionId: "pending" }));
+    assert.equal(memory.tacheDeFond("pending"), null);
+    memory.observe(task({ sessionId: "ses_enfant" }));
+    assert.deepEqual(memory.tacheDeFond("ses_enfant"), { callId: "call_1", messageId: "msg_a", parent: ROOT });
+    // Une délégation qui attend son résultat n'est pas une tâche de fond.
+    memory.observe(task({ sessionId: "ses_sync" }, { run_in_background: false }));
+    assert.equal(memory.tacheDeFond("ses_sync"), null);
+    // Un autre outil n'entre pas dans le registre.
+    const autre = new EventMemory();
+    autre.observe({
+      type: "message.part.updated",
+      properties: { sessionID: ROOT, part: { sessionID: ROOT, messageID: "msg_a", type: "tool", tool: "call_omo_agent", callID: "call_2", state: { status: "running", input: { run_in_background: true }, metadata: { sessionId: "ses_x" } } } },
+    });
+    assert.equal(autre.tacheDeFond("ses_x"), null);
+  });
+
+  it("carnetChemin : le chemin part du dossier du carnet, jamais avant ; ce qui n'est pas reconnu reste hors du carnet", () => {
+    assert.equal(carnetChemin("/workspace/projet/.omo/notepads/plan/learnings.md"), ".omo/notepads/plan/learnings.md");
+    assert.equal(carnetChemin("C:\\workspace\\projet\\.omo\\plans\\plan.md"), ".omo/plans/plan.md");
+    assert.equal(carnetChemin(".omo/notepads/x.md"), ".omo/notepads/x.md");
+    for (const refuse of [
+      "/workspace/projet/src/app.ts",
+      "/workspace/projet/.omo/boulder.json",
+      "/workspace/projet/.omo/notepads/",
+      "/workspace/projet/.omo/notepads/../../evasion.md",
+      "/workspace/projet/faux.omo/notepads/x.md",
+      `/workspace/.omo/notepads/${"a".repeat(CARNET_CHEMIN_MAX)}.md`,
+    ]) {
+      assert.equal(carnetChemin(refuse), null, refuse);
+    }
   });
 });
 

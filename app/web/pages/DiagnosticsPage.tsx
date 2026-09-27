@@ -1,6 +1,7 @@
 // Diagnostic : état d'opencode, du flux d'événements, du réseau, de Copilot et journal.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { certificateRenewalDue, localAccessNotice } from "../../server/shared/local-access-notice.ts";
+import type { OmoStatusResponse } from "../../server/shared/omo-types.ts";
 import { useApp } from "../app/AppContext.tsx";
 import { LOCAL_HTTP_EXPLANATIONS } from "../app/LocalHttpNotice.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -9,12 +10,14 @@ import { useReloadGuard } from "../components/reloadGuard.ts";
 import { Badge, Button, Card, Spinner, useConfirm } from "../components/ui.tsx";
 import { ApiError, api, errorText } from "../lib/api.ts";
 import { diagnostic11Api } from "../lib/api-diagnostic-11.ts";
+import { getOmoStatus } from "../lib/api-omo.ts";
 import { formatDateTime, formatDuration, formatInt, formatPercent, formatTime, relativeTime } from "../lib/format.ts";
 import { routeHref } from "../lib/router.ts";
 import type { CopilotCheckResult, CopilotView, DiagnosticActiviteResponse, SystemStatus } from "../lib/types.ts";
 import { AutonomyDiagnostics } from "./diagnostics/AutonomyDiagnostics.tsx";
 import { DelegationDiagnostics } from "./diagnostics/DelegationDiagnostics.tsx";
 import { LogsViewer } from "./diagnostics/LogsViewer.tsx";
+import { OmoDiagnostics } from "./diagnostics/OmoDiagnostics.tsx";
 import "./diagnostics/diagnostics.css";
 
 type Tone = "good" | "warning" | "critical" | "neutral";
@@ -94,6 +97,43 @@ function DelegatedWorkCard({ refreshKey }: { refreshKey: number | null }) {
       </Card>
     </div>
   );
+}
+
+/**
+ * État de la Salle OMO montré par `<OmoDiagnostics/>`. L26b livre l'écran ALIMENTÉ PAR PROPRIÉTÉS : il ne fait aucun appel
+ * réseau, parce que `web/lib/api-omo.ts` appartient à L26a, de la MÊME vague (aucun paquet de la vague 2 ne dépend d'un autre).
+ *
+ * BRANCHÉ PAR LE TRAIN DE LA VAGUE 2 (plan d'exécution 2 bis-2 ter §2.9 et §5.2 ; A15), sur le modèle de `DelegatedWorkCard` :
+ * lecture de `getOmoStatus()` (L26a) à chaque actualisation de la page (`refreshKey`), abandonnée au démontage, gardée par
+ * `boot.omo.enabled`. La salle est livrée coupée (`SALLE_OUVERTE` faux) : l'interrupteur est absent, le crochet ne demande rien
+ * et la carte reste absente. Une lecture en échec — 403 « salle-coupee » comprise — rend `null` : la carte disparaît plutôt que
+ * d'inventer un état (P3), et aucune erreur technique n'est montrée pour un état livré (arbitrage A16 point 4 b).
+ */
+function useOmoStatus(refreshKey: number | null): OmoStatusResponse | null {
+  const { boot } = useApp();
+  const actif = boot.omo?.enabled === true;
+  const [statut, setStatut] = useState<OmoStatusResponse | null>(null);
+  const request = useRef(0);
+
+  useEffect(() => {
+    const id = ++request.current;
+    if (!actif) {
+      setStatut(null);
+      return;
+    }
+    const controller = new AbortController();
+    getOmoStatus(controller.signal).then(
+      (next) => {
+        if (id === request.current) setStatut(next);
+      },
+      () => {
+        if (id === request.current) setStatut(null);
+      },
+    );
+    return () => controller.abort();
+  }, [actif, refreshKey]);
+
+  return actif ? statut : null;
 }
 
 /** Point à vérifier, avec l'action qui le règle. */
@@ -398,6 +438,7 @@ export function DiagnosticsPage() {
   };
 
   const s = status;
+  const omoStatut = useOmoStatus(loadedAt);
   const problems = s ? problemsOf(s, boot.settings.quotaSync.enabled) : [];
   const proxy = s ? s.security.httpProxy || s.security.httpsProxy : false;
 
@@ -779,6 +820,9 @@ export function DiagnosticsPage() {
               </Card>
 
               <DelegatedWorkCard refreshKey={loadedAt} />
+
+              {/* Salle OMO (L26b) : carte alimentée par propriétés, absente tant que `useOmoStatus` n'est pas branché. */}
+              {omoStatut === null ? null : <OmoDiagnostics statut={omoStatut} />}
             </div>
           </div>
         )}

@@ -597,6 +597,9 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
       if (!SESSION_ID_RE.test(rootId) || !ID_RE.test(permissionId)) return null;
       const root = c11.sessions.get(rootId);
       if (!root || root.parent_id !== null || root.root_id !== root.id || root.deleted_at !== null || root.purpose === "classifier") return null;
+      // P11 : une racine de la Salle OMO n'est JAMAIS demandée à l'opencode de l'instance principale (comme stoppableRoot,
+      // rootSession de conversation-autonomy.ts et rootConversation de plans.ts). Avant tout calcul de dossier : rien ne part.
+      if (root.instance !== "principale") return null;
       const directory = root.directory === "" ? null : root.directory;
       const request = await readPermission(c11.client, directory, permissionId);
       if (request === null || request.permission !== "task") return null;
@@ -606,6 +609,10 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
     },
     async collectDelegationFacts(ref) {
       if (!SESSION_ID_RE.test(ref.rootId) || !ID_RE.test(ref.sessionId) || !ID_RE.test(ref.permissionId)) throw new DelegationGoneError();
+      // P11, par symétrie avec `details` : le cycle d'autonomie ne tourne que sur l'instance principale, mais rien ne part vers
+      // son opencode pour une racine de la salle, même si un appel venait d'ailleurs.
+      const racine = c11.sessions.get(ref.rootId);
+      if (racine && racine.instance !== "principale") throw new DelegationGoneError();
       if ((await rootOfSession(c11, ref.sessionId, ref.directory)) !== ref.rootId) throw new DelegationGoneError();
       const inspection = await inspectDelegation(c11, ref);
       if (inspection.request === null) throw new DelegationGoneError();

@@ -36,8 +36,12 @@ export interface ActivityFact {
   at: number;
 }
 
-/** `data.cause` d'un fait « statut » écrit par un arrêt, un plafond, « Passé sans contrôle » ou un redémarrage d'opencode. */
-export type StatutCause = "arret" | "plafond" | "non-controle" | "interrompue";
+/**
+ * `data.cause` d'un fait « statut » écrit par un arrêt, un plafond, « Passé sans contrôle » ou un redémarrage d'opencode.
+ * « hors-controle » (D-2b-41) : arrêt de la Salle OMO après une détection ; les lecteurs de l'instance principale ne la
+ * connaissent pas et restent muets plutôt que d'inventer une phrase (P3).
+ */
+export type StatutCause = "arret" | "plafond" | "non-controle" | "interrompue" | "hors-controle";
 
 /**
  * Forme de `data` d'un fait « statut » posé par un arrêt ou un plafond. stopTree (L1c) y ajoute `motif` (la StopCause de l'arrêt :
@@ -66,9 +70,11 @@ export interface DecisionFactData {
  * Forme de `data` d'un fait « detection » (L10c) : le cockpit a VU quelque chose après coup, sans rien arrêter — « non-controle »,
  * une commande qu'opencode a lancée sans poser de demande d'autorisation (§4.10). `ref` est l'appel d'outil. Un arrêt, lui, s'écrit
  * toujours en fait « statut {cause} » (L1c) : le réducteur d'activité ne lit que celui-là comme un arrêt de la conversation.
+ * « hors-controle » : détection après coup de la Salle OMO, écrite AVANT son arrêt (L23c, D-2b-41 ; demande de contrat reçue au
+ * train de V4 de la 2 ter) ; l'arrêt, lui, reste le fait « statut » de stopTreeOmo.
  */
 export interface DetectionFactData {
-  cas: "non-controle";
+  cas: "non-controle" | "hors-controle";
   [key: string]: FactValue;
 }
 

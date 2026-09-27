@@ -41,7 +41,7 @@ function Invoke-WithSpies([scriptblock]$Setup, [scriptblock]$Block) {
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('cockpit-ps51-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Work | Out-Null
 $EnvNames = @('PATH', 'COCKPIT_TEST_DOCKER_SCENARIO', 'COCKPIT_TEST_CURL_LOG', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'CURL_HOME', 'HOME', 'APPDATA',
-    'COCKPIT_LOCAL_SCHEME', 'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_TOKEN', 'WORKSPACE_DIR', 'cockpit_port')
+    'COCKPIT_LOCAL_SCHEME', 'COCKPIT_LOCAL_HTTP_CONFIRMED', 'COCKPIT_TOKEN', 'WORKSPACE_DIR', 'cockpit_port', 'COMPOSE_PROFILES')
 $SavedEnv = @{}
 foreach ($name in $EnvNames) { $SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $Servers = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
@@ -220,6 +220,62 @@ try {
     Assert-Test 'divergence : variable nommee avec sa portee' (@($divergence.Variables | Where-Object { $_.Name -ceq 'COCKPIT_LOCAL_SCHEME' -and $_.Scope -ceq 'Process' }).Count -eq 1)
     Assert-Test 'divergence : fichiers voisins' ((@($divergence.Files) -join ',') -ceq 'docker-compose.override.yml,compose.yaml')
     Assert-Test 'divergence : jamais la valeur (marqueur)' (-not (ConvertTo-Json -Depth 4 $divergence).Contains('MARQUEUR'))
+
+    # --- Surcharge des projets prepares et profil de la salle (D-2b-28, MO-3) ----------------------------------------
+    # Les chaines que le test P13 de la CI interdit dans les scripts qu'elle appelle sont assemblees, jamais ecrites.
+    Write-Section 'Surcharge des projets prepares et profil de la salle'
+    $ContratSalle = Join-Path $RepoRoot ('docker\opencode' + '-omo\contrat-salle.json')
+    $Contrat = ConvertFrom-Json ([System.IO.File]::ReadAllText($ContratSalle))
+    $hors = @(@($Contrat.variables.cockpit) | Where-Object { $CockpitComposeEnvNames -cnotcontains $_ })
+    Assert-Test 'contrat : variables du cockpit toutes masquees' ($hors.Count -eq 0) ($hors -join ', ')
+    $salleDir = Join-Path $Work 'salle'
+    New-Item -ItemType Directory -Path $salleDir | Out-Null
+    $composeBase = Join-Path $salleDir 'docker-compose.yml'
+    $overlayFile = Join-Path $salleDir $CockpitOmoOverlay
+    function Set-SalleEnv([string]$Text) { [System.IO.File]::WriteAllText((Join-Path $salleDir '.env'), $Text, (New-Object System.Text.UTF8Encoding $false)) }
+    function Get-SalleArgs([string[]]$DockerArgs) { return ((ConvertTo-CockpitDockerArgs $salleDir $DockerArgs) -join '|') }
+
+    Set-SalleEnv "COCKPIT_PORT=7788`n"
+    Assert-Test 'surcharge absente, salle coupee : arguments inchanges' ((Get-SalleArgs @('compose', 'up', '-d')) -ceq ('compose|-f|' + $composeBase + '|up|-d'))
+    [System.IO.File]::WriteAllText($overlayFile, "services: {}`n", (New-Object System.Text.UTF8Encoding $false))
+    Assert-Test 'surcharge presente : ajoutee apres le fichier de base' ((Get-SalleArgs @('compose', 'up', '-d')) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|up|-d'))
+    Set-SalleEnv ("COCKPIT_PORT=7788`n" + ('{0}=exemple/salle:essai' -f ('COCKPIT_OMO' + '_IMAGE')) + "`n")
+    Assert-Test 'image installee mais salle coupee : aucun profil' ((Get-SalleArgs @('compose', 'up', '-d')) -cnotmatch 'profile')
+    Set-SalleEnv "COCKPIT_OMO=off`n"
+    Assert-Test 'COCKPIT_OMO=off : aucun profil' ((Get-SalleArgs @('compose', 'up', '-d')) -cnotmatch 'profile')
+    Set-SalleEnv "COCKPIT_OMO=ON`n"
+    Assert-Test 'COCKPIT_OMO=ON : aucun profil (valeur exacte attendue)' ((Get-SalleArgs @('compose', 'up', '-d')) -cnotmatch 'profile')
+    Set-SalleEnv "COCKPIT_OMO=on`n"
+    Assert-Test 'COCKPIT_OMO=on : profil ajoute apres les fichiers' ((Get-SalleArgs @('compose', 'up', '-d')) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|up|-d'))
+    foreach ($sous in @('stop', 'down')) {
+        Assert-Test ('MO-3 : profil repete pour ' + $sous) ((Get-SalleArgs @('compose', $sous)) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|' + $sous))
+    }
+    Assert-Test 'compose version : ni surcharge ni profil' ((Get-SalleArgs @('compose', 'version', '--short')) -ceq 'compose|version|--short')
+    Assert-Test 'commande hors compose : ni surcharge ni profil' ((Get-SalleArgs @('image', 'inspect', 'x')) -ceq 'image|inspect|x')
+    # Relecture 2ter-vague-3 : une source de la surcharge absente, changee de forme ou devenue lien retire le profil des seules
+    # commandes qui creent ou demarrent un conteneur (Docker la recreerait en dossier vide sur le poste) ; stop et down le gardent.
+    $sourceDir = Join-Path $Work 'salle-sources'
+    New-Item -ItemType Directory -Path (Join-Path $sourceDir 'app\src') -Force | Out-Null
+    $ligneSalle = { param([string]$Relatif, [string]$Forme) '      - { type: bind, source: "' + ($sourceDir -replace '\\', '/') + '/' + $Relatif + '", target: "/workspace/' + $Relatif + '", bind: { create_host_path: false } } # ' + $Forme }
+    [System.IO.File]::WriteAllText($overlayFile, ("services:`n  " + ('opencode' + '-omo') + ":`n    volumes:`n" + (& $ligneSalle 'app/src' 'dossier') + "`n" + (& $ligneSalle 'app/README.md' 'fichier') + "`n"), (New-Object System.Text.UTF8Encoding $false))
+    Assert-Test 'sources de la salle : l entree absente est nommee' ((@(Get-CockpitOmoSourceProblems $salleDir) -join ',') -ceq 'app/README.md') (@(Get-CockpitOmoSourceProblems $salleDir) -join ', ')
+    foreach ($sous in @('up', 'create', 'start', 'restart', 'run')) { Assert-Test ('sources de la salle : aucun profil pour ' + $sous) ((Get-SalleArgs @('compose', $sous)) -cnotmatch 'profile') (Get-SalleArgs @('compose', $sous)) }
+    foreach ($sous in @('stop', 'down')) { Assert-Test ('sources de la salle : profil garde pour ' + $sous) ((Get-SalleArgs @('compose', $sous)) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|' + $sous)) }
+    [System.IO.File]::WriteAllText((Join-Path $sourceDir 'app\README.md'), "lisez-moi`n")
+    Assert-Test 'sources de la salle : toutes presentes, profil rendu a up' ((Get-SalleArgs @('compose', 'up', '-d')) -ceq ('compose|-f|' + $composeBase + '|-f|' + $overlayFile + '|--profile|omo|up|-d'))
+    [System.IO.File]::Delete((Join-Path $sourceDir 'app\README.md')); New-Item -ItemType Directory -Path (Join-Path $sourceDir 'app\README.md') | Out-Null
+    Assert-Test 'sources de la salle : un fichier devenu dossier est refuse' ((@(Get-CockpitOmoSourceProblems $salleDir) -join ',') -ceq 'app/README.md')
+    [System.IO.File]::WriteAllText($overlayFile, "services: {}`n", (New-Object System.Text.UTF8Encoding $false))
+    $divergenceSalle = Get-CockpitComposeDivergence $salleDir @('Process')
+    Assert-Test 'divergence : la surcharge generee n est pas un fichier voisin inattendu' (@($divergenceSalle.Files).Count -eq 0) ((@($divergenceSalle.Files)) -join ', ')
+    # MO-3 point 3 : COMPOSE_PROFILES et --profile ne se melangent jamais ; la variable ne suit pas l'appel.
+    Set-Env 'COMPOSE_PROFILES' 'autre'
+    Set-DockerScenario @((New-Rule '^compose -f \S.* ps$' "vide`n"))
+    $appelSalle = Invoke-CockpitDocker $salleDir @('compose', 'ps') 30
+    $journalSalle = @(Get-DockerJournal)
+    Assert-Test 'MO-3 : COMPOSE_PROFILES retiree de l environnement de docker' ($appelSalle.ExitCode -eq 0 -and $journalSalle.Count -gt 0 -and @($journalSalle[$journalSalle.Count - 1].env) -cnotcontains 'COMPOSE_PROFILES')
+    Assert-Test 'MO-3 : le profil passe bien par --profile' ((@($journalSalle[$journalSalle.Count - 1].args) -join ' ').Contains('--profile omo'))
+    Set-Env 'COMPOSE_PROFILES' $SavedEnv['COMPOSE_PROFILES']
 
     # --- Fonctions docker avec le faux docker (M-FAKEDOCKER) ---------------------------------------------------------
     Write-Section 'Fonctions docker (faux docker)'

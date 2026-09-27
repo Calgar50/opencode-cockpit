@@ -483,7 +483,10 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
             saving={saving}
             issues={issues}
             onCancel={reset}
-            onSave={() => void save({ budget: draft }, "Budget enregistré", { refreshBoot: true })}
+            // Tout le budget SAUF `omo` : le dernier montant de la Salle OMO n'est écrit que par une activation confirmée (D-2b-11).
+            // Renvoyé depuis un brouillon ouvert avant cette activation, il serait périmé et le serveur refuserait tout (403
+            // « reglage-fixe ») ; absent du corps, il reste tel quel (réglages fusionnés, pas remplacés).
+            onSave={() => void save({ budget: Object.fromEntries(Object.entries(draft).filter(([cle]) => cle !== "omo")) }, "Budget enregistré", { refreshBoot: true })}
             onReset={async () => {
               await resetSection("budget", "Budget réinitialisé", true);
             }}

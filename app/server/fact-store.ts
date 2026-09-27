@@ -9,6 +9,7 @@
 //   l'identité (enfant, assistant, demande, commande) est complétée sans rien remplacer ; « sans confirmation » ne tient jamais
 //   avec une demande d'autorisation connue.
 // Le module « facts » pose le port, la dérivation (activity-deriver.ts) et le groupe de routes « activity » (routes-activity.ts).
+// 1.1, Salle OMO (L18a) : une dérivation par instance, la seconde inscrite seulement quand l'instance de la salle existe.
 // neutralFacts reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan §2.2).
 import type { DatabaseSync } from "node:sqlite";
 import { activityDerivation } from "./activity-deriver.ts";
@@ -50,6 +51,10 @@ export const factsModule: Cockpit11Module = {
   install(reg, c11) {
     c11.ports.facts = createFactStore({ db: c11.db, hub: c11.hub });
     reg.derivation(activityDerivation(c11));
+    // Salle OMO (L18a) : une SECONDE dérivation, propre à la salle. Deux objets, donc deux mémoires du flux : rien ne passe
+    // d'une instance à l'autre, et l'inscription de l'instance principale garde exactement sa forme d'origine. Les faits d'une
+    // racine de la salle sont écrits dans la même table : le magasin est commun, les racines ne le sont pas.
+    if (c11.instances?.omo) reg.derivation(activityDerivation(c11, { instance: "omo" }));
     reg.routes("activity", (app) => registerActivityRoutes(app, c11));
   },
 };

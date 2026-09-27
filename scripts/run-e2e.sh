@@ -20,6 +20,7 @@
 #   --scenarios <motif>      ne lance que les scénarios dont le nom correspond (sous-chaîne ou « it1-* »)
 #   --project-prefix <nom>   préfixe du projet Docker et des images (défaut : cockpit-e2e)
 #   --image-tag <étiquette>  étiquette des images bâties (défaut : local)
+#   --salle                  pile de la Salle OMO FACTICE (L26c, « --faux » seulement) : scénarios omo-ui-* seuls
 #   --fichier-env <chemin>   fichier d'environnement de la pile jetable (défaut : sous le dossier temporaire du banc)
 #   --dry-run                affiche les commandes docker sans les exécuter
 #   --garder-pile            laisse la pile debout après l'exécution (pour regarder un échec)

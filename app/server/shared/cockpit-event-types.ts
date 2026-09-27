@@ -2,8 +2,12 @@
 // Spécification §3.9 (SSE), §3.12, §3.14 ; plan d'exécution §4.2 et §4.5 (T0).
 import type { ActivityFact } from "./activity-types.ts";
 import type { AutonomyChoice, AutonomyRequestView, ChoiceCause, DecisionBy, DecisionVerdict, RequestEnd } from "./autonomy-types.ts";
+import type { OmoStopCause } from "./omo-types.ts";
 
-/** Cause d'un arrêt de l'arbre (`stopTree`, §3.12). */
+/**
+ * Cause d'un arrêt de l'arbre (`stopTree`, §3.12). INCHANGÉE par la Salle OMO (D-2b-41) : la salle a sa propre union,
+ * `OmoStopCause`, et les tables exhaustives de `stop-tree.ts` restent donc valides.
+ */
 export type StopCause = "vous" | "plafond-cout" | "plafond-delegations" | "non-controle" | "rechargement" | "equipe";
 
 /** Réponse de POST /api/conversations/:rootId/stop, et du proxy d'arrêt pour une racine suivie (L1c). */
@@ -38,7 +42,8 @@ export interface CockpitEventMap {
     spent: number;
     fin?: RequestEnd;
   };
-  "conversation.arretee": { rootId: string; cause: StopCause; unconfirmed: string[] };
+  /** Cause élargie (D-2b-41) : un arrêt de la Salle OMO porte une `OmoStopCause` ; un lecteur qui ne la connaît pas reste muet (P3). */
+  "conversation.arretee": { rootId: string; cause: StopCause | OmoStopCause; unconfirmed: string[] };
   "delegation.plafond": { rootId: string; kind: "nombre" | "cout" };
   "delegation.expiree": { rootId: string; permissionId: string };
   "activite.fait": ActivityFact;

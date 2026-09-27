@@ -49,7 +49,7 @@ import {
 } from "./shared/neon-band.ts";
 import { neonCssVariables } from "./shared/neon-palette.ts";
 import { NEON_CADRE, type NeonScene, scene } from "./shared/neon-scene.ts";
-import { TEXTES } from "./shared/neon-texts.ts";
+import { TEXTES, texteHorsBornes } from "./shared/neon-texts.ts";
 
 const WEB_DIR = path.join(import.meta.dirname, "..", "web");
 const BAND_TSX = path.join(WEB_DIR, "pages", "chat", "activity", "NeonBand.tsx");
@@ -334,6 +334,15 @@ describe("bande néon : résumé, tableau et noms tirés de la scène (P12)", ()
     assert.equal(nomAssistant({ agent: null, role: "conversation" }), TEXTES.partout.assistantConversation);
     assert.equal(nomAssistant({ agent: "", role: "delegation" }), TEXTES.partout.assistantInconnu);
     assert.equal(libelleNoeud({ agent: null, role: "delegation", etat: "echec" }), "Assistant non identifié, échec");
+  });
+
+  it("assistants non dessinés (relecture 2ter-vague-4) : singulier pour un seul, pluriel au-delà ; la bande écrit cette phrase-là", () => {
+    assert.equal(texteHorsBornes(1), "Déroulé partiel : 1 assistant non dessiné (plus de 3 niveaux ou de 50 assistants).");
+    assert.equal(texteHorsBornes(2), "Déroulé partiel : 2 assistants non dessinés (plus de 3 niveaux ou de 50 assistants).");
+    assert.equal(texteHorsBornes(11), "Déroulé partiel : 11 assistants non dessinés (plus de 3 niveaux ou de 50 assistants).");
+    const source = fs.readFileSync(BAND_TSX, "utf8");
+    assert.match(source, /texteHorsBornes\(vue\.horsBornes\)/);
+    assert.doesNotMatch(source, /TEXTES\.partout\.horsBornes/, "le gabarit au pluriel n'est plus rempli à la main");
   });
 });
 

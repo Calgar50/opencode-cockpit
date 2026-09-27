@@ -19,6 +19,9 @@ app/.tls-dev/
 
 # --- Données locales de l'outil ---
 data/
+# Projets préparés et surcharge compose de la salle, générés par install.ps1 sur le poste (jamais versionnés).
+/omo-projets.json
+/docker-compose.omo-projets.yml
 workspace/
 # Installations d'essai créées à la racine du dépôt (bancs, répétition générale).
 testinstall/
@@ -42,3 +45,14 @@ backups/
 
 # Exports Markdown des conversations (peuvent contenir du code ou des secrets)
 /archives/
+
+# --- Salle Oh My OpenAgent ---
+# Archive de l'image, son empreinte, son SBOM et son rapport d'audit (scripts/build-omo-image.ps1). Le script refuse déjà un
+# -OutDir situé dans le dépôt, qui est public (P13) : ces lignes sont la seconde barrière.
+opencode-cockpit-omo-*.tar.gz
+opencode-cockpit-omo-*.tar.gz.sha256
+opencode-cockpit-omo-*.sbom.json
+opencode-cockpit-omo-*.audit.json
+# Projets préparés du poste et surcharge des .git, écrits par install.ps1 : ils nomment les dossiers de travail de la machine.
+omo-projets.json
+docker-compose.omo-projets.yml

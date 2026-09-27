@@ -29,6 +29,24 @@ import { bash, within } from "./test-support/helpers.ts";
 
 const MODEL = { providerID: "github-copilot", modelID: "gpt-5-mini" };
 
+/**
+ * Inscription du câblage, lue sans dépendre du champ `instances` que T3b ajoutera (plan 2 bis §4.2, D-2b-40) : une inscription
+ * qui ne le porte pas sert l'instance principale.
+ */
+interface Inscription {
+  kind: string;
+  key: string;
+  module: string;
+  instances?: readonly string[];
+}
+
+/**
+ * Ouverture 2bis-V2 : ce fichier ne compare que les inscriptions de l'instance PRINCIPALE. Le compte figé des groupes de routes
+ * tombait sinon dès que la salle inscrivait le sien (groupe « omo », L18c), dans un fichier de croisement qu'aucun paquet n'a le
+ * droit de corriger.
+ */
+const sertPrincipale = (r: Inscription): boolean => (r.instances ?? ["principale"]).includes("principale");
+
 /** Conversation relayée par le proxy dont un « bash » attend une autorisation (même montage que permission-gate.test.ts). */
 async function pendingAsk(h: CockpitHarness, title: string): Promise<{ session: FakeSession; asked: FakePermissionRequest }> {
   const created = await h.call("POST", "/api/oc/session", { headers: h.headers.mutating, body: { title } });
@@ -53,11 +71,19 @@ describe("croisements it1 V1 : tous les modules installés", () => {
     // délégations (L1d, dont le crochet laisse passer le « once » d'une autre demande qu'une délégation) et plans (L6b, crochet
     // d'envoi limité aux conversations de plan). Le reste du cadre reste au repos, ports neutres ; comportement 1.0 inchangé
     // ci-dessous.
-    assert.equal(
-      h.cockpit.wiring.routes.length,
-      6,
+    const groupes = h.cockpit.wiring.registrations.filter((r) => r.kind === "routes");
+    assert.deepEqual(
+      groupes.filter(sertPrincipale).map((r) => r.key),
+      ["conversations", "delegations", "activity", "autonomy", "plans", "diagnostic-11"],
       "inscriptions de routes : conversations, délégations, activité, choix d'autonomie, plans, Diagnostic",
     );
+    assert.equal(h.cockpit.wiring.routes.length, groupes.length, "une fonction de routes câblée par inscription");
+    // Non-régression de l'ouverture 2bis-V2 : le groupe de routes de la salle sort de la liste comparée, un groupe de l'instance
+    // principale y reste.
+    const principaux = groupes.filter(sertPrincipale);
+    const avecSalle: Inscription[] = [...groupes, { kind: "routes", key: "omo", module: "omoRoom", instances: ["omo"] }];
+    assert.deepEqual(avecSalle.filter(sertPrincipale).map((r) => r.key), principaux.map((r) => r.key), "un groupe de la salle ne change rien");
+    assert.equal([...groupes, { kind: "routes", key: "autre", module: "autre" }].filter(sertPrincipale).length, principaux.length + 1, "un groupe principal, si");
 
     const { session, asked } = await pendingAsk(h, "Croisement V1");
     const always = await h.call("POST", `/api/oc/permission/${asked.id}/reply`, { headers: h.headers.mutating, body: { reply: "always" } });
@@ -168,7 +194,7 @@ describe("croisements it1 V1 : base réelle v4 ouverte par le code fusionné", (
     // 2. Ouverture par le code fusionné : migration 5 appliquée, données de la 1.0.4 intactes, défaut de sessions.instance posé.
     const db = openDb(dir);
     ouvertes.push(db);
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
     const rows = (db.prepare("SELECT id, root_id, title, instance FROM sessions ORDER BY id").all() as Array<Record<string, unknown>>).map((row) => ({ ...row }));
     assert.deepEqual(rows, [
       { id: "ses_enfant", root_id: "ses_racine", title: "Enfant 1.0.4", instance: "principale" },
@@ -193,7 +219,7 @@ describe("croisements it1 V1 : base réelle v4 ouverte par le code fusionné", (
     db.close();
     const again = openDb(dir);
     ouvertes.push(again);
-    assert.equal((again.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+    assert.equal((again.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
   });
 });
 

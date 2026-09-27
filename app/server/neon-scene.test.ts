@@ -2,28 +2,55 @@
 // réorganisées ; mode Simple à un seul assistant ; aucune taille liée à une grandeur ; « différé = direct » sur p1 ; faisceaux
 // figés sur `statut {cause: arret}` ; attente, décisions, terminé, échec ; zoom 3 ; honnêteté du dessin (chaque signe référence
 // des faits) ; textes de la carte ; pureté.
+// Salle OMO (fiche L25b) : enceinte (mode Avancé, statique), rôles par clé (T-L25-f), tâche de fond (JP-3), réveil (JP-2),
+// actions de l'extension, carnet partagé (JP-6), métadonnées JP-7 et leur échappement dans NeonBand.tsx (rendu serveur React du
+// vrai composant, transformé par vite sans rien écrire), bornes de l'arbre dessiné, orange du script JP-14.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
+import { ACTIVITY_MAX_DEPTH, ACTIVITY_MAX_SESSIONS } from "./shared/activity.ts";
 import { dedupeFacts, EventMemory, type FactContext, FactDeduper, type FactEvent, factsFromEvent, type FactSession, mergeFacts } from "./shared/activity-facts.ts";
 import type { ActivityFact, ActivityFactKind, FactValue } from "./shared/activity-types.ts";
-import { NEON_GRAMMAIRE, NEON_SIGNE_FAISCEAU, type NeonSign } from "./shared/neon-palette.ts";
+import {
+  colorDistance,
+  contrastRatio,
+  NEON_DECOR,
+  NEON_GRAMMAIRE,
+  NEON_MEME_FORME_SALLE,
+  NEON_PALETTES,
+  NEON_SIGNE_FAISCEAU,
+  type NeonSign,
+  type NeonTheme,
+  neonColorProblems,
+  paletteProblems,
+  SEUIL_ECART,
+  SEUIL_TRAIT,
+  VISIONS,
+} from "./shared/neon-palette.ts";
 import {
   moments,
   NEON_CADRE,
+  NEON_CARNET_TUILES,
   NEON_OUTILS,
   NEON_PLACES,
+  NEON_PROFONDEUR_MAX,
   NEON_SECTEURS,
+  NEON_SESSIONS_MAX,
   NEON_TAILLES,
+  type NeonConsigneSalle,
   type NeonMarkedOrigin,
   type NeonNodeState,
   type NeonScene,
   type NeonSceneOptions,
+  type NeonSector,
   type NeonStationId,
   scene,
   visibleCount,
 } from "./shared/neon-scene.ts";
+import { type OmoRole, roleDeAgent } from "./shared/omo-roles.ts";
+import { TEXTES as OMO_TEXTES } from "./shared/omo-room-texts.ts";
 import {
   carnetVide,
   libelleBouton,
@@ -195,6 +222,8 @@ interface SignRef {
 }
 
 const ACTIVITY: readonly ActivityFactKind[] = ["statut", "origine", "consigne", "resultat", "attente", "reponse", "decision"];
+/** Faits que seule la Salle OMO écrit : l'un d'eux justifie l'enceinte. */
+const SALLE_OPENERS: readonly ActivityFactKind[] = ["statut", "consigne", "carnet", "reveil", "origine", "decision"];
 const BEAM_OPENERS: Readonly<Record<string, readonly ActivityFactKind[]>> = { demande: ["origine"], preparation: ["consigne"], consigne: ["consigne"], resultat: ["resultat"] };
 
 function signsOf(s: NeonScene): SignRef[] {
@@ -213,6 +242,12 @@ function signsOf(s: NeonScene): SignRef[] {
   for (const p of s.impulsions) out.push({ quoi: `impulsion ${p.messageId}`, sessions: [p.sessionId], premier: ["statut"], faits: p.faits });
   for (const o of s.origines) out.push({ quoi: `origine ${o.messageId}`, sessions: [o.sessionId], premier: ["origine"], faits: o.faits });
   if (s.arret) out.push({ quoi: "arrêt", sessions: [], premier: ["statut"], faits: s.arret.faits });
+  // Salle OMO (L25b) : enceinte, boucles de l'extension, tuiles et liens du carnet, métadonnées de la consigne.
+  if (s.enceinte) out.push({ quoi: "enceinte", sessions: [], premier: SALLE_OPENERS, faits: s.enceinte.faits });
+  for (const e of s.extensions) out.push({ quoi: `extension ${e.sessionId}`, sessions: [e.sessionId], premier: ["decision"], faits: e.faits });
+  for (const t of s.carnet.tuiles) out.push({ quoi: `carnet ${t.fichier}`, sessions: t.sessions, premier: ["carnet"], faits: t.faits });
+  for (const l of s.carnet.liens) out.push({ quoi: `lien du carnet ${l.sessionId}`, sessions: [l.sessionId], premier: ["carnet"], faits: l.faits });
+  if (s.detail?.panneau.metadonnees) out.push({ quoi: "panneau métadonnées", sessions: [], premier: ["consigne"], faits: s.detail.panneau.metadonnees.faits });
   const d = s.detail;
   if (d) {
     for (const slot of [...d.outils, { ...d.autresOutils, categorie: "autres" }]) {
@@ -903,7 +938,7 @@ describe("honnêteté du dessin (P12) : aucun signe sans fait", () => {
   it("sans fait d'activité, aucun signe : liste vide, faits d'affichage, de choix, de carnet, de détection, de réveil ou de reprise ; autre conversation ignorée", () => {
     const empty = scene([], null, AVANCE);
     assert.deepEqual([empty.noeuds, empty.faisceaux, empty.attentes, empty.decisions, empty.impulsions, empty.origines, empty.arret, empty.detail], [[], [], [], [], [], [], null, null]);
-    assert.deepEqual(empty.carnet, { vide: true, tuiles: [] });
+    assert.deepEqual(empty.carnet, { vide: true, tuiles: [], liens: [] });
     assert.deepEqual(empty.stations.map((st) => st.id).sort(), ["carnet", "copilot", "vous"]);
     assert.deepEqual(empty.secteurs.map((s) => s.id), [...NEON_SECTEURS]);
     const st = new Story();
@@ -911,7 +946,7 @@ describe("honnêteté du dessin (P12) : aucun signe sans fait", () => {
     for (const options of ALL_OPTIONS) {
       const s = scene(st.facts, null, options);
       assert.deepEqual([s.noeuds, s.faisceaux, s.origines, s.detail?.dossiers ?? []], [[], [], [], []]);
-      assert.deepEqual(s.carnet, { vide: true, tuiles: [] });
+      assert.deepEqual(s.carnet, { vide: true, tuiles: [], liens: [] });
     }
     // Faits d'une autre conversation après la première : ignorés. Une demande sur un enfant : aucun faisceau.
     const mixed = new Story();
@@ -971,7 +1006,7 @@ describe("textes de la carte (neon-texts.ts)", () => {
     assert.deepEqual(etats.map(libelleEtat), ["pas encore commencé", "travaille", "en attente de votre accord", "terminé", "échec", "arrêté"]);
     for (const signe of Object.keys(NEON_GRAMMAIRE) as NeonSign[]) {
       assert.ok((libelleSigne(signe, "avance") ?? "").length > 0, signe);
-      assert.equal(libelleSigne(signe, "simple") === null, signe === "extension", signe);
+      assert.equal(libelleSigne(signe, "simple") === null, signe === "extension" || signe === "enceinte", signe);
     }
     const origines: NeonMarkedOrigin[] = ["cockpit", "reveil-sans-reponse", "relance-extension", "interne-extension", "interne-opencode", "origine-inconnue"];
     for (const origine of origines) {
@@ -995,5 +1030,454 @@ describe("textes de la carte (neon-texts.ts)", () => {
     assert.equal(remplir("{a}{a}", { a: "{a}" }), "{a}{a}");
     assert.equal(libelleBouton(null, "attente-accord"), "Assistant de la conversation, en attente de votre accord");
     assert.equal(libelleBouton("analyste-journaux", "termine"), "analyste-journaux, terminé");
+  });
+});
+
+// --- Salle OMO (fiche L25b) ---------------------------------------------------------------------------------------------------------
+
+/** Les secteurs de la carte sont les rôles de la salle : un rôle ajouté d'un seul côté ne compile plus. */
+type Memes<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const SECTEURS_EGAUX_ROLES: Memes<NeonSector, OmoRole> = true;
+
+/** Histoire d'une conversation de la Salle OMO : racine et assistants de l'instance `omo`, consignes à métadonnées (L25a). */
+class SalleStory extends Story {
+  racine(agent = "sisyphus") {
+    return this.add(this.rootId, "statut", { etat: "creee", role: "conversation", parent: null, agent, instance: "omo" });
+  }
+  creeeSalle(sessionId: string, parent: string, agent: string | null) {
+    return this.add(sessionId, "statut", { etat: "creee", role: "delegation", parent, agent, instance: "omo" });
+  }
+  envoyeeSalle(parent: string, callId: string, messageId: string | null, enfant: string, agent: string | null, meta: Record<string, FactValue>) {
+    return this.add(parent, "consigne", { etat: "envoyee", callId, messageId, enfant, agent, source: "ia", commande: null, reprise: false, ...meta }, callId);
+  }
+  /** Préparation, création, envoi avec métadonnées, puis l'enfant se met au travail. */
+  delegueSalle(parent: string, callId: string, messageId: string, enfant: string, agent: string, meta: Record<string, FactValue>) {
+    this.prepare(parent, callId, messageId);
+    this.creeeSalle(enfant, parent, agent);
+    this.envoyeeSalle(parent, callId, messageId, enfant, agent, meta);
+    return this.occupee(enfant);
+  }
+  carnet(sessionId: string, callId: string, etat: string, chemin: string, fichier: string) {
+    return this.add(sessionId, "carnet", { etat, chemin, fichier, dossier: "00000000000000d0", callId, messageId: "msg_c" }, callId);
+  }
+  extension(sessionId: string, callId: string, verdict = "auto") {
+    return this.add(sessionId, "decision", { verdict, regle: "A-grep", par: "extension" }, callId);
+  }
+}
+
+const SALLE: NeonSceneOptions = { zoom: 2, mode: "avance", roleSalle: roleDeAgent };
+const META_FOND = { categorie: "quick", ia: "github-copilot/claude-sonnet-4.5", competences: 2, fond: true };
+const META_ATTEND = { categorie: "deep", ia: "github-copilot/gpt-5.6-luna", competences: 1, fond: false };
+
+describe("Salle OMO : enceinte (JP-10, JP-13)", () => {
+  it("dès le premier fait propre à la salle, en mode Avancé seulement ; jamais hors de la salle ni sur un fait mal formé", () => {
+    const st = new SalleStory();
+    st.demande("msg_d");
+    st.occupee(R);
+    const racine = st.racine();
+    st.repos(R);
+    assert.equal(scene(st.facts.slice(0, racine), null, SALLE).enceinte, null, "avant le fait de la salle : aucune enceinte");
+    assert.deepEqual(scene(st.facts, null, SALLE).enceinte, { depuis: st.facts[racine]?.at, faits: [racine] });
+    assert.equal(scene(st.facts, null, { ...SALLE, mode: "simple" }).enceinte, null, "salle réservée au mode Avancé");
+    // Chaque fait que seule la salle écrit suffit ; le même fait ailleurs ou mal formé, jamais.
+    const seul = (kind: ActivityFactKind, data: Record<string, FactValue>, sessionId = R) => {
+      const s = new Story();
+      s.demande("msg_d");
+      s.add(sessionId, kind, data, "ref_1");
+      return scene(s.facts, null, SALLE).enceinte?.faits ?? null;
+    };
+    assert.deepEqual(seul("statut", { etat: "creee", role: "conversation", parent: null, agent: null, instance: "omo" }), [1]);
+    assert.deepEqual(seul("consigne", { etat: "envoyee", callId: "c", messageId: "m", enfant: "ses_e", agent: null, fond: false }), [1]);
+    assert.deepEqual(seul("carnet", { etat: "lu", chemin: ".omo/plans/p.md", fichier: "0123456789abcdef" }), [1]);
+    assert.deepEqual(seul("reveil", { etat: "depose", messageId: "m" }), [1]);
+    assert.deepEqual(seul("origine", { origine: "relance-extension", cas: 5, messageId: "m" }), [1]);
+    assert.deepEqual(seul("decision", { verdict: "auto", regle: "A-grep", par: "extension" }), [1]);
+    for (const [kind, data] of [
+      ["statut", { etat: "creee", role: "conversation", parent: null, agent: null, instance: "principale" }],
+      ["consigne", { etat: "envoyee", callId: "c", messageId: "m", enfant: "ses_e", agent: null }],
+      ["carnet", { etat: "x" }],
+      ["carnet", { etat: "lu", chemin: ".omo/plans/../../secret", fichier: "0123456789abcdef" }],
+      ["reveil", { etat: "x" }],
+      ["origine", { origine: "origine-inconnue", cas: 7, messageId: "m" }],
+      ["decision", { verdict: "auto", regle: "E1", par: "regles" }],
+    ] as const) {
+      assert.equal(seul(kind, data), null, `${kind} ${JSON.stringify(data)}`);
+    }
+    // Les captures de l'instance principale n'ont jamais d'enceinte.
+    for (const name of CAPTURES) for (const options of ALL_OPTIONS) assert.equal(scene(replay(name), null, options).enceinte, null, name);
+  });
+
+  it("statique : la même enceinte à chaque fait suivant (aucune heure qui avance, aucune clé qui change)", () => {
+    const st = new SalleStory();
+    const racine = st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    st.delegueSalle(R, "call_1", "msg_a", "ses_1", "explore", META_FOND);
+    st.repos(R);
+    st.repos("ses_1");
+    const premiere = scene(st.facts.slice(0, racine + 1), null, SALLE).enceinte;
+    for (let k = racine + 1; k <= st.facts.length; k++) assert.deepEqual(scene(st.facts.slice(0, k), null, SALLE).enceinte, premiere, `k=${k}`);
+  });
+});
+
+describe("Salle OMO : rôles par clé de configuration (T-L25-f)", () => {
+  it("secteur lu par la clé (casse ignorée) dans la salle ; inconnu, « athena », « council-member » ou clé d'Object → Autres", () => {
+    assert.equal(SECTEURS_EGAUX_ROLES, true);
+    const agents = ["sisyphus", "oracle", "librarian", "momus", "sisyphus-junior", "OPENCODE-BUILDER", "athena", "council-member", "constructor", "__proto__", "explore"];
+    const attendus: NeonSector[] = ["planifier", "conseiller", "chercher", "verifier", "executer", "executer", "autres", "autres", "autres", "autres", "chercher"];
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    agents.forEach((agent, i) => st.delegueSalle(R, `call_${i}`, `msg_${i}`, `ses_${i}`, agent, META_ATTEND));
+    const s = scene(st.facts, null, SALLE);
+    assert.deepEqual(
+      agents.map((_, i) => nodeOf(s, `ses_${i}`)?.secteur),
+      attendus,
+    );
+    // Hors de la salle, la même histoire garde les secteurs ordinaires (seul « explore » est rangé par opencode).
+    const hors = new Story();
+    hors.demande("msg_d");
+    hors.occupee(R);
+    agents.forEach((agent, i) => hors.delegate(R, `call_${i}`, `msg_${i}`, `ses_${i}`, agent));
+    const h = scene(hors.facts, null, SALLE);
+    assert.deepEqual(
+      agents.map((_, i) => nodeOf(h, `ses_${i}`)?.secteur),
+      agents.map((agent) => (agent === "explore" ? "chercher" : "autres")),
+    );
+    // Sans `roleSalle`, la salle garde les secteurs ordinaires ; une réponse qui n'est pas un secteur vaut « autres ».
+    assert.equal(nodeOf(scene(st.facts, null, { zoom: 2, mode: "avance" }), "ses_0")?.secteur, "autres");
+    assert.equal(nodeOf(scene(st.facts, null, { ...SALLE, roleSalle: () => "partout" }), "ses_10")?.secteur, "autres");
+    // roleDeAgent (L20) rendait ce qu'Object hérite pour « constructor » (constat de L25b) ; corrigé au train de V4 : clés propres
+    // de la table seulement. La scène garde sa propre garde (« partout » ci-dessus).
+    for (const cle of ["constructor", "__proto__", "toString", "hasOwnProperty"]) assert.equal(roleDeAgent(cle), "autres", cle);
+  });
+});
+
+describe("Salle OMO : tâche de fond (JP-3), réveil (JP-2) et actions de l'extension", () => {
+  it("la consigne rose d'une tâche de fond reste tendue jusqu'à la fin de l'enfant, même au repos de celui qui l'a confiée ; le bleu part du résultat", () => {
+    for (const fond of [true, false]) {
+      const st = new SalleStory();
+      st.racine();
+      st.demande("msg_d");
+      st.occupee(R);
+      st.delegueSalle(R, "call_f", "msg_a", "ses_f", "explore", fond ? META_FOND : META_ATTEND);
+      st.repos(R);
+      const auRepos = scene(st.facts, null, SALLE);
+      assert.deepEqual(beamsOf(auRepos), fond ? [`consigne:${R}>ses_f`] : [], `fond=${fond} : racine au repos`);
+      assert.equal(nodeOf(auRepos, R)?.etat, "termine", "le vrai statut de la racine, jamais une attente supposée");
+      if (!fond) continue;
+      st.repos("ses_f");
+      const resultat = st.resultat(R, "call_f", "ses_f", "rendu");
+      const rendu = scene(st.facts, null, SALLE);
+      assert.deepEqual(beamsOf(rendu), [`resultat:ses_f>${R}`], "le faisceau bleu part à la fin de l'enfant");
+      assert.equal(rendu.faisceaux[0]?.faits[0], resultat);
+      assert.equal(nodeOf(rendu, "ses_f")?.etat, "termine");
+      // Réveil de la racine sans tour (JP-2) : ni impulsion, ni coût, ni reprise du travail ; seule la marque « résultat déposé ».
+      const avant = scene(st.facts, null, SALLE);
+      st.add(R, "origine", { origine: "reveil-sans-reponse", cas: 4, messageId: "msg_reveil" }, "msg_reveil");
+      st.add(R, "reveil", { etat: "depose", messageId: "msg_reveil" }, "msg_reveil");
+      const reveil = scene(st.facts, null, SALLE);
+      assert.deepEqual(reveil.impulsions, []);
+      assert.deepEqual([nodeOf(reveil, R)?.etat, nodeOf(reveil, R)?.dernierAppel], [nodeOf(avant, R)?.etat, nodeOf(avant, R)?.dernierAppel]);
+      assert.deepEqual(
+        reveil.origines.map((o) => [o.sessionId, o.origine]),
+        [[R, "reveil-sans-reponse"]],
+      );
+      // Le prochain tour de la racine lit le résultat : le faisceau bleu s'éteint à la fin de ce tour.
+      st.occupee(R);
+      st.repos(R);
+      assert.deepEqual(beamsOf(scene(st.facts, null, SALLE)), []);
+    }
+  });
+
+  it("action de l'extension sans demande : boucle comptée par appel, gardée après le repos, jamais un bouclier ni une croix ; rien en mode Simple", () => {
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    st.delegueSalle(R, "call_1", "msg_a", "ses_1", "librarian", META_ATTEND);
+    const a = st.extension("ses_1", "call_g");
+    st.extension("ses_1", "call_g");
+    const c = st.extension("ses_1", "call_h", "refus-interdit");
+    st.repos("ses_1");
+    const s = scene(st.facts, null, SALLE);
+    assert.deepEqual(s.decisions, [], "le cockpit n'a rien décidé");
+    assert.deepEqual(
+      s.extensions.map((e) => [e.sessionId, e.actions, e.faits]),
+      [["ses_1", 2, [a, a + 1, c]]],
+    );
+    assert.deepEqual(s.extensions[0]?.position, nodeOf(s, "ses_1")?.position);
+    // Mode Simple : aucune boucle, même sur la conversation, seul assistant dessiné (salle réservée au mode Avancé).
+    st.extension(R, "call_r");
+    assert.deepEqual(
+      scene(st.facts, null, SALLE).extensions.map((e) => e.sessionId),
+      [R, "ses_1"],
+    );
+    assert.deepEqual(scene(st.facts, null, { ...SALLE, mode: "simple" }).extensions, []);
+    // Une décision ordinaire du cockpit garde son bouclier.
+    st.decision("ses_1", "per_1", "auto");
+    assert.deepEqual(
+      scene(st.facts, null, SALLE).decisions.map((d) => d.signe),
+      ["auto"],
+    );
+  });
+
+  it("carnet partagé et plans (JP-6) : une tuile par fichier, lue ou modifiée, reliée aux assistants dessinés ; au-delà de la rangée, comptée", () => {
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    st.delegueSalle(R, "call_1", "msg_a", "ses_1", "sisyphus-junior", META_ATTEND);
+    const m = st.carnet("ses_1", "call_c1", "modifie", ".omo/notepads/plan/learnings.md", "00000000000000a1");
+    const l = st.carnet(R, "call_c2", "lu", ".omo/notepads/plan/learnings.md", "00000000000000a1");
+    st.carnet(R, "call_c3", "lu", ".omo/plans/plan.md", "00000000000000a2");
+    st.carnet(R, "call_c4", "lu", ".omo/plans/../../../etc/passwd", "00000000000000a3");
+    for (let i = 0; i < NEON_CARNET_TUILES; i++) st.carnet(R, `call_d${i}`, "lu", `.omo/plans/p${i}.md`, `00000000000000b${i}`);
+    const s = scene(st.facts, null, SALLE);
+    assert.equal(s.carnet.vide, false);
+    assert.deepEqual(
+      s.carnet.tuiles.slice(0, 2).map((t) => [t.chemin, t.lu, t.modifie, t.sessions, t.faits]),
+      [
+        [".omo/notepads/plan/learnings.md", true, true, ["ses_1", R], [m, l]],
+        [".omo/plans/plan.md", true, false, [R], [l + 1]],
+      ],
+    );
+    assert.equal(s.carnet.tuiles.length, 2 + NEON_CARNET_TUILES, "le chemin qui remonte n'est pas une tuile");
+    assert.deepEqual(
+      s.carnet.tuiles.map((t) => t.position !== null),
+      s.carnet.tuiles.map((_, i) => i < NEON_CARNET_TUILES),
+    );
+    assert.deepEqual(
+      s.carnet.liens.map((lien) => [lien.sessionId, lien.arrivee]),
+      [
+        ["ses_1", nodeOf(s, "ses_1")?.position],
+        [R, nodeOf(s, R)?.position],
+      ],
+    );
+    // Mode Simple : aucune tuile (salle réservée au mode Avancé) ; hors de la salle, aucun fait de carnet n'existe (L25a).
+    assert.deepEqual(scene(st.facts, null, { ...SALLE, mode: "simple" }).carnet, { vide: true, tuiles: [], liens: [] });
+  });
+});
+
+describe("Salle OMO : métadonnées de la consigne dans le zoom 3 (JP-7)", () => {
+  it("catégorie, IA choisie, compétences, « en tâche de fond » ou « attend le résultat » ; tout texte qui n'a pas la forme d'un code : null", () => {
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    const fond = st.delegueSalle(R, "call_f", "msg_a", "ses_f", "explore", META_FOND) - 1;
+    const balises = st.delegueSalle(
+      R,
+      "call_b",
+      "msg_a",
+      "ses_b",
+      "oracle",
+      { categorie: '<img src=x onerror="alert(1)">', ia: "</dd><script>alert(2)</script>", competences: -1, fond: false },
+    ) - 1;
+    const detail = (focus: string) => scene(st.facts, null, { ...SALLE, zoom: 3, focus }).detail?.panneau.metadonnees;
+    assert.deepEqual(detail("ses_f"), { categorie: "quick", ia: "github-copilot/claude-sonnet-4.5", competences: 2, attente: "fond", faits: [fond] });
+    assert.deepEqual(detail("ses_b"), { categorie: null, ia: null, competences: null, attente: "resultat", faits: [balises] });
+    assert.equal(detail(R), null, "la conversation n'a pas reçu de consigne");
+    // Hors de la salle : aucune clé de la salle dans la consigne, aucune métadonnée.
+    const hors = new Story();
+    hors.demande("msg_d");
+    hors.occupee(R);
+    hors.delegate(R, "call_1", "msg_a", "ses_1", "explore");
+    assert.equal(scene(hors.facts, null, { zoom: 3, mode: "avance", focus: "ses_1" }).detail?.panneau.metadonnees, null);
+  });
+});
+
+describe("bornes de l'arbre dessiné (§3.10 : 3 niveaux, 50 assistants)", () => {
+  it("mêmes bornes que le réducteur ; au-delà, ni dessiné ni relié, compté avec ses descendants", () => {
+    assert.deepEqual([NEON_PROFONDEUR_MAX, NEON_SESSIONS_MAX], [ACTIVITY_MAX_DEPTH, ACTIVITY_MAX_SESSIONS]);
+    const large = new SalleStory();
+    large.racine();
+    large.demande("msg_d");
+    large.occupee(R);
+    for (let i = 0; i < 60; i++) large.delegueSalle(R, `call_${i}`, "msg_a", `ses_${String(i).padStart(2, "0")}`, "explore", META_FOND);
+    const l = scene(large.facts, null, SALLE);
+    assert.equal(l.noeuds.length, NEON_SESSIONS_MAX);
+    assert.equal(l.horsBornes, 61 - NEON_SESSIONS_MAX);
+    assert.ok(l.faisceaux.every((f) => f.vers === null || nodeOf(l, f.vers) !== undefined), "aucun faisceau vers un assistant non dessiné");
+    const chaine = new SalleStory();
+    chaine.racine();
+    chaine.demande("msg_d");
+    chaine.occupee(R);
+    const ids = ["ses_n1", "ses_n2", "ses_n3", "ses_n4", "ses_n5", "ses_n6"];
+    ids.forEach((id, i) => chaine.delegueSalle(i === 0 ? R : (ids[i - 1] as string), `call_${i}`, `msg_${i}`, id, "explore", META_ATTEND));
+    const c = scene(chaine.facts, null, SALLE);
+    assert.deepEqual(
+      c.noeuds.map((n) => n.sessionId),
+      [R, "ses_n1", "ses_n2", "ses_n3"],
+    );
+    assert.equal(c.horsBornes, 3, "ses_n4 au-delà, ses_n5 et ses_n6 comptés avec lui");
+    for (const options of ALL_OPTIONS) assertHonest(scene(chaine.facts, null, options), chaine.facts, chaine.facts.length, JSON.stringify(options));
+    // Un descendant d'un assistant hors bornes est compté par l'un ou l'autre fait qui le fait connaître : sa création seule, ou la
+    // consigne seule.
+    const creation = new SalleStory();
+    creation.facts.push(...chaine.facts.slice(0, chaine.facts.findIndex((f) => f.sessionId === "ses_n5")));
+    creation.creeeSalle("ses_x5", "ses_n4", "explore");
+    assert.equal(scene(creation.facts, null, SALLE).horsBornes, 2, "ses_n4 et ses_x5 (création seule)");
+    const consigne = new SalleStory();
+    consigne.facts.push(...chaine.facts.slice(0, chaine.facts.findIndex((f) => f.sessionId === "ses_n5")));
+    consigne.envoyeeSalle("ses_n4", "call_y", "msg_y", "ses_y5", "explore", META_ATTEND);
+    assert.equal(scene(consigne.facts, null, SALLE).horsBornes, 2, "ses_n4 et ses_y5 (consigne seule)");
+  });
+});
+
+describe("Salle OMO : aucun signe sans fait (P12) et différé = direct", () => {
+  it("à chaque fait d'une histoire de la salle, dans les deux modes et au zoom 3, chaque signe référence ses faits ; relue depuis la base, même scène", () => {
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    st.delegueSalle(R, "call_f", "msg_a", "ses_f", "explore", META_FOND);
+    st.delegueSalle(R, "call_j", "msg_a", "ses_j", "sisyphus-junior", META_ATTEND);
+    st.carnet("ses_j", "call_c", "modifie", ".omo/notepads/n.md", "00000000000000c1");
+    st.extension("ses_j", "call_g");
+    st.repos("ses_j");
+    st.resultat(R, "call_j", "ses_j", "rendu");
+    st.repos(R);
+    st.repos("ses_f");
+    st.resultat(R, "call_f", "ses_f", "rendu");
+    st.add(R, "origine", { origine: "reveil-sans-reponse", cas: 4, messageId: "msg_r" }, "msg_r");
+    st.add(R, "reveil", { etat: "depose", messageId: "msg_r" }, "msg_r");
+    const options: NeonSceneOptions[] = [SALLE, { ...SALLE, mode: "simple" }, { ...SALLE, zoom: 3 }, { ...SALLE, zoom: 3, focus: "ses_j" }, { ...SALLE, zoom: 3, focus: "ses_f" }];
+    const relus = stored(st.facts);
+    for (let k = 0; k <= st.facts.length; k++) {
+      for (const o of options) {
+        const direct = scene(st.facts.slice(0, k), null, o);
+        assertHonest(direct, st.facts, k, `k=${k} ${JSON.stringify({ ...o, roleSalle: undefined })}`);
+        assert.deepEqual(scene(relus.slice(0, k), null, o), direct, `différé k=${k}`);
+      }
+    }
+  });
+});
+
+describe("script couleurs JP-14 : l'orange de l'extension", () => {
+  it("l'orange passe : trait 3:1 contre le fond et la grille, en vision normale, deutéranopie et protanopie, dans les deux thèmes ; écart de 15 avec le cyan de même forme", () => {
+    assert.deepEqual(neonColorProblems(), []);
+    assert.deepEqual(
+      NEON_MEME_FORME_SALLE.map(([a, b]) => `${a}/${b}`),
+      ["extension/territoire", "extension/acteur"],
+    );
+    for (const theme of ["sombre", "clair"] as NeonTheme[]) {
+      const palette = NEON_PALETTES[theme];
+      for (const vision of VISIONS) {
+        for (const decor of NEON_DECOR) assert.ok(contrastRatio(palette.extension, palette[decor], vision) >= SEUIL_TRAIT, `${theme} ${vision} ${decor}`);
+        for (const [a, b] of NEON_MEME_FORME_SALLE) assert.ok(colorDistance(palette[a], palette[b], vision) >= SEUIL_ECART, `${theme} ${vision} ${a}/${b}`);
+      }
+    }
+    assert.equal(NEON_GRAMMAIRE.enceinte.trait, "extension");
+    const formes = Object.values(NEON_GRAMMAIRE).map((style) => style.forme);
+    assert.equal(new Set(formes).size, formes.length, "l'enceinte a sa propre forme");
+  });
+
+  it("un orange trop proche du cyan, ou trop sombre, fait échouer le script", () => {
+    const proche = paletteProblems({ ...NEON_PALETTES.sombre, extension: "#2ED8F0" }, "sombre");
+    assert.ok(proche.some((p) => p.mesure === "ecart" && p.jeton === "extension" && p.contre === "acteur"));
+    assert.ok(proche.some((p) => p.mesure === "ecart" && p.jeton === "extension" && p.contre === "territoire"));
+    const sombre = paletteProblems({ ...NEON_PALETTES.clair, extension: "#F0B080" }, "clair");
+    assert.ok(sombre.some((p) => p.mesure === "contraste" && p.jeton === "extension"));
+  });
+});
+
+// --- Bande de la salle : le vrai composant NeonBand.tsx rendu côté serveur -------------------------------------------------------
+
+interface BandeRendue {
+  MetadonneesConsigne: (props: { meta: NeonConsigneSalle }) => unknown;
+  NeonCarte: (props: { vue: NeonScene }) => unknown;
+  NeonTableau: (props: { vue: NeonScene }) => unknown;
+}
+
+const BAND_FILE = path.join(import.meta.dirname, "..", "web", "pages", "chat", "activity", "NeonBand.tsx");
+let bandeChargee: Promise<{ bande: BandeRendue; rendre: (composant: unknown, props: object) => string }> | null = null;
+
+/**
+ * NeonBand.tsx transformé en mémoire par vite (transformWithOxc, déjà installé), sans rien écrire : feuille de style retirée,
+ * imports relatifs et React en adresses absolues, module chargé depuis une adresse data:. Rendu par renderToStaticMarkup.
+ */
+function chargerBande() {
+  bandeChargee ??= (async () => {
+    const { transformWithOxc } = (await import("vite")) as unknown as { transformWithOxc: (code: string, file: string, options: object) => Promise<{ code: string }> };
+    const { code } = await transformWithOxc(fs.readFileSync(BAND_FILE, "utf8"), BAND_FILE, { lang: "tsx", jsx: { runtime: "automatic" } });
+    const dossier = path.dirname(BAND_FILE);
+    const absolu = code
+      .replace(/^import\s+["']\.\/[\w.-]+\.css["'];?[ \t]*$/m, "")
+      .replace(/(\bfrom\s+)["'](\.{1,2}\/[^"']+)["']/g, (_m, tete: string, spec: string) => `${tete}${JSON.stringify(pathToFileURL(path.resolve(dossier, spec)).href)}`)
+      .replace(/(\bfrom\s+)["'](react|react\/jsx-runtime)["']/g, (_m, tete: string, spec: string) => `${tete}${JSON.stringify(import.meta.resolve(spec))}`);
+    assert.equal(/\bfrom\s+["'](?!file:)/.test(absolu), false, "un import resté relatif ou nu ne se chargerait pas");
+    const bande = (await import(`data:text/javascript;base64,${Buffer.from(absolu).toString("base64")}`)) as BandeRendue;
+    const react = (await import(import.meta.resolve("react"))) as { createElement: (type: unknown, props: object) => unknown };
+    const serveur = (await import("react-dom/server")) as unknown as { renderToStaticMarkup: (element: unknown) => string };
+    return { bande, rendre: (composant: unknown, props: object) => serveur.renderToStaticMarkup(react.createElement(composant, props)) };
+  })();
+  return bandeChargee;
+}
+
+describe("bande de la salle (NeonBand.tsx) : textes échappés, enceinte statique", () => {
+  it("JP-7 : un texte à balises venu de l'IA reste du texte — jamais une balise dans le HTML rendu", async () => {
+    const { bande, rendre } = await chargerBande();
+    const html = rendre(bande.MetadonneesConsigne, {
+      meta: { categorie: '<img src=x onerror="alert(1)">', ia: "</dd><script>alert(2)</script>", competences: 3, attente: "fond", faits: [0] },
+    });
+    assert.equal(/<img|<script|<\/dd><script/i.test(html), false, html);
+    assert.ok(html.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"), html);
+    assert.ok(html.includes("&lt;/dd&gt;&lt;script&gt;alert(2)&lt;/script&gt;"), html);
+    for (const texte of [TEXTES.avance.consigneSalle.titre, TEXTES.avance.consigneSalle.categorie, TEXTES.avance.consigneSalle.ia, TEXTES.avance.consigneSalle.tacheDeFond, "3"]) {
+      assert.ok(html.includes(texte.replaceAll("'", "&#x27;")), texte);
+    }
+    // Valeur refusée par la scène (null) : « non enregistré », et « attend le résultat ».
+    const vide = rendre(bande.MetadonneesConsigne, { meta: { categorie: null, ia: null, competences: null, attente: "resultat", faits: [0] } });
+    assert.equal(vide.split(TEXTES.partout.nonEnregistre).length - 1, 3);
+    assert.ok(vide.includes(TEXTES.avance.consigneSalle.attendResultat));
+  });
+
+  it("carte de la salle : enceinte sans clé de transition ni animation ; boucle et tuiles dessinées ; nom à balises écrit en texte dans le tableau", async () => {
+    const { bande, rendre } = await chargerBande();
+    const st = new SalleStory();
+    st.racine();
+    st.demande("msg_d");
+    st.occupee(R);
+    st.delegueSalle(R, "call_1", "msg_a", "ses_1", "librarian", META_ATTEND);
+    st.extension("ses_1", "call_g");
+    st.carnet("ses_1", "call_c", "lu", ".omo/plans/plan.md", "00000000000000c1");
+    const vue = scene(st.facts, null, SALLE);
+    const carte = rendre(bande.NeonCarte, { vue });
+    const enceinte = /<g class="neon-enceinte">([\s\S]*?)<\/g>/.exec(carte);
+    assert.ok(enceinte, "enceinte dessinée");
+    assert.equal(/data-neon|style=|<animate/i.test(enceinte?.[0] ?? ""), false, "enceinte statique : aucune transition possible");
+    assert.ok(enceinte?.[1]?.includes("Salle OMO · extension active"));
+    assert.ok(/<g class="neon-extension"[^>]*data-neon-cle="x:ses_1"/.test(carte), "boucle de l'extension");
+    assert.ok(carte.includes('class="neon-carnet-tuile is-lu"'), "tuile lue du carnet");
+    assert.ok(carte.includes('class="neon-lien-carnet"'), "lien du carnet vers l'assistant");
+    // Hors de la salle : aucune enceinte, aucune boucle.
+    const hors = rendre(bande.NeonCarte, { vue: scene(replay("p1-delegation-parallele.jsonl"), null, AVANCE) });
+    assert.equal(/neon-enceinte|neon-extension|neon-carnet-tuile/.test(hors), false);
+    // Tableau : actions de l'extension et carnet en toutes lettres ; une valeur à balises glissée dans la scène reste du texte.
+    const tableau = rendre(bande.NeonTableau, { vue });
+    assert.ok(tableau.includes("Par l&#x27;extension (1) · non contrôlé avant exécution"), tableau);
+    assert.ok(tableau.includes("Carnet partagé et plan : 1"), tableau);
+    const piegee: NeonScene = { ...vue, noeuds: vue.noeuds.map((n) => (n.sessionId === "ses_1" ? { ...n, agent: "<b onmouseover=x>lib</b>" } : n)) };
+    assert.equal(/<b onmouseover/i.test(rendre(bande.NeonTableau, { vue: piegee })), false);
+  });
+
+  it("textes de la salle : la phrase de la bande reprend le bandeau permanent (L26a) ; « non contrôlé avant exécution » partout le même", () => {
+    assert.equal(TEXTES.avance.salle, "Salle OMO · extension active · actions non contrôlées avant exécution");
+    assert.ok(OMO_TEXTES.avance.bandeau.texte.startsWith(`${TEXTES.avance.salle} · `));
+    assert.equal(TEXTES.avance.nonControle.toLowerCase(), OMO_TEXTES.avance.marques.nonControle);
+    assert.equal(TEXTES.avance.signes.extension.toLowerCase(), OMO_TEXTES.avance.marques.parExtension);
+    assert.ok(TEXTES.avance.actionsExtension.includes(TEXTES.avance.nonControle.toLowerCase()));
+    assert.ok(!JSON.stringify(TEXTES.simple).includes("OMO") && !JSON.stringify(TEXTES.partout).includes("OMO"), "la salle n'est nommée qu'en mode Avancé");
+  });
+
+  it("NeonBand.tsx et neon.css : aucune écriture HTML brute, aucune animation ni transition sur l'enceinte", () => {
+    const source = fs.readFileSync(BAND_FILE, "utf8");
+    assert.equal(/dangerouslySetInnerHTML|\.innerHTML|\.outerHTML|insertAdjacentHTML|DOMParser|document\.write/.test(source), false);
+    const css = fs.readFileSync(path.join(path.dirname(BAND_FILE), "neon.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const regles = [...css.matchAll(/([^{}]*\.neon-enceinte[^{}]*)\{([^}]*)\}/g)];
+    assert.ok(regles.length >= 2, "règles de l'enceinte trouvées");
+    for (const [, selecteur, corps] of regles) assert.equal(/animation|transition|opacity|@keyframes/i.test(corps ?? ""), false, selecteur);
   });
 });

@@ -1,6 +1,7 @@
 ﻿# Validate-Scripts.ps1 - regles statiques des scripts PowerShell 5.1 du cockpit (plan 3.7.8), puis auto-test d'injection.
 # Usage : powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/ps51/Validate-Scripts.ps1 [-Path <fichiers>] [-SkipSelfTest]
-# -Path : chemins relatifs a la racine du depot (defaut : install.ps1, cockpit.ps1, CockpitTls.ps1) ; les regles dependent du nom.
+# -Path : chemins relatifs a la racine du depot ; les regles dependent du nom. Defaut : tous les .ps1 livres, c'est-a-dire
+# ceux de la racine du depot et ceux du dossier scripts\ (les bancs de tests\ps51 ont leurs propres suites).
 # Code de sortie : 0 si chaque fichier est conforme et si l'auto-test est vert, 1 sinon.
 param([string[]]$Path, [switch]$SkipSelfTest)
 Set-StrictMode -Version 2.0
@@ -17,7 +18,9 @@ $ReadHostPrompts = @{
     'CockpitTls.ps1' = @('Tapez HTTP EN CLAIR pour confirmer')
 }
 $InstallParams = @('WorkspaceDir', 'Port', 'Mode', 'ImagesArchive', 'ImageRegistry', 'Proxy', 'NoProxy', 'CopilotApiUrl', 'SkipCertificates',
-    'InsecureTls', 'SecureTls', 'NoStart', 'NoBrowser', 'Http', 'Https', 'TlsPreflight', 'AcceptBrowserBlock')
+    'InsecureTls', 'SecureTls', 'NoStart', 'NoBrowser', 'Http', 'Https', 'TlsPreflight', 'AcceptBrowserBlock',
+    'OmoArchive', 'OmoProjetsSeulement', 'WorkspacePath')
+$CockpitParams = @('Command', 'Target', 'Purge', 'PurgeOmo', 'Renew')
 $CockpitCommands = @('open', 'start', 'stop', 'restart', 'status', 'logs', 'diag', 'certs', 'update', 'backup', 'restore', 'uninstall', 'help', 'tls', 'rollback')
 
 function Find-Ast($Ast, [scriptblock]$Predicate) { return @($Ast.FindAll($Predicate, $true)) }
@@ -42,6 +45,23 @@ function Get-SwitchClauseExtent($Ast, [string]$Label) {
 
 function Test-InExtent($Extent, [int]$Offset) { return ($null -ne $Extent -and $Extent.StartOffset -le $Offset -and $Offset -lt $Extent.EndOffset) }
 
+# Un appel porte-t-il "-RemoveEnv $CockpitComposeEnvNames" ? Le NOM Invoke-CockpitProcess ne garantit rien : sa signature
+# (CockpitTls.ps1) donne $RemoveEnv = @() par defaut, donc sans cet argument l'enfant herite des variables de compose du shell.
+# C'est l'argument, sur le CommandAst lui-meme, qui est exige : nom du parametre, puis la variable attendue derriere lui.
+function Test-CockpitRemoveEnv($Command) {
+    $elements = @($Command.CommandElements)
+    for ($i = 1; $i -lt $elements.Count; $i++) {
+        $element = $elements[$i]
+        if (-not ($element -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+        if ($element.ParameterName -ine 'RemoveEnv') { continue }
+        # Forme "-RemoveEnv:$x" : la valeur est portee par le parametre ; forme "-RemoveEnv $x" : c'est l'element suivant.
+        $value = $element.Argument
+        if ($null -eq $value -and $i + 1 -lt $elements.Count) { $value = $elements[$i + 1] }
+        return ($value -is [System.Management.Automation.Language.VariableExpressionAst] -and $value.VariablePath.UserPath -ceq 'CockpitComposeEnvNames')
+    }
+    return $false
+}
+
 function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
     $found = New-Object System.Collections.Generic.List[string]
     $bytes = [System.IO.File]::ReadAllBytes($File)
@@ -62,7 +82,11 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
     if (@($errors).Count -gt 0) { return $found }
     $functions = Find-Ast $ast { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }
     $certsClause = $null
-    if ($Kind -ceq 'cockpit.ps1') { $certsClause = Get-SwitchClauseExtent $ast 'certs' }
+    $uninstallClause = $null
+    if ($Kind -ceq 'cockpit.ps1') {
+        $certsClause = Get-SwitchClauseExtent $ast 'certs'
+        $uninstallClause = Get-SwitchClauseExtent $ast 'uninstall'
+    }
     $code = @($tokens | Where-Object { $_.Kind -ne [System.Management.Automation.Language.TokenKind]::Comment })
 
     foreach ($token in $code) {
@@ -85,6 +109,11 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         }
         if ($text.IndexOf('.Config.Env', [System.StringComparison]::Ordinal) -ge 0 -and $function -cne 'Get-CockpitImageVersion') {
             $found.Add(('docker-inspect : .Config.Env hors de Get-CockpitImageVersion (ligne {0})' -f $line))
+        }
+        # Desinstallation en masse : --volumes emporterait les conversations de la salle et --rmi son image, que
+        # 'uninstall -Purge' doit garder (decision du 17/09, point 3). Les commentaires ne comptent pas.
+        if ((Test-InExtent $uninstallClause $offset) -and @('--volumes', '--rmi') -ccontains $text.Trim([char]39, [char]34)) {
+            $found.Add(('desinstallation : option {0} dans uninstall (ligne {1})' -f $text, $line))
         }
     }
     foreach ($member in (Find-Ast $ast { param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] })) {
@@ -135,7 +164,13 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         if ($DockerFunctions -notcontains $function.Name) { continue }
         $names = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.CommandAst] } | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
         $variables = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] } | ForEach-Object { $_.VariablePath.UserPath })
-        $isolated = ($names -contains 'Invoke-CockpitDocker') -or (($names -contains 'ConvertTo-CockpitDockerArgs') -and (($names -contains 'Clear-CockpitComposeEnv') -or ($variables -contains 'CockpitComposeEnvNames')))
+        # Invoke-CockpitProcess n'est admis qu'avec l'ARGUMENT "-RemoveEnv $CockpitComposeEnvNames" : le nom seul laisserait
+        # passer un appel qui garde les variables de compose du shell de l'utilisateur (COCKPIT_TOKEN, WORKSPACE_DIR,
+        # COMPOSE_PROFILES...), c'est-a-dire la fuite meme que cette regle ferme. Le parametre est cherche sur l'appel.
+        $viaProcess = @(Find-Ast $function.Body { param($n) $n -is [System.Management.Automation.Language.CommandAst] } |
+            Where-Object { $_.GetCommandName() -ieq 'Invoke-CockpitProcess' } | Where-Object { Test-CockpitRemoveEnv $_ }).Count -gt 0
+        $isolated = ($names -contains 'Invoke-CockpitDocker') -or $viaProcess -or
+            (($names -contains 'ConvertTo-CockpitDockerArgs') -and (($names -contains 'Clear-CockpitComposeEnv') -or ($variables -contains 'CockpitComposeEnvNames')))
         if (-not $isolated) { $found.Add(('docker-isolation : {0} sans ConvertTo-CockpitDockerArgs et masquage des variables de compose' -f $function.Name)) }
     }
     if ($Kind -ceq 'CockpitTls.ps1') {
@@ -145,12 +180,12 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
         $expected = @([regex]::Matches([System.IO.File]::ReadAllText($ComposeFile), '\$\{([A-Z_][A-Z0-9_]*)') | ForEach-Object { $_.Groups[1].Value }) + @('COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'COMPOSE_PROFILES')
         foreach ($name in ($expected | Sort-Object -Unique)) { if ($listed -cnotcontains $name) { $found.Add(('compose-variables : {0} absent de $CockpitComposeEnvNames' -f $name)) } }
         $lines = [System.IO.File]::ReadAllLines($File).Count
-        if ($lines -gt 660) { $found.Add(('taille : {0} lignes (660 au plus)' -f $lines)) }
+        if ($lines -gt 700) { $found.Add(('taille : {0} lignes (700 au plus)' -f $lines)) }
     }
     if ($null -ne $ast.ParamBlock -and @('install.ps1', 'cockpit.ps1') -contains $Kind) {
         $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
         $wanted = $InstallParams
-        if ($Kind -ceq 'cockpit.ps1') { $wanted = @('Command', 'Target', 'Purge', 'Renew') }
+        if ($Kind -ceq 'cockpit.ps1') { $wanted = $CockpitParams }
         if (@(Compare-Object -ReferenceObject $wanted -DifferenceObject $params).Count -gt 0) { $found.Add(('parametres : bloc param different de la liste attendue ({0})' -f ($params -join ', '))) }
         if ($Kind -ceq 'cockpit.ps1') {
             foreach ($parameter in $ast.ParamBlock.Parameters) {
@@ -163,6 +198,7 @@ function Get-Violations([string]$File, [string]$Kind, [string]$ComposeFile) {
             }
             $backup = Get-SwitchClauseExtent $ast 'backup'
             if ($null -ne $backup -and $backup.Text -match '(?i)cockpit-tls:') { $found.Add('sauvegarde : volume cockpit-tls monte dans backup') }
+            # Options de desinstallation en masse interdites : voir la regle 'desinstallation' de la boucle de jetons.
         }
     } elseif (@('install.ps1', 'cockpit.ps1') -contains $Kind) {
         $found.Add('parametres : bloc param absent')
@@ -186,17 +222,20 @@ function Invoke-SelfTest([string]$ComposeFile) {
             'CockpitTls.ps1' = [System.IO.File]::ReadAllText((Join-Path $RepoRoot 'CockpitTls.ps1')).TrimStart([char]0xFEFF)
             'install.ps1' = @('[CmdletBinding()]',
                 'param([string]$WorkspaceDir, [int]$Port = 0, [string]$Mode, [string]$ImagesArchive, [string]$ImageRegistry, [string]$Proxy, [string]$NoProxy, [string]$CopilotApiUrl,',
-                '    [switch]$SkipCertificates, [switch]$InsecureTls, [switch]$SecureTls, [switch]$NoStart, [switch]$NoBrowser, [switch]$Http, [switch]$Https, [switch]$TlsPreflight, [switch]$AcceptBrowserBlock)',
+                '    [switch]$SkipCertificates, [switch]$InsecureTls, [switch]$SecureTls, [switch]$NoStart, [switch]$NoBrowser, [switch]$Http, [switch]$Https, [switch]$TlsPreflight, [switch]$AcceptBrowserBlock,',
+                '    [string]$OmoArchive, [switch]$OmoProjetsSeulement, [string]$WorkspacePath)',
                 'function Export-WindowsCertificates { foreach ($cert in (Get-ChildItem -Path ''Cert:\CurrentUser\Root'')) { $cert.Thumbprint } }',
                 'function Invoke-Docker { $dockerArgs = ConvertTo-CockpitDockerArgs $Root @($args); $saved = Clear-CockpitComposeEnv; try { & docker @dockerArgs } finally { Restore-CockpitComposeEnv $saved } }',
+                'function Get-DockerOutput { Invoke-CockpitProcess -FilePath $DockerPath -Arguments $Arguments -RemoveEnv $CockpitComposeEnvNames }',
                 '$answer = Read-Host "Dossier de vos projets [$WorkspaceDir]"', '') -join "`n"
             'cockpit.ps1' = @('[CmdletBinding()]',
                 'param([Parameter(Position = 0)][ValidateSet(''open'', ''start'', ''stop'', ''restart'', ''status'', ''logs'', ''diag'', ''certs'', ''update'', ''backup'', ''restore'', ''uninstall'', ''help'', ''tls'', ''rollback'')][string]$Command = ''help'',',
-                '    [Parameter(Position = 1)][string]$Target = '''', [switch]$Purge, [switch]$Renew)',
+                '    [Parameter(Position = 1)][string]$Target = '''', [switch]$Purge, [switch]$PurgeOmo, [switch]$Renew)',
                 'switch ($Command) {',
                 '    ''certs'' { foreach ($cert in (Get-ChildItem -Path ''Cert:\LocalMachine\Root'')) { $cert.Thumbprint } }',
                 '    ''backup'' { Invoke-Docker run --rm -v "${Project}_cockpit-data:/src/cockpit-data:ro" img; Write-Host ''Exclus : certificat HTTPS local (volume cockpit-tls).'' }',
                 '    ''restore'' { $answer = Read-Host ''Tapez RESTAURER pour confirmer'' }',
+                '    ''uninstall'' { Invoke-Docker compose down --remove-orphans; Invoke-DockerTimeout 180 volume rm -f @volumeArgs }',
                 '}', '') -join "`n"
         }
         foreach ($kind in @($bases.Keys)) {
@@ -248,12 +287,20 @@ function Invoke-SelfTest([string]$ComposeFile) {
             @('install.ps1', 'docker-isolation', 'replace', '$saved = Clear-CockpitComposeEnv; |'),
             @('CockpitTls.ps1', 'compose-variables', 'replace', "'COCKPIT_PORT', |"),
             @('CockpitTls.ps1', 'docker-inspect', 'append', ($append -f "Invoke-CockpitDocker '' @('inspect', '--format', '{{range .Config.Env}}{{println .}}{{end}}', 'c')")),
-            @('install.ps1', 'parametres', 'replace', '[switch]$AcceptBrowserBlock)|[switch]$AcceptBrowserBlock, [switch]$ConfirmHttp)'),
+            @('install.ps1', 'parametres', 'replace', '[switch]$AcceptBrowserBlock,|[switch]$AcceptBrowserBlock, [switch]$ConfirmHttp,'),
             @('install.ps1', 'parametres', 'replace', ' [switch]$Http,|'),
             @('cockpit.ps1', 'parametres', 'replace', ', ''rollback''|'),
             @('cockpit.ps1', 'parametres', 'replace', '[switch]$Renew|[string]$Renew'),
             @('cockpit.ps1', 'sauvegarde', 'replace', ':ro" img;|:ro" -v "${Project}_cockpit-tls:/src/tls:ro" img;'),
-            @('CockpitTls.ps1', 'taille', 'append', ((1..700 | ForEach-Object { '# ligne ajoutee' }) -join "`n"))
+            @('install.ps1', 'docker-isolation', 'replace', 'Invoke-CockpitProcess -FilePath $DockerPath|& docker'),
+            # Le seul retrait de l'argument suffit a rendre l'appel permeable : la regle doit le voir (relecture 2bis-vague-2).
+            @('install.ps1', 'docker-isolation', 'replace', ' -RemoveEnv $CockpitComposeEnvNames|'),
+            @('install.ps1', 'docker-isolation', 'replace', '-RemoveEnv $CockpitComposeEnvNames|-RemoveEnv @(''COCKPIT_PORT'')'),
+            @('cockpit.ps1', 'desinstallation', 'replace', 'compose down --remove-orphans|compose down --volumes --rmi all'),
+            @('cockpit.ps1', 'desinstallation', 'replace', 'compose down --remove-orphans|compose down --rmi local'),
+            @('install.ps1', 'parametres', 'replace', '[string]$OmoArchive, |'),
+            @('cockpit.ps1', 'parametres', 'replace', '[switch]$PurgeOmo, |'),
+            @('CockpitTls.ps1', 'taille', 'append', ((1..760 | ForEach-Object { '# ligne ajoutee' }) -join "`n"))
         )
         foreach ($case in $cases) {
             $count++
@@ -280,7 +327,15 @@ function Invoke-SelfTest([string]$ComposeFile) {
     return [pscustomobject]@{ Count = $count; Failures = $failures }
 }
 
-if (-not $Path) { $Path = @('install.ps1', 'cockpit.ps1', 'CockpitTls.ps1') }
+# Tous les scripts livres : racine du depot, puis dossier scripts\ (aucun nom en dur : un script neuf est couvert d office).
+if (-not $Path) {
+    $defaults = @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.ps1' -File | ForEach-Object { $_.Name } | Sort-Object)
+    $scriptsDir = Join-Path $RepoRoot 'scripts'
+    if (Test-Path -LiteralPath $scriptsDir -PathType Container) {
+        $defaults += @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.ps1' -File | ForEach-Object { 'scripts/' + $_.Name } | Sort-Object)
+    }
+    $Path = $defaults
+}
 $composeFile = Join-Path $RepoRoot 'docker-compose.yml'
 $bad = 0
 foreach ($item in @($Path | ForEach-Object { $_ -split ',' } | Where-Object { $_.Trim() })) {

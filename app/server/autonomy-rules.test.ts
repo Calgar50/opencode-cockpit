@@ -841,7 +841,7 @@ describe("phrases des décisions, du bandeau, des plafonds et des fins", () => {
   });
 
   it("fins d'une demande de l'instance principale : « Passé sans contrôle » exact (§6 l.1046) ; plafonds chiffrés", () => {
-    const ends: Array<Exclude<RequestEnd, "hors-controle" | "homme-mort" | "recreation" | "plafond-tentatives" | "plafond-sessions">> = [
+    const ends: Array<Exclude<RequestEnd, "hors-controle" | "homme-mort" | "recreation" | "plafond-tentatives" | "plafond-sessions" | "seuil-mensuel">> = [
       "terminee",
       "plafond-cout",
       "plafond-actions",

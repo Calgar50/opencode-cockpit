@@ -164,8 +164,17 @@ export class Classifier {
     this.#d = deps;
   }
 
+  /**
+   * D-2b-05 : le classement automatique ne sert QUE l'instance principale. Une racine de la Salle OMO n'est jamais archivée par
+   * ce minuteur ni envoyée à une IA de classement — son archive n'est que l'heuristique, gratuite.
+   */
+  #estPrincipale(rootId: string): boolean {
+    return (this.#d.sessions.instanceOf(rootId) ?? "principale") === "principale";
+  }
+
   /** Session racine inactive : archivage rapide, puis classement après le délai configuré. */
   onIdle(rootId: string): void {
+    if (!this.#estPrincipale(rootId)) return;
     clearTimeout(this.#refreshTimers.get(rootId));
     const timer = setTimeout(() => {
       this.#refreshTimers.delete(rootId);
@@ -218,7 +227,8 @@ export class Classifier {
         return refreshed.conversation;
       }
       let result = classifyHeuristic(refreshed.digest, settings.categories);
-      if (settings.mode === "llm" || (options.force && settings.mode !== "heuristic")) {
+      // D-2b-05 : classement HEURISTIQUE SEUL pour une racine de la salle, même demandé à la main — aucun appel facturé.
+      if (this.#estPrincipale(rootId) && (settings.mode === "llm" || (options.force && settings.mode !== "heuristic"))) {
         if (settings.model && !this.#d.allowedProviders.includes(providerOf(settings.model))) {
           this.#d.log.warn("IA de classement d'un fournisseur non autorisé ignorée : choix automatique", { model: settings.model.slice(0, 200) });
         }
