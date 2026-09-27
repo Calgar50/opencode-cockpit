@@ -2028,6 +2028,52 @@ describe("GF4 (A27) : [Relancer la suite] avec les accords que sa boîte a écri
 });
 // </c5:relance-accords>
 
+// <c5:ligne-avant-refus>
+// --- Grande fusion (GF4, A27, constats-5b §6.2 b) : l'échec d'une étape inconnue de l'instantané s'écrit, au tour ≥ 2 aussi -------
+
+describe("GF4 (A27 §6.2 b) : étape inconnue de l'instantané à un tour ≥ 2 — sa ligne est créée avant le refus, l'équipe échoue, rien n'est relancé", () => {
+  it("relance d'une relecture au repos entre deux tours avec un instantané qui ne porte plus l'auteur : ligne du tour 2 en échec, équipe en échec, un seul refus", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow(), guardsReels: true });
+    const { h } = ctx;
+    const runId = "0a0a0a0a-1b1b-2c2c-3d3d-4e4e4e4e4e4e";
+    const rootId = await nouvelleSession(h, "Conversation");
+    const redac = await nouvelleSession(h, "Rédaction");
+    const relec = await nouvelleSession(h, "Relecture");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: relectureFlow(),
+      state: "interrompue",
+      cause: "rechargement",
+      lignes: { redac: { state: "terminee", sessionId: redac, extrait: "Version 1." }, relec: { state: "terminee", sessionId: relec, extrait: "Faux.\nVERDICT: À REPRENDRE" } },
+    });
+    h.db.prepare("UPDATE team_run_steps SET verdict = 'a-reprendre' WHERE run_id = ? AND step_id = 'relec'").run(runId);
+    await h.cockpit.startup();
+    // L'instantané de la relance ne porte plus l'auteur (défaut latent : inatteignable avec le vrai pré-lancement, qui porte
+    // toutes les étapes déclarées) ; la relecture poursuit, donc la prochaine étape est l'auteur au TOUR 2, sans ligne encore.
+    ctx.plan = { ...ctx.plan, etapes: ctx.plan.etapes.filter((etape) => etape.stepId !== "redac") };
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: ctx.plan.estimateSha256 } });
+    assert.equal(confirme.status, 200, confirme.body);
+    const fini = await ctx.waitRun(runId, (v) => v.state === "echec", "équipe en échec");
+    const store = createTeamStore({ db: h.db });
+    assert.equal(fini.cause, "echec");
+    const tour2 = store.steps.ofRun(runId).filter((ligne) => ligne.step_id === "redac" && ligne.tour === 2);
+    assert.deepEqual(
+      tour2.map((ligne) => [ligne.state, ligne.cause]),
+      [["echec", "étape inconnue de l'instantané du lancement"]],
+      "la ligne du tour 2 existe et porte l'échec",
+    );
+    assert.equal(tour2[0]?.titre, "Rédaction", "titre du déroulé, à défaut de l'instantané");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const refus = store.events.ofRun(runId).filter((evenement) => evenement.kind === "etape-echec");
+    assert.equal(refus.length, 1, "un seul refus : l'étape n'est pas relancée sans fin");
+    assert.equal(envois(h).length, 0);
+    assert.equal(creationsDEtape(h).length, 0, "aucune session créée");
+    h.assertNoGlobalRestart();
+  });
+});
+// </c5:ligne-avant-refus>
+
 describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
   it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {
     // Sonde K2b de la contre-vérification : « L'étape « Supervision et seuils » attend votre confirmation… » alors que seul le

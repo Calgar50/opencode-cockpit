@@ -1571,7 +1571,35 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const declarees = etapesDeclarees(run.flow);
     const order = passages.find((entry) => entry.stepId === stepId && entry.tour === key.tour) ?? declarees.find((entry) => entry.stepId === stepId);
     if (!planned || !order) {
-      failStep(run, key, "étape inconnue de l'instantané du lancement", null);
+      // <c5:ligne-avant-refus>
+      // Grande fusion (GF4, A27, constats-5b §6.2 b) : l'échec s'écrit TOUJOURS quelque part. La ligne d'un tour ≥ 2 n'est créée
+      // que plus bas : avant, `failStep` écrivait sur une ligne absente, rien n'était enregistré, et l'ordonnanceur relançait la
+      // même étape sans fin. La ligne est donc créée d'abord (titre et assistant du déroulé à défaut de l'instantané), puis
+      // l'étape échoue — l'équipe s'arrête en « echec » (D-eq-20). Une étape que le déroulé ne déclare même pas n'a aucune
+      // place où l'écrire : c'est le lancement qui échoue, et rien n'est relancé.
+      if (order !== undefined && !store.steps.get(key)) {
+        const declaration = etapeDuDeroule(run.flow, stepId);
+        const place = declarees.find((entry) => entry.stepId === stepId);
+        store.steps.create({
+          runId: key.runId,
+          stepId,
+          tour: key.tour,
+          tentative: key.tentative,
+          ordre: place?.ordre ?? order.ordre,
+          blocIndex: place?.blocIndex ?? order.blocIndex,
+          titre: planned?.titre ?? declaration?.step.titre ?? stepId,
+          agent: planned?.assistant ?? declaration?.step.assistant ?? "",
+          state: "prevue",
+        });
+      }
+      if (store.steps.get(key)) {
+        failStep(run, key, "étape inconnue de l'instantané du lancement", null);
+      } else {
+        audit(run.runId, "etape-echec", { etape: stepId, tentative: key.tentative, cause: "étape absente du déroulé" });
+        setRunState(run, "echec", "echec");
+        audit(run.runId, "echec", { etape: stepId });
+      }
+      // </c5:ligne-avant-refus>
       return;
     }
     // Ligne du tour : celle du tour 1 existe depuis le lancement, celle d'un tour suivant est créée ici (une par (étape, tour)).
