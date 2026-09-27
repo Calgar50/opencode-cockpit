@@ -38,6 +38,10 @@ import {
   relevesDuBanc,
   verifierCertificatPublic,
 } from "./cockpit.mjs";
+// <nav:import>
+// Émulation de l'onglet « Fichiers » (A34 (1), rang de fusion GFN) : médias par l'onglet, vision et captures par a11y.mjs.
+import { captureAccessibilite, emuler, emulerVision } from "./a11y.mjs";
+// </nav:import>
 
 /** Racine du dépôt : e2e/lib → e2e → dépôt. */
 export const RACINE = path.resolve(import.meta.dirname, "..", "..");
@@ -782,9 +786,13 @@ export function correspond(nom, motif) {
 //     revérifié juste avant). Liste FERMÉE : « ln -s <cible> <lien> », « ln <cible> <lien> », « mkfifo <chemin> » ; lien, chemin et
 //     cible d'un lien physique sous /workspace seulement ; aucune option passée par l'appelant (« -- » ajouté avant les opérandes).
 //     Rend { code, sortie } sans lever : un montage qui refuse un tube ou un lien est une MESURE (M-NAV-1, M-NAV-2), pas un échec ;
-//   - emulation.appliquer({ theme, contraste, gris, mouvementReduit }) et emulation.retirer() : contraste forcé (forced-colors: active),
-//     mouvement réduit (prefers-reduced-motion: reduce) et niveaux de gris (achromatopsie), par Emulation.setEmulatedMedia et
-//     Emulation.setEmulatedVisionDeficiency, envoyés par le client du navigateur sur la session de l'onglet (cdp.mjs n'est pas touché) ;
+//   - emulation.appliquer({ theme, contraste, gris, mouvementReduit }), emulation.retirer() et emulation.captureAccessibilite(prefixe,
+//     options) : contraste forcé (forced-colors: active), mouvement réduit (prefers-reduced-motion: reduce) et niveaux de gris
+//     (achromatopsie). Rang de fusion GFN (A34 (1)) : AUCUN envoi direct. La partie média passe par l'onglet (emuler d'a11y.mjs →
+//     onglet.medias → emulerMedias de cdp.mjs, seul envoi du banc, relevé par la garde du mouvement de R106-b) : le mouvement part à
+//     chaque appel (« reduce » avec mouvementReduit, sinon « no-preference »), jamais une liste vide ; la vision des couleurs et les
+//     18 captures (3 modes × 2 thèmes × 3 tailles) passent par a11y.mjs (emulerVision, captureAccessibilite), sur la session de
+//     l'onglet ; retirer() rend l'état du banc (onglet.medias({}) : mouvement du scénario gardé, ni thème ni contraste forcé) ;
 //   - verifierGardes() : les vérifications des deux gardes ci-dessus, sans Docker ni navigateur. Le scénario nav-fichiers.mjs les joue
 //     à son début ; elles ne font pas partie de « --gardes », dont le nombre est annoncé par le RECAPITULATIF.
 
@@ -843,21 +851,21 @@ export function ecrireDansTravail(dossierTravail, cheminRelatif, contenu) {
   return cible;
 }
 
-/** Émulation d'accessibilité d'un onglet, par le client du navigateur (session de l'onglet). */
-function creerEmulation(client, sessionId) {
-  const envoyer = (methode, params) => client.envoyer(methode, params, sessionId);
+/**
+ * Émulation d'accessibilité de l'onglet du banc (A34 (1), rang de fusion GFN), sans aucun envoi direct : médias par l'onglet
+ * (a11y.mjs `emuler` → `onglet.medias` → `emulerMedias`), vision des couleurs et captures par a11y.mjs. `navigateur` n'est qu'un
+ * porte-client pour a11y.mjs, qui envoie la vision sur la session de l'onglet (`navigateur.client.envoyer(…, onglet.sessionId)`).
+ */
+function creerEmulation(client, onglet) {
+  const navigateur = { client };
   return {
-    async appliquer({ theme = "clair", contraste = false, gris = false, mouvementReduit = false } = {}) {
-      const features = [{ name: "prefers-color-scheme", value: theme === "sombre" ? "dark" : "light" }];
-      if (contraste) features.push({ name: "forced-colors", value: "active" });
-      if (mouvementReduit) features.push({ name: "prefers-reduced-motion", value: "reduce" });
-      await envoyer("Emulation.setEmulatedMedia", { features });
-      await envoyer("Emulation.setEmulatedVisionDeficiency", { type: gris ? "achromatopsia" : "none" });
-    },
+    appliquer: ({ theme = "clair", contraste = false, gris = false, mouvementReduit = false } = {}) =>
+      emuler(navigateur, onglet, { theme, forcedColors: contraste, reducedMotion: mouvementReduit, grayscale: gris }),
     async retirer() {
-      await envoyer("Emulation.setEmulatedMedia", { features: [] });
-      await envoyer("Emulation.setEmulatedVisionDeficiency", { type: "none" });
+      await onglet.medias({});
+      await emulerVision({ envoyer: (methode, params) => client.envoyer(methode, params, onglet.sessionId) }, "none");
     },
+    captureAccessibilite: (prefixe, options = {}) => captureAccessibilite(navigateur, onglet, prefixe, options),
   };
 }
 
@@ -872,7 +880,7 @@ export function creerTravail(plan, { client, onglet }) {
       const { code, sortie } = await compose(plan, ["exec", "-T", "cockpit", ...commande], { silencieux: true, tolerant: true });
       return { code, sortie: String(sortie ?? "").slice(0, 400) };
     },
-    emulation: creerEmulation(client, onglet.sessionId),
+    emulation: creerEmulation(client, onglet),
     verifierGardes: () => verifierGardesTravail(),
   };
 }
@@ -982,19 +990,78 @@ export async function verifierGardesTravail() {
     () => sansConsole(() => creerTravail({ ...planEssai, projet: "opencode-cockpit" }, { client: clientEssai, onglet: { sessionId: "essai" } }).dansLeConteneur(["mkfifo", "/workspace/x"])),
     "pile de l'utilisateur",
   );
-  await tient("émulation : forced-colors, prefers-reduced-motion et achromatopsie envoyés sur la session de l'onglet, puis retirés", async () => {
-    const envois = [];
-    const client = { envoyer: async (methode, params, sessionId) => envois.push({ methode, params, sessionId }) };
-    const emulation = creerTravail(planEssai, { client, onglet: { sessionId: "onglet-1" } }).emulation;
-    await emulation.appliquer({ theme: "sombre", contraste: true, gris: true, mouvementReduit: true });
-    await emulation.retirer();
-    const texte = JSON.stringify(envois);
-    for (const attendu of ['"forced-colors","value":"active"', '"prefers-reduced-motion","value":"reduce"', '"prefers-color-scheme","value":"dark"', '"type":"achromatopsia"', '"features":[]', '"type":"none"']) {
-      if (!texte.includes(attendu)) throw new Error(`envoi sans ${attendu} : ${texte}`);
-    }
-    if (envois.some((e) => e.sessionId !== "onglet-1")) throw new Error("envoi hors de la session de l'onglet");
-  });
+  await tient(
+    "émulation (A34 (1)) : médias par onglet.medias, mouvement à chaque appel, jamais une liste vide ; vision et 18 captures par a11y.mjs, sur la session de l'onglet",
+    () => verifierEmulationTravail(planEssai),
+  );
   return tombees;
+}
+
+/**
+ * Émulation de `ctx.travail` sur un VRAI onglet de cdp.mjs monté sur un client factice (aucun navigateur) : chaque émulation de
+ * média passe par `onglet.medias` (donc par emulerMedias, relevée par la garde du mouvement), porte `prefers-reduced-motion`
+ * (« reduce » demandé, sinon « no-preference »), jamais une liste vide ; la vision des couleurs part sur la session de l'onglet ;
+ * `captureAccessibilite` écrit 18 captures et laisse la page au réglage « no-preference », sans perte relevée par la garde. Les noms
+ * de commandes sont lus par leur fin : ce fichier ne cite pas la commande de vision (croisements de la grande fusion, point 9).
+ */
+async function verifierEmulationTravail(planEssai) {
+  const envois = [];
+  const client = {
+    envoyer: async (methode, params = {}, sessionId = null) => {
+      envois.push({ methode, params, sessionId });
+      if (methode === "Runtime.evaluate") return { result: { value: true } };
+      if (methode === "Page.captureScreenshot") return { data: "" };
+      return {};
+    },
+    ecouter: () => () => {},
+  };
+  const onglet = await creerOnglet(client, "onglet-1", "cible-1");
+  const mediasDeLOnglet = onglet.medias;
+  let parLOnglet = 0;
+  onglet.medias = (options) => {
+    parLOnglet++;
+    return mediasDeLOnglet(options);
+  };
+  const medias = () => envois.filter((e) => e.methode.endsWith(".setEmulatedMedia"));
+  const vue = (envoi) => Object.fromEntries((envoi?.params.features ?? []).map((f) => [f.name, f.value]));
+  const vision = () => envois.filter((e) => e.methode.endsWith("VisionDeficiency")).map((e) => e.params.type);
+  const emulation = creerTravail(planEssai, { client, onglet }).emulation;
+  onglet.suivreMouvement();
+  await onglet.mouvement("no-preference");
+
+  await emulation.appliquer({ theme: "sombre", contraste: true, gris: true, mouvementReduit: true });
+  const tout = vue(medias().at(-1));
+  if (tout["forced-colors"] !== "active" || tout["prefers-reduced-motion"] !== "reduce" || tout["prefers-color-scheme"] !== "dark") throw new Error(`appliquer (tout) : ${JSON.stringify(tout)}`);
+  if (vision().at(-1) !== "achromatopsia") throw new Error(`vision : ${JSON.stringify(vision())}`);
+  await emulation.appliquer({ theme: "clair", contraste: true });
+  const contraste = vue(medias().at(-1));
+  if (contraste["prefers-reduced-motion"] !== "no-preference" || contraste["forced-colors"] !== "active") throw new Error(`appliquer({ theme, contraste }) : ${JSON.stringify(contraste)}`);
+  // Niveaux de gris encore posés : retirer() doit rendre la vision ordinaire.
+  await emulation.appliquer({ theme: "clair", gris: true });
+  if (vision().at(-1) !== "achromatopsia") throw new Error(`appliquer({ gris }) : vision ${JSON.stringify(vision())}`);
+  await emulation.retirer();
+  const retire = vue(medias().at(-1));
+  if (JSON.stringify(retire) !== JSON.stringify({ "prefers-reduced-motion": "no-preference" })) throw new Error(`retirer() : ${JSON.stringify(retire)}`);
+  if (vision().at(-1) !== "none") throw new Error(`retirer() : vision ${JSON.stringify(vision())}`);
+
+  const essai = fs.mkdtempSync(path.join(path.dirname(DOSSIER_BANC), "opencode-cockpit-e2e-emulation-"));
+  try {
+    const faites = await emulation.captureAccessibilite(path.join(essai, "nav"), { poseMs: 0 });
+    if (faites.length !== 18 || fs.readdirSync(essai).length !== 18) throw new Error(`captures : ${faites.length}`);
+  } finally {
+    fs.rmSync(essai, { recursive: true, force: true });
+  }
+  const gris = medias().filter((e) => vue(e)["prefers-reduced-motion"] === "reduce");
+  if (gris.length < 6 || !vision().includes("achromatopsia")) throw new Error(`mode gris et mouvement réduit : ${gris.length} émulation(s)`);
+
+  if (medias().some((e) => (e.params.features ?? []).length === 0)) throw new Error("liste de médias vide envoyée");
+  if (medias().some((e) => !vue(e)["prefers-reduced-motion"])) throw new Error("émulation de média sans prefers-reduced-motion");
+  if (envois.some((e) => e.methode.startsWith("Emulation.") && e.sessionId !== "onglet-1")) throw new Error("émulation hors de la session de l'onglet");
+  // Un envoi de média par appel de onglet.medias, plus celui de onglet.mouvement : aucun envoi direct par le client.
+  if (medias().length !== parLOnglet + 1) throw new Error(`${medias().length} émulation(s) de média pour ${parLOnglet} appel(s) de onglet.medias : envoi direct`);
+  const suivi = onglet.finSuiviMouvement();
+  const verdict = verdictMouvement(suivi, "no-preference");
+  if (verdict !== null || suivi.pertes !== 0 || suivi.mouvement !== "no-preference") throw new Error(`garde du mouvement : ${verdict ?? JSON.stringify(suivi)}`);
 }
 // </nav:travail>
 

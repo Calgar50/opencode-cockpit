@@ -19,8 +19,8 @@
 //      %XX dont le nom contient « secret » reste protégé par son nom ;
 //   5. mode Avancé : ligne de détails (utf-16le), « lien symbolique », fichiers cachés affichés ;
 //   6. captures 1440, 1024 et 400 dans les deux thèmes, en mode normal, en contraste forcé et en niveaux de gris avec mouvement réduit
-//      (émulation CDP de ctx.travail.emulation) ; focus visible en contraste forcé, aucune animation en mouvement réduit ; vue à 400 px
-//      avec « Retour aux fichiers » ;
+//      (captureAccessibilite d'e2e/lib/a11y.mjs par ctx.travail.emulation : médias par l'onglet, garde du mouvement de R106-b) ; focus
+//      visible en contraste forcé (focusVisible), aucune animation en mouvement réduit ; vue à 400 px avec « Retour aux fichiers » ;
 //   7. aucun appel : aucune requête facturable, aucune requête /file* ni /find* reçue par opencode pendant les étapes de l'onglet ;
 //   8. chat (« --faux ») : un outil `write` terminé sur /workspace/nav-banc/scripts/nouveau.ps1 porte « Ouvrir dans Fichiers », qui
 //      ouvre ce fichier (sous le témoin P6 et P4) ;
@@ -29,6 +29,7 @@
 //      violation de la CSP.
 // Les phrases attendues sont écrites ici en clair : c'est la spécification (fiche NAV §8) qu'on vérifie, pas ce que le code déclare.
 import path from "node:path";
+import { animationsActives, focusVisible, mediasDeLaPage } from "../lib/a11y.mjs";
 import {
   attendre,
   attendreFinDuTour,
@@ -363,33 +364,46 @@ async function verifierPourcent(ctx, page) {
 async function capturesEtAccessibilite(ctx, page) {
   const emulation = ctx.travail.emulation;
   const faites = [];
-  faites.push(...(await ctx.screenshot("fichier-ouvert")));
+  const lienRapport = `${ARBRE} a[href=${JSON.stringify(adresse(PROJET, "scripts/Get-Rapport.ps1"))}]`;
+  // A34 (2) : les 18 captures (3 modes × 2 thèmes × 3 tailles) par captureAccessibilite d'a11y.mjs, sur l'onglet du banc (ctx.travail).
+  // Chaque capture est relevée JUSTE AVANT d'être prise : fichier ouvert, et, au-dessus de 720 px, arborescence dépliée sur
+  // « scripts » (à 400 px, le fichier remplace les colonnes : « Retour aux fichiers » en tête).
+  const vueAttendue = async ({ mode, theme, taille }) => {
+    const vue = await page.evaluer(`(() => {
+      const titre = document.querySelector(".fichiers-vue h2.fichiers-titre")?.textContent ?? "";
+      const scripts = ${exprLigne("scripts")};
+      const retour = [...document.querySelectorAll(".fichiers-vue button")].some((b) => b.textContent.trim() === ${JSON.stringify(PHRASES.retour)});
+      return { titre, deplie: scripts?.getAttribute("aria-expanded") === "true" && scripts.getClientRects().length > 0, retour };
+    })()`);
+    const etroite = taille.largeur <= 720;
+    exiger(vue.titre === "Get-Rapport.ps1" && (etroite ? vue.retour : vue.deplie), `capture ${mode.nom} ${taille.nom} ${theme} : vue inattendue (${resume(vue)}).`);
+  };
   try {
-    faites.push(...(await ctx.screenshot("fichier-ouvert-contraste", { avant: ({ theme }) => emulation.appliquer({ theme, contraste: true }) })));
-    faites.push(...(await ctx.screenshot("fichier-ouvert-gris", { avant: ({ theme }) => emulation.appliquer({ theme, gris: true, mouvementReduit: true }) })));
+    faites.push(...(await emulation.captureAccessibilite(path.join(ctx.dossierCaptures, "nav-fichiers-fichier-ouvert"), { apres: vueAttendue })));
     await page.taille(LARGE);
 
-    // Contraste forcé : le focus clavier reste visible (contour de 2 px au moins).
+    // Contraste forcé : le focus clavier reste visible (focusVisible d'a11y.mjs : contour réellement dessiné, 2 px au moins).
     await emulation.appliquer({ theme: "clair", contraste: true });
-    exiger(await page.evaluer(`matchMedia("(forced-colors: active)").matches`), "contraste forcé non émulé.");
-    await page.evaluer(`document.activeElement?.blur()`);
-    await tabulerJusqua(page, `e.matches(${JSON.stringify(`${ARBRE} a, ${ARBRE} button`)})`, "élément de l'arborescence");
-    const focus = await page.evaluer(`(() => { const e = document.activeElement; const s = getComputedStyle(e); return { visible: e.matches(":focus-visible"), style: s.outlineStyle, largeur: parseFloat(s.outlineWidth) }; })()`);
-    exiger(focus.visible && focus.style !== "none" && focus.largeur >= 2, `contraste forcé : focus clavier peu visible (${resume(focus)}).`);
+    exiger((await mediasDeLaPage(page)).contrasteForce, "contraste forcé non émulé.");
+    await page.attendreQue(`document.querySelector(${JSON.stringify(lienRapport)})?.getClientRects().length > 0`, { libelle: "lien de Get-Rapport.ps1 visible" });
+    const focus = await focusVisible(page, lienRapport);
+    exiger(focus.trouve && focus.visible && focus.pseudo && focus.contour !== "none" && focus.largeur >= 2, `contraste forcé : focus clavier peu visible (${resume(focus)}).`);
 
     // Niveaux de gris et mouvement réduit : aucune animation en cours dans la page.
     await emulation.appliquer({ theme: "clair", gris: true, mouvementReduit: true });
-    exiger(await page.evaluer(`matchMedia("(prefers-reduced-motion: reduce)").matches`), "mouvement réduit non émulé.");
+    exiger((await mediasDeLaPage(page)).mouvementReduit, "mouvement réduit non émulé.");
     await attendre(300);
-    const animations = await page.evaluer(`document.getAnimations().filter((a) => a.playState === "running").length`);
+    const animations = await animationsActives(page);
     exiger(animations === 0, `${animations} animation(s) en cours en mouvement réduit.`);
-    releve(ctx, `accessibilité : focus visible en contraste forcé (contour ${focus.style} ${focus.largeur} px) ; 0 animation en mouvement réduit`);
+    releve(ctx, `accessibilité : focus visible en contraste forcé (contour ${focus.contour} ${focus.largeur} px) ; 0 animation en mouvement réduit`);
   } finally {
     await emulation.retirer();
   }
   exiger(faites.length === 18, `18 captures attendues (3 modes × 2 thèmes × 3 tailles), ${faites.length} faites.`);
 
   // 400 px : le fichier ouvert remplace les colonnes, « Retour aux fichiers » en tête ; le retour rend le focus au lien d'origine.
+  // Thème clair fixé avant la capture qui le porte dans son nom (revue NAV : après retirer(), la page suivait le thème du poste).
+  await page.theme("clair");
   await page.taille({ largeur: 400, hauteur: 860 });
   await attendre(200);
   const retourVu = await page.evaluer(`(() => {
@@ -418,7 +432,9 @@ export async function run(ctx) {
   exiger(tombees.length === 0, `gardes de ctx.travail tombées : ${resume(tombees, 600)}`);
   const conteneur = await preparer(ctx);
 
-  // La page est rechargée pour que la liste des projets du cockpit contienne nav-banc.
+  // La page est rechargée pour que la liste des projets du cockpit contienne nav-banc. Garde du mouvement (R106-b) : le réglage est
+  // fixé AVANT cette première action sur la page, puis gardé par preparerPage (rang de fusion GFN).
+  await ctx.navigateur.mouvement("no-preference");
   await ctx.navigateur.aller(`${ctx.url}/`);
   const page = await preparerPage(ctx);
   const faux = ctx.mode === "faux";
