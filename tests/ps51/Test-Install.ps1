@@ -210,9 +210,12 @@ try {
         -and $result.Host.Contains("Utilisez 127.0.0.1 (localhost redemande l'avertissement). L'ancienne adresse en http:// ne repond plus.")) $result.Host
     $calls = @(Get-DockerCalls $journal)
     $joined = @($calls | ForEach-Object { (@($_.args) -join ' ') })
-    Assert-Test 'neuve HTTPS : volume cockpit-tls prepare avec l image app, sans -R' (@($joined | Where-Object { $_ -cmatch '^run --rm --network none --user 0 --entrypoint chown -v opencode-cockpit_cockpit-tls:/tls opencode-cockpit/app:local 1000:1000 /tls\z' }).Count -eq 1) ($joined -join ' | ')
-    Assert-Test 'neuve HTTPS : droits 0700 du volume cockpit-tls' (@($joined | Where-Object { $_ -cmatch '^run --rm --network none --user 0 --entrypoint chmod -v opencode-cockpit_cockpit-tls:/tls opencode-cockpit/app:local 0700 /tls\z' }).Count -eq 1)
-    Assert-Test 'neuve HTTPS : volumes partages sans reseau' (@($joined | Where-Object { $_ -cmatch '^run --rm --network none --user 0 --entrypoint chown -v opencode-cockpit_oc-config' }).Count -eq 1)
+    # Migration du web (fiche MW 1.2) : --pull never sur les run de chown et de chmod, une image absente n'est jamais tiree.
+    Assert-Test 'neuve HTTPS : volume cockpit-tls prepare avec l image app, sans -R' (@($joined | Where-Object { $_ -cmatch '^run --rm --pull never --network none --user 0 --entrypoint chown -v opencode-cockpit_cockpit-tls:/tls opencode-cockpit/app:local 1000:1000 /tls\z' }).Count -eq 1) ($joined -join ' | ')
+    Assert-Test 'neuve HTTPS : droits 0700 du volume cockpit-tls' (@($joined | Where-Object { $_ -cmatch '^run --rm --pull never --network none --user 0 --entrypoint chmod -v opencode-cockpit_cockpit-tls:/tls opencode-cockpit/app:local 0700 /tls\z' }).Count -eq 1)
+    Assert-Test 'neuve HTTPS : volumes partages sans reseau' (@($joined | Where-Object { $_ -cmatch '^run --rm --pull never --network none --user 0 --entrypoint chown -v opencode-cockpit_oc-config' }).Count -eq 1)
+    Assert-Test 'neuve HTTPS : aucun run sans --pull never (image jamais tiree d un registre)' (@($joined | Where-Object { $_ -cmatch '^run ' -and $_ -cnotmatch '^run --rm --pull never ' }).Count -eq 0) ($joined -join ' | ')
+    Assert-Test 'neuve HTTPS : volume neuf, migration du web sans rien afficher' (-not $result.Host.Contains('Passage a la 1.1.0') -and @($joined | Where-Object { $_ -cmatch ('^run --rm --pull never --name ' + $MigrationNamePattern + ' ') }).Count -eq 1) ($joined -join ' | ')
     Assert-Test 'neuve HTTPS : -f docker-compose.yml sur chaque commande compose' (Test-ComposeFileAlways $calls $Root)
 
     # --- Garde Edge : entree en HTTPS bloquee -----------------------------------------------------------------------------
@@ -599,6 +602,188 @@ try {
         }
         Assert-Test ('proxy {0} : identifiants jamais affiches' -f $label) (-not $result.Host.Contains('MOTDEPASSE-PROXY'))
     }
+
+    # --- Migration du web 1.0.x -> 1.1.0 (decision A37, fiche MW : T6) ---------------------------------------------------------------
+    Write-Section 'Migration du web (A37) : conteneur jetable, verdict sur stdout seul, jamais bloquante'
+    $MigrationNo = 0
+    # Appel direct de la bibliotheque (chargee en tete de ce fichier) avec un scenario neuf du faux docker.
+    function Invoke-MigrationUnit([object[]]$Rules, [string]$Image = 'opencode-cockpit/app:local', [string]$Project = 'opencode-cockpit', [string]$Contexte = 'install', [int]$TimeoutSec = 120) {
+        $script:MigrationNo++
+        $journal = Set-InstallDockerScenario $Work ('migration-unite-' + $MigrationNo) $Rules
+        $threw = $null
+        $value = $null
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        try { $value = Invoke-CockpitWebMigration -Root $Root -Project $Project -Image $Image -Contexte $Contexte -TimeoutSec $TimeoutSec } catch { $threw = $_.Exception.Message }
+        $watch.Stop()
+        return [pscustomobject]@{ Value = $value; Threw = $threw; Seconds = $watch.Elapsed.TotalSeconds; Journal = $journal
+            Calls = @(Get-DockerCalls $journal | ForEach-Object { (@($_.args) -join ' ') }); Raw = @(Get-DockerCalls $journal) }
+    }
+    function Get-MigrationFields($Value) {
+        if ($null -eq $Value) { return 'null' }
+        return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $Value.Etat, $Value.Profil, $Value.Fichier, $Value.Blocs, $Value.Restes, $Value.Sauvegarde, $Value.Raison)
+    }
+    $LineMigre = 'migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-'
+    $ExactRun = '^run --rm --pull never --name (' + $MigrationNamePattern + ') --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 -v opencode-cockpit_oc-config:/oc-config --entrypoint node opencode-cockpit/app:local --no-warnings server/migrate-oc-config.ts /oc-config\z'
+
+    $expectedLine = 'docker run --rm --pull never --name opencode-cockpit-migration-web-0123abcd --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 -v opencode-cockpit_oc-config:/oc-config --entrypoint node opencode-cockpit/app:local --no-warnings server/migrate-oc-config.ts /oc-config'
+    $argsLine = $null
+    try { $argsLine = 'docker ' + ((Get-CockpitWebMigrationArgs 'opencode-cockpit' 'opencode-cockpit/app:local' 'opencode-cockpit-migration-web-0123abcd') -join ' ') } catch { $argsLine = $_.Exception.Message }
+    Assert-Test 'migration : commande exacte de la fiche MW 1.2' ($argsLine -ceq $expectedLine) ([string]$argsLine)
+
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n"))
+    Assert-Test 'migration : verdict migre lu sur stdout' ((Get-MigrationFields $unit.Value) -ceq 'migre|prudent|opencode.jsonc|1|0|opencode.jsonc.avant-1.1.0|-') ((Get-MigrationFields $unit.Value) + ' ' + [string]$unit.Threw)
+    Assert-Test 'migration : un seul appel, ligne exacte, nom tire au hasard' ($unit.Calls.Count -eq 1 -and $unit.Calls[0] -cmatch $ExactRun) ($unit.Calls -join ' | ')
+    Assert-Test 'migration : aucune variable transmise au conteneur (ni -e, ni --env-file, ni variable de compose)' ($unit.Raw.Count -eq 1 -and @($unit.Raw[0].env).Count -eq 0 -and -not ($unit.Calls[0] -cmatch '(^| )(-e|--env|--env-file)( |=)')) ($unit.Calls -join ' | ')
+    $second = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n"))
+    Assert-Test 'migration : deux appels, deux noms differents' ($unit.Calls.Count -eq 1 -and $second.Calls.Count -eq 1 -and $unit.Calls[0] -cmatch $ExactRun -and ($first = $Matches[1]) -and $second.Calls[0] -cmatch $ExactRun -and $Matches[1] -cne $first) ($second.Calls -join ' | ')
+
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n") 0 "(node:1) Warning: avertissement de Node`nWARNING: avertissement de Docker`n")
+    Assert-Test 'migration : avertissement sur stderr et ligne stdout valide -> migre (stderr ignore)' ((Get-MigrationFields $unit.Value) -ceq 'migre|prudent|opencode.jsonc|1|0|opencode.jsonc.avant-1.1.0|-') (Get-MigrationFields $unit.Value)
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules "`n" 0 ($LineMigre + "`n"))
+    Assert-Test 'migration : ligne valide sur stderr seulement -> sortie-inattendue (verdict sur stdout seul)' ($null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Value.Raison -ceq 'sortie-inattendue') (Get-MigrationFields $unit.Value)
+
+    $inattendues = @(
+        @{ Name = 'deux lignes'; Stdout = ($LineMigre + "`n" + $LineMigre + "`n"); Code = 0 },
+        @{ Name = 'texte libre'; Stdout = "Unable to find image`n"; Code = 0 },
+        @{ Name = 'ligne tronquee'; Stdout = 'migration-web etat=migre profil=prudent'; Code = 0 },
+        @{ Name = 'raison hors format'; Stdout = 'migration-web etat=erreur profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=Raison_Libre'; Code = 1 },
+        @{ Name = 'migre avec le code 1'; Stdout = $LineMigre; Code = 1 },
+        @{ Name = 'erreur avec le code 0'; Stdout = 'migration-web etat=erreur profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=root'; Code = 0 })
+    foreach ($case in $inattendues) {
+        $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($case.Stdout + "`n") $case.Code)
+        $runs = @($unit.Calls | Where-Object { $_ -cmatch $ExactRun })
+        $name = ''
+        if ($runs.Count -eq 1 -and $runs[0] -cmatch $ExactRun) { $name = $Matches[1] }
+        Assert-Test ('migration, sortie inattendue ({0}) : erreur sortie-inattendue, sans exception' -f $case.Name) ($null -eq $unit.Threw -and $null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Value.Raison -ceq 'sortie-inattendue') ((Get-MigrationFields $unit.Value) + ' ' + [string]$unit.Threw)
+        Assert-Test ('migration, sortie inattendue ({0}) : docker rm -f du meme conteneur avant de rendre la main' -f $case.Name) ($name -and @($unit.Calls | Where-Object { $_ -ceq ('rm -f ' + $name) }).Count -eq 1) ($unit.Calls -join ' | ')
+    }
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules "`n" 125 "docker: Error response from daemon: No such image`n")
+    Assert-Test 'migration : image absente (--pull never, code 125) -> erreur docker, conteneur retire' ($null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Value.Raison -ceq 'docker' -and @($unit.Calls | Where-Object { $_ -cmatch ('^rm -f ' + $MigrationNamePattern + '$') }).Count -eq 1) ((Get-MigrationFields $unit.Value) + ' ' + ($unit.Calls -join ' | '))
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules 'migration-web etat=erreur profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=root' 1)
+    Assert-Test 'migration : erreur rendue par le script (code 1 coherent) -> sa raison, aucun rm -f' ((Get-MigrationFields $unit.Value) -ceq 'erreur|-|-|0|0|-|root' -and @($unit.Calls | Where-Object { $_ -cmatch '^rm -f ' }).Count -eq 0) ((Get-MigrationFields $unit.Value) + ' ' + ($unit.Calls -join ' | '))
+
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n") 0 '' 8000) -TimeoutSec 2
+    Assert-Test 'migration : delai depasse -> erreur delai, sans attendre le conteneur' ($null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Value.Raison -ceq 'delai' -and $unit.Seconds -lt 7) ((Get-MigrationFields $unit.Value) + (' {0:N1} s' -f $unit.Seconds))
+    Assert-Test 'migration : delai depasse -> docker rm -f joue avant de rendre la main' (@($unit.Calls | Where-Object { $_ -cmatch ('^rm -f ' + $MigrationNamePattern + '$') }).Count -eq 1) ($unit.Calls -join ' | ')
+
+    foreach ($image in @('-evil', '--pull=always', 'image avec espace', '', ('a' * 260), 'img;calc')) {
+        $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n")) -Image $image
+        Assert-Test ('migration : image refusee ({0}) -> erreur, aucun appel docker' -f $image.Substring(0, [Math]::Min(20, $image.Length))) ($null -eq $unit.Threw -and $null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Calls.Count -eq 0) ((Get-MigrationFields $unit.Value) + ' ' + ($unit.Calls -join ' | '))
+    }
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n")) -Project 'Opencode Cockpit'
+    Assert-Test 'migration : nom de projet hors format -> erreur, aucun appel docker' ($null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Calls.Count -eq 0) (Get-MigrationFields $unit.Value)
+    $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n")) -Contexte 'autre'
+    Assert-Test 'migration : contexte inconnu -> erreur, aucun appel docker' ($null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Calls.Count -eq 0) (Get-MigrationFields $unit.Value)
+    # Docker introuvable : Get-Command leve dans Invoke-CockpitDocker ; la migration ne leve jamais.
+    Set-Env 'PATH' (Join-Path $env:SystemRoot 'System32')
+    try { $unit = Invoke-MigrationUnit @(New-MigrationDockerRules ($LineMigre + "`n")) } finally { Set-Env 'PATH' ((Join-Path $Here 'fake-docker') + ';' + $SavedEnv['PATH']) }
+    Assert-Test 'migration : docker introuvable -> erreur docker, aucune exception' ($null -eq $unit.Threw -and $null -ne $unit.Value -and $unit.Value.Etat -ceq 'erreur' -and $unit.Value.Raison -ceq 'docker') ((Get-MigrationFields $unit.Value) + ' ' + [string]$unit.Threw)
+
+    # Textes de l'installateur (fiche MW 7), ASCII ; rien pour absent ni pour conforme sans reste.
+    $H = "==> Passage a la 1.1.0 : l'assistant ne va plus sur Internet"
+    $HRestore = '==> Regles Internet de la sauvegarde restauree'
+    $Deja = "    C'etait deja impossible depuis la 1.0.6 (seul GitHub Copilot est joignable), et une demande restee sans reponse pouvait bloquer les autres autorisations."
+    $Copie = "    Copie de l'ancien fichier : {0}.avant-1.1.0, dans le volume de configuration d'opencode (compris dans .\cockpit.ps1 backup)."
+    $Restes = "    [!] Certaines regles demandent encore l'acces a Internet : voir Parametres > Securite."
+    $Laissees = '    [!] Regles Internet laissees telles quelles ({0}).'
+    $ConseilProfil = "    Reglage conseille : Parametres > Securite > Fermer l'acces a Internet (votre profil est garde)."
+    $ConseilPerso = "    Si l'assistant reste bloque sur une demande d'acces a Internet, refusez-la. En mode Avance : Parametres > opencode, mettez webfetch et websearch a deny."
+    $NoStartFait = '    Le fichier est a jour ; il sera lu au prochain demarrage (.\cockpit.ps1 start).'
+    $NoStartActif = '    [!] Regles Internet non mises a jour : opencode est en marche. Relancez .\install.ps1 sans -NoStart ; en attendant : Parametres > Securite.'
+    function New-MigrationValue([string]$Etat, [string]$Profil = '-', [string]$Fichier = '-', [int]$Blocs = 0, [int]$Restes = 0, [string]$Sauvegarde = '-', [string]$Raison = '-') {
+        return [pscustomobject]@{ Etat = $Etat; Profil = $Profil; Fichier = $Fichier; Blocs = $Blocs; Restes = $Restes; Sauvegarde = $Sauvegarde; Raison = $Raison }
+    }
+    function Get-LinesText($Value, [string]$Contexte) {
+        try { return (@(Get-CockpitWebMigrationLines $Value $Contexte) -join "`n") } catch { return ('EXCEPTION ' + $_.Exception.Message) }
+    }
+    $textCases = @(
+        @{ Name = 'absent'; Value = (New-MigrationValue 'absent'); Contexte = 'install'; Lines = @() },
+        @{ Name = 'conforme sans reste'; Value = (New-MigrationValue 'conforme' '-' 'opencode.jsonc'); Contexte = 'install'; Lines = @() },
+        @{ Name = 'conforme sans reste (restore)'; Value = (New-MigrationValue 'conforme' '-' 'opencode.jsonc'); Contexte = 'restore'; Lines = @() },
+        @{ Name = 'migre Prudent'; Value = (New-MigrationValue 'migre' 'prudent' 'opencode.jsonc' 1 0 'opencode.jsonc.avant-1.1.0'); Contexte = 'install'
+            Lines = @($H, "    [OK] Profil de droits Prudent conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.jsonc')) },
+        @{ Name = 'migre Equilibre, sauvegarde existante'; Value = (New-MigrationValue 'migre' 'equilibre' 'opencode.json' 1 0 'existante'); Contexte = 'install'
+            Lines = @($H, "    [OK] Profil de droits Equilibre conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.json')) },
+        @{ Name = 'migre Sans confirmation (restore)'; Value = (New-MigrationValue 'migre' 'autonome' 'opencode.jsonc' 1 0 'opencode.jsonc.avant-1.1.0'); Contexte = 'restore'
+            Lines = @($HRestore, "    [OK] Profil de droits Sans confirmation conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.jsonc')) },
+        @{ Name = 'migre personnalise avec reste (-NoStart)'; Value = (New-MigrationValue 'migre' '-' 'config.json' 2 1 'config.json.avant-1.1.0'); Contexte = 'nostart'
+            Lines = @($H, '    [OK] Vos regles personnalisees sont conservees : seules les regles Internet "sur demande" sont desormais refusees.', $Deja, ($Copie -f 'config.json'), $Restes, $NoStartFait) },
+        @{ Name = 'conforme avec restes'; Value = (New-MigrationValue 'conforme' '-' 'opencode.jsonc' 0 2); Contexte = 'install'; Lines = @($H, $Restes) },
+        @{ Name = 'opencode actif (-NoStart)'; Value = (New-MigrationValue 'non-migre' '-' '-' 0 0 '-' 'opencode-actif'); Contexte = 'nostart'; Lines = @($H, $NoStartActif) },
+        @{ Name = 'opencode actif (install)'; Value = (New-MigrationValue 'non-migre' '-' '-' 0 0 '-' 'opencode-actif'); Contexte = 'install'; Lines = @($H, ($Laissees -f "opencode n'a pas pu etre arrete"), $ConseilPerso) },
+        @{ Name = 'erreur, profil reconnu'; Value = (New-MigrationValue 'erreur' 'prudent' 'opencode.jsonc' 0 0 '-' 'verification'); Contexte = 'install'; Lines = @($H, ($Laissees -f 'verification impossible'), $ConseilProfil) },
+        @{ Name = 'erreur delai'; Value = (New-MigrationValue 'erreur' '-' '-' 0 0 '-' 'delai'); Contexte = 'restore'; Lines = @($HRestore, ($Laissees -f 'verification impossible'), $ConseilPerso) })
+    $reasons = [ordered]@{ 'plusieurs-fichiers' = 'plusieurs fichiers de configuration'; 'illisible' = 'fichier de configuration illisible'; 'cle-en-double' = 'regle ecrite deux fois'
+        'inhabituel' = 'fichier de configuration inhabituel'; 'lien-ou-special' = 'fichier de configuration remplace par un lien ou un element special'; 'trop-gros' = 'fichier de configuration trop gros'
+        'modifie-pendant' = 'fichier modifie pendant la mise a jour'; 'sauvegarde-impossible' = 'copie de securite impossible' }
+    foreach ($reason in @($reasons.Keys)) {
+        $textCases += @{ Name = ('non-migre ' + $reason); Value = (New-MigrationValue 'non-migre' '-' 'opencode.jsonc' 0 0 '-' $reason); Contexte = 'install'; Lines = @($H, ($Laissees -f $reasons[$reason]), $ConseilPerso) }
+    }
+    $textCases += @{ Name = 'non-migre, profil reconnu'; Value = (New-MigrationValue 'non-migre' 'equilibre' 'opencode.jsonc' 0 0 '-' 'modifie-pendant'); Contexte = 'install'; Lines = @($H, ($Laissees -f 'fichier modifie pendant la mise a jour'), $ConseilProfil) }
+    foreach ($case in $textCases) {
+        $got = Get-LinesText $case.Value $case.Contexte
+        Assert-Test ('migration, textes : {0}' -f $case.Name) ($got -ceq ($case.Lines -join "`n")) $got
+        Assert-Test ('migration, textes ASCII : {0}' -f $case.Name) ($got -cmatch '^[\x20-\x7E\n]*\z') $got
+    }
+
+    # --- install.ps1 : ordre de l'etape 4, textes, jamais bloquante ---------------------------------------------------------------
+    Write-Section 'Migration du web (A37) : etape 4 d install.ps1, -NoStart'
+    $migEnv = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) $Version
+    function Invoke-MigrationInstall([string]$Name, [hashtable]$RuleParams, [hashtable]$Extra = @{}) {
+        Reset-Root $migEnv
+        $ruleArgs = @{ CertFile = $CertFile; JsonFile = $JsonFile }
+        foreach ($key in @($RuleParams.Keys)) { $ruleArgs[$key] = $RuleParams[$key] }
+        $journal = Set-InstallDockerScenario $Work ('migration-install-' + $Name) (New-InstallDockerRules @ruleArgs)
+        $params = @{ NoBrowser = $true }
+        foreach ($key in @($Extra.Keys)) { $params[$key] = $Extra[$key] }
+        $result = Invoke-Install -Root $Root -Parameters (New-Params $params) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+        return [pscustomobject]@{ Result = $result; Calls = @(Get-DockerCalls $journal | ForEach-Object { (@($_.args) -join ' ') }) }
+    }
+    function Get-CallIndex([string[]]$Calls, [string]$Pattern) {
+        for ($i = 0; $i -lt $Calls.Count; $i++) { if ($Calls[$i] -cmatch $Pattern) { return $i } }
+        return -1
+    }
+
+    $run = Invoke-MigrationInstall 'ordre' @{}
+    $order = @((Get-CallIndex $run.Calls '^compose -f \S+ up --no-start --remove-orphans\z'),
+        (Get-CallIndex $run.Calls '^run --rm --pull never --network none --user 0 --entrypoint chown -v opencode-cockpit_oc-config'),
+        (Get-CallIndex $run.Calls '^compose -f \S+ stop opencode\z'),
+        (Get-CallIndex $run.Calls '^compose -f \S+ ps -q --status running opencode\z'),
+        (Get-CallIndex $run.Calls $ExactRun),
+        (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z'))
+    $ordered = @($order | Where-Object { $_ -lt 0 }).Count -eq 0
+    for ($i = 1; $i -lt $order.Count; $i++) { if ($order[$i] -le $order[$i - 1]) { $ordered = $false } }
+    Assert-Test 'etape 4 : up --no-start, chown, stop opencode, controle, migration, up -d, dans cet ordre' $ordered (($order -join ',') + ' : ' + ($run.Calls -join ' | '))
+    Assert-Test 'etape 4 : volume neuf (absent) -> rien d affiche, installation terminee' ($null -eq $run.Result.Error -and -not $run.Result.Host.Contains('Passage a la 1.1.0') -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
+
+    $run = Invoke-MigrationInstall 'migre' @{ Migration = $LineMigre }
+    $expected = @($H, "    [OK] Profil de droits Prudent conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.jsonc')) -join "`n"
+    Assert-Test 'etape 4 : Prudent 1.0 migre -> textes exacts, installation terminee' ($null -eq $run.Result.Error -and $run.Result.Host.Contains($expected) -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
+
+    $run = Invoke-MigrationInstall 'restes' @{ Migration = 'migration-web etat=conforme profil=- fichier=opencode.jsonc blocs=0 restes=2 sauvegarde=- raison=-' }
+    Assert-Test 'etape 4 : conforme avec restes -> en-tete et ligne [!] seulement' ($run.Result.Host.Contains(($H, $Restes) -join "`n") -and -not $run.Result.Host.Contains('[OK] Profil de droits')) $run.Result.Host
+
+    $run = Invoke-MigrationInstall 'inattendue' @{ Migration = 'sortie sans rapport' }
+    $rmAt = Get-CallIndex $run.Calls ('^rm -f ' + $MigrationNamePattern + '$')
+    $upAt = Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z'
+    Assert-Test 'etape 4 : sortie inattendue -> [!] verification impossible, installation terminee' ($null -eq $run.Result.Error -and $run.Result.Host.Contains((($H, ($Laissees -f 'verification impossible'), $ConseilPerso) -join "`n")) -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
+    Assert-Test 'etape 4 : sortie inattendue -> docker rm -f AVANT up -d' ($rmAt -ge 0 -and $upAt -gt $rmAt) ($run.Calls -join ' | ')
+
+    foreach ($case in @(@{ Name = 'stop-echec'; Params = @{ StopFails = $true } }, @{ Name = 'toujours-en-marche'; Params = @{ OpencodeRunning = $true } })) {
+        $run = Invoke-MigrationInstall $case.Name $case.Params
+        Assert-Test ('etape 4 ({0}) : aucune migration' -f $case.Name) ((Get-CallIndex $run.Calls ('^run --rm --pull never --name ' + $MigrationNamePattern)) -lt 0) ($run.Calls -join ' | ')
+        Assert-Test ('etape 4 ({0}) : [!] opencode non arrete, up -d joue, installation terminee' -f $case.Name) ($null -eq $run.Result.Error -and $run.Result.Host.Contains(($Laissees -f "opencode n'a pas pu etre arrete")) -and (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z') -ge 0 -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
+    }
+
+    # -NoStart : migration seulement si le volume existe ET si opencode ne tourne pas ; jamais de demarrage.
+    $run = Invoke-MigrationInstall 'nostart-sans-volume' @{} @{ NoStart = $true }
+    Assert-Test '-NoStart, volume absent : aucun run de migration, rien d affiche' ((Get-CallIndex $run.Calls ('^run --rm --pull never --name ' + $MigrationNamePattern)) -lt 0 -and -not $run.Result.Host.Contains('Passage a la 1.1.0') -and (Get-CallIndex $run.Calls '^volume inspect ') -ge 0) ($run.Calls -join ' | ')
+    $run = Invoke-MigrationInstall 'nostart-en-marche' @{ VolumeExists = $true; OpencodeRunning = $true; Migration = $LineMigre } @{ NoStart = $true }
+    Assert-Test '-NoStart, opencode en marche : aucun run, ligne [!] propre a -NoStart' ((Get-CallIndex $run.Calls ('^run --rm --pull never --name ' + $MigrationNamePattern)) -lt 0 -and $run.Result.Host.Contains((($H, $NoStartActif) -join "`n"))) ($run.Result.Host + ' || ' + ($run.Calls -join ' | '))
+    Assert-Test '-NoStart, opencode en marche : aucun arret demande' ((Get-CallIndex $run.Calls '^compose -f \S+ stop') -lt 0) ($run.Calls -join ' | ')
+    $run = Invoke-MigrationInstall 'nostart-arrete' @{ VolumeExists = $true; Migration = $LineMigre } @{ NoStart = $true }
+    Assert-Test '-NoStart, volume present et pile arretee : migration, textes, aucun up' ((Get-CallIndex $run.Calls $ExactRun) -ge 0 -and (Get-CallIndex $run.Calls ' up ') -lt 0 -and $run.Result.Host.Contains((($H, "    [OK] Profil de droits Prudent conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.jsonc'), $NoStartFait) -join "`n"))) ($run.Result.Host + ' || ' + ($run.Calls -join ' | '))
+    Assert-Test '-NoStart, volume present et pile arretee : aucun arret demande' ((Get-CallIndex $run.Calls '^compose -f \S+ stop') -lt 0) ($run.Calls -join ' | ')
 } finally {
     foreach ($server in $Servers) {
         try { $server.StandardInput.Close(); [void]$server.WaitForExit(5000) } catch { }

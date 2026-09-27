@@ -74,6 +74,10 @@ jobs:
           tags: opencode-cockpit/app:ci
       - name: Test de fumee HTTPS de l'image app
         run: bash .github/ci/https-smoke.sh opencode-cockpit/app:ci
+      # Migration du web 1.0.x -> 1.1.0 (A37) : le script dans l'image app, avec les options d'install.ps1 (liens, tube, droits, uid).
+      - name: Migration du web dans l'image app
+        if: ${{ !cancelled() }}
+        run: bash .github/ci/migration-web-smoke.sh opencode-cockpit/app:ci
 
   windows-ps51:
     name: Scripts PowerShell 5.1 (Windows)

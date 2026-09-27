@@ -31,6 +31,33 @@ cherché par `E2E_MESURES_DIR` puis dans `execution/mesures`) avant de démarrer
 `--reel` demande l'accord de l'utilisateur et annonce son budget (décision D-12) : il n'est jamais lancé
 automatiquement. Le banc, lui, se vérifie à blanc (`--reel --dry-run`).
 
+<!-- mw:volume-1-0-6 -->
+### Volume d'une installation 1.0.6 : `--volume-1-0-6` (migration du web, 1.1.0)
+
+`--reel-hors-ligne --volume-1-0-6` rejoue la mise à jour d'une installation 1.0.0 à 1.0.6 (décision A37). Après
+`run --rm preparation`, le service `preparation` de la surcharge (seul son point d'entrée change, le temps d'un `run`)
+pose `e2e/lib/opencode-volume-1.0.6.jsonc` dans le volume `oc-config` : le fichier livré de la 1.0.0 à la 1.0.6, web sur
+« ask », avec le fournisseur du banc. Puis la migration le traite par le conteneur jetable de l'image app du banc, avec
+**la même liste d'options** que `CockpitTls.ps1` (`Get-CockpitWebMigrationArgs` ; test statique dans
+`app/server/migrate-oc-config.test.ts` et garde `[mw]` de `--gardes`). Le banc exige la ligne
+`migration-web etat=migre profil=prudent … sauvegarde=opencode.jsonc.avant-1.1.0` **avant** `up` ; enfin, un temporaire
+non migré est laissé comme leurre (`opencode.jsonc.0123456789ab.tmp`), qu'opencode doit ignorer comme la copie.
+`mw-api-volume-106.mjs` vérifie ce que sert la pile (Prudent 1.1, fichier attendu `opencode-volume-1.0.6.migre.jsonc` à
+l'octet, web refusé aux agents et absent des outils envoyés à l'IA) et joue un second passage par `ctx.migrerVolume()`
+(arrêt d'opencode, migration, relance : « conforme », texte inchangé) ; les scénarios qui lisent `casM2` attendent la
+configuration migrée.
+
+```sh
+scripts/run-e2e.sh --reel-hors-ligne --volume-1-0-6 --scenarios '*api*' --project-prefix gf11-e2e --image-tag gf11
+```
+
+- **Pourquoi pas `--faux`** : il n'y a pas de volume d'opencode à migrer — ni l'image opencode ni son superviseur n'y
+  tournent, le faux sert sa propre configuration. L'option y est refusée, comme en `--reel` (qui facturerait), et
+  `mw-api-volume-106.mjs` s'y annonce « non joué ».
+- **Sans l'option**, rien n'est posé ni migré : la pile `--reel-hors-ligne` par défaut garde le Prudent 1.0
+  d'`opencode-hors-ligne.jsonc` (web sur « ask »), pour la répétition de la mesure D11.
+<!-- /mw:volume-1-0-6 -->
+
 ## Isolation
 
 Tout part de deux fichiers Compose, toujours passés ensemble :
@@ -191,6 +218,7 @@ sortie est le nombre d'échecs.
 | `e2e/lib/cockpit.mjs` | contre-vérification du certificat public, transport HTTPS épinglé (ou `fetch` en `--http`), santé, session, client d'API, relevés du faux |
 | `e2e/lib/faux-fournisseur.mjs` | faux fournisseur compatible OpenAI (mode `--reel-hors-ligne`) |
 | `e2e/lib/opencode-hors-ligne.jsonc` | configuration d'opencode pour ce mode (levier de M-B1) |
+| `e2e/lib/opencode-volume-1.0.6.jsonc`, `…migre.jsonc` | graine de `--volume-1-0-6` (fichier de la 1.0.6, fournisseur du banc) et attendu migré à l'octet |
 | `e2e/fake-opencode-server.ts` | le faux opencode des tests, servi dans la pile jetable ; avec `--salle`, aussi la salle factice, le faux catalogue Copilot et la préparation de leur pile |
 | `e2e/docker-compose.e2e.yml` | surcharge d'isolation, jamais utilisée seule |
 | `e2e/scenarios/` | les scénarios ; `000-smoke.mjs` vérifie le banc lui-même ; `010-reprise-apres-coupure.mjs` vérifie que l'interface se rétablit seule après un rechargement de l'amorçage en échec (coupure réseau, retour de l'onglet, focus sur « Réessayer », onglet caché, redémarrage réel du conteneur, amorçage lent puis deux changements rapprochés, 401) |

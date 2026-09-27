@@ -64,11 +64,28 @@ function New-DockerRule([string]$Match, [string]$Stdout = '', [int]$Code = 0, [s
     return $rule
 }
 
+# Verdict du script de migration du web (fiche MW 3) ; defaut du banc : volume neuf, rien a migrer, rien d'affiche.
+$MigrationAbsent = 'migration-web etat=absent profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=-'
+# Nom du conteneur jetable de la migration pour le projet du banc (8 caracteres hexadecimaux tires au hasard).
+$MigrationNamePattern = 'opencode-cockpit-migration-web-[0-9a-f]{8}'
+
+# Regles du conteneur jetable de la migration du web (A37) et de son retrait : a placer AVANT la regle generique '^run ',
+# qui rendrait une sortie vide (erreur sortie-inattendue). Stderr et delai simules a la demande.
+function New-MigrationDockerRules([string]$Stdout = ($MigrationAbsent + "`n"), [int]$Code = 0, [string]$Stderr = '', [int]$SleepMs = 0) {
+    $rule = [ordered]@{ match = ('^run --rm --pull never --name ' + $MigrationNamePattern + ' '); stdout = $Stdout; code = $Code }
+    if ($Stderr) { $rule['stderr'] = $Stderr }
+    if ($SleepMs -gt 0) { $rule['sleepMs'] = $SleepMs }
+    return @($rule, (New-DockerRule ('^rm -f ' + $MigrationNamePattern + '$') ''))
+}
+
 # Jeu de regles d'une execution complete d'install.ps1. Les chemins des fichiers compose contiennent le dossier du
 # cockpit : les motifs acceptent n'importe quel chemin apres -f.
+# Migration du web (A37) : -Migration (ligne rendue par le script), -MigrationCode, -MigrationStderr ; arret d'opencode en
+# echec (-StopFails), opencode encore en marche (-OpencodeRunning), volume oc-config present (-VolumeExists, pour -NoStart).
 function New-InstallDockerRules {
     param([string]$CertFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.0.6', [string]$ContainerHealth = 'healthy',
-        [switch]$ImagesMissing, [switch]$FailPull, [string]$Logs = '')
+        [switch]$ImagesMissing, [switch]$FailPull, [string]$Logs = '', [string]$Migration = $MigrationAbsent, [int]$MigrationCode = 0,
+        [string]$MigrationStderr = '', [switch]$StopFails, [switch]$OpencodeRunning, [switch]$VolumeExists)
     $rules = New-Object System.Collections.Generic.List[object]
     $rules.Add((New-DockerRule '^version ' "28.0.1`n"))
     $rules.Add((New-DockerRule '^compose version' "2.33.0`n"))
@@ -88,6 +105,16 @@ function New-InstallDockerRules {
     $rules.Add((New-DockerRule '^load ' "Loaded image: opencode-cockpit-app:test`nLoaded image: opencode-cockpit-opencode:test`n"))
     $rules.Add((New-DockerRule '^compose -f .* up --no-start' ''))
     $rules.Add((New-DockerRule '^compose -f .* up -d' ''))
+    foreach ($rule in @(New-MigrationDockerRules ($Migration + "`n") $MigrationCode $MigrationStderr)) { $rules.Add($rule) }
+    $stopCode = 0
+    if ($StopFails) { $stopCode = 1 }
+    $rules.Add((New-DockerRule '^compose -f .* stop opencode$' '' $stopCode))
+    $running = ''
+    if ($OpencodeRunning) { $running = "0123456789ab`n" }
+    $rules.Add((New-DockerRule '^compose -f .* ps -q --status running opencode$' $running))
+    $volumeCode = 1
+    if ($VolumeExists) { $volumeCode = 0 }
+    $rules.Add((New-DockerRule '^volume inspect --format \{\{\.Name\}\} opencode-cockpit_oc-config$' "opencode-cockpit_oc-config`n" $volumeCode))
     $rules.Add((New-DockerRule '^run ' ''))
     $rules.Add((New-DockerRule '^compose -f .* ps -q cockpit$' "0123456789abcdef`n"))
     $rules.Add((New-DockerRule '^inspect --format \{\{\.State\.Health\.Status\}\}' ($ContainerHealth + "`n")))

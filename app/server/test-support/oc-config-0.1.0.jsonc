@@ -1,0 +1,37 @@
+{
+  // Configuration initiale posée par opencode-cockpit au premier démarrage.
+  // Modifiable ensuite depuis l'interface (Paramètres > opencode).
+  "$schema": "https://opencode.ai/config.json",
+
+  // Aucune mise à jour automatique : la version est épinglée dans l'image.
+  "autoupdate": false,
+
+  // Jamais de partage public des conversations (opencode.ai).
+  "share": "disabled",
+
+  // Seul GitHub Copilot est autorisé : aucun code n'est envoyé à un autre fournisseur,
+  // en particulier pas aux modèles gratuits « OpenCode Zen » activés par défaut par opencode.
+  "enabled_providers": ["github-copilot"],
+
+  // Serveurs de langage et formateurs : téléchargements à la volée désactivés.
+  "lsp": false,
+  "formatter": false,
+
+  // Mode prudent : confirmation avant toute modification de fichier ou commande shell,
+  // sauf quelques commandes en lecture seule. La dernière règle correspondante l'emporte.
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git branch*": "allow",
+      "git show*": "allow",
+      "ls*": "allow",
+      "pwd": "allow"
+    },
+    "webfetch": "ask",
+    "websearch": "ask"
+  }
+}

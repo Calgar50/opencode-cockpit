@@ -62,7 +62,7 @@ export async function run(ctx) {
     exigerPlancher(apres.permission, PLANCHER_CONVERSATION, "conversation après le tour");
 
     // 3. Présence des outils : aucun retiré par le plancher, « read » compris.
-    const attendus = casM2("sans-regle", ctx.mode);
+    const attendus = casM2("sans-regle", ctx);
     if (ctx.mode === "faux") {
       const avecPlancher = outilsDuFaux(apres, agents, { agent: "build" });
       const sansRegle = outilsDuFaux({ ...apres, permission: [] }, agents, { agent: "build" });

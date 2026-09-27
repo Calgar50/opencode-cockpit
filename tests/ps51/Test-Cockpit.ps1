@@ -494,7 +494,8 @@ try {
 
     Set-SalleScenario
     $backupResult = Invoke-CockpitScript $SalleDir @('backup')
-    $tarCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^run --rm --entrypoint tar ' })
+    # --pull never (fiche MW 1.2) : l'image du cockpit n'est jamais tiree d'un registre par une sauvegarde.
+    $tarCall = @(Get-DockerJournal | Where-Object { (@($_.args) -join ' ') -cmatch '^run --rm --pull never --entrypoint tar ' })
     $tarArgs = ''
     if ($tarCall.Count -gt 0) { $tarArgs = (@($tarCall[0].args) -join ' ') }
     Assert-Test 'backup : les conversations de la salle sont montees en lecture seule' ($tarArgs -cmatch 'rg105-l7_oc-omo-data:/src/oc-omo-data:ro') (Get-Extract $tarArgs)
@@ -538,6 +539,50 @@ try {
     Set-SalleScenario
     $simpleResult = Invoke-CockpitScript $SalleDir @('uninstall')
     Assert-Test 'uninstall sans -Purge : les donnees restent' ($simpleResult.Host.Contains('Les donnees restent dans les volumes Docker') -and -not (Test-DockerCall '^volume rm ') -and -not (Test-DockerCall '^image rm ')) (Get-Extract $simpleResult.Host)
+
+    # --- restore : migration du web de la sauvegarde restauree (decision A37, fiche MW 1.1 point 3 : T6 e) -------------------------
+    # Apres l'extraction reussie, avant le redemarrage (finally : up -d --force-recreate) ; extraction en echec : aucun appel.
+    Write-Section 'restore : regles Internet de la sauvegarde restauree (migration du web, A37)'
+    $RestoreDir = New-TestInstallation $Work 'restore' (New-TestEnvValues $Ports.plain 'https')
+    $BackupFile = Join-Path $Work 'cockpit-20260927-101500.tar.gz'
+    [System.IO.File]::WriteAllText($BackupFile, 'archive factice du banc')
+    $MigrationPattern = '^run --rm --pull never --name rg105-l7-migration-web-[0-9a-f]{8} --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 -v rg105-l7_oc-config:/oc-config --entrypoint node opencode-cockpit/app:rg105-l7 --no-warnings server/migrate-oc-config.ts /oc-config\z'
+    $ExtractPattern = '^run --rm --pull never --user 0 --entrypoint sh '
+    function Get-JournalIndex([string]$Pattern) {
+        $calls = @(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') })
+        for ($i = 0; $i -lt $calls.Count; $i++) { if ($calls[$i] -cmatch $Pattern) { return $i } }
+        return -1
+    }
+    function Set-RestoreScenario([string]$Migration = 'migration-web etat=absent profil=- fichier=- blocs=0 restes=0 sauvegarde=- raison=-', [object[]]$More = @()) {
+        Set-DockerScenario (New-CockpitDockerRules -Migration $Migration -Extra (@($More) + @((New-Rule '^compose -f \S.* config --format json$' $ConfigJson))))
+    }
+    $RestoreHeader = '==> Regles Internet de la sauvegarde restauree'
+
+    Set-RestoreScenario 'migration-web etat=conforme profil=- fichier=opencode.jsonc blocs=0 restes=0 sauvegarde=- raison=-'
+    $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
+    $extractAt = Get-JournalIndex $ExtractPattern
+    $migrationAt = Get-JournalIndex $MigrationPattern
+    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z'
+    Assert-Test 'restore : extraction (--pull never), puis migration, puis up -d --force-recreate' ($null -eq $restore.Error -and $extractAt -ge 0 -and $migrationAt -gt $extractAt -and $upAt -gt $migrationAt) ('{0},{1},{2} {3} {4}' -f $extractAt, $migrationAt, $upAt, $restore.Error, (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600))
+    Assert-Test 'restore : verification de l archive avec --pull never' ((Get-JournalIndex '^run --rm --pull never --entrypoint tar -v \S.*:/backup:ro opencode-cockpit/app:rg105-l7 tzf /backup/cockpit-20260927-101500\.tar\.gz\z') -ge 0) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
+    Assert-Test 'restore : sauvegarde 1.1 (conforme) -> rien d affiche sur les regles Internet' (-not $restore.Host.Contains($RestoreHeader) -and $restore.Host.Contains('Restauration terminee.')) (Get-Extract $restore.Host)
+
+    Set-RestoreScenario 'migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-'
+    $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
+    $attendu = @($RestoreHeader, "    [OK] Profil de droits Prudent conserve : seul l'acces a Internet est desormais refuse.",
+        "    C'etait deja impossible depuis la 1.0.6 (seul GitHub Copilot est joignable), et une demande restee sans reponse pouvait bloquer les autres autorisations.",
+        "    Copie de l'ancien fichier : opencode.jsonc.avant-1.1.0, dans le volume de configuration d'opencode (compris dans .\cockpit.ps1 backup).") -join "`n"
+    Assert-Test 'restore : sauvegarde 1.0.x re-migree, en-tete propre a la restauration' ($null -eq $restore.Error -and $restore.Host.Contains($attendu)) (Get-Extract $restore.Host 900)
+
+    Set-RestoreScenario 'sortie sans rapport'
+    $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
+    $rmAt = Get-JournalIndex '^rm -f rg105-l7-migration-web-[0-9a-f]{8}\z'
+    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z'
+    Assert-Test 'restore : sortie inattendue -> [!], conteneur retire avant le redemarrage, restauration terminee' ($null -eq $restore.Error -and $restore.Host.Contains('[!] Regles Internet laissees telles quelles (verification impossible).') -and $rmAt -ge 0 -and $upAt -gt $rmAt) (Get-Extract $restore.Host 600)
+
+    Set-RestoreScenario 'migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-' @((New-Rule $ExtractPattern '' 1))
+    $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
+    Assert-Test 'restore : extraction en echec -> aucune migration, redemarrage quand meme' ($null -ne $restore.Error -and (Get-JournalIndex '^run --rm --pull never --name ') -lt 0 -and (Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z') -ge 0 -and -not $restore.Host.Contains($RestoreHeader)) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
 
     # --- Relecture 2ter-vague-3 : une entree de premier niveau supprimee apres install.ps1 ne fait jamais demarrer la salle ----
     # Docker recreerait la source absente en DOSSIER vide sur le poste (un fichier devient un dossier) : cockpit.ps1 ne passe pas le

@@ -1,5 +1,5 @@
 ﻿# CockpitTls.ps1 - bibliotheque commune d'install.ps1 et cockpit.ps1 (opencode-cockpit 1.0.5).
-# Chargee par dot-sourcing apres Assert-CockpitFullLanguage. ASCII + BOM, CRLF, 700 lignes au plus. Aucun etat global .NET modifie.
+# Chargee par dot-sourcing apres Assert-CockpitFullLanguage. ASCII + BOM, CRLF, 800 lignes au plus. Aucun etat global .NET modifie.
 # curl et git : Invoke-CockpitProcess. docker : Invoke-CockpitDocker (variables de compose masquees, -f explicite).
 #
 # Contrat stable ($Mode = 'https' | 'http', ou objet rendu par Get-CockpitLocalMode) :
@@ -143,6 +143,86 @@ function Invoke-CockpitDocker([string]$Root, [object[]]$DockerArgs, [int]$Timeou
     # Chemin absolu (jamais un docker.exe du dossier courant) ; le fichier "docker" sans extension de Docker Desktop est ignore.
     $docker = @(Get-Command docker -CommandType Application -ErrorAction Stop | Where-Object { @('.exe', '.cmd', '.bat') -contains $_.Extension })[0].Source
     return (Invoke-CockpitProcess -FilePath $docker -Arguments (ConvertTo-CockpitDockerArgs $Root $DockerArgs) -TimeoutSec $TimeoutSec -RemoveEnv $CockpitComposeEnvNames)
+}
+
+# --- Migration du web 1.0.x -> 1.1.0 (decision A37, fiche MW 1.2, 1.3, 3 et 7) ---------------------------------------------------
+# Verdict de server/migrate-oc-config.ts : la SEULE ligne non vide de stdout, confrontee a cette expression ancree.
+$CockpitWebMigrationPattern = '^migration-web etat=(absent|conforme|migre|non-migre|erreur) profil=(prudent|equilibre|autonome|-) fichier=(opencode\.jsonc|opencode\.json|config\.json|-) blocs=([0-9]{1,4}) restes=([0-9]{1,4}) sauvegarde=((opencode\.jsonc|opencode\.json|config\.json)\.avant-1\.1\.0|existante|-) raison=([a-z-]{1,24})\z'
+
+function New-CockpitWebMigrationResult([string]$Etat, [string]$Raison, [string]$Profil = '-', [string]$Fichier = '-', [int]$Blocs = 0, [int]$Restes = 0, [string]$Sauvegarde = '-') {
+    return [pscustomobject]@{ Etat = $Etat; Profil = $Profil; Fichier = $Fichier; Blocs = $Blocs; Restes = $Restes; Sauvegarde = $Sauvegarde; Raison = $Raison }
+}
+
+# Options du conteneur jetable, dans l'ordre de la fiche : aucune variable ni --env-file, aucun reseau, aucun privilege, image
+# jamais tiree. Le banc e2e (e2e/lib/docker-e2e.mjs, section mw:) utilise la MEME liste (app/server/migrate-oc-config.test.ts).
+function Get-CockpitWebMigrationArgs([string]$Project, [string]$Image, [string]$Name) {
+    return @('run', '--rm', '--pull', 'never', '--name', $Name, '--network', 'none', '--user', '1000:1000', '--read-only', '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges', '--pids-limit', '32', '-v', ($Project + '_oc-config:/oc-config'), '--entrypoint', 'node', $Image,
+        '--no-warnings', 'server/migrate-oc-config.ts', '/oc-config')
+}
+
+# Retrait du conteneur jetable (delai, sortie inattendue) AVANT de rendre la main : Invoke-CockpitProcess ne tue que le client
+# docker, et le conteneur continuerait d'ecrire apres le redemarrage d'opencode. Erreur ignoree.
+function Remove-CockpitWebMigrationContainer([string]$Name) {
+    try { [void](Invoke-CockpitDocker '' @('rm', '-f', $Name) 30) } catch { }
+}
+
+# Migration du web du volume <Project>_oc-config, opencode ARRETE par l'appelant (install | nostart | restore). Ne leve JAMAIS :
+# tout echec rend Etat 'erreur'. -> { Etat ; Profil ; Fichier ; Blocs ; Restes ; Sauvegarde ; Raison }. Stderr jamais lu.
+function Invoke-CockpitWebMigration([string]$Root, [string]$Project, [string]$Image, [string]$Contexte, [int]$TimeoutSec = 120) {
+    $name = $null
+    try {
+        if (@('install', 'nostart', 'restore') -cnotcontains $Contexte -or $Project -cnotmatch '^[a-z0-9][a-z0-9_-]*\z') { return (New-CockpitWebMigrationResult 'erreur' 'interne') }
+        # Image : jamais une option (comme Get-CockpitImageVersion), jamais hors du format d'une reference d'image.
+        if (-not $Image -or $Image.StartsWith('-') -or $Image -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\z') { return (New-CockpitWebMigrationResult 'erreur' 'docker') }
+        $bytes = New-Object byte[] 4; $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+        $name = '{0}-migration-web-{1}' -f $Project, (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+        $result = Invoke-CockpitDocker $Root (Get-CockpitWebMigrationArgs $Project $Image $name) $TimeoutSec
+        if ($result.TimedOut) { Remove-CockpitWebMigrationContainer $name; return (New-CockpitWebMigrationResult 'erreur' 'delai') }
+        $lines = @(([string]$result.StdOut -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+        # Code coherent avec l'etat : 1 pour 'erreur', 0 sinon.
+        if ($lines.Count -eq 1 -and $lines[0] -cmatch $CockpitWebMigrationPattern -and @(0, 1) -contains $result.ExitCode -and (($Matches[1] -ceq 'erreur') -eq ($result.ExitCode -eq 1))) {
+            return (New-CockpitWebMigrationResult $Matches[1] $Matches[8] $Matches[2] $Matches[3] ([int]$Matches[4]) ([int]$Matches[5]) $Matches[6])
+        }
+        Remove-CockpitWebMigrationContainer $name
+        if ($lines.Count -eq 0 -and @(0, 1) -notcontains $result.ExitCode) { return (New-CockpitWebMigrationResult 'erreur' 'docker') }
+        return (New-CockpitWebMigrationResult 'erreur' 'sortie-inattendue')
+    } catch {
+        if ($name) { Remove-CockpitWebMigrationContainer $name }
+        return (New-CockpitWebMigrationResult 'erreur' 'docker')
+    }
+}
+
+# Lignes ASCII de l'installateur (fiche MW 7) : rien pour 'absent' ni pour 'conforme' sans reste ; au plus cinq lignes sous l'en-tete.
+function Get-CockpitWebMigrationLines($Result, [string]$Contexte) {
+    if ($null -eq $Result -or $Result.Etat -ceq 'absent' -or ($Result.Etat -ceq 'conforme' -and $Result.Restes -eq 0)) { return }
+    $lines = @("==> Passage a la 1.1.0 : l'assistant ne va plus sur Internet")
+    if ($Contexte -ceq 'restore') { $lines = @('==> Regles Internet de la sauvegarde restauree') }
+    $labels = @{ prudent = 'Prudent'; equilibre = 'Equilibre'; autonome = 'Sans confirmation' }
+    $profil = $labels.ContainsKey([string]$Result.Profil)
+    $restes = "    [!] Certaines regles demandent encore l'acces a Internet : voir Parametres > Securite."
+    if ($Result.Etat -ceq 'migre') {
+        if ($profil) { $lines += ("    [OK] Profil de droits {0} conserve : seul l'acces a Internet est desormais refuse." -f $labels[[string]$Result.Profil]) }
+        else { $lines += '    [OK] Vos regles personnalisees sont conservees : seules les regles Internet "sur demande" sont desormais refusees.' }
+        $lines += "    C'etait deja impossible depuis la 1.0.6 (seul GitHub Copilot est joignable), et une demande restee sans reponse pouvait bloquer les autres autorisations."
+        $lines += ("    Copie de l'ancien fichier : {0}.avant-1.1.0, dans le volume de configuration d'opencode (compris dans .\cockpit.ps1 backup)." -f $Result.Fichier)
+        if ($Result.Restes -gt 0) { $lines += $restes }
+        if ($Contexte -ceq 'nostart') { $lines += '    Le fichier est a jour ; il sera lu au prochain demarrage (.\cockpit.ps1 start).' }
+        return $lines
+    }
+    if ($Result.Etat -ceq 'conforme') { return ($lines + $restes) }
+    if ($Result.Raison -ceq 'opencode-actif' -and $Contexte -ceq 'nostart') { return ($lines + '    [!] Regles Internet non mises a jour : opencode est en marche. Relancez .\install.ps1 sans -NoStart ; en attendant : Parametres > Securite.') }
+    $reasons = @{ 'plusieurs-fichiers' = 'plusieurs fichiers de configuration'; 'illisible' = 'fichier de configuration illisible'; 'cle-en-double' = 'regle ecrite deux fois'
+        'inhabituel' = 'fichier de configuration inhabituel'; 'lien-ou-special' = 'fichier de configuration remplace par un lien ou un element special'
+        'trop-gros' = 'fichier de configuration trop gros'; 'modifie-pendant' = 'fichier modifie pendant la mise a jour'
+        'sauvegarde-impossible' = 'copie de securite impossible'; 'opencode-actif' = "opencode n'a pas pu etre arrete" }
+    $text = 'verification impossible'
+    if ($Result.Etat -ceq 'non-migre' -and $reasons.ContainsKey([string]$Result.Raison)) { $text = $reasons[[string]$Result.Raison] }
+    $lines += ('    [!] Regles Internet laissees telles quelles ({0}).' -f $text)
+    if ($profil) { $lines += "    Reglage conseille : Parametres > Securite > Fermer l'acces a Internet (votre profil est garde)." }
+    else { $lines += "    Si l'assistant reste bloque sur une demande d'acces a Internet, refusez-la. En mode Avance : Parametres > opencode, mettez webfetch et websearch a deny." }
+    return $lines
 }
 
 # Nom du projet tel que compose le resout (P3). La configuration contient des secrets : jamais affichee.

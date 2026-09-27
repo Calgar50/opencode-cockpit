@@ -194,6 +194,24 @@ function Get-DockerOutput {
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String).Trim() }
 }
 
+# Migration du web 1.0.x -> 1.1.0 (A37, fiche MW 1.1) : vrai si opencode tourne, ou si on ne peut pas le savoir (ferme en cas de doute).
+function Test-OpencodeRunning {
+    try {
+        $ps = Invoke-CockpitDocker $Root @('compose', 'ps', '-q', '--status', 'running', 'opencode') 30
+        return ($ps.TimedOut -or $ps.ExitCode -ne 0 -or ([string]$ps.StdOut).Trim() -cne '')
+    } catch { return $true }
+}
+
+# Arret d'opencode avant la migration, par Invoke-CockpitDocker (jamais Invoke-Docker, qui leve sur un code non nul), puis controle :
+# aucun conteneur opencode en marche. Faux si l'un ou l'autre echoue : la migration n'a alors pas lieu, l'installation continue.
+function Stop-OpencodeForWebMigration {
+    try {
+        $stop = Invoke-CockpitDocker $Root @('compose', 'stop', 'opencode') 120
+        if ($stop.TimedOut -or $stop.ExitCode -ne 0) { return $false }
+    } catch { return $false }
+    return (-not (Test-OpencodeRunning))
+}
+
 function New-Secret([int]$Bytes = 32) {
     $buffer = New-Object byte[] $Bytes
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -1215,6 +1233,19 @@ try {
     }
 
     if ($NoStart) {
+        # Migration du web (A37, fiche MW 1.1 point 2) : seulement si le volume de configuration d'opencode existe ET si opencode ne
+        # tourne pas ; jamais d'arret ni de demarrage ici. Jamais bloquante : le fichier sera lu au prochain cockpit.ps1 start.
+        $webLines = @()
+        try {
+            $noStartProject = Get-CockpitComposeProjectName $Root
+            $volume = Invoke-CockpitDocker '' @('volume', 'inspect', '--format', '{{.Name}}', ('{0}_oc-config' -f $noStartProject)) 30
+            if (-not $volume.TimedOut -and $volume.ExitCode -eq 0) {
+                $webMigration = New-CockpitWebMigrationResult 'non-migre' 'opencode-actif'
+                if (-not (Test-OpencodeRunning)) { $webMigration = Invoke-CockpitWebMigration -Root $Root -Project $noStartProject -Image $config['COCKPIT_APP_IMAGE'] -Contexte 'nostart' }
+                $webLines = @(Get-CockpitWebMigrationLines $webMigration 'nostart')
+            }
+        } catch { $webLines = @(Get-CockpitWebMigrationLines (New-CockpitWebMigrationResult 'erreur' 'docker') 'nostart') }
+        if ($webLines.Count -gt 0) { Write-Host ''; Write-CockpitLines $webLines }
         Write-Step 'Installation terminee (demarrage non demande)'
         if ($finalScheme -ceq 'http') { Write-Info 'Demarrer : .\cockpit.ps1 start, puis .\cockpit.ps1 open (verification : preuve du jeton)' }
         else { Write-Info 'Demarrer : .\cockpit.ps1 start, puis .\cockpit.ps1 open (verification HTTPS : empreinte et preuve du jeton)' }
@@ -1231,13 +1262,20 @@ try {
     foreach ($volume in @('oc-config', 'oc-data', 'oc-cache', 'cockpit-data', 'control')) {
         $volumeArgs += @('-v', ('{0}_{1}:/volumes/{1}' -f $Project, $volume))
     }
-    Invoke-Docker run --rm --network none --user 0 --entrypoint chown @volumeArgs $config['COCKPIT_OPENCODE_IMAGE'] -R 1000:1000 /volumes
+    # --pull never : une image absente est une erreur, jamais un telechargement (en Build, le nom local se resoudrait sur docker.io).
+    Invoke-Docker run --rm --pull never --network none --user 0 --entrypoint chown @volumeArgs $config['COCKPIT_OPENCODE_IMAGE'] -R 1000:1000 /volumes
     # Volume du certificat local : prepare dans les deux modes (le mode HTTP n'y ecrit rien, mais le retour en
     # HTTPS doit trouver un dossier utilisable). Image du cockpit, jamais -R : la cle garde ses droits 0600.
     $tlsMount = @('-v', ('{0}_cockpit-tls:/tls' -f $Project))
-    Invoke-Docker run --rm --network none --user 0 --entrypoint chown @tlsMount $config['COCKPIT_APP_IMAGE'] 1000:1000 /tls
-    Invoke-Docker run --rm --network none --user 0 --entrypoint chmod @tlsMount $config['COCKPIT_APP_IMAGE'] 0700 /tls
+    Invoke-Docker run --rm --pull never --network none --user 0 --entrypoint chown @tlsMount $config['COCKPIT_APP_IMAGE'] 1000:1000 /tls
+    Invoke-Docker run --rm --pull never --network none --user 0 --entrypoint chmod @tlsMount $config['COCKPIT_APP_IMAGE'] 0700 /tls
     Write-Good 'Droits des volumes verifies'
+    # Migration du web 1.0.x -> 1.1.0 (A37, fiche MW 1.1 point 1) : opencode arrete et verifie arrete, puis le conteneur jetable de
+    # l'image app. Jamais bloquante : si opencode tourne encore, pas de migration, une ligne [!] ; up -d suit dans tous les cas.
+    $webMigration = New-CockpitWebMigrationResult 'non-migre' 'opencode-actif'
+    if (Stop-OpencodeForWebMigration) { $webMigration = Invoke-CockpitWebMigration -Root $Root -Project $Project -Image $config['COCKPIT_APP_IMAGE'] -Contexte 'install' }
+    $webLines = @(Get-CockpitWebMigrationLines $webMigration 'install')
+    if ($webLines.Count -gt 0) { Write-Host ''; Write-CockpitLines $webLines }
 
     Write-Step 'Demarrage des conteneurs'
     Invoke-Docker compose up -d --remove-orphans

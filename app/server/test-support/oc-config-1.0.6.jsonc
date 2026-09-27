@@ -1,0 +1,38 @@
+{
+  // Configuration initiale posée par opencode-cockpit au premier démarrage.
+  // Modifiable ensuite depuis l'interface (Paramètres > opencode).
+  "$schema": "https://opencode.ai/config.json",
+
+  // Aucune mise à jour automatique : la version est épinglée dans l'image.
+  "autoupdate": false,
+
+  // Jamais de partage public des conversations (opencode.ai).
+  "share": "disabled",
+
+  // Seul GitHub Copilot est autorisé : aucun code n'est envoyé à un autre fournisseur,
+  // en particulier pas aux modèles gratuits « OpenCode Zen » activés par défaut par opencode.
+  "enabled_providers": ["github-copilot"],
+  // Seconde barrière : fournisseurs gratuits d'opencode explicitement désactivés (leurs chargeurs ne tournent pas).
+  "disabled_providers": ["opencode", "opencode-go"],
+
+  // Serveurs de langage et formateurs : téléchargements à la volée désactivés.
+  "lsp": false,
+  "formatter": false,
+
+  // Permissions posées à l'installation : profil « Prudent » de Paramètres > opencode. Appliquer un autre
+  // profil remplace le bloc ci-dessous sans toucher à ce commentaire : seules les règles qui suivent font foi.
+  // Pourquoi aucune commande « de consultation » (git status, git diff...) n'est autorisée d'office :
+  // opencode ne vérifie pas les affectations de variables (export GIT_CONFIG_...), qui suffisent à en
+  // détourner une pour exécuter du code. Sous-agents (task) sur confirmation : leur consigne peut désigner
+  // un fichier (@chemin) qu'opencode lit sans autre contrôle.
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "pwd": "allow"
+    },
+    "task": "ask",
+    "webfetch": "ask",
+    "websearch": "ask"
+  }
+}
