@@ -73,8 +73,10 @@ import { modelName, type Rule, truncateGlob } from "./shared/assistant-rules.ts"
 import type { StopCause, StopResult } from "./shared/cockpit-event-types.ts";
 import { type FlowEstimateContext, suiteEstimate } from "./shared/flow-estimate.ts";
 import {
+  DELIVERABLE_TEXTS,
   deliverable,
   type FlowAction,
+  type FlowDeliverable,
   type FlowState,
   injectionText,
   type InjectionKind,
@@ -292,6 +294,48 @@ function lireChoixConfirme(brut: string | null): string[] | "aucun" | null {
     return null;
   }
 }
+
+// <c5:depot-fige>
+/** Note « Relecture non conclue après {n} tours… » écrite par le cockpit : son nombre de tours se relit sur le gabarit. */
+const [NON_CONCLUE_AVANT = "", NON_CONCLUE_APRES = ""] = DELIVERABLE_TEXTS.nonConclue.split("{n}");
+
+/**
+ * Grande fusion (GF4, A28 C6) : ce que le COCKPIT écrit dans un message de résultat, FIGÉ à son dépôt dans l'événement d'audit.
+ * Codes et nombres seulement, jamais un texte de message (team_run_events) : genre, journal de relecture, et les deux notes
+ * d'honnêteté. La vue le rend (`depot`) pour que la carte de CE message ne relise jamais l'état d'un lancement relancé depuis.
+ */
+function ecritAuDepot(genre: "resultat" | "resultats-partiels", livrable: FlowDeliverable | null): Record<string, string | number | boolean | null> {
+  const notes = genre === "resultat" ? (livrable?.notes ?? []) : [];
+  const conclue = notes.find((note) => note.startsWith(NON_CONCLUE_AVANT) && note.endsWith(NON_CONCLUE_APRES));
+  const tours = conclue === undefined ? Number.NaN : Number(conclue.slice(NON_CONCLUE_AVANT.length, conclue.length - NON_CONCLUE_APRES.length));
+  return {
+    genre,
+    journal: genre === "resultat" && livrable?.journal === true,
+    nonRelue: notes.includes(DELIVERABLE_TEXTS.nonRelue),
+    nonConclue: Number.isSafeInteger(tours) && tours > 0 ? tours : null,
+  };
+}
+
+/** Dépôt figé du message `messageId`, relu dans les événements d'audit ; null pour un dépôt sans cette trace. */
+function depotDesEvenements(events: readonly { kind: string; data: string }[], messageId: string | null): TeamRunView["depot"] | null {
+  if (messageId === null) return null;
+  for (const event of [...events].reverse()) {
+    if (event.kind !== "livraison" && event.kind !== "resultats-ajoutes") continue;
+    let data: unknown;
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      continue;
+    }
+    if (!isRecord(data) || data.messageId !== messageId) continue;
+    const genre = data.genre === "resultat" || data.genre === "resultats-partiels" ? data.genre : null;
+    if (genre === null || typeof data.journal !== "boolean" || typeof data.nonRelue !== "boolean") return null;
+    const tours = typeof data.nonConclue === "number" && Number.isSafeInteger(data.nonConclue) && data.nonConclue > 0 ? data.nonConclue : null;
+    return { messageId, genre, journal: data.journal, nonRelue: data.nonRelue, nonConclue: tours };
+  }
+  return null;
+}
+// </c5:depot-fige>
 
 /** Texte des parties « text » d'un message opencode, dans l'ordre. */
 function textOf(parts: unknown): string {
@@ -961,9 +1005,15 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       }
     });
     // </c5:blocs-prevus>
+    // <c5:depot-fige>
+    const depot = depotDesEvenements(store.events.ofRun(runId), row.result_message_id);
+    // </c5:depot-fige>
     return {
       ...base,
       ...(blocs.length === 0 ? {} : { blocs }),
+      // <c5:depot-fige>
+      ...(depot === null ? {} : { depot }),
+      // </c5:depot-fige>
       steps: base.steps.map((step) => {
         const line = brut.get(`${step.stepId}\u0000${step.tour}\u0000${step.tentative}`);
         const verdict = line?.verdict === "a-reprendre" || line?.verdict === "rien-a-reprendre" ? line.verdict : null;
@@ -1940,7 +1990,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       try {
         const messageId = await inject(run, "resultat", livrable.texte);
         if (messageId !== null) store.runs.patch(run.runId, { resultMessageId: messageId });
-        audit(run.runId, "livraison", { etape: livrable.etapeSource, messageId });
+        // <c5:depot-fige>
+        // GF4 (A28 C6) : ce que le cockpit a écrit dans ce message est figé ici, avec lui.
+        audit(run.runId, "livraison", { etape: livrable.etapeSource, messageId, ...ecritAuDepot("resultat", livrable) });
+        // </c5:depot-fige>
       } catch (err) {
         // Injection refusée par opencode : carte seule et [Ajouter à la conversation] (D-eq-14).
         warn("résultat non injecté : carte seule", { runId: run.runId, error: errorMessage(err) });
@@ -2123,7 +2176,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       const messageId = await inject(run, complet ? "resultat" : "resultats-partiels", complet?.texte ?? partiel?.texte ?? "");
       if (messageId === null) return refusal(409, "etat-incompatible");
       store.runs.patch(runId, { resultMessageId: messageId });
-      audit(runId, "resultats-ajoutes", { messageId }, "vous");
+      // <c5:depot-fige>
+      // GF4 (A28 C6) : ce que le cockpit a écrit dans ce message est figé ici, avec lui.
+      audit(runId, "resultats-ajoutes", { messageId, ...ecritAuDepot(complet ? "resultat" : "resultats-partiels", complet) }, "vous");
+      // </c5:depot-fige>
       return { messageId };
     } catch (err) {
       warn("résultats non ajoutés à la conversation", { runId, error: errorMessage(err) });

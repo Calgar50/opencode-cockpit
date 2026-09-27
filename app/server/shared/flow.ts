@@ -847,6 +847,13 @@ export interface FlowDeliverable {
   etapeSource: string;
   /** 5b : notes ajoutées sous le livrable (relecture non conclue, version non relue) ; absent quand il n'y en a aucune. */
   notes?: string[];
+  // <c5:depot-fige>
+  /**
+   * Grande fusion (GF4, A28 C6) : le cockpit a écrit le journal de relecture sous ce livrable (au moins un tour relu). L'exécuteur
+   * le FIGE au dépôt du message, avec les notes : la carte le relit là, jamais sur l'état d'un lancement relancé depuis.
+   */
+  journal?: true;
+  // </c5:depot-fige>
 }
 
 /** Dernier bloc de TRAVAIL du déroulé : c'est lui qui porte le livrable (une pause finale n'en porte aucun). */
@@ -885,7 +892,14 @@ function relectureDeliverable(block: Extract<FlowBlock, { type: "relecture" }>, 
     notes.push(DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", String(tours)));
   }
   if (notes.length > 0) morceaux.push(...notes);
-  return { texte: morceaux.join("\n\n"), etapeSource: block.auteur.id, ...(notes.length > 0 ? { notes } : {}) };
+  return {
+    texte: morceaux.join("\n\n"),
+    etapeSource: block.auteur.id,
+    ...(notes.length > 0 ? { notes } : {}),
+    // <c5:depot-fige>
+    ...(verdicts.length > 0 ? { journal: true as const } : {}),
+    // </c5:depot-fige>
+  };
 }
 
 /**

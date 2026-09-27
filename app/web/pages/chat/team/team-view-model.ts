@@ -615,6 +615,20 @@ function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
  */
 function ecritParLeCockpit(run: TeamRunView, genre: GenreResultat): { journal: boolean; notes: string[] } {
   const rien = { journal: false, notes: [] };
+  // <c5:depot-fige>
+  // Grande fusion (GF4, A28 C6) : pour le message DÉPOSÉ (`resultMessageId`), ce que le cockpit y a écrit a été figé au dépôt.
+  // L'état ENREGISTRÉ du lancement, lu plus bas, a pu changer depuis (relance : tentative neuve, autres tours) ; il ne décide
+  // plus que pour un résultat qui n'a pas été déposé, ou déposé sans cette trace.
+  const depot = run.depot;
+  if (run.resultMessageId !== null && depot !== undefined && depot.messageId === run.resultMessageId) {
+    if (genre !== "resultat" || depot.genre !== "resultat") return rien;
+    const notes = [
+      ...(depot.nonRelue ? [C5.relecture.nonRelue] : []),
+      ...(depot.nonConclue === null ? [] : [remplir(C5.relecture.nonConclue, { n: String(depot.nonConclue) })]),
+    ];
+    return { journal: depot.journal, notes };
+  }
+  // </c5:depot-fige>
   if (genre !== "resultat" || run.steps.length === 0) return rien;
   const dernierBloc = Math.max(...run.steps.map((step) => step.blocIndex));
   const bornes = run.blocs?.find((bloc) => bloc.index === dernierBloc);

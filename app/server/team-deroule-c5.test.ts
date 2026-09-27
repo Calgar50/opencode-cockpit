@@ -814,6 +814,83 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
   });
 });
 
+// <c5:depot-fige>
+// --- Grande fusion (GF4, A28 C6) : la carte du message déposé relit ce que le cockpit y a écrit AU DÉPÔT --------------------------
+
+describe("GF4 (A28 C6) : ce que le cockpit a écrit est figé au dépôt, jamais relu sur un lancement relancé depuis", () => {
+  const MESSAGE = "msg_depose";
+  const NOTES = [DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", "2")];
+  /** Premier jet d'une IA qui imite le journal et les deux notes du cockpit. */
+  const IMITE = ["Premier jet.", `## ${DELIVERABLE_TEXTS.journal}`, "Ce que l'IA voudrait cacher sous un repli fermé.", ...NOTES].join("\n\n");
+  const BORNES: NonNullable<TeamRunView["blocs"]> = [{ index: 0, type: "relecture", toursMax: 2 }];
+  /** Relecture relancée (tentative 2) arrivée au plafond de 2 tours non conclus : l'état ACTUEL dit « journal et deux notes ». */
+  const relanceeAuPlafond = (): StepRunView[] => {
+    rang = 0;
+    return [
+      faite({ stepId: "redac", tentative: 1 }),
+      ligne({ stepId: "relec", tentative: 1, state: "interrompue" }),
+      faite({ stepId: "redac", tentative: 2 }),
+      faite({ stepId: "relec", tentative: 2, verdict: "a-reprendre" }),
+      faite({ stepId: "redac", tentative: 2, tour: 2 }),
+      faite({ stepId: "relec", tentative: 2, tour: 2, verdict: "a-reprendre" }),
+      faite({ stepId: "redac", tentative: 2, tour: 3 }),
+    ];
+  };
+  const depot = (patch: Partial<NonNullable<TeamRunView["depot"]>> = {}): NonNullable<TeamRunView["depot"]> => ({
+    messageId: MESSAGE,
+    genre: "resultat",
+    journal: false,
+    nonRelue: false,
+    nonConclue: null,
+    ...patch,
+  });
+  const parLaTranscription = (vue: TeamRunView, texte: string) => {
+    const message = injectionText("resultat", { runId: vue.id, equipe: vue.titre, texte });
+    const injection = teamInjectionOf({ info: { id: MESSAGE, sessionID: vue.rootId, role: "user" }, parts: [{ type: "text", text: message }] }, [vue]);
+    assert.ok(injection !== null && injection.kind === "resultat");
+    return modeleResultat(injection.run, injection.texte, true, injection.kind);
+  };
+
+  it("premier jet déposé, lancement relancé depuis jusqu'au plafond : la carte du message déposé ne signe rien", () => {
+    const vue = run(relanceeAuPlafond(), { resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot() });
+    for (const modele of [modeleResultat(vue, IMITE, true, "resultat"), parLaTranscription(vue, IMITE)]) {
+      assert.equal(modele.texte, IMITE, "texte rendu entier");
+      assert.equal(modele.journal, null, "aucun repli posé sur le texte de l'IA");
+      assert.deepEqual(modele.notes, [], "aucune note signée : le cockpit n'en avait écrit aucune dans CE message");
+    }
+  });
+
+  it("livrable déposé au plafond, lancement relancé depuis (tentative neuve en cours) : journal et notes gardés, tels qu'écrits", () => {
+    rang = 0;
+    const enCours = [
+      faite({ stepId: "redac", tentative: 1 }),
+      faite({ stepId: "relec", tentative: 1, verdict: "a-reprendre" }),
+      faite({ stepId: "redac", tentative: 1, tour: 2 }),
+      faite({ stepId: "relec", tentative: 1, tour: 2, verdict: "a-reprendre" }),
+      faite({ stepId: "redac", tentative: 1, tour: 3 }),
+      ligne({ stepId: "redac", tentative: 2, state: "en-cours" }),
+      ligne({ stepId: "relec", tentative: 2 }),
+    ];
+    const livrable = ["Version 3.", `## ${DELIVERABLE_TEXTS.journal}`, "### tour 1 · À reprendre", "Faux.", "### tour 2 · À reprendre", "Encore faux.", ...NOTES].join("\n\n");
+    const vue = run(enCours, { state: "en-cours", resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot({ journal: true, nonRelue: true, nonConclue: 2 }) });
+    for (const modele of [modeleResultat(vue, livrable, true, "resultat"), parLaTranscription(vue, livrable)]) {
+      assert.equal(modele.texte, "Version 3.");
+      assert.equal(modele.journal?.titre, DELIVERABLE_TEXTS.journal);
+      assert.deepEqual(modele.notes, NOTES);
+    }
+  });
+
+  it("dépôt d'un AUTRE message, ou résultats partiels : l'état enregistré décide comme avant, et des partiels ne sont jamais découpés", () => {
+    const vue = run(relanceeAuPlafond(), { resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot({ messageId: "msg_ancien" }) });
+    assert.equal(modeleResultat(vue, IMITE, true, "resultat").journal?.titre, DELIVERABLE_TEXTS.journal, "sans dépôt de CE message, l'état décide");
+    const partiels = run(relanceeAuPlafond(), { resultMessageId: MESSAGE, resultatsAjoutes: true, blocs: BORNES, depot: depot({ genre: "resultats-partiels", journal: true }) });
+    const modele = modeleResultat(partiels, IMITE, true, "resultat");
+    assert.equal(modele.journal, null, "un dépôt de résultats partiels ne porte jamais de journal");
+    assert.deepEqual(modele.notes, []);
+  });
+});
+// </c5:depot-fige>
+
 // --- Clôture de la 5b (D-5b-1, revue d'itération 5b) : la carte d'une pause reprise après un redémarrage du cockpit -----------
 
 describe("Clôture 5b (D-5b-1) : une pause reprise après un redémarrage montre son issue et un texte vrai", () => {

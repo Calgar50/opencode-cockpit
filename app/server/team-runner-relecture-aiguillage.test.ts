@@ -816,6 +816,58 @@ describe("exécution 5b : relecture en deux tours (D-5-14, MC5-2)", () => {
 
 // --- Aiguillage ---------------------------------------------------------------------------------------------------------------------
 
+// <c5:depot-fige>
+describe("GF4 (A28 C6) : l'exécuteur fige au dépôt ce qu'il a écrit dans le message de résultat", () => {
+  /** Données d'un événement d'audit de dépôt : des codes et des nombres, jamais un texte de message (team_run_events). */
+  const donneesDuDepot = (h: CockpitHarness, runId: string, kind: string): Record<string, unknown> => {
+    const row = h.db.prepare("SELECT data FROM team_run_events WHERE run_id = ? AND kind = ? ORDER BY id DESC LIMIT 1").get(runId, kind) as { data: string } | undefined;
+    assert.ok(row, `événement « ${kind} » absent`);
+    return JSON.parse(row.data) as Record<string, unknown>;
+  };
+
+  it("livraison au plafond de 2 tours non conclus : journal et deux notes figés avec l'identifiant du message, sans aucun texte", async (t) => {
+    const ctx = await openTeam(t, { flow: relectureFlow() });
+    const { h } = ctx;
+    h.fake.scriptWhen(
+      (session) => (session.metadata as { etape?: string } | undefined)?.etape === "redac",
+      { text: "Version 1.", cost: 0.01, stepMs: 5 },
+      { text: "Version 2.", cost: 0.01, stepMs: 5 },
+      { text: "Version 3.", cost: 0.01, stepMs: 5 },
+    );
+    h.fake.scriptWhen(
+      (session) => (session.metadata as { etape?: string } | undefined)?.etape === "relec",
+      { text: "Faux.\nVERDICT: À REPRENDRE", cost: 0.01, stepMs: 5 },
+      { text: "Encore faux.\nVERDICT: À REPRENDRE", cost: 0.01, stepMs: 5 },
+    );
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    const vue = await ctx.waitRun(runId, (v) => v.state === "terminee", "relecture au plafond");
+    assert.ok(vue.resultMessageId !== null, "livrable injecté");
+    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultat", journal: true, nonRelue: true, nonConclue: 2 });
+    const data = donneesDuDepot(h, runId, "livraison");
+    assert.deepEqual(Object.keys(data).toSorted(), ["etape", "genre", "journal", "messageId", "nonConclue", "nonRelue"]);
+    for (const valeur of Object.values(data)) assert.ok(typeof valeur !== "string" || !/Version|Faux|relecture/i.test(valeur), `texte dans l'événement : ${String(valeur)}`);
+  });
+
+  it("résultats ajoutés à la main (équipe interrompue après deux étapes) : le dépôt dit « résultats partiels », sans journal ni note", async (t) => {
+    const ctx = await openTeam(t, { flow: duoFlow(), guardsReels: true });
+    const { h } = ctx;
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "a", { text: "Collecte faite.", cost: 0.01, stepMs: 5 });
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse longue.", cost: 0.01, stepMs: 400 });
+    const started = await ctx.run();
+    const { runId } = started.json<TeamRunStarted>();
+    await ctx.waitRun(runId, (v) => v.steps.some((step) => step.stepId === "b" && step.state === "en-cours"), "seconde étape en cours");
+    ctx.runner.interrupt(runId, "rechargement");
+    await ctx.waitRun(runId, (v) => v.state === "interrompue", "équipe interrompue");
+    const ajout = await h.call("POST", `/api/team-runs/${runId}/ajouter-resultats`, { headers: h.headers.mutating, body: {} });
+    assert.equal(ajout.status, 200, ajout.body);
+    const vue = ctx.view(runId);
+    assert.deepEqual(vue.depot, { messageId: vue.resultMessageId, genre: "resultats-partiels", journal: false, nonRelue: false, nonConclue: null });
+    assert.equal(donneesDuDepot(h, runId, "resultats-ajoutes").genre, "resultats-partiels");
+  });
+});
+// </c5:depot-fige>
+
 describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", () => {
   function scripterAiguillage(h: CockpitHarness): void {
     h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "tri", {

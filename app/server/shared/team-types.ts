@@ -422,6 +422,23 @@ export interface TeamRunView {
    */
   requestMessageId: string | null;
   resultMessageId: string | null;
+  // <c5:depot-fige>
+  /**
+   * Grande fusion (GF4, A28 C6) : ce que le COCKPIT a écrit dans le message de résultat `resultMessageId`, figé à son dépôt
+   * (événement d'audit « livraison » ou « resultats-ajoutes ») : genre du message, journal de relecture, notes d'honnêteté.
+   * La carte de ce message le relit ICI, jamais sur l'état actuel du lancement, qu'une relance a pu changer depuis. Absent
+   * pour un message déposé sans cette trace, ou quand rien n'a été déposé.
+   */
+  depot?: {
+    messageId: string;
+    genre: "resultat" | "resultats-partiels";
+    journal: boolean;
+    /** « Non relue après la dernière correction. » écrite sous le livrable. */
+    nonRelue: boolean;
+    /** Tours de la note « Relecture non conclue après {n} tours… », null quand elle n'est pas écrite. */
+    nonConclue: number | null;
+  };
+  // </c5:depot-fige>
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;
