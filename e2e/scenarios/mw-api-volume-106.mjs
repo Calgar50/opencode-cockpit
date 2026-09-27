@@ -78,8 +78,20 @@ export async function run(ctx) {
     }
   }
 
-  // 5. Un vrai tour : webfetch absent des outils envoyés au faux fournisseur.
-  const ia = iaDuBanc(bootstrap);
+  // 5. Un vrai tour : webfetch absent des outils envoyés au faux fournisseur. L'IA est relue au catalogue jusqu'à ce qu'il la porte
+  // (comme c5b-mc5-reel) : le bootstrap du point 3 peut être lu avant la première lecture du catalogue, que le cockpit fait juste
+  // après qu'opencode répond ; joué seul sur une pile qui vient de démarrer, le scénario tombait sinon sur « aucune IA du
+  // fournisseur « banc » » (train de la vague 3 de F2).
+  const ia = await attendreQue(
+    async () => {
+      try {
+        return iaDuBanc(await ctx.api.get("/api/bootstrap"));
+      } catch {
+        return false;
+      }
+    },
+    { delaiMs: 60_000, pasMs: 2_000, libelle: "IA du banc au catalogue du cockpit" },
+  );
   const debut = (await ctx.billedCalls()).length;
   const creee = await client.creerConversation("mw-api-volume-106");
   exiger(typeof creee?.id === "string", `conversation non créée : ${resume(creee)}`);
