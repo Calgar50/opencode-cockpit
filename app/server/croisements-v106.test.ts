@@ -1308,6 +1308,29 @@ async function vueDuLancement(h: CockpitHarness, runId: string, predicat: (v: Te
   }
 }
 
+/**
+ * Les avis parallèles de l'exemple tous « en-cours » ET leur message reçu par le faux. Le runner passe une étape « en-cours »
+ * AVANT son `prompt_async` (transition bloquante, D-eq-06) : attendre une seule étape laissait les envois de ses sœurs tomber
+ * dans la fenêtre mesurée par `sansRequete` (course vue à l'intégration de F2, vague 0 : T-EQ2 rouge 2 fois sur 40 sous charge).
+ */
+async function avisEnvoyes(h: CockpitHarness, runId: string): Promise<TeamRunView> {
+  const bloc = exampleById(EQUIPE)?.flow.blocs.find((b) => b.type === "avis");
+  const attendus = bloc?.type === "avis" ? bloc.avis.length : 0;
+  assert.ok(attendus > 1, "l'exemple « revue-sql » a des avis parallèles");
+  return vueDuLancement(
+    h,
+    runId,
+    (v) => {
+      const envoyees = v.steps.filter((s) => s.state === "en-cours" && s.sessionId !== null);
+      return (
+        envoyees.length === attendus &&
+        envoyees.every((s) => h.fake.requests.some((r) => r.method === "POST" && r.pathname === `/session/${s.sessionId}/prompt_async`))
+      );
+    },
+    "avis envoyés",
+  );
+}
+
 /** Lancement réel dans `directory` ; chaque étape reste en cours (outil qui ne rend jamais la main) si `bloquee`. */
 async function lancerDans(h: CockpitHarness, directory: string, bloquee: boolean): Promise<TeamRunStarted & { estimateSha256: string }> {
   h.fake.scriptWhen(
@@ -1341,7 +1364,7 @@ describe("croisements v106 <gf3:v106> : équipes × 1.0.6 (fiche §5)", () => {
 
     // Relance d'un lancement hérité au dossier %XX (ligne d'une base d'avant la 1.0.6) : estimation et relance refusées.
     const { runId } = await lancerDans(h, dirOf("proj"), true);
-    await vueDuLancement(h, runId, (v) => v.steps.some((s) => s.state === "en-cours" && s.sessionId !== null), "étape en cours");
+    await avisEnvoyes(h, runId);
     const eq = h.cockpit.equipes.eq;
     eq.ports.runner.interrupt(runId, "rechargement");
     await vueDuLancement(h, runId, (v) => v.relancable, "lancement relançable");
@@ -1367,7 +1390,7 @@ describe("croisements v106 <gf3:v106> : équipes × 1.0.6 (fiche §5)", () => {
       }),
     });
     const { runId } = await lancerDans(h, dirOf("proj"), true);
-    await vueDuLancement(h, runId, (v) => v.steps.some((s) => s.state === "en-cours" && s.sessionId !== null), "étape en cours");
+    await avisEnvoyes(h, runId);
     assert.equal(h.cockpit.c11.reloadBusy(), true, "une étape travaille : la garde de rechargement est occupée");
     const piege = await sansRequete(h, omo, "Studio %XX", () =>
       h.call("PUT", `/api/studio/instructions?project=${q(TRAP)}`, { headers: h.headers.mutating, body: { content: "[synthétique] consignes" } }),
