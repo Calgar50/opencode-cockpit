@@ -194,16 +194,36 @@ function remainingSteps(store: TeamStore, run: RunRow): string[] {
  * fait, donc ce chemin est bien celui qui reste, et l'empreinte recalculée par `check` tombe sur celle de l'estimation montrée.
  * `remainingSteps`, lui, retire toute étape terminée une fois : pour une relecture dont le premier jet est fait, il perd les
  * révisions à venir, et la confirmation était refusée « estimation-perimee » à chaque fois (mesuré sur le vrai pré-lancement).
+ * Grande fusion (GF4, A27/A28 §3) : seule la reprise d'une pause compte encore ainsi ; une relance compte ce qu'elle refait
+ * (`cheminDeRelance`, section c5:chemin-relance), et `remainingSteps` lit ce chemin-là.
  */
 export function cheminParPassages(store: TeamStore, run: RunRow): string[] {
   const flow = parseJson<Flow | null>(run.flow, null);
   if (flow === null) return [];
-  // <c5:chemin-relance>
   // Grande fusion (GF4, A27/A28 §3) : passages de la tentative COURANTE seulement (`passagesTermines`), comme l'exécuteur les
   // compte (`toursTermines`) ; un passage d'une tentative précédente, laissé en base par une relance, n'est plus « fait ».
   return resteParPassages(flow, passagesTermines(store.steps.ofRun(run.id)));
-  // </c5:chemin-relance>
 }
+
+/**
+ * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
+ * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
+ * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
+ * (400 invalid, sans aucune requête, A4).
+ */
+export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const brut = (parsed as Record<string, unknown>).confirmations;
+  if (brut === undefined) return {};
+  if (typeof brut !== "object" || brut === null || Array.isArray(brut)) return null;
+  const accords: { budget?: true; plafond?: true } = {};
+  for (const [cle, valeur] of Object.entries(brut)) {
+    if ((cle !== "budget" && cle !== "plafond") || valeur !== true) return null;
+    accords[cle] = true;
+  }
+  return accords;
+}
+// </c5:reprise-redemarrage>
 
 // <c5:chemin-relance>
 /**
@@ -395,26 +415,6 @@ export function etatDuChemin(flow: Flow, chemin: readonly string[]): Array<{ ste
   });
 }
 // </c5:chemin-relance>
-
-/**
- * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
- * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
- * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
- * (400 invalid, sans aucune requête, A4).
- */
-export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const brut = (parsed as Record<string, unknown>).confirmations;
-  if (brut === undefined) return {};
-  if (typeof brut !== "object" || brut === null || Array.isArray(brut)) return null;
-  const accords: { budget?: true; plafond?: true } = {};
-  for (const [cle, valeur] of Object.entries(brut)) {
-    if ((cle !== "budget" && cle !== "plafond") || valeur !== true) return null;
-    accords[cle] = true;
-  }
-  return accords;
-}
-// </c5:reprise-redemarrage>
 
 // --- Module -----------------------------------------------------------------------------------------------------------------------
 
