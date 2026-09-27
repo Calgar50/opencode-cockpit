@@ -10,6 +10,7 @@
 // ([Modifier], [Dupliquer], [Nouvelle équipe]) ni vers l'installation (galerie absente).
 // [Voir une démonstration] de la spéc. §5.4 l.909 est MASQUÉ : la démonstration d'équipe arrive en itération 5 (P3 : ne jamais
 // annoncer une fonction absente). Aucun libellé de démonstration n'existe donc dans ce modèle.
+import { equipesOuvertes as equipesOuvertesDuMode } from "../../../../server/shared/equipes-ouvertes.ts";
 import { TEAM_GUARD_CODES } from "../../../../server/shared/team-limits.ts";
 import { installeAussi, phraseErreur, remplir, TEXTES } from "../../../../server/shared/team-texts.ts";
 import type { FlowRow, TeamExampleView, TeamsListResponse, TeamView } from "../../../../server/shared/team-types.ts";
@@ -230,7 +231,8 @@ const VIDE: TeamsTabVide = { definition: P.definition, accueil: P.accueil, parti
  * vrai. Aucune autre valeur ne les ferme : basculer EQUIPES_SIMPLE_OUVERTES ouvre l'onglet d'une seule ligne.
  */
 export function equipesOuvertes(advanced: boolean, donnees: TeamsListResponse | null): boolean {
-  return advanced || donnees?.ouvertesEnSimple === true;
+  // GF5 : une seule définition (server/shared/equipes-ouvertes.ts, reprise par L51) ; aucune réponse lue (null) : fermé en Simple.
+  return equipesOuvertesDuMode(advanced ? "avance" : "simple", donnees === null ? null : donnees.ouvertesEnSimple);
 }
 
 /** Modèle de l'onglet. Seul `ouvertesEnSimple` ferme les équipes en Simple : l'ouverture tient en une ligne (U1). */

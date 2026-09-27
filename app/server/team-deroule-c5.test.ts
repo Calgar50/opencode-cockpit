@@ -880,7 +880,8 @@ describe("GF4 (A27 §6.2 a) : carte seule — l'extrait d'une étape n'est jamai
   it("chaque carte d'un extrait le dit « extrait » : carte seule (modèle et composant) et démonstration ; la transcription garde le genre du message", () => {
     assert.match(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /genre="extrait"/);
     assert.doesNotMatch(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /genre="resultat"/);
-    const demo = withoutComments(read("web/pages/assistants/teams/TeamDemo.tsx"));
+    // GF5 : la carte de la démonstration est sortie de TeamDemo.tsx dans demo-equipe-source.tsx (lue aussi par le lecteur complet).
+    const demo = withoutComments(read("web/pages/assistants/teams/demo-equipe-source.tsx"));
     assert.match(demo, /modeleResultat\(run, etapeResultat\(run\)\?\.extrait \?\? "", advanced, "extrait"\)/);
     assert.doesNotMatch(demo, /"resultat"\)/);
     assert.match(withoutComments(read(`${DIR}/TeamTranscriptEntry.tsx`)), /genre=\{injection\.kind\}/);

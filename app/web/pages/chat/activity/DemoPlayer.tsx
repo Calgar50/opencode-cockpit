@@ -28,6 +28,14 @@
 // retour anticipé : chacun appelle toujours les mêmes crochets. L'entrée de la démonstration d'équipe dans le CHOIX du lecteur
 // complet est posée par GF5, pas ici.
 // </c5:demonstration-passee-doc>
+// <c5:demonstration-equipe-doc>
+// Grande fusion (GF5 ; plan it5 §8.6 GF5 point 3, §2.8 ; U1, D-5-24, plan it3 §8.4 (c)) : la démonstration d'équipe entre dans le
+// CHOIX du lecteur complet (« Comment se déroule une équipe », après les trois de l'itération 3), avec ses vitesses, son pas à pas
+// et son badge « EN DIFFÉRÉ », SEULEMENT si l'appelant passe `equipesVisibles` vrai (défaut faux), calculé par
+// equipesOuvertes(mode, ouvertesEnSimple) (server/shared/equipes-ouvertes.ts). Ce lecteur ne lit JAMAIS cette valeur lui-même,
+// ni aucune API : ses faits et son contenu propre viennent de demo-equipe-source.tsx, livré avec l'interface. Sous la bande, le
+// moment enregistré atteint par le lecteur (carte d'exécution et Déroulé de l'itération 4, données fictives dites).
+// </c5:demonstration-equipe-doc>
 // Composant interne : ses propriétés restent libres pour son propriétaire.
 import { useId, useMemo, useState } from "react";
 // <c5:demonstration-passee-import>
@@ -56,6 +64,11 @@ import { resumeBande } from "../../../../server/shared/neon-band.ts";
 import { remplir } from "../../../../server/shared/neon-texts.ts";
 import { formatHeure } from "../../../../server/shared/revoir-texts.ts";
 // </c5:demonstration-passee-import-lecteur>
+// <c5:demonstration-equipe-import>
+import { TEXTES as TEXTES_C5 } from "../../../../server/shared/construction-texts.ts";
+import { type CleDemonstration, demonstrationsProposees } from "../../../../server/shared/equipes-ouvertes.ts";
+import { ContenuDemoEquipe, FAITS_EQUIPE, momentEquipeAu } from "../../assistants/teams/demo-equipe-source.tsx";
+// </c5:demonstration-equipe-import>
 
 // <c5:demonstration-passee-contrat>
 /**
@@ -82,6 +95,13 @@ export interface DemoPlayerProps {
   /** Démonstration à rejouer ; absente : le lecteur complet et ses trois démonstrations. */
   demo?: DemoSource;
   // </c5:demonstration-passee-propriete>
+  // <c5:demonstration-equipe-propriete>
+  /**
+   * « Comment se déroule une équipe » proposée dans le choix du lecteur complet : décidé par l'APPELANT (equipesOuvertes), jamais
+   * lu ici ; absente ou fausse : les trois démonstrations de l'itération 3 seulement (U1 : rien ne propose d'équipe en Simple fermé).
+   */
+  equipesVisibles?: boolean;
+  // </c5:demonstration-equipe-propriete>
   onClose: () => void;
 }
 
@@ -106,6 +126,15 @@ function demonstration(cle: string, titre: string, fichier: { faits: readonly un
 
 const P1 = demonstration("p1", T.demos.deuxEnMemeTemps, demoP1);
 const DEMOS: readonly Demonstration[] = [P1, demonstration("attente-accord", T.demos.attenteAccord, demoAttente), demonstration("arret-plafond", T.demos.arretPlafond, demoPlafond)];
+// <c5:demonstration-equipe-liste>
+/** Toutes les démonstrations du lecteur complet, par clé : celles de l'itération 3, puis celle d'équipe (L49, D-5-15). */
+const PAR_CLE: Readonly<Record<CleDemonstration, Demonstration>> = {
+  p1: P1,
+  "attente-accord": DEMOS[1] ?? P1,
+  "arret-plafond": DEMOS[2] ?? P1,
+  equipe: demonstration("equipe", TEXTES_C5.partout.demonstration.titre, { faits: FAITS_EQUIPE }),
+};
+// </c5:demonstration-equipe-liste>
 
 /** Vrai quand la démonstration dessine une délégation : un assistant au moins n'est pas celui de la conversation. */
 function dessineUneDelegation(faits: readonly ActivityFact[]): boolean {
@@ -115,16 +144,21 @@ function dessineUneDelegation(faits: readonly ActivityFact[]): boolean {
 // <c5:demonstration-passee-aiguillage>
 // Grande fusion (GF4) : sans `demo`, le lecteur complet de L34 (LecteurComplet, son code d'avant la fusion) ; avec `demo`, le
 // lecteur pas à pas de la démonstration passée (L49).
-export function DemoPlayer({ advanced, demo: passee, onClose }: DemoPlayerProps) {
-  return passee === undefined ? <LecteurComplet advanced={advanced} onClose={onClose} /> : <DemonstrationPassee advanced={advanced} demo={passee} onClose={onClose} />;
+export function DemoPlayer({ advanced, demo: passee, equipesVisibles = false, onClose }: DemoPlayerProps) {
+  // c5:demonstration-equipe : `equipesVisibles` passé au lecteur complet, seul à montrer le choix.
+  return passee === undefined ? <LecteurComplet advanced={advanced} equipesVisibles={equipesVisibles} onClose={onClose} /> : <DemonstrationPassee advanced={advanced} demo={passee} onClose={onClose} />;
 }
 
-function LecteurComplet({ advanced, onClose }: Omit<DemoPlayerProps, "demo">) {
+function LecteurComplet({ advanced, equipesVisibles = false, onClose }: Omit<DemoPlayerProps, "demo">) {
   // </c5:demonstration-passee-aiguillage>
   const choixId = useId();
   const [cle, setCle] = useState(P1.cle);
   const [tableau, setTableau] = useState(false);
-  const demo = DEMOS.find((une) => une.cle === cle) ?? P1;
+  // <c5:demonstration-equipe-choix>
+  // Choix composé par la fonction pure (U1) : la démonstration d'équipe n'y est que si l'appelant la rend visible.
+  const proposees = demonstrationsProposees(equipesVisibles).map((une) => PAR_CLE[une]);
+  const demo = proposees.find((une) => une.cle === cle) ?? P1;
+  // </c5:demonstration-equipe-choix>
   const faits = demo.faits;
   const lecteur = useReplay(faits, null);
   const t = instant(lecteur.etat);
@@ -153,7 +187,8 @@ function LecteurComplet({ advanced, onClose }: Omit<DemoPlayerProps, "demo">) {
               setCle(event.currentTarget.value);
             }}
           >
-            {DEMOS.map((une) => (
+            {/* c5:demonstration-equipe-choix : les démonstrations proposées, la démonstration d'équipe comprise si elle est visible. */}
+            {proposees.map((une) => (
               <option key={une.cle} value={une.cle}>
                 {une.titre}
               </option>
@@ -189,6 +224,10 @@ function LecteurComplet({ advanced, onClose }: Omit<DemoPlayerProps, "demo">) {
           {TEXTES.partout.commandes.tableau}
         </button>
         <div className="neon-body">{tableau ? <NeonTableau vue={vue} /> : <NeonCarte vue={vue} />}</div>
+        {/* <c5:demonstration-equipe-contenu> */}
+        {/* Démonstration d'équipe : le moment enregistré atteint par le lecteur, sous la bande (données fictives dites). */}
+        {demo.cle === "equipe" ? <ContenuDemoEquipe moment={momentEquipeAu(t)} advanced={advanced} /> : null}
+        {/* </c5:demonstration-equipe-contenu> */}
         <div className="revoir-legendes">
           {/* Aucun onVoirConsigne : une démonstration n'a aucune consigne gardée (D-3d-30). */}
           {legendes.map((legende, i) => (

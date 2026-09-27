@@ -211,7 +211,8 @@ export function TeamsTab({ advanced }: TeamsTabProps) {
 
       <TeamInstallDialog exemple={aInstaller} onClose={() => setAInstaller(null)} onInstalled={() => reload()} />
       {/* <c5:demonstration-equipe-lecteur> */}
-      {demonstration ? <TeamDemo advanced={advanced} onClose={() => setDemonstration(false)} /> : null}
+      {/* GF5 : l'onglet passe l'ouverture des équipes dans le mode courant (equipesOuvertes, déjà calculée), jamais lue par le lecteur. */}
+      {demonstration ? <TeamDemo advanced={advanced} equipesVisibles={ouvertes} onClose={() => setDemonstration(false)} /> : null}
       {/* </c5:demonstration-equipe-lecteur> */}
     </div>
   );
