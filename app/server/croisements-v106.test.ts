@@ -19,6 +19,7 @@ import { Hono } from "hono";
 import { parse as parseYaml } from "yaml";
 import { knownDirectories, probeSessionsBusyStrict } from "./assistants.ts";
 import { requestPendingRescan } from "./autonomy-requests.ts";
+import { capWatchModuleWith } from "./autonomy-watch.ts";
 import { createConsignesStore } from "./consignes-store.ts";
 import type { ActivationPort, Cockpit11, Cockpit11Module, ControlAiInput, ConversationAutonomyPort, RequestsPort } from "./contracts-11.ts";
 import { CONTROL_AGENT_PROMPT, createControlAiModule } from "./control-ai.ts";
@@ -1779,6 +1780,100 @@ describe("croisements v106 <gf5:v106> : grande fusion × 1.0.6 (sentinelle compl
       "demandes lues (refus préalable) puis suppression, dans ce dossier",
     );
     assertSentinel(h, "T-GF5-3");
+  });
+
+  // Relecture de F2 (vague 3) : carte d'une délégation et sondage de l'autonomie, deux lectures de GET /permission qui partaient
+  // avec le dossier d'une racine héritée sans passer par isAllowedDirectory (famille A22 ; défaut antérieur à GF5).
+  it("T-GF5-4 (A22) : carte d'une délégation d'une racine héritée au dossier %XX → 404, ZÉRO requête ; racines légitimes : GET /permission dans leur dossier, à l'octet", async (t) => {
+    const { h } = await start(t, { modules: ["taskGuard"], settings: { ui: { mode: "avance" } } });
+    const legacy = await conversation(h, dirOf("proj"), "Héritée");
+    h.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(TRAP_DIR, legacy.id);
+    const avant = h.fake.requests.length;
+    const refus = await h.call("GET", `/api/conversations/${legacy.id}/delegations/per_sondeRevue01`, { headers: h.headers.authed });
+    assert.equal(refus.status, 404, refus.body);
+    assert.equal(await h.cockpit.c11.ports.taskGuard.details(legacy.id, "per_sondeRevue01"), null, "port : même refus");
+    assert.deepEqual(
+      h.fake.requests.slice(avant).map((r) => `${r.method} ${r.pathname}?directory=${r.query.directory ?? ""}`),
+      [],
+      "rien n'est demandé à opencode pour la racine %XX",
+    );
+    const lectures = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission");
+    for (const name of LEGIT) {
+      const root = await conversation(h, dirOf(name), name);
+      const depuis = lectures().length;
+      const carte = await h.call("GET", `/api/conversations/${root.id}/delegations/per_sondeRevue01`, { headers: h.headers.authed });
+      assert.equal(carte.status, 404, `${name} : ${carte.body}`);
+      assert.deepEqual(
+        lectures()
+          .slice(depuis)
+          .map((r) => r.query.directory),
+        [dirOf(name)],
+        `${name} : demandes lues dans ce dossier seulement`,
+      );
+    }
+    assertSentinel(h, "T-GF5-4");
+  });
+
+  it("T-GF5-5 (A22) : sondage de l'autonomie (redémarrage d'opencode) sur une racine devenue héritée au dossier %XX → aucune lecture, rien d'affirmé ; dossier légitime : lu à l'octet", async (t) => {
+    const tours: Array<() => Promise<void>> = [];
+    const capWatch = capWatchModuleWith({
+      schedule: (tour) => {
+        tours.push(tour);
+        return () => void tours.splice(tours.indexOf(tour), 1);
+      },
+    });
+    const { h } = await start(t, {
+      modules: ["floors", "facts", "conversationAutonomy", "requests", "stopTree", "autonomy", capWatch],
+      settings: { ui: { mode: "simple" } },
+      ports: { activation: { check: async () => ({ ok: true }) } },
+    });
+    const sonder = async () => {
+      for (const tour of [...tours]) await tour();
+    };
+    const lectures = () => h.fake.requests.filter((r) => r.method === "GET" && r.pathname === "/permission");
+    const directory = dirOf(LEGIT[0]);
+    const root = await conversation(h, directory, "Autonome");
+    const choix = await h.call("PUT", `/api/conversations/${root.id}/autonomie`, { headers: h.headers.confirmed, body: { choix: "autonome" } });
+    assert.equal(choix.status, 200, choix.body);
+    h.fake.script(root.id, { tools: [{ tool: "bash", input: { command: "git push" }, ask: { permission: "bash", patterns: ["git push"] } }], followUp: { text: "Fait." } });
+    const envoi = await h.call("POST", `/api/oc/session/${root.id}/prompt_async?directory=${q(directory)}`, {
+      headers: h.headers.mutating,
+      body: { agent: "build", model: MODEL, parts: [{ type: "text", text: "Pousse." }] },
+    });
+    assert.equal(envoi.status, 204, envoi.body);
+    await until(() => h.fake.pendingPermissions().at(0), 5_000);
+    const demande = () => h.db.prepare("SELECT fin FROM autonomy_requests WHERE root_id = ? ORDER BY rowid DESC LIMIT 1").get(root.id) as { fin: string | null } | undefined;
+    await until(() => demande());
+    // Barrière du flux : une conversation créée après coup est suivie quand tout ce qui précède est traité (autonomy-watch.test.ts).
+    await conversation(h, directory, "Barrière");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Témoin : la demande d'autorisation tient toujours, le sondage relit GET /permission dans le dossier de la racine, à l'octet.
+    let depuis = lectures().length;
+    await sonder();
+    assert.deepEqual(
+      lectures()
+        .slice(depuis)
+        .map((r) => r.query.directory),
+      [directory],
+      "dossier légitime relu tel quel",
+    );
+    assert.equal(demande()?.fin, null, "témoin : rien d'affirmé, la demande tient");
+
+    // Racine héritée au dossier %XX : aucune lecture ; une lecture partie aurait ouvert « /secret » et, n'y trouvant pas la demande,
+    // affirmé à tort un redémarrage d'opencode (demande « interrompue »).
+    h.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(TRAP_DIR, root.id);
+    depuis = lectures().length;
+    await sonder();
+    assert.deepEqual(
+      lectures()
+        .slice(depuis)
+        .map((r) => r.query.directory),
+      [],
+      "aucune lecture pour le dossier %XX",
+    );
+    assert.equal(demande()?.fin, null, "rien n'est affirmé : la demande n'est pas donnée pour interrompue");
+    assertSentinel(h, "T-GF5-5");
   });
 });
 // </gf5:v106> fin

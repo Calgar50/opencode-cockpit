@@ -420,11 +420,13 @@ export function fermetureUnique(onglet, fermerConnexion, reglage) {
  * (ouvrirCdp) ; les gardes du banc y passent une connexion simulée, sans navigateur.
  */
 export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouvementReduit = false, couleursForcees = false, theme = "clair" } = {}, { ouvrir = ouvrirCdp } = {}) {
-  // Grande fusion (GF12) × garde du mouvement de R106-b : l'onglet du banc fixe le MÊME réglage de mouvement et le même thème
-  // que la seconde connexion, AVANT toute action sur la page. `Emulation.setEmulatedMedia` remplace toute la liste de la page à
-  // chaque envoi, quelle que soit la connexion : le banc émule donc d'abord, puis la seconde connexion pose le jeu complet
-  // (thème, mouvement, couleurs forcées). Un appel suivant de preparerPage(ctx, …, { mouvement }) doit garder ce réglage ; un
-  // scénario qui le CHANGE passe par `mouvement(…)` du contexte rendu, que la fermeture de la connexion repose ensuite.
+  // Grande fusion (GF12) × garde du mouvement de R106-b : l'onglet du banc fixe d'abord le réglage de mouvement et le thème,
+  // AVANT toute action sur la page. `Emulation.setEmulatedMedia` remplace toute la liste de la page à chaque envoi : `emuler`
+  // envoie ensuite le jeu complet (thème, mouvement, couleurs forcées) par l'onglet lui aussi, `onglet.medias` (emulerMedias de
+  // cdp.mjs, seul envoi de cette commande), et c'est le dernier envoi ; la vision des couleurs passe par `emulerVision`
+  // d'a11y.mjs. Depuis GF5, la seconde connexion ne pose plus AUCUN réglage de média. Un appel suivant de
+  // preparerPage(ctx, …, { mouvement }) doit garder ce réglage ; un scénario qui le CHANGE passe par `mouvement(…)` du contexte
+  // rendu, que la fermeture unique de la connexion repose ensuite sur l'onglet.
   const reglage = { mouvement: mouvementReduit ? "reduce" : "no-preference" };
   await ctx.navigateur.mouvement(reglage.mouvement);
   await ctx.navigateur.theme(theme);
@@ -446,8 +448,9 @@ export async function preparer3d(ctx, { refusCaveat = false, moteur = null, mouv
     simule,
     attendue3d: mode.mode !== "aucun" && !refusCaveat && moteur === null && !mouvementReduit && !couleursForcees,
     /**
-     * Change le réglage de mouvement en cours de scénario : l'onglet du banc d'abord (garde de R106-b), puis la seconde
-     * connexion avec le jeu complet (dernier envoi) ; la fermeture de la connexion reposera ce réglage.
+     * Change le réglage de mouvement en cours de scénario : l'onglet du banc d'abord (garde de R106-b), puis `emuler` par
+     * l'onglet avec le jeu complet (dernier envoi, `onglet.medias`) ; la fermeture unique de la seconde connexion reposera ce
+     * réglage.
      */
     async mouvement(valeur) {
       await ctx.navigateur.mouvement(valeur);

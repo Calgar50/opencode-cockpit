@@ -1091,9 +1091,10 @@ async function envoyerApi(ctx, rootId, directory) {
  * activée PAR L'API (préparation, jamais le parcours éprouvé), une demande brève part en Avancé et finit d'elle-même (repos, puis
  * fin de demande, D-2b-29). En Simple : pendant la demande, « Revoir » est refusé (« salle-demande-en-cours ») et /facts reste 403
  * (L18c) ; la demande finie, « Revoir » est permis (état, puis lecture 200 « terminée »), sans aucune requête aux deux instances,
- * et le zoom 1 liste la conversation avec [Revoir cette demande]. Défaut reproduit par cette étape avant sa correction : la salle
- * tient sa demande dans la ligne « omo » de conversation_autonomy (omo-activation.ts), jamais dans `autonomy_requests`, et
- * « Revoir » restait refusé (« salle-fin-inconnue ») après la fin de la demande.
+ * et, au zoom 1, la RÉPONSE DE L'API (GET /api/salle-controle/territoires) liste la conversation avec `revoir` vrai et sans
+ * compteur (`travaillent` nul) ; le bouton [Revoir cette demande] de l'interface n'est pas cliqué ici. Défaut reproduit par cette
+ * étape avant sa correction : la salle tient sa demande dans la ligne « omo » de conversation_autonomy (omo-activation.ts), jamais
+ * dans `autonomy_requests`, et « Revoir » restait refusé (« salle-fin-inconnue ») après la fin de la demande.
  */
 async function revoirSimple(s) {
   const { ctx, page } = s;

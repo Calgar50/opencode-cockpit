@@ -69,8 +69,8 @@ export async function run(ctx) {
     await ouvrirSalle(page, null);
     await attendre2d(page);
     await exigerPhrase(page, PHRASES.accessibilite, "mouvement réduit");
-    // Réglage levé : l'onglet du banc d'abord (garde de R106-b), puis la seconde connexion avec le jeu complet (dernier envoi) ;
-    // la fermeture de la connexion reposera ce réglage levé, et non le « reduce » du départ.
+    // Réglage levé : l'onglet du banc d'abord (garde de R106-b), puis `emuler` par l'onglet avec le jeu complet (dernier envoi,
+    // `onglet.medias`) ; la fermeture unique de la seconde connexion reposera ce réglage levé, et non le « reduce » du départ.
     await accessibilite.mouvement("no-preference");
     await cliquerBouton(page, PHRASES.reessayer, { portee: ".salle3d-fluidite" });
     if (accessibilite.mode.mode === "materiel") {

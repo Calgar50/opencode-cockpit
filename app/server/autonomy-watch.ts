@@ -521,6 +521,12 @@ export function createCapWatch(c11: Cockpit11, options: CapWatchOptions = {}): C
     const root = c11.sessions.get(rootId);
     if (!root) return;
     const directory = root.directory === "" ? null : root.directory;
+    // Dossier refusé (racine héritée au dossier %XX, décodé deux fois par opencode : A22) : aucune lecture, rien n'est affirmé,
+    // comme rescanNow d'autonomy.ts (relecture de F2, vague 3 ; sentinelle T-GF5-5).
+    if (directory !== null && !c11.projects.isAllowedDirectory(directory)) {
+      log.warn("surveillance : demandes d'autorisation non relues, dossier de la conversation refusé", { rootId });
+      return;
+    }
     let alive: Set<string>;
     try {
       alive = new Set((await c11.gate.pending(directory)).map((request) => request.id));

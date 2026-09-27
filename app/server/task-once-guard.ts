@@ -618,6 +618,9 @@ export function createTaskGuard(c11: Cockpit11, options: TaskGuardOptions = {}):
       // rootSession de conversation-autonomy.ts et rootConversation de plans.ts). Avant tout calcul de dossier : rien ne part.
       if (root.instance !== "principale") return null;
       const directory = root.directory === "" ? null : root.directory;
+      // Dossier hors du workspace ou qu'opencode ouvrirait ailleurs (racine héritée au dossier %XX, décodé deux fois : A22) :
+      // 404 sans aucune lecture, comme stoppableRoot et rescanNow (relecture de F2, vague 3 ; sentinelle T-GF5-4).
+      if (directory !== null && !c11.projects.isAllowedDirectory(directory)) return null;
       const request = await readPermission(c11.gate, directory, permissionId);
       if (request === null || request.permission !== "task") return null;
       if ((await rootOfSession(c11, request.sessionID, directory)) !== rootId) return null;

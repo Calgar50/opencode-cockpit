@@ -2,7 +2,9 @@
 // §3.9 l.343, §3.5 ; plan it3 §8.3 (U1), §8.4 (c), D-3d-08, D-3d-21, D-3d-30 ; plan it4 D-eq-13, D-eq-23 ; D-5-15, D-5-17, D-5-24 ;
 // U1, U2, A2). Harnais : modules « tous », équipes « tous », option `omo` (salle factice, COUPÉE : SALLE_OUVERTE faux).
 // Faux opencode seulement : aucun appel facturé. La jonction U2 des étapes est faite par GF3 (croisements-fusion.test.ts) : GF5
-// n'écrit rien dans le module de consignes de l'it3, il en vérifie ici la tenue avec une relecture en deux tours.
+// n'écrit rien dans le module de consignes de l'it3, il en vérifie ici la tenue avec une relecture en deux tours suivie d'un
+// aiguillage confirmé (point 4 : « relecture et choix », « différé = direct » comparé à la lecture en direct et au plan 3D du
+// préfixe, relecture de F2, vague 3).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -13,15 +15,16 @@ import { createConsignesStore } from "./consignes-store.ts";
 import { MIGRATIONS, openMemoryDb } from "./db.ts";
 import { createSecondReadingService } from "./second-reading.ts";
 import { floorHash } from "./session-floor-service.ts";
-import type { ActivityFact } from "./shared/activity-types.ts";
+import type { ActivityFact, FactsResponse } from "./shared/activity-types.ts";
 import { type Rule, truncateGlob } from "./shared/assistant-rules.ts";
 import { SECOND_READING_CATALOG_ID, SECOND_READING_TURN_KIND } from "./shared/construction-constants.ts";
 import { outilsDeConstruction } from "./shared/construction-salle.ts";
 import { secondReadingPrefix } from "./shared/construction-texts.ts";
 import { demonstrationsProposees, equipesOuvertes } from "./shared/equipes-ouvertes.ts";
-import { scene } from "./shared/neon-scene.ts";
+import { planConversation } from "./shared/neon-plan3d.ts";
+import { moments, type NeonSceneOptions, scene, visibleCount } from "./shared/neon-scene.ts";
 import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
-import type { RevoirConsignesEnfantResponse, RevoirResponse } from "./shared/salle3d-types.ts";
+import type { Plan3d, RevoirConsignesEnfantResponse, RevoirResponse } from "./shared/salle3d-types.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
 import type { Flow, FlowEstimate, FlowStep, TeamRunStarted, TeamRunView } from "./shared/team-types.ts";
 import { createTeamRunnerModule, type TeamRunner } from "./team-runner.ts";
@@ -268,7 +271,39 @@ const RELECTURE: Flow = {
   blocs: [{ type: "relecture", id: "rel", auteur: etape("redac", "Rédaction", AGENT_REDAC, "demande"), relecteur: etape("relec", "Relecture", AGENT_RELEC, "precedent"), toursMax: 2, pauseAvantRelecture: false }],
 };
 
-/** Équipe « relecture en deux tours » sur le cockpit réuni (modules « tous », équipes « tous », salle), pré-lancement doublé. */
+/**
+ * Point 4 (« relecture et choix », plan it5 §8.6 GF5) : la relecture en deux tours, puis un aiguillage dont l'aiguilleur propose
+ * un spécialiste (ligne CHOIX:) ; VOUS confirmez le choix (pause « attente-choix »), l'autre spécialiste reste « Non choisi ».
+ */
+const RELECTURE_ET_CHOIX: Flow = {
+  version: 1,
+  blocs: [
+    ...RELECTURE.blocs,
+    {
+      type: "aiguillage",
+      id: "aig",
+      aiguilleur: etape("tri", "Tri", AGENT_RELEC, "precedent"),
+      specialistes: [etape("s1", "Réseau", AGENT_REDAC, "demande"), etape("s2", "Base", AGENT_REDAC, "demande")],
+      choixMax: 1,
+      synthese: null,
+    },
+  ],
+};
+
+/** Étapes déclarées du déroulé, dans l'ordre d'écriture, avec leur bloc (le faux pré-lancement couvre la liste ENTIÈRE). */
+const etapesDeclarees = (flow: Flow): Array<{ step: FlowStep; blocIndex: number }> =>
+  flow.blocs.flatMap((bloc, blocIndex) => {
+    if (bloc.type === "relecture") return [bloc.auteur, bloc.relecteur].map((step) => ({ step, blocIndex }));
+    if (bloc.type === "aiguillage") return [bloc.aiguilleur, ...bloc.specialistes, ...(bloc.synthese ? [bloc.synthese] : [])].map((step) => ({ step, blocIndex }));
+    return [];
+  });
+
+const AVANCE: NeonSceneOptions = { zoom: 2, mode: "avance" };
+const SIMPLE: NeonSceneOptions = { zoom: 2, mode: "simple" };
+/** Plan 3D d'une conversation au moment `t` (null : tous les faits), comme croisements-3d-fusion (GF12). */
+const planDe = (faits: readonly ActivityFact[], t: number | null, vue: NeonSceneOptions): Plan3d => planConversation(scene(faits, t, vue), { theme: "sombre", mode: vue.mode });
+
+/** Équipe « relecture en deux tours, puis aiguillage » sur le cockpit réuni (modules « tous », équipes « tous », salle), pré-lancement doublé. */
 async function equipeRelecture(t: TestContext) {
   const ctx: { plan: RunPlan | null } = { plan: null };
   const preflight: TeamPreflightPort = {
@@ -281,7 +316,7 @@ async function equipeRelecture(t: TestContext) {
     id: "equipe-gf5",
     titre: "[synthétique] Rédaction relue",
     description: "",
-    flow: JSON.stringify(RELECTURE),
+    flow: JSON.stringify(RELECTURE_ET_CHOIX),
     origine: "exemple",
     exemple_id: "enquete-incident",
     exemple_version: 1,
@@ -302,16 +337,12 @@ async function equipeRelecture(t: TestContext) {
   const directory = h.fake.directory;
   const snapshot = await h.cockpit.c11.lookup.get(directory);
   const regles = (name: string): Rule[] => snapshot.agents.find((agent) => agent.name === name)?.permission ?? [];
-  const etapes: PlannedStep[] = [
-    { step: RELECTURE.blocs[0]?.type === "relecture" ? RELECTURE.blocs[0].auteur : null, ordre: 1 },
-    { step: RELECTURE.blocs[0]?.type === "relecture" ? RELECTURE.blocs[0].relecteur : null, ordre: 2 },
-  ].map(({ step, ordre }) => {
-    const s = step as FlowStep;
+  const etapes: PlannedStep[] = etapesDeclarees(RELECTURE_ET_CHOIX).map(({ step: s, blocIndex }, index) => {
     const agentRules = regles(s.assistant);
     return {
       stepId: s.id,
-      blocIndex: 0,
-      ordre,
+      blocIndex,
+      ordre: index + 1,
       titre: s.titre,
       assistant: s.assistant,
       agentRules,
@@ -326,19 +357,19 @@ async function equipeRelecture(t: TestContext) {
       taille: "M",
     };
   });
-  createTeamStore({ db: h.db }).teams.put({ id: team.id, titre: team.titre, description: "", flow: RELECTURE, origine: "exemple", exempleId: "enquete-incident", exempleVersion: 1, avance: false });
+  createTeamStore({ db: h.db }).teams.put({ id: team.id, titre: team.titre, description: "", flow: RELECTURE_ET_CHOIX, origine: "exemple", exempleId: "enquete-incident", exempleVersion: 1, avance: false });
   const estimate: FlowEstimate = {
-    typique: 0.1,
-    maximum: 0.4,
-    plafond: 0.4,
-    etapesFacturees: 2,
+    typique: 0.2,
+    maximum: 0.8,
+    plafond: 0.8,
+    etapesFacturees: etapes.length,
     depassementUnAppel: 0.02,
     relais: 0,
     parEtape: etapes.map((e) => ({ stepId: e.stepId, titre: e.titre, assistant: e.assistant, model: MODEL, modelLabel: "GPT-5 mini", niveau: null, choisieParEquipe: false, typique: 0.05, maximum: 0.2, source: "profil" as const })),
   };
   ctx.plan = {
-    flow: RELECTURE,
-    flowSha256: sha256(JSON.stringify(RELECTURE)),
+    flow: RELECTURE_ET_CHOIX,
+    flowSha256: sha256(JSON.stringify(RELECTURE_ET_CHOIX)),
     estimate,
     estimateSha256: "b".repeat(64),
     plafond: estimate.plafond,
@@ -360,39 +391,69 @@ async function equipeRelecture(t: TestContext) {
     { text: `[synthétique] Les causes ne sont pas étayées.${NL}VERDICT: À REPRENDRE`, cost: 0.01, stepMs: 5 },
     { text: `[synthétique] Il reste un point.${NL}VERDICT: À REPRENDRE`, cost: 0.01, stepMs: 5 },
   );
+  for (const [stepId, texte] of [
+    ["tri", `[synthétique] Le réseau d'abord.${NL}CHOIX: Réseau`],
+    ["s1", "[synthétique] Réseau : pertes de paquets la nuit."],
+    ["s2", "[synthétique] Base : verrous longs."],
+  ] as const) {
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === stepId, { text: texte, cost: 0.01, stepMs: 5 });
+  }
   const runner = h.cockpit.equipes.eq.ports.runner as TeamRunner;
-  const lancer = async (): Promise<{ runId: string; rootId: string; vue: TeamRunView }> => {
+  const attendre = (runId: string, etats: readonly string[]): Promise<TeamRunView> =>
+    until(() => {
+      const v = runner.view(runId);
+      return v && etats.includes(v.state) ? v : undefined;
+    }, 15_000);
+  const lancer = async (): Promise<{ runId: string; rootId: string; enChoix: TeamRunView; vue: TeamRunView }> => {
     const res = await h.call("POST", `/api/teams/${team.id}/run`, {
       headers: h.headers.mutating,
       body: { directory, rootId: null, demande: "[synthétique] Rédige le compte rendu.", fichiers: [], agentConversation: "build", estimateSha256: ctx.plan?.estimateSha256, confirmations: {} },
     });
     assert.equal(res.status, 202, res.body);
     const { runId, rootId } = res.json<TeamRunStarted>();
-    const vue = await until(() => {
-      const v = runner.view(runId);
-      return v && (v.state === "terminee" || v.state === "echec" || v.state === "plafond") ? v : undefined;
-    }, 15_000);
-    return { runId, rootId, vue };
+    // Pause de choix de l'aiguillage : VOTRE confirmation, jamais un départ automatique (spéc. §4.11 l.772).
+    const enChoix = await attendre(runId, ["attente-choix", "terminee", "echec", "plafond"]);
+    assert.equal(enChoix.state, "attente-choix", JSON.stringify(enChoix.state));
+    const choix = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.mutating, body: { choix: ["s1"] } });
+    assert.equal(choix.status, 200, choix.body);
+    const vue = await attendre(runId, ["terminee", "echec", "plafond"]);
+    return { runId, rootId, enChoix, vue };
   };
   return { h, lancer };
 }
 
-describe("croisements grande fusion (4) : « Revoir » d'une conversation d'équipe avec relecture (U2 × relecture)", () => {
-  it("relecture en 2 tours : une consigne par tour (etape-1-…, etape-2-…, mêmes sessions) listées par l'enfant ; « Revoir » sans requête ni ligne usage, textes d'étape jamais rendus ; suppression → consignes et message_text vidés", async (t) => {
+describe("croisements grande fusion (4) : « Revoir » d'une conversation d'équipe avec relecture et choix (U2 × relecture × aiguillage)", () => {
+  it("relecture en 2 tours puis aiguillage confirmé : une consigne par tour (etape-1-…, etape-2-…, mêmes sessions) listées par l'enfant ; « Revoir » = faits du direct (sessions d'étape comprises), plan 3D à chaque moment = direct du préfixe (Avancé et Simple), sans requête ni ligne usage, textes d'étape jamais rendus ; suppression → consignes et message_text vidés", async (t) => {
     const { h, lancer } = await equipeRelecture(t);
-    const { runId, rootId, vue } = await lancer();
+    const { runId, rootId, enChoix, vue } = await lancer();
     assert.equal(vue.state, "terminee", JSON.stringify(vue.state));
+    assert.deepEqual(
+      enChoix.pause?.choix?.map((c) => [c.stepId, c.propose]),
+      [
+        ["s1", true],
+        ["s2", false],
+      ],
+      "la proposition de l'aiguilleur (ligne CHOIX:) est présélectionnée",
+    );
+    assert.deepEqual(vue.steps.find((s) => s.stepId === "tri")?.choix, ["s1"], "votre choix");
+    assert.equal(vue.steps.find((s) => s.stepId === "s2")?.state, "non-choisi");
     // L'exécuteur rafraîchit l'archive APRÈS avoir posé « terminee » (team-runner.ts) : ses lectures (GET /session/:id, …/message)
     // appartiennent au lancement, pas à « Revoir ». Attendues ici, avant le repère.
     await until(() => h.db.prepare("SELECT 1 AS x FROM conversations WHERE session_id = ?").get(rootId), 10_000);
     await h.processor.settled();
     await h.attentesAuRepos();
-    const lignes = h.db.prepare("SELECT step_id, tour, session_id FROM team_run_steps WHERE run_id = ? ORDER BY ordre, tour").all(runId) as Array<{ step_id: string; tour: number; session_id: string }>;
+    const lignes = h.db.prepare("SELECT step_id, tour, session_id FROM team_run_steps WHERE run_id = ? ORDER BY ordre, tour").all(runId) as Array<{ step_id: string; tour: number; session_id: string | null }>;
     const sessionDe = (stepId: string) => lignes.find((l) => l.step_id === stepId)?.session_id ?? "";
     const redac = sessionDe("redac");
     const relec = sessionDe("relec");
+    const tri = sessionDe("tri");
+    const specialiste = sessionDe("s1");
     assert.ok(redac && relec && redac !== relec);
-    for (const l of lignes) assert.equal(l.session_id, l.step_id === "redac" ? redac : relec, "mêmes sessions à chaque tour (D-5-14)");
+    assert.ok(tri && specialiste && new Set([redac, relec, tri, specialiste]).size === 4, "une session par étape qui a travaillé");
+    assert.equal(sessionDe("s2"), "", "le spécialiste écarté n'a aucune session");
+    for (const l of lignes.filter((ligne) => ligne.step_id === "redac" || ligne.step_id === "relec")) {
+      assert.equal(l.session_id, l.step_id === "redac" ? redac : relec, "mêmes sessions à chaque tour (D-5-14)");
+    }
     const consignes = h.db.prepare("SELECT call_id, enfant_session_id FROM revoir_consignes WHERE root_id = ? ORDER BY call_id").all(rootId) as Array<{ call_id: string; enfant_session_id: string }>;
     assert.deepEqual(
       consignes.filter((c) => c.enfant_session_id === relec).map((c) => c.call_id),
@@ -404,23 +465,79 @@ describe("croisements grande fusion (4) : « Revoir » d'une conversation d'équ
       [`etape-1-1-${redac}`, `etape-2-1-${redac}`, `etape-3-1-${redac}`],
       "une consigne par tour de l'auteur (deux révisions)",
     );
+    for (const enfant of [tri, specialiste]) {
+      assert.deepEqual(
+        consignes.filter((c) => c.enfant_session_id === enfant).map((c) => c.call_id),
+        [`etape-1-1-${enfant}`],
+        "une consigne pour l'aiguilleur et pour le spécialiste choisi",
+      );
+    }
     // Consigne d'une délégation dans la même conversation (U2) : purgée avec le reste.
     assert.equal(createConsignesStore(h.db).enregistrer({ rootId, parent: rootId, enfant: "ses_gf5_delegue", callId: "call_gf5_task", brut: "[synthétique] consigne déléguée", at: Date.now() }), "enregistree");
+
+    // Direct : faits de la conversation lus en mode Avancé par la route du Déroulé (/facts), AVANT le repère de « Revoir ».
+    const lectureDirecte = await h.call("GET", `/api/conversations/${rootId}/facts?since=0`, { headers: h.headers.authed });
+    assert.equal(lectureDirecte.status, 200, lectureDirecte.body);
+    const direct = lectureDirecte.json<FactsResponse>();
+    assert.equal(direct.partial, false);
+    const sessionsDirect = new Set(direct.facts.map((f) => f.sessionId));
+    for (const [nom, session] of [
+      ["conversation", rootId],
+      ["rédaction", redac],
+      ["relecture", relec],
+      ["aiguilleur", tri],
+      ["spécialiste choisi", specialiste],
+    ] as const) {
+      assert.ok(sessionsDirect.has(session), `témoin du direct : faits de la session « ${nom} » absents de /facts`);
+    }
 
     // « Revoir » : zéro requête opencode, zéro ligne usage ; ni résultat d'étape ni texte de relecture rendu.
     const avant = { requetes: h.fake.requests.length, usage: lignesUsage(h) };
     const revoir = await h.call("GET", `/api/revoir/${rootId}`, { headers: h.headers.authed });
     assert.equal(revoir.status, 200, revoir.body);
     const lu = revoir.json<RevoirResponse>();
-    assert.ok(lu.facts.length > 0);
-    const differe = await h.call("GET", `/api/revoir/${rootId}`, { headers: h.headers.authed });
-    assert.deepEqual(differe.json<RevoirResponse>().facts, lu.facts, "différé = direct : mêmes faits relus");
+    assert.equal(lu.instance, "principale");
+    assert.equal(lu.partial, false);
+    // « Différé = direct » (point 4) : « Revoir » sert EXACTEMENT les faits du direct, sessions d'étape, tours de relecture,
+    // aiguilleur et spécialiste compris (jamais les seuls faits de la racine).
+    assert.deepEqual(lu.facts, direct.facts, "différé = direct : « Revoir » sert les faits de la lecture en direct");
+    const sessionsRevues = new Set(lu.facts.map((f) => f.sessionId));
+    for (const [nom, session] of [
+      ["rédaction", redac],
+      ["relecture", relec],
+      ["aiguilleur", tri],
+      ["spécialiste choisi", specialiste],
+    ] as const) {
+      assert.ok(sessionsRevues.has(session), `« Revoir » sans les faits de la session d'étape « ${nom} »`);
+    }
+    // Même lecture en mode Simple (conversation de l'instance principale : accès dans les deux modes, D-3d-09).
+    h.settings.update({ ui: { mode: "simple" } });
+    const revoirSimple = await h.call("GET", `/api/revoir/${rootId}`, { headers: h.headers.authed });
+    assert.equal(revoirSimple.status, 200, revoirSimple.body);
+    assert.deepEqual(revoirSimple.json<RevoirResponse>().facts, direct.facts, "différé = direct, en Simple aussi");
+    h.settings.update({ ui: { mode: "avance" } });
+    // Plan 3D rejoué à chaque moment = plan du direct sur le préfixe des faits, en Avancé et en Simple (comme GF12).
+    const tous = moments(lu.facts);
+    assert.ok(tous.length > 1, "la conversation d'équipe a plusieurs moments");
+    for (const moment of tous) {
+      const prefixe = direct.facts.slice(0, visibleCount(direct.facts, moment));
+      for (const vueScene of [AVANCE, SIMPLE]) assert.deepEqual(planDe(lu.facts, moment, vueScene), planDe(prefixe, null, vueScene), `moment ${moment}, ${vueScene.mode}`);
+    }
     for (const enfant of [redac, relec]) {
       const parEnfant = await h.call("GET", `/api/revoir/${rootId}/consignes?enfant=${enfant}`, { headers: h.headers.authed });
       assert.equal(parEnfant.status, 200, parEnfant.body);
       assert.equal(parEnfant.json<RevoirConsignesEnfantResponse>().consignes.length, enfant === redac ? 3 : 2, "[Voir la consigne] : chaque tour listé");
     }
-    for (const texte of ["Version 3 du compte rendu.", "Les causes ne sont pas étayées.", "Il reste un point."]) assert.equal(revoir.body.includes(texte), false, `texte d'étape rendu par « Revoir » : ${texte}`);
+    for (const texte of [
+      "Version 3 du compte rendu.",
+      "Les causes ne sont pas étayées.",
+      "Il reste un point.",
+      "Le réseau d'abord.",
+      "CHOIX: Réseau",
+      "Réseau : pertes de paquets la nuit.",
+    ]) {
+      assert.equal(revoir.body.includes(texte), false, `texte d'étape rendu par « Revoir » : ${texte}`);
+    }
     assert.deepEqual(
       h.fake.requests.slice(avant.requetes).map((r) => `${r.method} ${r.pathname}`),
       [],
