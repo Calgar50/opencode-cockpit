@@ -979,10 +979,13 @@ async function temoinQ6(s) {
   const activation = await activerApi(ctx, rootId);
   exiger(activation.code === 200, `activation par l'API : ${resume(activation)}`);
 
+  // Corps lu UNE fois, en Avancé (l'IA de la salle vient de /api/omo/oc/agent, 403 en Simple), puis envoyé tel quel dans les deux modes.
+  const corps = await corpsEnvoi(ctx, directory, "[synthétique] témoin Q6 de la répétition générale");
+
   // 1. Simple : même racine activée, même corps → 403 « mode-avance », rien relayé.
   const avantSimple = (await envoisSalle(ctx, rootId)).length;
   await changerMode(ctx, "simple");
-  const simple = await envoyerApi(ctx, rootId, directory);
+  const simple = await envoyerCorps(ctx, rootId, directory, corps);
   const simpleLu = simple.corps ? JSON.parse(simple.corps) : null;
   await attendre(1_500);
   const apresSimple = (await envoisSalle(ctx, rootId)).length;
@@ -996,12 +999,12 @@ async function temoinQ6(s) {
 
   // 2. Avancé (témoin) : le même envoi passe la porte et arrive à la salle factice (204, un relayé).
   await changerMode(ctx, "avance");
-  let avance = await envoyerApi(ctx, rootId, directory);
+  let avance = await envoyerCorps(ctx, rootId, directory, corps);
   if (avance.code === 409 && /activ/i.test(String((avance.corps ? JSON.parse(avance.corps) : null)?.error ?? ""))) {
     // L'activation vaut pour une demande ; si le passage par Simple l'a retirée, elle est redonnée (même racine).
     const re = await activerApi(ctx, rootId);
     exiger(re.code === 200, `réactivation après le passage en Simple : ${resume(re)}`);
-    avance = await envoyerApi(ctx, rootId, directory);
+    avance = await envoyerCorps(ctx, rootId, directory, corps);
   }
   exiger(avance.code === 204, `Avancé : envoi ${avance.code} ${resume(avance.corps)} (204 attendu)`);
   await attendreQue(async () => ((await envoisSalle(ctx, rootId)).length > apresSimple ? true : false), { delaiMs: 15_000, pasMs: 250, libelle: "envoi relayé à la salle factice" });
@@ -1047,23 +1050,39 @@ async function temoinQ6(s) {
   );
 }
 
-/** Envoi d'une demande dans la salle PAR L'API (préparation) : IA de l'agent principal de la salle, confirmée ; 409 d'IA changée suivi. */
-async function envoyerApi(ctx, rootId, directory) {
+/**
+ * Corps d'un envoi dans la salle : IA de l'agent principal de la salle, lue par GET /api/omo/oc/agent — donc EN MODE AVANCÉ (en
+ * Simple, la route répond 403 « mode-avance » comme tout /api/omo/oc/*). Le témoin Q6 lit ce corps une fois, en Avancé, puis
+ * envoie le MÊME corps dans les deux modes.
+ */
+async function corpsEnvoi(ctx, directory, texte) {
   const agents = await ctx.api.brut("GET", `/api/omo/oc/agent?directory=${encodeURIComponent(directory)}`);
   exiger(agents.code === 200, `GET /api/omo/oc/agent : ${agents.code} ${resume(agents.corps)}`);
   const principal = (a) => typeof a?.name === "string" && a.mode !== "subagent";
   const liste = JSON.parse(agents.corps);
   const agent = liste.find((a) => principal(a) && a.name === "build") ?? liste.find((a) => principal(a) && a.hidden !== true);
   const model = agent?.model?.providerID && agent?.model?.modelID ? { providerID: agent.model.providerID, modelID: agent.model.modelID } : null;
-  const parts = [{ type: "text", text: "[synthétique] demande brève de la salle, revue ensuite en mode Simple" }];
+  return { parts: [{ type: "text", text: texte }], ...(model ? { model } : {}) };
+}
+
+/** Envoi d'un corps dans la salle PAR L'API, confirmé ; 409 d'IA changée suivi (même texte, IA rendue par le cockpit). */
+async function envoyerCorps(ctx, rootId, directory, corps) {
   const chemin = `/api/omo/oc/session/${encodeURIComponent(rootId)}/prompt_async?directory=${encodeURIComponent(directory)}`;
   const confirmer = { entetes: { "x-cockpit-confirm": "1" } };
-  let reponse = await ctx.api.brut("POST", chemin, { parts, ...(model ? { model } : {}) }, confirmer);
-  const lu = reponse.corps ? JSON.parse(reponse.corps) : null;
+  let reponse = await ctx.api.brut("POST", chemin, corps, confirmer);
+  let lu = null;
+  try {
+    lu = reponse.corps ? JSON.parse(reponse.corps) : null;
+  } catch {}
   if (reponse.code === 409 && lu?.error === "assistant-model-changed" && lu?.model) {
-    reponse = await ctx.api.brut("POST", chemin, { parts, model: lu.model, ...(lu.variant ? { variant: lu.variant } : {}) }, confirmer);
+    reponse = await ctx.api.brut("POST", chemin, { parts: corps.parts, model: lu.model, ...(lu.variant ? { variant: lu.variant } : {}) }, confirmer);
   }
   return reponse;
+}
+
+/** Envoi d'une demande dans la salle PAR L'API (préparation, mode Avancé) : corps lu puis envoyé. */
+async function envoyerApi(ctx, rootId, directory) {
+  return await envoyerCorps(ctx, rootId, directory, await corpsEnvoi(ctx, directory, "[synthétique] demande brève de la salle, revue ensuite en mode Simple"));
 }
 
 /**
