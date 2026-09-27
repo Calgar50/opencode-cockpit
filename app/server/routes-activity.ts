@@ -43,6 +43,9 @@ import type {
 } from "./shared/autonomy-types.ts";
 import { SESSION_ID_RE } from "./shared/ids.ts";
 import { phraseRefusActivation } from "./shared/omo-room-texts.ts";
+// --- équipes (it4) : début ---
+import { createTeamStore } from "./team-store.ts";
+// --- équipes (it4) : fin ---
 
 /** `data.etat` du fait « affichage » posé par la bande 2D quand sa file est vidée (« Affichage rattrapé »). */
 export const AFFICHAGE_RATTRAPE_ETAT: AffichageEtat = "rattrape";
@@ -224,7 +227,10 @@ export function readActivity(c11: Pick<Cockpit11, "db" | "settings">, rootId: st
   const defaults = c11.settings.get().budget.autonomie;
 
   return {
-    runs: [],
+    // --- équipes (it4) : début ---
+    // Résumés des lancements d'équipe de la conversation (L37s) ; lecture seule, comme le reste de cette route.
+    runs: createTeamStore({ db }).summaries(rootId),
+    // --- équipes (it4) : fin ---
     delegations: delegations.map(
       (row): DelegationView => ({
         id: row.id,

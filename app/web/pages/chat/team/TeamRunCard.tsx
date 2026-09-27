@@ -1,0 +1,226 @@
+// Propriétaire : L38b.
+// Carte d'UN lancement d'équipe dans le fil (C §9.5) : en-tête « Équipe « {équipe} » · étape {n} sur {N} · {x} $ jusqu'ici ·
+// plafond {y} $ » et [Arrêter l'équipe] ; une ligne par étape (icône ET mot, jamais la couleur seule) avec [Voir son travail] qui
+// ouvre la session d'étape dans le tiroir de lecture ; bloc de pause (TeamPauseCard) ; cartes finales (arrêtée, plafond, échec,
+// interrompue) avec [Relancer la suite (≈ x $)], [Ajouter les résultats obtenus à la conversation] et [Fermer] selon `relancable`
+// et `resultatsAjoutes` (D-eq-22).
+// Arrêt : boîte « Arrêter l'équipe ? » puis POST …/stop. Relance (D-eq-17, A4) : au clic, POST …/estimate (les lectures se font
+// là), puis la boîte « Déjà dépensé : … » et POST …/relancer avec l'EMPREINTE et x-cockpit-confirm: 1 — jamais l'inverse ; un
+// refus prévisible (`blocage`) désactive le bouton avec sa raison, sans rien envoyer.
+// Annonces : région de la page (L5b, useAnnouncer, réglage ui.activityAnnouncements), polies, jamais une nouvelle région
+// aria-live. Modèle et textes : team-view-model.ts (T4t) ; aucune animation, aucun raccourci clavier.
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { TeamRunView } from "../../../../server/shared/team-types.ts";
+import { useApp } from "../../../app/AppContext.tsx";
+import { Icon } from "../../../components/Icon.tsx";
+import { Button, useConfirm } from "../../../components/ui.tsx";
+import { useAnnouncer } from "../../../lib/announcer.ts";
+import { teamError, teamRunsApi } from "../../../lib/api-teams.ts";
+import { errorText } from "../../../lib/api.ts";
+import { TeamPauseCard } from "./TeamPauseCard.tsx";
+import {
+  confirmationArret,
+  type RelanceConfirmation,
+  relanceApresConfirmation,
+  relanceApresEstimation,
+  relanceDebut,
+  type TeamButton,
+  type TeamRunCardModel,
+} from "./team-view-model.ts";
+import "./team-cards.css";
+
+export interface TeamRunCardProps {
+  run: TeamRunView;
+  modele: TeamRunCardModel;
+  onOpenSession: (sessionId: string) => void;
+  /** Une action a changé l'état : le cache relit les lancements de la conversation. */
+  onChanged: () => void;
+}
+
+const allureBouton = (allure: TeamButton["allure"]) => (allure === "danger" ? "danger" : allure === "primary" ? "primary" : "default");
+
+export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCardProps) {
+  const { ui } = useApp();
+  const say = useAnnouncer(ui.activityAnnouncements);
+  const confirm = useConfirm();
+
+  /** Appel en cours (garde synchrone contre un double clic, avant le rendu suivant). */
+  const inflight = useRef(false);
+  const [occupe, setOccupe] = useState(false);
+  /** Raison d'un refus, affichée jusqu'au prochain essai. */
+  const [message, setMessage] = useState<string | null>(null);
+  /** Refus prévisible de la relance (`blocage` de l'estimation) : le bouton reste désactivé avec sa raison. */
+  const [blocage, setBlocage] = useState<string | null>(null);
+  /** Carte montée : une réponse arrivée après son démontage ne touche plus à l'état. */
+  const monte = useRef(false);
+  const dernierEtat = useRef<string | null>(null);
+
+  useEffect(() => {
+    monte.current = true;
+    return () => {
+      monte.current = false;
+    };
+  }, []);
+
+  // Transition annoncée une fois, poliment, par la région de la page ; jamais le premier état vu.
+  useEffect(() => {
+    const precedent = dernierEtat.current;
+    dernierEtat.current = modele.annonce;
+    if (precedent !== null && precedent !== modele.annonce) say(modele.annonce);
+  }, [modele.annonce, say]);
+
+  const lancer = useCallback(
+    async (action: () => Promise<unknown>) => {
+      if (inflight.current) return;
+      inflight.current = true;
+      setOccupe(true);
+      setMessage(null);
+      try {
+        await action();
+        if (monte.current) onChanged();
+      } catch (err: unknown) {
+        const refus = teamError(err);
+        if (monte.current) setMessage(refus === null ? errorText(err) : refus.message);
+      } finally {
+        inflight.current = false;
+        if (monte.current) setOccupe(false);
+      }
+    },
+    [onChanged],
+  );
+
+  const arreter = useCallback(() => {
+    const boite = confirmationArret();
+    void (async () => {
+      const ok = await confirm({ title: boite.titre, message: boite.message, confirmLabel: boite.confirmer, cancelLabel: boite.annuler, danger: true });
+      if (ok) await lancer(() => teamRunsApi.stop(run.id));
+    })();
+  }, [confirm, lancer, run.id]);
+
+  /** D-eq-17 : estimation d'abord (seules lectures), confirmation ensuite, puis `relancer` avec l'empreinte. */
+  const relancer = useCallback(() => {
+    if (relanceDebut(run) === null || inflight.current) return;
+    inflight.current = true;
+    setOccupe(true);
+    setMessage(null);
+    setBlocage(null);
+    void (async () => {
+      let confirmation: RelanceConfirmation | null = null;
+      try {
+        const etape = relanceApresEstimation(await teamRunsApi.estimate(run.id));
+        if (etape.genre === "blocage") {
+          if (monte.current) setBlocage(etape.raison);
+        } else if (etape.genre === "confirmation") {
+          confirmation = etape.confirmation;
+        }
+      } catch (err: unknown) {
+        const refus = teamError(err);
+        if (monte.current) setMessage(refus === null ? errorText(err) : refus.message);
+      } finally {
+        inflight.current = false;
+        if (monte.current) setOccupe(false);
+      }
+      if (confirmation === null) return;
+      const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
+      const suite = relanceApresConfirmation(confirmation, ok);
+      if (suite === null) return;
+      await lancer(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }));
+    })();
+  }, [confirm, lancer, run]);
+
+  const cliquer = useCallback(
+    (bouton: TeamButton, desactive: boolean) => {
+      if (desactive) return;
+      switch (bouton.action) {
+        case "arreter":
+          arreter();
+          return;
+        case "relancer":
+          relancer();
+          return;
+        case "ajouter-resultats":
+        case "ajouter":
+          void lancer(() => teamRunsApi.addResults(run.id));
+          return;
+        case "fermer":
+          void lancer(() => teamRunsApi.close(run.id));
+          return;
+        default:
+          return;
+      }
+    },
+    [arreter, lancer, relancer, run.id],
+  );
+
+  const continuer = useCallback(
+    (corps: { precision?: string; correction?: string }, confirme: boolean) => {
+      void lancer(() => teamRunsApi.continue(run.id, corps, confirme ? { confirm: true } : {}));
+    },
+    [lancer, run.id],
+  );
+
+  /** Raison lue à côté du bouton : le refus prévisible de la relance remplace la raison du modèle. */
+  const raisonDe = (bouton: TeamButton) => (bouton.action === "relancer" && blocage !== null ? blocage : bouton.raison);
+
+  return (
+    <section className={`team-card team-run state-${run.state}`} aria-label={modele.entete}>
+      <div className="team-card-head">
+        <Icon name={modele.etatIcone} className="team-icon" />
+        <p className="team-card-title tabular">{modele.entete}</p>
+        <span className="team-card-state">{modele.etatMot}</span>
+      </div>
+      {modele.message === null ? null : <p className="team-card-message">{modele.message}</p>}
+      {modele.bilan === null ? null : <p className="team-card-note tabular">{modele.bilan}</p>}
+      {modele.lignes.length === 0 ? null : (
+        <ul className="team-steps">
+          {modele.lignes.map((ligne) => (
+            <li key={ligne.cle} className={`team-step kind-${ligne.kind}`}>
+              <Icon name={ligne.icone} className="team-icon" />
+              <span className="team-step-main">
+                <span className="team-step-detail">{ligne.detail === "" ? ligne.titre : ligne.detail}</span>
+                <span className="team-step-state">{ligne.mot}</span>
+                {ligne.tentative === null ? null : <span className="team-step-note">{ligne.tentative}</span>}
+                {ligne.tronquee === null ? null : <span className="team-step-note">{ligne.tronquee}</span>}
+                {ligne.cause === null ? null : <span className="team-step-note">{ligne.cause}</span>}
+              </span>
+              {ligne.sessionId === null || ligne.voirTravail === null ? null : (
+                <Button size="sm" onClick={() => onOpenSession(ligne.sessionId ?? "")}>
+                  {ligne.voirTravail}
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {modele.pause === null ? null : <TeamPauseCard pause={modele.pause} occupe={occupe} onContinue={continuer} onStop={arreter} />}
+      {modele.boutons.length === 0 ? null : (
+        <div className="team-card-actions">
+          {modele.boutons.map((bouton) => {
+            const desactive = bouton.desactive || (bouton.action === "relancer" && blocage !== null);
+            return (
+              <Button
+                key={bouton.action}
+                variant={allureBouton(bouton.allure)}
+                disabled={occupe}
+                aria-disabled={desactive}
+                aria-describedby={raisonDe(bouton) === null ? undefined : `${modele.runId}-${bouton.action}`}
+                onClick={() => cliquer(bouton, desactive)}
+              >
+                {bouton.libelle}
+              </Button>
+            );
+          })}
+        </div>
+      )}
+      {modele.boutons.map((bouton) => {
+        const raison = raisonDe(bouton);
+        return raison === null ? null : (
+          <p key={bouton.action} id={`${modele.runId}-${bouton.action}`} className="team-card-note">
+            {raison}
+          </p>
+        );
+      })}
+      {message === null ? null : <p className="team-card-message">{message}</p>}
+    </section>
+  );
+}

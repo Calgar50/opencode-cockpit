@@ -26,6 +26,9 @@ import {
   exigerPlancherHerite,
   iaDuBanc,
   lecture,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   partiesOutil,
@@ -38,12 +41,21 @@ const FICHIER_TEXTE = "/workspace/it1-api-pfx-explore/notes.txt";
 const DESCRIPTION = "Explorer it1-api-pfx-explore";
 
 export async function run(ctx) {
+  // --- équipes (it4) : début ---
+  // Racine créée ici ; le `finally` la rend au repos même si une assertion tombe pendant une demande d'autorisation (sans quoi
+  // la session reste comptée occupée par opencode pour tous les scénarios suivants de la passe, dossier partagé).
+  const racines = [];
+  try {
+  // --- équipes (it4) : fin ---
   await avecTemoinP6(ctx, async (temoin) => {
     const ia = iaDuBanc(await ctx.api.get("/api/bootstrap"));
     const client = oc(ctx);
 
     // 1. Racine avec le plancher ; explore est un sous-agent qui lit par ses propres règles (la lecture n'y est pas refusée).
     const racine = await client.creerConversation("it1-api-pfx-explore");
+    // --- équipes (it4) : début ---
+    racines.push(racine.id);
+    // --- équipes (it4) : fin ---
     exigerPlancher(racine.permission, PLANCHER_CONVERSATION, "écho de la création");
     const agents = await client.agents();
     const explore = agents.find((a) => a.name === "explore");
@@ -94,4 +106,9 @@ export async function run(ctx) {
       exiger(reponses.length === 1 && reponses[0].pathname === `/permission/${demande.id}/reply`, `réponses d'autorisation inattendues : ${resume(reponses.map((r) => r.pathname))}`);
     });
   });
+  // --- équipes (it4) : début ---
+  } finally {
+    await libererLesDemandes(ctx, racines);
+  }
+  // --- équipes (it4) : fin ---
 }

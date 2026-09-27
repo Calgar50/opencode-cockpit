@@ -1,0 +1,342 @@
+/* Propriétaire : L40b. Éditeur guidé d'une équipe, 4 écrans (spécification §5.3 l.894-902, §5.5, §5.6, §2.2 l.90 ; C §8.1,
+   §9.11). Les formes du schéma et de la liste viennent de teams.css (L40a), chargée avec cette feuille.
+   Disposition (§5.6) : deux colonnes au-dessus de 900 px, le déroulé à gauche et le schéma à droite ; sous 900 px, une colonne,
+   le schéma passe DESSOUS ; à 400 px, teams.css laisse la liste seule (le schéma y est caché).
+   Progression : l'écran courant est dit par son TEXTE (« 2 / 4 · Les étapes ») et marqué par une bordure épaisse, jamais par la
+   couleur seule ; sa liste porte aria-label="Progression" (§2.2 l.90 : « Étape » reste le mot des étapes d'une équipe).
+   Problèmes : bordure et icône, avec le texte du problème ; un problème bloquant a un trait plus épais, jamais la couleur seule.
+   Mouvement : aucune animation ; une seule transition de couleur, sous prefers-reduced-motion: no-preference.
+   Contraste forcé (U9, §5.5 l.922) : cartes de blocs et problèmes bordés (l'icône passe en CanvasText), écran courant de la
+   progression souligné, focus en Highlight, connecteurs du schéma en stroke: CanvasText. */
+
+.tm-ed {
+  min-width: 0;
+}
+
+.tm-ed-titre {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tm-ed-sous-titre {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tm-ed-entete {
+  gap: 12px;
+  align-items: center;
+}
+
+/* --- Progression -------------------------------------------------------------------------------------------------------- */
+
+.tm-ed-progression {
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tm-ed-pas {
+  padding: 4px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 1px;
+  border-radius: var(--radius-sm);
+}
+
+/* L'écran courant : son texte chiffré, plus un trait sous la case. */
+.tm-ed-pas.courant {
+  color: var(--text-1);
+  font-weight: 600;
+  border-color: var(--border-strong);
+  border-bottom: 3px solid var(--accent);
+}
+
+/* --- Corps : déroulé à gauche, schéma à droite ---------------------------------------------------------------------------- */
+
+.tm-ed-corps {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  min-width: 0;
+}
+
+.tm-ed-principal,
+.tm-ed-schema {
+  min-width: 0;
+}
+
+@media (min-width: 901px) {
+  .tm-ed-corps {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+    align-items: start;
+  }
+  .tm-ed-schema {
+    position: sticky;
+    top: 12px;
+  }
+}
+
+/* --- Écran 1 : exemples et formes ---------------------------------------------------------------------------------------- */
+
+.tm-ed-cartes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.tm-ed-choix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.tm-ed-choix p {
+  margin: 0;
+  min-width: 0;
+}
+
+.tm-ed-choix-bouton {
+  align-self: flex-start;
+}
+
+/* --- Écran 2 : blocs et étapes -------------------------------------------------------------------------------------------- */
+
+.tm-ed-historique {
+  gap: 8px;
+}
+
+.tm-ed-rang {
+  gap: 8px;
+  min-width: 0;
+}
+
+.tm-ed-ajout {
+  gap: 8px;
+  align-items: center;
+}
+
+.tm-ed-ajout-libelle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tm-ed-bloc {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+/* Forme du genre de bloc, doublée par le mot du titre (« Bloc 2 · Des avis indépendants ») : jamais la couleur seule. */
+.tm-ed-bloc-etape {
+  border-radius: var(--radius-sm);
+}
+.tm-ed-bloc-avis {
+  border-radius: var(--radius-lg);
+}
+.tm-ed-bloc-pause {
+  border-left: 5px solid var(--border-strong);
+}
+
+.tm-ed-bloc-titre {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tm-ed-bloc-entete,
+.tm-ed-bloc-actions,
+.tm-ed-bloc-ajout,
+.tm-ed-etape-actions {
+  gap: 8px;
+  align-items: center;
+}
+
+.tm-ed-bloc-aide {
+  margin: 0;
+}
+
+.tm-ed-etape {
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.tm-ed-champs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.tm-ed-limite,
+.tm-ed-recoit {
+  margin: 0;
+  min-width: 0;
+}
+
+.tm-ed-recoit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tm-ed-recoit-libelle {
+  font-weight: 600;
+}
+
+/* Boutons impossibles : focalisables (aria-disabled), estompés et bordés en pointillé, jamais retirés. */
+.tm-ed-bloc-actions .btn[aria-disabled="true"],
+.tm-ed-historique .btn[aria-disabled="true"],
+.tm-ed-ajout .btn[aria-disabled="true"],
+.tm-ed-verifier .btn[aria-disabled="true"] {
+  color: var(--text-3);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+
+/* --- Problèmes ------------------------------------------------------------------------------------------------------------ */
+
+.tm-ed-problemes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.tm-ed-probleme {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 10px;
+  color: var(--text-1);
+  font-size: 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.tm-ed-probleme.bloquant {
+  border-left-width: 5px;
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+/* --- Écran 3 : coût et plafond -------------------------------------------------------------------------------------------- */
+
+.tm-ed-total {
+  margin: 0;
+  font-weight: 600;
+}
+
+.tm-ed-arret,
+.tm-ed-confidentialite,
+.tm-ed-refus {
+  align-items: flex-start;
+  margin: 0;
+}
+
+/* --- Écran 4 : vérifier et nommer ----------------------------------------------------------------------------------------- */
+
+.tm-ed-partage {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.tm-ed-droits,
+.tm-ed-honnetete {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.tm-ed-droits {
+  list-style: none;
+  padding-left: 0;
+}
+
+.tm-ed-droit {
+  padding-left: 2px;
+}
+
+.tm-ed-pied {
+  gap: 12px;
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tm-ed-choix-bouton,
+  .tm-ed-bloc-actions .btn,
+  .tm-ed-historique .btn {
+    transition: background-color 120ms ease;
+  }
+}
+
+/* --- Contraste forcé (U9, spécification §5.5 l.922) ----------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .tm-ed-bloc,
+  .tm-ed-choix,
+  .tm-ed-etape,
+  .tm-ed-probleme,
+  .tm-ed-probleme.bloquant {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .tm-ed-bloc-pause {
+    border-left: 5px solid CanvasText;
+  }
+  .tm-ed-probleme.bloquant {
+    border-left: 5px solid CanvasText;
+  }
+  /* L'icône du problème n'est jamais seule : le texte du problème la suit toujours. */
+  .tm-ed-probleme .icon {
+    color: CanvasText;
+  }
+  .tm-ed-pas {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .tm-ed-pas.courant {
+    border-bottom: 3px solid CanvasText;
+    text-decoration: underline;
+  }
+  .tm-connecteur-trait {
+    stroke: CanvasText;
+  }
+  .tm-ed-bloc-actions .btn[aria-disabled="true"],
+  .tm-ed-historique .btn[aria-disabled="true"],
+  .tm-ed-ajout .btn[aria-disabled="true"],
+  .tm-ed-verifier .btn[aria-disabled="true"] {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  .tm-ed .btn:focus-visible,
+  .tm-ed input:focus-visible,
+  .tm-ed select:focus-visible,
+  .tm-ed textarea:focus-visible,
+  .tm-ed a:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

@@ -30,6 +30,9 @@ import {
   exigerListe,
   exigerPlancher,
   iaDuBanc,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   occupees,
@@ -42,14 +45,28 @@ const TRAVAILLE = "Analyser les journaux";
 const ATTEND = "Analyser changements.md";
 
 export async function run(ctx) {
+  // --- équipes (it4) : début ---
+  // Racine créée ici ; le `finally` la rend au repos même si une assertion tombe pendant une demande d'autorisation (sans quoi
+  // la session reste comptée occupée par opencode pour tous les scénarios suivants de la passe, dossier partagé).
+  const racines = [];
+  try {
+  // --- équipes (it4) : fin ---
   await avecTemoinP6(ctx, async (temoin) => {
     const ia = iaDuBanc(await ctx.api.get("/api/bootstrap"));
     const client = oc(ctx);
     const racine = await client.creerConversation("it1-api-arret");
+    // --- équipes (it4) : début ---
+    racines.push(racine.id);
+    // --- équipes (it4) : fin ---
     exigerPlancher(racine.permission, PLANCHER_CONVERSATION, "écho de la création");
     if (ctx.mode === "faux") await enModeAvance(ctx, () => arreterUnArbreQuiTravaille(ctx, client, temoin, racine, ia));
     else await arreterApresLeTour(ctx, client, temoin, racine, ia);
   });
+  // --- équipes (it4) : début ---
+  } finally {
+    await libererLesDemandes(ctx, racines);
+  }
+  // --- équipes (it4) : fin ---
 }
 
 /** Réponse de « Arrêter » : 200 et StopResult de la racine, rien de non confirmé. */

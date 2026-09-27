@@ -485,6 +485,27 @@ export class Ledger {
     return row.cost;
   }
 
+  // <gf3:plafond-autonomie> début : croisement équipes × autonomie (grande fusion GF3 ; spéc. §4.11 l.772)
+  /**
+   * Dépense d'une DEMANDE AUTONOME depuis `since` : celle de spentSince, SANS les sessions d'étape d'équipe (sessions.purpose =
+   * « equipe »). Une demande autonome reste ouverte, conversation au repos, jusqu'à l'envoi suivant (autonomy-requests.ts) : une
+   * équipe lancée entre-temps dans la même conversation ne doit ni faire monter sa dépense, ni lui faire atteindre son plafond
+   * de coût (qui arrêterait l'équipe et ramènerait la conversation à « Demander à chaque fois »). L'équipe a son propre plafond
+   * d'arrêt (team-run-guards.ts). Mêmes règles que spentSince pour tout le reste ; `since` illisible : erreur, jamais 0.
+   */
+  spentSinceSansEtapes(rootId: string, since: number): number {
+    if (!Number.isFinite(since)) throw new RangeError("début de demande invalide");
+    const row = this.#db
+      .prepare(
+        `SELECT COALESCE(SUM(u.cost), 0) AS cost FROM usage u
+         WHERE u.root_id = ? AND u.created_at >= ?
+           AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = u.session_id AND s.purpose = 'equipe')`,
+      )
+      .get(rootId, since) as { cost: number };
+    return row.cost;
+  }
+  // </gf3:plafond-autonomie> fin
+
   months(): string[] {
     const rows = this.#db
       .prepare("SELECT DISTINCT strftime('%Y-%m', created_at / 1000, 'unixepoch') AS m FROM usage ORDER BY m DESC")

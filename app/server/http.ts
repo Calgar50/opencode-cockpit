@@ -122,6 +122,9 @@ import { StudioApplyError, type StudioScope, type StudioService, StudioValidatio
 import type { StudioKind } from "./studio-schema.ts";
 import { TEMPLATES } from "./templates.ts";
 import { ACTIVATION_OUVERTE, SALLE_OUVERTE } from "./wiring-11.ts";
+// --- équipes (it4) : début ---
+import type { TeamProxyGuard } from "./contracts-eq.ts";
+// --- équipes (it4) : fin ---
 
 /** Niveaux d'IA utilisés par l'API (TierService les fournit). */
 export interface TierPort {
@@ -178,6 +181,10 @@ export interface AppDeps {
   routes?: Array<(app: Hono) => void>;
   /** 1.1 : portillon des accords partagé (app-factory) ; absent : une instance propre à cette application. */
   gate?: PermissionGate;
+  // --- équipes (it4) : début ---
+  /** Équipes (D-eq-04) : verrou appelé en tête du proxy et avant DELETE /api/archive/:id (app-factory) ; absent : rien ne change. */
+  teamGuard?: TeamProxyGuard;
+  // --- équipes (it4) : fin ---
   /** 1.1 : crochets du proxy rangés par wiring-11 (app-factory) ; absents : comportement 1.0. */
   proxyHooks?: ProxyHooks;
   /** 1.1 : agents internes (ports.internalAgents), installés après un redémarrage réussi ; absent : agent de classement seul. */
@@ -996,6 +1003,11 @@ export function createApp(deps: AppDeps): Hono {
       // Fenêtre de connexion du relais (1.0.6) : montage de l'instance principale SEUL, jamais dans proxyCommun ni pour la salle
       // (la salle sort par egress, sa propre liste fermée, jamais github.com).
       egressLogin: deps.egressLogin,
+      // --- équipes (it4) : début ---
+      // Verrous des équipes (D-eq-04, GF3) : montage de l'instance principale SEUL, jamais dans proxyCommun ni pour la salle
+      // (aucune équipe ne tourne dans la salle ; une racine de la salle n'est jamais verrouillée par une équipe).
+      teamGuard: deps.teamGuard,
+      // --- équipes (it4) : fin ---
     }),
   );
 
@@ -1198,6 +1210,26 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(refreshed.conversation);
   });
 
+  // --- équipes (it4) : début ---
+  // Suppression d'une conversation par les Archives (D-eq-04) : verrou des équipes AVANT la purge (textes d'équipe compris).
+  // Identifiant invalide pour shared/ids.ts : rien, la route répond comme avant.
+  const { teamGuard } = deps;
+  if (teamGuard) {
+    app.use(
+      "/api/archive/:id",
+      forMethods(["DELETE"], async (c, next) => {
+        const id = c.req.param("id");
+        const locked =
+          id !== undefined && SESSION_ID_RE.test(id)
+            ? await teamGuard({ entree: "archive", method: "DELETE", sub: "", directory: null, sessionId: id, permissionId: null })
+            : null;
+        if (locked) return locked;
+        await next();
+        return undefined;
+      }),
+    );
+  }
+  // --- équipes (it4) : fin ---
   app.delete("/api/archive/:id", async (c) => {
     const deleted = await archive.remove(c.req.param("id"));
     if (deleted) hub.cockpit("conversation.deleted", { sessionId: c.req.param("id") });

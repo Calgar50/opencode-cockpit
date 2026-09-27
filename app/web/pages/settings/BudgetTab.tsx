@@ -15,6 +15,9 @@ import type { AutonomieSettings, DelegationSettings } from "../../../server/shar
 import type { QuotaSnapshot } from "../../lib/types.ts";
 import { NumberInput, TokenListEditor } from "../studio/widgets.tsx";
 import { fmtNumber, SectionFooter, useDraft, useSettingsSave } from "./common.tsx";
+// --- équipes (it4) : début ---
+import { TeamsBudgetSettings } from "./TeamsBudgetSettings.tsx";
+// --- équipes (it4) : fin ---
 
 function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
   const { boot, advanced } = useApp();
@@ -332,8 +335,16 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
   const { draft, setDraft, dirty, reset } = useDraft(boot.settings.budget);
   const { save, resetSection, saving, issues } = useSettingsSave();
   const [quotaDirty, setQuotaDirty] = useState(false);
+  // --- équipes (it4) : début ---
+  const [teamsDirty, setTeamsDirty] = useState(false);
+  // --- équipes (it4) : fin ---
 
-  useEffect(() => onDirtyChange(dirty || quotaDirty), [dirty, quotaDirty, onDirtyChange]);
+  // --- équipes (it4) : début ---
+  // Ligne REMPLACÉE (elle ne s'ajoute pas) : l'originale de l'itération 1 est
+  // `useEffect(() => onDirtyChange(dirty || quotaDirty), [dirty, quotaDirty, onDirtyChange]);`
+  // et le bloc des équipes s'ajoute aux sections qui salissent l'onglet.
+  useEffect(() => onDirtyChange(dirty || quotaDirty || teamsDirty), [dirty, quotaDirty, teamsDirty, onDirtyChange]);
+  // --- équipes (it4) : fin ---
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const expensive = boot.models
@@ -494,6 +505,9 @@ export function BudgetTab({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
         </div>
       </Card>
 
+      {/* --- équipes (it4) : début --- */}
+      {advanced ? <TeamsBudgetSettings onDirty={setTeamsDirty} /> : null}
+      {/* --- équipes (it4) : fin --- */}
       <QuotaSection onDirty={setQuotaDirty} />
     </div>
   );

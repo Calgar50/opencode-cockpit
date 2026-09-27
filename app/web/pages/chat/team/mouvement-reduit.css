@@ -1,0 +1,22 @@
+/* Propriétaire : branche « équipes (it4) ». Fichier NEUF, dans un dossier que la branche possède entièrement (plan it4 §2.7).
+   Une seule déclaration, et elle est GLOBALE : à reloger dans `web/styles.css`, à côté de la remise à zéro du mouvement réduit,
+   par une demande de contrat au train de la grande fusion. Consigné dans execution/constats-V4.md.
+
+   Pourquoi elle est ici et pas là-bas : `web/styles.css` est dans la liste « jamais écrits par cette branche » du §2.7, et la
+   revue d'itération 4 a relevé que la branche l'avait écrit (commit 46470db) sans passer par une demande de contrat, sur un
+   fichier que les branches salle, 3D et construction peuvent aussi toucher. La règle revient donc chez la branche, où elle
+   n'entre en conflit avec personne ; elle s'applique de la même façon, `web/styles.css` étant chargée avant (main.tsx) et
+   aucune autre règle ne déclarant `animation-iteration-count` en `!important`.
+
+   Ce qu'elle corrige (relevé du banc de la vague 4, it4-captures : « 2 animations en cours malgré le mouvement réduit ») : la
+   remise à zéro du mouvement réduit de `styles.css` ramène les durées à 0,01 ms, ce qui ne suffit pas. Une animation « infinite »
+   — la pastille `.dot.pulse` d'une réponse en cours — continue de tourner, sans fin, même à 0,01 ms : elle reste comptée comme
+   un mouvement en cours et ne s'arrête jamais. Le nombre de répétitions est donc ramené à 1, comme le veut la remise à zéro
+   habituelle du mouvement réduit (spécification §5.5). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-iteration-count: 1 !important;
+  }
+}

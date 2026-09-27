@@ -44,6 +44,9 @@ import {
   exigerAucuneViolationCsp,
   exigerSignesDeLaDemande,
   LARGE,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   occupees,
@@ -164,12 +167,22 @@ export async function run(ctx) {
     ctx.expectNoConsoleErrors();
     return;
   }
+  // --- équipes (it4) : début ---
+  // Racines créées ici ; le `finally` de fin de scénario les rend au repos, même si une assertion tombe pendant une demande
+  // d'autorisation (sans quoi la session reste comptée occupée par opencode pour tous les scénarios suivants de la passe).
+  // Le corps garde son indentation : les lignes de l'itération 1 restent lisibles telles quelles dans la grande fusion.
+  const racines = [];
+  try {
+  // --- équipes (it4) : fin ---
   await avecTemoinP6(ctx, async () => {
     await enModeAvance(ctx, async () => {
       await attendreModeAffiche(page, "avance");
       const ia = await attendreIa(ctx);
       const client = oc(ctx);
       const racine = await client.creerConversation("it1-ui-mise-en-page");
+      // --- équipes (it4) : début ---
+      racines.push(racine.id);
+      // --- équipes (it4) : fin ---
       await ctx.faux.scripter(racine.id, {
         tools: [{ ...delegation(DESCRIPTION, "general", { text: "Rien d'anormal.", workMs: 60_000 }), askAfterMs: DEMANDE_APRES_MS }],
         followUp: { text: "Relecture faite." },
@@ -257,6 +270,9 @@ export async function run(ctx) {
       // 5. Modification en attente sur la racine (vérification de la clôture : sa ligne était cachée à 1440) : « Qui travaille ? »
       //    (titre, la ligne de la conversation, [Répondre]) et l'attente de votre accord sur la carte, vus sans défiler ; puis « Arrêter ».
       const autre = await client.creerConversation("it1-ui-mise-en-page-modification");
+      // --- équipes (it4) : début ---
+      racines.push(autre.id);
+      // --- équipes (it4) : fin ---
       await ctx.faux.scripter(autre.id, {
         tools: [{ tool: "edit", input: { filePath: FICHIER, oldString: "avant", newString: "après" }, ask: { permission: "edit", patterns: [FICHIER] }, askAfterMs: DEMANDE_APRES_MS }],
         followUp: { text: "Modifié." },
@@ -280,5 +296,10 @@ export async function run(ctx) {
       await exigerAucuneViolationCsp(page);
     });
   });
+  // --- équipes (it4) : début ---
+  } finally {
+    await libererLesDemandes(ctx, racines);
+  }
+  // --- équipes (it4) : fin ---
   ctx.expectNoConsoleErrors();
 }

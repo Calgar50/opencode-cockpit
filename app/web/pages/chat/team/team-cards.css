@@ -1,0 +1,256 @@
+/* Propriétaire : L38b. Cartes d'équipe du fil (C §9.5, §9.6) : carte d'exécution, lignes d'étapes, bloc de pause, cartes finales
+   et carte de résultat. Aucune animation (test « web-animations » : périmètre chat/team/**). L'état est toujours dit par le MOT à
+   côté de l'icône, jamais par la couleur seule (§2.3). Textes secondaires en --text-2 (au moins 4,5:1 sur --surface-1 dans les
+   deux thèmes). Sélecteurs « .btn.… » : styles.css est chargé après cette feuille et gagnerait à spécificité égale. */
+
+.team-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.team-cards-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.team-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.team-card-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.team-card-state {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.team-icon {
+  flex: none;
+  color: var(--text-2);
+}
+
+.team-card-note {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.team-card-verifier {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.team-card-message {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--critical-soft);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+/* --- Lignes d'étapes ------------------------------------------------------------------------------------------------------ */
+
+.team-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-step-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.team-step-detail {
+  min-width: 0;
+  font-size: 13px;
+}
+
+.team-step-state {
+  flex: none;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.team-step-note {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* --- Pause ---------------------------------------------------------------------------------------------------------------- */
+
+.team-pause {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.team-pause-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.team-pause-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.team-pause-textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.team-pause-textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Résultat et boutons --------------------------------------------------------------------------------------------------- */
+
+.team-result-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.team-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-card-actions .btn {
+  height: auto;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 6px 12px;
+  white-space: normal;
+  text-align: left;
+}
+
+.team-card-actions .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.team-card-actions .btn[aria-disabled="true"],
+.team-card-actions .btn[aria-disabled="true"]:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .team-card-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .team-card-actions .btn {
+    justify-content: flex-start;
+  }
+}
+
+/* Contraste forcé (U9, spécification §5.5 l.922) : bordures des cartes, icônes d'état en CanvasText (l'état reste dit par le
+   mot), [Arrêter l'équipe] et focus en Highlight, zone « Résumé transmis » bordée. */
+@media (forced-colors: active) {
+  .team-card,
+  .team-pause {
+    border: 1px solid CanvasText;
+  }
+  .team-card-state {
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+  .team-icon {
+    color: CanvasText;
+  }
+  .team-card-message {
+    border: 1px solid CanvasText;
+  }
+  .team-pause-textarea {
+    border: 1px solid CanvasText;
+    color: CanvasText;
+  }
+  .team-card-actions .btn.danger {
+    border: 2px solid Highlight;
+    color: CanvasText;
+  }
+  .team-card-actions .btn:focus-visible,
+  .team-pause-textarea:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+  .team-card-actions .btn[aria-disabled="true"],
+  .team-card-actions .btn[aria-disabled="true"]:hover {
+    border-color: GrayText;
+    color: GrayText;
+  }
+}

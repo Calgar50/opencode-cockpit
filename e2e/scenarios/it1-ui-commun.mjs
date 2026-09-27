@@ -32,6 +32,9 @@ export {
   exiger,
   exigerListe,
   iaDuBanc,
+  // --- équipes (it4) : début ---
+  libererLesDemandes,
+  // --- équipes (it4) : fin ---
   nonJoue,
   oc,
   occupees,

@@ -10,6 +10,9 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { BillRefusal } from "./config-queue.ts";
 import type { EmittedReply, ProxyContext } from "./contracts-11.ts";
+// --- équipes (it4) : début ---
+import type { TeamProxyGuard } from "./contracts-eq.ts";
+// --- équipes (it4) : fin ---
 import type { LoginWindow } from "./egress-policy.ts";
 import type { AppEnv } from "./env.ts";
 import { errorMessage, type Logger } from "./log.ts";
@@ -302,6 +305,14 @@ export interface OcProxyDeps {
    * l'instance principale (/api/oc) : la salle n'a pas ces routes (PROXY_RULES_OMO) et ne sort jamais par le relais.
    */
   egressLogin?: Pick<LoginWindow, "open">;
+  // --- équipes (it4) : début ---
+  /**
+   * Verrous des équipes (D-eq-04), reportés de http.ts par la grande fusion (GF3). Passés au SEUL montage de l'instance
+   * principale (/api/oc) : aucune équipe ne tourne dans la salle, et une racine de la salle n'est jamais verrouillée par une
+   * équipe. Même passé par erreur au montage de la salle, il n'y est jamais appelé.
+   */
+  teamGuard?: TeamProxyGuard;
+  // --- équipes (it4) : fin ---
 }
 
 /** Gestionnaire du proxy d'une instance : la fermeture de la 1.0.x, ses dépendances rendues explicites. */
@@ -331,6 +342,26 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
     if (refusRoute !== null) return fail(c, 403, refusRoute.error, refusRoute.message);
     const matched = rules.find((r) => r.method === method && r.pattern.test(sub));
     if (!matched) return fail(c, 404, "not-allowed", `Route opencode non autorisée : ${method} ${sub}`);
+    // --- équipes (it4) : début ---
+    // Verrous des équipes (D-eq-04), reportés de http.ts par la grande fusion (GF3), sur l'instance principale SEULEMENT. En
+    // tête du gestionnaire, juste après la liste blanche (une route hors liste répond 404 avant le verrou, comme dans H4) :
+    // avant la cloison des instances, la garde facturée, la lecture du corps et toute demande comptée en vol. Un refus est
+    // rendu tel quel, rien n'est relayé. Dossier refusé par isAllowedDirectory (%XX compris) : null, et la route répond 403
+    // ensuite. Ordre : liste blanche, verrou, cloison P11, garde facturée, dossier, corps, forbiddenProxyBody, fenêtre de
+    // connexion du relais (1.0.6), crochets.
+    if (instanceDeps.teamGuard !== undefined && !salle) {
+      const asked = new URL(c.req.url).searchParams.get("directory");
+      const locked = await instanceDeps.teamGuard({
+        entree: "proxy",
+        method,
+        sub,
+        directory: asked !== null && instance.isAllowedDirectory(asked) ? asked : null,
+        sessionId: SESSION_ROUTE.exec(sub)?.[1] ?? null,
+        permissionId: PERMISSION_REPLY_ROUTE.exec(sub)?.[1] ?? null,
+      });
+      if (locked) return locked;
+    }
+    // --- équipes (it4) : fin ---
     // Cloison des instances (P11), avant tout envoi : une conversation de l'autre instance n'existe pas sur ce montage, dans
     // les deux sens. Sur la salle, une conversation que le cockpit ne suit pas est refusée aussi (fermé en cas de doute) ;
     // sur l'instance principale, une conversation inconnue reste relayée, exactement comme en 1.0.x. Elle ne joue que sur les

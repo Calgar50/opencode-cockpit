@@ -911,8 +911,14 @@ class SceneBuilder {
     if (data.role === "conversation" && s !== undefined && fact.sessionId === this.#rootId) s.node.agent ??= str(data.agent);
     const parentId = str(data.parent) ?? "";
     const parent = this.#sessions.get(parentId);
-    if (data.role === "delegation" && this.#horsBornes.has(parentId)) this.#horsBornes.add(fact.sessionId);
-    if (data.role !== "delegation" || parent === undefined) return;
+    // <gf3:etapes-scene> début : grande fusion (GF3 ; plan it3 §8.4 (c), D-3d-30 ; plan it5 §8.6). Une session d'étape d'équipe
+    // (rôle « etape », L4a/L37b : enfant de la racine créé par le runner, sans partie task) est dessinée COMME une délégation :
+    // même place, mêmes bornes, secteur de son assistant (« Autres » s'il n'a pas de rôle d'opencode). Sans elle, « Revoir » d'une
+    // conversation d'équipe ne montrerait aucune étape, et [Voir la consigne] d'une étape (lue par l'enfant) resterait hors d'atteinte.
+    const dessinee = data.role === "delegation" || data.role === "etape";
+    if (dessinee && this.#horsBornes.has(parentId)) this.#horsBornes.add(fact.sessionId);
+    if (!dessinee || parent === undefined) return;
+    // </gf3:etapes-scene> fin
     // Création avant l'envoi : la délégation appartient au message de la dernière préparation non envoyée.
     const pending = [...parent.pending.values()].at(-1) ?? null;
     this.#addChild(fact.sessionId, parent, str(data.agent), pending, step);

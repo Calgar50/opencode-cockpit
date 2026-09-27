@@ -152,6 +152,17 @@ const SCENARIOS_ARRIVES_PAR_LA_FUSION: readonly string[] = [
   "it2-ui-plan-autonome.mjs",
   "it2-ui-selecteur-clavier.mjs",
   "omo-ui-salle.mjs",
+  // Grande fusion (GF3) : scénarios de l'itération 4 (équipes et carte des assistants), arrivés avec H4.
+  "it4-arret.mjs",
+  "it4-avis.mjs",
+  "it4-captures.mjs",
+  "it4-carte.mjs",
+  "it4-commun.mjs",
+  "it4-outils-etape.mjs",
+  "it4-pause.mjs",
+  "it4-prelancement.mjs",
+  "it4-simple-ouvert.mjs",
+  "it4-studio.mjs",
 ];
 
 /**
@@ -199,12 +210,17 @@ function phraseDe(texte: string, debut: string): string {
 }
 
 /** Symboles exportés par un module `.mjs` (déclarations `export function|const|async function|class`, et `export { … }`). */
+/** Liste d'import ou d'export sans ses commentaires de ligne (balises de branche posées entre deux symboles). */
+const sansCommentairesDeLigne = (liste: string): string => liste.replace(/\/\/[^\n]*/g, "");
+
 function exportesDe(fichier: string): Set<string> {
   const source = lire(fichier);
   const noms = new Set<string>();
   for (const m of source.matchAll(/^export\s+(?:async\s+)?(?:function|const|let|class)\s+([A-Za-z0-9_$]+)/gm)) noms.add(m[1] ?? "");
   for (const m of source.matchAll(/^export\s*\{([^}]*)\}/gm)) {
-    for (const brut of (m[1] ?? "").split(",")) {
+    // Grande fusion (GF3) : une liste peut porter des balises de branche en commentaire (« // --- équipes (it4) : début --- ») ;
+    // un commentaire n'est pas un symbole.
+    for (const brut of sansCommentairesDeLigne(m[1] ?? "").split(",")) {
       const nom = brut.trim().split(/\s+as\s+/).pop()?.trim() ?? "";
       if (nom !== "") noms.add(nom);
     }
@@ -218,7 +234,7 @@ function importesDe(source: string, finDuChemin: string): string[] {
   const noms: string[] = [];
   const motif = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*"([^"]*${finDuChemin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})"`, "g");
   for (const m of source.matchAll(motif)) {
-    for (const brut of (m[1] ?? "").split(",")) {
+    for (const brut of sansCommentairesDeLigne(m[1] ?? "").split(",")) {
       const nom = brut.trim().split(/\s+as\s+/)[0]?.trim() ?? "";
       if (nom !== "") noms.push(nom);
     }

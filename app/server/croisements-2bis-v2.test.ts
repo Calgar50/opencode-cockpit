@@ -27,7 +27,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { parse as parseYaml } from "yaml";
-import { createCockpitApp } from "./app-factory.ts";
+import { type CockpitAppDeps, createCockpitApp } from "./app-factory.ts";
 import type { OmoControlDirs } from "./contracts-11.ts";
 import {
   loadEnv,
@@ -187,6 +187,8 @@ describe("croisement V2 : main.ts relie env.omo (T3c) aux dossiers de omoControl
     assert.notEqual(h.deps.configQueue, undefined);
     const app = createCockpitApp({
       ...h.deps,
+      // Grande fusion (GF3) : type resserré par les équipes (installation des exemples) ; le harnais passe un AssistantService.
+      assistants: h.deps.assistants as CockpitAppDeps["assistants"],
       sessions: h.sessions,
       configQueue: h.deps.configQueue as NonNullable<typeof h.deps.configQueue>,
       omoControlDirs: { controlDir: control, stateDir: state, authDir: auth, opencodeDataDir: dossier("oc-data") },

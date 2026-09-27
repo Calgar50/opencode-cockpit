@@ -335,7 +335,20 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
     const cited = new Set<string>();
     for (const doc of DOCS) {
       const text = fs.readFileSync(path.join(REPO_DIR, doc), "utf8");
-      for (const m of text.matchAll(/(?<![\w-])(it\d-(?:api|ui)-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) {
+      // --- équipes (it4) : début ---
+      // Les familles d'une itération ne sont plus seulement `itN-api-…` et `itN-ui-…` : les scénarios d'équipes s'appellent
+      // `it4-<nom>.mjs` (it4-avis, it4-carte, it4-commun…). Le motif prend donc tout nom `itN-…` (train de la vague 4). Le motif
+      // d'origine était /(?<![\w-])(it\d-(?:api|ui)-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-…\.mjs)(?![\w-])/g.
+      for (const m of text.matchAll(/(?<![\w-])(it\d-[a-z0-9]+(?:-[a-z0-9]+)*|\d{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) {
+        // Grande fusion (GF3) : « tout nom itN-… » prend aussi, dans la documentation de l'itération 2 et de la 3D, des noms qui
+        // ne sont pas des scénarios (dossiers de travail du banc `it2-atelier` et `it2-piege`, fixture `it3-dense.jsonl`). Seuls
+        // comptent : les familles d'origine (`itN-api-…`, `itN-ui-…`), celle des équipes (`it4-<nom>`), et tout nom écrit avec
+        // `.mjs` ; un nom suivi d'une autre extension n'est jamais un scénario.
+        const nom = m[1] ?? "";
+        const suite = text.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 8);
+        if (/^\.(?!mjs\b)[a-z]/.test(suite)) continue;
+        if (!(/^it\d-(?:api|ui)-/.test(nom) || nom.startsWith("it4-") || nom.endsWith(".mjs") || suite.startsWith(".mjs"))) continue;
+        // --- équipes (it4) : fin ---
         cited.add(m[1]?.endsWith(".mjs") ? m[1] : `${m[1]}.mjs`);
       }
     }

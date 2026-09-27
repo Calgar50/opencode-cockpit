@@ -300,7 +300,10 @@ export function createAutonomyRequests(c11: Cockpit11, options: AutonomyRequests
   /** Dépense de l'arbre depuis le début de la demande (MX1 §5 : l'appel du titre n'est porté par aucun message). */
   const spentSince = (rootId: string, since: number): number => {
     try {
-      return c11.ledger.spentSince(rootId, since);
+      // <gf3:plafond-autonomie> début : sans les étapes d'une équipe lancée pendant que la demande est ouverte (spéc. §4.11
+      // l.772 : jamais tranchées par l'autonomie) ; leur coût relève du plafond de l'équipe. Grande fusion, GF3.
+      return c11.ledger.spentSinceSansEtapes(rootId, since);
+      // </gf3:plafond-autonomie> fin
     } catch (err) {
       c11.log.warn("demande autonome : dépense illisible", { rootId, error: errorMessage(err) });
       return 0;

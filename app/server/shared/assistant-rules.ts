@@ -67,8 +67,11 @@ export interface CatalogLite {
   contextLimit: number | null;
 }
 
-export type RunRole = "message" | "raccourci" | "delegue" | "reprise";
-export type RunSource = "assistant" | "niveau" | "raccourci" | "assistant-du-raccourci" | "assistant-delegue" | "choix-avance";
+// --- équipes (it4) : début ---
+// « etape » : appel d'une étape d'équipe, IA de l'étape (source « equipe »), contrôlé par le pré-lancement (P3, L37p).
+export type RunRole = "message" | "raccourci" | "delegue" | "reprise" | "etape";
+export type RunSource = "assistant" | "niveau" | "raccourci" | "assistant-du-raccourci" | "assistant-delegue" | "choix-avance" | "equipe";
+// --- équipes (it4) : fin ---
 
 /** Un appel de modèle facturé. */
 export interface Run {
@@ -1705,6 +1708,9 @@ const ROLE_LABELS: Record<RunRole, string> = {
   raccourci: "Raccourci",
   delegue: "Travail délégué",
   reprise: "Reprise dans la conversation (l'IA résume et peut poursuivre)",
+  // --- équipes (it4) : début ---
+  etape: "Étape d'équipe",
+  // --- équipes (it4) : fin ---
 };
 
 /** Textes français d'un tour résolu (utilisés par POST /api/chat/resolve). */

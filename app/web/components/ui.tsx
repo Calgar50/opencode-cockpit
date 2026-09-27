@@ -12,6 +12,9 @@ import {
 } from "react";
 import type { Category } from "../lib/types.ts";
 import { Icon, type IconName } from "./Icon.tsx";
+// --- équipes (it4) : début ---
+import { piegerLaTabulation } from "./modal-focus.ts";
+// --- équipes (it4) : fin ---
 
 type ButtonVariant = "default" | "primary" | "ghost" | "danger" | "danger-solid";
 
@@ -295,6 +298,15 @@ export function Modal({
     const focusable = panel.current?.querySelector<HTMLElement>("input, textarea, select, button:not([data-close])");
     (focusable ?? panel.current)?.focus();
     const onKey = (e: KeyboardEvent) => {
+      // --- équipes (it4) : début ---
+      // Défaut D6 (arbitrage A13) : `aria-modal="true"` promet que le focus reste DANS la boîte ; il n'y restait pas — une
+      // tabulation sur douze seulement se posait dans la feuille de lancement d'une équipe, les onze autres partaient derrière
+      // la boîte. Le piège est dans ./modal-focus.ts, pour qu'un test le monte tel quel (aucun moteur JSX dans `npm test`).
+      if (e.key === "Tab") {
+        piegerLaTabulation(e, panel.current, backdrop.current);
+        return;
+      }
+      // --- équipes (it4) : fin ---
       if (e.key !== "Escape") return;
       // Modales empilées : seule celle du dessus se ferme.
       const stack = document.querySelectorAll(".modal-backdrop");
