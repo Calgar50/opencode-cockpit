@@ -32,6 +32,19 @@
 // Le squelette de T4 inscrivait déjà le prédicat de la garde de rechargement (D-eq-06) : cette inscription est GARDÉE, avec la
 // dérivation, l'abonnement « opencode.connection », le démarrage (recover) et les routes du groupe « team-runs » prévus par
 // EQ_STEP_ORDER. neutralRunner reste exporté et inchangé : c'est le port des tests qui ne déclarent pas ce module (plan it4 §2.3).
+//
+// ITÉRATION 5b (L42b) : exécution des formes « relecture » et « aiguillage » posées par L42a, transmissions `recoit: {etapes}` et
+// méthodes des étapes. Points qui tiennent ici :
+// - D-5-14, CONFIRMÉE par la mesure MC5-2 : à partir du tour 2, une relecture ne crée AUCUNE session — le même `session_id` reçoit
+//   un nouveau `prompt_async`, avec sa garde et son plafond comme toute autre étape. Il n'y a donc ni repli « session neuve avec
+//   la version précédente encadrée », ni correction à faire : une session au repos garde tout son historique et rend la dernière
+//   ligne `VERDICT:` à l'octet. Une ligne `team_run_steps` par (étape, tour), toutes sur la même session, `verdict` enregistré ;
+// - spéc. l.772 : le choix d'un aiguillage n'est JAMAIS tranché par l'autonomie ni par un crochet. L'aiguilleur terminé met le
+//   lancement en « attente-choix » et rien ne repart avant VOTRE `POST …/continue {choix}` ou `{aucun: true}` ;
+// - A4 (Q5 (b) du plan it4) : la reprise de fraîcheur d'avant chaque étape couvre aussi les méthodes — une méthode devenue
+//   inconnue, ou désormais posée dans le fichier de l'assistant, met l'équipe en pause « À vérifier » SANS aucun envoi. Le
+//   contrôle relit le fichier d'agent EN LOCAL (`studio.get`), donc sans aucune requête à opencode ;
+// - le cockpit n'ajoute jamais de méthode à une étape qui n'en déclare pas.
 import { createHash, randomUUID } from "node:crypto";
 import { billRefusal } from "./config-queue.ts";
 // <gf3:consignes-etape> début : magasin des consignes de « Revoir » (3D, L28d), appelé par la jonction U2 des étapes (GF3)
@@ -50,6 +63,7 @@ import {
   type TeamRunnerPort,
 } from "./contracts-eq.ts";
 import { errorMessage } from "./log.ts";
+import { METHODS } from "./methods-catalogue.ts";
 import type { OcGlobalEvent, OcSession } from "./opencode.ts";
 import { resolvePrice } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
@@ -60,22 +74,34 @@ import type { StopCause, StopResult } from "./shared/cockpit-event-types.ts";
 import { type FlowEstimateContext, suiteEstimate } from "./shared/flow-estimate.ts";
 import {
   deliverable,
+  type FlowAction,
   type FlowState,
   injectionText,
   type InjectionKind,
   nextActions,
   partialDeliverable,
+  readChoice,
+  readVerdict,
   requestFromStepMessage,
   type StepResult,
   stepMessage,
+  tourKey,
 } from "./shared/flow.ts";
 import { ID_RE } from "./shared/ids.ts";
+import { methodIdsIn } from "./shared/methods.ts";
 import { buildFloor, canonicalRules, floorHolds, floorMark } from "./shared/session-floors.ts";
-import { FLOW_LIMITS, planSteps } from "./shared/team-limits.ts";
+import { choixMaxDe, FLOW_LIMITS, planSteps, toursDe } from "./shared/team-limits.ts";
 import { pauseChangement, remplir, TEXTES } from "./shared/team-texts.ts";
 import type {
   Flow,
+  FlowBlock,
+  FlowStep,
+  PlannedRole,
   StepAssistant,
+  StepChoice,
+  // StepVerdict de T4 nomme déjà, plus bas, le verdict de la REVÉRIFICATION de chaque étape : celui du relecteur (L42a) est
+  // renommé ici, pour que les deux restent lisibles côte à côte.
+  StepVerdict as VerdictRelecteur,
   TeamContinueBody,
   TeamErrorCode,
   TeamPauseView,
@@ -108,6 +134,8 @@ const USAGE_POLL_MS = 5;
 export const RUN_TITLE_DEMANDE_MAX = 40;
 /** Cause enregistrée sur une étape ou un lancement : courte, d'une seule ligne, masquée. */
 const CAUSE_MAX = 160;
+/** Raison d'un aiguilleur affichée dans la carte de choix (5b, C §9.5) : masquée, bornée, jamais une consigne. */
+const RAISON_MAX = 300;
 /** Titre de repli quand l'équipe du plan n'est plus installée (son déroulé reste celui du lancement). */
 const TEAM_TITLE_FALLBACK = "Équipe";
 
@@ -120,7 +148,11 @@ const BUSY_RUN_STATES: ReadonlySet<TeamRunState> = new Set<TeamRunState>(["prepa
 // est dans `run.inflight` de sa place réservée à l'enregistrement de sa fin, et un nouvel essai différé laisse son lancement
 // « en-cours ». `stepsBusy()` lit ces deux signaux.
 
-/** États d'un lancement que la reprise au démarrage examine (les autres sont finis). */
+/**
+ * États d'un lancement que la reprise au démarrage examine (les autres sont finis).
+ * « attente-choix » (5b) en est ABSENT volontairement : un redémarrage du cockpit laisse la pause de choix telle quelle, aucune
+ * étape n'est lancée et la carte est rendue depuis la base (spéc. l.772 — rien ne part sans votre réponse).
+ */
 const RECOVERABLE_STATES: readonly TeamRunState[] = ["preparation", "en-cours", "attente-verification", "attente-budget", "attente-modification"];
 
 /** États d'un lancement qui admettent [Ajouter les résultats obtenus à la conversation] (D-eq-22). */
@@ -163,6 +195,104 @@ export function canonicalAgentRules(rules: readonly Rule[]): string {
   return canonicalRules(out);
 }
 
+// --- Lecture du déroulé (5b) ----------------------------------------------------------------------------------------------------
+
+/**
+ * Étapes déclarées d'un bloc, avec leur rôle. `planSteps` (T4, L42a) reste la fonction de référence pour l'ORDRE et `receivedFrom`
+ * pour les relais : rien n'est réécrit ici. Cette lecture-ci sert à ce que l'ordre d'estimation ne donne pas — le texte d'une
+ * étape (`methodes`), le bloc auquel elle appartient, et les spécialistes qu'un aiguillage peut lancer AU-DELÀ de `choixMax`.
+ */
+function etapesDuBloc(bloc: FlowBlock): Array<{ step: FlowStep; role: PlannedRole }> {
+  switch (bloc.type) {
+    case "etape":
+      return [{ step: bloc.etape, role: "etape" }];
+    case "avis":
+      return [...bloc.avis.map((step) => ({ step, role: "avis" as const })), { step: bloc.synthese, role: "synthese" as const }];
+    case "relecture":
+      return [
+        { step: bloc.auteur, role: "redaction" },
+        { step: bloc.relecteur, role: "relecture" },
+      ];
+    case "aiguillage":
+      return [
+        { step: bloc.aiguilleur, role: "aiguilleur" as const },
+        ...(Array.isArray(bloc.specialistes) ? bloc.specialistes : []).map((step) => ({ step, role: "specialiste" as const })),
+        ...(bloc.synthese ? [{ step: bloc.synthese, role: "synthese" as const }] : []),
+      ];
+    default:
+      return [];
+  }
+}
+
+/** Étape du déroulé, avec son bloc et son rôle ; null quand l'identifiant n'y est pas. */
+function etapeDuDeroule(flow: Flow, stepId: string): { step: FlowStep; bloc: FlowBlock; role: PlannedRole } | null {
+  for (const bloc of flow.blocs) {
+    for (const { step, role } of etapesDuBloc(bloc)) if (step.id === stepId) return { step, bloc, role };
+  }
+  return null;
+}
+
+/**
+ * Place de chaque étape DÉCLARÉE, sans doublon. `planSteps` rend le chemin d'ESTIMATION : une relecture y revient à chaque tour
+ * (dédupliqué ici) et un aiguillage n'y compte que `choixMax` spécialistes, alors que l'exécution peut lancer n'importe lesquels
+ * de la liste. Les spécialistes que le chemin maximal ne porte pas sont donc ajoutés derrière leurs frères, et les rangs sont
+ * renumérotés. Pour un déroulé de l'itération 4, la liste est exactement celle de `planSteps`.
+ */
+function etapesDeclarees(flow: Flow): Array<{ stepId: string; blocId: string; blocIndex: number; ordre: number }> {
+  const entrees: Array<{ stepId: string; blocId: string; blocIndex: number }> = [];
+  const vues = new Set<string>();
+  for (const planned of planSteps(flow)) {
+    if (vues.has(planned.stepId)) continue;
+    vues.add(planned.stepId);
+    entrees.push({ stepId: planned.stepId, blocId: planned.blocId, blocIndex: planned.blocIndex });
+  }
+  flow.blocs.forEach((bloc, blocIndex) => {
+    if (bloc.type !== "aiguillage") return;
+    const specialistes = Array.isArray(bloc.specialistes) ? bloc.specialistes : [];
+    const ids = new Set(specialistes.map((step) => step.id));
+    let place = entrees.findLastIndex((entree) => entree.blocId === bloc.id && ids.has(entree.stepId)) + 1;
+    for (const step of specialistes) {
+      if (vues.has(step.id)) continue;
+      vues.add(step.id);
+      entrees.splice(place, 0, { stepId: step.id, blocId: bloc.id, blocIndex });
+      place++;
+    }
+  });
+  return entrees.map((entree, index) => ({ ...entree, ordre: index + 1 }));
+}
+
+/** Méthodes « consigne » du catalogue (L44a), par identifiant : le cockpit n'en ajoute jamais une que l'étape ne déclare pas. */
+const METHODES_CONSIGNE = new Map(METHODS.filter((methode) => methode.kind === "consigne").map((methode) => [methode.id, methode]));
+
+/**
+ * Raison affichée sous la proposition d'un aiguilleur : sa réponse PRIVÉE de sa dernière ligne (le « CHOIX: … », qui est lu à
+ * part par `readChoice`), masquée, sur une seule ligne, bornée à RAISON_MAX. C'est du texte d'IA : la carte le présente comme une
+ * proposition à vérifier, jamais comme une consigne.
+ */
+function raisonDeLAiguilleur(texte: string): string {
+  const lignes = texte.trimEnd().split("\n");
+  if (lignes.length > 1) lignes.pop();
+  return redactSecrets(lignes.join(" ")).replace(/\s+/gu, " ").trim().slice(0, RAISON_MAX);
+}
+
+/**
+ * Choix CONFIRMÉ relu dans la colonne `choix` de l'aiguilleur : « aucun », ou la liste d'identifiants. La colonne reste vide tant
+ * que vous n'avez pas répondu — la PROPOSITION de l'aiguilleur, elle, ne s'écrit jamais là (spéc. l.772 : rien ne se lance sans
+ * votre réponse, donc une proposition ne doit jamais pouvoir passer pour une confirmation).
+ */
+function lireChoixConfirme(brut: string | null): string[] | "aucun" | null {
+  if (brut === null || brut === "") return null;
+  if (brut === "aucun") return "aucun";
+  try {
+    const value: unknown = JSON.parse(brut);
+    if (!Array.isArray(value)) return null;
+    const ids = value.filter((id): id is string => typeof id === "string" && id !== "");
+    return ids.length > 0 ? ids : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Texte des parties « text » d'un message opencode, dans l'ordre. */
 function textOf(parts: unknown): string {
   if (!Array.isArray(parts)) return "";
@@ -189,11 +319,23 @@ interface RunMemory {
   demande: string | null;
   fichiers: string[];
   precisions: string[];
-  /** Texte complet du résultat de chaque étape terminée (relais, livrable) ; relu dans la session si la mémoire a été perdue. */
+  /**
+   * Texte complet du résultat de chaque étape terminée (relais, livrable) ; relu dans la session si la mémoire a été perdue.
+   * 5b : une relecture y range AUSSI chaque tour, sous la clé `tourKey(etape, tour)` ; la clé nue garde la dernière version.
+   */
   resultats: Map<string, string>;
   corriges: Set<string>;
   pausesFranchies: string[];
-  tour: number;
+  /** 5b : blocs « relecture » dont la pause d'avant la première relecture a été franchie (elle n'a pas de bloc « pause »). */
+  pausesRelecture: string[];
+  /** 5b : tour COURANT de chaque étape (1 partout, sauf les tours d'une relecture) ; remplace l'ancien `tour` du lancement. */
+  tours: Map<string, number>;
+  /** 5b : proposition LUE sur la dernière ligne de chaque aiguilleur ; null = choix illisible, rien n'est présélectionné. */
+  proposes: Map<string, StepChoice | null>;
+  /** 5b : raison donnée par l'aiguilleur, masquée et bornée : c'est la proposition d'une IA, à vérifier. */
+  raisons: Map<string, string>;
+  /** 5b : choix CONFIRMÉ par vous, par bloc d'aiguillage ; il est aussi écrit en base (colonne `choix` de l'aiguilleur). */
+  choix: Map<string, string[] | "aucun">;
   tentatives: Map<string, number>;
   state: TeamRunState;
   /** Raison de la pause « À vérifier » du contrôle de fraîcheur (A4), ou assistant changé d'une pause de modification. */
@@ -206,6 +348,14 @@ interface RunMemory {
   stopping: boolean;
   /** Étapes qui occupent une place, y compris entre POST /session et prompt_async (D-eq-06). */
   inflight: Set<string>;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : étapes relues « en-file » après un redémarrage du cockpit. Leur nouvel essai était un minuteur de
+   * l'ancien processus, perdu avec lui : l'ordonnanceur les reprend comme des étapes à lancer, sur LEUR ligne (même tour, même
+   * tentative), qui n'a rien envoyé. Vide pour un lancement suivi par ce processus depuis son départ.
+   */
+  enFileOrphelines: Set<string>;
+  // </c5:reprise-redemarrage>
   billRetries: Map<string, number>;
   timers: Set<NodeJS.Timeout>;
   chain: Promise<void>;
@@ -217,6 +367,8 @@ interface StepWatch {
   key: StepKey;
   sessionId: string;
   lastAssistant: string | null;
+  /** 5b : messages d'assistant vus DEPUIS CET ENVOI ; une session reprise en porte déjà des tours précédents (D-5-14). */
+  assistants: Set<string>;
   openAssistant: boolean;
   idleSeen: boolean;
   sawWork: boolean;
@@ -296,32 +448,83 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     }
   };
 
-  /** Dernière tentative de chaque étape du tour courant (ligne qui fait foi). */
-  const lastRows = (runId: string, tour: number): Map<string, StepRow> => {
+  /**
+   * Ligne qui fait foi pour chaque étape : la DERNIÈRE écrite. L'itération 4 la cherchait dans le seul tour 1 ; depuis L42a, une
+   * relecture repasse par la même étape à chaque tour, donc l'ordre de lecture est « tentative d'abord, puis tour » — une relance
+   * repart au tour 1 avec une tentative plus grande (D-5-14), et elle doit l'emporter sur les tours de la tentative précédente.
+   */
+  const lastRows = (runId: string): Map<string, StepRow> => {
     const out = new Map<string, StepRow>();
     for (const row of store.steps.ofRun(runId)) {
-      if (row.tour !== tour) continue;
       const kept = out.get(row.step_id);
-      if (!kept || row.tentative >= kept.tentative) out.set(row.step_id, row);
+      if (!kept || row.tentative > kept.tentative || (row.tentative === kept.tentative && row.tour >= kept.tour)) out.set(row.step_id, row);
+    }
+    return out;
+  };
+
+  /** Verdicts rendus dans chaque bloc « relecture », dans l'ordre des tours ; `null` = verdict illisible (colonne `verdict`). */
+  const verdictsDesBlocs = (run: RunMemory): Record<string, (VerdictRelecteur | null)[]> => {
+    const out: Record<string, (VerdictRelecteur | null)[]> = {};
+    const derniere = new Map<string, StepRow>();
+    for (const row of store.steps.ofRun(run.runId)) {
+      const cle = `${row.step_id}\u0000${row.tour}`;
+      const kept = derniere.get(cle);
+      if (!kept || row.tentative >= kept.tentative) derniere.set(cle, row);
+    }
+    for (const bloc of run.flow.blocs) {
+      if (bloc.type !== "relecture") continue;
+      const tours: (VerdictRelecteur | null)[] = [];
+      for (let tour = 1; ; tour++) {
+        const row = derniere.get(`${bloc.relecteur.id}\u0000${tour}`);
+        if (!row || row.state !== "terminee") break;
+        tours.push(row.verdict === "a-reprendre" || row.verdict === "rien-a-reprendre" ? row.verdict : null);
+      }
+      out[bloc.id] = tours;
+    }
+    return out;
+  };
+
+  /** Choix CONFIRMÉ par vous pour chaque aiguillage : colonne `choix` de l'aiguilleur, écrite par `continue` seulement. */
+  const choixConfirmes = (run: RunMemory): Record<string, string[] | "aucun"> => {
+    const out: Record<string, string[] | "aucun"> = {};
+    const rows = lastRows(run.runId);
+    for (const bloc of run.flow.blocs) {
+      if (bloc.type !== "aiguillage") continue;
+      const confirme = run.choix.get(bloc.id) ?? lireChoixConfirme(rows.get(bloc.aiguilleur.id)?.choix ?? null);
+      if (confirme !== null) out[bloc.id] = confirme;
     }
     return out;
   };
 
   const flowState = (run: RunMemory): FlowState => {
-    const rows = lastRows(run.runId, run.tour);
+    const rows = lastRows(run.runId);
     const etapes: Record<string, TeamStepState> = {};
-    for (const planned of planSteps(run.flow)) {
-      etapes[planned.stepId] = run.inflight.has(planned.stepId) ? "en-cours" : (rows.get(planned.stepId)?.state ?? "prevue");
+    for (const declaree of etapesDeclarees(run.flow)) {
+      // <c5:reprise-redemarrage>
+      // Une étape « en-file » dont le nouvel essai a été perdu avec l'ancien processus est rendue à l'ordonnanceur « prevue » :
+      // sans cela, elle comptait comme une étape active, et le lancement attendait pour toujours un essai qui ne viendrait pas.
+      const enregistre = rows.get(declaree.stepId)?.state ?? "prevue";
+      const etat: TeamStepState = enregistre === "en-file" && run.enFileOrphelines.has(declaree.stepId) ? "prevue" : enregistre;
+      // </c5:reprise-redemarrage>
+      etapes[declaree.stepId] = run.inflight.has(declaree.stepId) ? "en-cours" : etat;
     }
     const resultats: Record<string, string> = {};
-    for (const [stepId, texte] of run.resultats) resultats[stepId] = texte;
-    return { etapes, pausesFranchies: run.pausesFranchies, resultats };
+    for (const [cle, texte] of run.resultats) resultats[cle] = texte;
+    return {
+      etapes,
+      pausesFranchies: run.pausesFranchies,
+      resultats,
+      tours: Object.fromEntries(toursTermines(run.runId)),
+      verdicts: verdictsDesBlocs(run),
+      choix: choixConfirmes(run),
+      pausesRelecture: run.pausesRelecture,
+    };
   };
 
   const keyOf = (run: RunMemory, stepId: string): StepKey => ({
     runId: run.runId,
     stepId,
-    tour: run.tour,
+    tour: run.tours.get(stepId) ?? 1,
     tentative: run.tentatives.get(stepId) ?? 1,
   });
 
@@ -387,10 +590,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   /** Résultat de la dernière étape terminée : ce que la carte de pause montre et ce qu'une correction remplace. */
   const dernierResultat = (run: RunMemory): TeamPauseView["resultat"] => {
-    const rows = lastRows(run.runId, run.tour);
+    const rows = lastRows(run.runId);
     let last: StepRow | null = null;
-    for (const planned of planSteps(run.flow)) {
-      const row = rows.get(planned.stepId);
+    for (const declaree of etapesDeclarees(run.flow)) {
+      const row = rows.get(declaree.stepId);
       if (row?.state === "terminee") last = row;
     }
     if (!last) return null;
@@ -399,11 +602,16 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   /** Première étape non terminée du chemin (libellé d'une pause de budget). */
   const prochaineEtape = (run: RunMemory): { stepId: string; titre: string } | null => {
-    const rows = lastRows(run.runId, run.tour);
-    for (const planned of planSteps(run.flow)) {
-      const row = rows.get(planned.stepId);
+    const rows = lastRows(run.runId);
+    for (const declaree of etapesDeclarees(run.flow)) {
+      const row = rows.get(declaree.stepId);
       if (row?.state === "terminee") continue;
-      return { stepId: planned.stepId, titre: row?.titre ?? planned.stepId };
+      // <c5:prochaine-etape>
+      // Clôture 5b, tour 3 : un spécialiste (ou une synthèse) écarté par votre choix est « Non choisi », état final — il ne
+      // partira jamais. Sans ce saut, la pause « garde-fou budgétaire » nommait une étape que vous n'aviez pas retenue (P3).
+      if (row?.state === "non-choisi") continue;
+      // </c5:prochaine-etape>
+      return { stepId: declaree.stepId, titre: row?.titre ?? declaree.stepId };
     }
     return null;
   };
@@ -415,14 +623,50 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   };
 
   /**
+   * Bloc « aiguillage » qui attend VOTRE choix : son aiguilleur a fini et aucun choix n'est confirmé. Lu dans la BASE, jamais
+   * dans la mémoire du processus, pour qu'un redémarrage du cockpit rende la même pause (rien n'est lancé en attendant).
+   */
+  const blocEnChoix = (run: RunMemory): Extract<FlowBlock, { type: "aiguillage" }> | null => {
+    const rows = lastRows(run.runId);
+    const confirmes = choixConfirmes(run);
+    for (const bloc of run.flow.blocs) {
+      if (bloc.type !== "aiguillage") continue;
+      if (rows.get(bloc.aiguilleur.id)?.state !== "terminee") continue;
+      if (!Object.hasOwn(confirmes, bloc.id)) return bloc;
+    }
+    return null;
+  };
+
+  /** Vue de la pause de choix (L42a) : les spécialistes de la liste, la proposition lue, la raison masquée et le maximum. */
+  const choixView = (run: RunMemory, base: Omit<TeamPauseView, "kind" | "message">): TeamPauseView | null => {
+    const bloc = blocEnChoix(run);
+    if (!bloc) return null;
+    const propose = run.proposes.get(bloc.id) ?? null;
+    const retenus = propose === null || propose === "aucun" ? [] : propose.ids;
+    return {
+      ...base,
+      blocId: bloc.id,
+      kind: "choix",
+      message: P.pauses.choix.titre,
+      choix: (Array.isArray(bloc.specialistes) ? bloc.specialistes : []).map((step) => ({
+        stepId: step.id,
+        titre: step.titre,
+        propose: retenus.includes(step.id),
+      })),
+      raison: run.raisons.get(bloc.id) ?? "",
+      choixMax: choixMaxDe(bloc),
+    };
+  };
+
+  /**
    * Contexte d'estimation du chemin restant, SANS aucune lecture d'opencode : IA et variante relues dans les lignes d'étapes (ou
    * dans l'instantané du lancement), tarifs du catalogue déjà chargé, moyennes observées de la base.
    */
   const estimateContext = (run: RunMemory): FlowEstimateContext => {
-    const rows = lastRows(run.runId, run.tour);
+    const rows = lastRows(run.runId);
     const lite = c11.catalog.lite();
     const assistants = new Map<string, StepAssistant>();
-    for (const planned of planSteps(run.flow)) {
+    for (const planned of etapesDeclarees(run.flow)) {
       const nom = rows.get(planned.stepId)?.agent ?? plannedOf(run, planned.stepId)?.assistant;
       if (!nom) continue;
       assistants.set(nom, {
@@ -458,12 +702,41 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     };
   };
 
+  /**
+   * Passages déjà TERMINÉS de chaque étape : depuis L42a une relecture repasse par la même étape à chaque tour, et un seul état
+   * ne dit pas combien de fois elle est passée. Une ligne par (étape, tour), sa dernière tentative faisant foi.
+   */
+  const toursTermines = (runId: string): Map<string, number> => {
+    const derniere = new Map<string, StepRow>();
+    const tentativeMax = new Map<string, number>();
+    for (const row of store.steps.ofRun(runId)) {
+      tentativeMax.set(row.step_id, Math.max(tentativeMax.get(row.step_id) ?? 0, row.tentative));
+      const cle = `${row.step_id}\u0000${row.tour}`;
+      const kept = derniere.get(cle);
+      if (!kept || row.tentative >= kept.tentative) derniere.set(cle, row);
+    }
+    const out = new Map<string, number>();
+    for (const row of derniere.values()) {
+      // Une relance repart du tour 1 avec une tentative de plus (D-5-14) : les tours de la tentative précédente ne comptent plus,
+      // sinon une relecture relancée croirait ses deux tours déjà faits et ne relirait plus rien.
+      if (row.state !== "terminee" || row.tentative !== tentativeMax.get(row.step_id)) continue;
+      out.set(row.step_id, (out.get(row.step_id) ?? 0) + 1);
+    }
+    return out;
+  };
+
   const suiteOf = (run: RunMemory): { typique: number; maximum: number } => {
-    const rows = lastRows(run.runId, run.tour);
-    const etapes = planSteps(run.flow).map((planned) => ({
-      stepId: planned.stepId,
-      state: rows.get(planned.stepId)?.state ?? ("prevue" as TeamStepState),
-    }));
+    const rows = lastRows(run.runId);
+    const finis = toursTermines(run.runId);
+    // UNE entrée par étape, jamais une par passage : `suiteEstimate` additionne les comptes de tours qu'on lui donne.
+    const etapes: Array<{ stepId: string; state: TeamStepState; tours: number }> = [];
+    for (const declaree of etapesDeclarees(run.flow)) {
+      etapes.push({
+        stepId: declaree.stepId,
+        state: rows.get(declaree.stepId)?.state ?? ("prevue" as TeamStepState),
+        tours: finis.get(declaree.stepId) ?? 0,
+      });
+    }
     const estimate = suiteEstimate(run.flow, { etapes }, estimateContext(run));
     return { typique: estimate.typique, maximum: estimate.maximum };
   };
@@ -483,6 +756,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       const message = typeof nom === "string" ? remplir(P.pauses.modification.messageNom, { nom }) : P.pauses.modification.message;
       return { ...base, kind: "modification", message };
     }
+    // 5b : le choix d'un aiguillage attend VOTRE réponse (spéc. l.772). La pause est rendue depuis la base, donc elle survit à un
+    // redémarrage du cockpit — et rien n'est lancé tant qu'elle dure.
+    if (state === "attente-choix") return choixView(run, base);
     if (state !== "attente-verification") return null;
     if (cause === "changement") {
       return { ...base, blocId: null, kind: "changement", message: pauseChangement(run.changement?.code ?? "autre"), changement: run.changement };
@@ -505,7 +781,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   const memoryFromRow = (runId: string): RunMemory | null => {
     const row = store.runs.get(runId);
     if (!row) return null;
-    return {
+    const run: RunMemory = {
       runId,
       rootId: row.root_session_id,
       directory: row.directory,
@@ -518,7 +794,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       resultats: new Map(),
       corriges: new Set(),
       pausesFranchies: [],
-      tour: 1,
+      pausesRelecture: [],
+      tours: new Map(),
+      proposes: new Map(),
+      raisons: new Map(),
+      choix: new Map(),
       tentatives: new Map(),
       state: row.state,
       changement: null,
@@ -526,11 +806,136 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       attenteFraicheur: false,
       stopping: false,
       inflight: new Set(),
+      // <c5:reprise-redemarrage>
+      enFileOrphelines: new Set(),
+      // </c5:reprise-redemarrage>
       billRetries: new Map(),
       timers: new Set(),
       chain: Promise.resolve(),
     };
+    relirePropositions(run);
+    // <c5:reprise-redemarrage>
+    restaurerApresRedemarrage(run, row.state, row.cause);
+    // </c5:reprise-redemarrage>
+    return run;
   };
+
+  /**
+   * Propositions d'aiguilleur et raisons relues dans la BASE (5b) : après un redémarrage du cockpit, la pause de choix doit
+   * rendre exactement ce qu'elle rendait avant. La proposition est relue dans l'audit (identifiants seulement, jamais un texte
+   * de message) et la raison dans l'extrait déjà masqué du résultat de l'aiguilleur, privé de sa dernière ligne (le « CHOIX: »).
+   */
+  const relirePropositions = (run: RunMemory): void => {
+    const aiguillages = run.flow.blocs.filter((bloc): bloc is Extract<FlowBlock, { type: "aiguillage" }> => bloc.type === "aiguillage");
+    if (aiguillages.length === 0) return;
+    for (const event of store.events.ofRun(run.runId)) {
+      if (event.kind !== "aiguillage-propose") continue;
+      let data: unknown;
+      try {
+        data = JSON.parse(event.data || "{}");
+      } catch {
+        continue;
+      }
+      if (!isRecord(data) || typeof data.bloc !== "string" || typeof data.ids !== "string") continue;
+      if (data.ids === "aucun") run.proposes.set(data.bloc, "aucun");
+      else {
+        const ids = data.ids.split(",").filter((id) => id !== "");
+        run.proposes.set(data.bloc, ids.length > 0 ? { ids } : null);
+      }
+    }
+    const rows = lastRows(run.runId);
+    for (const bloc of aiguillages) {
+      const extrait = rows.get(bloc.aiguilleur.id)?.result_excerpt;
+      if (typeof extrait === "string" && extrait !== "") run.raisons.set(bloc.id, raisonDeLAiguilleur(extrait));
+    }
+  };
+
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : ce que la mémoire d'un lancement relit en BASE après un redémarrage du cockpit, pour que la pause rende
+   * la même chose qu'avant et que VOTRE réponse la fasse repartir :
+   * - les pauses déjà franchies : tout bloc « pause » placé avant une étape que l'ordonnanceur a ATTEINTE — une ligne, quelle
+   *   que soit sa tentative, qui n'est ni « prevue » ni « non-lancee » (terminée, mais aussi en cours, en file ou écartée : la
+   *   pause d'avant a donc reçu votre réponse) ; la pause d'avant la première relecture, dès que le relecteur a travaillé une
+   *   fois (lu ici, et non plus dans `reattach` seul, pour que la VUE d'un lancement qu'aucune exécution de ce processus ne suit
+   *   les connaisse aussi). L'itération 4 ne comptait que les étapes TERMINÉES : une étape encore au travail au redémarrage,
+   *   rattachée puis finie, laissait la pause d'avant non franchie, et elle était redemandée ;
+   * - le bloc qui attend (`pauseBloc`) d'une pause « vérifier » : sans lui, la carte perdait le message écrit dans le bloc, et
+   *   [Continuer] ne notait pas la pause franchie — l'ordonnanceur la redemandait aussitôt, sans fin ;
+   * - les étapes restées « en-file » : leur nouvel essai était un minuteur de l'ancien processus (`enFileOrphelines`).
+   * Aucune requête : tout est lu dans la base.
+   */
+  const restaurerApresRedemarrage = (run: RunMemory, state: TeamRunState, cause: TeamRunCause | null): void => {
+    const rows = lastRows(run.runId);
+    const atteintes = new Set(
+      store.steps
+        .ofRun(run.runId)
+        .filter((row) => row.state !== "prevue" && row.state !== "non-lancee")
+        .map((row) => row.step_id),
+    );
+    const franchies = new Set<string>();
+    for (const declaree of etapesDeclarees(run.flow)) {
+      if (!atteintes.has(declaree.stepId)) continue;
+      for (const bloc of run.flow.blocs.slice(0, declaree.blocIndex)) if (bloc.type === "pause") franchies.add(bloc.id);
+    }
+    run.pausesFranchies = [...franchies];
+    const finis = toursTermines(run.runId);
+    run.pausesRelecture = [];
+    for (const bloc of run.flow.blocs) {
+      if (bloc.type !== "relecture") continue;
+      const dejaEnvoye = (rows.get(bloc.relecteur.id)?.session_id ?? null) !== null;
+      if ((finis.get(bloc.relecteur.id) ?? 0) > 0 || dejaEnvoye) run.pausesRelecture.push(bloc.id);
+    }
+    for (const [stepId, row] of rows) if (row.state === "en-file") run.enFileOrphelines.add(stepId);
+    if (state === "attente-verification" && cause === "pause") {
+      const premiere = nextActions(run.flow, flowState(run), { simultanees: concurrentSteps() })[0];
+      if (premiere !== undefined && "pause" in premiere) run.pauseBloc = premiere.pause;
+    }
+  };
+
+  /**
+   * VOTRE réponse à cette pause lancerait-elle un appel facturé ? Elle est JOUÉE à blanc par l'ordonnanceur lui-même
+   * (`nextActions`, sans rien écrire) : la pause « vérifier » est notée franchie, « Aucun ne convient » est posé sur le bloc en
+   * choix, et toute autre pause repart telle quelle, comme le fait `continueRun`. Vrai dès que la première décision de
+   * l'ordonnanceur LANCE une étape. Retenir des spécialistes les lance toujours ; « Aucun ne convient » ne lance rien, sauf
+   * l'étape d'un bloc suivant (D-5-13). Une ligne d'étape ne suffit pas à le dire : le tour suivant d'une relecture n'a pas
+   * encore de ligne tant qu'il n'est pas parti.
+   */
+  const lanceraitUnAppel = (run: RunMemory, state: TeamRunState, cause: string | null, reponse: { aucun: boolean }): boolean => {
+    let etat = flowState(run);
+    if (state === "attente-choix") {
+      const bloc = blocEnChoix(run);
+      if (bloc === null) return false;
+      if (!reponse.aucun) return true;
+      etat = { ...etat, choix: { ...(etat.choix ?? {}), [bloc.id]: "aucun" } };
+    } else if (state === "attente-verification" && cause === "pause" && run.pauseBloc !== null) {
+      const franchie = run.pauseBloc;
+      etat =
+        run.flow.blocs.find((bloc) => bloc.id === franchie)?.type === "relecture"
+          ? { ...etat, pausesRelecture: [...(etat.pausesRelecture ?? []), franchie] }
+          : { ...etat, pausesFranchies: [...(etat.pausesFranchies ?? []), franchie] };
+    }
+    return nextActions(run.flow, etat, { simultanees: concurrentSteps() }).some((action) => "lancer" in action);
+  };
+
+  /**
+   * La pause attend-elle une NOUVELLE estimation ? Oui quand l'instantané du lancement est perdu (il ne vit qu'en mémoire : après
+   * un redémarrage du cockpit, la mémoire est relue en base sans lui) ET que votre réponse lancerait un appel facturé.
+   * `aucunLibre` : pause de choix où « Aucun ne convient » ne lancerait rien. `possible` : la demande est reconstituable en base
+   * (D-eq-27), donc POST …/relancer peut l'accepter.
+   */
+  const repriseDe = (run: RunMemory, state: TeamRunState, cause: string | null): NonNullable<TeamPauseView["reestimation"]> | null => {
+    if (run.plan !== null || !state.startsWith("attente-") || !lanceraitUnAppel(run, state, cause, { aucun: false })) return null;
+    return {
+      aucunLibre: state === "attente-choix" && !lanceraitUnAppel(run, state, cause, { aucun: true }),
+      possible: readRequest(run.runId) !== null,
+    };
+  };
+
+  /** Pause, avec la ré-estimation qu'elle attend ; le champ est ABSENT sinon (la forme de la vue de l'itération 4 est gardée). */
+  const avecReprise = (pause: TeamPauseView | null, reprise: NonNullable<TeamPauseView["reestimation"]> | null): TeamPauseView | null =>
+    pause === null || reprise === null ? pause : { ...pause, reestimation: reprise };
+  // </c5:reprise-redemarrage>
 
   const view = (runId: string): TeamRunView | null => {
     const row = store.runs.get(runId);
@@ -540,10 +945,39 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const run = runs.get(runId) ?? memoryFromRow(runId);
     if (!run) return base;
     const lite = c11.catalog.lite();
+    // 5b : `verdict` et `choix` sont des colonnes que la vue du magasin ne rend pas (team-store.ts appartient à L37s) ; elles
+    // sont ajoutées ici, ligne par ligne, sur la clé complète (étape, tour, tentative).
+    const brut = new Map(store.steps.ofRun(runId).map((line) => [`${line.step_id}\u0000${line.tour}\u0000${line.tentative}`, line]));
+    // <c5:blocs-prevus>
+    // Bornes DÉCLARÉES des blocs répétables : le Déroulé d'équipe en a besoin pour dire « Prévu : jusqu'à {n} », que les lignes
+    // enregistrées ne portent pas (elles ne comptent que ce qui a eu lieu). Lues dans le déroulé du lancement, jamais ailleurs.
+    const blocs: NonNullable<TeamRunView["blocs"]> = [];
+    run.flow.blocs.forEach((bloc, index) => {
+      if (bloc.type === "relecture") blocs.push({ index, type: "relecture", toursMax: toursDe(bloc) });
+      // `specialistes` : le nombre DÉCLARÉ, pour que le Déroulé n'ait plus à deviner où est la synthèse (elle n'existe qu'à
+      // partir de deux spécialistes possibles, et un aiguillage neuf n'en a pas).
+      else if (bloc.type === "aiguillage") {
+        blocs.push({ index, type: "aiguillage", choixMax: choixMaxDe(bloc), specialistes: (Array.isArray(bloc.specialistes) ? bloc.specialistes : []).length });
+      }
+    });
+    // </c5:blocs-prevus>
     return {
       ...base,
-      steps: base.steps.map((step) => ({ ...step, ia: { ...step.ia, label: step.ia.model === null ? null : modelName(step.ia.model, lite) } })),
-      pause: pauseView(run, row.state, row.cause),
+      ...(blocs.length === 0 ? {} : { blocs }),
+      steps: base.steps.map((step) => {
+        const line = brut.get(`${step.stepId}\u0000${step.tour}\u0000${step.tentative}`);
+        const verdict = line?.verdict === "a-reprendre" || line?.verdict === "rien-a-reprendre" ? line.verdict : null;
+        const choix = lireChoixConfirme(line?.choix ?? null);
+        return {
+          ...step,
+          ia: { ...step.ia, label: step.ia.model === null ? null : modelName(step.ia.model, lite) },
+          ...(line?.verdict === undefined || line.verdict === null ? {} : { verdict }),
+          ...(choix === null ? {} : { choix }),
+        };
+      }),
+      // <c5:reprise-redemarrage>
+      pause: avecReprise(pauseView(run, row.state, row.cause), repriseDe(run, row.state, row.cause)),
+      // </c5:reprise-redemarrage>
       suite: row.state === "terminee" || row.state === "arretee" ? null : suiteOf(run),
       // D-eq-27 : un lancement dont la demande n'est plus reconstituable (textes purgés, aucune étape envoyée) n'est pas
       // relançable. Seule la BASE fait foi, comme pour la route de relance : la mémoire du processus n'est qu'un cache de
@@ -598,6 +1032,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       key,
       sessionId,
       lastAssistant: null,
+      assistants: new Set<string>(),
       openAssistant: false,
       idleSeen: false,
       sawWork: false,
@@ -629,7 +1064,10 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
         const watch = watches.get(info.sessionID);
         if (!watch) return;
         watch.sawWork = true;
-        if (typeof info.id === "string") watch.lastAssistant = info.id;
+        if (typeof info.id === "string") {
+          watch.lastAssistant = info.id;
+          watch.assistants.add(info.id);
+        }
         const time = isRecord(info.time) ? info.time : {};
         const closedMessage = typeof time.completed === "number" || (info.error !== undefined && info.error !== null);
         watch.openAssistant = !closedMessage;
@@ -748,17 +1186,21 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       plafond: plan.plafond,
       confirmations: Object.fromEntries(Object.entries(body.confirmations ?? {}).map(([key, value]) => [key, value === true])),
     });
-    for (const planned of planSteps(plan.flow)) {
-      const step = plan.etapes.find((entry) => entry.stepId === planned.stepId);
+    // UNE ligne par étape déclarée, au tour 1. L'itération 4 suivait `planSteps`, qui depuis L42a rend un élément PAR PASSAGE
+    // (une relecture y revient à chaque tour) et n'en rend aucun pour les spécialistes au-delà de `choixMax` : la ligne d'un tour
+    // suivant est créée quand ce tour part, et un spécialiste que l'estimation ne comptait pas garde quand même sa ligne.
+    for (const declaree of etapesDeclarees(plan.flow)) {
+      const step = plan.etapes.find((entry) => entry.stepId === declaree.stepId);
+      const declaration = etapeDuDeroule(plan.flow, declaree.stepId);
       store.steps.create({
         runId,
-        stepId: planned.stepId,
-        tour: planned.tour,
+        stepId: declaree.stepId,
+        tour: 1,
         tentative: 1,
-        ordre: planned.ordre,
-        blocIndex: planned.blocIndex,
-        titre: step?.titre ?? planned.stepId,
-        agent: step?.assistant ?? "",
+        ordre: declaree.ordre,
+        blocIndex: declaree.blocIndex,
+        titre: step?.titre ?? declaration?.step.titre ?? declaree.stepId,
+        agent: step?.assistant ?? declaration?.step.assistant ?? "",
         state: "prevue",
       });
     }
@@ -776,7 +1218,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       resultats: new Map(),
       corriges: new Set(),
       pausesFranchies: [],
-      tour: 1,
+      pausesRelecture: [],
+      tours: new Map(),
+      proposes: new Map(),
+      raisons: new Map(),
+      choix: new Map(),
       tentatives: new Map(),
       state: "preparation",
       changement: null,
@@ -784,6 +1230,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       attenteFraicheur: false,
       stopping: false,
       inflight: new Set(),
+      // <c5:reprise-redemarrage>
+      enFileOrphelines: new Set(),
+      // </c5:reprise-redemarrage>
       billRetries: new Map(),
       timers: new Set(),
       chain: Promise.resolve(),
@@ -862,11 +1311,12 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     if (closed || run.stopping) return;
     if (store.runs.get(run.runId)?.state !== "en-cours") return;
     const actions = nextActions(run.flow, flowState(run), { simultanees: concurrentSteps() });
-    const lancer = actions.filter((action): action is { lancer: string } => "lancer" in action);
+    const lancer = actions.filter((action): action is Extract<FlowAction, { lancer: string }> => "lancer" in action);
     if (lancer.length > 0) {
       // Place réservée AVANT toute attente : deux passages de l'ordonnanceur ne lancent jamais la même étape deux fois.
       for (const action of lancer) run.inflight.add(action.lancer);
-      await Promise.all(lancer.map((action) => runStep(run, action.lancer)));
+      // 5b : `tour` et `reprendreSession` viennent de l'ordonnanceur (L42a). Un tour repris ne crée AUCUNE session (D-5-14).
+      await Promise.all(lancer.map((action) => runStep(run, action.lancer, { tour: action.tour ?? 1, reprendreSession: action.reprendreSession === true })));
       await tick(run);
       return;
     }
@@ -877,6 +1327,15 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       run.attenteFraicheur = false;
       setRunState(run, "attente-verification", "pause");
       audit(run.runId, "pause", { bloc: first.pause });
+      return;
+    }
+    // 5b : l'aiguilleur a fini, VOUS confirmez son choix (spéc. l.772). Aucun spécialiste ne part avant votre réponse, et ni
+    // l'autonomie ni un crochet ne tranchent à votre place : la seule sortie est POST …/continue {choix} ou {aucun: true}.
+    if ("choix" in first) {
+      run.pauseBloc = first.choix;
+      run.attenteFraicheur = false;
+      setRunState(run, "attente-choix", null);
+      audit(run.runId, "attente-choix", { bloc: first.choix });
       return;
     }
     if ("echec" in first) {
@@ -898,6 +1357,9 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     | { kind: "differe"; raison: string }
     | { kind: "plafond"; depense: number; plafond: number };
 
+  /** 5b : méthodes de l'étape, ou l'écart qui met l'équipe en pause « À vérifier » avant tout envoi (A4). */
+  type MethodesDEtape = { ok: true; blocs: { titre: string; bloc: string }[] } | { ok: false; code: TeamErrorCode; details: Record<string, unknown> };
+
   const failStep = (run: RunMemory, key: StepKey, cause: string, sessionId: string | null): void => {
     const propre = cleanCause(cause);
     store.steps.setState(key, "echec", { cause: propre });
@@ -916,6 +1378,40 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     } catch (err) {
       warn("session d'étape abandonnée non supprimée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
     }
+  };
+
+  /**
+   * Méthodes d'une étape, résolues par le catalogue de L44a, avec la REPRISE DE FRAÎCHEUR d'avant chaque étape (A4) : une méthode
+   * devenue inconnue du catalogue, ou désormais PRÉSENTE dans le fichier de l'assistant (posée après l'estimation), met l'équipe
+   * en pause « À vérifier » — l'étape la recevrait deux fois, une fois par sa consigne durable, une fois par le message.
+   * Le fichier d'agent est relu EN LOCAL (`studio.get`, comme au pré-lancement) : aucune requête à opencode. Fichier illisible :
+   * rien n'est supposé, l'étape part avec ses méthodes (le pré-lancement les a déjà validées).
+   * Une étape sans `methodes` ne fait AUCUNE lecture et ne reçoit AUCUNE méthode : le cockpit n'en ajoute jamais.
+   */
+  const methodesDeLEtape = async (run: RunMemory, stepId: string, assistant: string): Promise<MethodesDEtape> => {
+    const declaration = etapeDuDeroule(run.flow, stepId);
+    const demandees = Array.isArray(declaration?.step.methodes) ? declaration.step.methodes : [];
+    if (demandees.length === 0) return { ok: true, blocs: [] };
+    const blocs: { titre: string; bloc: string }[] = [];
+    for (const id of demandees) {
+      const methode = typeof id === "string" ? METHODES_CONSIGNE.get(id) : undefined;
+      if (!methode) return { ok: false, code: "equipe-invalide", details: { raison: "methode-inconnue", methode: String(id), etape: stepId } };
+      blocs.push({ titre: methode.titre, bloc: methode.bloc });
+    }
+    let corps: string | null = null;
+    try {
+      corps = (await c11.studio.get("agents", assistant, { type: "global" }))?.body ?? null;
+    } catch (err) {
+      warn("fichier d'un assistant d'étape illisible : méthodes laissées telles quelles", { runId: run.runId, etape: stepId, error: errorMessage(err) });
+    }
+    if (corps !== null) {
+      const deja = new Set(methodIdsIn(corps).map((entree) => entree.id));
+      const double = demandees.find((id) => typeof id === "string" && deja.has(id));
+      if (double !== undefined) {
+        return { ok: false, code: "equipe-invalide", details: { raison: "methode-deja-posee", methode: double, etape: stepId, nom: assistant } };
+      }
+    }
+    return { ok: true, blocs };
   };
 
   const recheckStep = async (run: RunMemory, planned: PlannedStep): Promise<StepVerdict> => {
@@ -944,13 +1440,22 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const plafond = store.runs.get(run.runId)?.plafond ?? null;
     if (plafond !== null) {
       const depense = store.spentOfRun(run.runId);
-      const maximum = run.plan?.estimate.parEtape.find((ligne) => ligne.stepId === planned.stepId)?.maximum ?? 0;
-      if (depense + maximum > plafond) return { kind: "plafond", depense, plafond };
+      // Coût INCONNU : aucune ligne dans l'estimation du lancement (étape hors du chemin estimé), ou une ligne sans montant
+      // (prix illisible à l'estimation). Le contrôle ne peut alors rien garantir, donc il refuse. Un `?? 0` le neutraliserait :
+      // toute étape sans montant passerait sous n'importe quel plafond, et l'arrêt au plafond ne tiendrait plus (P3).
+      const maximum = run.plan?.estimate.parEtape.find((ligne) => ligne.stepId === planned.stepId)?.maximum ?? null;
+      if (maximum === null || depense + maximum > plafond) return { kind: "plafond", depense, plafond };
     }
     return { kind: "ok", agentRules };
   };
 
-  const retryLater = (run: RunMemory, stepId: string, key: StepKey): void => {
+  /** 5b : ce qui distingue un passage d'un autre pour la MÊME étape (relecture, D-5-14). Par défaut : tour 1, session neuve. */
+  interface StepPass {
+    tour: number;
+    reprendreSession: boolean;
+  }
+
+  const retryLater = (run: RunMemory, stepId: string, key: StepKey, pass: StepPass): void => {
     const timer = setTimeout(() => {
       run.timers.delete(timer);
       if (closed || run.stopping) return;
@@ -958,7 +1463,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       void schedule(run, async () => {
         run.inflight.add(stepId);
         try {
-          await runStepInner(run, stepId, key);
+          await runStepInner(run, stepId, key, pass);
         } catch (err) {
           warn("nouvel essai d'étape en échec", { runId: run.runId, etape: stepId, error: errorMessage(err) });
           failStep(run, key, errorMessage(err), store.steps.get(key)?.session_id ?? null);
@@ -972,10 +1477,17 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     run.timers.add(timer);
   };
 
-  const runStep = async (run: RunMemory, stepId: string): Promise<void> => {
+  const runStep = async (run: RunMemory, stepId: string, pass: StepPass): Promise<void> => {
+    // 5b : le tour courant de l'étape fait partie de sa clé (une ligne par (étape, tour), D-5-14).
+    run.tours.set(stepId, pass.tour);
+    // <c5:reprise-redemarrage>
+    // L'étape en file orpheline repart sur sa ligne : si elle retombe « en-file », c'est un nouvel essai VIVANT (retryLater) qui la
+    // tient, et l'ordonnanceur ne doit plus la relancer lui-même.
+    run.enFileOrphelines.delete(stepId);
+    // </c5:reprise-redemarrage>
     const key = keyOf(run, stepId);
     try {
-      await runStepInner(run, stepId, key);
+      await runStepInner(run, stepId, key, pass);
     } catch (err) {
       warn("étape en échec", { runId: run.runId, etape: stepId, error: errorMessage(err) });
       failStep(run, key, errorMessage(err), store.steps.get(key)?.session_id ?? null);
@@ -984,11 +1496,56 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     }
   };
 
-  const runStepInner = async (run: RunMemory, stepId: string, key: StepKey): Promise<void> => {
+  /** Session déjà ouverte pour cette étape, à reprendre au tour suivant (D-5-14) : la dernière ligne qui en porte une. */
+  const sessionDeLEtape = (run: RunMemory, stepId: string, tentative: number): string | null => {
+    let trouvee: StepRow | null = null;
+    for (const row of store.steps.ofRun(run.runId)) {
+      if (row.step_id !== stepId || row.tentative !== tentative || row.session_id === null) continue;
+      if (!trouvee || row.tour >= trouvee.tour) trouvee = row;
+    }
+    return trouvee?.session_id ?? null;
+  };
+
+  const runStepInner = async (run: RunMemory, stepId: string, key: StepKey, pass: StepPass): Promise<void> => {
     const planned = plannedOf(run, stepId);
-    const order = planSteps(run.flow).find((entry) => entry.stepId === stepId);
+    // Rang affiché dans le message : le passage de CE tour sur le chemin maximal, sinon la place déclarée de l'étape (un
+    // spécialiste que le chemin d'estimation ne compte pas en a une, `planSteps` non).
+    const passages = planSteps(run.flow);
+    const declarees = etapesDeclarees(run.flow);
+    const order = passages.find((entry) => entry.stepId === stepId && entry.tour === key.tour) ?? declarees.find((entry) => entry.stepId === stepId);
     if (!planned || !order) {
       failStep(run, key, "étape inconnue de l'instantané du lancement", null);
+      return;
+    }
+    // Ligne du tour : celle du tour 1 existe depuis le lancement, celle d'un tour suivant est créée ici (une par (étape, tour)).
+    if (!store.steps.get(key)) {
+      const place = declarees.find((entry) => entry.stepId === stepId);
+      store.steps.create({
+        runId: key.runId,
+        stepId,
+        tour: key.tour,
+        tentative: key.tentative,
+        ordre: place?.ordre ?? order.ordre,
+        blocIndex: place?.blocIndex ?? order.blocIndex,
+        titre: planned.titre,
+        agent: planned.assistant,
+        state: "prevue",
+      });
+    }
+
+    // (0) Méthodes de l'étape et leur fraîcheur (5b, A4) : AUCUNE requête à opencode, et aucune lecture quand l'étape n'en
+    // déclare pas. Contrôlées avant tout le reste : un refus tardif ne doit jamais coûter une lecture de plus.
+    const methodes = await methodesDeLEtape(run, stepId, planned.assistant);
+    if (closed || run.stopping) return;
+    if (!methodes.ok) {
+      run.changement = { code: methodes.code, details: methodes.details };
+      run.attenteFraicheur = true;
+      setRunState(run, "attente-verification", "changement");
+      audit(run.runId, "pause-methodes", {
+        etape: stepId,
+        raison: String(methodes.details.raison ?? ""),
+        methode: String(methodes.details.methode ?? ""),
+      });
       return;
     }
 
@@ -1023,7 +1580,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       }
       if (store.steps.setState(key, "en-file")) emitStep(run, key, "en-file", null);
       audit(run.runId, "etape-differee", { etape: stepId, raison: verdict.raison, essai: essais });
-      retryLater(run, stepId, key);
+      retryLater(run, stepId, key, pass);
       return;
     }
     if (verdict.kind === "plafond") {
@@ -1034,51 +1591,72 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     run.billRetries.delete(stepId);
 
     // (2) Session d'étape : plancher ETAPE posé par le serveur, écho vérifié (D-eq-08, spéc. §6 l.1032).
+    // 5b, D-5-14 (CONFIRMÉE par MC5-2) : au tour 2 et suivants d'une relecture, AUCUN `POST /session` — la session du tour 1 est
+    // reprise telle quelle, avec tout son historique. Son plancher a déjà été posé et vérifié à sa création.
     const { agentRules } = verdict;
     const glob = truncateGlob();
     const floor = buildFloor("ETAPE", { agentRules, truncateGlob: glob });
     const floorSha256 = floorHash("ETAPE", { agentRules, truncateGlob: glob });
-    const total = planSteps(run.flow).length;
-    let created: unknown;
-    try {
-      created = await c11.client.request<unknown>("POST", "/session", {
-        directory: run.directory,
-        body: {
-          parentID: run.rootId,
-          title: `${planned.titre} (étape ${order.ordre} de l'équipe ${run.titre})`,
-          metadata: { cockpit: "equipe", run: run.runId, etape: stepId, tentative: key.tentative, tour: key.tour },
-          permission: floor,
-        },
-        timeoutMs: STEP_TIMEOUT_MS,
-      });
-    } catch (err) {
-      failStep(run, key, `session d'étape non créée : ${errorMessage(err)}`, null);
-      return;
-    }
-    const sessionId = isRecord(created) && typeof created.id === "string" && ID_RE.test(created.id) ? created.id : null;
-    const echoOk = sessionId !== null && isRecord(created) && created.parentID === run.rootId && floorHolds(created.permission, floor);
-    if (!echoOk) {
-      warn("plancher d'étape non vérifié sur l'écho : session supprimée, rien n'est envoyé", { runId: run.runId, etape: stepId, sessionId });
-      if (sessionId !== null) {
-        try {
-          await c11.client.request("DELETE", `/session/${enc(sessionId)}`, { directory: run.directory, timeoutMs: STEP_TIMEOUT_MS });
-        } catch (err) {
-          warn("session d'étape sans plancher non supprimée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
-        }
+    const total = Math.max(passages.length, declarees.length);
+    const reprise = pass.reprendreSession ? sessionDeLEtape(run, stepId, key.tentative) : null;
+    let sessionId: string | null = reprise;
+    if (reprise === null) {
+      // Garde de sûreté : une reprise demandée sans session à reprendre (tentative neuve dont le tour précédent est resté sur
+      // la tentative d'avant) repart en session NEUVE au tour demandé. Un échec ici arrêtait tout le lancement sur un message
+      // interne — « session du tour précédent introuvable » —, qu'aucune relance ne pouvait dépasser.
+      if (pass.reprendreSession) warn("session du tour précédent introuvable : le tour repart en session neuve", { runId: run.runId, etape: stepId, tour: key.tour });
+      let created: unknown;
+      try {
+        created = await c11.client.request<unknown>("POST", "/session", {
+          directory: run.directory,
+          body: {
+            parentID: run.rootId,
+            title: `${planned.titre} (étape ${order.ordre} de l'équipe ${run.titre})`,
+            metadata: { cockpit: "equipe", run: run.runId, etape: stepId, tentative: key.tentative, tour: key.tour },
+            permission: floor,
+          },
+          timeoutMs: STEP_TIMEOUT_MS,
+        });
+      } catch (err) {
+        failStep(run, key, `session d'étape non créée : ${errorMessage(err)}`, null);
+        return;
       }
-      failStep(run, key, "plancher-etape", null);
-      audit(run.runId, "plancher-refuse", { etape: stepId, tentative: key.tentative });
+      const creee = isRecord(created) && typeof created.id === "string" && ID_RE.test(created.id) ? created.id : null;
+      const echoOk = isRecord(created) && created.parentID === run.rootId && floorHolds(created.permission, floor);
+      if (creee === null || !echoOk) {
+        warn("plancher d'étape non vérifié sur l'écho : session supprimée, rien n'est envoyé", { runId: run.runId, etape: stepId, sessionId: creee });
+        if (creee !== null) {
+          try {
+            await c11.client.request("DELETE", `/session/${enc(creee)}`, { directory: run.directory, timeoutMs: STEP_TIMEOUT_MS });
+          } catch (err) {
+            warn("session d'étape sans plancher non supprimée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
+          }
+        }
+        failStep(run, key, "plancher-etape", null);
+        audit(run.runId, "plancher-refuse", { etape: stepId, tentative: key.tentative });
+        return;
+      }
+      try {
+        c11.sessions.upsert(created as OcSession);
+        c11.sessions.setPlancher(creee, floorMark("ETAPE", floorSha256));
+      } catch (err) {
+        warn("session d'étape vérifiée mais non enregistrée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
+      }
+      sessionId = creee;
+    }
+    if (sessionId === null) {
+      failStep(run, key, "session d'étape introuvable", null);
       return;
     }
-    try {
-      c11.sessions.upsert(created as OcSession);
-      c11.sessions.setPlancher(sessionId, floorMark("ETAPE", floorSha256));
-    } catch (err) {
-      warn("session d'étape vérifiée mais non enregistrée", { runId: run.runId, etape: stepId, error: errorMessage(err) });
-    }
+    const session = sessionId;
+    // Une session REPRISE n'est jamais supprimée par un abandon : elle porte les tours déjà faits, et l'arrêt de l'arbre s'en
+    // charge (stopTree). Seule une session créée pour CE tour est jetée quand rien ne part.
+    const abandonner = async (): Promise<void> => {
+      if (reprise === null) await dropStepSession(run, stepId, session);
+    };
     // Arrêt ou interruption pendant la création de la session : elle est supprimée et RIEN n'est envoyé (D-eq-05).
     if (closed || run.stopping) {
-      await dropStepSession(run, stepId, sessionId);
+      await abandonner();
       return;
     }
 
@@ -1094,10 +1672,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       fichiers: run.fichiers,
       precisions: run.precisions,
       resultats: await resultsFor(run),
+      methodes: methodes.blocs,
     });
     // Arrêt ou interruption pendant la lecture des résultats précédents : dernière attente avant l'envoi (D-eq-05).
     if (closed || run.stopping) {
-      await dropStepSession(run, stepId, sessionId);
+      await abandonner();
       return;
     }
     const empreinte = sha256(texte);
@@ -1117,8 +1696,8 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     // « interrompue » par `interrupt`, « arretee », plafond). La fenêtre qui va de la place réservée à l'envoi est ainsi
     // fermée par construction : plus aucun `prompt_async` ne part après un arrêt, et la session créée est supprimée.
     if (!store.steps.setState(key, "en-cours")) {
-      store.steps.patch(key, { sessionId: null });
-      await dropStepSession(run, stepId, sessionId);
+      if (reprise === null) store.steps.patch(key, { sessionId: null });
+      await abandonner();
       return;
     }
     emitStep(run, key, "en-cours", sessionId);
@@ -1172,22 +1751,26 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     await settleStep(run, key, watch);
   };
 
-  /** Résultats disponibles pour le message d'une étape ; `stepMessage` ne transmet que ceux de `receivedFrom` (T4). */
+  /**
+   * Résultats disponibles pour le message d'une étape ; `stepMessage` ne transmet que ceux de `receivedFrom` (T4) — qui lit
+   * `recoit`, y compris la forme `{etapes}` de la 5b : les résultats de TOUTES les étapes terminées nommées y sont donc portés,
+   * quel que soit leur bloc, et pas seulement ceux du bloc précédent.
+   */
   const resultsFor = async (run: RunMemory): Promise<StepResult[]> => {
-    const rows = lastRows(run.runId, run.tour);
+    const rows = lastRows(run.runId);
     const lite = c11.catalog.lite();
     const out: StepResult[] = [];
-    for (const planned of planSteps(run.flow)) {
-      const row = rows.get(planned.stepId);
+    for (const declaree of etapesDeclarees(run.flow)) {
+      const row = rows.get(declaree.stepId);
       if (!row || row.state !== "terminee") continue;
-      const texte = run.resultats.get(planned.stepId) ?? (await readResult(run, row)) ?? row.result_excerpt ?? "";
+      const texte = run.resultats.get(declaree.stepId) ?? (await readResult(run, row)) ?? row.result_excerpt ?? "";
       out.push({
-        stepId: planned.stepId,
+        stepId: declaree.stepId,
         titre: row.titre,
         assistant: row.agent,
         ia: row.model === null ? "" : modelName(row.model, lite),
         texte,
-        corrige: run.corriges.has(planned.stepId) || row.correction_sha256 !== null,
+        corrige: run.corriges.has(declaree.stepId) || row.correction_sha256 !== null,
       });
     }
     return out;
@@ -1240,6 +1823,33 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
   };
 
   /**
+   * 5b : fin de réponse d'un relecteur ou d'un aiguilleur, lue sur la DERNIÈRE ligne (L42a).
+   * - relecteur : le verdict est écrit dans la colonne `verdict` de la ligne du tour ; illisible → colonne vide, et
+   *   l'ordonnanceur le traite comme « à reprendre » (le cockpit ne suppose jamais qu'une relecture s'est bien passée) ;
+   * - aiguilleur : la PROPOSITION est gardée en mémoire et inscrite à l'audit (identifiants seulement) pour qu'un redémarrage
+   *   rende la même carte. Elle n'est JAMAIS écrite dans la colonne `choix`, réservée à VOTRE confirmation (spéc. l.772).
+   */
+  const enregistrerVerdictOuChoix = (run: RunMemory, key: StepKey, texte: string): void => {
+    const declaration = etapeDuDeroule(run.flow, key.stepId);
+    if (!declaration) return;
+    const { bloc, role } = declaration;
+    if (bloc.type === "relecture" && role === "relecture") {
+      const verdict = readVerdict(texte);
+      store.steps.patch(key, { verdict });
+      audit(run.runId, "verdict", { bloc: bloc.id, tour: key.tour, verdict: verdict ?? "illisible" });
+      return;
+    }
+    if (bloc.type === "aiguillage" && role === "aiguilleur") {
+      const specialistes = Array.isArray(bloc.specialistes) ? bloc.specialistes : [];
+      const propose = readChoice(texte, specialistes, choixMaxDe(bloc));
+      run.proposes.set(bloc.id, propose);
+      run.raisons.set(bloc.id, raisonDeLAiguilleur(texte));
+      const ids = propose === null ? "" : propose === "aucun" ? "aucun" : propose.ids.join(",");
+      audit(run.runId, "aiguillage-propose", { bloc: bloc.id, ids });
+    }
+  };
+
+  /**
    * (5) Lecture et (6) enregistrement. Ordre imposé par ME-6 : l'abandon est lu AVANT le test « texte vide », car un message
    * arrêté porte à la fois du texte et `MessageAbortedError`.
    */
@@ -1271,8 +1881,21 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const errorName = typeof error?.name === "string" ? error.name : null;
     const errorData = error && isRecord(error.data) ? error.data : null;
     const errorText = typeof errorData?.message === "string" ? errorData.message : null;
-    const tronquee = steps !== null && steps > 0 && assistants.length >= steps;
-    const cost = await stepCost(watch.sessionId, watch.lastAssistant);
+    // « Tronquée » ne vaut que pour CE tour : une session reprise (relecture, D-5-14) porte aussi les messages des tours
+    // précédents, que la lecture rend tous. Au tour 1 le compte reste celui de l'itération 4, à l'unité près.
+    const vus = key.tour > 1 ? watch.assistants.size : assistants.length;
+    const tronquee = steps !== null && steps > 0 && vus >= steps;
+    // Coût DE CE TOUR. `stepCost` rend l'usage de la session depuis son début et, au tour 2 d'une relecture, la même session
+    // porte déjà le tour 1 (D-5-14) : ce que les tours précédents de la MÊME étape, de la MÊME tentative et de la MÊME session
+    // ont déjà porté est retranché. Sans cela, la colonne « Coût » du Déroulé — une ligne par tour — additionnait deux fois les
+    // tours précédents et ne retombait plus sur le bilan du lancement (spentOfRun, qui somme par session et ne compte rien deux
+    // fois).
+    const sessionUsd = await stepCost(watch.sessionId, watch.lastAssistant);
+    const dejaPorte = store.steps
+      .ofRun(run.runId)
+      .filter((ligne) => ligne.step_id === key.stepId && ligne.tentative === key.tentative && ligne.tour < key.tour && ligne.session_id === watch.sessionId)
+      .reduce((somme, ligne) => somme + ligne.cost, 0);
+    const cost = Math.max(0, sessionUsd - dejaPorte);
 
     let state: TeamStepState = "terminee";
     let cause: string | null = null;
@@ -1290,7 +1913,12 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
     // Extrait : le magasin masque puis coupe à 2 000 caractères (couper d'abord laisserait passer le début d'un secret).
     store.steps.patch(key, { cost, tronquee, resultExcerpt: texte });
-    if (state === "terminee") run.resultats.set(key.stepId, texte);
+    if (state === "terminee") {
+      run.resultats.set(key.stepId, texte);
+      // 5b : la version de CE tour est gardée à part (journal de relecture) ; la clé nue garde la dernière (livrable, relais).
+      run.resultats.set(tourKey(key.stepId, key.tour), texte);
+      enregistrerVerdictOuChoix(run, key, texte);
+    }
     store.steps.setState(key, state, { ...(cause === null ? {} : { cause: cleanCause(cause) }), at: now() });
     store.runs.patch(run.runId, { cost: store.spentOfRun(run.runId) });
     emitStep(run, key, state, watch.sessionId);
@@ -1342,6 +1970,60 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     ...(details ? { details } : {}),
   });
 
+  /**
+   * Votre réponse à une pause de choix (5b, spéc. l.772). Rien ne part avant elle, et rien ne part non plus quand elle ne tient
+   * pas : les identifiants doivent être ceux de la liste, sans doublon, `choixMax` au plus. Un refus est rendu AVANT toute
+   * écriture et toute requête — « Rien n'a été envoyé ni facturé ».
+   * Le refus sort en 409 `choix-invalide` : le code a été ajouté à `TeamErrorCode` et à `team-texts.ts` par l'intégrateur du
+   * train de la vague 2, sur la demande de contrat de ce paquet (plan it5 §2.4).
+   */
+  const repondreAuChoix = (run: RunMemory, body: TeamContinueBody): RunnerRefusal | null => {
+    const bloc = blocEnChoix(run);
+    if (!bloc) return refusal(409, "etat-incompatible");
+    const specialistes = Array.isArray(bloc.specialistes) ? bloc.specialistes : [];
+    if (body.aucun === true) {
+      // « Aucun ne convient » : aucun spécialiste n'est lancé, donc rien n'est facturé (D-5-13).
+      run.choix.set(bloc.id, "aucun");
+      store.steps.patch(keyOf(run, bloc.aiguilleur.id), { choix: "aucun" });
+      ecarterNonChoisis(run, bloc, []);
+      audit(run.runId, "choix", { bloc: bloc.id, retenus: "aucun" }, "vous");
+      return null;
+    }
+    const demandes = Array.isArray(body.choix) ? body.choix : null;
+    const connus = new Set(specialistes.map((step) => step.id));
+    const sansDouble = demandes === null ? [] : [...new Set(demandes)];
+    if (
+      demandes === null ||
+      demandes.length === 0 ||
+      sansDouble.length !== demandes.length ||
+      demandes.length > choixMaxDe(bloc) ||
+      demandes.some((id) => !connus.has(id))
+    ) {
+      return refusal(409, "choix-invalide");
+    }
+    // Ordre du déroulé, jamais celui du corps reçu : la liste rendue est celle que la carte et le Déroulé affichent.
+    const retenus = specialistes.filter((step) => demandes.includes(step.id)).map((step) => step.id);
+    run.choix.set(bloc.id, retenus);
+    store.steps.patch(keyOf(run, bloc.aiguilleur.id), { choix: JSON.stringify(retenus) });
+    ecarterNonChoisis(run, bloc, retenus);
+    audit(run.runId, "choix", { bloc: bloc.id, retenus: retenus.join(",") }, "vous");
+    return null;
+  };
+
+  /**
+   * Spécialistes écartés par votre choix, et la synthèse quand elle ne travaille pas (moins de deux résultats choisis) :
+   * état FINAL « non-choisi », sans coût. Ils n'ont jamais rien envoyé, donc rien n'est facturé pour eux.
+   */
+  const ecarterNonChoisis = (run: RunMemory, bloc: Extract<FlowBlock, { type: "aiguillage" }>, retenus: readonly string[]): void => {
+    const specialistes = Array.isArray(bloc.specialistes) ? bloc.specialistes : [];
+    const ecartes = specialistes.filter((step) => !retenus.includes(step.id)).map((step) => step.id);
+    if (bloc.synthese && retenus.length < 2) ecartes.push(bloc.synthese.id);
+    for (const stepId of ecartes) {
+      const key = keyOf(run, stepId);
+      if (store.steps.setState(key, "non-choisi", { cause: "vous" })) emitStep(run, key, "non-choisi", null);
+    }
+  };
+
   const continueRun = async (runId: string, body: TeamContinueBody, confirmed: boolean): Promise<TeamRunView | RunnerRefusal> => {
     const row = store.runs.get(runId);
     if (!row) return refusal(404, "not-found");
@@ -1351,13 +2033,29 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     if ((precision !== null && precision.length > FLOW_LIMITS.precision) || (correction !== null && correction.length > FLOW_LIMITS.relaisCaracteres)) {
       return refusal(409, "invalid");
     }
+    // 5b : `choix` et `aucun` ne valent QUE pour une pause de choix, et une pause de choix n'a pas d'autre sortie.
+    const repondAuChoix = Array.isArray(body.choix) || body.aucun === true;
+    if (repondAuChoix !== (row.state === "attente-choix")) return refusal(409, "etat-incompatible");
     if (row.state === "attente-budget" && !confirmed) return refusal(409, "budget-guard");
     const run = runs.get(runId) ?? reattach(runId);
     if (!run) return refusal(404, "not-found");
-    // Instantané perdu (redémarrage du cockpit) : aucune étape ne peut repartir sans lui. La feuille ré-estime, puis relance
-    // (L37c) ; rien n'est envoyé ni facturé en attendant, et aucune étape n'échoue faute d'instantané.
-    if (run.plan === null && [...lastRows(runId, run.tour).values()].some((step) => step.state === "prevue" || step.state === "en-file")) {
-      return refusal(409, "estimation-perimee");
+    // Instantané perdu (redémarrage du cockpit) : aucune étape ne peut repartir sans lui, et rien n'est envoyé ni facturé en
+    // attendant. Aucune étape n'échoue faute d'instantané.
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1). Ce contrôle passait AVANT votre réponse et refusait tout, « aucun » compris, en 409
+    // `estimation-perimee` — dont la phrase (« une nouvelle estimation est affichée ») était fausse ici : rien n'était affiché,
+    // et aucune route ne sortait de la pause. Désormais la réponse est jouée à blanc (`lanceraitUnAppel`) :
+    // - une réponse qui ne lance rien passe sans instantané — « Aucun ne convient » sans bloc suivant, une pause suivie d'une autre
+    //   pause, ou la fin de l'équipe ;
+    // - toute réponse qui lancerait un appel facturé est refusée par `reestimation-requise`, AVANT toute écriture et toute
+    //   requête ; sa phrase dit la vérité et la suite : refaire l'estimation (POST …/estimate), puis la confirmer
+    //   (POST …/relancer). La pause revient alors, et c'est encore VOTRE réponse qui la fait repartir (spéc. l.772), avec toutes
+    //   les gardes de facturation d'une étape — sauf la pause « Le cockpit a redémarré », dont la seule réponse est de continuer.
+    if (run.plan === null && lanceraitUnAppel(run, row.state, row.cause, { aucun: body.aucun === true })) return refusal(409, "reestimation-requise");
+    // </c5:reprise-redemarrage>
+    if (row.state === "attente-choix") {
+      const refus = repondreAuChoix(run, body);
+      if (refus !== null) return refus;
     }
 
     if (precision !== null && precision.trim().length > 0) {
@@ -1377,7 +2075,11 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     }
     if (row.state === "attente-budget") store.runs.patch(runId, { confirmations: { ...parseConfirmations(runId), budget: true } });
     if (row.state === "attente-verification" && row.cause === "pause" && run.pauseBloc !== null) {
-      run.pausesFranchies.push(run.pauseBloc);
+      // 5b : la pause d'avant la première relecture porte l'identifiant de son bloc « relecture », qui n'est pas un bloc
+      // « pause » — elle est donc notée à part, sinon l'ordonnanceur la redemanderait à chaque tour.
+      const bloc = run.flow.blocs.find((entree) => entree.id === run.pauseBloc);
+      if (bloc?.type === "relecture") run.pausesRelecture.push(run.pauseBloc);
+      else run.pausesFranchies.push(run.pauseBloc);
       run.pauseBloc = null;
     }
     audit(runId, "reprise", { depuis: row.state }, "vous");
@@ -1399,7 +2101,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   /** Résultats complets relus dans les sessions d'étape quand la mémoire a été perdue (redémarrage). */
   const hydrateResults = async (run: RunMemory): Promise<void> => {
-    for (const row of lastRows(run.runId, run.tour).values()) {
+    for (const row of lastRows(run.runId).values()) {
       if (row.state !== "terminee" || run.resultats.has(row.step_id)) continue;
       const texte = (await readResult(run, row)) ?? row.result_excerpt;
       if (texte !== null) run.resultats.set(row.step_id, texte);
@@ -1431,6 +2133,40 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   // --- Relance ----------------------------------------------------------------------------------------------------------------
 
+  /**
+   * Bloc « relecture » qui REPART à la relance : une de ses deux étapes n'est pas terminée et son dernier verdict ne l'a pas
+   * clos. Les deux lectures de l'état d'un bloc — les tours faits (`toursTermines`) et les verdicts rendus (`verdictsDesBlocs`)
+   * — doivent alors porter sur la MÊME tentative : la ligne neuve du relecteur périme son verdict, comme celle du rédacteur
+   * périme ses tours.
+   */
+  const relectureQuiRepart = (
+    run: RunMemory,
+    stepId: string,
+    rows: Map<string, StepRow>,
+    verdicts: Record<string, (VerdictRelecteur | null)[]>,
+  ): boolean => {
+    const bloc = etapeDuDeroule(run.flow, stepId)?.bloc;
+    if (!bloc || bloc.type !== "relecture") return false;
+    if ((verdicts[bloc.id] ?? []).at(-1) === "rien-a-reprendre") return false;
+    return [bloc.auteur.id, bloc.relecteur.id].some((id) => rows.get(id)?.state !== "terminee");
+  };
+
+  /**
+   * Bloc « aiguillage » dont VOTRE choix tient encore : son aiguilleur est terminé — sa ligne n'est donc pas recréée et garde
+   * la colonne `choix` — et ce choix est lisible. Si l'aiguilleur lui-même repart, le choix est perdu avec sa ligne et les
+   * spécialistes écartés doivent bien redevenir « prevue ».
+   */
+  const aiguillageArbitre = (
+    run: RunMemory,
+    stepId: string,
+    rows: Map<string, StepRow>,
+    confirmes: Record<string, string[] | "aucun">,
+  ): boolean => {
+    const bloc = etapeDuDeroule(run.flow, stepId)?.bloc;
+    if (!bloc || bloc.type !== "aiguillage") return false;
+    return rows.get(bloc.aiguilleur.id)?.state === "terminee" && Object.hasOwn(confirmes, bloc.id);
+  };
+
   const relaunch = async (runId: string, plan: RunPlan): Promise<TeamRunView | RunnerRefusal> => {
     const row = store.runs.get(runId);
     if (!row) return refusal(404, "not-found");
@@ -1441,6 +2177,16 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const enBase = readRequest(runId);
     if (enBase === null) return refusal(409, "pas-relancable");
     const request = run.demande === null ? enBase : { demande: run.demande, fichiers: run.fichiers };
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : une PAUSE ne repart jamais par une relance complète. Sans instantané (redémarrage du cockpit), la
+    // confirmation de la nouvelle estimation le lui rend (`reprendreApresRedemarrage`) ; avec son instantané, elle attend VOTRE
+    // réponse par POST …/continue — une seconde confirmation arrivée juste après la première est donc refusée ici, sans rien lire
+    // ni écrire.
+    if (row.state.startsWith("attente-")) {
+      if (run.plan !== null) return refusal(409, "pas-relancable");
+      return reprendreApresRedemarrage(run, row.state, row.cause, plan, request);
+    }
+    // </c5:reprise-redemarrage>
     await hydrateResults(run);
     // Transition d'abord (table de T4 : « terminee » et « arretee » sont finaux) : rien n'est touché en mémoire ni en base
     // quand elle est refusée. Une pause (dont celle d'un redémarrage) et les états en échec admettent une nouvelle tentative ;
@@ -1453,24 +2199,47 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     run.stopping = false;
     run.changement = null;
     run.billRetries.clear();
+    // 5b : une relance repart du TOUR 1, avec de nouvelles sessions et une tentative de plus (D-5-14). Les tours de la tentative
+    // précédente restent en base comme historique, et `toursTermines` ne les compte plus.
+    run.tours.clear();
+    run.pausesRelecture = [];
+    run.proposes.clear();
+    run.raisons.clear();
+    run.choix.clear();
     store.runs.patch(runId, { estimateSha256: plan.estimateSha256, plafond: plan.plafond, endedAt: null });
     // Nouvelle tentative (nouvelle ligne, nouvelle session) pour chaque étape non terminée ; les terminées ne sont pas refacturées.
-    const rows = lastRows(runId, run.tour);
-    for (const planned of planSteps(run.flow)) {
-      const previous = rows.get(planned.stepId);
-      if (previous?.state === "terminee") continue;
-      const tentative = (previous?.tentative ?? 0) + 1;
-      run.tentatives.set(planned.stepId, tentative);
-      const step = plan.etapes.find((entry) => entry.stepId === planned.stepId);
+    const rows = lastRows(runId);
+    // État du déroulé AVANT les lignes neuves : les verdicts déjà rendus (pour savoir quel bloc de relecture repart) et VOTRE
+    // choix, relu en base puisque `run.choix` vient d'être vidé (colonne `choix` de l'aiguilleur, ligne non recréée).
+    const verdictsAvant = verdictsDesBlocs(run);
+    const choixTenus = choixConfirmes(run);
+    const tentativesMax = new Map<string, number>();
+    for (const ligne of store.steps.ofRun(runId)) tentativesMax.set(ligne.step_id, Math.max(tentativesMax.get(ligne.step_id) ?? 0, ligne.tentative));
+    for (const declaree of etapesDeclarees(run.flow)) {
+      const previous = rows.get(declaree.stepId);
+      // Une étape TERMINÉE n'est refaite que lorsque son bloc de relecture repart : le bloc entier recommence alors au tour 1,
+      // avec de nouvelles sessions des deux côtés (D-5-14, fiche L42b). Sans cela, le rédacteur repartait seul au tour 1 tandis
+      // que le verdict du relecteur, resté sur l'ancienne tentative, faisait redemander un tour 2 dont la session n'existait
+      // plus : la relance retombait en échec sans rien envoyer, indéfiniment.
+      if (previous?.state === "terminee" && !relectureQuiRepart(run, declaree.stepId, rows, verdictsAvant)) continue;
+      // Un spécialiste écarté par VOTRE choix reste « Non choisi », état final, tant que ce choix tient en base. Le recréer
+      // « prevue » le laissait ainsi pour toujours : `blocEnChoix` ne redemande rien et l'aiguillage ne lance que les retenus.
+      if (previous?.state === "non-choisi" && aiguillageArbitre(run, declaree.stepId, rows, choixTenus)) continue;
+      // La tentative la plus haute TOUS TOURS confondus : au tour 2 d'une relecture interrompue, la ligne du tour 1 porte déjà
+      // la même tentative, et la nouvelle ligne du tour 1 doit lui succéder.
+      const tentative = (tentativesMax.get(declaree.stepId) ?? 0) + 1;
+      run.tentatives.set(declaree.stepId, tentative);
+      const step = plan.etapes.find((entry) => entry.stepId === declaree.stepId);
+      const declaration = etapeDuDeroule(run.flow, declaree.stepId);
       store.steps.create({
         runId,
-        stepId: planned.stepId,
-        tour: run.tour,
+        stepId: declaree.stepId,
+        tour: 1,
         tentative,
-        ordre: planned.ordre,
-        blocIndex: planned.blocIndex,
-        titre: step?.titre ?? previous?.titre ?? planned.stepId,
-        agent: step?.assistant ?? previous?.agent ?? "",
+        ordre: declaree.ordre,
+        blocIndex: declaree.blocIndex,
+        titre: step?.titre ?? previous?.titre ?? declaration?.step.titre ?? declaree.stepId,
+        agent: step?.assistant ?? previous?.agent ?? declaration?.step.assistant ?? "",
         state: "prevue",
       });
     }
@@ -1481,6 +2250,51 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     void schedule(run, () => startRun(run, { injecter: false }));
     return view(runId) ?? refusal(404, "not-found");
   };
+
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : POST …/relancer sur une pause qui a survécu à un redémarrage du cockpit. La route n'arrive ici qu'après
+   * l'estimation MONTRÉE (POST …/estimate), votre confirmation (x-cockpit-confirm: 1) et le pré-lancement complet de la relance
+   * (A4 : budget, garde-fou P6, plafond, grammaire, configuration), qui rend l'instantané `plan`.
+   * Ce n'est PAS une relance à tentative neuve : rien de déjà payé n'est refait — ni l'aiguilleur et sa proposition, ni le
+   * premier jet d'une relecture — et aucune ligne n'est recréée. Le lancement retrouve seulement son instantané, et son plafond
+   * celui de la nouvelle estimation (déjà dépensé compris). Ensuite :
+   * - pause « Le cockpit a redémarré » : elle n'a pas d'autre réponse que « continuer », que votre confirmation donne. La suite
+   *   repart par la préparation, donc par le contrôle de fraîcheur, comme une relance ;
+   * - toute autre pause reste telle quelle (choix d'aiguillage, pause pour vérifier, budget, assistant changé, fraîcheur) : c'est
+   *   VOTRE réponse qui la fera repartir, par POST …/continue, avec les gardes de chaque étape (recheckStep, billRefusal, plafond
+   *   avec coût inconnu = refus, beginBilled). Le choix d'un aiguillage n'est jamais tranché ici (spéc. l.772).
+   */
+  const reprendreApresRedemarrage = async (
+    run: RunMemory,
+    state: TeamRunState,
+    cause: TeamRunCause | null,
+    plan: RunPlan,
+    request: { demande: string; fichiers: string[] },
+  ): Promise<TeamRunView | RunnerRefusal> => {
+    // Transition d'abord, comme la relance : refusée, rien n'est touché ni en mémoire ni en base.
+    const continuer = state === "attente-verification" && cause === "redemarrage-cockpit";
+    if (continuer && !store.runs.setState(run.runId, "preparation")) return refusal(409, "pas-relancable");
+    run.demande = request.demande;
+    run.fichiers = request.fichiers;
+    run.plan = plan;
+    run.stopping = false;
+    run.billRetries.clear();
+    store.runs.patch(run.runId, { estimateSha256: plan.estimateSha256, plafond: plan.plafond });
+    audit(run.runId, "reestimation", { estimation: plan.estimateSha256, depuis: state }, "vous");
+    if (continuer) {
+      runs.set(run.runId, run);
+      emitRun(run);
+      void schedule(run, () => startRun(run, { injecter: false }));
+      return view(run.runId) ?? refusal(404, "not-found");
+    }
+    // Pause de fraîcheur (A4) : [Continuer] refera le contrôle, comme avant le redémarrage.
+    if (state === "attente-verification" && cause === "changement") run.attenteFraicheur = true;
+    runs.set(run.runId, run);
+    emitRun(run);
+    return view(run.runId) ?? refusal(404, "not-found");
+  };
+  // </c5:reprise-redemarrage>
 
   // --- Reprise au démarrage ---------------------------------------------------------------------------------------------------
 
@@ -1495,15 +2309,14 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       run.demande = request.demande;
       run.fichiers = request.fichiers;
     }
-    // Pauses déjà franchies : tout bloc « pause » placé avant une étape terminée l'a été.
-    const rows = lastRows(runId, run.tour);
-    const franchies = new Set<string>();
-    for (const planned of planSteps(run.flow)) {
-      if (rows.get(planned.stepId)?.state !== "terminee") continue;
-      for (const bloc of run.flow.blocs.slice(0, planned.blocIndex)) if (bloc.type === "pause") franchies.add(bloc.id);
+    // Pauses déjà franchies (blocs « pause », pause d'avant la première relecture) : relues par `memoryFromRow`
+    // (`restaurerApresRedemarrage`, clôture 5b), pour que la vue d'un lancement non suivi les connaisse aussi.
+    const rows = lastRows(runId);
+    for (const [stepId, row] of rows) {
+      run.tentatives.set(stepId, row.tentative);
+      // Tour COURANT de l'étape : celui de sa dernière ligne (une relecture en a une par tour).
+      run.tours.set(stepId, row.tour);
     }
-    run.pausesFranchies = [...franchies];
-    for (const [stepId, row] of rows) run.tentatives.set(stepId, row.tentative);
     runs.set(runId, run);
     return run;
   };
@@ -1515,7 +2328,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
       if (!row) continue;
       const run = reattach(id);
       if (!run) continue;
-      const steps = lastRows(id, run.tour);
+      const steps = lastRows(id);
       const envoyees = [...steps.values()].filter((step) => step.session_id !== null);
       const occupees = [...steps.values()].filter((step) => step.state === "en-cours" || step.state === "attente-accord");
       // Équipe en préparation, ou en pause de fraîcheur sans aucune étape envoyée : rien n'a été envoyé ni facturé (D-eq-27).
@@ -1602,7 +2415,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
 
   const stopped = (rootId: string, cause: StopCause, result: StopResult | null): void => {
     for (const run of runsOfRoot(rootId)) {
-      for (const [stepId, row] of lastRows(run.runId, run.tour)) {
+      for (const [stepId, row] of lastRows(run.runId)) {
         const key: StepKey = { runId: run.runId, stepId, tour: row.tour, tentative: row.tentative };
         if (row.state === "prevue" || row.state === "en-file") {
           if (store.steps.setState(key, "non-lancee", { cause: "vous" })) emitStep(run, key, "non-lancee", row.session_id);
@@ -1630,7 +2443,7 @@ export function createTeamRunner(eq: EqContext, options: TeamRunnerOptions = {})
     const run = runs.get(runId) ?? reattach(runId);
     if (!run) return;
     run.stopping = true;
-    for (const [stepId, row] of lastRows(runId, run.tour)) {
+    for (const [stepId, row] of lastRows(runId)) {
       const key: StepKey = { runId, stepId, tour: row.tour, tentative: row.tentative };
       if (row.state === "en-cours" || row.state === "attente-accord" || row.state === "en-file") {
         if (store.steps.setState(key, "interrompue", { cause })) emitStep(run, key, "interrompue", row.session_id);

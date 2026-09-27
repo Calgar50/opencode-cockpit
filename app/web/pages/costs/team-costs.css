@@ -1,0 +1,269 @@
+/* Coûts et archives « par équipe » (itération 5, L46b ; plan d'exécution it5 §4.3, D-5-10, D-5-11).
+   Feuille unique des deux vues d'équipe : la section « Par équipe » de la page Coûts et la section « Équipes lancées dans
+   cette conversation » de la fiche d'Archives, qui partagent leurs cartes de lancement et leurs étapes ; la liste des
+   Archives y prend la puce du filtre « Avec une équipe ».
+   Uniquement les jetons du thème (clair et sombre), aucune couleur écrite en dur. Aucune animation, donc aucune animation
+   infinie (web-animations.test.ts couvre pages/costs et pages/archives depuis T5a). */
+
+/* --- Page Coûts : tableau « Par équipe » et lancements les plus coûteux --------------------- */
+
+.team-costs-note {
+  padding: 16px;
+}
+
+/* `.visually-hidden` est positionné en absolu : sans conteneur positionné, la légende du tableau et le libellé de la colonne
+   d'action sortent du cadre défilant et font défiler la PAGE entière à 400 px. Le cadre devient donc leur référence. */
+.team-table-wrap {
+  position: relative;
+}
+
+/* En-tête de LIGNE (colonne « Équipe ») : c'est un titre lu, pas un en-tête de colonne — d'où le poids et la couleur du texte
+   ordinaire. `.table` n'annule la bordure basse que des `td` : sans la seconde règle, la dernière ligne garde un trait qui
+   s'arrête au milieu du tableau, discret en thème clair, très visible en couleurs forcées. */
+.team-table-wrap .table tbody th {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-1);
+  max-width: 320px;
+}
+.team-table-wrap .table tbody tr:last-child th {
+  border-bottom: none;
+}
+
+.team-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.team-title > strong {
+  min-width: 0;
+}
+
+/* --- Fiche d'Archives : équipes lancées dans la conversation -------------------------------- */
+
+/* Le Déroulé (deroule.css) pose déjà sa zone dans la grille de la fiche. Les équipes prennent la leur juste après, et la
+   règle à deux `:has` l'emporte sur les deux règles simples, quel que soit l'ordre des feuilles chargées. */
+.archive-grid:has(> .archive-teams) {
+  grid-template-rows: auto auto 1fr;
+  grid-template-areas:
+    "summary side"
+    "equipes side"
+    "transcript side";
+}
+.archive-grid:has(> .deroule--archives):has(> .archive-teams) {
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas:
+    "summary side"
+    "deroule side"
+    "equipes side"
+    "transcript side";
+}
+.archive-teams {
+  grid-area: equipes;
+  min-width: 0;
+}
+/* Sous 1100 px, la fiche passe sur une colonne (archives.css) : les deux règles ci-dessus, plus spécifiques, doivent être
+   reprises ici, sans quoi elles garderaient la zone « side » et la grille resterait à deux colonnes. */
+@media (max-width: 1100px) {
+  .archive-grid:has(> .archive-teams) {
+    grid-template-rows: auto;
+    grid-template-areas:
+      "summary"
+      "side"
+      "equipes"
+      "transcript";
+  }
+  .archive-grid:has(> .deroule--archives):has(> .archive-teams) {
+    grid-template-rows: auto;
+    grid-template-areas:
+      "summary"
+      "side"
+      "deroule"
+      "equipes"
+      "transcript";
+  }
+}
+
+.archive-teams-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.team-run {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.team-run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.team-run-head h4 {
+  margin: 0;
+  font-size: 14px;
+  min-width: 0;
+}
+
+.team-run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 6px 0 0;
+}
+.team-run-facts > div {
+  display: flex;
+  gap: 6px;
+}
+.team-run-facts dt {
+  color: var(--text-3);
+}
+.team-run-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-steps {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-step {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  min-width: 0;
+}
+.team-step:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.team-step-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Extrait du résultat : replié, jamais interprété (texte rendu par React). */
+.team-excerpt {
+  margin-top: 6px;
+}
+.team-excerpt > summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.team-excerpt > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.team-excerpt-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- Liste des Archives : puce du filtre « Avec une équipe » --------------------------------- */
+
+.chip.team-filter {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border-color: var(--border-strong);
+  font-size: 13px;
+}
+.team-filter .icon {
+  color: var(--text-3);
+}
+.team-filter[aria-pressed="true"] .icon {
+  color: var(--accent);
+}
+
+.team-filter-note {
+  margin: 0;
+}
+
+/* --- Largeurs réduites (spécification §5.6 : 400 px) ---------------------------------------- */
+
+/* Sur un écran étroit, les cinq colonnes ne tiennent plus : plutôt que de tout renvoyer derrière un défilement latéral, les
+   en-têtes et les titres se replient sur plusieurs lignes et les marges se resserrent, pour que « Lancements » et « Coût »
+   restent lus sans faire défiler. Le cadre `.table-wrap` garde le reste à portée. */
+@media (max-width: 640px) {
+  .team-table-wrap .table th,
+  .team-table-wrap .table td {
+    padding: 6px 8px;
+    white-space: normal;
+  }
+  .team-table-wrap .table tbody th {
+    max-width: 130px;
+  }
+  .team-table-wrap .table tbody th .ellipsis {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  /* Titre replié sur plusieurs lignes : la puce « Équipe supprimée » passe dessous, jamais au milieu du titre. */
+  .team-title {
+    align-items: flex-start;
+  }
+  .team-title > strong {
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 400px) {
+  .archive-teams-body {
+    padding: 0 12px 12px;
+  }
+  .team-run {
+    padding: 8px 10px;
+  }
+  /* Une information par ligne : rien ne dépasse, aucun défilement latéral de la page. */
+  .team-run-facts {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .team-excerpt-text {
+    max-height: 160px;
+  }
+}
+
+/* --- Contrastes forcés (spécification §5.5) -------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .team-run,
+  .team-excerpt-text {
+    border: 1px solid CanvasText;
+  }
+  /* La bordure de gauche ne porte plus de couleur : elle reste un repère d'épaisseur. */
+  .team-run {
+    border-left-width: 3px;
+  }
+  .team-filter[aria-pressed="true"] {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+  .team-excerpt > summary:focus-visible {
+    outline: 2px solid CanvasText;
+  }
+}

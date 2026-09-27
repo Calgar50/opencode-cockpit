@@ -124,6 +124,10 @@ export type AssistantsView =
   | { mode: "equipe-modifier"; id: string }
   | { mode: "carte"; element: string | null }
   // --- équipes (it4) : fin ---
+  // <c5:onglet-methodes>
+  /** Itération 5 (L44f) : onglet « Méthodes » (#/assistants/methodes), qui accueille la bibliothèque des méthodes de L44d. */
+  | { mode: "methodes" }
+  // </c5:onglet-methodes>
   | { mode: "liste" }
   | { mode: "nouveau" }
   | { mode: "modifier" | "completer" | "detail"; name: string };
@@ -143,6 +147,9 @@ export function assistantsHref(view: AssistantsView = LIST_VIEW): string {
     return `${routeHref("assistants", "carte")}${query}`;
   }
   // --- équipes (it4) : fin ---
+  // <c5:onglet-methodes-href>
+  if (view.mode === "methodes") return routeHref("assistants", "methodes");
+  // </c5:onglet-methodes-href>
   if (view.mode === "liste") return routeHref("assistants");
   if (view.mode === "nouveau") return routeHref("assistants", "nouveau");
   return routeHref("assistants", view.mode, view.name);
@@ -168,20 +175,29 @@ const CARTE_ELEMENT_ID = /^(?:vous|(?:agent|raccourci|fiche):[A-Za-z0-9][A-Za-z0
 export const CARTE_ELEMENT_PARAM = "element";
 
 /** Onglets de la page Assistants, dans l'ordre affiché. La création et la modification (assistant, équipe) n'en ont pas. */
-export const ASSISTANTS_TABS = ["assistants", "equipes", "carte"] as const;
+// 5b (L44f) : « Méthodes » ajouté EN FIN de liste ; l'ordre des trois onglets de l'itération 4, relu et capturé par son banc,
+// ne bouge pas.
+export const ASSISTANTS_TABS = ["assistants", "equipes", "carte", "methodes"] as const;
 export type AssistantsTab = (typeof ASSISTANTS_TABS)[number];
 
 /** Onglet actif d'une vue ; null : vue en pleine page, sans onglets (assistant de création, éditeur d'équipe). */
 export function assistantsTabOf(view: AssistantsView): AssistantsTab | null {
   if (view.mode === "liste" || view.mode === "detail") return "assistants";
-  if (view.mode === "equipes" || view.mode === "carte") return view.mode;
+  if (view.mode === "equipes" || view.mode === "carte" || view.mode === "methodes") return view.mode;
   return null;
 }
 
-/** Adresse d'un onglet : #/assistants, #/assistants/equipes, #/assistants/carte. */
+/** Adresse d'un onglet : #/assistants, #/assistants/equipes, #/assistants/carte, #/assistants/methodes. */
 export function assistantsTabHref(tab: AssistantsTab): string {
   if (tab === "equipes") return assistantsHref({ mode: "equipes" });
   if (tab === "carte") return assistantsHref({ mode: "carte", element: null });
+  // --- équipes (it4) : fin ---
+  // <c5:onglet-methodes-tab>
+  // Clôture 5b (A20) : le bloc de l'itération 4 est refermé juste au-dessus et rouvert juste en dessous, pour que cette ligne de
+  // la construction soit dans sa section et jamais dans le bloc d'une autre branche. Rien ne change à l'exécution.
+  if (tab === "methodes") return assistantsHref({ mode: "methodes" });
+  // </c5:onglet-methodes-tab>
+  // --- équipes (it4) : début ---
   return assistantsHref(LIST_VIEW);
 }
 
@@ -221,6 +237,11 @@ export function assistantsViewOf(route: readonly string[], query: URLSearchParam
   // --- équipes (it4) : fin ---
   const [section, sub, name] = route;
   if (section !== "assistants") return LIST_VIEW;
+  // <c5:onglet-methodes-route>
+  // #/assistants/methodes (L44f). Un segment en trop donne la vue par défaut, comme pour les vues des équipes : une adresse
+  // partagée ne devine jamais ce qu'elle ne reconnaît pas.
+  if (sub === "methodes") return route.length === 2 ? { mode: "methodes" } : LIST_VIEW;
+  // </c5:onglet-methodes-route>
   if (sub === "nouveau") return { mode: "nouveau" };
   if ((sub === "modifier" || sub === "completer" || sub === "detail") && name) return { mode: sub, name };
   return LIST_VIEW;

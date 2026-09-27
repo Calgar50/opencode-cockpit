@@ -306,10 +306,23 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
     // plafonds (L10c) sa dérivation, son abonnement usage.updated et sa reprise au démarrage. Le reste reste au repos.
     // Porte I1 basculée au train de la vague 3 (it2) : l'activation (L10d) inscrit son crochet d'envoi, entre les plans et les
     // demandes ; beforeBilledSend passe donc de 3 à 4.
-    const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 4, beforeOnceRelay: 1, abort: 1 };
+    // <c5:inscriptions>
+    // beforeBilledSend passe de 4 à 5 : Seconde lecture (L44c, premier du rang — elle ne refuse jamais et doit tourner même
+    // quand un crochet suivant refuse), puis plancher, plans, activation et demandes.
+    const hooked: Partial<Record<HookStep, number>> = { createSession: 1, sessionCreated: 1, beforeBilledSend: 5, beforeOnceRelay: 1, abort: 1 };
+    // </c5:inscriptions>
     const principales = wiring.registrations.filter(sertPrincipale);
     assert.deepEqual(principales, [
-      ...(["createSession", "sessionCreated", "beforeBilledSend"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
+      // <c5:inscriptions>
+      // La section couvre les TROIS lignes que la construction a touchées ici, et pas seulement la ligne ajoutée : le lot
+      // `["createSession", "sessionCreated"]` a perdu `beforeBilledSend` (la Seconde lecture s'inscrit avant le plancher, donc
+      // l'ordre attendu n'est plus celui d'un lot unique), et la ligne du plancher est réécrite à la main juste après celle de
+      // la Seconde lecture. Sans cette borne, ces deux lignes se fondraient dans le code de l'itération 1 à la grande fusion
+      // (reste n° 3 de la 5a, régularisé par la clôture 5b).
+      ...(["createSession", "sessionCreated"] as const).map((key) => ({ kind: "hook", key, module: "floors" })),
+      { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
+      { kind: "hook", key: "beforeBilledSend", module: "floors" },
+      // </c5:inscriptions>
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
       { kind: "hook", key: "beforeBilledSend", module: "activation" },
       { kind: "hook", key: "beforeBilledSend", module: "requests" },
@@ -331,6 +344,14 @@ describe("croisements it1 V0 : câblage 1.1 (T0) sur le harnais (T1)", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <c5:inscriptions>
+      // Construction (itération 5, V1 et V2) : les routes du groupe « construction » de L44b (methods), L44c (secondReading),
+      // L47b (chronologie) et L46a (teamCosts). Le crochet de la Seconde lecture est ajouté plus haut, dans la même section.
+      { kind: "routes", key: "construction", module: "methods" },
+      { kind: "routes", key: "construction", module: "secondReading" },
+      { kind: "routes", key: "construction", module: "chronologie" },
+      { kind: "routes", key: "construction", module: "teamCosts" },
+      // </c5:inscriptions>
     ]);
     // Non-régression de l'ouverture 2bis-V2 : une inscription de la salle sort de la liste comparée, une inscription de
     // l'instance principale (champ absent ou « principale ») y reste — sinon le filtre affaiblirait l'assertion.

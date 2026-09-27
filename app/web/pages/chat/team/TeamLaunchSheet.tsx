@@ -109,7 +109,13 @@ export function TeamLaunchSheet({ equipe, rootId, directory, advanced, busy, age
     return () => window.clearTimeout(minuteur);
   }, [estimation, envoiEnCours, estimer]);
 
-  const vue = vueFeuille({ equipe, advanced, estimation, estimationEnCours, refus, accords, occupee: busy, envoiEnCours, detailOuvert });
+  // <c5:controle-sql>
+  // Demande lue UNE FOIS à l'ouverture : la feuille est modale, la saisie ne bouge plus tant qu'elle est ouverte, et le rendu
+  // reste pur (aucune lecture du brouillon pendant un rendu). Elle ne sert qu'au contrôle SQL local de « Revue SQL sur
+  // réplica » (C §12.1) : aucun appel d'IA, aucune requête, rien n'est envoyé.
+  const [demande] = useState(() => getDraft().texte);
+  // </c5:controle-sql>
+  const vue = vueFeuille({ equipe, advanced, estimation, estimationEnCours, refus, accords, occupee: busy, envoiEnCours, detailOuvert, demande });
 
   const accorder = (cle: CleConfirmation) => setAccords((precedent) => ({ ...precedent, [cle]: !precedent[cle] }));
 
@@ -171,6 +177,9 @@ export function TeamLaunchSheet({ equipe, rootId, directory, advanced, busy, age
                 {phrase}
               </p>
             ))}
+            {/* <c5:controle-sql> */}
+            {vue.sql ? <p className="team-sheet-ligne">{vue.sql}</p> : null}
+            {/* </c5:controle-sql> */}
             {vue.blocs.length > 0 ? (
               <ol className="team-sheet-blocs">
                 {vue.blocs.map((bloc, index) => (

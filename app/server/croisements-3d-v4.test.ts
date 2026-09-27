@@ -163,6 +163,21 @@ const SCENARIOS_ARRIVES_PAR_LA_FUSION: readonly string[] = [
   "it4-prelancement.mjs",
   "it4-simple-ouvert.mjs",
   "it4-studio.mjs",
+  // <c5:scenarios-arrives>
+  // Grande fusion (GF4) : scénarios de l'itération 5 (construction), arrivés avec H5b' (11f26eb).
+  "c5a-a11y.mjs",
+  "c5a-chronologie.mjs",
+  "c5a-mc5-reel.mjs",
+  "c5a-methodes.mjs",
+  "c5a-seconde-lecture.mjs",
+  "c5b-a11y.mjs",
+  "c5b-aiguillage.mjs",
+  "c5b-couts-archives.mjs",
+  "c5b-demonstration.mjs",
+  "c5b-relecture.mjs",
+  "c5b-schema.mjs",
+  "c5b-vue-ensemble.mjs",
+  // </c5:scenarios-arrives>
 ];
 
 /**

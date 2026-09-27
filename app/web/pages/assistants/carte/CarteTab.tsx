@@ -7,8 +7,10 @@
 // - Deux vues : « Centrée » (défaut visuel) et « Liste ». La LISTE EST TOUJOURS RENDUE (U11) : au-dessus de 900 px elle reste
 //   dans l'arbre d'accessibilité, hors de l'écran ; sous 900 px, carte.css la montre seule (§5.6). Elle est la vérité : toutes
 //   les arêtes, une phrase chacune.
-// - « Vue d'ensemble » (spéc. §5.2) : itération 5, NON LIVRÉE. Aucun libellé ne l'annonce (P3 : jamais annoncer une fonction
-//   absente).
+// <c5:vue-ensemble>
+// - « Vue d'ensemble » (spéc. §5.2 l.890) : LIVRÉE par l'itération 5b (L48), en mode AVANCÉ seulement. En mode Simple, elle
+//   n'est ni proposée ni montée — aucun libellé ne l'annonce (P3). Sous 900 px, la Liste reste le défaut (overview.css).
+// </c5:vue-ensemble>
 // - Élément : lu dans l'adresse, choisi par le sélecteur ou par un clic sur un nœud ; un élément inconnu de la carte ne vide
 //   jamais la vue (repli sur « Vous »).
 // Aucun texte écrit ici : tout vient d'agent-map-texts.ts (T4t). Aucune animation, aucun raccourci clavier, aucun focus pris.
@@ -22,11 +24,19 @@ import { elementMontre, groupesDuSelecteur, notesSousLaCarte, phrasesEtatVide } 
 import { CarteCentree } from "./CarteCentree.tsx";
 import { CarteComprendre } from "./CarteComprendre.tsx";
 import { CarteListe } from "./CarteListe.tsx";
+// <c5:vue-ensemble>
+import { TEXTES as TEXTES_C5 } from "../../../../server/shared/construction-texts.ts";
+import { OverviewMap } from "./OverviewMap.tsx";
+// </c5:vue-ensemble>
 import "./carte.css";
 
 const P = TEXTES.partout;
+// <c5:vue-ensemble>
+const V = TEXTES_C5.avance.vueEnsemble;
 
-type Vue = "centree" | "liste";
+/** Troisième vue, réservée au mode Avancé (spéc. §5.2 l.890) : le mode Simple ne la propose ni ne la monte jamais. */
+type Vue = "centree" | "liste" | "ensemble";
+// </c5:vue-ensemble>
 
 /** Sélecteur d'élément : une liste par groupes (Assistants, Raccourcis, Équipes, Fiches) et une recherche qui la réduit. */
 function Selecteur({
@@ -81,7 +91,12 @@ function Selecteur({
 export function CarteTab({ directory, advanced, element }: CarteTabProps) {
   const baseId = useId();
   const { data, error, loading } = useAsync(() => agentMapApi.get({ directory, element }), [directory, element]);
-  const [vue, setVue] = useState<Vue>("centree");
+  // <c5:vue-ensemble>
+  // Vue CHOISIE par les boutons ; la vue MONTRÉE retombe sur « Centrée » si le mode repasse en Simple pendant que la vue
+  // d'ensemble est choisie (§5.2 l.890 : elle n'existe qu'en Avancé). Aucune constante, aucun réglage : le mode suffit.
+  const [vueChoisie, setVue] = useState<Vue>("centree");
+  const vue: Vue = vueChoisie === "ensemble" && !advanced ? "centree" : vueChoisie;
+  // </c5:vue-ensemble>
   const [recherche, setRecherche] = useState("");
 
   // Un dossier ou un élément qui change repart d'une recherche vide : la liste du sélecteur suit toujours ce qui est affiché.
@@ -125,6 +140,13 @@ export function CarteTab({ directory, advanced, element }: CarteTabProps) {
               <button type="button" className="btn" aria-pressed={vue === "centree"} onClick={() => setVue("centree")}>
                 {P.vues.centree}
               </button>
+              {/* <c5:vue-ensemble> */}
+              {advanced ? (
+                <button type="button" className="btn" aria-pressed={vue === "ensemble"} onClick={() => setVue("ensemble")}>
+                  {V.titre}
+                </button>
+              ) : null}
+              {/* </c5:vue-ensemble> */}
               <button type="button" className="btn" aria-pressed={vue === "liste"} onClick={() => setVue("liste")}>
                 {P.vues.liste}
               </button>
@@ -143,6 +165,13 @@ export function CarteTab({ directory, advanced, element }: CarteTabProps) {
             <div className="ca-bloc-centree">
               <CarteCentree result={data} advanced={advanced} element={montre} onChoisir={choisir} />
             </div>
+            {/* <c5:vue-ensemble> */}
+            {advanced ? (
+              <div className="ca-bloc-ensemble">
+                <OverviewMap result={data} advanced={advanced} element={montre} />
+              </div>
+            ) : null}
+            {/* </c5:vue-ensemble> */}
             <div className="ca-bloc-liste">
               <CarteListe result={data} advanced={advanced} element={montre} onChoisir={choisir} />
             </div>

@@ -446,7 +446,7 @@ export interface ChatTurnRow {
   id: number;
   session_id: string;
   created_at: number;
-  kind: "message" | "raccourci" | "resume";
+  kind: "message" | "raccourci" | "resume" | "seconde-lecture"; // c5
   agent: string;
   command: string | null;
   tier: string | null;

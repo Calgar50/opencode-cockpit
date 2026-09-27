@@ -44,6 +44,10 @@ import type {
 import { configuredExtensions, subagentDepth } from "./diagnostics-11.ts";
 import { isInside } from "./fsutil.ts";
 import { errorMessage } from "./log.ts";
+// <c5:methodes-import>
+import { METHODS } from "./methods-catalogue.ts";
+import { methodIdsIn } from "./shared/methods.ts";
+// </c5:methodes-import>
 import type { OcAgentInfo } from "./oc-lookup.ts";
 import { roundUsd } from "./pricing.ts";
 import { redactSecrets } from "./redact.ts";
@@ -71,7 +75,7 @@ import {
   type StepIa,
   suiteEstimate,
 } from "./shared/flow-estimate.ts";
-import { validateFlow } from "./shared/flow.ts";
+import { type FlowMethodsContext, validateFlow } from "./shared/flow.ts";
 import { buildFloor, canonicalRules } from "./shared/session-floors.ts";
 import { FLOW_LIMITS, planSteps, TEAM_TEXT_LIMITS } from "./shared/team-limits.ts";
 import type {
@@ -83,9 +87,10 @@ import type {
   TeamConfirmation,
   TeamErrorCode,
   TeamEstimateBody,
+  TeamStepState,
 } from "./shared/team-types.ts";
 import { INTERNAL_AGENTS } from "./studio.ts";
-import { createTeamStore, type TeamStore } from "./team-store.ts";
+import { ACTIVE_RUN_STATES, createTeamStore, type TeamStore } from "./team-store.ts";
 
 /** Validité d'un instantané de lectures (D-eq-17) : au-delà, la feuille ré-estime (409 estimation-perimee). */
 export const SNAPSHOT_TTL_MS = 10 * 60_000;
@@ -99,6 +104,28 @@ const OBSERVED_WINDOW_MS = 30 * 86_400_000;
 const CODES_AVANCE: readonly string[] = ["niveau-avance", "personnalise"];
 
 const sha256 = (texte: string): string => createHash("sha256").update(texte, "utf8").digest("hex");
+
+// <c5:methodes-contexte>
+/** Méthodes du catalogue attachables à une étape (genre « consigne », L44a) : une méthode « relecture » n'en est pas une. */
+const METHODES_CONSIGNE: ReadonlySet<string> = new Set(METHODS.filter((methode) => methode.kind === "consigne").map((methode) => methode.id));
+const AUCUNE_METHODE: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Méthodes déjà posées dans les fichiers d'agent, RATTACHÉES À L'INSTANTANÉ de l'estimation (A4, réponse (b) à la Q5 du plan
+ * it4). Elles sortent des fichiers que `planifier` a DÉJÀ lus et empreintés pour l'estimation : le pré-lancement n'ajoute ni
+ * lecture ni requête, et un refus `methodes` n'émet rien. Une table à part plutôt qu'un champ d'`EstimateSnapshot` : ce
+ * contrat appartient à l'itération 4 et n'est pas touché ici ; la table faible se vide avec l'instantané qu'elle suit.
+ * Un fichier CHANGÉ depuis l'estimation relève de la reprise de fraîcheur de l'exécuteur (pause « À vérifier », L42b), jamais
+ * d'une requête ajoutée au pré-lancement.
+ */
+const methodesDInstantane = new WeakMap<EstimateSnapshot, ReadonlyMap<string, ReadonlySet<string>>>();
+
+/** Contexte `methods` de `validateFlow` (C §5.2) bâti sur ces lectures ; un assistant hors du chemin estimé n'y figure pas. */
+const contexteMethodes = (parAssistant: ReadonlyMap<string, ReadonlySet<string>>): FlowMethodsContext => ({
+  consigne: METHODES_CONSIGNE,
+  parAssistant: (nom) => parAssistant.get(nom) ?? AUCUNE_METHODE,
+});
+// </c5:methodes-contexte>
 
 /**
  * Forme canonique des règles d'un assistant, base des empreintes P11 (report MX-EQ) : chaque SUITE de règles consécutives de
@@ -178,6 +205,14 @@ function stepsById(flow: Flow): Map<string, FlowStep> {
   for (const bloc of flow.blocs) {
     if (bloc.type === "etape") out.set(bloc.etape.id, bloc.etape);
     else if (bloc.type === "avis") for (const step of [...bloc.avis, bloc.synthese]) out.set(step.id, step);
+    // <c5:formes-5b>
+    // Formes de la 5b (L42a) : sans ces deux branches, les étapes d'une relecture ou d'un aiguillage seraient inconnues de
+    // `planifier`, donc absentes du plan — aucune règle effective, aucune empreinte, aucun droit pour elles.
+    else if (bloc.type === "relecture") for (const step of [bloc.auteur, bloc.relecteur]) out.set(step.id, step);
+    else if (bloc.type === "aiguillage") {
+      for (const step of [bloc.aiguilleur, ...bloc.specialistes, ...(bloc.synthese ? [bloc.synthese] : [])]) out.set(step.id, step);
+    }
+    // </c5:formes-5b>
   }
   return out;
 }
@@ -396,36 +431,69 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     }
   };
 
-  /** Empreinte du fichier d'agent (lecture LOCALE par le Studio) ; assistant natif, sans fichier ou illisible → null. */
-  const lireFichierAgent = async (assistant: StepAssistant): Promise<string | null> => {
-    if (assistant.origin === "natif" || assistant.origin === "interne") return null;
+  /**
+   * Empreinte du fichier d'agent (lecture LOCALE par le Studio) ; assistant natif, sans fichier ou illisible → null.
+   * 5b (L45b) : la MÊME lecture rend aussi les méthodes posées dans le corps du fichier (`methodIdsIn`, vérité D-5-07). Aucune
+   * lecture n'est ajoutée : c'est le fichier déjà lu et déjà empreinté pour l'estimation qui sert au contexte `methods` (A4).
+   */
+  const lireFichierAgent = async (assistant: StepAssistant): Promise<{ sha: string | null; methodes: readonly string[] }> => {
+    if (assistant.origin === "natif" || assistant.origin === "interne") return { sha: null, methodes: [] };
     try {
       const item = await c11.studio.get("agents", assistant.name, { type: "global" });
-      if (item === null) return null;
-      return sha256(canonicalJson({ frontmatter: item.frontmatter, body: item.body }));
+      if (item === null) return { sha: null, methodes: [] };
+      return {
+        sha: sha256(canonicalJson({ frontmatter: item.frontmatter, body: item.body })),
+        methodes: methodIdsIn(item.body).map((methode) => methode.id),
+      };
     } catch {
-      return null;
+      return { sha: null, methodes: [] };
     }
   };
 
-  /** Instantané P11 d'une étape : règles effectives et leur empreinte, fichier d'agent, plancher ETAPE, droits, IA. */
+  /**
+   * Instantané P11 d'une étape : règles effectives et leur empreinte, fichier d'agent, plancher ETAPE, droits, IA.
+   * 5b (L45b) : la même passe recueille les méthodes de chaque fichier d'agent lu, pour le contexte `methods` — un assistant
+   * dont aucune étape n'est sur le chemin estimé n'y figure pas, puisque son fichier n'est pas lu (A4 : aucune lecture ajoutée).
+   */
   const planifier = async (
     flow: Flow,
     chemin: readonly string[],
     source: { assistants: ReadonlyMap<string, StepAssistant>; variantes: ReadonlyMap<string, string | null> },
     mode: UiMode,
-  ): Promise<PlannedStep[]> => {
+  ): Promise<{ etapes: PlannedStep[]; methodes: Map<string, ReadonlySet<string>> }> => {
     const steps = stepsById(flow);
     const ordre = new Map(planSteps(flow).map((planned) => [planned.stepId, planned]));
     const etapes: PlannedStep[] = [];
-    for (const stepId of chemin) {
+    const methodes = new Map<string, ReadonlySet<string>>();
+    // <c5:specialistes-hors-chemin>
+    // Le chemin d'ESTIMATION ne compte que `choixMax` spécialistes d'un aiguillage (5b, L42a) : l'estimation ne paie que ce qui
+    // partira. Mais VOUS pouvez retenir n'importe lesquels de la liste, et l'exécuteur exige pour chacun l'instantané P11 de son
+    // assistant (règles, plancher ETAPE, empreinte du fichier). Sans ces entrées, un spécialiste placé après le `choixMax`
+    // échouerait au lancement (« étape inconnue de l'instantané du lancement ») : les voici, DERRIÈRE le chemin, avec leur place
+    // déclarée. Elles ne comptent ni dans l'estimation, ni dans le garde-fou budgétaire (groupe B4, filtré sur le chemin).
+    const surLeChemin = new Set(chemin);
+    const horsChemin = new Map<string, { blocIndex: number; ordre: number }>();
+    let rang = Math.max(0, ...[...ordre.values()].map((planned) => planned.ordre));
+    flow.blocs.forEach((bloc, blocIndex) => {
+      if (bloc.type !== "aiguillage") return;
+      for (const step of Array.isArray(bloc.specialistes) ? bloc.specialistes : []) {
+        if (surLeChemin.has(step.id) || horsChemin.has(step.id)) continue;
+        rang += 1;
+        horsChemin.set(step.id, { blocIndex, ordre: rang });
+      }
+    });
+    // </c5:specialistes-hors-chemin>
+    for (const stepId of [...chemin, ...horsChemin.keys()]) {
       const step = steps.get(stepId);
-      const planned = ordre.get(stepId);
+      const planned = ordre.get(stepId) ?? horsChemin.get(stepId);
       const assistant = step ? source.assistants.get(step.assistant) : undefined;
       const ia = step ? iaDeLEtape(step, source.assistants, mode, source.variantes) : null;
       if (!step || !planned || !assistant || ia === null) continue;
       const agentRules = assistant.rules;
       const floor = buildFloor("ETAPE", { agentRules });
+      // Même lecture qu'avant (une par passage, l'ordre des lectures ne change pas) ; elle rend en plus les méthodes du corps.
+      const fichier = await lireFichierAgent(assistant);
+      methodes.set(assistant.name, new Set(fichier.methodes));
       etapes.push({
         stepId,
         blocIndex: planned.blocIndex,
@@ -434,7 +502,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         assistant: assistant.name,
         agentRules,
         rulesSha256: rulesSha256(agentRules),
-        agentFileSha256: await lireFichierAgent(assistant),
+        agentFileSha256: fichier.sha,
         floor,
         floorSha256: floorHash("ETAPE", { agentRules }),
         droits: rightLines([...agentRules, ...floor], [], assistant.steps),
@@ -444,7 +512,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         taille: step.taille,
       });
     }
-    return etapes;
+    return { etapes, methodes };
   };
 
   // --- Lectures d'opencode : fin --------------------------------------------------------------------------------------------
@@ -500,7 +568,12 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       if (actifs.length > 0) return refus(409, "equipe-en-cours");
     }
     // A5 P5 : nombre d'équipes actives, toutes conversations confondues.
-    if (store().runs.activeCount() >= c11.settings.get().teams.maxActiveRuns) return refus(409, "trop-d-equipes");
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : la relance d'un lancement ENCORE ACTIF (pause reprise après un redémarrage du cockpit) ne compte pas
+    // ce lancement lui-même, qui occupe déjà sa place ; la relance d'un lancement fini en prend une de plus, comme avant.
+    const relanceActive = relance !== undefined && ACTIVE_RUN_STATES.includes(store().runs.get(relance.runId)?.state ?? "terminee");
+    if (store().runs.activeCount() - (relanceActive ? 1 : 0) >= c11.settings.get().teams.maxActiveRuns) return refus(409, "trop-d-equipes");
+    // </c5:reprise-redemarrage>
     // A6 P9 : le dossier est la racine du workspace.
     if (body.directory === c11.projects.opencodeRoot && body.confirmations?.workspace !== true) return refus(409, "confirmation-workspace");
     // A7 P10 : secret probable dans la demande (jamais le texte du secret dans la réponse ni dans un journal).
@@ -528,6 +601,13 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     deja: number;
     /** false : B4 sauté (le contrôle de fraîcheur ne rejoue que B1 à B3 et B5 ; budget et plafond ont été tranchés au lancement). */
     calculs: boolean;
+    // <c5:methodes-entree>
+    /**
+     * Contexte `methods` de la grammaire (5b, L45b), tiré des fichiers d'agent DÉJÀ LUS pour l'estimation. ABSENT → seul le
+     * NOMBRE de méthodes d'une étape est contrôlé : rien n'est supposé, et surtout aucune lecture n'est ajoutée pour le savoir.
+     */
+    methodes?: FlowMethodsContext;
+    // </c5:methodes-entree>
   }
 
   /** Résultat du groupe B : refus ou estimation calculée (réutilisée par l'estimation et par le plan). */
@@ -541,6 +621,27 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     /** Problèmes du déroulé, lus sur les mêmes assistants et la même IA par étape que le refus. */
     problems: FlowProblem[];
   }
+
+  /** Comptage des passages d'une liste : `chemin` et le plan portent un élément PAR PASSAGE, pas par étape (L42a). */
+  const passagesPar = (ids: readonly string[]): Map<string, number> => {
+    const out = new Map<string, number>();
+    for (const stepId of ids) out.set(stepId, (out.get(stepId) ?? 0) + 1);
+    return out;
+  };
+
+  /**
+   * État des étapes reconstruit à partir du reste du chemin : `tours` = passages prévus moins passages restants. Compter par
+   * identifiant ferait passer une relecture dont le premier jet est fini pour une étape entièrement terminée, et ses révisions
+   * sortiraient du « Coût du reste » comme du plafond de la relance.
+   */
+  const etatDuReste = (flow: Flow, chemin: readonly string[]): Array<{ stepId: string; state: TeamStepState; tours: number }> => {
+    const prevus = passagesPar(planSteps(flow).map((planned) => planned.stepId));
+    const restants = passagesPar(chemin);
+    return [...prevus].map(([stepId, total]) => {
+      const reste = restants.get(stepId) ?? 0;
+      return { stepId, state: (reste > 0 ? "prevue" : "terminee") as TeamStepState, tours: Math.max(0, total - reste) };
+    });
+  };
 
   /**
    * Groupe B, sans aucune nouvelle lecture. Ordre : grammaire et étapes (B2), configuration (B3), calculs locaux (B4),
@@ -561,9 +662,10 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
         label: modelName(planned.model, c11.catalog.lite()),
       };
     });
-    const estimate = entree.chemin.length === planSteps(flow).length
-      ? estimateFlow(flow, ctx)
-      : suiteEstimate(flow, { etapes: planSteps(flow).map((planned) => ({ stepId: planned.stepId, state: entree.chemin.includes(planned.stepId) ? "prevue" : "terminee" })) }, ctx);
+    // Reste à faire, compté en PASSAGES et non en identifiants : une relecture repasse par la même étape à chaque tour (L42a),
+    // et `chemin` porte déjà un élément par passage. L'écart entre les passages prévus et ceux qui restent donne le compte de
+    // tours déjà faits, sans quoi les révisions à venir sortiraient du reste — et du plafond de la relance (ligne `plafond`).
+    const estimate = entree.chemin.length === planSteps(flow).length ? estimateFlow(flow, ctx) : suiteEstimate(flow, { etapes: etatDuReste(flow, entree.chemin) }, ctx);
     // P8 : le plafond EST l'estimation haute (`FlowEstimate.plafond` = `maximum`, L36b) ; en relance, il couvre tout le
     // lancement, donc la dépense déjà faite s'y ajoute (comme `spentOfRun`).
     const plafond = roundUsd(entree.deja + estimate.plafond);
@@ -577,7 +679,15 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
 
     // B2 P2 : grammaire dans le mode courant, sur les assistants de l'instantané.
     const problems: FlowProblem[] = [
-      ...validateFlow(flow, { assistants: [...src.assistants.values()], mode, niveauDisponible, pour: "lancement" }),
+      ...validateFlow(flow, {
+        assistants: [...src.assistants.values()],
+        mode,
+        niveauDisponible,
+        pour: "lancement",
+        // <c5:methodes-validation>
+        ...(entree.methodes ? { methods: entree.methodes } : {}),
+        // </c5:methodes-validation>
+      }),
       ...estimateProblems(flow, ctx),
     ];
 
@@ -601,8 +711,21 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       const b4 = (): Refus | null => {
         if (entree.estimateSha256 !== null && entree.estimateSha256 !== empreinte) return refus(409, "estimation-perimee");
         const lite = c11.catalog.lite();
-        const runs: Run[] = etapes.map((etape) => ({ role: "etape", model: etape.model, variant: etape.variant, source: "equipe", agent: etape.assistant }));
-        const tailles = etapes.map((etape) => etape.taille);
+        // <c5:specialistes-hors-chemin>
+        // Le garde-fou budgétaire (P6) ne compte QUE les passages du chemin estimé : les instantanés des spécialistes qu'un
+        // aiguillage pourrait lancer au-delà de `choixMax` sont dans l'instantané pour que l'exécuteur les retrouve, jamais
+        // pour gonfler le coût annoncé. Un passage par élément du chemin, dans l'ordre : une relecture y revient à chaque tour.
+        const restants = new Map<string, number>();
+        for (const stepId of entree.chemin) restants.set(stepId, (restants.get(stepId) ?? 0) + 1);
+        const etapesDuCout = etapes.filter((etape) => {
+          const reste = restants.get(etape.stepId) ?? 0;
+          if (reste <= 0) return false;
+          restants.set(etape.stepId, reste - 1);
+          return true;
+        });
+        // </c5:specialistes-hors-chemin>
+        const runs: Run[] = etapesDuCout.map((etape) => ({ role: "etape", model: etape.model, variant: etape.variant, source: "equipe", agent: etape.assistant }));
+        const tailles = etapesDuCout.map((etape) => etape.taille);
         const taille: TaskSize = tailles.includes("L") ? "L" : tailles.includes("M") ? "M" : "S";
         const garde = c11.ledger.guardRuns(runs, entree.confirmed, {
           command: null,
@@ -656,6 +779,12 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     if (agent === null) return { ok: false, status: 400, code: "invalid", details: { champ: "agentConversation" } };
 
     const chemin = input.relance ? input.relance.restantes : planSteps(flow).map((planned) => planned.stepId);
+    // <c5:methodes-check>
+    // A4 à la lettre : les méthodes viennent de l'instantané, donc des fichiers lus par `POST /estimate`. Aucune lecture, aucune
+    // requête, et un refus `methodes` n'émet rien. Un instantané d'avant la 5b n'en a pas : la grammaire contrôle alors le seul
+    // nombre de méthodes, jamais davantage.
+    const methodes = methodesDInstantane.get(snap);
+    // </c5:methodes-check>
     const sortie = groupeB({
       lectures: snap,
       flow,
@@ -667,6 +796,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin,
       deja: input.relance?.depense ?? 0,
       calculs: true,
+      ...(methodes ? { methodes: contexteMethodes(methodes) } : {}),
     });
     if (sortie.refus !== null) return { ok: false, ...sortie.refus };
 
@@ -727,8 +857,22 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
     if (relance) {
       const run = store().runs.get(relance.runId);
       if (!run || run.root_session_id !== rootId) return { ok: false, status: 404, code: "not-found" };
-      const terminees = new Set(store().steps.ofRun(relance.runId).filter((step) => step.state === "terminee").map((step) => step.step_id));
-      chemin = tous.filter((stepId) => !terminees.has(stepId));
+      // Passages déjà TERMINÉS, une ligne par (étape, tour), sa dernière tentative faisant foi : une relecture repasse par la
+      // même étape à chaque tour (L42a), donc un seul passage fini n'en retire qu'un du chemin, jamais tous.
+      const faits = new Map<string, number>();
+      const derniere = new Map<string, { tentative: number; state: string; stepId: string }>();
+      for (const step of store().steps.ofRun(relance.runId)) {
+        const cle = `${step.step_id}\u0000${step.tour}`;
+        const kept = derniere.get(cle);
+        if (!kept || step.tentative >= kept.tentative) derniere.set(cle, { tentative: step.tentative, state: step.state, stepId: step.step_id });
+      }
+      for (const ligne of derniere.values()) if (ligne.state === "terminee") faits.set(ligne.stepId, (faits.get(ligne.stepId) ?? 0) + 1);
+      chemin = tous.filter((stepId) => {
+        const restant = faits.get(stepId) ?? 0;
+        if (restant <= 0) return true;
+        faits.set(stepId, restant - 1);
+        return false;
+      });
       deja = store().spentOfRun(relance.runId);
     }
 
@@ -739,7 +883,7 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       // Lecture impossible : aucun instantané n'est gardé, donc aucun lancement ne peut s'appuyer dessus.
       return { ok: false, status: 502, code: "opencode-injoignable" };
     }
-    const etapes = await planifier(flow, chemin, src, mode);
+    const { etapes, methodes } = await planifier(flow, chemin, src, mode);
     // Blocage : refus PRÉVISIBLE, donc jugé toutes confirmations accordées (celles-ci sont annoncées par `confirmations`) et
     // garde-fou budgétaire P6 mis de côté (il se confirme par l'en-tête, après le clic).
     const sortie = groupeB({
@@ -754,13 +898,16 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin,
       deja,
       calculs: true,
+      // <c5:methodes-estimate>
+      methodes: contexteMethodes(methodes),
+      // </c5:methodes-estimate>
     });
     const at = now();
     const confirmations: TeamConfirmation[] = [
       ...(body.directory === c11.projects.opencodeRoot ? (["workspace"] as const) : []),
       ...sortie.confirmations,
     ];
-    garder({
+    const snapshot: EstimateSnapshot = {
       estimateSha256: sortie.empreinte,
       teamId: team.id,
       runId: relance?.runId ?? null,
@@ -773,7 +920,13 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       config: src.config,
       rootBusy: src.rootBusy,
       etapes,
-    });
+    };
+    // <c5:methodes-garder>
+    // Les méthodes suivent l'instantané, sans entrer dans son contrat (it4) : la table faible les libère avec lui. Elles sont
+    // posées AVANT `garder`, pour qu'un `check` ne trouve jamais un instantané sans ses méthodes.
+    methodesDInstantane.set(snapshot, methodes);
+    // </c5:methodes-garder>
+    garder(snapshot);
     return {
       ok: true,
       response: {
@@ -823,6 +976,11 @@ export function createTeamPreflight(eq: EqContext, options: TeamPreflightOptions
       chemin: plan.etapes.map((etape) => etape.stepId),
       deja: 0,
       calculs: false,
+      // <c5:methodes-recheck>
+      // Aucun contexte `methods` ici : la fraîcheur juge l'état d'OPENCODE (B1 à B3, B5), et les fichiers d'agent ne sont pas
+      // relus. Une méthode ajoutée à la main dans un fichier après l'acceptation change ce fichier : c'est la reprise de
+      // fraîcheur de l'exécuteur (pause « À vérifier », L42b) qui la voit, jamais une lecture ajoutée ici.
+      // </c5:methodes-recheck>
     });
     if (sortie.refus === null) return { ok: true };
     return { ok: false, genre: "changement", code: sortie.refus.code, ...(sortie.refus.details ? { details: sortie.refus.details } : {}) };

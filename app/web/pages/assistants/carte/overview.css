@@ -1,0 +1,257 @@
+/* Propriétaire : L48. Vue d'ensemble de la carte des assistants (spécification §5.2 l.890, §5.5, §5.6 ; C §7.4, §9.9).
+   Bascule (§5.6) : la vue d'ensemble n'existe qu'à partir de 900 px, comme la vue Centrée de carte.css. Sous 900 px, la LISTE
+   reste le défaut et reste seule affichée ; au-dessus, la vue choisie prend la place et la liste reste dans l'arbre
+   d'accessibilité, hors de l'écran (mêmes règles que .visually-hidden de styles.css). La liste est la vérité (U11).
+   Estompage (§5.5) : opacité 0.85 et « (hors sujet) » pour le lecteur d'écran, jamais un nœud retiré. L'opacité est choisie
+   pour garder le contraste au-dessus de 4,5:1 sur le texte le plus faible de la vue, --text-2 : en thème clair, #52514e sur
+   --surface-2 (#f1f0ec) posé sur --surface-1 (#fcfcfb) devient #6a6966 sur #f3f2ee, soit 4,9:1 ; en thème sombre, #c3c2b7 sur
+   #232321 posé sur #1a1a19 devient #aaa99f sur #222220, soit 6,7:1.
+   Un nœud estompé prend en plus une bordure en POINTILLÉS, qui se voit encore en couleurs forcées ; un lien garde la forme de
+   trait de la vue Liste (carte.css), qui dit qui l'applique, et que l'estompage n'écrase jamais.
+   Mouvement : AUCUNE animation, aucune transition (rien à mettre sous prefers-reduced-motion).
+   Contraste forcé (U9) : connecteurs en CanvasText, estompage rendu par les pointillés (l'opacité revient à 1), nœud au focus
+   bordé, focus visible en outline Highlight, fonds à Canvas et textes à CanvasText. */
+
+/* --- Bascule des vues (§5.6) --------------------------------------------------------------------------------------------- */
+
+.ca-bloc-ensemble {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .ca-vues.vue-ensemble .ca-bloc-ensemble {
+    display: block;
+  }
+
+  /* Vue d'ensemble choisie : la liste reste lue par le lecteur d'écran, hors de l'écran. */
+  .ca-vues.vue-ensemble .ca-bloc-liste {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+/* --- Cadre de la vue ----------------------------------------------------------------------------------------------------- */
+
+.ov-ensemble {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ov-aide {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* --- Puces de filtre ----------------------------------------------------------------------------------------------------- */
+
+.ov-filtres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ov-puce[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+
+/* Puce éteinte : le genre n'est plus montré. La bordure en pointillés le dit sans la couleur (§2.3, U9). */
+.ov-puce[aria-pressed="false"] {
+  border-style: dashed;
+  color: var(--text-2);
+}
+
+/* --- Cinq colonnes ------------------------------------------------------------------------------------------------------- */
+
+.ov-colonnes {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.ov-colonne {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ov-groupe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.ov-groupe-titre {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ov-noeuds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ov-noeud {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ov-noeud[aria-pressed="true"] {
+  border: 2px solid var(--border-strong);
+  font-weight: 600;
+}
+
+.ov-noeud-nom {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.ov-noeud-technique {
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Hors de l'ensemble du focus : estompé pour l'œil, « (hors sujet) » pour le lecteur d'écran (§5.5). Rien n'est retiré. */
+.ov-noeud.estompe,
+.ov-lien.estompe {
+  opacity: 0.85;
+}
+
+/* Un nœud estompé prend aussi des POINTILLÉS : en couleurs forcées, l'opacité seule ne se verrait pas. Un lien garde la forme
+   de son trait (carte.css), qui dit qui l'applique : elle ne doit jamais être écrasée. */
+.ov-noeud.estompe {
+  border-style: dotted;
+}
+
+.ov-noeud:hover {
+  border-color: var(--border-strong);
+}
+
+.ov-noeud:focus-visible,
+.ov-puce:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Connecteurs SVG (décoratifs) ---------------------------------------------------------------------------------------- */
+
+.ov-connecteur {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.ov-connecteur-trait,
+.ov-connecteur-pointe {
+  fill: none;
+  stroke: var(--axis);
+  stroke-width: 2;
+}
+
+/* --- Liens repris en texte ----------------------------------------------------------------------------------------------- */
+
+.ov-liens {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.ov-liens-titre {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ov-liens-liste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Un lien porte aussi les classes de la vue Liste (classesDuLien, carte.css) : même mise en forme, même FORME de trait. */
+.ov-lien {
+  min-width: 0;
+}
+
+/* --- Contraste forcé (U9, spécification §5.5 l.922) ---------------------------------------------------------------------- */
+
+@media (forced-colors: active) {
+  .ov-groupe,
+  .ov-noeud,
+  .ov-liens {
+    background: Canvas;
+    color: CanvasText;
+    border: 1px solid CanvasText;
+  }
+
+  .ov-noeud[aria-pressed="true"] {
+    border: 2px solid CanvasText;
+  }
+
+  .ov-aide,
+  .ov-noeud-technique {
+    color: CanvasText;
+  }
+
+  .ov-connecteur-trait,
+  .ov-connecteur-pointe {
+    stroke: CanvasText;
+  }
+
+  /* L'opacité se voit mal en couleurs forcées : un nœud estompé garde ses POINTILLÉS, et « (hors sujet) » reste lu. */
+  .ov-noeud.estompe {
+    border-style: dotted;
+  }
+
+  .ov-puce[aria-pressed="true"] {
+    border: 2px solid CanvasText;
+  }
+
+  .ov-puce[aria-pressed="false"] {
+    border-style: dashed;
+    color: CanvasText;
+  }
+
+  .ov-noeud:focus-visible,
+  .ov-puce:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}

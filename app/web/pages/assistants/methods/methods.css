@@ -1,0 +1,257 @@
+/* Propriétaire : L44d. Bibliothèque des méthodes (spécification §5.5, §5.6 ; conception C §9.8) : cartes, menu APG « Ajouter à
+   un assistant », méthodes conseillées. AUCUNE animation, donc aucune boucle : rien ne bouge dans cette vue. Contraste des
+   textes secondaires : --text-2 (au moins 4,5:1 sur --surface-1 dans les deux thèmes), jamais une opacité. Mot ET icône :
+   un cadenas accompagne toujours la raison d'une entrée indisponible, jamais une couleur seule. À 400 px, la grille passe à
+   une colonne et le menu défile. Mode contrasté (forced-colors) : bordures, focus et texte estompé repris en couleurs système. */
+
+.met-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.met-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.met-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.met-card-head h3 {
+  margin: 0;
+  font-size: 15px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.met-phrase {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.met-card p {
+  margin: 0;
+}
+.met-card .secondary {
+  color: var(--text-2);
+}
+.met-attention {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.met-attention .icon {
+  flex: none;
+  margin-top: 2px;
+}
+.met-utilisee {
+  overflow-wrap: anywhere;
+}
+
+.met-details summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+.met-bloc {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.met-sources {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.met-sources li {
+  overflow-wrap: anywhere;
+}
+
+.met-card-actions {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* --- Menu « Ajouter à un assistant » (APG) --- */
+
+.met-menu-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.met-menu-button {
+  min-width: 0;
+}
+.met-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: min(320px, calc(100vw - 32px));
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.met-menu:focus {
+  outline: none;
+}
+.met-menu-vide {
+  margin: 6px 8px;
+}
+.met-menu-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.met-menu-item:hover,
+.met-menu-item:focus-visible {
+  background: var(--surface-2);
+}
+.met-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.met-menu-item[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.met-menu-item[aria-disabled="true"] .met-menu-label {
+  color: var(--text-2);
+}
+.met-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.met-menu-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.met-menu-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.met-menu-reason .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* --- Méthodes conseillées --- */
+
+.met-conseils h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.met-conseil-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.met-conseil-row:first-child {
+  border-top: none;
+}
+.met-conseil-nom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  min-width: 140px;
+}
+.met-conseil-methodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-width: 0;
+}
+.met-suggestion {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.met-suggestion-titre {
+  overflow-wrap: anywhere;
+}
+
+/* --- Cases « Méthodes (facultatif) » de l'assistant de création --- */
+
+.met-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.met-choice {
+  align-items: flex-start;
+}
+.met-choice-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.met-choice-titre {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .met-grid,
+  .met-choices {
+    grid-template-columns: 1fr;
+  }
+  .met-conseil-nom {
+    min-width: 0;
+  }
+  .met-menu {
+    width: min(320px, calc(100vw - 32px));
+    max-height: 260px;
+  }
+}
+
+@media (forced-colors: active) {
+  .met-card,
+  .met-menu,
+  .met-bloc {
+    border-color: CanvasText;
+  }
+  .met-menu-item:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .met-menu-item[aria-disabled="true"] .met-menu-label,
+  .met-menu-reason {
+    color: GrayText;
+  }
+  .met-conseil-row {
+    border-top-color: CanvasText;
+  }
+}

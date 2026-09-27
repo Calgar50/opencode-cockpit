@@ -9,6 +9,9 @@
 // `forced-colors` ; la barre de pause est la classe neuve de ./team-deroule.css. La hachure ne dit jamais l'état à elle seule : le
 // mot est écrit dans la barre (« vous », « vérification »), l'état en toutes lettres sur la ligne, et le tableau donne les mêmes
 // valeurs sans aucune couleur. Aucune animation ; aucune région aria-live propre.
+// 5b (L42c) : une ligne par tour réellement fait d'une relecture (« tour {n} »), « ×{n} » sur le bloc, le verdict en MOT et
+// icône, « Non relue après la dernière correction. », les spécialistes écartés en « Non choisi » (icône `minus`, sans barre ni
+// coût) et, EN GRAS, l'écart entre le prévu et le réel. Tout est calculé par ./deroule-model.ts (pur).
 import { useId, useState } from "react";
 import { TEXTES } from "../../../../server/shared/team-texts.ts";
 import { Icon } from "../../../components/Icon.tsx";
@@ -67,11 +70,19 @@ function TeamDerouleBars({ modele }: { modele: TeamDerouleModel }) {
               <span className="team-deroule-prevu nowrap">
                 {`${COLONNES.prevu} ${prevuTexte(row.prevu)}`}
                 {row.tentative === null ? "" : ` · ${row.tentative}`}
+                {row.tour === null ? "" : ` · ${row.tour}`}
               </span>
+              {row.repetition === null ? null : <span className="team-deroule-repetition tabular nowrap">{row.repetition}</span>}
               <span className="deroule-state nowrap">
                 <Icon name={row.icone} size={12} />
                 {row.reel}
               </span>
+              {row.verdict === null ? null : (
+                <span className="deroule-state nowrap">
+                  <Icon name={row.verdict.icone} size={12} />
+                  {row.verdict.mot}
+                </span>
+              )}
             </div>
             {row.detail === "" ? null : <div className="tiny muted ellipsis">{row.detail}</div>}
             <div className="deroule-track" aria-hidden="true">
@@ -128,8 +139,8 @@ function TeamDerouleTable({ modele }: { modele: TeamDerouleModel }) {
               <th scope="row" className="deroule-cell-who">
                 {row.titre}
               </th>
-              <td>{prevuTexte(row.prevu)}</td>
-              <td>{row.tentative === null ? row.reel : `${row.reel} · ${row.tentative}`}</td>
+              <td>{row.tour === null ? prevuTexte(row.prevu) : `${prevuTexte(row.prevu)} · ${row.tour}`}</td>
+              <td>{[row.reel, row.tentative, row.verdict?.mot].filter((part) => typeof part === "string" && part !== "").join(" · ")}</td>
               <td className="nowrap">{debutTexte(row)}</td>
               <td className="num nowrap">{dureeTexte(row)}</td>
               <td className="num nowrap">{coutCellule(row.cost)}</td>
@@ -170,6 +181,16 @@ export function TeamDeroule({ rootId, placement, advanced }: TeamDerouleProps) {
             </span>
           </div>
           <p className="tiny muted tabular team-deroule-bilan">{modele.bilan}</p>
+          {modele.ecarts.map((ecart) => (
+            <p key={ecart} className="tiny team-deroule-ecart">
+              <strong>{ecart}</strong>
+            </p>
+          ))}
+          {modele.notes.map((note) => (
+            <p key={note} className="tiny muted team-deroule-note">
+              {note}
+            </p>
+          ))}
           {table ? <TeamDerouleTable modele={modele} /> : <TeamDerouleBars modele={modele} />}
         </div>
       ))}

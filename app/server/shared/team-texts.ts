@@ -185,6 +185,17 @@ export const TEXTES = {
         /** A4, D-eq-17 : {raison} = phrase de raisonsChangement (pauseChangement()). */
         message: "Avant le début de l'équipe, la situation a changé depuis l'estimation : {raison}. Rien n'a été envoyé ni facturé.",
       },
+      // <c5:pause-choix>
+      /**
+       * Pause de choix d'un aiguillage (5b, L42a) : le croisement de V0 de l'itération 4 exige une entrée par membre de
+       * TeamPauseView.kind. Titre repris à l'octet de construction-texts.ts (`execution.choix.titre`) ; la carte complète
+       * (proposition, raison masquée, boutons) est rendue par L42c avec les phrases de la construction.
+       */
+      choix: {
+        titre: "Choisissez le ou les spécialistes",
+        gratuite: PAUSE_GRATUITE,
+      },
+      // </c5:pause-choix>
     },
     /** Raison d'une pause de fraîcheur, par code rendu par le contrôle (L37p, recheck) ; « autre » pour un code non prévu. */
     raisonsChangement: {
@@ -297,6 +308,15 @@ export const TEXTES = {
       "plancher-etape": "Règles de sécurité de l'étape non appliquées : rien n'a été envoyé à l'IA pour cette étape.",
       "etape-consultable": CONSULTABLE,
       "etat-incompatible": "Cette action n'est plus possible dans l'état actuel de l'équipe.",
+      // <c5:choix-invalide>
+      "choix-invalide": "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau.",
+      // </c5:choix-invalide>
+      // <c5:reprise-redemarrage>
+      // Clôture 5b (D-5b-1) : le refus arrive avant toute écriture et toute requête, d'où la fin de la phrase. Elle ne dit pas
+      // QUAND le cockpit a redémarré : la pause « Le cockpit a redémarré » est née de ce redémarrage.
+      "reestimation-requise":
+        "L'estimation de la suite n'a pas été gardée au redémarrage du cockpit : refaites-la avant de continuer. Rien n'a été envoyé ni facturé.",
+      // </c5:reprise-redemarrage>
       "pas-relancable": "La suite de cette équipe ne peut pas être relancée : relancez l'équipe depuis la saisie.",
       "deja-ajoute": "Les résultats de cette équipe sont déjà dans la conversation.",
       "confirmation-requise": "Confirmez d'abord la relance de la suite.",
@@ -328,6 +348,19 @@ export const TEXTES = {
       personnalise: "Assistant Personnalisé : réservé au mode Avancé.",
       "niveau-avance": "Choisir l'IA d'une étape se fait en mode Avancé : en mode Simple, chaque étape utilise l'IA de son assistant.",
       "niveau-indisponible": "L'IA de cette étape est indisponible sur votre compte GitHub Copilot : choisissez-en une autre.",
+      // <c5:problemes>
+      // Codes ajoutés par la 5b (L42a) : le croisement de V0 de l'itération 4 exige une phrase par membre de FlowProblemCode.
+      // Textes repris à l'octet de construction-texts.ts (`TEXTES.partout.problemes`, §4.3 du plan it5) ; `methodes` y porte
+      // deux phrases (« trop » et « deja »), dont la première est celle du code.
+      "aiguillage-premier": "Un aiguillage ne peut être que le premier bloc.",
+      specialistes: "Proposez de 2 à 8 spécialistes.",
+      "relecteur-distinct": "Le relecteur doit être un autre assistant, ou le même avec une autre IA.",
+      "meme-famille": "Rédacteur et relecteur utilisent la même famille d'IA : la relecture sera moins indépendante.",
+      "lien-arriere": "Une étape ne peut recevoir que le résultat d'étapes situées plus haut.",
+      "lien-avis": "Les avis indépendants ne se voient pas entre eux.",
+      "lien-avance": "Réglage du mode Avancé.",
+      methodes: "2 méthodes au maximum par étape.",
+      // </c5:problemes>
     },
     /** TeamRunState (plan §4.1.1). */
     etatsEquipe: {
@@ -336,6 +369,7 @@ export const TEXTES = {
       "attente-verification": "Attend votre vérification",
       "attente-budget": "Attend votre confirmation (budget)",
       "attente-modification": "Attend votre choix (assistant modifié)",
+      /* <c5:etat-attente-choix> */ "attente-choix": "Attend votre choix (spécialistes)" /* </c5:etat-attente-choix> */,
       terminee: "Terminée",
       arretee: "Arrêtée",
       echec: "Échec",
@@ -354,6 +388,10 @@ export const TEXTES = {
       interrompue: "Interrompue",
       plafond: "Arrêtée : plafond d'arrêt atteint",
       "non-lancee": "Non lancée",
+      // <c5:etat-non-choisi>
+      /** 5b (L42a) : spécialiste ou synthèse écarté par votre choix. Texte repris à l'octet de construction-texts.ts. */
+      "non-choisi": "Non choisi",
+      // </c5:etat-non-choisi>
     },
     /** TeamRunCause (plan §4.1.1). */
     causes: {
@@ -388,6 +426,12 @@ export const TEXTES = {
       blocs: {
         etape: "Une étape",
         avis: "Des avis indépendants",
+        // <c5:blocs>
+        // Formes ajoutées par la 5b (L42a) : le croisement de V0 de l'itération 4 exige une entrée par membre de
+        // FLOW_BLOCK_TYPES. Textes repris à l'octet de construction-texts.ts (`TEXTES.partout.editeur.menu`).
+        relecture: "Une rédaction et relecture",
+        aiguillage: "Un aiguillage",
+        // </c5:blocs>
         pause: "Une pause pour vérifier",
       },
       bloc: "Bloc {n} · {forme}",

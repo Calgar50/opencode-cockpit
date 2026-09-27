@@ -40,6 +40,7 @@ import { planSteps } from "./shared/team-limits.ts";
 import { TEXTES } from "./shared/team-texts.ts";
 import type {
   Flow,
+  StepInput,
   TeamEstimateResponse,
   TeamInstallResponse,
   TeamRunStarted,
@@ -190,8 +191,8 @@ const fakeAgent = (name: string): FakeAgent => ({
   steps: 20,
 });
 
-/** Étapes d'un déroulé, dans l'ordre de `planSteps`. */
-function etapesDe(flow: Flow): Array<{ id: string; assistant: string; recoit: string }> {
+/** Étapes d'un déroulé, dans l'ordre de `planSteps`. `recoit` est un StepInput depuis la 5b (L42a : `{etapes}` s'y ajoute). */
+function etapesDe(flow: Flow): Array<{ id: string; assistant: string; recoit: StepInput }> {
   const byId = new Map(
     flow.blocs.flatMap((bloc) => (bloc.type === "etape" ? [bloc.etape] : bloc.type === "avis" ? [...bloc.avis, bloc.synthese] : [])).map((step) => [step.id, step]),
   );
@@ -259,10 +260,14 @@ describe("croisement it4 V2 : montage réel des cinq modules", () => {
     const vide = await liste(h);
     assert.deepEqual(vide.teams, []);
     assert.equal(vide.ouvertesEnSimple, false);
+    // <c5:exemples-it4>
+    // Les deux exemples de l'it4 ouvrent la galerie, dans cet ordre ; la 5b (L45b) en ajoute quatre à la suite (C §12.1),
+    // contrôlés par `team-examples-c5.test.ts`. Ce croisement de l'it4 ne juge que les deux premiers.
     assert.deepEqual(
-      vide.exemples.map((exemple) => exemple.id),
+      vide.exemples.slice(0, 2).map((exemple) => exemple.id),
       ["revue-sql", "relecture-script"],
     );
+    // </c5:exemples-it4>
     assert.equal(EQUIPES_SIMPLE_OUVERTES, false);
     h.assertNoGlobalRestart();
   });

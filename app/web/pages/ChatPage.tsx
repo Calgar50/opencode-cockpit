@@ -86,6 +86,12 @@ import type { TeamDraft } from "./chat/team/slots.ts";
 import { TeamLauncher } from "./chat/team/TeamLauncher.tsx";
 import { TeamRunCards } from "./chat/team/TeamRunCards.tsx";
 // --- équipes (it4) : fin ---
+// <c5:composeur-prerempli>
+// Écoute du préremplissage de la saisie par [Envoyer à cet assistant] (5b, L42c). Les deux noms viennent du dossier des équipes
+// par la passerelle de la construction : le bloc d'imports de l'itération 4, juste au-dessus, reste celui de H4, sans aucune
+// ligne de la construction dedans (clôture 5b, A20).
+import { type ComposeurPrerempli, demandeRecopiee, EVENEMENT_COMPOSEUR } from "./chat/methods/passerelle-equipe.ts";
+// </c5:composeur-prerempli>
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -1063,6 +1069,31 @@ export function ChatPage() {
       })
       .sort((x, y) => rank(x.name) - rank(y.name) || x.title.localeCompare(y.title, "fr"));
   }, [agents, assistantByName]);
+
+  // <c5:composeur-ecoute>
+  /**
+   * [Envoyer à cet assistant] de la carte de résultat d'une équipe, chemin « aucun ne convient » (D-5-13, fiche L42c) : la carte
+   * PUBLIE la demande et l'assistant de repli sans rien envoyer, et c'est ici qu'ils remplissent la saisie. AUCUNE requête : la
+   * demande est relue dans la transcription déjà chargée, et rien n'est envoyé ni facturé — vous relisez, puis vous envoyez.
+   * L'assistant n'est retenu que s'il est installé (P3 : le cockpit ne bascule jamais vers un assistant qu'il ne connaît pas) et
+   * la saisie n'est remplacée que par un texte réellement retrouvé (jamais vidée). Le focus n'est pas déplacé.
+   */
+  const prerempliRef = useRef<(detail: Partial<ComposeurPrerempli> | undefined) => void>(() => undefined);
+  prerempliRef.current = (detail) => {
+    // Tout vient d'un événement du document : rien n'est tenu pour acquis sur sa forme.
+    if (!detail || typeof detail.runId !== "string" || typeof detail.assistant !== "string" || detail.rootId !== sessionId) return;
+    const message = typeof detail.demandeMessageId === "string" ? transcript.byId.get(detail.demandeMessageId) : undefined;
+    const demande = message === undefined ? "" : demandeRecopiee(message, detail.runId);
+    if (demande !== "") setDraftSeed({ text: demande, nonce: ++draftNonce.current });
+    const assistant = detail.assistant;
+    if (agentOptions.some((option) => option.name === assistant)) applyAgent(assistant);
+  };
+  useEffect(() => {
+    const ecouter = (event: Event) => prerempliRef.current((event as CustomEvent<Partial<ComposeurPrerempli>>).detail);
+    window.addEventListener(EVENEMENT_COMPOSEUR, ecouter);
+    return () => window.removeEventListener(EVENEMENT_COMPOSEUR, ecouter);
+  }, []);
+  // </c5:composeur-ecoute>
 
   const commandItems = useMemo(
     () => commandOptions({ commands, agents, chatTurn, chatAgent: chatTurn.agent, boot, simple: !advanced, sizeOf }),

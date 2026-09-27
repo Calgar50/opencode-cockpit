@@ -48,6 +48,9 @@ import { floorsModule, neutralFloors } from "./session-floor-service.ts";
 import type { SessionInstance } from "./shared/activity-types.ts";
 import { neutralStopTree, stopTreeModule } from "./stop-tree.ts";
 import { neutralTaskGuard, taskGuardModule } from "./task-once-guard.ts";
+// <c5:import>
+import { CONSTRUCTION_MODULE_ORDER, CONSTRUCTION_MODULES, CONSTRUCTION_ROUTES } from "./wiring-construction.ts";
+// </c5:import>
 
 /**
  * Porte I1 tenue par le code (plan §2.6). Tant qu'elle valait false, le port activation réel répondait comme le port neutre
@@ -100,6 +103,7 @@ export const MODULE_ORDER = [
   "omoDetections",
   "omoResponder",
   "omoCaps",
+  ...CONSTRUCTION_MODULE_ORDER, // c5
 ] as const satisfies readonly ModuleName[];
 
 export interface StepOrder {
@@ -123,7 +127,12 @@ export const STEP_ORDER = {
     createSession: ["floors"],
     sessionCreated: ["floors"],
     // Salle : omoActivation (jeton et conditions revérifiées) puis omoCaps (garde-fou budgétaire du message de l'utilisateur).
-    beforeBilledSend: ["floors", "plans", "activation", "requests", "omoActivation", "omoCaps"],
+    // <c5:ordre-crochets>
+    // `secondReading` est en TÊTE : il ne refuse jamais et ne fait qu'un UPDATE de la ligne que `enforceTurn` vient d'écrire.
+    // En queue, un refus antérieur le sautait (`runHooks` s'arrête au premier refus) et la ligne restait mal qualifiée : le
+    // composeur basculait alors sur le Relecteur après une seconde lecture qui n'était jamais partie (wiring-construction.ts).
+    // </c5:ordre-crochets>
+    beforeBilledSend: ["secondReading", "floors", "plans", "activation", "requests", "omoActivation", "omoCaps"], // c5
     beforeOnceRelay: ["taskGuard"],
     // Salle : omoStop (arrêt de la salle, D-2b-30).
     abort: ["stopTree", "omoStop"],
@@ -150,6 +159,7 @@ export const STEP_ORDER = {
     ["autonomy", "conversationAutonomy"],
     ["plans", "plans"],
     ["diagnostic-11", "diagnostics"],
+    ...CONSTRUCTION_ROUTES, // c5
     // Salle : monté en dernier, juste avant le 404 de /api/*.
     ["omo", "omoRoom"],
   ],
@@ -191,6 +201,7 @@ export const MODULES: { readonly [N in ModuleName]: Cockpit11Module } = {
   omoDetections: omoDetectionsModule,
   omoResponder: omoResponderModule,
   omoCaps: omoCapsModule,
+  ...CONSTRUCTION_MODULES, // c5
 };
 
 /** Ports neutres (= comportement 1.0.4) : ceux de tout module non installé, même quand son code réel est fusionné. */

@@ -11,6 +11,17 @@
 // ni « facultatif », ni « methodes », ni `recoit: {etapes}` (« relecture » et « aiguillage » arrivent en itération 5, et leurs
 // formes ne sont donc proposées nulle part ici). Bornes : FLOW_LIMITS et TEAM_TEXT_LIMITS de team-limits.ts (T4), jamais réécrites.
 //
+// FORMES DE LA 5b (L42d, plan d'exécution it5 fiche L42d ; spécification §5.3 l.896-903 ; C §8.1, §9.11, §10) : « relecture » et
+// « aiguillage » sont proposés à CÔTÉ des formes de l'itération 4, jamais à leur place — `BLOCS_AJOUTABLES`, `FORMES_DEPART`,
+// `ajouterBloc`, `Ecran1Model.formes` et `Ecran2Model.ajouter` gardent exactement ce que l'itération 4 y met, et les entrées de
+// la 5b vivent dans des valeurs et des champs À PART (`BLOCS_AJOUTABLES_C5`, `FORMES_C5`, `ajouterBlocC5`, `Ecran1Model.formesC5`,
+// `Ecran2Model.formes`). Un genre de la 5b passé à `ajouterBloc` rend donc toujours le brouillon tel quel.
+// Aucun TYPE n'est touché par L42d : `FlowStep.methodes`, `recoit: {etapes}`, les deux genres de bloc et leurs bornes viennent de
+// L42a (`team-types.ts`, `team-limits.ts`), et la grammaire qui les juge de `flow.ts` (L42a) — ce module n'en réécrit aucune.
+// Les PROBLÈMES de la 5b s'affichent sur le bloc ou l'étape fautifs avec les phrases que L42a a posées dans team-texts.ts ; seul
+// `synthese-requise`, partagé avec les blocs d'avis de l'itération 4, prend sur un AIGUILLAGE la phrase du §4.3
+// (construction-texts.ts) : ce qui manque n'y est pas la synthèse des avis.
+//
 // Valeurs par défaut (C §5.1, adaptées à D-eq-10) : `recoit = "precedent"` pour une étape, « demande » pour le premier bloc de
 // travail ; chaque avis reçoit « demande » (c'est ce qui les rend indépendants) et la synthèse « tous » ; `niveau = null` (l'IA de
 // l'assistant, décision n° 3, D-eq-12) ; taille « M » ; consigne vide. Le titre d'une étape part VIDE : la grammaire (L36a) pose
@@ -26,7 +37,14 @@
 // est faux, donc aucune requête d'aperçu ne part. Le parcours Simple reste entièrement construit et testé ici : l'ouverture tient
 // en UNE ligne (EQUIPES_SIMPLE_OUVERTES = true dans wiring-eq.ts), sans qu'aucune autre valeur n'entre en jeu.
 import { type RightLine, slugifyName, TASK_SIZES, type TaskSize, type Tier, TIER_IDS } from "./assistant-rules.ts";
-import { FLOW_LIMITS, FLOW_VERSION, TEAM_TEXT_LIMITS } from "./team-limits.ts";
+// <c5:import-l42d>
+// L42d : les phrases des formes de la 5b, de leurs réglages et des méthodes d'étape sont dans construction-texts.ts (§4.3) et
+// non dans team-texts.ts — flow-layout.ts (L42a) le fait déjà pour « Reçoit le résultat de : {etapes} », et le croisement de V0
+// de l'itération 4 fige les clés de team-texts.ts. `MethodView` n'apporte qu'un TYPE : le catalogue est fourni par l'appelant.
+import { TEXTES as CONSTRUCTION_TEXTES } from "./construction-texts.ts";
+import type { MethodView } from "./construction-types.ts";
+// </c5:import-l42d>
+import { FLOW_LIMITS, FLOW_VERSION, isStepInputName, stepInputEtapes, TEAM_TEXT_LIMITS } from "./team-limits.ts";
 import { montant, refusEnregistrement, remplir, TEXTES } from "./team-texts.ts";
 import type {
   Flow,
@@ -34,6 +52,7 @@ import type {
   FlowProblem,
   FlowRow,
   FlowStep,
+  PlannedRole,
   StepEstimate,
   StepInput,
   TeamExampleView,
@@ -42,6 +61,12 @@ import type {
 
 const P = TEXTES.partout;
 const E = P.editeur;
+// <c5:textes-l42d>
+/** Textes de la construction lus ici (L42d) : formes de la 5b, champs de l'éditeur, problèmes et lignes du tableau de coût. */
+const C5 = CONSTRUCTION_TEXTES.partout;
+/** Bascule « Étapes | Schéma modifiable » et phrase des écrans étroits (mode Avancé seulement, §4.3). */
+const C5_SCHEMA = CONSTRUCTION_TEXTES.avance.schema;
+// </c5:textes-l42d>
 
 // --- Brouillon ------------------------------------------------------------------------------------------------------------------
 
@@ -63,6 +88,36 @@ export const FORMES_DEPART: readonly ["a-la-suite", "avis"] = Object.freeze(["a-
 
 export type FormeDepart = (typeof FORMES_DEPART)[number];
 
+// <c5:formes-l42d>
+/**
+ * Genres de bloc ajoutés par la 5b (L42d). Liste SÉPARÉE de `BLOCS_AJOUTABLES` : les entrées de l'itération 4 ne bougent pas,
+ * et `ajouterBloc` continue de refuser un genre de la 5b (c'est `ajouterBlocC5` qui les pose, avec la règle « en tête seulement »
+ * de l'aiguillage). L'ordre est celui du menu : « Une rédaction et relecture », puis « Un aiguillage ».
+ */
+export const BLOCS_AJOUTABLES_C5: readonly ["relecture", "aiguillage"] = Object.freeze(["relecture", "aiguillage"]) as readonly [
+  "relecture",
+  "aiguillage",
+];
+
+/** Formes de départ ajoutées par la 5b, dans l'ordre de l'écran 1 : elles s'affichent à la suite de `FORMES_DEPART`. */
+export const FORMES_C5: readonly ["relecture", "aiguillage"] = BLOCS_AJOUTABLES_C5;
+
+export type FormeC5 = (typeof FORMES_C5)[number];
+
+/** Toutes les formes que l'écran 1 propose : les deux de l'itération 4, puis les deux de la 5b. */
+export type FormeEditeur = FormeDepart | FormeC5;
+
+/**
+ * Largeur en dessous de laquelle le schéma modifiable n'est PAS rendu (spécification §5.3 l.903) : la phrase « Le schéma
+ * modifiable demande un écran plus large : utilisez les étapes. » prend sa place, et les étapes restent le chemin complet.
+ * Le nombre vit ici, jamais dans un `.tsx` : l'interface lit `Ecran2Model.vue.etroit`, calculé par le modèle.
+ */
+export const SCHEMA_LARGEUR_MIN = 900;
+
+/** Vue de l'écran 2 (mode Avancé) : les étapes guidées, ou l'emplacement du schéma modifiable (L43). */
+export type VueEtapes = "etapes" | "schema";
+// </c5:formes-l42d>
+
 /** Taille d'estimation d'une étape neuve : « Un fichier ou un document » (profil du milieu). */
 export const TAILLE_PAR_DEFAUT: TaskSize = "M";
 
@@ -75,14 +130,21 @@ const TEAM_ID_MAX = 40;
 /** Identifiant d'un bloc ou d'une étape : lettre, puis le compteur (STEP_ID_RE : ^[a-z0-9-]{1,24}$). */
 const identifiant = (prefixe: "b" | "e", n: number): string => `${prefixe}${n}`;
 
-const estTravail = (block: FlowBlock): boolean => block.type === "etape" || block.type === "avis";
+// <c5:compte-formes>
+// Branche minimale (L42a) : les formes de la 5b sont des blocs de TRAVAIL et leurs étapes comptent dans les 12, sinon les
+// bornes de l'éditeur mentiraient sur un déroulé qui en contient. Rien de nouveau n'est proposé pour autant : BLOCS_AJOUTABLES
+// et FORMES_DEPART restent ceux de l'itération 4, et l'éditeur guidé de ces formes arrive avec L42d.
+const estTravail = (block: FlowBlock): boolean => block.type !== "pause";
 
 /** Étapes déclarées d'un bloc, dans l'ordre d'écriture (aucun ordre d'exécution : planSteps reste la référence). */
 function etapesDe(block: FlowBlock): FlowStep[] {
   if (block.type === "etape") return [block.etape];
   if (block.type === "avis") return [...block.avis, block.synthese];
+  if (block.type === "relecture") return [block.auteur, block.relecteur];
+  if (block.type === "aiguillage") return [block.aiguilleur, ...block.specialistes, ...(block.synthese ? [block.synthese] : [])];
   return [];
 }
+// </c5:compte-formes>
 
 /** Nombre d'étapes déclarées d'un déroulé (bornes FLOW_LIMITS.etapes). */
 export function compterEtapes(flow: Flow): number {
@@ -130,16 +192,50 @@ function compteurSuffisant(flow: Flow): number {
   return max;
 }
 
+// <c5:copie-etape>
+/**
+ * Copie d'une étape (L42d). Le tableau `methodes` (5b, L42a) est RECOPIÉ : `{ ...step }` le partagerait entre deux états de
+ * l'historique, et cocher une méthode se verrait dans l'état d'avant, que [Annuler] est censé rendre intact.
+ */
+function copierEtape(step: FlowStep): FlowStep {
+  return { ...step, ...(step.methodes === undefined ? {} : { methodes: [...step.methodes] }) };
+}
+// </c5:copie-etape>
+
 /** Copie profonde d'un déroulé : l'historique garde des états entiers, jamais un objet partagé avec l'état courant. */
 function copierFlow(flow: Flow): Flow {
   return {
     version: FLOW_VERSION,
     blocs: flow.blocs.map((block): FlowBlock => {
-      if (block.type === "etape") return { type: "etape", id: block.id, etape: { ...block.etape } };
+      if (block.type === "etape") return { type: "etape", id: block.id, etape: copierEtape(block.etape) };
       if (block.type === "avis") {
-        return { type: "avis", id: block.id, avis: block.avis.map((step) => ({ ...step })), synthese: { ...block.synthese } };
+        return { type: "avis", id: block.id, avis: block.avis.map(copierEtape), synthese: copierEtape(block.synthese) };
       }
-      return { type: "pause", id: block.id, message: block.message };
+      if (block.type === "pause") return { type: "pause", id: block.id, message: block.message };
+      // <c5:copie-formes>
+      // L42d : copie CHAMP PAR CHAMP des formes de la 5b, comme pour celles de l'itération 4 — sans quoi l'historique
+      // annuler / rétablir garderait des étapes partagées entre deux états, et une frappe dans le rédacteur se verrait dans
+      // l'état précédent. `methodes` est un tableau : il est recopié, jamais partagé.
+      if (block.type === "relecture") {
+        return {
+          type: "relecture",
+          id: block.id,
+          auteur: copierEtape(block.auteur),
+          relecteur: copierEtape(block.relecteur),
+          toursMax: block.toursMax,
+          pauseAvantRelecture: block.pauseAvantRelecture,
+        };
+      }
+      return {
+        type: "aiguillage",
+        id: block.id,
+        aiguilleur: copierEtape(block.aiguilleur),
+        specialistes: block.specialistes.map(copierEtape),
+        choixMax: block.choixMax,
+        synthese: block.synthese === null ? null : copierEtape(block.synthese),
+        ...(block.repli === undefined ? {} : { repli: block.repli }),
+      };
+      // </c5:copie-formes>
     }),
   };
 }
@@ -163,18 +259,64 @@ function reglerEntrees(flow: Flow): Flow {
     if (block.type === "etape") {
       if (premier) block.etape.recoit = "demande";
       else if (block.etape.recoit === "demande") block.etape.recoit = "precedent";
-    } else {
+    } else if (block.type === "avis") {
       // Les avis reçoivent la demande seule : c'est ce qui les rend indépendants (spéc. §6 l.1034).
       for (const avis of block.avis) avis.recoit = "demande";
       block.synthese.recoit = "tous";
     }
+    // <c5:entrees-formes>
+    // L42d : entrées des formes de la 5b, exactement celles que la grammaire impose (flow.ts, ATTENDU_PAR_ROLE) — relecteur
+    // « precedent », aiguilleur et spécialistes « demande », synthèse d'un aiguillage « tous ». Seul le RÉDACTEUR a un choix,
+    // le même qu'une étape : « demande » à la tête, sinon sa valeur est gardée (« precedent », « tous », ou les étapes choisies
+    // du mode Avancé), et une « demande » héritée d'un déplacement redevient « precedent ».
+    else if (block.type === "relecture") {
+      if (premier) block.auteur.recoit = "demande";
+      else if (block.auteur.recoit === "demande") block.auteur.recoit = "precedent";
+      block.relecteur.recoit = "precedent";
+    } else if (block.type === "aiguillage") {
+      block.aiguilleur.recoit = "demande";
+      for (const specialiste of block.specialistes) specialiste.recoit = "demande";
+      if (block.synthese !== null) block.synthese.recoit = "tous";
+    }
+    // </c5:entrees-formes>
   }
   return flow;
 }
 
-/** Nouvel état du brouillon, entrées recalculées, sans toucher l'état reçu. */
+// <c5:liens-pendants>
+/**
+ * Liens PENDANTS oubliés : `recoit: {etapes}` (5b, L42a) ne garde que des étapes qui existent ENCORE.
+ *
+ * Toute opération qui retire des étapes — « Supprimer », « Retirer cet avis », « Retirer ce spécialiste », et « Transformer
+ * en… », qui repose la forme avec des identifiants neufs — laissait sinon un lien vers une étape disparue. La grammaire pose
+ * alors `lien-arriere` (flow.ts, branche `!place`) sur une étape que l'utilisateur n'a pas touchée, avec une phrase qui parle
+ * d'ordre (« Une étape ne peut recevoir que le résultat d'étapes situées plus haut. ») là où le vrai problème est une étape
+ * disparue — et le menu « Reçoit le résultat de… » ne propose aucune case à décocher pour réparer, puisqu'il ne liste que des
+ * étapes existantes : l'équipe devient irrecevable sans porte de sortie (422 `equipe-invalide`).
+ *
+ * Le lien est donc OUBLIÉ, jamais signalé : c'est ce que l'utilisateur a demandé en retirant l'étape. Une liste dont tous les
+ * identifiants existent n'est JAMAIS touchée — une valeur légitime ne se détruit pas en silence, même règle que `reglerEntrees`
+ * — et une liste devenue vide retombe sur la valeur par défaut de la place, que `reglerEntrees` corrige ensuite si besoin.
+ */
+function oublierLiensPendants(flow: Flow): Flow {
+  const presentes = new Set<string>();
+  for (const block of flow.blocs) for (const step of etapesDe(block)) presentes.add(step.id);
+  for (const block of flow.blocs) {
+    for (const step of etapesDe(block)) {
+      const listees = stepInputEtapes(step.recoit);
+      if (listees === null) continue;
+      const gardees = listees.filter((id) => presentes.has(id));
+      if (gardees.length === listees.length) continue;
+      step.recoit = gardees.length === 0 ? "precedent" : { etapes: gardees };
+    }
+  }
+  return flow;
+}
+// </c5:liens-pendants>
+
+/** Nouvel état du brouillon, liens pendants oubliés et entrées recalculées, sans toucher l'état reçu. */
 function poser(draft: FlowDraft, flow: Flow, compteur: number): FlowDraft {
-  return { flow: reglerEntrees(flow), compteur };
+  return { flow: reglerEntrees(oublierLiensPendants(flow)), compteur };
 }
 
 /** Bloc neuf du genre demandé, avec ses étapes par défaut. */
@@ -223,6 +365,140 @@ export function peutAjouterBloc(draft: FlowDraft, type: FlowBlock["type"]): bool
   const travail = compterBlocsTravail(draft.flow) + (type === "pause" ? 0 : 1);
   return travail <= FLOW_LIMITS.blocsTravail && compterEtapes(draft.flow) + etapesAjoutees(type) <= FLOW_LIMITS.etapes;
 }
+
+// <c5:ajout-formes-l42d>
+
+/** Étapes qu'un bloc de la 5b ajoute : rédacteur et relecteur ; aiguilleur et 2 spécialistes (la synthèse vient avec 2 choix). */
+function etapesAjouteesC5(type: FormeC5): number {
+  return type === "relecture" ? 2 : 1 + FLOW_LIMITS.specialistesMin;
+}
+
+/**
+ * Bloc neuf d'une forme de la 5b. Les titres partent VIDES, comme ceux de l'itération 4 : la grammaire pose alors son problème
+ * « Donnez à l'étape un titre… » sur chaque étape, qui est l'invite. Seule la synthèse porte son titre de rôle (T4t).
+ * Valeurs de départ : 1 tour, aucune pause avant la relecture, 1 spécialiste à consulter au plus et donc aucune synthèse —
+ * « Synthèse » est EXIGÉE à 2 (flow.ts, `synthese-requise`), et `modifierChoixMax` la pose en passant à 2.
+ */
+function blocNeufC5(draft: FlowDraft, type: FormeC5): { block: FlowBlock; compteur: number } {
+  const compteurBloc = draft.compteur + 1;
+  const id = identifiant("b", compteurBloc);
+  if (type === "relecture") {
+    const auteur = etapeNeuve({ ...draft, compteur: compteurBloc }, "precedent");
+    const relecteur = etapeNeuve({ ...draft, compteur: auteur.compteur }, "precedent");
+    return {
+      block: { type: "relecture", id, auteur: auteur.step, relecteur: relecteur.step, toursMax: 1, pauseAvantRelecture: false },
+      compteur: relecteur.compteur,
+    };
+  }
+  const aiguilleur = etapeNeuve({ ...draft, compteur: compteurBloc }, "demande");
+  let compteur = aiguilleur.compteur;
+  const specialistes: FlowStep[] = [];
+  for (let i = 0; i < FLOW_LIMITS.specialistesMin; i++) {
+    const neuve = etapeNeuve({ ...draft, compteur }, "demande");
+    compteur = neuve.compteur;
+    specialistes.push(neuve.step);
+  }
+  return { block: { type: "aiguillage", id, aiguilleur: aiguilleur.step, specialistes, choixMax: 1, synthese: null }, compteur };
+}
+
+/** Le déroulé contient déjà un aiguillage : un second ne pourrait pas être le premier bloc (flow.ts, `aiguillage-premier`). */
+const aUnAiguillage = (flow: Flow): boolean => flow.blocs.some((block) => block.type === "aiguillage");
+
+/**
+ * L'ajout d'une forme de la 5b à la place `index` est possible. Deux règles, et rien d'autre :
+ * - les bornes de l'itération 4 (5 blocs de travail, 12 étapes), comme pour tout bloc ;
+ * - un AIGUILLAGE ne s'insère qu'EN TÊTE (`index` 0) et une seule fois : la grammaire n'en accepte qu'un, et seulement comme
+ *   premier bloc. L'entrée du menu reste visible ailleurs, désactivée, plutôt que de disparaître sans explication.
+ */
+export function peutAjouterBlocC5(draft: FlowDraft, type: FormeC5, index: number): boolean {
+  if (type === "aiguillage" && (Math.trunc(index) !== 0 || aUnAiguillage(draft.flow))) return false;
+  const travail = compterBlocsTravail(draft.flow) + 1;
+  return travail <= FLOW_LIMITS.blocsTravail && compterEtapes(draft.flow) + etapesAjouteesC5(type) <= FLOW_LIMITS.etapes;
+}
+
+/**
+ * Ajout d'une forme de la 5b à la position `index`. Refusé — le brouillon est rendu TEL QUEL — quand `peutAjouterBlocC5` dit
+ * non : [Annuler] ne rend alors jamais un état identique au précédent (`appliquer`).
+ */
+export function ajouterBlocC5(draft: FlowDraft, type: FormeC5, index: number): FlowDraft {
+  if (!BLOCS_AJOUTABLES_C5.includes(type) || !peutAjouterBlocC5(draft, type, index)) return draft;
+  const place = Math.max(0, Math.min(Math.trunc(index), draft.flow.blocs.length));
+  const { block, compteur } = blocNeufC5(draft, type);
+  const blocs = copierFlow(draft.flow).blocs;
+  blocs.splice(place, 0, block);
+  return poser(draft, { version: FLOW_VERSION, blocs }, compteur);
+}
+
+/** Un spécialiste de plus dans ce bloc : 8 au plus (FLOW_LIMITS.specialistesMax) et 12 étapes au plus. */
+export function peutAjouterSpecialiste(draft: FlowDraft, blocId: string): boolean {
+  const block = draft.flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "aiguillage") return false;
+  return block.specialistes.length < FLOW_LIMITS.specialistesMax && compterEtapes(draft.flow) + 1 <= FLOW_LIMITS.etapes;
+}
+
+/** Un spécialiste de moins : 2 au moins (FLOW_LIMITS.specialistesMin ; « Proposez de 2 à 8 spécialistes. »). */
+export function peutRetirerSpecialiste(draft: FlowDraft, blocId: string): boolean {
+  const block = draft.flow.blocs.find((b) => b.id === blocId);
+  return !!block && block.type === "aiguillage" && block.specialistes.length > FLOW_LIMITS.specialistesMin;
+}
+
+export function ajouterSpecialiste(draft: FlowDraft, blocId: string): FlowDraft {
+  if (!peutAjouterSpecialiste(draft, blocId)) return draft;
+  const flow = copierFlow(draft.flow);
+  const block = flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "aiguillage") return draft;
+  const { step, compteur } = etapeNeuve(draft, "demande");
+  block.specialistes.push(step);
+  return poser(draft, flow, compteur);
+}
+
+export function retirerSpecialiste(draft: FlowDraft, blocId: string, stepId: string): FlowDraft {
+  if (!peutRetirerSpecialiste(draft, blocId)) return draft;
+  const flow = copierFlow(draft.flow);
+  const block = flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "aiguillage" || !block.specialistes.some((step) => step.id === stepId)) return draft;
+  block.specialistes = block.specialistes.filter((step) => step.id !== stepId);
+  return poser(draft, flow, draft.compteur);
+}
+
+/** « Nombre de tours au maximum » : 1 ou 2 (FLOW_LIMITS.toursMax), jamais davantage. */
+export function modifierTours(draft: FlowDraft, blocId: string, tours: 1 | 2): FlowDraft {
+  const flow = copierFlow(draft.flow);
+  const block = flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "relecture" || block.toursMax === tours || tours < 1 || tours > FLOW_LIMITS.toursMax) return draft;
+  block.toursMax = tours;
+  return poser(draft, flow, draft.compteur);
+}
+
+/** « Me laisser vérifier le premier jet avant la relecture » : une pause après le premier jet, au tour 1 seulement. */
+export function modifierPauseAvantRelecture(draft: FlowDraft, blocId: string, valeur: boolean): FlowDraft {
+  const flow = copierFlow(draft.flow);
+  const block = flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "relecture" || block.pauseAvantRelecture === valeur) return draft;
+  block.pauseAvantRelecture = valeur;
+  return poser(draft, flow, draft.compteur);
+}
+
+/**
+ * « Spécialistes à consulter au plus » : 1 ou 2 (FLOW_LIMITS.choixMax). À 2, la SYNTHÈSE est exigée (flow.ts,
+ * `synthese-requise`) : elle est posée ici, avec son titre de rôle, quand le déroulé a encore la place pour une étape. Sans
+ * cette place, `choixMax` change quand même et la grammaire pose son problème sur le bloc — rien n'est caché.
+ * Passer de 2 à 1 GARDE la synthèse : elle reste valide avec un seul spécialiste, et la retirer effacerait un travail réglé.
+ */
+export function modifierChoixMax(draft: FlowDraft, blocId: string, choixMax: 1 | 2): FlowDraft {
+  const flow = copierFlow(draft.flow);
+  const block = flow.blocs.find((b) => b.id === blocId);
+  if (!block || block.type !== "aiguillage" || choixMax < 1 || choixMax > FLOW_LIMITS.choixMax) return draft;
+  const posableSynthese = choixMax === 2 && block.synthese === null && compterEtapes(draft.flow) + 1 <= FLOW_LIMITS.etapes;
+  if (block.choixMax === choixMax && !posableSynthese) return draft;
+  block.choixMax = choixMax;
+  if (!posableSynthese) return poser(draft, flow, draft.compteur);
+  const synthese = etapeNeuve(draft, "tous", E.synthese);
+  block.synthese = synthese.step;
+  return poser(draft, flow, synthese.compteur);
+}
+
+// </c5:ajout-formes-l42d>
 
 /** Un avis de plus dans ce bloc : 5 avis au plus (FLOW_LIMITS.avisMax) et 12 étapes au plus. */
 export function peutAjouterAvis(draft: FlowDraft, blocId: string): boolean {
@@ -304,13 +580,38 @@ export function dupliquerBloc(draft: FlowDraft, blocId: string): FlowDraft {
   const copieId = identifiant("b", compteur);
   const copieEtape = (step: FlowStep): FlowStep => {
     compteur += 1;
-    return { ...step, id: identifiant("e", compteur) };
+    // c5 (L42d) : copierEtape recopie aussi `methodes`, que `{ ...step }` partagerait entre l'original et sa copie.
+    return { ...copierEtape(step), id: identifiant("e", compteur) };
   };
   let copie: FlowBlock;
   if (original.type === "etape") copie = { type: "etape", id: copieId, etape: copieEtape(original.etape) };
   else if (original.type === "avis") {
     copie = { type: "avis", id: copieId, avis: original.avis.map(copieEtape), synthese: copieEtape(original.synthese) };
-  } else copie = { type: "pause", id: copieId, message: original.message };
+  } else if (original.type === "pause") copie = { type: "pause", id: copieId, message: original.message };
+  // <c5:duplication-formes>
+  // L42d : une forme de la 5b se duplique comme celles de l'itération 4 — la COPIE reçoit des identifiants d'étape neufs, et
+  // l'original garde les siens. `repli` (assistant proposé quand aucun spécialiste ne convient) suit la copie tel quel.
+  else if (original.type === "relecture") {
+    copie = {
+      type: "relecture",
+      id: copieId,
+      auteur: copieEtape(original.auteur),
+      relecteur: copieEtape(original.relecteur),
+      toursMax: original.toursMax,
+      pauseAvantRelecture: original.pauseAvantRelecture,
+    };
+  } else {
+    copie = {
+      type: "aiguillage",
+      id: copieId,
+      aiguilleur: copieEtape(original.aiguilleur),
+      specialistes: original.specialistes.map(copieEtape),
+      choixMax: original.choixMax,
+      synthese: original.synthese === null ? null : copieEtape(original.synthese),
+      ...(original.repli === undefined ? {} : { repli: original.repli }),
+    };
+  }
+  // </c5:duplication-formes>
 
   const blocs = copierFlow(draft.flow).blocs;
   blocs.splice(index + 1, 0, copie);
@@ -357,6 +658,57 @@ export function modifierEtape(draft: FlowDraft, stepId: string, patch: StepPatch
   return poser(draft, flow, draft.compteur);
 }
 
+// <c5:etape-l42d>
+
+/** Étape du brouillon, par identifiant ; null quand elle n'existe pas (identifiant venu d'un rendu périmé). */
+function etapeDe(flow: Flow, stepId: string): FlowStep | null {
+  for (const block of flow.blocs) {
+    for (const step of etapesDe(block)) if (step.id === stepId) return step;
+  }
+  return null;
+}
+
+/**
+ * Méthodes « consigne » d'une étape (5b, L42a) : FLOW_LIMITS.methodesParEtape au plus, sans doublon, dans l'ordre reçu.
+ * Une liste VIDE retire le champ plutôt que d'écrire `[]` : un déroulé sans méthode reste celui que l'itération 4 enregistrait,
+ * à l'octet près (aucune migration, A2). Une liste identique rend le brouillon TEL QUEL.
+ */
+export function modifierMethodes(draft: FlowDraft, stepId: string, methodes: readonly string[]): FlowDraft {
+  const flow = copierFlow(draft.flow);
+  const step = etapeDe(flow, stepId);
+  if (step === null) return draft;
+  const propres = [...new Set(methodes)].slice(0, FLOW_LIMITS.methodesParEtape);
+  const avant = step.methodes ?? [];
+  if (propres.length === avant.length && propres.every((id, rang) => id === avant[rang])) return draft;
+  if (propres.length === 0) delete step.methodes;
+  else step.methodes = propres;
+  return poser(draft, flow, draft.compteur);
+}
+
+/**
+ * « Le résultat d'étapes choisies » (mode AVANCÉ, `recoit: {etapes}` de L42a) : `etapes` non vide écrit le lien, `null` ou une
+ * liste vide rend l'étape à la valeur par défaut de sa place (« precedent », réparée ensuite par `reglerEntrees` si la place a
+ * changé). L'ordre et les doublons sont nettoyés ici ; ce que la grammaire accepte reste jugé par `validateFlow` (L42a), qui
+ * pose `lien-arriere`, `lien-avis` ou `lien-avance` sur l'étape fautive.
+ */
+export function modifierRecoitEtapes(draft: FlowDraft, stepId: string, etapes: readonly string[] | null): FlowDraft {
+  const flow = copierFlow(draft.flow);
+  const step = etapeDe(flow, stepId);
+  if (step === null) return draft;
+  const propres = etapes === null ? [] : [...new Set(etapes)];
+  const avant = stepInputEtapes(step.recoit);
+  if (propres.length === 0) {
+    if (avant === null) return draft;
+    step.recoit = "precedent";
+    return poser(draft, flow, draft.compteur);
+  }
+  if (avant !== null && avant.length === propres.length && propres.every((id, rang) => id === avant[rang])) return draft;
+  step.recoit = { etapes: propres };
+  return poser(draft, flow, draft.compteur);
+}
+
+// </c5:etape-l42d>
+
 /** Message d'un bloc « pause » (ce que vous voulez vérifier), borné à TEAM_TEXT_LIMITS.messagePause. */
 export function modifierPause(draft: FlowDraft, blocId: string, message: string): FlowDraft {
   const flow = copierFlow(draft.flow);
@@ -371,8 +723,13 @@ export function modifierPause(draft: FlowDraft, blocId: string, message: string)
 /**
  * Déroulé de départ d'une forme (écran 1) : « À la suite » = deux étapes ; « Avis indépendants » = un bloc d'avis (2 avis et sa
  * synthèse). Les deux tiennent dans les bornes.
+ * c5 (L42d) : « Rédaction et relecture » = un bloc de relecture ; « Aiguillage » = un bloc d'aiguillage, seul, donc en tête.
+ * Les quatre formes tiennent dans les bornes.
  */
-export function brouillonDeForme(forme: FormeDepart): FlowDraft {
+export function brouillonDeForme(forme: FormeEditeur): FlowDraft {
+  // <c5:depart-formes>
+  if (forme === "relecture" || forme === "aiguillage") return ajouterBlocC5(brouillonVide(), forme, 0);
+  // </c5:depart-formes>
   if (forme === "avis") return ajouterBloc(brouillonVide(), "avis", 0);
   return ajouterBloc(ajouterBloc(brouillonVide(), "etape", 0), "etape", 1);
 }
@@ -593,7 +950,25 @@ export interface Ecran1Model {
   partirForme: string;
   exemples: readonly ExempleCarte[];
   formes: readonly FormeCarte[];
+  // <c5:ecran1-formes>
+  /**
+   * Formes de la 5b (L42d), rendues à la SUITE de `formes` sous le même titre « Partir d'une forme » : les deux y sont
+   * activées, chacune avec sa phrase d'aide. Champ séparé pour que `formes` garde exactement les deux formes de l'itération 4.
+   */
+  formesC5: readonly FormeCarteC5[];
+  // </c5:ecran1-formes>
 }
+
+// <c5:carte-forme-c5>
+/** Carte d'une forme de la 5b : son titre, sa phrase d'aide et, pour la relecture, la phrase qui dit ce qu'est un tour. */
+export interface FormeCarteC5 {
+  id: FormeC5;
+  titre: string;
+  aide: string;
+  /** Deuxième phrase d'aide (« Un tour = une relecture, puis une correction si nécessaire. ») ; null pour l'aiguillage. */
+  precision: string | null;
+}
+// </c5:carte-forme-c5>
 
 /** Problème affiché sur un bloc ou une étape : sa phrase, et s'il bloque l'enregistrement. */
 export interface ProblemeAffiche {
@@ -602,16 +977,62 @@ export interface ProblemeAffiche {
   bloquant: boolean;
 }
 
+// <c5:methode-etape>
+/**
+ * Puce d'une méthode « consigne » dans le formulaire d'étape (L42d) : la méthode reste LISIBLE même refusée, avec sa raison —
+ * jamais retirée en silence, comme les assistants indisponibles. Les deux raisons sont celles du §4.3 :
+ * « Déjà appliquée par l'assistant. » et « 2 méthodes au maximum par étape. ».
+ */
+export interface MethodeEtapeOption {
+  id: string;
+  titre: string;
+  choisie: boolean;
+  desactivee: boolean;
+  /** Phrase du refus ; null quand la méthode peut être cochée ou décochée. */
+  raison: string | null;
+}
+
+/** Une étape d'un bloc antérieur, proposée à « Le résultat d'étapes choisies » (mode Avancé). */
+export interface LienEtapeOption {
+  stepId: string;
+  libelle: string;
+  cochee: boolean;
+}
+// </c5:methode-etape>
+
 export interface StepFormModel {
   stepId: string;
-  /** Rôle de l'étape dans son bloc : une synthèse ne se retire pas. */
-  role: "etape" | "avis" | "synthese";
+  /**
+   * Rôle de l'étape dans son bloc : une synthèse ne se retire pas.
+   * c5 (L42d) : les quatre rôles des formes de la 5b s'ajoutent aux trois de l'itération 4 (mêmes noms que PlannedRole).
+   */
+  role: PlannedRole;
   /** `max` : borne de saisie du champ, comme la consigne et le message de pause (jamais un nombre écrit dans le .tsx). */
   titre: { libelle: string; aide: string; valeur: string; max: number };
   assistant: { libelle: string; valeur: string; groupes: readonly AssistantGroupe[] };
   taille: { libelle: string; valeur: TaskSize; choix: ReadonlyArray<{ valeur: TaskSize; libelle: string }> };
   consigne: { libelle: string; aide: string; limite: string; valeur: string; max: number };
-  recoit: { libelle: string; aide: string; texte: string };
+  recoit: {
+    libelle: string;
+    aide: string;
+    texte: string;
+    // <c5:recoit-choix>
+    /**
+     * « Le résultat d'étapes choisies » (L42d) : cases des étapes situées PLUS HAUT, `recoit: {etapes}` de L42a. Rendu en mode
+     * AVANCÉ seulement, et seulement là où la grammaire laisse le choix (une étape ou un rédacteur hors du premier bloc de
+     * travail) : en mode Simple, le champ vaut null et aucun chemin de l'interface ne peut poser de lien (D-5-24, U1).
+     */
+    etapes: { libelle: string; actif: boolean; choix: readonly LienEtapeOption[] } | null;
+    // </c5:recoit-choix>
+  };
+  // <c5:step-l42d>
+  /** Rôle nommé au-dessus du formulaire (« Rédacteur », « Relecteur », « Aiguilleur », « Synthèse ») ; null pour l'it4. */
+  roleLibelle: string | null;
+  /** Phrase d'aide propre au rôle (l'IA du relecteur) ; null ailleurs. */
+  roleAide: string | null;
+  /** « Méthodes (facultatif, 2 au plus) » et ses puces ; null quand le catalogue n'offre aucune méthode « consigne ». */
+  methodes: { libelle: string; valeur: readonly string[]; options: readonly MethodeEtapeOption[] } | null;
+  // </c5:step-l42d>
   /** « IA de l'étape » : mode AVANCÉ seulement (D-eq-12) ; null en Simple, où l'IA est celle de l'assistant. */
   ia: { libelle: string; aide: string; valeur: Tier | null; choix: readonly ChoixIa[] } | null;
   /** [Retirer cet avis] ; null quand l'étape ne se retire pas (étape seule, synthèse, ou 2 avis restants). */
@@ -637,6 +1058,16 @@ export interface BlockCardModel {
   /** Bloc « pause » : son message. */
   pause: { libelle: string; exemple: string; valeur: string; max: number } | null;
   problemes: readonly ProblemeAffiche[];
+  // <c5:bloc-l42d>
+  /** « Nombre de tours au maximum » 1 · 2, avec « Un tour = … » ; null hors d'un bloc de relecture. */
+  tours: { libelle: string; aide: string; valeur: number; choix: readonly number[] } | null;
+  /** « Me laisser vérifier le premier jet avant la relecture » ; null hors d'un bloc de relecture. */
+  pauseAvantRelecture: { libelle: string; valeur: boolean } | null;
+  /** « Spécialistes à consulter au plus » 1 · 2 ; null hors d'un bloc d'aiguillage. */
+  choixMax: { libelle: string; valeur: number; choix: readonly number[] } | null;
+  /** « Spécialistes » et [Ajouter un spécialiste] ; null hors d'un bloc d'aiguillage, `ajouter` null à la borne haute. */
+  specialistes: { libelle: string; ajouter: string | null } | null;
+  // </c5:bloc-l42d>
 }
 
 export interface AjoutModel {
@@ -644,11 +1075,40 @@ export interface AjoutModel {
   choix: ReadonlyArray<{ type: FlowBlock["type"]; libelle: string; possible: boolean }>;
 }
 
+// <c5:ajout-c5-model>
+/** Entrées de la 5b du menu [+ Ajouter], à une place donnée : « Une rédaction et relecture », puis « Un aiguillage ». */
+export interface AjoutC5Model {
+  /** Place d'insertion (0 = en tête) : l'aiguillage n'est possible qu'à 0. */
+  place: number;
+  choix: ReadonlyArray<{ type: FormeC5; libelle: string; possible: boolean }>;
+}
+
+/** Bascule « Étapes | Schéma modifiable » (mode Avancé, spécification §5.3 l.903). */
+export interface VueSchemaModel {
+  etapes: string;
+  schema: string;
+  phrase: string;
+  courant: VueEtapes;
+  /** Phrase rendue À LA PLACE du schéma sous 900 px ; null au-dessus, ou sur la vue « Étapes ». */
+  etroit: string | null;
+}
+// </c5:ajout-c5-model>
+
 export interface Ecran2Model {
   blocs: readonly BlockCardModel[];
   ajouter: AjoutModel;
   annuler: { libelle: string; possible: boolean };
   retablir: { libelle: string; possible: boolean };
+  // <c5:ecran2-l42d>
+  /**
+   * Entrées de la 5b du menu [+ Ajouter], UNE par place d'insertion (`blocs.length + 1` : avant chaque bloc, puis à la fin).
+   * Champ séparé pour que `ajouter` garde les trois genres de l'itération 4 ; c'est la place qui décide si « Un aiguillage »
+   * est possible (en tête seulement).
+   */
+  formes: readonly AjoutC5Model[];
+  /** Bascule « Étapes | Schéma modifiable » ; null en mode Simple, où seules les étapes existent. */
+  vue: VueSchemaModel | null;
+  // </c5:ecran2-l42d>
 }
 
 export interface LigneCout {
@@ -669,6 +1129,14 @@ export interface Ecran3Model {
   arret: string;
   enGeneralAide: string;
   plafondAide: string;
+  // <c5:ecran3-repetitions>
+  /**
+   * Lignes des TOURS et des CHOIX que « au plus » couvre (L42d) : « 1 tour en général, {n} au plus » et « 1 spécialiste en
+   * général, {n} au plus », d'après `FlowEstimate.repetitions` (L42a). Vide quand le déroulé n'a ni relecture ni aiguillage :
+   * l'écran ne parle pas d'une forme absente.
+   */
+  repetitions: readonly string[];
+  // </c5:ecran3-repetitions>
 }
 
 export interface Ecran4Model {
@@ -750,14 +1218,42 @@ export interface EditorInput {
   /** Lecture en cours (équipe à modifier, liste des équipes). */
   chargement: boolean;
   erreur: string | null;
+  // <c5:entree-l42d>
+  /**
+   * Catalogue des méthodes (GET /api/methods, L44b) : seules celles de genre « consigne » sont proposées à une étape. ABSENT
+   * ou vide → le formulaire d'étape ne montre aucune section « Méthodes » plutôt qu'une section vide.
+   */
+  methodes?: readonly MethodView[];
+  /** Vue de l'écran 2 en mode Avancé : « Étapes » (défaut) ou « Schéma modifiable ». */
+  vue?: VueEtapes;
+  /** La fenêtre est plus étroite que SCHEMA_LARGEUR_MIN : le schéma modifiable cède la place à sa phrase (spéc. l.903). */
+  etroit?: boolean;
+  // </c5:entree-l42d>
 }
 
 /** Phrase d'un problème, par code (T4t) ; un code hors de la liste est ignoré plutôt qu'affiché sans phrase. */
-function problemesAffiches(problems: readonly FlowProblem[], garde: (probleme: FlowProblem) => boolean): ProblemeAffiche[] {
+function problemesAffiches(
+  problems: readonly FlowProblem[],
+  garde: (probleme: FlowProblem) => boolean,
+  // <c5:probleme-forme-l42d>
+  // L42d : genre du bloc concerné, pour le SEUL code que la 5b partage avec l'itération 4. `synthese-requise` a deux phrases
+  // selon ce qui manque : « Il manque la synthèse qui rassemble les avis. » sur un bloc d'avis (T4t, phrase du code dans
+  // team-texts.ts) et « Avec 2 spécialistes possibles, ajoutez une étape de synthèse. » sur un aiguillage (§4.3,
+  // construction-texts.ts). Sans cette distinction, un aiguillage sans synthèse parlerait d'avis qu'il n'a pas.
+  // Tous les autres codes de la 5b (L42a) ont leur phrase unique dans team-texts.ts : elle est lue comme avant.
+  forme: FlowBlock["type"] | null = null,
+  // </c5:probleme-forme-l42d>
+): ProblemeAffiche[] {
   const out: ProblemeAffiche[] = [];
   for (const probleme of problems) {
     if (!garde(probleme)) continue;
-    const texte = Object.hasOwn(P.problemes, probleme.code) ? P.problemes[probleme.code as keyof typeof P.problemes] : null;
+    // c5 (L42d) : la phrase de `synthese-requise` sur un aiguillage vient du §4.3 ; tout le reste de team-texts.ts (T4t).
+    const texte =
+      probleme.code === "synthese-requise" && forme === "aiguillage"
+        ? C5.problemes["synthese-requise"]
+        : Object.hasOwn(P.problemes, probleme.code)
+          ? P.problemes[probleme.code as keyof typeof P.problemes]
+          : null;
     if (texte !== null) out.push({ code: probleme.code, texte, bloquant: probleme.bloquant });
   }
   return out;
@@ -770,8 +1266,76 @@ const TAILLES_CHOIX: ReadonlyArray<{ valeur: TaskSize; libelle: string }> = Obje
 const AIDES_BLOC: Readonly<Record<FlowBlock["type"], string | null>> = {
   etape: null,
   avis: P.honnetete.avis,
+  // <c5:aides-formes>
+  // L42d : chaque forme de la 5b porte sur sa carte la phrase d'honnêteté du §4.3, la même que sur sa carte de l'écran 1.
+  relecture: C5.formes.relecture.phrase,
+  aiguillage: C5.formes.aiguillage.phrase,
+  // </c5:aides-formes>
   pause: P.pauses.verification.gratuite,
 };
+
+// <c5:modele-l42d>
+
+/** Libellé de rôle affiché au-dessus d'un formulaire d'étape d'une forme de la 5b ; null pour les rôles de l'itération 4. */
+const LIBELLES_ROLE: Readonly<Record<PlannedRole, string | null>> = {
+  etape: null,
+  avis: null,
+  synthese: null,
+  redaction: C5.editeur.champs.redacteur,
+  relecture: C5.editeur.champs.relecteur,
+  aiguilleur: C5.editeur.champs.aiguilleur,
+  specialiste: null,
+};
+
+/** Rôles dont la place laisse choisir ce que l'étape reçoit (flow.ts : `attendu` vaut null hors du premier bloc de travail). */
+const ROLES_LIBRES: readonly PlannedRole[] = Object.freeze(["etape", "redaction"]);
+
+/** Valeurs proposées par « Nombre de tours au maximum » et « Spécialistes à consulter au plus » : 1 · 2 (FLOW_LIMITS). */
+const nombresJusqua = (borne: number): readonly number[] => Object.freeze(Array.from({ length: borne }, (_, rang) => rang + 1));
+const CHOIX_TOURS = nombresJusqua(FLOW_LIMITS.toursMax);
+const CHOIX_SPECIALISTES = nombresJusqua(FLOW_LIMITS.choixMax);
+
+/**
+ * Puces des méthodes « consigne » d'une étape (§4.3). Ordre des refus, le même que celui de la puce du composeur
+ * (chat-methods-view.ts) : méthode DÉJÀ dans le fichier de l'assistant, puis limite par étape (FLOW_LIMITS.methodesParEtape).
+ * Une méthode déjà retenue reste décochable même devenue « déjà appliquée » (assistant changé après le choix) : sans quoi elle
+ * resterait attachée à l'étape sans aucun moyen de la retirer.
+ */
+function methodesEtape(step: FlowStep, catalogue: readonly MethodView[]): StepFormModel["methodes"] {
+  const consignes = catalogue.filter((methode) => methode.kind === "consigne");
+  if (consignes.length === 0) return null;
+  const retenues = step.methodes ?? [];
+  const choisies = new Set(retenues);
+  const options = consignes.map((methode): MethodeEtapeOption => {
+    const choisie = choisies.has(methode.id);
+    let raison: string | null = null;
+    if (methode.utiliseePar.some((assistant) => assistant.name === step.assistant)) raison = C5.problemes.methodes.deja;
+    else if (!choisie && choisies.size >= FLOW_LIMITS.methodesParEtape) raison = C5.problemes.methodes.trop;
+    return { id: methode.id, titre: methode.titre, choisie, desactivee: !choisie && raison !== null, raison };
+  });
+  return { libelle: C5.editeur.champs.methodes, valeur: retenues, options };
+}
+
+/**
+ * « Le résultat d'étapes choisies » : cases des étapes des blocs situés PLUS HAUT (L42a, règle `lien-arriere`). Rendu
+ * seulement en mode Avancé (`lien-avance`) et seulement pour un rôle dont la place laisse le choix. `null` partout ailleurs :
+ * en mode Simple, ce choix est ABSENT du modèle, donc de l'interface.
+ */
+function lienEtapes(step: FlowStep, role: PlannedRole, input: EditorInput, blocIndex: number): StepFormModel["recoit"]["etapes"] {
+  if (!input.advanced || !ROLES_LIBRES.includes(role)) return null;
+  const blocs = input.historique.present.flow.blocs;
+  const listees = new Set(stepInputEtapes(step.recoit) ?? []);
+  const choix: LienEtapeOption[] = [];
+  for (const bloc of blocs.slice(0, blocIndex)) {
+    for (const amont of etapesDe(bloc)) {
+      choix.push({ stepId: amont.id, libelle: amont.titre === "" ? amont.id : amont.titre, cochee: listees.has(amont.id) });
+    }
+  }
+  if (choix.length === 0) return null;
+  return { libelle: C5.editeur.recoitEtapes, actif: listees.size > 0, choix };
+}
+
+// </c5:modele-l42d>
 
 function stepForm(
   step: FlowStep,
@@ -779,6 +1343,11 @@ function stepForm(
   input: EditorInput,
   groupes: readonly AssistantGroupe[],
   retirer: string | null,
+  // <c5:step-form-l42d>
+  // Rang du bloc (les étapes proposées à « Le résultat d'étapes choisies » sont celles des blocs d'AVANT) et aide propre au
+  // rôle. Tous deux facultatifs : les appels de l'itération 4 restent tels quels.
+  options: { blocIndex?: number; roleAide?: string | null } = {},
+  // </c5:step-form-l42d>
 ): StepFormModel {
   const simple = !input.advanced;
   const assistant = input.assistants.find((a) => a.name === step.assistant) ?? null;
@@ -800,8 +1369,18 @@ function stepForm(
     recoit: {
       libelle: E.champs.recoit,
       aide: E.champs.recoitAide,
-      texte: Object.hasOwn(recoitChoix, step.recoit) ? recoitChoix[step.recoit] : "",
+      // <c5:recoit-etapes>
+      // L42d : un `recoit: {etapes}` (5b, L42a) n'a pas de libellé fermé — la phrase « Reçoit le résultat de : {etapes} » est
+      // rendue par flowAsList, sous le schéma. Ici, le texte reste vide et ce sont les CASES ci-dessous qui disent le lien.
+      texte: isStepInputName(step.recoit) && Object.hasOwn(recoitChoix, step.recoit) ? recoitChoix[step.recoit] : "",
+      etapes: lienEtapes(step, role, input, options.blocIndex ?? 0),
+      // </c5:recoit-etapes>
     },
+    // <c5:step-champs-l42d>
+    roleLibelle: LIBELLES_ROLE[role],
+    roleAide: options.roleAide ?? null,
+    methodes: methodesEtape(step, input.methodes ?? []),
+    // </c5:step-champs-l42d>
     // D-eq-12 : aucun réglage d'IA par étape en mode Simple.
     ia: simple
       ? null
@@ -821,11 +1400,26 @@ function blockCard(block: FlowBlock, index: number, input: EditorInput, groupes:
   const forme = E.blocs[block.type];
   const retraitPossible = block.type === "avis" && peutRetirerAvis(draft, block.id);
   const etapes: StepFormModel[] = [];
-  if (block.type === "etape") etapes.push(stepForm(block.etape, "etape", input, groupes, null));
+  if (block.type === "etape") etapes.push(stepForm(block.etape, "etape", input, groupes, null, { blocIndex: index }));
   else if (block.type === "avis") {
     for (const avis of block.avis) etapes.push(stepForm(avis, "avis", input, groupes, retraitPossible ? E.retirerAvis : null));
     etapes.push(stepForm(block.synthese, "synthese", input, groupes, null));
   }
+  // <c5:bloc-etapes-l42d>
+  // Formes de la 5b : rédacteur puis relecteur (l'aide sur l'IA du relecteur est portée par SON formulaire) ; aiguilleur, puis
+  // les spécialistes (retirables tant qu'il en reste plus de 2), puis la synthèse quand le bloc en a une.
+  else if (block.type === "relecture") {
+    etapes.push(stepForm(block.auteur, "redaction", input, groupes, null, { blocIndex: index }));
+    etapes.push(stepForm(block.relecteur, "relecture", input, groupes, null, { roleAide: C5.editeur.aide }));
+  } else if (block.type === "aiguillage") {
+    const retraitSpecialiste = peutRetirerSpecialiste(draft, block.id) ? C5.editeur.retirerSpecialiste : null;
+    etapes.push(stepForm(block.aiguilleur, "aiguilleur", input, groupes, null));
+    for (const specialiste of block.specialistes) etapes.push(stepForm(specialiste, "specialiste", input, groupes, retraitSpecialiste));
+    if (block.synthese !== null) {
+      etapes.push({ ...stepForm(block.synthese, "synthese", input, groupes, null), roleLibelle: C5.editeur.champs.synthese });
+    }
+  }
+  // </c5:bloc-etapes-l42d>
   return {
     blocId: block.id,
     titre: remplir(E.bloc, { n: index + 1, forme }),
@@ -841,7 +1435,27 @@ function blockCard(block: FlowBlock, index: number, input: EditorInput, groupes:
       block.type === "pause"
         ? { libelle: E.champs.pause, exemple: E.champs.pauseExemple, valeur: block.message, max: TEAM_TEXT_LIMITS.messagePause }
         : null,
-    problemes: problemesAffiches(input.apercu?.problems ?? [], (probleme) => probleme.bloc === block.id && probleme.etape === null),
+    // c5 (L42d) : le genre du bloc choisit la phrase de `synthese-requise` (avis, T4t ; aiguillage, §4.3).
+    problemes: problemesAffiches(
+      input.apercu?.problems ?? [],
+      (probleme) => probleme.bloc === block.id && probleme.etape === null,
+      block.type,
+    ),
+    // <c5:bloc-reglages-l42d>
+    tours:
+      block.type === "relecture"
+        ? { libelle: C5.editeur.champs.tours, aide: C5.formes.relecture.tour, valeur: block.toursMax, choix: CHOIX_TOURS }
+        : null,
+    pauseAvantRelecture: block.type === "relecture" ? { libelle: C5.editeur.champs.pause, valeur: block.pauseAvantRelecture } : null,
+    choixMax: block.type === "aiguillage" ? { libelle: C5.editeur.champs.specialistesMax, valeur: block.choixMax, choix: CHOIX_SPECIALISTES } : null,
+    specialistes:
+      block.type === "aiguillage"
+        ? {
+            libelle: C5.editeur.champs.specialistes,
+            ajouter: peutAjouterSpecialiste(draft, block.id) ? C5.editeur.ajouterSpecialiste : null,
+          }
+        : null,
+    // </c5:bloc-reglages-l42d>
   };
 }
 
@@ -857,12 +1471,34 @@ function ecran1(input: EditorInput): Ecran1Model {
       layout: exemple.layout,
     })),
     formes: FORMES_DEPART.map((id) => ({ id, titre: P.formes[id], aide: P.aidesFormes[id] })),
+    // <c5:ecran1-formes-c5>
+    // Les DEUX formes de la 5b, activées toutes les deux, avec leur phrase d'aide du §4.3 ; la relecture porte en plus la
+    // phrase qui dit ce qu'est un tour, parce que « 2 tours au maximum » ne se comprend pas sans elle.
+    formesC5: [
+      { id: "relecture", titre: C5.formes.relecture.titre, aide: C5.formes.relecture.phrase, precision: C5.formes.relecture.tour },
+      { id: "aiguillage", titre: C5.formes.aiguillage.titre, aide: C5.formes.aiguillage.phrase, precision: null },
+    ],
+    // </c5:ecran1-formes-c5>
   };
 }
 
 function ecran2(input: EditorInput): Ecran2Model {
   const draft = input.historique.present;
   const groupes = assistantsProposables(input.assistants, { simple: !input.advanced });
+  // <c5:ecran2-vue-l42d>
+  // Bascule « Étapes | Schéma modifiable » : mode AVANCÉ seulement (spéc. §5.3). Sous 900 px, la vue « Schéma modifiable »
+  // rend la phrase du spéc. l.903 à la place du schéma — les étapes restent le chemin complet, dans les deux cas.
+  const courant: VueEtapes = input.vue ?? "etapes";
+  const vue: VueSchemaModel | null = input.advanced
+    ? {
+        etapes: C5_SCHEMA.etapes,
+        schema: C5_SCHEMA.titre,
+        phrase: C5_SCHEMA.phrase,
+        courant,
+        etroit: courant === "schema" && input.etroit === true ? C5_SCHEMA.etroit : null,
+      }
+    : null;
+  // </c5:ecran2-vue-l42d>
   return {
     blocs: draft.flow.blocs.map((block, index) => blockCard(block, index, input, groupes)),
     ajouter: {
@@ -871,6 +1507,19 @@ function ecran2(input: EditorInput): Ecran2Model {
     },
     annuler: { libelle: E.annulerModif, possible: peutAnnuler(input.historique) },
     retablir: { libelle: E.retablir, possible: peutRetablir(input.historique) },
+    // <c5:ecran2-formes-l42d>
+    // Une entrée de menu par PLACE d'insertion : « Une rédaction et relecture » partout où les bornes le permettent,
+    // « Un aiguillage » EN TÊTE SEULEMENT — ailleurs l'entrée reste lisible, désactivée, jamais retirée en silence.
+    formes: Array.from({ length: draft.flow.blocs.length + 1 }, (_, place) => ({
+      place,
+      choix: BLOCS_AJOUTABLES_C5.map((type) => ({
+        type,
+        libelle: C5.editeur.menu[type],
+        possible: peutAjouterBlocC5(draft, type, place),
+      })),
+    })),
+    vue,
+    // </c5:ecran2-formes-l42d>
   };
 }
 
@@ -903,8 +1552,25 @@ function ecran3(input: EditorInput): Ecran3Model {
     arret: cout.arret,
     enGeneralAide: cout.enGeneralAide,
     plafondAide: E.plafondAide,
+    // <c5:ecran3-repetitions-l42d>
+    // Ce que « au plus » couvre en plus des lignes du tableau : les tours d'une relecture et les spécialistes d'un aiguillage.
+    // Les nombres viennent de l'estimation (L42a, `repetitions`), jamais d'un comptage refait ici.
+    repetitions: repetitionsAffichees(estimate?.repetitions),
+    // </c5:ecran3-repetitions-l42d>
   };
 }
+
+// <c5:repetitions-l42d>
+/** « 1 tour en général, {n} au plus » et « 1 spécialiste en général, {n} au plus » ; rien quand la forme est absente. */
+function repetitionsAffichees(repetitions: { tours: number; specialistes: number } | undefined): string[] {
+  if (repetitions === undefined) return [];
+  const lignes: string[] = [];
+  const estimation = C5.execution.estimation;
+  if (repetitions.tours > 0) lignes.push(remplir(estimation.tours, { n: repetitions.tours }));
+  if (repetitions.specialistes > 0) lignes.push(remplir(estimation.specialistes, { n: repetitions.specialistes }));
+  return lignes;
+}
+// </c5:repetitions-l42d>
 
 /** Nom refusé : trop court, ou déjà porté par une autre équipe. */
 function erreurNom(titre: string, nomsPris: readonly string[]): string | null {

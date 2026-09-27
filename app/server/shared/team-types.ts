@@ -2,15 +2,24 @@
 // serveur et l'interface (web/lib/types.ts les réexporte). Valeurs, tables et fonctions pures : team-limits.ts, qui porte aussi la
 // liste exécutable de chaque union fermée (clés des textes de T4t, croisement de V0). Un changement de contrat après la vague 0
 // est une demande écrite à l'intégrateur, traitée au train avec la liste des consommateurs prévenus (plan it4 §2.4).
-// Formes de l'itération 4 (D-eq-10) : blocs « etape », « avis » et « pause » seulement ; clé JSON « avis » (jamais « regards ») ;
-// ni « facultatif », ni « methodes », ni `recoit: {etapes}` (l'itération 5 ajoute « relecture » et « aiguillage »).
+// Formes de l'itération 4 (D-eq-10) : blocs « etape », « avis » et « pause » ; clé JSON « avis » (jamais « regards ») ; ni
+// « facultatif », ni « methodes », ni `recoit: {etapes}`.
+// Formes ajoutées par l'itération 5b (L42a) : blocs « relecture » et « aiguillage », `FlowStep.methodes`, `recoit: {etapes}`,
+// l'état de lancement « attente-choix » et l'état d'étape « non-choisi ». `methodes` est FACULTATIF et `recoit` garde ses trois
+// noms : les déroulés enregistrés par l'itération 4 restent valides tels quels, sans migration de données (A2).
 import type { RightLine, Rule, TaskSize, Tier, UiMode } from "./assistant-rules.ts";
 import type { FLOW_LIMITS, FLOW_VERSION } from "./team-limits.ts";
 
 // --- Déroulé ------------------------------------------------------------------------------------------------------------------
 
-/** Ce qu'une étape reçoit en plus de sa consigne (sémantique : receivedFrom de team-limits.ts). */
-export type StepInput = "demande" | "precedent" | "tous";
+/** Noms fermés de ce qu'une étape reçoit (liste exécutable STEP_INPUTS de team-limits.ts). */
+export type StepInputName = "demande" | "precedent" | "tous";
+
+/**
+ * Ce qu'une étape reçoit en plus de sa consigne (sémantique : receivedFrom de team-limits.ts). `{etapes}` (5b, L42a) nomme les
+ * étapes de blocs ANTÉRIEURS dont le résultat est transmis, dans l'ordre de planSteps : réglage du mode Avancé (`lien-avance`).
+ */
+export type StepInput = StepInputName | { etapes: string[] };
 
 /** Une étape : la part d'un assistant dans une équipe. */
 export interface FlowStep {
@@ -26,12 +35,26 @@ export interface FlowStep {
   /** 0 à 4 000 caractères (FLOW_LIMITS.consigne). */
   consigne: string;
   recoit: StepInput;
+  /**
+   * Identifiants de méthodes « consigne » ajoutées au message de l'étape (5b, L42a ; FLOW_LIMITS.methodesParEtape au plus).
+   * ABSENT = aucune méthode : un déroulé enregistré par l'itération 4 reste valide sans migration de données.
+   */
+  methodes?: string[];
 }
 
-/** Bloc du déroulé, union FERMÉE (D-eq-10). `message` d'une pause : 0 à 300 caractères. */
+/**
+ * Bloc du déroulé, union FERMÉE. `message` d'une pause : 0 à 300 caractères.
+ * - « relecture » (5b) : l'auteur rédige, le relecteur relit, `toursMax` tours au plus ; `pauseAvantRelecture` place une pause
+ *   après le premier jet, avant la première relecture (tour 1 seulement) ;
+ * - « aiguillage » (5b) : l'aiguilleur propose `choixMax` spécialistes au plus dans une liste fermée, VOUS confirmez son choix ;
+ *   `synthese` rassemble les résultats choisis (exigée quand `choixMax` vaut 2) ; `repli` nomme l'assistant proposé quand aucun
+ *   spécialiste ne convient (D-5-13).
+ */
 export type FlowBlock =
   | { type: "etape"; id: string; etape: FlowStep }
   | { type: "avis"; id: string; avis: FlowStep[]; synthese: FlowStep }
+  | { type: "relecture"; id: string; auteur: FlowStep; relecteur: FlowStep; toursMax: 1 | 2; pauseAvantRelecture: boolean }
+  | { type: "aiguillage"; id: string; aiguilleur: FlowStep; specialistes: FlowStep[]; choixMax: 1 | 2; synthese: FlowStep | null; repli?: string }
   | { type: "pause"; id: string; message: string };
 
 /** Déroulé d'une équipe, JSON « Flow v1 » (colonne teams.flow). */
@@ -43,17 +66,30 @@ export interface Flow {
 export type FlowLimits = typeof FLOW_LIMITS;
 
 /**
+ * Rôle d'une étape dans son bloc. « etape », « avis » et « synthese » viennent de l'itération 4 ; « redaction », « relecture »,
+ * « aiguilleur » et « specialiste » sont ajoutés par la 5b (L42a).
+ */
+export type PlannedRole = "etape" | "avis" | "synthese" | "redaction" | "relecture" | "aiguilleur" | "specialiste";
+
+/**
  * Une étape dans l'ordre d'exécution (planSteps). `blocIndex` : rang du bloc dans `flow.blocs` (pauses comprises, à partir de 0) ;
- * `ordre` : rang d'exécution à partir de 1 ; `tour` : 1 en itération 4.
+ * `ordre` : rang d'exécution à partir de 1 ; `tour` : 1 pour les formes de l'itération 4, 1 à `toursMax + 1` pour une relecture
+ * (5b : une même étape revient alors plusieurs fois dans le chemin maximal, une entrée par tour).
  */
 export interface PlannedOrder {
   stepId: string;
   blocId: string;
   blocIndex: number;
   ordre: number;
-  tour: 1;
-  role: "etape" | "avis" | "synthese";
+  tour: number;
+  role: PlannedRole;
 }
+
+/** Verdict d'un relecteur, lu sur la DERNIÈRE ligne de sa réponse (readVerdict de flow.ts). */
+export type StepVerdict = "a-reprendre" | "rien-a-reprendre";
+
+/** Choix d'un aiguilleur, lu sur la DERNIÈRE ligne de sa réponse (readChoice de flow.ts) : liste fermée, ou « aucun ». */
+export type StepChoice = { ids: string[] } | "aucun";
 
 // --- Assistants d'étape -------------------------------------------------------------------------------------------------------
 
@@ -99,7 +135,16 @@ export type FlowProblemCode =
   | "propose-reporte"
   | "personnalise"
   | "niveau-avance"
-  | "niveau-indisponible";
+  | "niveau-indisponible"
+  // Ajoutés par la 5b (L42a) : relecture, aiguillage, liens entre étapes et méthodes des étapes.
+  | "aiguillage-premier"
+  | "specialistes"
+  | "relecteur-distinct"
+  | "meme-famille"
+  | "lien-arriere"
+  | "lien-avis"
+  | "lien-avance"
+  | "methodes";
 
 /** Problème du déroulé ; le texte est dans team-texts.ts (T4t), par code. */
 export interface FlowProblem {
@@ -145,6 +190,12 @@ export interface FlowEstimate {
   /** Coût des résultats relayés d'une étape à l'autre (receivedFrom). */
   relais: number;
   parEtape: StepEstimate[];
+  /**
+   * 5b (L42a) : répétitions que « au plus » couvre — tours d'une relecture, spécialistes d'un aiguillage. Ce sont les nombres
+   * des lignes « 1 tour en général, {n} au plus » et « 1 spécialiste en général, {n} au plus » (§4.3 du plan it5). ABSENT quand
+   * le déroulé n'a ni relecture ni aiguillage : l'estimation d'un déroulé de l'itération 4 ne change en rien.
+   */
+  repetitions?: { tours: number; specialistes: number };
 }
 
 // --- Affichage ----------------------------------------------------------------------------------------------------------------
@@ -153,7 +204,7 @@ export interface FlowEstimate {
 export interface FlowRow {
   /** Identifiant du bloc. */
   bloc: string;
-  kind: "etape" | "avis" | "synthese" | "pause";
+  kind: "etape" | "avis" | "synthese" | "relecture" | "aiguillage" | "pause";
   cellules: Array<{ stepId: string | null; titre: string; sousTitre: string }>;
   /** Identifiants des étapes dont cette ligne reçoit le résultat. */
   recoitDe: string[];
@@ -168,6 +219,8 @@ export type TeamRunState =
   | "attente-verification"
   | "attente-budget"
   | "attente-modification"
+  /** 5b (L42a) : l'aiguilleur a proposé, VOUS confirmez son choix ; rien n'est lancé tant que la réponse n'est pas venue. */
+  | "attente-choix"
   | "terminee"
   | "arretee"
   | "echec"
@@ -185,7 +238,9 @@ export type TeamStepState =
   | "arretee"
   | "interrompue"
   | "plafond"
-  | "non-lancee";
+  | "non-lancee"
+  /** 5b (L42a) : spécialiste ou synthèse d'un aiguillage écarté par le choix ; état FINAL, sans coût. */
+  | "non-choisi";
 
 /**
  * Cause d'un état de lancement. « changement » : état d'opencode changé entre l'estimation et le lancement (contrôle de fraîcheur,
@@ -210,7 +265,7 @@ export type TeamRunFinalState = "terminee" | "arretee";
 export type TeamRunStoppedState = "echec" | "interrompue" | "plafond";
 
 /** États finaux d'une étape (une relance crée une nouvelle tentative : la ligne finale ne change plus). */
-export type TeamStepFinalState = "terminee" | "echec" | "arretee" | "interrompue" | "plafond" | "non-lancee";
+export type TeamStepFinalState = "terminee" | "echec" | "arretee" | "interrompue" | "plafond" | "non-lancee" | "non-choisi";
 
 /** Forme de TEAM_RUN_TRANSITIONS : un état final ne régresse jamais, aucun état ne se cite lui-même. */
 export type TeamRunTransitions = {
@@ -288,6 +343,10 @@ export interface StepRunView {
   /** Extrait du résultat (2 000 caractères au plus, secrets masqués) ; null avant la fin ou après la suppression. */
   extrait: string | null;
   droits: RightLine[];
+  /** 5b (L42a) : verdict lu sur la dernière ligne d'un relecteur ; absent ou null hors d'une étape de relecture. */
+  verdict?: StepVerdict | null;
+  /** 5b (L42a) : spécialistes retenus, lus sur la dernière ligne d'un aiguilleur puis confirmés par vous ; « aucun » si aucun. */
+  choix?: string[] | "aucun" | null;
 }
 
 /**
@@ -295,7 +354,7 @@ export interface StepRunView {
  * `changement` rempli avec le code du contrôle).
  */
 export interface TeamPauseView {
-  kind: "verification" | "budget" | "modification" | "redemarrage-cockpit" | "changement";
+  kind: "verification" | "budget" | "modification" | "redemarrage-cockpit" | "changement" | "choix";
   blocId: string | null;
   message: string;
   /** Résultat transmis à la suite (modifiable : « Résumé transmis »). */
@@ -303,6 +362,27 @@ export interface TeamPauseView {
   /** Coût du reste du chemin. */
   suite: { typique: number; maximum: number };
   changement: { code: TeamErrorCode; details?: Record<string, unknown> } | null;
+  /**
+   * Pause « choix » (5b, L42a) : les spécialistes proposés à votre confirmation, dans l'ordre du déroulé. `propose` reprend la
+   * lecture de la dernière ligne de l'aiguilleur ; il est faux partout quand le choix est illisible (rien n'est présélectionné).
+   * Champs FACULTATIFS : une pause d'un autre genre ne les porte pas.
+   */
+  choix?: Array<{ stepId: string; titre: string; propose: boolean }>;
+  /** Raison donnée par l'aiguilleur, 300 caractères au plus, masquée : c'est la proposition d'une IA, à vérifier. */
+  raison?: string;
+  /** Spécialistes que vous pouvez retenir au plus (aiguillage.choixMax). */
+  choixMax?: number;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1) : l'instantané de l'estimation, qui ne vit qu'en mémoire, n'a pas survécu à un redémarrage du cockpit
+   * (pendant la pause, ou pendant l'équipe pour la pause « Le cockpit a redémarré », que ce redémarrage a créée). Toute réponse qui lancerait un appel facturé passe d'abord par une nouvelle estimation, MONTRÉE
+   * puis confirmée (POST …/estimate, puis POST …/relancer) ; la pause revient ensuite telle quelle, sauf celle du redémarrage,
+   * que la confirmation relance. ABSENT quand l'estimation est à jour ou que rien de facturé ne reste à lancer.
+   * `aucunLibre` : pause de choix où « Aucun ne convient » ne lancerait aucun appel — la réponse reste permise sans estimation.
+   * `possible` : la demande est reconstituable en base (D-eq-27) ; faux, la suite ne peut repartir que depuis la saisie.
+   */
+  reestimation?: { aucunLibre: boolean; possible: boolean };
+  // </c5:reprise-redemarrage>
 }
 
 export interface TeamRunView {
@@ -319,6 +399,18 @@ export interface TeamRunView {
   plafond: number | null;
   cost: number;
   steps: StepRunView[];
+  // <c5:blocs-prevus>
+  /**
+   * 5b (train de la vague 2) : bornes DÉCLARÉES des blocs répétables du déroulé lancé. Sans elles, le Déroulé d'équipe ne peut
+   * pas dire « Prévu : jusqu'à 2 tours · Réel : 1 tour » (spéc. §5.1 l.881, conception A §7.3) : les lignes `team_run_steps`
+   * ne portent que les tours RÉELLEMENT faits et les spécialistes déclarés, jamais le maximum que l'estimation a annoncé.
+   * Absent pour un lancement sans bloc répétable, et pour une vue construite par un module qui ne les connaît pas.
+   * `specialistes` (corrections de la relecture de la vague 2) : nombre de spécialistes DÉCLARÉS d'un aiguillage. Sans lui, le
+   * Déroulé devinait la synthèse à sa place (la dernière ligne du bloc) et prenait un vrai spécialiste pour elle dès qu'un
+   * aiguillage n'en portait aucune — forme par défaut de l'éditeur (`choixMax: 1`, `synthese: null`).
+   */
+  blocs?: Array<{ index: number; type: "relecture" | "aiguillage"; toursMax?: number; choixMax?: number; specialistes?: number }>;
+  // </c5:blocs-prevus>
   pause: TeamPauseView | null;
   relancable: boolean;
   /** Coût du chemin restant (suiteEstimate, calcul local sans lecture d'opencode) : libellé [Relancer la suite (≈ x $)]. */
@@ -418,14 +510,31 @@ export interface TeamRunStarted {
   rootId: string;
 }
 
-/** POST /api/team-runs/:runId/continue : précision 1 000 caractères au plus ; correction du résumé transmis. */
+/**
+ * POST /api/team-runs/:runId/continue : précision 1 000 caractères au plus ; correction du résumé transmis. La 5b (L42a) y
+ * ajoute la réponse à une pause « choix » : `choix` porte les identifiants de spécialistes retenus (⊆ liste, `choixMax` au
+ * plus), `aucun` dit qu'aucun spécialiste de la liste ne convient. Les deux ne s'envoient jamais ensemble.
+ */
 export interface TeamContinueBody {
   precision?: string;
   correction?: string;
+  choix?: string[];
+  aucun?: true;
 }
 
 export interface TeamRelaunchBody {
   estimateSha256: string;
+  // <c5:reprise-redemarrage>
+  /**
+   * Clôture 5b (D-5b-1, tour 3) : accords que la boîte « Reprendre avec cette estimation ? » vous a MONTRÉS et que vous avez
+   * confirmés, pour une pause reprise après un redémarrage du cockpit seulement — `budget` (P7, la suite coûte au plus plus que ce
+   * qui reste sur le budget du mois) et `plafond` (P8, Avancé : le plafond d'arrêt dépasse le plafond maximum d'un lancement).
+   * Sans eux, le pré-lancement de la reprise refusait « budget-insuffisant » à chaque fois, sans que la carte puisse rien
+   * confirmer : la pause « garde-fou budgétaire » que crée un budget épuisé n'avait plus que [Arrêter l'équipe]. Ils ne sont
+   * JAMAIS écrits dans le lancement, et une relance de l'itération 4 (lancement arrêté) ne les lit pas.
+   */
+  confirmations?: { budget?: true; plafond?: true };
+  // </c5:reprise-redemarrage>
 }
 
 /** POST /api/teams/examples/:id/install. */
@@ -476,6 +585,16 @@ export type TeamErrorCode =
   | "plancher-etape"
   | "etape-consultable"
   | "etat-incompatible"
+  // <c5:choix-invalide> Demande de contrat de L42b, traitée au train de la vague 2 (plan it5 §2.4) : le refus d'un choix
+  // d'aiguillage qui ne tient pas sort en clair, au lieu d'un « invalid » avec `details.raison`.
+  | "choix-invalide"
+  // </c5:choix-invalide>
+  // <c5:reprise-redemarrage>
+  // Clôture 5b (D-5b-1) : réponse à une pause qui lancerait un appel facturé alors que l'instantané de l'estimation a été perdu
+  // au redémarrage du cockpit. Sa phrase dit la vérité et la suite (refaire l'estimation), là où `estimation-perimee` disait
+  // « une nouvelle estimation est affichée » sans que rien ne le soit.
+  | "reestimation-requise"
+  // </c5:reprise-redemarrage>
   | "pas-relancable"
   | "deja-ajoute"
   | "confirmation-requise"

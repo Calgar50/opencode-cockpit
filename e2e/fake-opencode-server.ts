@@ -60,6 +60,11 @@ import type { OmoSupervisorPhase, OmoSupervisorState } from "../app/server/share
 // `FakeSession` s'y ajoute pour les prédicats de `scriptWhen` (L41).
 import { type FakeAgent, FakeOpencode, type FakeSession, type FakeTurnScript, rulesFromConfig } from "../app/server/test-support/fake-opencode.ts";
 // --- équipes (it4) : fin ---
+// <c5:agents-import>
+// Itération 5 (L50a) : agents servis par GET /agent, déclarés par un scénario (voir la section `c5:agents-du-banc`). `FakeAgent`
+// vient déjà de la ligne des équipes ci-dessus (grande fusion, GF4).
+import { nativeAgents } from "../app/server/test-support/fake-opencode.ts";
+// </c5:agents-import>
 
 // --- Mode ------------------------------------------------------------------------------------------------------------------------
 
@@ -86,6 +91,56 @@ const repondre = (res: http.ServerResponse, code: number, corps: unknown, entete
   res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store", "content-security-policy": "default-src 'none'; sandbox", ...entetes });
   res.end(texte);
 };
+
+// <c5:agents-du-banc>
+// Itération 5 (L50a) : les assistants que le cockpit vient d'installer, servis ensuite par GET /agent.
+//
+// Pourquoi. Le cockpit ne propose la Seconde lecture que si le « Relecteur critique » est À LA FOIS installé (fichier
+// d'agent écrit par le cockpit) ET vu par opencode (`second-reading.ts`) ; de même, le composeur ne propose que les
+// assistants qu'opencode lui rend (`ChatPage.tsx`). Le faux, lui, ne lit aucun fichier : c'est donc le scénario qui lui
+// dit, APRÈS l'installation, quels agents opencode sert. Avant elle, la liste reste celle des agents natifs — sans quoi
+// le nom serait déjà pris et le cockpit en choisirait un autre (« relecteur-critique-2 »), qu'il ne retrouverait plus.
+//
+// Comment, sans route nouvelle : un scénario n'a que `scripter`, `tourParDefaut`, `requetes`, `evenements` et `oublier`
+// (`e2e/lib/cockpit.mjs`, que la construction n'écrit pas). La conversation RÉSERVÉE ci-dessous n'est donc jamais
+// scriptée : son « tour » porte la liste des agents, et chaque envoi remplace la liste entière.
+const SESSION_AGENTS = "banc:agents";
+
+/** Agent déclaré par un scénario : son nom, et l'IA que son fichier d'agent fixe, comme pour un assistant installé. */
+interface AgentDuBanc {
+  name: string;
+  description?: string;
+  mode?: FakeAgent["mode"];
+  model?: { providerID: string; modelID: string };
+}
+
+/** Agent de GET /agent : seules sa présence, sa forme et son IA comptent ici ; aucune règle n'est inventée. */
+const agentDuBanc = (agent: AgentDuBanc): FakeAgent => ({
+  name: agent.name,
+  description: agent.description ?? "Assistant installé par le cockpit (banc e2e).",
+  mode: agent.mode ?? "primary",
+  options: {},
+  permission: [],
+  ...(agent.model ? { model: agent.model } : {}),
+});
+
+/**
+ * Grande fusion (GF4) : le faux est désormais créé par `servirOpencode` (salle, L26c ; 3D, L35) ; la conversation réservée
+ * s'y pose sur l'instance PRINCIPALE seulement (la salle factice sert les assistants de l'extension, jamais ceux du banc).
+ */
+function agentsDuBanc(faux: FakeOpencode): void {
+  const scripterOrigine = faux.script.bind(faux);
+  faux.script = (sessionID: string, ...tours: FakeTurnScript[]): void => {
+    if (sessionID !== SESSION_AGENTS) {
+      scripterOrigine(sessionID, ...tours);
+      return;
+    }
+    const demandes = (tours as unknown as Array<{ agents?: AgentDuBanc[] }>).flatMap((tour) => tour.agents ?? []);
+    faux.setAgents([...nativeAgents(faux.globalConfig.permission), ...demandes.map(agentDuBanc)]);
+    console.log(`faux opencode : ${demandes.length} agent(s) déclaré(s) par le banc en plus des natifs.`);
+  };
+}
+// </c5:agents-du-banc>
 
 const lireCorps = async (req: http.IncomingMessage): Promise<unknown> => {
   const morceaux: Buffer[] = [];
@@ -370,6 +425,10 @@ async function servirOpencode(mode: "principale" | "omo"): Promise<void> {
 
   // Salle : les assistants de l'extension, et un superviseur qui décide quand « opencode » est joignable.
   const salle = mode === "omo" ? creerSalle(faux, amont, MOT_DE_PASSE) : null;
+  // <c5:agents-du-banc-pose>
+  // Itération 5 (L50a), posée à la grande fusion (GF4) : conversation réservée « banc:agents », instance principale seule.
+  if (mode === "principale") agentsDuBanc(faux);
+  // </c5:agents-du-banc-pose>
 
   /**
    * Relais : le faux écoute sur 127.0.0.1 (il est écrit pour les tests, où c'est le bon choix), alors que le cockpit l'appelle

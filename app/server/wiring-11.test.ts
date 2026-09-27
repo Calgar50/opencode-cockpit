@@ -48,6 +48,9 @@ import {
   servesInstance,
   STEP_ORDER,
 } from "./wiring-11.ts";
+// <c5:import>
+import { CONSTRUCTION_MODULE_ORDER } from "./wiring-construction.ts";
+// </c5:import>
 
 /** Modules de la salle (T3a) : le test « production » leur applique une propriété, jamais une liste exacte (D-2b-40). */
 const EST_MODULE_SALLE = (name: string): name is OmoModuleName => (OMO_MODULE_NAMES as readonly string[]).includes(name);
@@ -389,12 +392,18 @@ describe("câblage 1.1 : ordre figé", () => {
       "internalAgents",
       "diagnostics",
       ...OMO_MODULE_NAMES,
+      // <c5:ordre>
+      "methods",
+      "secondReading",
+      "chronologie",
+      "teamCosts",
+      // </c5:ordre>
     ]);
     assert.deepEqual(STEP_ORDER, {
       hooks: {
         createSession: ["floors"],
         sessionCreated: ["floors"],
-        beforeBilledSend: ["floors", "plans", "activation", "requests", "omoActivation", "omoCaps"],
+        beforeBilledSend: ["secondReading", "floors", "plans", "activation", "requests", "omoActivation", "omoCaps"], // c5
         beforeOnceRelay: ["taskGuard"],
         abort: ["stopTree", "omoStop"],
       },
@@ -414,6 +423,12 @@ describe("câblage 1.1 : ordre figé", () => {
         ["autonomy", "conversationAutonomy"],
         ["plans", "plans"],
         ["diagnostic-11", "diagnostics"],
+        // <c5:routes>
+        ["construction", "methods"],
+        ["construction", "secondReading"],
+        ["construction", "chronologie"],
+        ["construction", "teamCosts"],
+        // </c5:routes>
         ["omo", "omoRoom"],
       ],
     });
@@ -450,7 +465,11 @@ describe("câblage 1.1 : ordre figé", () => {
   it("MODULES et NEUTRAL_PORTS : un module réel par nom, un port neutre par module sauf gate", () => {
     assert.deepEqual(Object.keys(MODULES), [...MODULE_ORDER]);
     for (const name of MODULE_ORDER) assert.equal(MODULES[name].name, name);
-    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => name !== "gate").sort());
+    // <c5:ports>
+    // La construction n'ajoute aucun port (D-5-04) : ses modules n'ont pas de port neutre, comme « gate ».
+    const SANS_PORT: readonly ModuleName[] = ["gate", ...CONSTRUCTION_MODULE_ORDER];
+    assert.deepEqual(Object.keys(NEUTRAL_PORTS).sort(), MODULE_ORDER.filter((name) => !SANS_PORT.includes(name)).sort());
+    // </c5:ports>
   });
 
   it("modules factices : crochets, dérivations, abonnements, démarrage et routes rangés par STEP_ORDER", async () => {
@@ -535,6 +554,14 @@ describe("câblage 1.1 : ordre figé", () => {
       },
       { name: "internalAgents", install: (reg) => reg.startup(async () => void trace.push("internalAgents")) },
       { name: "diagnostics", install: (reg) => reg.routes("diagnostic-11", () => void trace.push("diagnostic-11")) },
+      // <c5:factices>
+      // Squelettes de la construction (T5a) : déclarés pour que wiring.modules couvre MODULE_ORDER ; ils n'inscrivent rien tant
+      // que L44b, L44c, L47b et L46a ne sont pas livrés. Leurs inscriptions arrivent ici au train de la vague qui les apporte.
+      { name: "methods", install: () => undefined },
+      { name: "secondReading", install: () => undefined },
+      { name: "chronologie", install: () => undefined },
+      { name: "teamCosts", install: () => undefined },
+      // </c5:factices>
     ];
     const wiring = buildCockpit11(s.deps, { modules: [...factices].reverse() });
     // Modules du cockpit seuls : ceux de la salle ont leur propre test d'ordre (§4.1.2), plus bas.
@@ -750,6 +777,11 @@ describe("câblage 1.1 : ports neutres", () => {
       [
       { kind: "hook", key: "createSession", module: "floors" },
       { kind: "hook", key: "sessionCreated", module: "floors" },
+      // <c5:production>
+      // Seconde lecture (L44c) : PREMIER crochet de beforeBilledSend, donc avant le plancher et les plans. Il ne refuse jamais
+      // et ne fait qu'un UPDATE ; en queue, un refus antérieur le sautait (corrections de la relecture de la vague 3).
+      { kind: "hook", key: "beforeBilledSend", module: "secondReading" },
+      // </c5:production>
       { kind: "hook", key: "beforeBilledSend", module: "floors" },
       { kind: "hook", key: "beforeBilledSend", module: "plans" },
       // L10d : porte I1 basculée au train de la vague 3 (it2) → le crochet d'activation s'inscrit, entre « plans » et « requests ».
@@ -777,6 +809,15 @@ describe("câblage 1.1 : ports neutres", () => {
       { kind: "routes", key: "autonomy", module: "conversationAutonomy" },
       { kind: "routes", key: "plans", module: "plans" },
       { kind: "routes", key: "diagnostic-11", module: "diagnostics" },
+      // <c5:production>
+      // Construction (itération 5), en fin de MODULE_ORDER et de STEP_ORDER.routes : L44c inscrit le crochet de la Seconde
+      // lecture, PREMIER de beforeBilledSend, et sa route ; L44b et L46a montent les leurs dans le groupe
+      // « construction ». Le module `chronologie` monte la sienne depuis L47b (train de V2).
+      { kind: "routes", key: "construction", module: "methods" },
+      { kind: "routes", key: "construction", module: "secondReading" },
+      { kind: "routes", key: "construction", module: "chronologie" },
+      { kind: "routes", key: "construction", module: "teamCosts" },
+      // </c5:production>
       ],
     );
     // PROPRIÉTÉ des inscriptions de la salle (D-2b-40) : chacune sert l'instance « omo » et son couple figure dans STEP_ORDER.
@@ -798,14 +839,19 @@ describe("câblage 1.1 : ports neutres", () => {
         wiring.hooks.beforeOnceRelay.length,
         wiring.hooks.abort.length,
       ],
-      // beforeBilledSend : 4 depuis la bascule de la porte I1 (floors, plans, activation, requests).
-      [1, 1, 4, 1, 1],
+      // <c5:production>
+      // beforeBilledSend passe de 4 à 5 : Seconde lecture (L44c) en tête, puis plancher, plans, activation et demandes.
+      [1, 1, 5, 1, 1],
+      // </c5:production>
     );
     assert.deepEqual(wiring.subscriptions.map((sub) => sub.type), ["usage.updated", "opencode.connection", "usage.updated"]);
     assert.equal(wiring.derivations.length, 5);
     assert.equal(wiring.startup.length, 2);
-    // 7 groupes : les six du cockpit, puis « omo ».
-    assert.equal(wiring.routes.length, 7);
+    // <c5:production>
+    // 7 groupes (les six du cockpit, puis « omo »), plus les quatre inscriptions du groupe « construction » (L44b, L44c, L47b,
+    // L46a), montées juste avant « omo », qui reste le dernier.
+    assert.equal(wiring.routes.length, 11);
+    // </c5:production>
     // Ports réels de L6a (le neutre répondrait 409) et de L4b (le neutre n'écrit rien) ; leur comportement est contrôlé par
     // conversation-autonomy.test.ts et fact-store.test.ts. Un choix inconnu reste invalide quelle que soit la salle ; la réponse
     // à « omo » (409 « autonomie-indisponible », raison « racine-hors-salle ») est contrôlée par conversation-autonomy.test.ts (L22c).

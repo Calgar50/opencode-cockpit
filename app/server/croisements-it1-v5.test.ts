@@ -351,6 +351,12 @@ describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
         // --- équipes (it4) : fin ---
         cited.add(m[1]?.endsWith(".mjs") ? m[1] : `${m[1]}.mjs`);
       }
+      // <c5:scenarios-cites>
+      // Itération 5 (L50a) : la famille `c5a-*` (et `c5b-*` en 5b) du banc de la construction, citée dans e2e/README.md
+      // comme les autres familles. Sans cette ligne, le compte des scénarios cités ne les verrait pas, et ce test
+      // tomberait pour la seule raison qu'une famille nouvelle a été ajoutée au banc.
+      for (const m of text.matchAll(/(?<![\w-])(c5[ab]-[a-z0-9]+(?:-[a-z0-9]+)*\.mjs)(?![\w-])/g)) cited.add(m[1] as string);
+      // </c5:scenarios-cites>
     }
     // [3d] : ce croisement appartient à l'itération 1 et ne compte que SES scénarios (`it1-…` et `000-`, `010-`). Ceux des
     // autres itérations portent d'autres noms (`it3-salle-controle.mjs`…), hors de la forme reconnue ici ; leur présence dans

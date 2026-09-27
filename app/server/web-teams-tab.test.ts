@@ -3,7 +3,8 @@
 // Le modèle pur (web/pages/assistants/teams/teams-tab-model.ts) porte la logique : états de l'onglet, boutons par état d'équipe,
 // textes repris de team-texts.ts sans en écrire un seul, ligne d'une équipe installée, galerie, installation, suppression et
 // phrase d'un refus. L'interface n'étant pas exécutée par `npm test`, les composants et la feuille de style sont RELUS (contrat
-// statique) : aucun texte en dur, [Voir une démonstration] masqué, schéma décoratif (aria-hidden) et liste (`<figure>`) vérité du
+// statique) : aucun texte en dur, [Voir une démonstration] seulement là où l'itération 5 le pose (L49, c5:demonstration-equipe-garde
+// ci-dessous), schéma décoratif (aria-hidden) et liste (`<figure>`) vérité du
 // lecteur d'écran, liste seule sous 900 px, bloc `forced-colors` complet.
 // MODE SIMPLE FERMÉ (U1) : tant que `ouvertesEnSimple` est faux, en Simple, la liste est en lecture seule et AUCUN bouton ne mène
 // à l'éditeur ni à l'installation. L'ouverture tient en UNE LIGNE : les mêmes données avec `ouvertesEnSimple: true` rendent tous
@@ -289,6 +290,9 @@ describe("onglet Équipes : schéma lu", () => {
       etape: P.etape,
       avis: P.formes.avis,
       synthese: P.editeur.synthese,
+      // 5b (L42a) : les deux lignes neuves du schéma prennent le mot de leur forme ; leur rendu propre vient de L42d et L43.
+      relecture: P.editeur.blocs.relecture,
+      aiguillage: P.editeur.blocs.aiguillage,
       pause: P.execution.pause,
     });
     for (const mot of Object.values(MOTS_LIGNE)) assert.ok(mot.length > 0);
@@ -437,11 +441,21 @@ describe("onglet Équipes : contrat statique des sources", () => {
     }
   });
 
-  it("[Voir une démonstration] MASQUÉ : la démonstration d'équipe arrive en itération 5 (P3)", () => {
-    for (const fichier of [...SOURCES, "teams.css"]) {
+  // <c5:demonstration-equipe-garde>
+  // Itération 5 (fiche L49) : [Voir une démonstration] arrive, mais SEULEMENT dans l'onglet et dans la galerie, et seulement par
+  // le texte de la construction — jamais en dur, jamais ailleurs. Le reste de l'onglet reste muet à son sujet. Que le bouton ne
+  // paraisse pas tant que les équipes sont fermées en Simple est gardé par `demo-equipe.test.ts` (aucune constante propre, U1).
+  const SANS_DEMONSTRATION = [...SOURCES.filter((f) => f !== "TeamsTab.tsx" && f !== "TeamGallery.tsx"), "teams.css"];
+
+  it("[Voir une démonstration] : seulement l'onglet et la galerie, par le texte de la construction (L49)", () => {
+    for (const fichier of SANS_DEMONSTRATION) {
       assert.doesNotMatch(sansCommentaires(lire(fichier)), /d[ée]monstration/i, fichier);
     }
+    for (const fichier of ["TeamsTab.tsx", "TeamGallery.tsx"]) {
+      assert.match(sansCommentaires(lire(fichier)), /TEXTES_CONSTRUCTION\.partout\.demonstration\.voir/, fichier);
+    }
   });
+  // </c5:demonstration-equipe-garde>
 
   it("montants : jamais formatUsd, qui ajoute déjà « $ » (report MX-EQ §4.2)", () => {
     for (const fichier of SOURCES) assert.doesNotMatch(sansCommentaires(lire(fichier)), /formatUsd/, fichier);

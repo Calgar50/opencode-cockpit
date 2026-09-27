@@ -314,7 +314,19 @@ describe("L36a grammaire : un contrôle par code, dans les deux modes", () => {
     rassembler(suite(), ctx("simple", [assistant({ rights: "personnalise" })]));
     rassembler(flowOf(etapeBloc("un", { niveau: "expert" })), ctx("simple"));
     rassembler(suite(), ctx("avance", [assistant({ model: null })]));
-    const attendus = Object.keys(TEAM_TEXTES.partout.problemes) as FlowProblemCode[];
+    // Codes ajoutés par la 5b (L42a) : leurs montages sont dans server/flow-relecture-aiguillage.test.ts, avec les formes qui
+    // les produisent. Ce fichier garde la couverture des codes de l'itération 4, à la lettre.
+    const CODES_5B: readonly FlowProblemCode[] = [
+      "aiguillage-premier",
+      "specialistes",
+      "relecteur-distinct",
+      "meme-famille",
+      "lien-arriere",
+      "lien-avis",
+      "lien-avance",
+      "methodes",
+    ];
+    const attendus = (Object.keys(TEAM_TEXTES.partout.problemes) as FlowProblemCode[]).filter((code) => !CODES_5B.includes(code));
     assert.deepEqual([...produits].sort(), [...attendus].sort());
   });
 });

@@ -261,20 +261,27 @@ describe("croisements it2 V2 : porte I1 fermée sur le câblage complet (L10d ×
     assert.equal(ACTIVATION_OUVERTE, true, "la constante du dépôt est basculée depuis le train de la vague 3");
     // Le crochet d'envoi du paquet L10a (rang « requests ») est là ; celui de l'activation ne l'est pas tant que la porte est
     // fermée. À la bascule, « activation » s'insère entre « plans » et « requests » (avertissement en tête de fichier, point a).
-    assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["floors", "plans", "requests"]);
+    // <c5:crochets-it2>
+    // Grande fusion (GF4) : le câblage complet porte aussi la construction, dont le crochet de la Seconde lecture est le PREMIER
+    // de beforeBilledSend (il ne refuse jamais, wiring-construction.ts). Le rang de l'activation par rapport à « plans » et
+    // « requests », que cette suite éprouve, ne change pas.
+    assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["secondReading", "floors", "plans", "requests"]);
     // Non-régression de l'ouverture 2bis-V2 : un crochet de la salle sort de la liste, un crochet de l'instance principale y reste.
     const inscriptions: readonly Inscription[] = h.cockpit.wiring.registrations;
     assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "omoCaps", instances: ["omo"] }], "beforeBilledSend"), [
+      "secondReading",
       "floors",
       "plans",
       "requests",
     ]);
     assert.deepEqual(crochets([...inscriptions, { kind: "hook", key: "beforeBilledSend", module: "autre" }], "beforeBilledSend"), [
+      "secondReading",
       "floors",
       "plans",
       "requests",
       "autre",
     ]);
+    // </c5:crochets-it2>
 
     const root = await withAgent(h, "Porte fermée");
     const lectures = activationReads(h);
@@ -321,7 +328,10 @@ describe("croisements it2 V2 : répétition générale de la bascule (porte ouve
   it("le crochet d'activation s'inscrit avant celui des demandes, et « PUT autonome » confirmé rend 200 (§2.6)", async (t) => {
     const h = await start(t, { modules: TOUS_PORTE_OUVERTE });
     assert.equal(ACTIVATION_OUVERTE, true, "la porte du dépôt est ouverte depuis la bascule du train de la vague 3");
-    assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["floors", "plans", "activation", "requests"]);
+    // <c5:crochets-it2-ouverte>
+    // Grande fusion (GF4) : la Seconde lecture de la construction en tête, puis l'ordre de l'itération 2, inchangé.
+    assert.deepEqual(hooksOf(h, "beforeBilledSend"), ["secondReading", "floors", "plans", "activation", "requests"]);
+    // </c5:crochets-it2-ouverte>
 
     const root = await withAgent(h, "Porte ouverte");
     const sans = await putChoice(h, root.id, "autonome", h.headers.mutating);

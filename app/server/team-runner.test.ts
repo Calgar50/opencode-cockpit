@@ -174,7 +174,23 @@ async function openTeam(t: TestContext, options: OpenOptions): Promise<Ctx> {
 
   const preflight: TeamPreflightPort = {
     assistants: async () => new Map(),
-    estimate: async () => ({ ok: false, status: 409, code: "a-venir" }),
+    // <c5:reprise-redemarrage>
+    // Clôture 5b (D-5b-1) : la pause « redemarrage-cockpit » sort par la ROUTE d'estimation (POST …/estimate). Le faux rend
+    // l'estimation de l'instantané du test, sans aucune lecture ; il rendait « a-venir », qu'aucun test n'attendait.
+    estimate: async (_team, _body, _mode, relance) => ({
+      ok: true,
+      response: {
+        estimate: ctx.plan.estimate,
+        estimateSha256: ctx.plan.estimateSha256,
+        problems: [],
+        plafond: ctx.plan.plafond,
+        confirmations: [],
+        blocage: null,
+        expireA: Date.now() + 600_000,
+        deja: relance ? 0 : null,
+      },
+    }),
+    // </c5:reprise-redemarrage>
     // A4 : `check` n'émet AUCUNE requête ; le faux non plus.
     check: async (): Promise<PreflightOutcome> => (ctx.refus ? { ok: false, ...ctx.refus } : { ok: true, plan: ctx.plan }),
     recheck: async () => (ctx.recheck.length > 1 ? (ctx.recheck.shift() as RecheckOutcome) : (ctx.recheck[0] as RecheckOutcome)),
@@ -965,7 +981,8 @@ describe("runner d'équipes : redémarrage, relance et lectures", () => {
   }
 
   it("recover : étape occupée rattachée, aucune nouvelle étape, pause « redemarrage-cockpit », demande reconstituée", async (t) => {
-    const ctx = await openTeam(t, { flow: duoFlow() });
+    // Clôture 5b (D-5b-1) : routes d'incident (estimate, relancer) du module teamGuards, monté pour de vrai.
+    const ctx = await openTeam(t, { flow: duoFlow(), guardsReels: true });
     const { h } = ctx;
     const runId = "11111111-2222-3333-4444-555555555555";
     // Racine et session d'étape déjà créées, comme avant le redémarrage ; la session travaille encore.
@@ -990,8 +1007,10 @@ describe("runner d'équipes : redémarrage, relance et lectures", () => {
       precisions: [],
       resultats: [],
     });
-    seedRun(h, { runId, rootId, flow: duoFlow(), state: "en-cours", sessionId: enfant.id, messageText: texte });
+    // Clôture 5b : le travail de la session est lancé AVANT d'écrire le lancement en base — le verrou réel du proxy (teamGuards)
+    // refuse tout envoi vers une session d'étape, et c'est ce que la session devient une fois le lancement écrit.
     await h.call("POST", `/api/oc/session/${enfant.id}/prompt_async`, { headers: h.headers.mutating, body: { agent: AGENT_SCRIPT, model: { providerID: "github-copilot", modelID: "gpt-5-mini" }, parts: [{ type: "text", text: "Travaille." }] } });
+    seedRun(h, { runId, rootId, flow: duoFlow(), state: "en-cours", sessionId: enfant.id, messageText: texte });
 
     const avant = h.fake.requests.length;
     await h.cockpit.startup();
@@ -1003,15 +1022,27 @@ describe("runner d'équipes : redémarrage, relance et lectures", () => {
     assert.equal(apres.filter((req) => req.pathname.endsWith("/prompt_async")).length, 0, "aucun envoi après le redémarrage");
 
     // Instantané perdu avec la mémoire : [Continuer] ne lance rien et demande une nouvelle estimation (rien n'est facturé).
+    // Clôture 5b (D-5b-1) : le code était `estimation-perimee`, dont la phrase (« une nouvelle estimation est affichée ») était
+    // fausse ici ; `reestimation-requise` dit ce qui s'est passé et ce qu'il reste à faire.
     const continuer = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.mutating, body: {} });
     assert.equal(continuer.status, 409, continuer.body);
-    assert.equal(continuer.json<{ error: string }>().error, "estimation-perimee");
+    assert.equal(continuer.json<{ error: string }>().error, "reestimation-requise");
+    assert.equal(continuer.json<{ message: string }>().message, TEXTES.partout.erreurs["reestimation-requise"]);
     assert.equal(h.fake.requests.slice(avant).filter((req) => req.pathname.endsWith("/prompt_async")).length, 0, "toujours aucun envoi");
+    assert.deepEqual(ctx.view(runId).pause?.reestimation, { aucunLibre: false, possible: true }, "la pause porte son issue");
 
     // D-eq-27 : la relance reconstitue la demande depuis `message_text`, sans aucune colonne dédiée ni requête de lecture.
+    // Clôture 5b (D-5b-1) : la sortie passe par les ROUTES — estimation montrée (POST …/estimate), puis votre confirmation
+    // (POST …/relancer, x-cockpit-confirm: 1) —, et non plus par `runner.relaunch` appelé en direct, qu'aucune route n'exposait
+    // dans cet état.
     h.fake.scriptWhen((s) => (s.metadata as { etape?: string } | undefined)?.etape === "securite", { text: "Sécurité : rien de bloquant.", cost: 0.01, stepMs: 5 });
-    const relance = await ctx.runner.relaunch(runId, { ...ctx.plan, rootId });
-    assert.ok(!("ok" in relance), JSON.stringify(relance));
+    const estimation = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(estimation.status, 200, estimation.body);
+    const relance = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: estimation.json<{ estimateSha256: string }>().estimateSha256 },
+    });
+    assert.equal(relance.status, 200, relance.body);
     await ctx.waitRun(runId, (v) => v.state === "terminee", "suite relancée");
     const corps = (h.fake.messages(sessionIdOf(h, "securite"))[0]?.parts ?? []).map((part) => (part as { text?: string }).text ?? "").join("");
     assert.ok(corps.includes(DEMANDE), "la demande est reconstituée depuis le message de l'étape déjà envoyée");

@@ -781,7 +781,9 @@ function deriverFlow(flow: Flow, suffixe: string): Flow {
       const id = `${bloc.id}-${suffixe}`;
       if (bloc.type === "etape") return { type: "etape", id, etape: renomme(bloc.etape) };
       if (bloc.type === "avis") return { type: "avis", id, avis: bloc.avis.map(renomme), synthese: renomme(bloc.synthese) };
-      return { type: "pause", id, message: bloc.message };
+      if (bloc.type === "pause") return { type: "pause", id, message: bloc.message };
+      // Formes de la 5b (L42a) : recopiées telles quelles, identifiant du bloc changé ; aucun exemple de l'it4 n'en contient.
+      return { ...bloc, id };
     }),
   } as Flow;
 }

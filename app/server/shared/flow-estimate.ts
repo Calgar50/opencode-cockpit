@@ -17,7 +17,7 @@
 // - `depassementUnAppel` chiffre ce qu'un appel déjà parti peut ajouter au-delà du plafond (§2.1 l.66).
 import { type ModelPrice, ratesFor, roundUsd } from "../pricing.ts";
 import { chooseEstimate, estimateTaskCost, TASK_PROFILES, type TaskSize, type Tier } from "./assistant-rules.ts";
-import { planSteps, receivedFrom } from "./team-limits.ts";
+import { choixMaxDe, planSteps, receivedFrom, toursDe } from "./team-limits.ts";
 import type { Flow, FlowEstimate, FlowProblem, FlowStep, StepAssistant, StepEstimate, TeamStepState } from "./team-types.ts";
 
 // --- Contexte -------------------------------------------------------------------------------------------------------------------
@@ -57,9 +57,14 @@ export interface FlowEstimateContext {
   simultanees: number;
 }
 
-/** État des étapes d'un lancement (suiteEstimate) : dernière tentative de chaque étape ; une étape absente n'a pas été lancée. */
+/**
+ * État des étapes d'un lancement (suiteEstimate) : dernière tentative de chaque étape ; une étape absente n'a pas été lancée.
+ * `tours` (5b) : nombre de PASSAGES déjà faits par l'étape. Depuis L42a une même étape revient plusieurs fois sur le chemin
+ * d'une relecture, et un seul état ne dit pas combien de fois elle est passée : sans ce compte, une étape « terminee » au tour 1
+ * retirerait du reste TOUTES ses révisions à venir. Absent : 1 passage pour « terminee », 0 sinon (comportement de l'it4).
+ */
 export interface FlowRunState {
-  etapes: ReadonlyArray<{ stepId: string; state: TeamStepState }>;
+  etapes: ReadonlyArray<{ stepId: string; state: TeamStepState; tours?: number }>;
 }
 
 // --- Taille au-dessus et coût d'un appel ------------------------------------------------------------------------------------------
@@ -108,6 +113,10 @@ function stepsById(flow: Flow): Map<string, FlowStep> {
   for (const block of flow.blocs) {
     if (block.type === "etape") out.set(block.etape.id, block.etape);
     else if (block.type === "avis") for (const step of [...block.avis, block.synthese]) out.set(step.id, step);
+    else if (block.type === "relecture") for (const step of [block.auteur, block.relecteur]) out.set(step.id, step);
+    else if (block.type === "aiguillage") {
+      for (const step of [block.aiguilleur, ...block.specialistes, ...(block.synthese ? [block.synthese] : [])]) out.set(step.id, step);
+    }
   }
   return out;
 }
@@ -149,31 +158,105 @@ function estimateStep(step: FlowStep, ctx: FlowEstimateContext): StepLine {
   };
 }
 
-/** Estimation d'un chemin donné (identifiants dans l'ordre de planSteps) : cœur commun d'estimateFlow et de suiteEstimate. */
-function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly string[]): FlowEstimate {
+/**
+ * Une entrée du chemin estimé. `groupe` : bloc d'aiguillage dont l'étape est un spécialiste PROPOSÉ — toutes les propositions
+ * sont estimées (la feuille de lancement doit pouvoir les nommer), mais « au plus » n'en paie que `garde`, le nombre que le
+ * bloc laisse confirmer. Sans `groupe`, l'entrée est toujours comptée.
+ */
+interface CheminEntree {
+  stepId: string;
+  blocId: string;
+  groupe?: string;
+  garde?: number;
+}
+
+/**
+ * Chemin estimé : l'ordre de planSteps (T4), où les spécialistes d'un aiguillage sont remplacés par TOUS ceux que le bloc
+ * propose. L'aiguilleur peut proposer n'importe lequel, la pause de choix les liste tous et l'ordonnanceur lance sans réserve
+ * ceux que l'on confirme (flow.ts, L42a) : borner « au plus » aux premiers ÉCRITS annoncerait un plafond que le choix réel peut
+ * dépasser, et la feuille tairait des spécialistes qu'elle doit nommer (§13.2, P3). Le nombre payé reste `choixMaxDe` ; ce sont
+ * les plus coûteux qui sont retenus, donc le montant ne dépend plus de l'ordre d'écriture.
+ */
+function cheminEstime(flow: Flow, chemin: "typique" | "maximal"): CheminEntree[] {
+  const blocs = new Map(flow.blocs.map((block) => [block.id, block]));
+  const ouverts = new Set<string>();
+  const out: CheminEntree[] = [];
+  for (const planned of planSteps(flow, { chemin })) {
+    const block = blocs.get(planned.blocId);
+    if (chemin === "maximal" && block?.type === "aiguillage" && planned.role === "specialiste") {
+      if (ouverts.has(block.id)) continue;
+      ouverts.add(block.id);
+      const garde = choixMaxDe(block);
+      for (const step of Array.isArray(block.specialistes) ? block.specialistes : []) {
+        out.push({ stepId: step.id, blocId: block.id, groupe: block.id, garde });
+      }
+      continue;
+    }
+    out.push({ stepId: planned.stepId, blocId: planned.blocId });
+  }
+  return out;
+}
+
+/** Coût d'une entrée du chemin : son estimation propre et les relais qu'elle paie en entrée. */
+interface CoutEntree {
+  typique: number;
+  maximum: number;
+  relais: number;
+}
+
+/** Estimation d'un chemin donné (entrées dans l'ordre de cheminEstime) : cœur commun d'estimateFlow et de suiteEstimate. */
+function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly CheminEntree[]): FlowEstimate {
   const steps = stepsById(flow);
   const parEtape: StepEstimate[] = [];
-  const appels: number[] = [];
+  // Un appel par étape EN COURS : une étape ne compte qu'une fois, même quand le chemin la fait revenir (tours d'une relecture).
+  const appels = new Map<string, number>();
+  // Spécialistes proposés d'un même aiguillage : seuls les `garde` plus coûteux entrent dans les sommes (choixMaxDe).
+  const groupes = new Map<string, { garde: number; couts: CoutEntree[] }>();
   let typique = 0;
   let maximum = 0;
   let relais = 0;
-  for (const stepId of chemin) {
-    const step = steps.get(stepId);
+  let comptees = 0;
+  for (const entree of chemin) {
+    const step = steps.get(entree.stepId);
     if (!step) continue;
     const { ligne, unAppel, prix } = estimateStep(step, ctx);
     parEtape.push(ligne);
-    typique += ligne.typique ?? 0;
-    maximum += ligne.maximum ?? 0;
-    appels.push(unAppel);
+    if (!appels.has(entree.stepId)) appels.set(entree.stepId, unAppel);
     // Relais : un coût par résultat reçu, SELON receivedFrom (T4). Un avis (« demande ») n'en reçoit aucun ; la synthèse d'un
-    // bloc d'avis en reçoit un par avis.
-    if (!prix) continue;
-    for (const source of receivedFrom(flow, stepId)) {
-      const producteur = steps.get(source);
-      if (producteur) relais += relayCost(producteur.taille, prix);
+    // bloc d'avis en reçoit un par avis ; une étape à `recoit: {etapes}` (5b) en reçoit un par étape listée.
+    let relaisEtape = 0;
+    if (prix) {
+      for (const source of receivedFrom(flow, entree.stepId)) {
+        const producteur = steps.get(source);
+        if (producteur) relaisEtape += relayCost(producteur.taille, prix);
+      }
     }
+    const cout: CoutEntree = { typique: ligne.typique ?? 0, maximum: ligne.maximum ?? 0, relais: relaisEtape };
+    if (entree.groupe === undefined) {
+      typique += cout.typique;
+      maximum += cout.maximum;
+      relais += cout.relais;
+      comptees += 1;
+      continue;
+    }
+    const groupe = groupes.get(entree.groupe) ?? { garde: entree.garde ?? 0, couts: [] };
+    groupe.garde = entree.garde ?? groupe.garde;
+    groupe.couts.push(cout);
+    groupes.set(entree.groupe, groupe);
   }
-  const dessus = appels.toSorted((a, b) => b - a).slice(0, Math.max(0, ctx.simultanees));
+  // « Au plus » d'un aiguillage : les `garde` propositions les plus chères, quel que soit leur rang d'écriture.
+  for (const groupe of groupes.values()) {
+    const retenues = groupe.couts
+      .toSorted((a, b) => b.maximum + b.relais - (a.maximum + a.relais))
+      .slice(0, Math.max(0, groupe.garde));
+    for (const cout of retenues) {
+      typique += cout.typique;
+      maximum += cout.maximum;
+      relais += cout.relais;
+    }
+    comptees += retenues.length;
+  }
+  const dessus = [...appels.values()].toSorted((a, b) => b - a).slice(0, Math.max(0, ctx.simultanees));
   const total = roundUsd(typique + relais);
   const haut = roundUsd(maximum + relais);
   return {
@@ -181,49 +264,99 @@ function estimateChemin(flow: Flow, ctx: FlowEstimateContext, chemin: readonly s
     maximum: haut,
     // Le plafond EST l'estimation haute : le cockpit arrête l'équipe quand le coût l'atteint (P3, L37c).
     plafond: haut,
-    etapesFacturees: parEtape.length,
+    // Appels que « au plus » paie : les propositions d'un aiguillage qui dépassent `choixMax` sont estimées, jamais facturées.
+    etapesFacturees: comptees,
     depassementUnAppel: roundUsd(dessus.reduce((somme, valeur) => somme + valeur, 0)),
     relais: roundUsd(relais),
     parEtape,
   };
 }
 
-/** Estimation du chemin complet (en itération 4, chemin typique = chemin maximal : aucun bloc facultatif ni aiguillage). */
+/**
+ * Estimation d'un déroulé : « en général » se compte sur le chemin TYPIQUE, « au plus » sur le chemin MAXIMAL, tous deux rendus
+ * par planSteps (T4, étendue par L42a). Pour les formes de l'itération 4 les deux chemins sont les mêmes : l'estimation ne
+ * change pas d'un iota. Pour une relecture ou un aiguillage, « au plus » couvre tous les tours et tous les spécialistes que le
+ * plafond doit payer — c'est ce qui rend « au plus » vrai (P3). Les spécialistes d'un aiguillage sont TOUS estimés, et « au
+ * plus » retient les `choixMax` plus coûteux (cheminEstime) : l'ordre d'écriture ne décide plus du plafond annoncé.
+ * `parEtape` garde UNE ligne par étape, dans l'ordre du chemin maximal : une étape qui revient à chaque tour n'est pas répétée.
+ */
 export function estimateFlow(flow: Flow, ctx: FlowEstimateContext): FlowEstimate {
-  return estimateChemin(
-    flow,
-    ctx,
-    planSteps(flow).map((planned) => planned.stepId),
-  );
+  const maximal = estimateChemin(flow, ctx, cheminEstime(flow, "maximal"));
+  const typique = estimateChemin(flow, ctx, cheminEstime(flow, "typique"));
+  const vues = new Set<string>();
+  const parEtape = maximal.parEtape.filter((ligne) => !vues.has(ligne.stepId) && (vues.add(ligne.stepId), true));
+  const repetitions = repetitionsDe(flow);
+  return { ...maximal, typique: typique.typique, parEtape, ...(repetitions === null ? {} : { repetitions }) };
 }
 
 /**
- * Coût du reste du chemin (bouton de pause, relance) : étapes non « terminee », prises dans l'ordre de planSteps de T4 — le coût
- * ne dépend pas de l'ordonnanceur de L36a. Les relais sont recomptés par receivedFrom : le résultat d'une étape déjà terminée
- * reste à transmettre, donc à payer en entrée.
+ * Répétitions que le chemin maximal couvre (5b) : tours d'une relecture et spécialistes d'un aiguillage. Ce sont les nombres
+ * des lignes « 1 tour en général, {n} au plus » et « 1 spécialiste en général, {n} au plus » (construction-texts.ts, §4.3) ;
+ * ce module ne les met pas en phrase, il ne porte aucun texte. `null` : le déroulé n'a aucune de ces deux formes.
+ */
+function repetitionsDe(flow: Flow): { tours: number; specialistes: number } | null {
+  let tours = 0;
+  let specialistes = 0;
+  for (const block of flow.blocs) {
+    if (block.type === "relecture") tours = Math.max(tours, toursDe(block));
+    if (block.type === "aiguillage") specialistes = Math.max(specialistes, choixMaxDe(block));
+  }
+  return tours === 0 && specialistes === 0 ? null : { tours, specialistes };
+}
+
+/** Passages déjà faits par une étape : `tours` quand l'exécuteur le donne, sinon 1 pour « terminee » et 0 autrement (it4). */
+function passagesFaits(etape: FlowRunState["etapes"][number]): number {
+  const plancher = etape.state === "terminee" ? 1 : 0;
+  const brut = Math.trunc(Number(etape.tours));
+  return Number.isFinite(brut) ? Math.max(plancher, brut) : plancher;
+}
+
+/**
+ * Coût du reste du chemin (bouton de pause, relance) : PASSAGES non encore faits, pris dans l'ordre du chemin maximal — le coût
+ * ne dépend pas de l'ordonnanceur de L36a. Le filtre porte sur les passages et non sur les identifiants : depuis L42a une même
+ * étape revient à chaque tour d'une relecture, et retirer tous ses passages parce qu'un seul est terminé ferait disparaître du
+ * « Coût du reste » les révisions à venir — donc du plafond d'une relance, qui vaut « déjà dépensé + reste » (team-preflight).
+ * Les relais sont recomptés par receivedFrom : le résultat d'une étape déjà terminée reste à transmettre, donc à payer en entrée.
  */
 export function suiteEstimate(flow: Flow, state: FlowRunState, ctx: FlowEstimateContext): FlowEstimate {
-  const terminees = new Set(state.etapes.filter((etape) => etape.state === "terminee").map((etape) => etape.stepId));
-  return estimateChemin(
-    flow,
-    ctx,
-    planSteps(flow)
-      .map((planned) => planned.stepId)
-      .filter((stepId) => !terminees.has(stepId)),
+  const faits = new Map<string, number>();
+  for (const etape of state.etapes) {
+    const compte = passagesFaits(etape);
+    if (compte > 0) faits.set(etape.stepId, (faits.get(etape.stepId) ?? 0) + compte);
+  }
+  const retires = new Map<string, number>();
+  const reste: CheminEntree[] = [];
+  for (const entree of cheminEstime(flow, "maximal")) {
+    const restant = faits.get(entree.stepId) ?? 0;
+    if (restant > 0) {
+      faits.set(entree.stepId, restant - 1);
+      if (entree.groupe !== undefined) retires.set(entree.groupe, (retires.get(entree.groupe) ?? 0) + 1);
+      continue;
+    }
+    reste.push(entree);
+  }
+  // Un spécialiste déjà terminé occupe une des places que « au plus » paie : le reste n'en couvre pas une de plus.
+  const ajuste = reste.map((entree) =>
+    entree.groupe === undefined ? entree : { ...entree, garde: Math.max(0, (entree.garde ?? 0) - (retires.get(entree.groupe) ?? 0)) },
   );
+  return estimateChemin(flow, ctx, ajuste);
 }
 
 /**
- * Problèmes constatés à l'estimation : une étape sans IA disponible donne « niveau-indisponible » (bloquant). Les problèmes de
- * grammaire (assistant absent, droits, bornes) restent à validateFlow (L36a) : FlowEstimate ne porte aucune liste de problèmes.
+ * Problèmes constatés à l'estimation : une étape sans IA disponible donne « niveau-indisponible » (bloquant). Le chemin est
+ * celui de l'estimation, donc TOUS les spécialistes proposés d'un aiguillage y passent : l'un d'eux peut être confirmé, son IA
+ * doit donc être disponible. Un problème par étape, jamais un par passage. Les problèmes de grammaire (assistant absent, droits,
+ * bornes) restent à validateFlow (L36a) : FlowEstimate ne porte aucune liste de problèmes.
  */
 export function estimateProblems(flow: Flow, ctx: FlowEstimateContext): FlowProblem[] {
   const steps = stepsById(flow);
   const problems: FlowProblem[] = [];
-  for (const planned of planSteps(flow)) {
-    const step = steps.get(planned.stepId);
-    if (!step || ctx.iaDe(step) !== null) continue;
-    const probleme: FlowProblem = { code: "niveau-indisponible", bloc: planned.blocId, etape: step.id, bloquant: true, nom: step.assistant };
+  const vues = new Set<string>();
+  for (const entree of cheminEstime(flow, "maximal")) {
+    const step = steps.get(entree.stepId);
+    if (!step || vues.has(entree.stepId) || ctx.iaDe(step) !== null) continue;
+    vues.add(entree.stepId);
+    const probleme: FlowProblem = { code: "niveau-indisponible", bloc: entree.blocId, etape: step.id, bloquant: true, nom: step.assistant };
     if (step.niveau !== null) probleme.niveau = step.niveau;
     problems.push(probleme);
   }
@@ -305,14 +438,15 @@ export function estimateCanonical(input: EstimateCanonicalInput): string {
 }
 
 /**
- * Étapes du texte canonique, lues comme l'estimation les a lues (ordre de planSteps, IA d'`iaDe`, tarifs de `prix`) : L37p bâtit
- * ainsi l'empreinte sur exactement ce qui a servi au calcul (A4, D-eq-17). Tarifs de base de la grille, hors paliers de contexte.
+ * Étapes du texte canonique, lues comme l'estimation les a lues (ordre du chemin estimé, IA d'`iaDe`, tarifs de `prix`) : L37p
+ * bâtit ainsi l'empreinte sur exactement ce qui a servi au calcul (A4, D-eq-17). Les spécialistes proposés d'un aiguillage y
+ * figurent tous, comme dans l'estimation. Tarifs de base de la grille, hors paliers de contexte.
  */
 export function canonicalSteps(flow: Flow, ctx: FlowEstimateContext): CanonicalStep[] {
   const steps = stepsById(flow);
   const out: CanonicalStep[] = [];
-  for (const planned of planSteps(flow)) {
-    const step = steps.get(planned.stepId);
+  for (const entree of cheminEstime(flow, "maximal")) {
+    const step = steps.get(entree.stepId);
     if (!step) continue;
     const ia = ctx.iaDe(step);
     const prix = ia ? ctx.prix(ia.model) : null;

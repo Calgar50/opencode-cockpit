@@ -813,6 +813,105 @@ L'ouverture tient en **une ligne** du code (`app/server/wiring-eq.ts`), posée a
 - Le comportement sur GitHub Copilot réel (messages ajoutés sans réponse, limites de débit, facturation d'un appel interrompu) reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
 <!-- équipes (it4) : fin -->
 
+<!-- c5:construction -->
+## Construction, méthodes et Seconde lecture (1.1)
+
+> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que le code du chantier contient déjà : les **méthodes** (des façons de répondre, attachées à un assistant, à un message ou à une étape d'équipe), la **Seconde lecture** d'une réponse par un autre assistant, deux formes d'équipe de plus (**rédaction et relecture**, **aiguillage**), le **schéma modifiable**, la **chronologie** d'une demande, les **coûts et les archives par équipe**, la **vue d'ensemble** de la carte des assistants et une **démonstration** d'équipe. Les méthodes et la Seconde lecture sont ouvertes dans les deux modes ; ce qui touche aux équipes suit la règle de la section précédente et s'utilise en **mode Avancé**.
+
+Les phrases entre guillemets de cette section sont celles de l'interface. Elles sont écrites dans `app/server/shared/construction-texts.ts` ; celles des équipes elles-mêmes restent dans `app/server/shared/team-texts.ts` (voir [Équipes et carte des assistants](#équipes-et-carte-des-assistants)), et les titres des méthodes et des assistants viennent de leurs catalogues (`app/server/methods-catalogue.ts`, `app/server/assistants-catalogue.ts`).
+
+### Méthodes
+
+Une méthode est un **texte court** qui guide la façon de répondre. Huit méthodes sont livrées, lisibles dans **Assistants › Méthodes** : « Certitude et À VÉRIFIER », « Clarifier d'abord », « Diagnostic différentiel », « 5 pourquoi », « Pré-mortem », « Retour arrière d'abord », « Avocat du diable » et « Seconde lecture ». Chaque carte dit quand s'en servir, ce à quoi faire attention, et montre le « Texte exact » qui sera ajouté.
+
+- **« Aucun appel d'IA en plus »** : une méthode n'est que du texte, ajouté aux consignes de l'assistant ou à la fin de votre message. Aucune IA supplémentaire n'est appelée, rien n'est vérifié en plus.
+- **Ce qu'elle promet, et rien d'autre** : « Une méthode guide la réponse ; elle ne garantit pas qu'elle est juste. »
+- **Trois façons de s'en servir** :
+  - **à un assistant**, dans sa création ou depuis la bibliothèque — « Méthodes (facultatif) », avec « Aucun appel d'IA en plus : le texte de la méthode s'ajoute aux consignes de l'assistant. » Le texte est écrit dans le fichier de l'assistant, qui fait foi ;
+  - **à un message**, par la puce « + Méthode » à côté de la saisie : la méthode ne vaut que pour cet envoi, et un aperçu montre ce qui sera ajouté avant l'envoi ;
+  - **à une étape d'équipe**, par « Méthodes (facultatif, 2 au plus) » dans l'éditeur guidé : le message de l'étape porte alors l'en-tête « ## Méthode : {titre} ».
+- **Conseillées, jamais automatiques** : la bibliothèque groupe les « Méthodes conseillées » par assistant, et la création marque « Conseillée pour cet assistant ». **Rien n'est attaché tout seul** : installer un assistant du catalogue n'ajoute aucune méthode, et c'est vous qui les posez.
+- **Bornes annoncées** : « 2 méthodes au maximum : au-delà, l'assistant les applique moins bien. » ; « Déjà appliquée par l'assistant. » ; « Les méthodes ne s'ajoutent pas à un raccourci. » ; « Les méthodes ne partent qu'avec un message écrit. » ; « Les méthodes d'une équipe se règlent sur ses étapes. »
+- **Après la réponse**, une pastille dit « Méthode appliquée » ou « Méthode non détectée dans la réponse », et son infobulle dit exactement ce qui a été regardé : « Le cockpit vérifie seulement que la section attendue est présente, pas que le raisonnement est juste. »
+- En mode Avancé, chaque méthode affiche ses « Sources ».
+
+### Seconde lecture
+
+Sous une réponse, **« Seconde lecture (≈ {x} $) »** la fait relire par un autre assistant, le « Relecteur critique », **dans la même conversation**.
+
+- **Le coût est estimé d'après la longueur de la conversation**, et **ce n'est pas un minimum garanti** : le montant est précédé de « ≈ », jamais de « au moins ». L'infobulle nomme l'IA et la raison du chiffre : « Un autre assistant (Relecteur critique, {ia}) relit la réponse avec une liste de contrôle. Il voit toute la conversation : le coût dépend de sa longueur. », suivie de la base employée — « Estimation d'après la longueur actuelle de la conversation. », « Estimation d'après ses relectures précédentes. » ou « Estimation pour une conversation courte : une longue conversation coûte davantage. » Quand aucune base n'est disponible, **aucun montant n'est affiché**.
+- **Elle ne remplace personne** : « Relecture par un autre assistant : elle ne remplace ni la relecture par un collègue ni le CAB. »
+- Le relecteur reçoit **toute la conversation**, appels d'outils compris : c'est ce qui fait dépendre le coût de sa longueur. Ce point est mesuré hors ligne sur opencode 1.18.30 (voir le récapitulatif, [Validations réalisées](docs/RECAPITULATIF.md#10-validations-réalisées)).
+- Elle est proposée aussi sous le **résultat d'une équipe**. Elle est refusée pendant qu'une réponse travaille (« Attendez la fin de la réponse en cours. »), pendant qu'une équipe travaille dans la conversation (« Une équipe travaille dans cette conversation : attendez sa fin ou arrêtez-la. ») et quand le relecteur n'est pas installé (« Installez l'assistant « Relecteur critique » pour demander une seconde lecture. »).
+- C'est **un message ordinaire** : un seul envoi, la même garde budgétaire que vos autres demandes, et la dépense apparaît dans les coûts du mois comme n'importe quelle autre.
+
+### Rédaction et relecture, aiguillage
+
+Deux formes d'équipe s'ajoutent aux trois de l'itération précédente.
+
+- **« Rédaction et relecture »** : « Un assistant rédige, un autre relit ; 2 tours au maximum. » — « Un tour = une relecture, puis une correction si nécessaire. » Le relecteur termine sa réponse par une ligne seule, `VERDICT: À REPRENDRE` ou `VERDICT: RIEN À REPRENDRE` ; le cockpit lit **cette dernière ligne et rien d'autre**. Un verdict illisible penche du côté prudent : « Verdict illisible : traité comme « à reprendre ». » Au bout des tours prévus, l'équipe le dit au lieu de conclure : « Relecture non conclue après {n} tours : points restants ci-dessous. » Le « Journal de relecture » garde chaque tour, et une correction non relue est marquée « Non relue après la dernière correction. »
+- **« Aiguillage »** : « Un premier assistant propose le bon spécialiste dans une liste fixe ; vous confirmez son choix. » L'équipe **s'arrête** sur une carte « Choisissez le ou les spécialistes » : **aucun spécialiste n'est lancé avant votre confirmation**, ni par l'autonomie, ni par un automatisme du cockpit. Le cockpit ne retient que des spécialistes de la liste écrite dans l'équipe, quoi que l'aiguilleur ait écrit. S'il ne répond pas lisiblement : « L'aiguilleur n'a pas donné de choix lisible : choisissez vous-même. » Si rien ne convient : « Aucun spécialiste de la liste ne convient. », avec « Envoyer à cet assistant », qui **préremplit la saisie** sans rien envoyer.
+- **Prévu et Réel** : le Déroulé d'équipe compare ce qui était prévu à ce qui a eu lieu — « Prévu : jusqu'à {n} tours · Réel : {m} tour » — et les spécialistes écartés y restent visibles, marqués « Non choisi ».
+- **Estimation** : la feuille de lancement annonce le chemin le plus long en plus du courant, « 1 tour en général, {n} au plus » et « 1 spécialiste en général, {n} au plus ».
+- L'éditeur guidé conseille : « Pour une relecture plus indépendante, donnez au relecteur une autre IA que le rédacteur. », refuse un relecteur identique au rédacteur (« Le relecteur doit être un autre assistant, ou le même avec une autre IA. ») et prévient sans bloquer quand les deux IA sont de la même famille (« Rédacteur et relecteur utilisent la même famille d'IA : la relecture sera moins indépendante. »).
+
+### Schéma modifiable (mode Avancé)
+
+« Schéma modifiable » montre l'équipe en blocs reliés et se modifie directement : « Même équipe, deux façons de la modifier. Le schéma n'accepte que ce que le cockpit sait exécuter. »
+
+- Il se parcourt et se modifie **au clavier seul** : chaque déplacement a son bouton ou son entrée de menu (« Ajouter après », « Monter », « Descendre », « Transformer en… », « Reçoit le résultat de… », « Supprimer »), et un lien se pose aussi à la souris (« Glissez vers une étape plus bas : elle recevra ce résultat. »).
+- Il **refuse en l'expliquant**, jamais par la couleur seule : « Le cockpit exécute les étapes de haut en bas : un lien ne peut aller que vers une étape plus bas. », « Seule une relecture revient en arrière, 2 tours au maximum. », « Pas de condition libre : seuls le verdict d'une relecture et le choix d'un aiguillage changent la suite. », « Un bloc ne peut pas en contenir un autre. »
+- « Voir le JSON » montre l'équipe telle qu'elle est enregistrée : « Lecture seule. Pour partager une équipe, utilisez « Dupliquer » ; l'import viendra plus tard. »
+- Sous 900 px de large : « Le schéma modifiable demande un écran plus large : utilisez les étapes. » La liste des étapes fait alors tout ce que fait le schéma.
+- Ce que le schéma accepte, le **serveur le revérifie** à l'enregistrement et au lancement : l'interface n'est jamais la seule garde.
+
+### Exemples et assistants d'équipe
+
+Quatre exemples s'ajoutent à la galerie d'**Assistants › Équipes** : « Enquête sur un incident » (trois avis et une synthèse), « Revue d'un changement avant le comité » (avec une pause pour compléter le dossier), « Compte rendu d'incident relu » (rédaction, pause pour que vous vérifiiez le premier jet, puis relecture, 2 tours au plus) et « Tri d'une alerte » (aiguillage vers des spécialistes, puis synthèse).
+
+- « Revue SQL sur réplica » gagne un **contrôle local, sans aucun appel d'IA** : les mots d'écriture repérés dans votre requête sont annoncés avant l'envoi — « Repéré dans la requête : {mots} — la synthèse le signalera en premier. » Le cockpit dit ce qu'il a **repéré**, jamais que la requête écrit.
+- Quatre **assistants d'équipe** entrent au catalogue, réunis sous « Assistants des équipes ({n}) » : « Relecteur critique », « Synthèse et rapport », « Aiguilleur » et « Rédiger un compte rendu d'incident ». « Ils travaillent surtout dans les équipes ; vous pouvez aussi les utiliser seuls. » Tous sont en **lecture seule**, sans Internet et sans délégation, comme toute étape d'équipe.
+
+### Chronologie d'une demande (mode Avancé)
+
+Dans le panneau **Déroulé**, une bascule « Déroulé » / « Chronologie » ouvre « Le déroulé détaillé : chaque appel d'IA, ses outils, ses jetons et son coût. »
+
+- Un tableau donne, appel par appel : qui, quel appel, son début, sa durée, son IA, ses jetons, ses outils, ses tentatives et son coût ; une figure les replace dans le temps, et le tableau seul reste sous 400 px.
+- Quand opencode n'a rien enregistré pour un appel, la ligne le dit : « Jetons non enregistrés pour cet appel. » Rien n'est estimé à la place.
+- Sans appel d'IA : « Aucun appel d'IA enregistré pour cette demande. »
+- La chronologie est **réservée au mode Avancé** : elle parle de jetons, un mot que le mode Simple n'emploie pas.
+
+### Coûts et archives par équipe
+
+- **Coûts** : une ligne « Par équipe » réunit, pour le mois, les lancements et la dépense de chaque équipe, avec « Lancements d'équipe les plus coûteux » ; « Aucune équipe lancée ce mois-ci. » quand il n'y en a pas, et « Équipe supprimée » pour une équipe désinstallée depuis.
+- **Export CSV** : deux colonnes, `lancement_equipe` et `etape`, sont ajoutées **en fin de ligne**. Les colonnes de la 1.0 gardent leur place et leur ordre : un tableur ou un script qui lisait l'export continue de marcher. Une ligne sans étape d'équipe laisse les deux cases vides.
+- **Archives** : un filtre « Avec une équipe », une section « Équipes lancées dans cette conversation » avec chaque étape, son assistant, son IA, son état et son coût, et un « Extrait du résultat (données masquées) ». Après la purge d'une conversation chez opencode : « Détail des étapes indisponible : conversation supprimée d'opencode. Coûts conservés. »
+- **Export Markdown** : le résumé des lancements est ajouté en fin d'export, sous « Déroulé de l'équipe « {equipe} » », et **sans aucun extrait de résultat** — les extraits restent dans l'interface, où ils sont déjà masqués. Le fichier écrit dans le dossier d'archives et le téléchargement de l'interface disent exactement la même chose.
+
+### Vue d'ensemble de la carte des assistants (mode Avancé)
+
+« Vue d'ensemble » ajoute une troisième vue à la carte : tout ce qui peut travailler chez vous, groupé par genre (« Vous », « Raccourcis », « Équipes », « Assistants », « Intégrés », « Agents du Studio », « Sous-agents », « Fiches »).
+
+- « Survolez ou sélectionnez un élément pour n'afficher que ses liens. » Ce qui sort du sujet est estompé et annoncé « (hors sujet) », jamais effacé.
+- Les traits dessinés sont décoratifs : chaque lien est **repris en toutes lettres** sous « Liens », et les puces de filtre sont groupées sous « Afficher ». La vue se lit donc entièrement sans le dessin.
+
+### Démonstration d'équipe
+
+« Voir une démonstration » ouvre « Comment se déroule une équipe », un déroulé enregistré : une équipe de trois avis indépendants, suivis d'une synthèse. C'est le seul déroulé livré : la démonstration n'a pas de bascule entre deux déroulés.
+
+- L'étiquette est permanente : « Démonstration enregistrée : aucune IA n'est appelée », avec « Déroulé enregistré avec des données fictives. »
+- **Aucune requête** n'est émise vers opencode pendant la démonstration : elle lit un fichier du dépôt, pas votre historique.
+- Elle ne se lance **jamais toute seule** : c'est vous qui avancez, moment par moment (« Moment {n} / {total} », le lecteur de l'itération 1). Les courtes transitions de la bande, au passage d'un moment à l'autre, sont coupées si votre système demande un mouvement réduit.
+
+### Limites à connaître
+
+- **« Méthode appliquée » ne regarde que l'en-tête.** Le cockpit cherche la ligne de titre que la méthode demande à l'IA d'écrire ; il ne juge ni le raisonnement ni la réponse. L'infobulle le dit à l'endroit où la pastille s'affiche.
+- **Le verdict et le choix sont lus sur la dernière ligne.** Un relecteur qui oublie sa ligne `VERDICT:` est traité comme « à reprendre » ; un aiguilleur dont la dernière ligne `CHOIX:` est illisible vous rend la main. Le cockpit ne devine pas le sens d'un texte libre, et il ne retient jamais un spécialiste absent de la liste de l'équipe. Que les IA de GitHub Copilot respectent vraiment ces dernières lignes reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
+- **La relecture reprend l'historique.** Le tour 2 reprend les **mêmes** conversations d'étape que le tour 1, celle du rédacteur et celle du relecteur : chacun revoit ce qu'il a déjà écrit. C'est ce qui rend la correction possible, et c'est aussi ce qui fait grandir le coût d'un tour à l'autre. Une relance après un échec ou une interruption, elle, repart du tour 1 avec des conversations neuves.
+- **La Seconde lecture n'a pas de minimum garanti.** Le montant affiché est une estimation à partir de la longueur actuelle de la conversation, ou de vos relectures précédentes, ou d'un profil de conversation courte. Une longue conversation coûte davantage, et le montant réel n'est connu qu'après coup, dans les coûts.
+- **Une méthode ne remplace pas une relecture.** Ni une méthode, ni la Seconde lecture ne remplacent la relecture par un collègue ou le passage au CAB : c'est écrit sous chaque seconde lecture.
+- **Le comportement sur GitHub Copilot réel** (dernières lignes respectées, relecture d'un historique contenant des appels d'outils, limites de débit avec trois étapes en même temps) reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
+<!-- /c5:construction -->
 ## Suivi des coûts
 
 Depuis le **1er juin 2026**, Copilot facture **au token**, en crédits IA (1 crédit = 0,01 $). Le compteur est remis à zéro le 1er de chaque mois à 00:00 UTC, et un budget utilisateur épuisé bloque les requêtes, sans repli sur un modèle gratuit.

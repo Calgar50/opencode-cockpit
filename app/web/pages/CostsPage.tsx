@@ -9,6 +9,10 @@ import { cockpitEvent, useEvents } from "../lib/events.ts";
 import { formatCredits, formatDateTime, formatDay, formatInt, formatPercent, formatTokens, formatUsd, monthLabel, relativeTime } from "../lib/format.ts";
 import { routeHref } from "../lib/router.ts";
 import { BarList, CumulativeChart, DailySpendChart } from "./costs/charts.tsx";
+// <c5:couts-equipe>
+// Itération 5 (L46b) : coûts par équipe du mois affiché (D-5-10). Le composant lit sa propre route et se recharge seul.
+import { TeamCosts } from "./costs/TeamCosts.tsx";
+// </c5:couts-equipe>
 
 const PURPOSES: Record<string, string> = {
   chat: "Conversations",
@@ -274,6 +278,10 @@ export function CostsPage() {
             </div>
           )}
         </Card>
+
+        {/* <c5:couts-equipe> */}
+        <TeamCosts month={month} />
+        {/* </c5:couts-equipe> */}
 
         <div className="grid-2">
           <Card title="Par usage">

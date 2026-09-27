@@ -426,16 +426,21 @@ describe("L37a : POST /api/teams/:id/estimate", () => {
 
 describe("L37a : exemples (Q3, réponse a)", () => {
   it("les deux exemples passent la grammaire du mode Simple avec le catalogue réel", () => {
+    // <c5:exemples-it4>
+    // Les deux exemples de l'it4 ouvrent le registre, dans cet ordre, et ne sont jamais réécrits ; la 5b (L45b) en ajoute
+    // quatre à la suite, contrôlés par `team-examples-c5.test.ts`. Ce test reste celui des deux premiers.
     assert.deepEqual(
-      TEAM_EXAMPLES.map((example) => example.id),
+      TEAM_EXAMPLES.slice(0, 2).map((example) => example.id),
       ["revue-sql", "relecture-script"],
     );
+    const exemplesIt4 = TEAM_EXAMPLES.slice(0, 2);
+    // </c5:exemples-it4>
     // Assistants tels que le catalogue les installe : profil « lecture », consignes propres, aucun assistant nouveau.
     const assistants = CATALOGUE.filter((entry) => entry.id === SQL || entry.id === SCRIPT).map((entry) =>
       assistant(entry.id, { title: entry.title, rights: entry.rights, rules: reglesLecture(entry.fiches), taille: entry.taskSize }),
     );
     assert.equal(assistants.length, 2, "les deux assistants des exemples sont déjà au catalogue");
-    for (const example of TEAM_EXAMPLES) {
+    for (const example of exemplesIt4) {
       const problems = validateFlow(exampleFlow(example, new Map()), { assistants, mode: "simple", niveauDisponible: () => true });
       assert.deepEqual(problems, [], `${example.id} : ${JSON.stringify(problems)}`);
       assert.ok(example.catalogIds.every((id) => id === SQL || id === SCRIPT));
@@ -471,13 +476,22 @@ describe("L37a : exemples (Q3, réponse a)", () => {
     const h = await banc(t, { preflight: preflightEspion([assistant(SCRIPT, { title: titreScript })]).port, settings: { ui: { mode: "avance" } } });
 
     const avant = await liste(h);
+    // <c5:exemples-it4>
+    // Les quatre exemples de la 5b (L45b) suivent les deux premiers dans la galerie : seul l'état des deux exemples de l'it4
+    // est jugé ici, et aucun exemple n'est installé au départ.
     assert.deepEqual(
-      avant.exemples.map((exemple) => [exemple.id, exemple.installee]),
+      avant.exemples.slice(0, 2).map((exemple) => [exemple.id, exemple.installee]),
       [
         ["revue-sql", false],
         ["relecture-script", false],
       ],
     );
+    assert.equal(
+      avant.exemples.some((exemple) => exemple.installee),
+      false,
+      "aucun exemple installé au départ",
+    );
+    // </c5:exemples-it4>
     const galerie = avant.exemples.find((exemple) => exemple.id === "relecture-script");
     assert.deepEqual(galerie?.assistantsManquants, [titreScript]);
     assert.ok((galerie?.liste.length ?? 0) >= 5, "la liste lue par un lecteur d'écran décrit tout le déroulé");

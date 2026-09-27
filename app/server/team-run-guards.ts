@@ -182,6 +182,56 @@ function remainingSteps(store: TeamStore, run: RunRow): string[] {
   return ordre.filter((stepId) => !finies.has(stepId));
 }
 
+// <c5:reprise-redemarrage>
+/**
+ * Clôture 5b (D-5b-1) : chemin restant d'une PAUSE reprise après un redémarrage du cockpit, compté PAR PASSAGE, exactement comme
+ * POST …/estimate le compte pour une relance (team-preflight.ts, `estimate`) : une ligne par (étape, tour), sa dernière tentative
+ * faisant foi, et chaque passage terminé retiré une fois du chemin maximal de `planSteps`. La reprise ne refait rien de déjà
+ * fait, donc ce chemin est bien celui qui reste, et l'empreinte recalculée par `check` tombe sur celle de l'estimation montrée.
+ * `remainingSteps`, lui, retire toute étape terminée une fois : pour une relecture dont le premier jet est fait, il perd les
+ * révisions à venir, et la confirmation était refusée « estimation-perimee » à chaque fois (mesuré sur le vrai pré-lancement).
+ */
+export function cheminParPassages(store: TeamStore, run: RunRow): string[] {
+  const flow = parseJson<Flow | null>(run.flow, null);
+  if (flow === null) return [];
+  const derniere = new Map<string, { tentative: number; state: string; stepId: string }>();
+  for (const step of store.steps.ofRun(run.id)) {
+    const cle = `${step.step_id}\u0000${step.tour}`;
+    const kept = derniere.get(cle);
+    if (!kept || step.tentative >= kept.tentative) derniere.set(cle, { tentative: step.tentative, state: step.state, stepId: step.step_id });
+  }
+  const faits = new Map<string, number>();
+  for (const ligne of derniere.values()) if (ligne.state === "terminee") faits.set(ligne.stepId, (faits.get(ligne.stepId) ?? 0) + 1);
+  return planSteps(flow)
+    .map((planned) => planned.stepId)
+    .filter((stepId) => {
+      const restant = faits.get(stepId) ?? 0;
+      if (restant <= 0) return true;
+      faits.set(stepId, restant - 1);
+      return false;
+    });
+}
+
+/**
+ * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
+ * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
+ * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
+ * (400 invalid, sans aucune requête, A4).
+ */
+export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const brut = (parsed as Record<string, unknown>).confirmations;
+  if (brut === undefined) return {};
+  if (typeof brut !== "object" || brut === null || Array.isArray(brut)) return null;
+  const accords: { budget?: true; plafond?: true } = {};
+  for (const [cle, valeur] of Object.entries(brut)) {
+    if ((cle !== "budget" && cle !== "plafond") || valeur !== true) return null;
+    accords[cle] = true;
+  }
+  return accords;
+}
+// </c5:reprise-redemarrage>
+
 // --- Module -----------------------------------------------------------------------------------------------------------------------
 
 export interface TeamGuards {
@@ -358,6 +408,15 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       return run ?? { status: 404, code: "not-found" };
     };
     const isRefusal = (value: RunRow | RouteRefusal): value is RouteRefusal => "code" in value;
+    // <c5:reprise-redemarrage>
+    /**
+     * Clôture 5b (D-5b-1) : une pause qui a survécu à un redémarrage du cockpit sans l'instantané de son estimation passe aussi par
+     * ces deux routes — estimation MONTRÉE, puis confirmation. C'est la vue du runner qui le dit (`pause.reestimation`), calculée
+     * sur la base seule : aucune requête à opencode avant la décision (A4). Une pause dont l'instantané est là (lancée par ce
+     * processus) reste hors de ces routes : seule VOTRE réponse (POST …/continue) la fait repartir.
+     */
+    const repriseAttendue = (run: RunRow): boolean => run.state.startsWith("attente-") && eq.ports.runner.view(run.id)?.pause?.reestimation !== undefined;
+    // </c5:reprise-redemarrage>
 
     app.post("/api/team-runs/:runId/stop", async (c) => {
       const run = runOf(c.req.param("runId"));
@@ -373,7 +432,9 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       const run = runOf(c.req.param("runId"));
       if (isRefusal(run)) return c.json(body(run), run.status);
       if (simpleFermees()) return c.json(body({ status: 403, code: "equipes-simple-fermees" }), 403);
-      if (!RELAUNCHABLE.includes(run.state)) return c.json(body({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      if (!RELAUNCHABLE.includes(run.state) && !repriseAttendue(run)) return c.json(body({ status: 409, code: "pas-relancable" }), 409);
+      // </c5:reprise-redemarrage>
       // Seule route de la relance qui lit opencode (D-eq-17) : elle garde l'instantané que POST …/relancer réutilise.
       const outcome = await eq.ports.preflight.estimate(teamRowOfRun(eq, run), { directory: run.directory, rootId: run.root_session_id }, modeOf(), {
         runId: run.id,
@@ -389,21 +450,50 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       if (isRefusal(run)) return c.json(body(run), run.status);
       if (simpleFermees()) return c.json(body({ status: 403, code: "equipes-simple-fermees" }), 403);
       if (c.req.header(CONFIRM_HEADER) !== "1") return c.json(body({ status: 428, code: "confirmation-requise" }), 428);
-      const empreinte = relaunchEmpreinte(await c.req.json().catch(() => null));
+      const corps: unknown = await c.req.json().catch(() => null);
+      const empreinte = relaunchEmpreinte(corps);
       if (empreinte === null) return c.json(body({ status: 400, code: "invalid" }), 400);
-      if (!RELAUNCHABLE.includes(run.state)) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      const reprise = !RELAUNCHABLE.includes(run.state) && repriseAttendue(run);
+      if (!RELAUNCHABLE.includes(run.state) && !reprise) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // Tour 3 : les accords (budget P7, plafond P8) que la boîte de la reprise vous a montrés. Une relance de l'itération 4 ne les
+      // lit pas : son comportement ne change pas.
+      const accords = reprise ? accordsDeReprise(corps) : {};
+      if (accords === null) return c.json(body({ status: 400, code: "invalid" }), 400);
+      // </c5:reprise-redemarrage>
       const rebuilt = rebuildRunBody(eq, store, run, empreinte);
       // D-eq-27 : textes purgés avec la conversation → la demande n'est plus reconstituable, la suite ne repart pas.
       if (rebuilt === null) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
+      // <c5:reprise-redemarrage>
+      // Clôture 5b (D-5b-1, tour 3) : ce que la boîte a montré et que vous avez confirmé vaut accord, comme sur la feuille de
+      // lancement. Sans cela, une pause « garde-fou budgétaire » reprise avec un budget du mois épuisé était refusée
+      // « budget-insuffisant » à chaque confirmation, et seul [Arrêter l'équipe] en sortait. Toutes les autres gardes du
+      // pré-lancement restent (P6 par l'en-tête, empreinte, grammaire, configuration, trop d'équipes).
+      if (reprise) rebuilt.confirmations = { ...rebuilt.confirmations, ...accords };
+      // </c5:reprise-redemarrage>
       const input: PreflightInput = {
         team: teamRowOfRun(eq, run),
         body: rebuilt,
         mode: modeOf(),
         confirmed: true,
-        relance: { runId: run.id, restantes: remainingSteps(store, run), depense: store.spentOfRun(run.id) },
+        // <c5:reprise-redemarrage>
+        // Une pause reprise ne refait rien : son reste est compté par passage, comme l'estimation qui vous a été montrée.
+        relance: { runId: run.id, restantes: reprise ? cheminParPassages(store, run) : remainingSteps(store, run), depense: store.spentOfRun(run.id) },
+        // </c5:reprise-redemarrage>
       };
       const checked = await eq.ports.preflight.check(input);
       if (!checked.ok) return c.json(relaunchRefusal(checked), checked.status);
+      // <c5:reprise-redemarrage>
+      // L'état a pu changer pendant le pré-lancement (deux confirmations presque simultanées, arrêt) : il est relu avant la
+      // relance, pour qu'une pause déjà reprise ne passe jamais par la relance complète et que rien ne soit relu pour rien.
+      const actuel = store.runs.get(run.id);
+      if (actuel === null || (!RELAUNCHABLE.includes(actuel.state) && !repriseAttendue(actuel))) {
+        // Tour 3 : une reprise devancée par une autre réponse (deux onglets) trouve l'équipe encore active — sa pause revenue avec
+        // son estimation, ou la suite repartie. « … relancez l'équipe depuis la saisie » était faux ici : la phrase dit l'état.
+        const devancee = reprise && actuel !== null && ACTIVE_RUN_STATES.includes(actuel.state);
+        return c.json(relaunchRefusal({ status: 409, code: devancee ? "etat-incompatible" : "pas-relancable" }), 409);
+      }
+      // </c5:reprise-redemarrage>
       const relaunched = await eq.ports.runner.relaunch(run.id, checked.plan);
       if ("ok" in relaunched && relaunched.ok === false) return c.json(relaunchRefusal(relaunched), relaunched.status);
       return c.json(relaunched);
