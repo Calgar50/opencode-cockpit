@@ -426,10 +426,17 @@ scripts/run-e2e.sh --faux --scenarios c5b- --project-prefix c511-e2e --image-tag
 scripts/run-e2e.sh --reel-hors-ligne --dry-run --scenarios c5a- --project-prefix c511-e2e --image-tag c511
 # Répétition générale, MC5-1 sur le code réel (projets c511-rg-*, E2E_MESURES_DIR = dossier des mesures) :
 scripts/run-e2e.sh --reel-hors-ligne --scenarios c5a-mc5-reel --project-prefix c511-rg --image-tag c511
+# Grande fusion : MC5-1 et MC5-2 sur le code réel, préfixe du travail en cours (ici gf11) :
+scripts/run-e2e.sh --reel-hors-ligne --scenarios mc5-reel --project-prefix gf11-e2e --image-tag gf11
 ```
 
-**Le préfixe `c511-e2e` est obligatoire** : le préfixe par défaut `cockpit-e2e` est celui du banc de l'itération 1-2,
-qui tourne en même temps sur une autre branche. Le nettoyage ne vise que `c511-e2e-*` et les images `c511-e2e/*`.
+**Le préfixe `c511-e2e` était obligatoire pendant la construction** : le préfixe par défaut `cockpit-e2e` était celui du
+banc de l'itération 1-2, qui tournait en même temps sur une autre branche. Le nettoyage ne vise que le préfixe donné
+(`c511-e2e-*` et les images `c511-e2e/*` pour la construction ; `gf11-e2e-*` et `gf11-e2e/*` pour la grande fusion).
+
+En `--reel-hors-ligne`, `ctx.fournisseur.tourParDefaut(tour)` règle la réponse par défaut du faux fournisseur
+(`{ texte, cout }`, comme `ctx.faux.tourParDefaut`) ; `ctx.fournisseur` vaut `null` dans les autres modes. Seul
+`c5b-mc5-reel` s'en sert, et il remet la réponse du banc à la fin, même en échec.
 
 | Scénario | Ce qu'il établit |
 |---|---|
@@ -445,6 +452,7 @@ qui tourne en même temps sur une autre branche. Le nettoyage ne vise que `c511-
 | `c5b-couts-archives.mjs` | ce qu'une équipe laisse derrière elle : Déroulé d'équipe d'une relecture faite en un tour (« Prévu : jusqu'à 2 tours · Réel : 1 tour ») ; aiguillage à un choix, spécialistes non retenus « Non choisi », sans coût, dans le Déroulé d'équipe du panneau de contexte, dans celui de la fiche d'Archives ET dans la ligne d'étape de la section « Équipes lancées dans cette conversation » ; filtre « Avec une équipe » ; ligne « Par équipe » des Coûts avec ses cinq colonnes ; colonnes `lancement_equipe` et `etape` à la fin de l'en-tête du CSV, et au moins une ligne qui les porte ; Seconde lecture d'un RÉSULTAT D'ÉQUIPE, chiffrée, sans « au moins », EN DERNIER sous la carte, et son clic au clavier : UN envoi au Relecteur critique, dans la conversation de l'équipe, avec la phrase exacte de la cible « équipe » ; onglet Méthodes et sa bibliothèque. Un écart du produit relevé en chemin n'arrête pas le scénario : le reste est éprouvé, puis il tombe en le nommant |
 | `c5b-a11y.mjs` | banc de captures d'accessibilité de la 5b : dix vues (galerie, éditeur en « Étapes » puis en « Schéma modifiable », carte de choix, carte d'exécution, carte de résultat, Déroulé d'équipe, chronologie d'un lancement, vue d'ensemble, onglet Méthodes) × 3 modes × 2 thèmes × 3 tailles = 180 fichiers, chaque vue RELEVÉE juste avant sa capture (sous 900 px, le schéma montre sa phrase et c'est elle qui est exigée) ; en mouvement réduit, zéro animation perceptible à CHAQUE capture de ce mode (dix vues × 2 thèmes × 3 tailles), puis au repos ; en contraste forcé, focus visible sur une puce de filtre et sur une ligne du schéma ; console muette |
 | `c5a-mc5-reel.mjs` | **répétition générale, `--reel-hors-ligne` seulement** (non joué en `--faux`) : MC5-1 rejouée sur le CODE RÉEL avec un vrai opencode 1.18.30 et le faux fournisseur hors ligne. Dans une seule conversation : envoi à « Analyser un incident » (204 sans corps), puis au « Relecteur critique » — invite système différente et tout l'historique transmis —, puis de nouveau au premier assistant, qui retrouve SON invite système (le Relecteur ne colle pas à la session) ; `agent` sur chaque message de `GET /session/:id/message`, messages `user` compris ; `GET /api/chat/choices/:id` rend l'assistant précédent (ligne `chat_turns` requalifiée, D-5-06). Les parties d'outil de MC5-1 ne sont pas rejouées ici : le faux fournisseur ne répond que du texte — ce point reste tenu par la mesure MC5 elle-même. |
+| `c5b-mc5-reel.mjs` | **répétition générale, `--reel-hors-ligne` seulement** (non joué en `--faux`), versé au dépôt par la grande fusion (GF4, A20) : MC5-2 rejouée sur le CODE RÉEL avec un vrai opencode 1.18.30 et le faux fournisseur hors ligne, dont chaque réponse se termine par la ligne `VERDICT: À REPRENDRE`. A : deux envois dans la même conversation au repos — le second appel reçu par le fournisseur porte tout l'historique (deux messages de plus au moins) et la même invite système, et la dernière ligne du tour 1 est rendue À L'OCTET, accents compris, avant comme après le tour 2. B : le VRAI exécuteur sur « Compte rendu d'incident relu » (`postmortem`) — rien n'est envoyé pendant la pause avant la relecture, trois jets et deux relectures (plafond de 2 tours), cinq appels en deux familles d'invite système dont chaque appel porte l'historique du précédent, EXACTEMENT deux sessions d'étape sous la racine (sessions reprises, D-5-14), et les deux verdicts relus à l'octet dans la session du relecteur. |
 
 ### Banc de captures d'accessibilité (`e2e/lib/a11y.mjs`)
 

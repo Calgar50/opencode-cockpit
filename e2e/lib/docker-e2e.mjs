@@ -1076,6 +1076,11 @@ async function construireContexte({ plan, onglet, urlCockpit, epinglage, faux, f
     navigateur: onglet,
     url: urlCockpit,
     faux,
+    // <c5:fournisseur>
+    // Grande fusion (GF4, A20) : réponse par défaut du faux fournisseur, pour c5b-mc5-reel (MC5-2 sur le code réel) ; la
+    // répétition générale de la 5b l'exposait dans sa copie jetable. Null hors de « --reel-hors-ligne ».
+    fournisseur: fournisseur ? { tourParDefaut: (tour) => fournisseur.tourParDefaut(tour) } : null,
+    // </c5:fournisseur>
     mode: plan.mode,
     // « https » (défaut) ou « http » (--http) ; en HTTPS, empreintes publiques épinglées (jamais la clé).
     schema: plan.schema,

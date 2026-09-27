@@ -174,6 +174,8 @@ const SCENARIOS_ARRIVES_PAR_LA_FUSION: readonly string[] = [
   "c5b-aiguillage.mjs",
   "c5b-couts-archives.mjs",
   "c5b-demonstration.mjs",
+  // MC5-2 sur le code réel, versé au dépôt par GF4 (A20) : resté hors dépôt depuis la répétition générale de la 5b.
+  "c5b-mc5-reel.mjs",
   "c5b-relecture.mjs",
   "c5b-schema.mjs",
   "c5b-vue-ensemble.mjs",

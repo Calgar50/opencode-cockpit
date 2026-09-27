@@ -142,7 +142,9 @@ describe("croisement V4 : les scénarios c5 suivent le vrai routeur et sont tous
     }
   });
 
-  it("la famille c5 : cinq scénarios de la 5a, sept de la 5b, chacun décrit dans e2e/README.md, et rien de plus", () => {
+  // Grande fusion (GF4, A20) : c5b-mc5-reel, MC5-2 rejouée sur le code réel par la répétition générale de la 5b, est versé au
+  // dépôt : huit scénarios de la 5b.
+  it("la famille c5 : cinq scénarios de la 5a, huit de la 5b, chacun décrit dans e2e/README.md, et rien de plus", () => {
     const famille = scenarios().filter((nom) => nom.startsWith("c5"));
     assert.deepEqual(
       famille,
@@ -156,6 +158,7 @@ describe("croisement V4 : les scénarios c5 suivent le vrai routeur et sont tous
         "c5b-aiguillage.mjs",
         "c5b-couts-archives.mjs",
         "c5b-demonstration.mjs",
+        "c5b-mc5-reel.mjs",
         "c5b-relecture.mjs",
         "c5b-schema.mjs",
         "c5b-vue-ensemble.mjs",
