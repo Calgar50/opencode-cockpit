@@ -60,7 +60,8 @@ export interface TeamResultCardProps {
   texte: string;
   /**
    * Clôture 5b, tour 4 : livrable complet (« resultat ») ou résultats partiels (« resultats-partiels »), dit par l'appelant.
-   * Des résultats partiels ne portent jamais ni journal ni note du cockpit : la carte les rend entiers.
+   * Des résultats partiels ne portent jamais ni journal ni note du cockpit : la carte les rend entiers. GF4 (A27, §6.2 a) :
+   * « extrait » pour l'extrait d'une étape (carte seule), rendu entier lui aussi.
    */
   genre: GenreResultat;
   advanced: boolean;

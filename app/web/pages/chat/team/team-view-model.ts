@@ -567,7 +567,14 @@ export function etapeResultat(run: TeamRunView): StepRunView | null {
  * le message injecté (team-transcript.ts, message reconnu par son identifiant) ; la carte seule et la démonstration ne montrent
  * qu'une équipe terminée.
  */
-export type GenreResultat = Exclude<TeamInjectionKind, "demande">;
+// <c5:carte-extrait>
+// Grande fusion (GF4, A27, constats-5b §6.2 a) : « extrait », troisième genre — le texte montré est l'EXTRAIT d'une étape
+// (`etapeResultat(run).extrait`, 2 000 caractères au plus : le texte d'une IA, l'auteur ou le relecteur), jamais le livrable que le
+// cockpit a composé. C'est ce que montrent la carte seule (injection refusée ou mode carte seule) et la démonstration. Le cockpit
+// n'y a rien écrit : un extrait n'est JAMAIS découpé (ni journal replié, ni note signée), même quand l'IA y a écrit
+// « ## Journal de relecture » ou recopié les notes du cockpit à l'octet — elles restent dans le texte, entier.
+export type GenreResultat = Exclude<TeamInjectionKind, "demande"> | "extrait";
+// </c5:carte-extrait>
 
 /**
  * Tours TERMINÉS du relecteur dans le bloc `blocIndex`, dans l'ordre, comptés comme l'exécuteur compte les verdicts qu'il met
@@ -603,7 +610,8 @@ function toursRelus(run: TeamRunView, blocIndex: number): StepRunView[] {
  * une IA qui écrit « ## Journal de relecture » replierait tout ce qui suit dans un `<details>` fermé et signerait une note
  * d'honnêteté à la place du cockpit (P3, §13.2). Trois portes, chacune nécessaire :
  * 1. le GENRE (clôture 5b, tour 4) : des résultats partiels (`partialDeliverable`) ne portent JAMAIS ni journal ni note — le
- *    cockpit n'y écrit que « Étape « {titre} » : » devant le texte de chaque étape terminée ;
+ *    cockpit n'y écrit que « Étape « {titre} » : » devant le texte de chaque étape terminée ; un EXTRAIT d'étape (genre
+ *    « extrait », GF4) non plus : le cockpit n'y a rien écrit ;
  * 2. le DERNIER bloc de travail (D-5b-2) : seul lui porte le livrable (`deliverable`, `dernierBlocDeTravail`), et le cockpit
  *    n'y écrit journal et notes que si c'est une relecture. C'est le bloc de la dernière ligne d'étape (un bloc « pause » n'en a
  *    aucune) ; son genre vient des bornes déclarées du déroulé (`run.blocs`) et, à défaut, de ses lignes — un verdict enregistré
@@ -720,7 +728,8 @@ export function buildTeamRunCard(run: TeamRunView, advanced: boolean, equipesOuv
     lignes.push({ cle: `pause-${run.id}`, kind: "pause", titre: P.execution.pause, detail: "", icone: "pause", mot: P.execution.pause, sessionId: null, voirTravail: null, tentative: null, tour: null, verdict: null, repetition: null, tronquee: null, cause: null });
   }
   // Une seule carte de résultat (risque 19 : reconnaissance par IDENTIFIANT) : rendue ici seulement quand rien n'a été injecté.
-  const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced, "resultat") : null;
+  // GF4 (A27, §6.2 a) : elle montre l'EXTRAIT de la dernière étape terminée, jamais découpé (genre « extrait »).
+  const resultat = run.state === "terminee" && run.resultMessageId === null ? modeleResultat(run, etapeResultat(run)?.extrait ?? "", advanced, "extrait") : null;
   return {
     runId: run.id,
     genre: genreCarte(run, enPause, finale),

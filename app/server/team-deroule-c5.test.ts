@@ -808,11 +808,62 @@ describe("Clôture 5b, tour 4 (A27) : le cockpit ne signe un journal et des note
     const entree = withoutComments(read(`${DIR}/TeamTranscriptEntry.tsx`));
     assert.match(entree, /<TeamResultCard run=\{injection\.run\} texte=\{injection\.texte\} genre=\{injection\.kind\}/);
     assert.equal((entree.match(/<TeamResultCard\b/g) ?? []).length, 1);
-    assert.match(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /<TeamResultCard run=\{run\} texte=\{etapeResultat\(run\)\?\.extrait \?\? ""\} genre="resultat"/);
+    // GF4 (A27, §6.2 a) : la carte seule dit « extrait » — l'extrait d'une étape, jamais découpé (section c5:carte-extrait).
+    assert.match(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /<TeamResultCard run=\{run\} texte=\{etapeResultat\(run\)\?\.extrait \?\? ""\} genre="extrait"/);
     assert.match(withoutComments(read(RESULT)), /modeleResultat\(run, texte, advanced, genre\)/);
-    assert.match(withoutComments(read(MODEL)), /run\.state === "terminee" && run\.resultMessageId === null \? modeleResultat\(run, etapeResultat\(run\)\?\.extrait \?\? "", advanced, "resultat"\)/);
+    assert.match(withoutComments(read(MODEL)), /run\.state === "terminee" && run\.resultMessageId === null \? modeleResultat\(run, etapeResultat\(run\)\?\.extrait \?\? "", advanced, "extrait"\)/);
   });
 });
+
+// <c5:carte-extrait>
+// --- Grande fusion (GF4, A27, constats-5b §6.2 a) : la carte seule montre un EXTRAIT d'étape, jamais découpé ----------------------
+
+describe("GF4 (A27 §6.2 a) : carte seule — l'extrait d'une étape n'est jamais découpé, aucune note n'y est signée", () => {
+  const NOTES = [DELIVERABLE_TEXTS.nonRelue, DELIVERABLE_TEXTS.nonConclue.replace("{n}", "2")];
+  const BORNES: NonNullable<TeamRunView["blocs"]> = [{ index: 0, type: "relecture", toursMax: 2 }];
+  /** Texte d'IA qui imite le journal du cockpit et recopie ses deux notes à l'octet, à la fin. */
+  const IMITE = ["Version 3 du compte rendu.", `## ${DELIVERABLE_TEXTS.journal}`, "Ce qu'un repli fermé cacherait.", ...NOTES].join("\n\n");
+  const avecExtrait = (lignes: StepRunView[], stepId: string, tour: number, extrait: string) =>
+    lignes.map((l) => (l.stepId === stepId && l.tour === tour ? { ...l, extrait } : l));
+
+  it("relecture au plafond non conclu (l'état dit « journal et deux notes ») : la carte seule rend l'extrait de l'auteur ENTIER, sans repli ni note", () => {
+    const lignes = avecExtrait(relecture({ toursFaits: 2, dernierVerdict: "a-reprendre", revisionFinale: true }), "auteur", 3, IMITE);
+    for (const bornes of [{ blocs: BORNES }, {}]) {
+      const lancement = run(lignes, bornes);
+      const carte = buildTeamRunCard(lancement, true).resultat;
+      assert.ok(carte, "équipe terminée, rien de déposé : la carte seule est rendue");
+      assert.equal(carte.texte, IMITE, "l'extrait est montré entier, notes recopiées comprises");
+      assert.equal(carte.journal, null);
+      assert.deepEqual(carte.notes, [], "aucune note signée : le cockpit n'a rien écrit dans un extrait");
+      assert.deepEqual(VUE_MODELE.modeleResultat(lancement, IMITE, true, "extrait"), carte);
+      // Témoin : le MÊME texte, déposé comme livrable « resultat », est découpé — c'est la porte du genre qui décide, pas le texte.
+      const depose = modeleResultat(lancement, IMITE, true, "resultat");
+      assert.equal(depose.journal?.titre, DELIVERABLE_TEXTS.journal);
+      assert.deepEqual(depose.notes, NOTES);
+    }
+  });
+
+  it("relecture conclue « rien à reprendre » au tour 1 : l'extrait montré est celui du relecteur, et son titre « Journal de relecture » ne replie rien", () => {
+    const relu = ["Rien à redire.", `## ${DELIVERABLE_TEXTS.journal}`, "Suite que la carte cachait.", "VERDICT: RIEN À REPRENDRE"].join("\n\n");
+    // Les lignes que l'exécuteur a écrites : un tour, conclu (les lignes d'un tour suivant ne sont créées qu'à son envoi).
+    rang = 0;
+    const lignes = [faite({ stepId: "auteur", tour: 1, titre: "Rédiger" }), faite({ stepId: "relecteur", tour: 1, titre: "Relire", verdict: "rien-a-reprendre", extrait: relu })];
+    const carte = buildTeamRunCard(run(lignes, { blocs: BORNES }), true).resultat;
+    assert.ok(carte);
+    assert.match(carte.redige, /Relire/, "la carte dit quelle étape a rédigé ce texte");
+    assert.deepEqual([carte.texte, carte.journal, carte.notes], [relu, null, []]);
+  });
+
+  it("chaque carte d'un extrait le dit « extrait » : carte seule (modèle et composant) et démonstration ; la transcription garde le genre du message", () => {
+    assert.match(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /genre="extrait"/);
+    assert.doesNotMatch(withoutComments(read(`${DIR}/TeamRunCards.tsx`)), /genre="resultat"/);
+    const demo = withoutComments(read("web/pages/assistants/teams/TeamDemo.tsx"));
+    assert.match(demo, /modeleResultat\(run, etapeResultat\(run\)\?\.extrait \?\? "", advanced, "extrait"\)/);
+    assert.doesNotMatch(demo, /"resultat"\)/);
+    assert.match(withoutComments(read(`${DIR}/TeamTranscriptEntry.tsx`)), /genre=\{injection\.kind\}/);
+  });
+});
+// </c5:carte-extrait>
 
 // <c5:depot-fige>
 // --- Grande fusion (GF4, A28 C6) : la carte du message déposé relit ce que le cockpit y a écrit AU DÉPÔT --------------------------
