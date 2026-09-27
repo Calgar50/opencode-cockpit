@@ -714,8 +714,13 @@ describe("cartes d'équipe : contrat des composants", () => {
     const code = withoutComments(read(CARD));
     const estimate = code.indexOf("teamRunsApi.estimate(run.id)");
     const boite = code.indexOf("await confirm({ title: confirmation.titre");
-    const relaunch = code.indexOf("teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte })");
-    assert.ok(estimate > 0 && boite > estimate && relaunch > boite, `estimate=${estimate} boite=${boite} relaunch=${relaunch}`);
+    // GF4 (A27) : le corps porte l'empreinte confirmée et les accords que la boîte a écrits (`corpsDeReprise`), bâti APRÈS la boîte
+    // — cherché dans `relancer` seul, la reprise de la clôture 5b bâtissant le même corps plus bas.
+    const debutRelancer = code.indexOf("const relancer = useCallback(");
+    const finRelancer = code.indexOf("}, [confirm, relancerAvecEmpreinte, run]);", debutRelancer);
+    const corps = code.indexOf("const corps = corpsDeReprise(suite, confirmation);", debutRelancer);
+    const relaunch = code.indexOf("teamRunsApi.relaunch(run.id, corps)", debutRelancer);
+    assert.ok(estimate > 0 && boite > estimate && corps > boite && relaunch > corps && finRelancer > relaunch, `estimate=${estimate} boite=${boite} corps=${corps} relaunch=${relaunch} fin=${finRelancer}`);
     assert.match(code, /const suite = relanceApresConfirmation\(confirmation, ok\);\s*if \(suite === null\) return;/);
   });
 });

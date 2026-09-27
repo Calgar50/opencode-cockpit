@@ -26,7 +26,6 @@ import {
   confirmationArret,
   type RelanceConfirmation,
   relanceApresConfirmation,
-  relanceApresEstimation,
   relanceDebut,
   type TeamButton,
   type TeamRunCardModel,
@@ -38,6 +37,9 @@ import { corpsDeReprise, repriseApresEstimation, repriseDebut } from "./team-vie
 // <c5:relance-perimee>
 import { confirmationReestimee, relancePerimee } from "./team-view-model.ts";
 // </c5:relance-perimee>
+// <c5:relance-accords>
+import { relanceAvecAccords } from "./team-view-model.ts";
+// </c5:relance-accords>
 import "./team-cards.css";
 import "./team-choice.css";
 
@@ -150,7 +152,8 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
     void (async () => {
       let confirmation: RelanceConfirmation | null = null;
       try {
-        const etape = relanceApresEstimation(await teamRunsApi.estimate(run.id));
+        // GF4 (A27) : les accords que l'estimation annonce (budget du mois, plafond maximum) sont écrits dans la boîte.
+        const etape = relanceAvecAccords(await teamRunsApi.estimate(run.id));
         if (etape.genre === "blocage") {
           if (monte.current) setBlocage(etape.raison);
         } else if (etape.genre === "confirmation") {
@@ -167,7 +170,10 @@ export function TeamRunCard({ run, modele, onOpenSession, onChanged }: TeamRunCa
       const ok = await confirm({ title: confirmation.titre, message: confirmation.message });
       const suite = relanceApresConfirmation(confirmation, ok);
       if (suite === null) return;
-      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, { estimateSha256: suite.empreinte }), dejaReestimee, () => relancer(true));
+      // GF4 (A27) : l'empreinte confirmée, et les accords que la boîte vient d'écrire — jamais d'autres (sans accord, le corps de
+      // l'itération 4).
+      const corps = corpsDeReprise(suite, confirmation);
+      await relancerAvecEmpreinte(() => teamRunsApi.relaunch(run.id, corps), dejaReestimee, () => relancer(true));
     })();
   }, [confirm, relancerAvecEmpreinte, run]);
 

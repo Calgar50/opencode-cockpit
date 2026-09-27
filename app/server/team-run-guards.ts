@@ -209,7 +209,7 @@ export function cheminParPassages(store: TeamStore, run: RunRow): string[] {
  * Clôture 5b (D-5b-1, tour 3) : accords du corps de POST …/relancer pour une pause reprise (`TeamRelaunchBody.confirmations`).
  * Seuls `budget` (P7) et `plafond` (P8) peuvent être accordés ici, et seulement à `true` : les confirmations « workspace » et
  * « secret » viennent du lancement (rebuildRunBody), jamais d'une reprise. Absent → aucun accord ; toute autre forme → null
- * (400 invalid, sans aucune requête, A4).
+ * (400 invalid, sans aucune requête, A4). GF4 (A27) : lus aussi pour une relance, que la boîte de [Relancer la suite] annonce.
  */
 export function accordsDeReprise(parsed: unknown): { budget?: true; plafond?: true } | null {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
@@ -640,9 +640,10 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       // <c5:reprise-redemarrage>
       const reprise = !RELAUNCHABLE.includes(run.state) && repriseAttendue(run);
       if (!RELAUNCHABLE.includes(run.state) && !reprise) return c.json(relaunchRefusal({ status: 409, code: "pas-relancable" }), 409);
-      // Tour 3 : les accords (budget P7, plafond P8) que la boîte de la reprise vous a montrés. Une relance de l'itération 4 ne les
-      // lit pas : son comportement ne change pas.
-      const accords = reprise ? accordsDeReprise(corps) : {};
+      // Tour 3 : les accords (budget P7, plafond P8) que la boîte de la reprise vous a montrés. Grande fusion (GF4, A27, constat
+      // neuf de constats-5b §5) : ceux de la boîte de [Relancer la suite] aussi — sans eux, une relance dont la suite dépasse le
+      // budget restant du mois, ou le plafond maximum en Avancé, était refusée à chaque confirmation, sans issue.
+      const accords = accordsDeReprise(corps);
       if (accords === null) return c.json(body({ status: 400, code: "invalid" }), 400);
       // </c5:reprise-redemarrage>
       const rebuilt = rebuildRunBody(eq, store, run, empreinte);
@@ -652,8 +653,9 @@ export function createTeamGuards(eq: EqContext): TeamGuards {
       // Clôture 5b (D-5b-1, tour 3) : ce que la boîte a montré et que vous avez confirmé vaut accord, comme sur la feuille de
       // lancement. Sans cela, une pause « garde-fou budgétaire » reprise avec un budget du mois épuisé était refusée
       // « budget-insuffisant » à chaque confirmation, et seul [Arrêter l'équipe] en sortait. Toutes les autres gardes du
-      // pré-lancement restent (P6 par l'en-tête, empreinte, grammaire, configuration, trop d'équipes).
-      if (reprise) rebuilt.confirmations = { ...rebuilt.confirmations, ...accords };
+      // pré-lancement restent (P6 par l'en-tête, empreinte, grammaire, configuration, trop d'équipes). GF4 (A27) : de même pour une
+      // relance ; l'accord n'est jamais écrit dans le lancement (seul le pré-lancement de CETTE confirmation le lit).
+      rebuilt.confirmations = { ...rebuilt.confirmations, ...accords };
       // </c5:reprise-redemarrage>
       const input: PreflightInput = {
         team: teamRowOfRun(eq, run),

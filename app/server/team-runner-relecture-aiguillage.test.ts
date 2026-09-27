@@ -1919,6 +1919,115 @@ describe("GF4 (A27/A28), « C2 après une relance » : la relecture relancée ne
 });
 // </c5:chemin-relance>
 
+// <c5:relance-accords>
+// --- Grande fusion (GF4, A27, constat neuf de constats-5b §5) : [Relancer la suite] et les accords budget (P7) / plafond (P8) ----
+
+describe("GF4 (A27) : [Relancer la suite] avec les accords que sa boîte a écrits, sur le pré-lancement RÉEL", () => {
+  /** Lancement « interrompue » (relançable) : la collecte est faite, l'analyse a été coupée par un rechargement. */
+  async function interrompu(h: CockpitHarness, runId: string, directory: string): Promise<void> {
+    const rootId = await nouvelleSession(h, "Conversation");
+    const collecte = await nouvelleSession(h, "Collecte");
+    const analyse = await nouvelleSession(h, "Analyse");
+    seedLancement(h, {
+      runId,
+      rootId,
+      flow: duoFlow(),
+      state: "interrompue",
+      cause: "rechargement",
+      directory,
+      lignes: { a: { state: "terminee", sessionId: collecte, extrait: "Collecte faite." }, b: { state: "interrompue", sessionId: analyse, extrait: null } },
+    });
+  }
+
+  const estimer = async (h: CockpitHarness, runId: string): Promise<TeamEstimateResponse> => {
+    const reponse = await h.call("POST", `/api/team-runs/${runId}/estimate`, { headers: h.headers.mutating, body: {} });
+    assert.equal(reponse.status, 200, reponse.body);
+    return reponse.json<TeamEstimateResponse>();
+  };
+
+  const finDe = (runner: TeamRunner, runId: string) =>
+    until(() => {
+      const courante = runner.view(runId);
+      return courante && (courante.state === "terminee" || courante.state === "echec" || courante.state === "plafond") ? courante : undefined;
+    }, 8_000);
+
+  it("budget du mois épuisé (réglages par défaut) : sans accord refus P7 comme avant, toute autre forme 400, l'accord « budget » écrit par la boîte fait repartir la suite", async (t) => {
+    const { h, runner, directory } = await bancReel(t);
+    const runId = "a1a1a1a1-b2b2-c3c3-d4d4-e5e5e5e5e5e5";
+    await interrompu(h, runId, directory);
+    epuiserLeBudget(h, 150);
+    await h.cockpit.startup();
+    assert.equal(runner.view(runId)?.relancable, true);
+
+    const montree = await estimer(h, runId);
+    assert.equal(montree.blocage, null);
+    assert.deepEqual(montree.confirmations, ["budget"], "l'estimation annonce l'accord « budget » : la boîte l'écrira");
+
+    const avant = h.fake.requests.length;
+    const sansAccord = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: montree.estimateSha256 } });
+    assert.deepEqual([sansAccord.status, sansAccord.json<{ error: string }>().error], [409, "budget-insuffisant"]);
+    for (const confirmations of [{ budget: "oui" }, { workspace: true }, { budget: true, secret: true }, ["budget"], "budget", null]) {
+      const invalide = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: montree.estimateSha256, confirmations } });
+      assert.deepEqual([invalide.status, invalide.json<{ error: string }>().error], [400, "invalid"], JSON.stringify(confirmations));
+    }
+    // Un accord que la boîte n'a pas écrit ne remplace pas celui qu'elle a écrit.
+    const autre = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: { estimateSha256: montree.estimateSha256, confirmations: { plafond: true } } });
+    assert.deepEqual([autre.status, autre.json<{ error: string }>().error], [409, "budget-insuffisant"]);
+    assert.equal(h.fake.requests.length, avant, "aucun refus n'a émis de requête (A4)");
+    assert.equal(runner.view(runId)?.state, "interrompue");
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.01, stepMs: 5 });
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, {
+      headers: h.headers.confirmed,
+      body: { estimateSha256: montree.estimateSha256, confirmations: { budget: true } },
+    });
+    assert.equal(confirme.status, 200, confirme.body);
+    assert.equal(confirme.json<TeamRunView>().plafond, montree.plafond, "le plafond d'arrêt est celui de l'estimation montrée");
+    // La relance est partie : le garde-fou budgétaire (P6), inchangé, arrête l'analyse avant son envoi et attend VOTRE
+    // [Continuer] confirmé — comme après la reprise d'une pause « garde-fou budgétaire » (clôture 5b, tour 3).
+    const enPause = await until(() => (runner.view(runId)?.state === "attente-budget" ? runner.view(runId) : undefined), 8_000);
+    assert.deepEqual([enPause.pause?.kind, enPause.steps.map((step) => `${step.stepId}#${step.tentative}:${step.state}`)], ["budget", ["a#1:terminee", "b#1:interrompue", "b#2:prevue"]]);
+    assert.equal(envois(h).length, 0, "rien n'est envoyé avant votre [Continuer]");
+    // L'accord de la boîte ne vaut que pour CE pré-lancement : jamais écrit dans le lancement (seul [Continuer] l'écrit, P6).
+    assert.deepEqual(confirmationsDe(h, runId), {}, "l'accord de la relance n'est jamais écrit dans le lancement");
+    const sansConfirmation = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.mutating, body: {} });
+    assert.deepEqual([sansConfirmation.status, sansConfirmation.json<{ error: string }>().error], [409, "budget-guard"]);
+    const reponse = await h.call("POST", `/api/team-runs/${runId}/continue`, { headers: h.headers.confirmed, body: {} });
+    assert.equal(reponse.status, 200, reponse.body);
+    const fini = await finDe(runner, runId);
+    assert.equal(fini.state, "terminee", `cause : ${String(fini.cause)}`);
+    assert.deepEqual(creationsDEtape(h).map((req) => (req.body as { metadata?: { etape?: string; tentative?: number } }).metadata).map((m) => `${m?.etape}#${m?.tentative}`), ["b#2"], "seule l'analyse repart ; la collecte faite n'est pas refaite");
+    assert.equal(envois(h).length, 1);
+    h.assertNoGlobalRestart();
+  });
+
+  it("plafond maximum dépassé en mode Avancé : sans accord refus P8, l'accord « budget » ne le remplace pas, l'accord « plafond » écrit par la boîte fait repartir l'analyse", async (t) => {
+    const { h, runner, directory } = await bancReel(t, { teams: { maxCapUsd: 0.001 } });
+    const runId = "f6f6f6f6-a7a7-b8b8-c9c9-d0d0d0d0d0d0";
+    await interrompu(h, runId, directory);
+    await h.cockpit.startup();
+
+    const montree = await estimer(h, runId);
+    assert.equal(montree.blocage, null);
+    assert.deepEqual(montree.confirmations, ["plafond"]);
+    const corps = (confirmations?: Record<string, true>) => ({ estimateSha256: montree.estimateSha256, ...(confirmations ? { confirmations } : {}) });
+    const sans = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps() });
+    assert.deepEqual([sans.status, sans.json<{ error: string }>().error], [409, "plafond-a-confirmer"]);
+    const autre = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps({ budget: true }) });
+    assert.deepEqual([autre.status, autre.json<{ error: string }>().error], [409, "plafond-a-confirmer"]);
+    assert.equal(envois(h).length, 0);
+
+    h.fake.scriptWhen((session) => (session.metadata as { etape?: string } | undefined)?.etape === "b", { text: "Analyse faite.", cost: 0.0001, stepMs: 5 });
+    const confirme = await h.call("POST", `/api/team-runs/${runId}/relancer`, { headers: h.headers.confirmed, body: corps({ plafond: true }) });
+    assert.equal(confirme.status, 200, confirme.body);
+    const fini = await finDe(runner, runId);
+    assert.deepEqual(fini.steps.filter((step) => step.tentative === 2).map((step) => `${step.stepId}:${step.state}`), ["b:terminee"], `état : ${fini.state}, cause : ${String(fini.cause)}`);
+    assert.deepEqual(confirmationsDe(h, runId), {}, "l'accord de la relance n'est jamais écrit dans le lancement");
+    h.assertNoGlobalRestart();
+  });
+});
+// </c5:relance-accords>
+
 describe("Clôture 5b, tour 3 : la pause « garde-fou budgétaire » nomme l'étape qui attend vraiment", () => {
   it("pause « garde-fou budgétaire » après votre choix d'aiguillage : le message nomme l'étape retenue qui attend, jamais un spécialiste « Non choisi »", async (t) => {
     // Sonde K2b de la contre-vérification : « L'étape « Supervision et seuils » attend votre confirmation… » alors que seul le

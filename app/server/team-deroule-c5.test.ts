@@ -1124,7 +1124,8 @@ describe("Clôture 5b : …/relancer refusé « estimation-perimee » depuis la 
     // [Relancer la suite] (itération 4) : même suite qu'avant, estimation refaite une fois et montrée.
     assert.match(code, /const relancer = useCallback\(\(dejaReestimee: boolean = false\) => \{/, "[Relancer la suite] est appelé sans argument : `false` par défaut");
     assert.match(code, /confirmation = dejaReestimee \? confirmationReestimee\(etape\.confirmation\) : etape\.confirmation;/);
-    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, \{ estimateSha256: suite\.empreinte \}\), dejaReestimee, \(\) => relancer\(true\)\);/);
+    // GF4 (A27) : le corps de [Relancer la suite] porte aussi les accords que sa boîte a écrits (`corpsDeReprise`).
+    assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, corps\), dejaReestimee, \(\) => relancer\(true\)\);/);
     // [Refaire l'estimation de la suite] (clôture 5b) : le bouton passe `false` explicitement, jamais l'événement du clic.
     assert.match(code, /const reprendre = useCallback\(\(\) => reprendreEstimation\(false\), \[reprendreEstimation\]\);/);
     assert.match(code, /await relancerAvecEmpreinte\(\(\) => teamRunsApi\.relaunch\(run\.id, corps\), dejaReestimee, \(\) => reprendreEstimation\(true\)\);/);
@@ -1193,7 +1194,8 @@ describe("Clôture 5b, tour 3 (D-5b-1) : la boîte d'une reprise écrit les acco
     const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
     assert.ok(suite);
     assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "d".repeat(64) });
-    // La relance de l'itération 4 n'écrit aucun accord dans sa boîte : sa suite est inchangée.
+    // La boîte de l'itération 4 (`relanceApresEstimation`) n'écrit aucun accord ; depuis GF4 (A27), [Relancer la suite] passe par
+    // `relanceAvecAccords`, qui les écrit (section c5:relance-accords ci-dessous).
     const relance = VUE_MODELE.relanceApresEstimation(reponse(["budget", "plafond"]));
     assert.equal(relance.genre === "confirmation" && relance.confirmation.accords, undefined);
   });
@@ -1207,6 +1209,102 @@ describe("Clôture 5b, tour 3 (D-5b-1) : la boîte d'une reprise écrit les acco
     }
   });
 });
+
+// <c5:relance-accords>
+// --- Grande fusion (GF4, A27, constat neuf de constats-5b §5) : [Relancer la suite] écrit les accords annoncés dans sa boîte ------
+
+describe("GF4 (A27) : la boîte de [Relancer la suite] écrit les accords annoncés (budget P7, plafond P8), et votre confirmation ne vaut que pour eux", () => {
+  const R = E.reprise;
+  type Reponse = Parameters<typeof VUE_MODELE.relanceAvecAccords>[0];
+  const reponse = (confirmations: TeamConfirmation[], blocage: Reponse["blocage"] = null): Reponse => ({
+    estimate: { typique: 0.12, maximum: 0.4, plafond: 0.4, etapesFacturees: 1, depassementUnAppel: 0.02, relais: 0, parEtape: [] },
+    estimateSha256: "e".repeat(64),
+    problems: [],
+    plafond: 0.45,
+    confirmations,
+    blocage,
+    expireA: NOW,
+    deja: 0.05,
+  });
+  const montants = "Déjà dépensé : 0,05 $. Suite : ≈ 0,12 $, plafond 0,45 $.";
+  const budget = "La suite peut coûter jusqu'à 0,40 $, plus que ce qui reste sur le budget du mois : en confirmant, vous l'acceptez.";
+  const plafond = "Le plafond d'arrêt de cette équipe (0,45 $) dépasse le plafond maximum d'un lancement : en confirmant, vous l'acceptez.";
+
+  it("budget du mois épuisé : la boîte de la relance dit le budget AVANT la confirmation, qui vaut l'accord « budget »", () => {
+    const etape = VUE_MODELE.relanceAvecAccords(reponse(["budget"]));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.deepEqual(confirmation, { titre: P.relance.titre, message: `${montants} ${budget}`, empreinte: "e".repeat(64), accords: { budget: true } });
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite && confirmation);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "e".repeat(64), confirmations: { budget: true } });
+    assert.equal(VUE_MODELE.relanceApresConfirmation(confirmation, false), null, "refusée, la boîte n'envoie rien");
+  });
+
+  it("budget et plafond (Avancé) : les deux phrases dans l'ordre de la feuille, les deux accords — jamais « workspace » ni « secret »", () => {
+    const etape = VUE_MODELE.relanceAvecAccords(reponse(["workspace", "secret", "budget", "plafond"]));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.ok(confirmation);
+    assert.equal(confirmation.titre, P.relance.titre, "la boîte reste celle de [Relancer la suite], pas celle d'une reprise");
+    assert.equal(confirmation.message, `${montants} ${budget} ${plafond}`);
+    assert.deepEqual(confirmation.accords, { budget: true, plafond: true });
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "e".repeat(64), confirmations: { budget: true, plafond: true } });
+    // Une estimation refaite après un 409 `estimation-perimee` garde les accords écrits dans sa propre boîte.
+    assert.deepEqual(VUE_MODELE.confirmationReestimee(confirmation).accords, { budget: true, plafond: true });
+  });
+
+  it("aucun accord annoncé : exactement la boîte et le corps de l'itération 4 ; un refus prévisible reste un refus", () => {
+    const etape = VUE_MODELE.relanceAvecAccords(reponse([]));
+    assert.deepEqual(etape, VUE_MODELE.relanceApresEstimation(reponse([])));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.ok(confirmation);
+    assert.equal("accords" in confirmation, false);
+    const suite = VUE_MODELE.relanceApresConfirmation(confirmation, true);
+    assert.ok(suite);
+    assert.deepEqual(VUE_MODELE.corpsDeReprise(suite, confirmation), { estimateSha256: "e".repeat(64) });
+    const occupee = reponse(["budget"], { status: 409, code: "conversation-occupee" });
+    const bloque = VUE_MODELE.relanceAvecAccords(occupee);
+    assert.equal(bloque.genre, "blocage");
+    assert.deepEqual(bloque, VUE_MODELE.relanceApresEstimation(occupee), "aucun accord ne lève un refus prévisible");
+  });
+
+  it("la reprise garde sa boîte : mêmes accords, même message qu'avant (montants, accords, puis la phrase de sa suite)", () => {
+    const pauseBudget = {
+      kind: "budget" as const,
+      blocId: null,
+      message: "",
+      resultat: null,
+      suite: { typique: 0.12, maximum: 0.4 },
+      changement: null,
+      reestimation: { aucunLibre: false, possible: true },
+    };
+    const etape = VUE_MODELE.repriseApresEstimation(pauseBudget, reponse(["budget", "plafond"]));
+    const confirmation = etape.genre === "confirmation" ? etape.confirmation : null;
+    assert.deepEqual(confirmation, {
+      titre: R.confirmationTitre,
+      message: `${montants} ${budget} ${plafond} ${R.confirmationPause}`,
+      empreinte: "e".repeat(64),
+      accords: { budget: true, plafond: true },
+    });
+  });
+
+  it("carte : [Relancer la suite] estime par `relanceAvecAccords`, puis envoie le corps bâti APRÈS la boîte (`corpsDeReprise`)", () => {
+    const code = withoutComments(read(CARD));
+    const debut = code.indexOf("const relancer = useCallback(");
+    const fin = code.indexOf("const reprendreEstimation = useCallback(", debut + 1);
+    assert.ok(debut !== -1 && fin > debut);
+    const section = code.slice(debut, fin);
+    const estimate = section.indexOf("relanceAvecAccords(await teamRunsApi.estimate(run.id))");
+    const boite = section.indexOf("await confirm({ title: confirmation.titre");
+    const corps = section.indexOf("const corps = corpsDeReprise(suite, confirmation);");
+    const relaunch = section.indexOf("teamRunsApi.relaunch(run.id, corps)");
+    assert.ok(estimate > 0 && boite > estimate && corps > boite && relaunch > corps, `estimate=${estimate} boite=${boite} corps=${corps} relaunch=${relaunch}`);
+    assert.doesNotMatch(section, /relanceApresEstimation\(/, "la boîte de l'itération 4 seule n'écrirait aucun accord");
+    assert.doesNotMatch(section, /estimateSha256: suite\.empreinte/, "aucun corps écrit à la main, sans les accords");
+  });
+});
+// </c5:relance-accords>
 
 describe("Clôture 5b, tour 3 : pause reprise en mode Simple quand les équipes y sont fermées (U1) — aucun bouton que le serveur refuserait", () => {
   const R = E.reprise;

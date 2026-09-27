@@ -753,7 +753,7 @@ export interface RelanceConfirmation {
   // <c5:reprise-redemarrage>
   /**
    * Clôture 5b (D-5b-1, tour 3) : accords ÉCRITS dans le message de la boîte d'une reprise (budget P7, plafond P8), que votre
-   * confirmation vaut ; absent partout ailleurs (la relance de l'itération 4 n'en envoie aucun).
+   * confirmation vaut ; depuis GF4 (A27), aussi dans celle de [Relancer la suite] (`relanceAvecAccords`) ; absent sinon.
    */
   accords?: { budget?: true; plafond?: true };
   // </c5:reprise-redemarrage>
@@ -811,11 +811,39 @@ export function repriseDebut(run: TeamRunView): RelanceEtape | null {
  * toute autre pause revient telle quelle, et rien ne part avant votre réponse (le choix d'un aiguillage reste le vôtre).
  */
 export function repriseApresEstimation(pause: TeamPauseView, reponse: TeamEstimateResponse): RelanceEtape {
-  const etape = relanceApresEstimation(reponse);
+  // Tour 3 : les accords que l'estimation annonce sont ÉCRITS dans la boîte, avant votre confirmation, qui les vaut. Sans eux,
+  // la reprise d'une pause « garde-fou budgétaire » avec un budget du mois épuisé était refusée à chaque fois. GF4 (A27) : le
+  // même mécanisme sert [Relancer la suite] (`relanceAvecAccords`) ; la reprise y ajoute son titre et la phrase de sa suite.
+  const etape = relanceAvecAccords(reponse);
   if (etape.genre !== "confirmation") return etape;
   const suite = pause.kind === "redemarrage-cockpit" ? REPRISE.confirmationReprend : REPRISE.confirmationPause;
-  // Tour 3 : les accords que l'estimation annonce sont ÉCRITS dans la boîte, avant votre confirmation, qui les vaut. Sans eux,
-  // la reprise d'une pause « garde-fou budgétaire » avec un budget du mois épuisé était refusée à chaque fois.
+  const message = [etape.confirmation.message, suite].join(" ");
+  return { genre: "confirmation", confirmation: { ...etape.confirmation, titre: REPRISE.confirmationTitre, message } };
+}
+
+/**
+ * Corps de POST …/relancer après la boîte d'une reprise ou, depuis GF4 (A27), de [Relancer la suite] : l'empreinte confirmée, et
+ * les accords que la boîte a écrits — jamais d'autres. Sans accord, le corps est exactement celui de la relance de l'itération 4.
+ */
+export function corpsDeReprise(suite: RelanceLancement, confirmation: RelanceConfirmation): TeamRelaunchBody {
+  const accords = confirmation.accords ?? {};
+  return Object.keys(accords).length === 0 ? { estimateSha256: suite.empreinte } : { estimateSha256: suite.empreinte, confirmations: { ...accords } };
+}
+// </c5:reprise-redemarrage>
+
+// <c5:relance-accords>
+/**
+ * Grande fusion (GF4, A27, constat neuf de constats-5b §5) : réponse de l'estimation de [Relancer la suite] (itération 4). La
+ * boîte de `relanceApresEstimation`, et les accords que l'estimation annonce (budget du mois P7, plafond maximum P8 en Avancé)
+ * ÉCRITS dans son message, avant votre confirmation, qui les vaut — le mécanisme de la reprise (clôture 5b, tour 3). Sans eux,
+ * une relance dont la suite dépasse le budget restant du mois, ou dont le plafond dépasse le plafond maximum d'un lancement,
+ * était refusée à chaque confirmation (« budget-insuffisant », « plafond-a-confirmer »), sans autre issue que [Fermer].
+ * « workspace » et « secret » ne sont jamais accordés ici : ils viennent du lancement. Sans accord annoncé, la boîte est
+ * exactement celle de l'itération 4.
+ */
+export function relanceAvecAccords(reponse: TeamEstimateResponse): RelanceEtape {
+  const etape = relanceApresEstimation(reponse);
+  if (etape.genre !== "confirmation") return etape;
   const annoncees = Array.isArray(reponse.confirmations) ? reponse.confirmations : [];
   const accords: NonNullable<RelanceConfirmation["accords"]> = {};
   const phrases: string[] = [];
@@ -827,20 +855,11 @@ export function repriseApresEstimation(pause: TeamPauseView, reponse: TeamEstima
     accords.plafond = true;
     phrases.push(remplir(REPRISE.accordPlafond, { plafond: reponse.plafond }));
   }
-  const message = [etape.confirmation.message, ...phrases, suite].join(" ");
-  const confirmation: RelanceConfirmation = { ...etape.confirmation, titre: REPRISE.confirmationTitre, message };
-  return { genre: "confirmation", confirmation: phrases.length === 0 ? confirmation : { ...confirmation, accords } };
+  if (phrases.length === 0) return etape;
+  const message = [etape.confirmation.message, ...phrases].join(" ");
+  return { genre: "confirmation", confirmation: { ...etape.confirmation, message, accords } };
 }
-
-/**
- * Corps de POST …/relancer après la boîte d'une reprise : l'empreinte confirmée, et les accords que la boîte a écrits — jamais
- * d'autres. Sans accord, le corps est exactement celui de la relance de l'itération 4.
- */
-export function corpsDeReprise(suite: RelanceLancement, confirmation: RelanceConfirmation): TeamRelaunchBody {
-  const accords = confirmation.accords ?? {};
-  return Object.keys(accords).length === 0 ? { estimateSha256: suite.empreinte } : { estimateSha256: suite.empreinte, confirmations: { ...accords } };
-}
-// </c5:reprise-redemarrage>
+// </c5:relance-accords>
 
 // <c5:relance-perimee>
 /**
