@@ -23,6 +23,20 @@ export const TEXTES = {
       "agent-studio": "Agent du Studio",
       "sous-agent": "Sous-agent",
     },
+    // <l39o:salle-omo>
+    /**
+     * Onglet « Salle OMO » de la carte (L39o ; spéc. §5.2 l.892) : mode Avancé seulement, comme la salle. Les noms des rôles ne
+     * sont PAS ici (secteurs de neon-texts.ts, par shared/agent-map-omo.ts), ni l'état « Salle coupée » (etats.coupee
+     * d'omo-room-texts.ts) : aucune table de libellés propre à la carte.
+     */
+    salle: {
+      /** Nom du groupe des deux boutons : carte de l'instance principale ou onglet de la salle. */
+      choix: "Carte montrée",
+      onglet: "Salle OMO",
+      intro: "Agents de la Salle OMO, en lecture seule. Le rôle de chaque agent est lu sur sa clé de configuration, jamais sur son nom affiché.",
+      aucun: "Aucun agent lu dans la Salle OMO.",
+    },
+    // </l39o:salle-omo>
   },
   partout: {
     titre: "Carte des assistants",
