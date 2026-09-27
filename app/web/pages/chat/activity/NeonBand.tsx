@@ -19,7 +19,8 @@
 // - Modes : repliée par défaut en Simple, avec un résumé d'une ligne ; dépliée en Avancé ; une autre conversation ou un autre
 //   mode revient à ce défaut. En Avancé, une demande qui attend votre réponse ne la replie jamais : elle y montre l'attente de
 //   votre accord et la préparation en pointillé fixe (§5.1, §5.7.1, §5.7.3 ; clôture de l'itération 1). En Simple seulement
-//   (repliPourLaDemande, calculé par ActivityRegion), repliée d'office tant que la demande attend, puis dépliée de nouveau. Sous
+//   (repliPourLaDemande, calculé par ActivityRegion), repliée d'office tant que la demande attend, puis dépliée de nouveau — jamais
+//   tant que le focus clavier est dans la BANDE ENTIÈRE, boîtes de dialogue de la barre de commandes comprises. Sous
 //   900 px, mini-carte de 3 lignes ; à 400 px, liste seule ; hauteur bornée par la fenêtre (neon.css). Néon clair en thème clair
 //   (jetons de styles.css) ; couleurs forcées dans neon.css.
 // Composant interne : ses propriétés restent libres pour son propriétaire. NeonCarte et NeonTableau sont réutilisables (L5d).
@@ -81,6 +82,7 @@ import { roleDeAgent } from "../../../../server/shared/omo-roles.ts";
 import { activityApi } from "../../../lib/api-activity.ts";
 import { oc } from "../../../lib/api.ts";
 import type { ActivityFact } from "../../../lib/types.ts";
+import { BandCommands3d } from "../../salle-controle/revoir/BandCommands3d.tsx"; // [3d]
 import "./neon.css";
 
 export interface NeonBandProps {
@@ -93,8 +95,10 @@ export interface NeonBandProps {
   onDemonstration?: (() => void) | undefined;
   /**
    * Mode Simple seulement (replierPendantLaDemande, useActivity.ts) : une demande de la conversation attend votre réponse, la carte
-   * se replie pour laisser la place à la demande, au fil et à la saisie, sauf si le focus clavier est dans la carte. La demande
-   * réglée, elle se déplie de nouveau, sauf si vous l'avez dépliée ou repliée entre-temps. Toujours faux en Avancé.
+   * se replie pour laisser la place à la demande, au fil et à la saisie, sauf si le focus clavier est dans la bande — la carte, mais
+   * aussi la barre de commandes et les boîtes de dialogue qu'elle ouvre (« Revoir »), sinon une boîte ouverte serait démontée sous
+   * les doigts et le focus perdu (§5.5 : focus jamais volé ni perdu). La demande réglée, elle se déplie de nouveau, sauf si vous
+   * l'avez dépliée ou repliée entre-temps. Toujours faux en Avancé.
    */
   repliPourLaDemande?: boolean | undefined;
 }
@@ -119,7 +123,9 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
   /** Carte repliée d'office pendant une demande (repliPourLaDemande, mode Simple) : dépliée de nouveau quand la demande est réglée. */
   const [replieeDOffice, setReplieeDOffice] = useState(false);
   const [attenteVue, setAttenteVue] = useState(false);
-  const corpsRef = useRef<HTMLDivElement>(null);
+  // Bande ENTIÈRE (et non le seul corps) : le repli d'office démonterait sinon une boîte de dialogue ouverte depuis la barre de
+  // commandes — « Revoir » (L28b) y monte la sienne — et le focus retomberait sur <body> (§5.5).
+  const bandeRef = useRef<HTMLElement>(null);
   // Autre mode ou autre conversation : repliée ou dépliée selon le mode, retour à la carte, affichage en direct.
   const contexte = `${mode}|${rootId}`;
   const [contexteVu, setContexteVu] = useState(contexte);
@@ -133,8 +139,8 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
   } else if (attenteVue !== repliPourLaDemande) {
     // Jamais dans le rendu d'un changement de contexte : la carte y reprend d'abord son défaut, lu ici au rendu suivant.
     setAttenteVue(repliPourLaDemande);
-    const focusDansLaCarte = corpsRef.current?.contains(document.activeElement) === true;
-    if (repliPourLaDemande && deplie && !focusDansLaCarte) {
+    const focusDansLaBande = bandeRef.current?.contains(document.activeElement) === true;
+    if (repliPourLaDemande && deplie && !focusDansLaBande) {
       setReplieeDOffice(true);
       setDeplie(false);
       setFocus(null);
@@ -191,7 +197,7 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
   else if (!tableau && vue.detail !== null) contenu = <NeonZoom3 vue={vue} detail={vue.detail} directory={directory} retourRef={retourRef} onRetour={fermer} />;
 
   return (
-    <section className="neon-band" aria-labelledby={titreId} onKeyDown={onKeyDown}>
+    <section className="neon-band" aria-labelledby={titreId} onKeyDown={onKeyDown} ref={bandeRef}>
       <div className="neon-head">
         <h2 className="neon-title" id={titreId}>
           {titreBande(mode)}
@@ -213,6 +219,9 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
                   {TOUCHES.demonstration}
                 </button>
               ) : null}
+              {/* [3d] début : commandes « Revoir » et salle de contrôle (itération 3, L28b) */}
+              <BandCommands3d rootId={rootId} facts={facts} advanced={advanced} />
+              {/* [3d] fin */}
             </>
           ) : null}
           <button type="button" className="btn sm" aria-expanded={deplie} aria-controls={deplie ? corpsId : undefined} onClick={basculerRepli}>
@@ -221,7 +230,7 @@ export function NeonBand({ rootId, facts, advanced, directory, onDemonstration, 
         </div>
       </div>
       {deplie ? (
-        <div className="neon-body" id={corpsId} ref={corpsRef}>
+        <div className="neon-body" id={corpsId}>
           {/* Le dessin est aria-hidden : l'enceinte de la salle et les assistants non dessinés sont dits en toutes lettres. */}
           {vue.enceinte === null ? null : <p className="neon-salle">{TEXTES.avance.salle}</p>}
           {contenu}

@@ -412,6 +412,13 @@ export function relevesDuBanc(url, jeton) {
     async tourParDefaut(tour) {
       return await appeler("POST", "/banc/defaut", { tour });
     },
+    // [3d] début : rejeu d'une suite d'événements (itération 3, L35 ; M20). Sans ce client, la route de pilotage
+    // « POST /banc/emettre » du faux (e2e/fake-opencode-server.ts) resterait injoignable depuis un scénario, qui ne connaît ni
+    // l'adresse ni le jeton du pilotage. Aucun tour joué, aucune IA, aucune facturation.
+    async emettre(evenements) {
+      return await appeler("POST", "/banc/emettre", { evenements });
+    },
+    // [3d] fin
     /** Vide le relevé (début d'un scénario). */
     async oublier() {
       return await appeler("POST", "/banc/oublier", {});

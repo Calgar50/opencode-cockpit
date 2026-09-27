@@ -239,6 +239,27 @@ function servirCatalogueCopilot(): void {
   process.on("SIGINT", () => arreter("SIGINT"));
 }
 
+// [3d] début : rejeu d'événements (itération 3, L35 ; M20). Les blocs reçus sont passés TELS QUELS à `faux.emit`, qui les
+// diffuse sur le flux comme opencode le ferait : aucun tour joué, aucune IA, aucune facturation. Le corps reste borné par
+// MAX_CORPS (1 Mio) comme les autres routes de pilotage. Grande fusion (GF2) : le faux est passé en paramètre, chaque mode
+// de la salle (L26c) ayant le sien.
+function rejouer(faux: FakeOpencode, corps: { evenements?: unknown }): { emis: number; erreur: string | null } {
+  const liste = corps.evenements;
+  if (!Array.isArray(liste)) return { emis: 0, erreur: "evenements (liste) attendus" };
+  let emis = 0;
+  for (const brut of liste) {
+    const evenement = brut as { type?: unknown; properties?: unknown; id?: unknown } | null;
+    if (typeof evenement?.type !== "string" || typeof evenement.properties !== "object" || evenement.properties === null) {
+      return { emis, erreur: "chaque événement attend { type, properties }" };
+    }
+    const proprietes = evenement.properties as Record<string, unknown>;
+    faux.emit(typeof evenement.id === "string" ? { type: evenement.type, properties: proprietes, id: evenement.id } : { type: evenement.type, properties: proprietes });
+    emis++;
+  }
+  return { emis, erreur: null };
+}
+// [3d] fin
+
 // --- Faux opencode (instance principale ou salle) ----------------------------------------------------------------------------------
 
 async function servirOpencode(mode: "principale" | "omo"): Promise<void> {
@@ -337,6 +358,13 @@ async function servirOpencode(mode: "principale" | "omo"): Promise<void> {
           repondre(res, 200, { ok: true });
           return;
         }
+        // [3d] début : rejeu d'une suite d'événements (itération 3, L35 ; M20), derrière le même jeton que le reste du pilotage.
+        if (req.method === "POST" && chemin === "/banc/emettre") {
+          const resultat = rejouer(faux, (await lireCorps(req)) as { evenements?: unknown });
+          repondre(res, resultat.erreur === null ? 200 : 400, resultat.erreur === null ? { ok: true, emis: resultat.emis } : { erreur: resultat.erreur });
+          return;
+        }
+        // [3d] fin
         if (req.method === "POST" && chemin === "/banc/oublier") {
           faux.requests.length = 0;
           faux.emitted.length = 0;

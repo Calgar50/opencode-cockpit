@@ -16,6 +16,9 @@ import { AssistantsPage } from "../pages/AssistantsPage.tsx";
 import { ChatPage } from "../pages/ChatPage.tsx";
 import { CostsPage } from "../pages/CostsPage.tsx";
 import { DiagnosticsPage } from "../pages/DiagnosticsPage.tsx";
+// [3d] début : page de la salle de contrôle, #/salle-controle (itération 3, T3d-a)
+import { SalleControlePage } from "../pages/salle-controle/SalleControlePage.tsx";
+// [3d] fin
 import { SettingsPage } from "../pages/SettingsPage.tsx";
 import { StudioPage } from "../pages/StudioPage.tsx";
 import { SalleOmoPage } from "../pages/omo/SalleOmoPage.tsx";
@@ -419,6 +422,10 @@ function Shell({ recovery, onRetry }: { recovery: BootView<Bootstrap>; onRetry: 
             <SettingsPage />
           ) : section === "diagnostic" ? (
             <DiagnosticsPage />
+            // [3d] début : page de la salle de contrôle, sans entrée de navigation (itération 3, T3d-a)
+          ) : section === "salle-controle" ? (
+            <SalleControlePage />
+            // [3d] fin
           ) : (
             <ChatPage />
           )}

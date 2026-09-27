@@ -20,6 +20,7 @@ import {
   toCatalogLite,
   withTierAvailability,
 } from "../../../server/shared/assistant-rules.ts";
+import { nettoyerTexteIa } from "../../../server/shared/texte-ia.ts";
 import { api } from "../../lib/api.ts";
 import { formatUsd as formatCost, plural } from "../../lib/format.ts";
 import type {
@@ -235,21 +236,13 @@ export function isModelNotFound(error: Pick<OcError, "name" | "data"> | null | u
 /** Longueur montrée au plus d'un texte d'IA (consigne, résultat, erreur) ; le reste est coupé et signalé. */
 export const AI_TEXT_MAX = 20_000;
 
-const char = (code: number): string => String.fromCharCode(code);
-/** Séquences de terminal (couleurs) d'une sortie d'outil. */
-const ANSI_SEQUENCES = new RegExp(`${char(27)}\\[[0-9;?]*[A-Za-z]`, "g");
-/**
- * Caractères de commande (tabulation et fin de ligne gardées, retour chariot retiré) et contrôles de sens d'écriture, qui
- * pourraient faire lire un texte d'IA autrement qu'il n'est écrit.
- */
-const HIDDEN_CHARACTERS = new RegExp(`[${char(0)}-${char(8)}${char(11)}-${char(31)}${char(127)}${char(0x202a)}-${char(0x202e)}${char(0x2066)}-${char(0x2069)}]`, "g");
-
 /**
  * Texte d'IA à montrer tel quel (consigne, résultat, erreur, titre) : rendu en texte par React, donc échappé, jamais interprété comme
- * du HTML ni du Markdown ; séquences de terminal et caractères cachés retirés ; longueur bornée à `max` (`clipped` : coupé).
+ * du HTML ni du Markdown ; séquences de terminal et caractères cachés retirés par nettoyerTexteIa (server/shared/texte-ia.ts, seule
+ * définition du dépôt, partagée avec « Revoir ») ; longueur bornée à `max` (`clipped` : coupé).
  */
 export function boundedAiText(value: unknown, max = AI_TEXT_MAX): { text: string; clipped: boolean } {
-  const clean = (typeof value === "string" ? value : "").replace(ANSI_SEQUENCES, "").replace(HIDDEN_CHARACTERS, "");
+  const clean = nettoyerTexteIa(value);
   if (clean.length <= max) return { text: clean, clipped: false };
   // Jamais une moitié de caractère double (émoji) en fin de coupe.
   const high = clean.charCodeAt(max - 1);

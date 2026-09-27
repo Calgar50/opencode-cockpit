@@ -83,7 +83,8 @@ describe("migration 6 (Salle OMO) : schéma", () => {
   it("D-2b-42 : openMemoryDb atteint user_version 6 = MIGRATIONS.length ; omo_rooms, omo_room_starts.start_id et son index", () => {
     const db = openMemoryDb();
     // Règle d'assertion unique (A2 bis) : la version de la base est le nombre d'entrées du tableau, jamais un compte à part.
-    assert.equal(MIGRATIONS.length, MIGRATION_SALLE);
+    // Grande fusion (GF2) : les 7 et 8 de la 3D suivent la 6 ; ce test ne vise que la 6 (`>= N`, plan it5 §8.5).
+    assert.ok(MIGRATIONS.length >= MIGRATION_SALLE);
     assert.equal(userVersion(db), MIGRATIONS.length);
 
     assert.deepEqual(colonnes(db, "omo_rooms"), [
@@ -130,8 +131,9 @@ describe("migration 6 (Salle OMO) : schéma", () => {
     for (const statement of statements) {
       assert.match(statement, /^(CREATE TABLE \w+ \(|CREATE INDEX \w+ ON \w+\(|ALTER TABLE \w+ ADD COLUMN \w+ )/, statement);
     }
-    // Aucun numéro réservé à une autre branche n'est posé ici (A2).
-    assert.equal(MIGRATIONS.length, MIGRATION_SALLE);
+    // Aucun numéro réservé à une autre branche n'est posé ici (A2). Grande fusion (GF2) : la 6 reste à son rang, les entrées
+    // suivantes sont celles de la 3D (7 réservée vide, 8), vérifiées par migration8.test.ts ; ici, `>= N` (plan it5 §8.5).
+    assert.ok(MIGRATIONS.length >= MIGRATION_SALLE);
   });
 });
 

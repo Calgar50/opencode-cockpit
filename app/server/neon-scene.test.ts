@@ -1403,7 +1403,15 @@ function chargerBande() {
     const { transformWithOxc } = (await import("vite")) as unknown as { transformWithOxc: (code: string, file: string, options: object) => Promise<{ code: string }> };
     const { code } = await transformWithOxc(fs.readFileSync(BAND_FILE, "utf8"), BAND_FILE, { lang: "tsx", jsx: { runtime: "automatic" } });
     const dossier = path.dirname(BAND_FILE);
-    const absolu = code
+    // Grande fusion (GF2) : la bande importe un composant .tsx de la 3D (BandCommands3d, L28b), que node ne charge pas. Il est
+    // remplacé ici par un composant vide ; les composants rendus par ce bloc (MetadonneesConsigne, NeonCarte) ne le montent pas.
+    const remplaces: string[] = [];
+    const sansTsx = code.replace(/^import\s+\{\s*(\w+)\s*\}\s+from\s+["']\.{1,2}\/[^"']+\.tsx["'];?[^\n]*$/gm, (_m, nom: string) => {
+      remplaces.push(nom);
+      return `const ${nom} = () => null;`;
+    });
+    assert.deepEqual(remplaces, ["BandCommands3d"], "composant .tsx importé par la bande : le nommer ici, ou le charger");
+    const absolu = sansTsx
       .replace(/^import\s+["']\.\/[\w.-]+\.css["'];?[ \t]*$/m, "")
       .replace(/(\bfrom\s+)["'](\.{1,2}\/[^"']+)["']/g, (_m, tete: string, spec: string) => `${tete}${JSON.stringify(pathToFileURL(path.resolve(dossier, spec)).href)}`)
       .replace(/(\bfrom\s+)["'](react|react\/jsx-runtime)["']/g, (_m, tete: string, spec: string) => `${tete}${JSON.stringify(import.meta.resolve(spec))}`);

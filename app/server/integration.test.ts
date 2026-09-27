@@ -16,7 +16,7 @@ import { ModelCatalog } from "./catalog.ts";
 import type { Classifier } from "./classifier.ts";
 import { ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService, RestartResult } from "./control.ts";
-import { openMemoryDb } from "./db.ts";
+import { MIGRATIONS, openMemoryDb } from "./db.ts";
 import type { AppEnv } from "./env.ts";
 import { createApp, forbiddenAttachment, forbiddenProxyBody, mergeConfigPatch, parsePermissionReply, PROXY_RULES, turnModelFromBody } from "./http.ts";
 import { EventHub } from "./hub.ts";
@@ -73,7 +73,7 @@ function setup() {
 describe("registre des coûts", () => {
   it("1.1 (migration 4) : tables d'équipes et d'autonomie, IA et réflexion par appel, agent de session, usages equipe et controle", () => {
     const { db, ledger, sessions } = setup();
-    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
+    assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, MIGRATIONS.length);
     const tables = (
       db
         .prepare(

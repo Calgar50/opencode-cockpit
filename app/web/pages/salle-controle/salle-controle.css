@@ -1,0 +1,304 @@
+/* 1.1 (L31b) : page « Salle de contrôle » — plein écran sous l'en-tête, vue et liste, fil d'Ariane, bandeau de fluidité
+   (spécification §5.5, §5.6 l.926-928, §5.8 l.992-1009 ; plan d'exécution it3, fiche L31b ; D-3d-17, D-3d-22).
+   - Mouvement : AUCUNE animation infinie ; la seule transition est sous @media (prefers-reduced-motion: no-preference)
+     (salle3d-animations.test.ts). La pulsation des halos appartient à la 3D, dans le moteur.
+   - Couleurs : jetons de styles.css seulement, pour suivre le thème clair et le thème sombre ; les couleurs de la mini-carte
+     viennent de la palette néon (attributs SVG), jamais d'ici.
+   - Largeurs (§5.6 l.928) : au-dessus de 900 px, la vue et la liste côte à côte ; sous 900 px, la liste passe dessous et la
+     mini-carte se réduit à trois lignes de hauteur ; à 400 px, la liste seule (la vue est masquée : elle n'est qu'une image). */
+
+.page.salle3d {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px 20px 18px;
+}
+
+.salle3d-tete {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.salle3d-tete h1 {
+  margin: 0;
+  font-size: 19px;
+}
+
+/* --- Fil d'Ariane --------------------------------------------------------------------- */
+
+.salle3d-fil {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.salle3d-fil li + li::before {
+  content: "›";
+  margin-right: 6px;
+  color: var(--text-3, var(--text-2));
+}
+
+.salle3d-fil a {
+  color: var(--text-1);
+}
+
+.salle3d-fil [aria-current="page"] {
+  color: var(--text-2);
+}
+
+.salle3d-identifiant {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+/* --- Bandeau de fluidité (§5.8 l.1006-1007) -------------------------------------------- */
+
+.salle3d-fluidite {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.salle3d-fluidite p {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: 13px;
+}
+
+/* --- Zoom 1 : vue et listes ------------------------------------------------------------ */
+
+.salle3d-zoom1 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.salle3d-vue {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.salle3d-vue > canvas,
+.salle3d-carte2d {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.salle3d-listes {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.salle3d-section h2 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.salle3d-note {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.salle3d-enceinte {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+/* --- Liste en grille de boutons (la vérité, P7) ---------------------------------------- */
+
+.salle3d-grille {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.salle3d-ligne {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.salle3d-ligne:last-child {
+  border-bottom: 0;
+}
+
+.salle3d-projet {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 100%;
+  gap: 2px;
+}
+
+.salle3d-nom {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.salle3d-compteurs {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.salle3d-cellule {
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.salle3d-conversation {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.salle3d-revoir {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.salle3d-revoir li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .salle3d-conversation {
+    transition: background-color 0.15s ease-out;
+  }
+}
+
+/* --- Sous 900 px : liste et mini-carte (§5.6 l.928) ------------------------------------- */
+
+@media (max-width: 900px) {
+  .salle3d-zoom1 {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .salle3d-vue {
+    height: 7.5em;
+  }
+}
+
+/* --- 400 px : la liste seule (§5.6 l.928) ----------------------------------------------- */
+
+@media (max-width: 400px) {
+  .page.salle3d {
+    padding: 12px 12px 14px;
+  }
+
+  /* La vue n'est pas montée à cette largeur (SalleControlePage) : la liste occupe toute la page. */
+  .salle3d-zoom1 {
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+/* --- Couleurs forcées (L33 ; §5.5 l.921) -------------------------------------------------
+   Mode contrasté : le système impose ses couleurs. Tout ce qui ne se voyait que par une nuance de fond (cadre de la vue,
+   bandeau de fluidité, enceinte de la Salle OMO, séparateurs de la grille) doit alors se voir par un TRAIT en couleur
+   système, sinon il disparaît. La 3D n'est JAMAIS montrée ici : `capacites()` (L30) repasse la salle en 2D dès que
+   `forced-colors` est actif ; la règle des étiquettes reste une garde, pour que les jetons néon posés en style en ligne
+   ne survivent jamais au mode contrasté. */
+@media (forced-colors: active) {
+  .salle3d-vue,
+  .salle3d-fluidite {
+    border-color: CanvasText;
+  }
+  /* Enceinte de la Salle OMO (JP-10) : son pointillé la distingue des projets, et il doit rester lisible. */
+  .salle3d-enceinte {
+    border-style: dashed;
+    border-color: CanvasText;
+  }
+  .salle3d-ligne {
+    border-bottom-color: CanvasText;
+  }
+  .salle3d-fil a {
+    color: LinkText;
+  }
+  .salle3d-fil [aria-current="page"],
+  .salle3d-fil li + li::before {
+    color: CanvasText;
+  }
+  .salle3d-fil a:focus-visible,
+  .salle3d-grille [data-cellule]:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  /* Mini-carte 2D du zoom 1 : ses couleurs sont écrites en attributs de présentation (Territoires2d), que le mode
+     contrasté remplacerait toutes par la même — plaques et fond confondus. La carte garde donc ses couleurs
+     (forced-color-adjust: none) et les prend du système : fond « Canvas », plaques et stations au TRAIT « CanvasText »,
+     le pointillé de l'enceinte gardé par son attribut `stroke-dasharray`. La liste en grille reste la vérité (P7). */
+  .salle3d-carte2d {
+    forced-color-adjust: none;
+  }
+  .salle3d-carte2d rect,
+  .salle3d-carte2d polygon,
+  .salle3d-carte2d circle {
+    fill: Canvas;
+  }
+  .salle3d-carte2d polygon,
+  .salle3d-carte2d circle {
+    stroke: CanvasText;
+  }
+  /* Étiquettes DOM de la scène 3D : garde. La 3D n'est pas montrée sous couleurs forcées ; si elle l'était, le fond et le
+     texte viendraient du système, jamais des jetons néon posés en style en ligne par Etiquettes3d. */
+  .salle3d-etiquette {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+  }
+  .salle3d-etiquette:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* --- Mouvement réduit (L33 ; §5.5 l.922) -------------------------------------------------
+   La seule transition de cette feuille est déjà sous `no-preference` : ce bloc la coupe NOMMÉMENT, pour que la salle ne
+   dépende pas de la règle générale de styles.css (feuille d'un autre paquet), et pour que le défilement des listes reste
+   instantané quel qu'en soit le réglage ailleurs. */
+@media (prefers-reduced-motion: reduce) {
+  .salle3d-conversation {
+    transition: none;
+  }
+  .salle3d-listes,
+  .salle3d-vue {
+    scroll-behavior: auto;
+  }
+}

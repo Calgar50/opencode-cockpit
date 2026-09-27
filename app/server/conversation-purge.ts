@@ -2,6 +2,7 @@
 // Une conversation supprimée dans opencode mais gardée aux Archives garde ses faits (Déroulé des Archives) : rien n'est purgé
 // sur session.deleted.
 import type { DatabaseSync } from "node:sqlite";
+import { purgeConsignes } from "./consignes-store.ts"; // [3d] copies locales des consignes (itération 3, L28d)
 import { transaction } from "./db.ts";
 
 /** Lignes touchées par une purge. */
@@ -46,6 +47,7 @@ export function purgeConversation(db: DatabaseSync, rootId: string): PurgeResult
       .prepare(`UPDATE autonomy_decisions SET resume = '', raison = '' WHERE root_id IN (${TREE_SQL}) AND (resume != '' OR raison != '')`)
       .run(root);
     const facts = db.prepare(`DELETE FROM activity_facts WHERE root_id IN (${TREE_SQL})`).run(root);
+    purgeConsignes(db, rootId); // [3d] copies locales des consignes, même politique que les faits (U2, D-3d-30 ; itération 3, L28d)
     return { runs: Number(runs.changes), steps: Number(steps.changes), decisions: Number(decisions.changes), facts: Number(facts.changes) };
   };
   return db.isTransaction ? purge() : transaction(db, purge);
