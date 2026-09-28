@@ -68,10 +68,13 @@ function git(...args: string[]): string {
   return execFileSync("git", ["-C", DEPOT, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-/** Le dépôt est-il lisible ici ? (une copie exportée sans .git ne peut pas vérifier la porte) */
-function depotLisible(): boolean {
+/**
+ * Les trois ancêtres sont-ils lisibles ici ? Non dans une copie exportée sans .git, ni dans un clone superficiel (la CI
+ * récupère un seul commit, sans étiquettes) : la porte ne peut alors rien vérifier, elle l'a été à la fusion.
+ */
+function ancetresLisibles(): boolean {
   try {
-    git("rev-parse", "--git-dir");
+    for (const [, commit] of ANCETRES) git("cat-file", "-e", `${commit}^{commit}`);
     return true;
   } catch {
     return false;
@@ -81,7 +84,7 @@ function depotLisible(): boolean {
 describe("train V1 : porte P-H1", () => {
   it(
     "H1', M0 et v1.0.5 sont des ancêtres de la branche intégrée",
-    { skip: depotLisible() ? false : "dépôt git absent de cette copie : porte vérifiée à la fusion" },
+    { skip: ancetresLisibles() ? false : "historique incomplet ici (copie sans .git ou clone superficiel) : porte vérifiée à la fusion" },
     () => {
       for (const [nom, commit] of ANCETRES) {
         assert.doesNotThrow(() => git("merge-base", "--is-ancestor", commit, "HEAD"), `${nom} (${commit}) n'est pas un ancêtre de HEAD`);
