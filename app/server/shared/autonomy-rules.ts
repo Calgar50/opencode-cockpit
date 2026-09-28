@@ -18,7 +18,7 @@
 // Module pur (server/shared) : ni module node ni accès au processus ; l'heure est passée par l'appelant (capReached) ; aucune
 // entrée n'est modifiée. Les faits (règles de l'assistant, configuration, compteurs, faits d'une délégation) sont relevés par le
 // serveur (L10a, L10c, L10d, L1d) et arrivent en données.
-import { type Rule, type UiMode, wildcardMatch } from "./assistant-rules.ts";
+import { evaluate, type Rule, type UiMode, wildcardMatch } from "./assistant-rules.ts";
 import type { ActivationRefusalCode, AutonomyCaps, AutonomyChoice, ChoiceCause, DelegationFacts, RequestEnd } from "./autonomy-types.ts";
 import { GIT_CONSULTATION_SUBCOMMANDS } from "./shell-gate.ts";
 
@@ -30,7 +30,7 @@ export type { EditFacts, EditPathFacts, EditRule, EditVerdict } from "./autonomy
  * dans autonomy_decisions.rules_version. À incrémenter à tout changement d'une règle qui décide : matrice et routes de ce module,
  * E1-E6 (autonomy-edit-rules.ts), S1-S7 (shell-gate.ts), D1-D7, plafonds.
  */
-export const AUTONOMY_RULES_VERSION = 1;
+export const AUTONOMY_RULES_VERSION = 2;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -231,7 +231,12 @@ function own(record: JsonRecord, key: string): unknown {
 
 type DelegationCheck = (facts: JsonRecord, caps: JsonRecord) => boolean;
 
-/** Règles dans l'ordre du §4.7 ; chacune rend vrai quand la délégation peut rester automatique. */
+/**
+ * Règles dans l'ordre du §4.7 ; chacune rend vrai quand la délégation peut rester automatique. D1 (pré-publication 1.1.0) exige
+ * aussi que la cible ne lise pas un .env sans demander et n'agisse pas sans demander (targetRightsFacts) : son travail ne passe par
+ * aucune demande, donc par aucun contrôle du cockpit (§4.1 « Lire un .env : votre accord », pour la conversation et tout son travail
+ * délégué). Fait absent ou d'un autre type : D1.
+ */
 const DELEGATION_CHECKS: ReadonlyArray<readonly [DelegationRule, DelegationCheck]> = [
   [
     "D1",
@@ -239,7 +244,14 @@ const DELEGATION_CHECKS: ReadonlyArray<readonly [DelegationRule, DelegationCheck
       const target = own(facts, "target");
       if (!isRecord(target)) return false;
       const name = own(target, "name");
-      return typeof name === "string" && name !== "" && DELEGATION_TARGET_MODES.has(own(target, "mode")) && own(target, "internal") === false;
+      return (
+        typeof name === "string" &&
+        name !== "" &&
+        DELEGATION_TARGET_MODES.has(own(target, "mode")) &&
+        own(target, "internal") === false &&
+        own(target, "actsWithoutAsking") === false &&
+        own(target, "readsEnvWithoutAsking") === false
+      );
     },
   ],
   [
@@ -324,6 +336,28 @@ function allowsWithoutAsking(rules: readonly Rule[], permission: ActivationWatch
 export function actsWithoutAsking(rules: readonly Rule[] | null): ActivationWatchedPermission | "regles-illisibles" | null {
   if (!Array.isArray(rules) || !rules.every(isRule)) return "regles-illisibles";
   return ACTIVATION_WATCHED_PERMISSIONS.find((permission) => allowsWithoutAsking(rules, permission)) ?? null;
+}
+
+/**
+ * Chemins relatifs qu'opencode 1.18.30 passe à `read` pour des .env (tool/read.ts : motif = chemin relatif au dossier) : à la racine,
+ * dans un sous-dossier, et leurs variantes. Les défauts d'opencode les mettent à « ask » ; une règle « read » posée après eux les
+ * rouvre.
+ */
+export const ENV_READ_SAMPLES = Object.freeze([".env", "app/.env", ".env.local", "app/.env.production"] as const);
+
+/**
+ * Droits effectifs d'une cible de délégation (règles de GET /agent, dans l'ordre ; pré-publication 1.1.0, D1) :
+ * - actsWithoutAsking : elle modifie, lance une commande, délègue ou va sur le web sans demander (même lecture que l'activation) ;
+ * - readsEnvWithoutAsking : `read` d'un .env vaut « allow » (evaluate, la dernière règle l'emporte).
+ * Règles illisibles : les deux à vrai (fermé en cas de doute). Le plancher de la conversation n'y est pas ajouté : il ne pose que
+ * des refus, donc cette lecture peut refuser plus que nécessaire, jamais moins.
+ */
+export function targetRightsFacts(rules: readonly Rule[] | null): { actsWithoutAsking: boolean; readsEnvWithoutAsking: boolean } {
+  if (!Array.isArray(rules) || !rules.every(isRule)) return { actsWithoutAsking: true, readsEnvWithoutAsking: true };
+  return {
+    actsWithoutAsking: actsWithoutAsking(rules) !== null,
+    readsEnvWithoutAsking: ENV_READ_SAMPLES.some((file) => evaluate(rules, "read", file) === "allow"),
+  };
 }
 
 /** Faits d'une activation, relevés par le serveur (L10d) ; tout booléen attendu qui n'est pas exactement la valeur sûre refuse. */

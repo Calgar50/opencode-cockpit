@@ -8,7 +8,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import type { ControlAiUnavailableCode, DelegationPolicyVerdict } from "./contracts-11.ts";
-import { effectiveAgentRules, effectiveBuiltinRules, evaluate, PERMISSION_PRESETS, type Rule, type UiMode } from "./shared/assistant-rules.ts";
+import {
+  effectiveAgentRules,
+  effectiveBuiltinRules,
+  evaluate,
+  opencodeDefaultPermission,
+  PERMISSION_PRESETS,
+  type Rule,
+  rulesFromConfig,
+  type UiMode,
+} from "./shared/assistant-rules.ts";
 import {
   descriptionChoix,
   raisonIndisponible,
@@ -131,10 +140,13 @@ function editFacts(over: Partial<EditFacts> = {}): EditFacts {
   };
 }
 
+/** Cible conforme (D1) : sous-agent ni principal ni interne, qui demande avant d'agir et avant de lire un .env. */
+const CIBLE = Object.freeze({ name: "general", mode: "subagent", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false });
+
 /** Délégation conforme D1-D7. */
 function delegation(over: Partial<DelegationFacts> = {}): DelegationFacts {
   return {
-    target: { name: "explore", mode: "subagent", internal: false },
+    target: { ...CIBLE },
     taskIdInTree: null,
     promptRisk: null,
     modelAllowed: true,
@@ -376,10 +388,12 @@ describe("pré-conditions d'un examen (§4.3 étape 3)", () => {
 describe("délégation en Autonome : un cas isolé par règle D1 à D7 (§4.7)", () => {
   const cases: Array<[string, Partial<DelegationFacts>, string]> = [
     ["cible absente de GET /agent", { target: null }, "D1"],
-    ["cible principale", { target: { name: "build", mode: "primary", internal: false } }, "D1"],
-    ["cible interne au cockpit", { target: { name: "cockpit-controle", mode: "subagent", internal: true } }, "D1"],
-    ["mode d'agent inconnu", { target: { name: "x", mode: "autre", internal: false } }, "D1"],
-    ["nom vide", { target: { name: "", mode: "subagent", internal: false } }, "D1"],
+    ["cible principale", { target: { ...CIBLE, name: "build", mode: "primary" } }, "D1"],
+    ["cible interne au cockpit", { target: { ...CIBLE, name: "cockpit-controle", internal: true } }, "D1"],
+    ["cible qui lit un .env sans demander (explore)", { target: { ...CIBLE, name: "explore", readsEnvWithoutAsking: true } }, "D1"],
+    ["cible qui agit sans demander", { target: { ...CIBLE, actsWithoutAsking: true } }, "D1"],
+    ["mode d'agent inconnu", { target: { ...CIBLE, name: "x", mode: "autre" } }, "D1"],
+    ["nom vide", { target: { ...CIBLE, name: "" } }, "D1"],
     ["task_id hors de l'arbre", { taskIdInTree: false }, "D2"],
     ["consigne à risque (@fichier)", { promptRisk: "fichier" }, "D3"],
     ["IA non autorisée", { modelAllowed: false }, "D4"],
@@ -393,7 +407,7 @@ describe("délégation en Autonome : un cas isolé par règle D1 à D7 (§4.7)",
       const verdict: DelegationPolicyVerdict = classifyDelegation(delegation(), CAPS, mode);
       assert.deepEqual(verdict, { verdict: "auto", regle: DELEGATION_AUTO_RULE });
     }
-    assert.equal(classifyDelegation(delegation({ target: { name: "general", mode: "all", internal: false } }), CAPS, "simple").verdict, "auto");
+    assert.equal(classifyDelegation(delegation({ target: { ...CIBLE, mode: "all" } }), CAPS, "simple").verdict, "auto");
     assert.equal(classifyDelegation(delegation({ taskIdInTree: true }), CAPS, "simple").verdict, "auto");
   });
 
@@ -431,6 +445,9 @@ describe("délégation en Autonome : un cas isolé par règle D1 à D7 (§4.7)",
       [{ target: bad({ name: 5, mode: "subagent", internal: false }) }, "D1"],
       [{ target: bad({ name: "explore", mode: "subagent" }) }, "D1"],
       [{ target: bad({ name: "explore", mode: "subagent", internal: "false" }) }, "D1"],
+      [{ target: bad({ name: "general", mode: "subagent", internal: false }) }, "D1"],
+      [{ target: bad({ ...CIBLE, actsWithoutAsking: undefined }) }, "D1"],
+      [{ target: bad({ ...CIBLE, readsEnvWithoutAsking: "false" }) }, "D1"],
       [{ taskIdInTree: bad(undefined) }, "D2"],
       [{ promptRisk: bad(undefined) }, "D3"],
       [{ promptRisk: "" }, "D3"],
@@ -450,6 +467,94 @@ describe("délégation en Autonome : un cas isolé par règle D1 à D7 (§4.7)",
     const inherited = Object.create({ name: "explore", mode: "subagent", internal: false }) as DelegationFacts["target"];
     assert.equal(classifyDelegation(delegation({ target: inherited }), CAPS, "avance").regle, "D1");
     assert.deepEqual(classifyDelegation(delegation({ taskIdInTree: false }), CAPS, "x" as UiMode), { verdict: "attente", regle: "D2" });
+  });
+});
+
+// --- Droits de la cible (pré-publication 1.1.0, constat « explore lit les .env ») --------------------------------------------
+
+describe("délégation en Autonome : D1 regarde les droits effectifs de la cible (revue de pré-publication 1.1.0)", () => {
+  /** Règles effectives d'explore relevées par GET /agent sur opencode 1.18.30 (mesure MX-EQ, passe a, me5.json), profil Prudent 1.0. */
+  const EXPLORE_MESURE: Rule[] = [
+    ["*", "*", "allow"],
+    ["doom_loop", "*", "ask"],
+    ["external_directory", "*", "ask"],
+    ["external_directory", "/home/node/.local/share/opencode/tool-output/*", "allow"],
+    ["external_directory", "/tmp/opencode/*", "allow"],
+    ["question", "*", "deny"],
+    ["plan_enter", "*", "deny"],
+    ["plan_exit", "*", "deny"],
+    ["read", "*", "allow"],
+    ["read", "*.env", "ask"],
+    ["read", "*.env.*", "ask"],
+    ["read", "*.env.example", "allow"],
+    ["*", "*", "deny"],
+    ["grep", "*", "allow"],
+    ["glob", "*", "allow"],
+    ["list", "*", "allow"],
+    ["bash", "*", "allow"],
+    ["webfetch", "*", "allow"],
+    ["websearch", "*", "allow"],
+    ["read", "*", "allow"],
+    ["external_directory", "*", "ask"],
+    ["external_directory", "/home/node/.local/share/opencode/tool-output/*", "allow"],
+    ["edit", "*", "ask"],
+    ["bash", "*", "ask"],
+    ["bash", "pwd", "allow"],
+    ["task", "*", "ask"],
+    ["webfetch", "*", "ask"],
+    ["websearch", "*", "ask"],
+    ["external_directory", "/home/node/.local/share/opencode/tool-output/*", "allow"],
+  ].map(([permission, pattern, action]) => ({ permission, pattern, action }) as Rule);
+  /** Règles propres d'explore dans opencode 1.18.30 (agent/agent.ts), posées entre les défauts et la configuration globale. */
+  const EXPLORE_PROPRES = { "*": "deny", grep: "allow", glob: "allow", list: "allow", bash: "allow", webfetch: "allow", websearch: "allow", read: "allow" };
+  /** Même ordre qu'opencode pour un sous-agent intégré : défauts, règles propres, configuration globale. */
+  const integre = (propres: unknown, globale: unknown): Rule[] => [
+    ...rulesFromConfig(opencodeDefaultPermission()),
+    ...rulesFromConfig(propres),
+    ...rulesFromConfig(globale),
+  ];
+  const faits = (target: Rule[] | null) => rules.targetRightsFacts(target);
+  const avecCible = (regles: Rule[] | null, name = "explore"): DelegationFacts => delegation({ target: { ...CIBLE, name, ...faits(regles) } });
+
+  it("explore, règles MESURÉES : un .env se lit sans demande (dernière règle « read * allow ») ; D1, jamais A-task, dans les deux modes", () => {
+    assert.equal(evaluate(EXPLORE_MESURE, "read", ".env"), "allow", "prémisse : read * allow d'explore posé après *.env ask");
+    assert.deepEqual(faits(EXPLORE_MESURE), { actsWithoutAsking: false, readsEnvWithoutAsking: true });
+    assert.deepEqual(classifyDelegation(avecCible(EXPLORE_MESURE), CAPS, "simple"), { verdict: "refus", regle: "D1" });
+    assert.deepEqual(classifyDelegation(avecCible(EXPLORE_MESURE), CAPS, "avance"), { verdict: "attente", regle: "D1" });
+  });
+
+  it("explore sous le profil Prudent 1.1 livré : même lecture des .env sans demande → D1 ; general (défauts : .env à « ask ») reste conforme", () => {
+    const prudent = PERMISSION_PRESETS.prudent.permission;
+    const explore = integre(EXPLORE_PROPRES, prudent);
+    for (const fichier of rules.ENV_READ_SAMPLES) assert.equal(evaluate(explore, "read", fichier), "allow", fichier);
+    assert.deepEqual(faits(explore), { actsWithoutAsking: false, readsEnvWithoutAsking: true });
+    assert.equal(classifyDelegation(avecCible(explore), CAPS, "avance").regle, "D1");
+    const general = integre({ todowrite: "deny" }, prudent);
+    assert.deepEqual(faits(general), { actsWithoutAsking: false, readsEnvWithoutAsking: false });
+    assert.deepEqual(classifyDelegation(avecCible(general, "general"), CAPS, "simple"), { verdict: "auto", regle: DELEGATION_AUTO_RULE });
+  });
+
+  it("cas voisin : bash réglé seulement pour l'assistant de la conversation (aucune règle bash globale) → le « bash * allow » d'explore agit sans demander → D1", () => {
+    const explore = integre({ ...EXPLORE_PROPRES, read: { "*": "allow", "*.env": "ask", "*.env.*": "ask" } }, { edit: "ask", task: "ask", webfetch: "deny", websearch: "deny" });
+    assert.deepEqual(faits(explore), { actsWithoutAsking: true, readsEnvWithoutAsking: false });
+    assert.equal(classifyDelegation(avecCible(explore), CAPS, "avance").regle, "D1");
+  });
+
+  it("une règle « read » de la configuration globale, posée après celles d'explore, referme les .env : la cible redevient conforme", () => {
+    const explore = integre(EXPLORE_PROPRES, { ...PERMISSION_PRESETS.prudent.permission, read: { "*": "allow", "*.env": "ask", "*.env.*": "ask" } });
+    assert.deepEqual(faits(explore), { actsWithoutAsking: false, readsEnvWithoutAsking: false });
+    assert.equal(classifyDelegation(avecCible(explore), CAPS, "avance").verdict, "auto");
+  });
+
+  it("règles illisibles (absentes, mal formées) : fermé en cas de doute, D1", () => {
+    for (const illisible of [null, [{ permission: "read", pattern: "*" }] as unknown as Rule[]]) {
+      assert.deepEqual(faits(illisible), { actsWithoutAsking: true, readsEnvWithoutAsking: true });
+      assert.equal(classifyDelegation(avecCible(illisible), CAPS, "avance").regle, "D1");
+    }
+  });
+
+  it("AUTONOMY_RULES_VERSION levée avec D1 (journal des décisions)", () => {
+    assert.ok(AUTONOMY_RULES_VERSION >= 2);
   });
 });
 

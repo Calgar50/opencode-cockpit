@@ -43,7 +43,7 @@ const JAMAIS = "Jamais : ce que l'assistant refuse.";
 export const TEXTES = {
   simple: {
     regles: {
-      D1: "Assistant inconnu, principal ou réservé au cockpit",
+      D1: "Assistant inconnu, principal, réservé au cockpit, ou qui lirait un .env ou agirait sans vous demander",
       "R-repetition": "L'IA répète la même action",
       "R-autre": "Action que le cockpit ne sait pas contrôler",
     },
@@ -56,7 +56,7 @@ export const TEXTES = {
   },
   avance: {
     regles: {
-      D1: "Agent absent de la liste, principal (primary) ou interne au cockpit",
+      D1: "Agent absent de la liste, principal (primary), interne au cockpit, ou qui lit un .env ou agit sans demander (règle « allow »)",
       "R-repetition": "Boucle détectée (doom_loop)",
       "R-autre": "Outil que le cockpit ne contrôle pas (MCP, extension ou autre)",
     },

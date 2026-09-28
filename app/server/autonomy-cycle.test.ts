@@ -28,6 +28,7 @@ import type { ActivationPort, Cockpit11Ports, ControlAiPort, ConversationAutonom
 import { createPermissionGate } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
 import type { UiMode } from "./shared/assistant-rules.ts";
+import { AUTONOMY_RULES_VERSION } from "./shared/autonomy-rules.ts";
 import { phraseRegle, phraseRelais, TEXTES } from "./shared/autonomy-texts.ts";
 import type { AutonomyChoice } from "./shared/autonomy-types.ts";
 import { CONTROL_PROBLEMS } from "./shared/control-ai-output.ts";
@@ -279,7 +280,7 @@ describe("L10a : décision automatique", () => {
     assert.equal(decision.choix, "autonome");
     assert.equal(decision.permission, "bash");
     assert.equal(decision.resume, "grep -rn 'TODO' src");
-    assert.equal(decision.rules_version, 1);
+    assert.equal(decision.rules_version, AUTONOMY_RULES_VERSION);
     assert.equal(decision.raison, TEXTES.partout.consultation);
     assert.deepEqual(repliesTo(h, request.id), [{ reply: "once" }]);
     assert.deepEqual(wait(h, request.id), { reply: "once", par: "cockpit" });

@@ -267,7 +267,7 @@ describe("L1d : consigne, cibles, refus et parité (fonctions pures)", () => {
 
   it("guardRefusal : les 7 cas du §3.14, dans l'ordre de la spécification ; D3 seuls (~, .., absolu) ne refusent pas le « once »", () => {
     const facts: DelegationFacts = {
-      target: { name: "general", mode: "subagent", internal: false },
+      target: { name: "general", mode: "subagent", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false },
       taskIdInTree: null,
       promptRisk: null,
       modelAllowed: true,
@@ -282,9 +282,9 @@ describe("L1d : consigne, cibles, refus et parité (fonctions pures)", () => {
     assert.equal(refusal({}), null);
     assert.equal(refusal({}, null), "demande-morte");
     assert.equal(refusal({ target: null }), "cible-refusee");
-    assert.equal(refusal({ target: { name: "build", mode: "primary", internal: false } }), "cible-refusee");
-    assert.equal(refusal({ target: { name: "cockpit-classifier", mode: "subagent", internal: true } }), "cible-refusee");
-    assert.equal(refusal({ target: { name: "tout", mode: "all", internal: false } }), null);
+    assert.equal(refusal({ target: { name: "build", mode: "primary", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false } }), "cible-refusee");
+    assert.equal(refusal({ target: { name: "cockpit-classifier", mode: "subagent", internal: true, actsWithoutAsking: false, readsEnvWithoutAsking: false } }), "cible-refusee");
+    assert.equal(refusal({ target: { name: "tout", mode: "all", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false } }), null);
     assert.equal(refusal({ taskIdInTree: false }), "task-id-hors-arbre");
     assert.equal(refusal({ taskIdInTree: true }), null);
     for (const risk of ["illisible", "commande", "url", "arobase-fichier"]) assert.equal(refusal({ promptRisk: risk }), "consigne-refusee", risk);
@@ -1293,7 +1293,7 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     const ref = { rootId: session.id, sessionId: session.id, permissionId: request.id, directory: null };
     const size = h.deps.tiers.taskCost("github-copilot/gpt-5-mini");
     assert.deepEqual(await port.collectDelegationFacts(ref), {
-      target: { name: "general", mode: "subagent", internal: false },
+      target: { name: "general", mode: "subagent", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false },
       taskIdInTree: null,
       promptRisk: "tilde",
       modelAllowed: true,

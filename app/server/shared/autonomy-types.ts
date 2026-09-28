@@ -233,8 +233,13 @@ export type FloorKind = "CONVERSATION" | "PLAN" | "ETAPE" | "CONTROLE";
  * collectDelegationFacts), classés par autonomy-rules.ts (L9b), réutilisés par la délégation en Autonome (L10e).
  */
 export interface DelegationFacts {
-  /** null : cible absente de GET /agent. */
-  target: { name: string; mode: string; internal: boolean } | null;
+  /**
+   * null : cible absente de GET /agent. `actsWithoutAsking` et `readsEnvWithoutAsking` (pré-publication 1.1.0) : droits EFFECTIFS
+   * de la cible (targetRightsFacts, autonomy-rules.ts). L'enfant garde ses propres règles et n'hérite de la conversation que ses
+   * refus : un sous-agent intégré comme `explore` (« read * allow » posé après le « *.env ask » des défauts) lirait un .env sans
+   * aucune demande.
+   */
+  target: { name: string; mode: string; internal: boolean; actsWithoutAsking: boolean; readsEnvWithoutAsking: boolean } | null;
   /** null : aucun task_id ; sinon true s'il désigne une session de l'arbre de la racine. */
   taskIdInTree: boolean | null;
   /** Code du risque trouvé dans la consigne (@fichier existant, ``!` ``, URL, ~, chemin absolu, ..), null sinon. */

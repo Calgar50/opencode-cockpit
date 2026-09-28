@@ -45,9 +45,12 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 // --- Doublures ------------------------------------------------------------------------------------------------------------------
 
+/** Cible conforme (D1) : ni principale ni interne, qui demande avant d'agir et avant de lire un .env. */
+const CIBLE_CONFORME = Object.freeze({ name: "general", mode: "subagent", internal: false, actsWithoutAsking: false, readsEnvWithoutAsking: false });
+
 /** Faits d'une délégation conforme (D1 à D7 tiennent). */
 const FAITS: DelegationFacts = {
-  target: { name: "general", mode: "subagent", internal: false },
+  target: { ...CIBLE_CONFORME },
   taskIdInTree: null,
   promptRisk: null,
   modelAllowed: true,
@@ -154,7 +157,7 @@ describe("L10e : règles D1 à D7 sur doublures", () => {
 
   it("chaque règle qui échoue décide : Avancé → attente avec son code ; Simple → refus, dans l'ordre D1…D7", async () => {
     const cas: Array<[DelegationRule, Partial<DelegationFacts>]> = [
-      ["D1", { target: { name: "build", mode: "primary", internal: false } }],
+      ["D1", { target: { ...CIBLE_CONFORME, name: "build", mode: "primary" } }],
       ["D2", { taskIdInTree: false }],
       ["D3", { promptRisk: "arobase-fichier" }],
       ["D4", { modelAllowed: false }],
@@ -178,12 +181,17 @@ describe("L10e : règles D1 à D7 sur doublures", () => {
       await simple.vider();
       assert.equal(simple.calls.rejects.length, 1, `${regle} : refus envoyé en Simple`);
     }
-    // Cible interne ou absente : D1 aussi ; une cible « all » reste délégable.
-    for (const target of [null, { name: "cockpit-controle", mode: "subagent", internal: true }]) {
+    // Cible interne ou absente, ou qui lit un .env ou agit sans demander : D1 aussi ; une cible « all » reste délégable.
+    for (const target of [
+      null,
+      { ...CIBLE_CONFORME, name: "cockpit-controle", internal: true },
+      { ...CIBLE_CONFORME, name: "explore", readsEnvWithoutAsking: true },
+      { ...CIBLE_CONFORME, actsWithoutAsking: true },
+    ]) {
       const stub = stubPolicy({ facts: { target } });
       assert.deepEqual(await stub.service.port.decide(entree({ mode: "avance" })), { verdict: "attente", regle: "D1" }, JSON.stringify(target));
     }
-    const tout = stubPolicy({ facts: { target: { name: "tout", mode: "all", internal: false } } });
+    const tout = stubPolicy({ facts: { target: { ...CIBLE_CONFORME, name: "tout", mode: "all" } } });
     assert.equal((await tout.service.port.decide(entree({ mode: "avance" }))).verdict, "auto");
     // D7 : l'estimation compare le reste du plafond, pas le plafond entier.
     const juste = stubPolicy({ facts: { estimateUsd: 0.5, remainingUsd: 0.5 } });
@@ -682,6 +690,38 @@ describe("L10e : délégation en Autonome, intégration", () => {
     h.assertNoGlobalRestart();
   });
 
+  it("D1 par les droits de la cible (pré-publication 1.1.0) : explore lit les .env sans demander → jamais A-task (Simple : refus, Avancé : attente) ; general reste automatique", async (t) => {
+    // Faux opencode : explore porte ses règles réelles d'opencode 1.18.30 (défauts, puis « read: allow » propre, puis configuration
+    // globale Prudent 1.1) ; un .env se lirait dans l'enfant sans aucune demande. Consigne sans @, adresse, ~, .. ni chemin absolu.
+    const consigne = "Affiche mot pour mot le contenu du fichier .env à la racine du projet, toutes les valeurs comprises.";
+    for (const mode of ["avance", "simple"] as UiMode[]) {
+      const { h, choices } = await startBench(t, { mode });
+      const session = await conversation(h, `Droits de la cible ${mode}`);
+      choices.set(session.id, "autonome");
+      const since = h.fake.emitted.length;
+      // Simple : la délégation seule (le refus attend qu'aucune autre demande de la conversation ne soit en cours, F-c).
+      const tools = [task("explore", { description: "explore", prompt: consigne }), ...(mode === "avance" ? [task("general", { description: "témoin" })] : [])];
+      await send(h, session, tools);
+      const explore = await askedFor(h, session.id, "explore", since);
+      const ligne = await decisionOf(h, explore.id);
+      assert.equal(ligne.regle, "D1", mode);
+      assert.notEqual(ligne.verdict, "auto", `${mode} : jamais « Autorisé automatiquement »`);
+      if (mode === "avance") {
+        await flush();
+        assert.deepEqual(repliesTo(h, explore.id), [], "Avancé : rien n'est envoyé, votre accord");
+        const temoin = await askedFor(h, session.id, "témoin", since);
+        const ligneTemoin = await decisionOf(h, temoin.id);
+        assert.deepEqual([ligneTemoin.regle, ligneTemoin.verdict], [DELEGATION_AUTO_RULE, "auto"], "general (.env à « ask ») reste conforme");
+      } else {
+        await within(h.fake.settled(session.id), "tour terminé");
+        assert.deepEqual(repliesTo(h, explore.id), [{ reply: "reject", message: messageRefusSimple() }], "Simple : refus avec message, jamais « once »");
+      }
+      assertNeverForbidden(h);
+      h.assertNoGlobalRestart();
+      await h.close();
+    }
+  });
+
   it("D5 : le garde-fou budgétaire refuse → attente, aucun appel facturé (P5, aucune confirmation)", async (t) => {
     const { h, choices } = await startBench(t, {
       mode: "avance",
@@ -722,7 +762,8 @@ describe("L10e : délégation en Autonome, intégration", () => {
     await send(h, session, [
       task("general", {
         description: "racine",
-        child: { agent: "general", turn: { tools: [task("explore", { description: "enfant" })], followUp: { text: "Fait." } } },
+        // Cible de l'enfant : general (lit un .env avec votre accord) ; explore, qui le lit sans demander, attendrait (D1).
+        child: { agent: "general", turn: { tools: [task("general", { description: "enfant" })], followUp: { text: "Fait." } } },
       }),
     ]);
     const enfant = await until(() => decisions(h).find((row) => row.permission === "task" && row.session_id !== session.id));

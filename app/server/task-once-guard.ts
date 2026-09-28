@@ -69,6 +69,7 @@ import {
   type TaskSize,
   type UiMode,
 } from "./shared/assistant-rules.ts";
+import { targetRightsFacts } from "./shared/autonomy-rules.ts";
 import type { AutonomyChoice, DelegationFacts } from "./shared/autonomy-types.ts";
 import { avisSimple, avisSimpleEnAttente, messageRefusSimple, refusDelegation, verificationImpossible } from "./shared/delegation-texts.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
@@ -488,7 +489,8 @@ export async function inspectDelegation(c11: Cockpit11, ref: DelegationRequestRe
     spentUsd,
     caps: { delegationsMax: maxPerRequest, plafondUsd: maxUsdPerRequest },
     facts: {
-      target: target === null ? null : { name: target.name, mode: target.mode, internal: isInternalTarget(target.name) },
+      target:
+        target === null ? null : { name: target.name, mode: target.mode, internal: isInternalTarget(target.name), ...targetRightsFacts(target.permission) },
       taskIdInTree,
       promptRisk,
       modelAllowed,
