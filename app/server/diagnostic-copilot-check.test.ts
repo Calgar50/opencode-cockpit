@@ -36,8 +36,8 @@ describe("Diagnostic › Tester la connexion Copilot (1.1.0)", () => {
     const body = res.json<{ hosts: Reachability[]; catalogError: string | null }>();
     assert.deepEqual(body.hosts, hosts);
     assert.equal(probed, 1);
-    // Relecture du test : sans découverte. (Le réalignement d'opencode ne relit la liste que s'il écrit une nouvelle adresse :
-    // relecture ordinaire, celle de la tâche de fond ; rien d'écrit ici.)
+    // Relecture du test : sans découverte. Le réalignement d'opencode (copilotConfig.sync, doublure du harnais) ne relit la liste
+    // que s'il écrit une nouvelle adresse, et sans découverte lui aussi : copilot.test.ts, « adresse appliquée … » (refreshOptions).
     assert.deepEqual(refreshes, [{ discovery: false }]);
   });
 });

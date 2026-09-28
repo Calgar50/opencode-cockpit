@@ -16,8 +16,13 @@ export const COPILOT_API_VERSION = "2026-06-01";
 
 /** Adresse annoncée par GitHub, et choix de cette adresse quand l'adresse d'office est bloquée, gardés une heure. */
 const DISCOVERY_TTL_MS = 60 * 60_000;
-/** Échec de lecture de l'adresse annoncée : nouvel essai possible après 30 s (jamais gardé une heure). */
-const DISCOVERY_FAILURE_TTL_MS = 30_000;
+/**
+ * Échec de lecture de l'adresse annoncée, gardé une heure lui aussi (mesure réseau de la 1.1.0, A43) : derrière un proxy qui refuse
+ * api.github.com, un nouvel essai toutes les 30 s ferait un CONNECT refusé à chaque relecture de la liste des IA (tous les quarts
+ * d'heure, à chaque « Recharger le catalogue », toutes les 20 s tant que la liste n'a jamais été lue). Au plus une lecture par heure
+ * pour un même jeton, réussie ou non ; un redémarrage du cockpit ou une nouvelle connexion à Copilot repart de zéro.
+ */
+export const DISCOVERY_FAILURE_TTL_MS = DISCOVERY_TTL_MS;
 
 export interface CopilotAuth {
   type?: string;
@@ -252,7 +257,8 @@ export class CopilotApi {
     return { url: null, plan: null };
   }
 
-  /** Adresse de l'abonnement annoncée par GitHub (copilot_internal/user), relue au plus toutes les heures. */
+  /** Adresse de l'abonnement annoncée par GitHub (copilot_internal/user), lue au plus une fois par heure, réussite ou échec.
+   * Jamais appelée quand COCKPIT_COPILOT_API_URL est imposée (listModels). */
   async #discover(auth: CopilotAuth, token: string): Promise<{ url: string | null; plan: string | null }> {
     const print = fingerprint(token);
     if (this.#discovered && this.#discovered.token === print && Date.now() < this.#discovered.until) return this.#discovered;
@@ -314,8 +320,10 @@ export class CopilotApi {
    * IA proposées à ce compte ; null si GitHub Copilot n'est pas connecté. Adresse : celle de COCKPIT_COPILOT_API_URL, sinon
    * celle qu'opencode utilise d'office, sinon (adresse d'office bloquée par le réseau) l'adresse de l'abonnement annoncée
    * par GitHub, retenue une heure. Échec : erreur au message lisible, sans jeton.
-   * `discovery: false` (test de connexion du Diagnostic, 1.1.0) : rien n'est demandé à GitHub (api.github.com) ; l'adresse de
-   * l'abonnement et l'abonnement ne viennent que d'une lecture précédente encore valable.
+   * Adresse imposée par COCKPIT_COPILOT_API_URL (configuration d'une entreprise ; mesure réseau de la 1.1.0, A43) : rien n'est
+   * jamais demandé à GitHub (api.github.com), et l'abonnement n'est pas lu (plan null).
+   * `discovery: false` (test de connexion du Diagnostic, relecture qui suit une écriture de l'adresse dans opencode ; 1.1.0) :
+   * rien n'est demandé à GitHub ; l'adresse de l'abonnement et l'abonnement ne viennent que d'une lecture précédente encore valable.
    */
   async listModels(options: { discovery?: boolean } = {}): Promise<{ models: CopilotModel[]; endpoint: CopilotEndpoint } | null> {
     const discover = (auth: CopilotAuth, token: string) => (options.discovery === false ? Promise.resolve(this.#cachedDiscovery(token)) : this.#discover(auth, token));
@@ -334,8 +342,7 @@ export class CopilotApi {
     try {
       const opencodeDefault = this.#opencodeDefault(auth);
       if (this.#d.copilotApiUrl) {
-        const { plan } = await discover(auth, token);
-        endpoint = { url: this.#d.copilotApiUrl, source: "env", plan, opencodeDefault };
+        endpoint = { url: this.#d.copilotApiUrl, source: "env", plan: null, opencodeDefault };
         const attempt = await this.#tryModels(endpoint.url, token);
         if ("models" in attempt) return done(attempt.models, endpoint);
         throw new Error(attempt.blocked);

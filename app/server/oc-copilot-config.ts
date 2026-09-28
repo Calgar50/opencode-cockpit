@@ -636,9 +636,11 @@ export class CopilotConfigSync {
     const { status, wrote, deferred } = await this.#d.queue.applyingWhile(() => this.#apply(target, intermediate, directories, checked), "adresse-copilot");
     if (wrote) {
       // Adresse écrite : la relecture de la liste des IA n'attend plus la fin d'une réponse (refus « adresse en vérification »).
+      // Sans rien demander à GitHub (mesure réseau de la 1.1.0) : l'adresse écrite vient d'une lecture réussie ou de .env, et
+      // cette relecture suit aussi « Tester la connexion Copilot » du Diagnostic, qui ne contacte jamais api.github.com.
       this.#written = true;
       this.#d.hub.cockpit("opencode.config.changed", {});
-      await catalog.refresh().catch(() => undefined);
+      await catalog.refresh({ discovery: false }).catch(() => undefined);
     }
     return { status, deferred };
   }

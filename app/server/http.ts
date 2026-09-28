@@ -1907,7 +1907,8 @@ export function createApp(deps: AppDeps): Hono {
   // Test de la connexion Copilot (page Diagnostic) : joignabilité de l'adresse d'API Copilot réellement utilisée à travers le
   // proxy, sans jeton, puis nouvelle lecture de la liste des IA (jeton envoyé seulement aux adresses officielles) et réalignement
   // d'opencode. Mesure réseau de la 1.1.0 : rien vers api.github.com ni github.com (ni essai, ni lecture de l'adresse de
-  // l'abonnement : celle-ci ne vient que d'une lecture précédente encore valable).
+  // l'abonnement : celle-ci ne vient que d'une lecture précédente encore valable ; la relecture qui suit une écriture de l'adresse
+  // par le réalignement se fait elle aussi sans découverte).
   app.post("/api/system/copilot-check", bodyLimit({ maxSize: 4_096 }), async (c) => {
     const hosts = await deps.copilot.probeHosts();
     const catalogError = await catalog.refresh({ discovery: false }).then(

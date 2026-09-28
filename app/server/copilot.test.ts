@@ -8,7 +8,7 @@ import { ModelCatalog, UNAVAILABLE_REASONS } from "./catalog.ts";
 import { CLASSIFIER_AGENT } from "./classifier.ts";
 import { billRefusal, canBill, ConfigWriteQueue } from "./config-queue.ts";
 import type { ControlService } from "./control.ts";
-import { CopilotApi, type CopilotEndpoint, type CopilotModel, copilotModelsFromApi, type FetchLike } from "./copilot.ts";
+import { CopilotApi, type CopilotEndpoint, type CopilotModel, copilotModelsFromApi, DISCOVERY_FAILURE_TTL_MS, type FetchLike } from "./copilot.ts";
 import { type AppEnv, EnvError, loadEnv, parseCopilotApiUrl } from "./env.ts";
 import { EventHub } from "./hub.ts";
 import type { Logger } from "./log.ts";
@@ -253,20 +253,22 @@ describe("API GitHub Copilot", () => {
     );
     assert.match(other.status.discoveryError ?? "", /inattendue/);
 
-    // Adresse imposée par .env : prioritaire, sans essai de l'adresse d'office.
+    // Adresse imposée par .env : prioritaire, sans essai de l'adresse d'office ni lecture de l'adresse de l'abonnement (A43).
     calls.length = 0;
     const forced = api(fetch, "https://api.enterprise.githubcopilot.com");
     assert.equal((await forced.listModels())?.endpoint.url, "https://api.enterprise.githubcopilot.com");
-    assert.equal(
-      calls.some((c) => c.url === "https://api.githubcopilot.com/models"),
-      false,
+    assert.deepEqual(
+      calls.map((c) => c.url),
+      ["https://api.enterprise.githubcopilot.com/models"],
     );
   });
 
-  it("adresse de l'abonnement illisible : échec jamais présenté comme l'adresse utilisée ; resetDiscovery repart de zéro", async () => {
+  it("adresse de l'abonnement illisible : échec jamais présenté comme l'adresse utilisée, gardé une heure comme une réussite (A43) ; resetDiscovery repart de zéro", async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+    assert.ok(DISCOVERY_FAILURE_TTL_MS >= 60 * 60_000, "échec gardé au moins une heure");
     let userCalls = 0;
     let down = true;
-    const client = api(async (url) => {
+    const reply: FetchLike = async (url) => {
       if (url === "https://api.githubcopilot.com/models") throw proxyRefusal();
       if (url.endsWith("/copilot_internal/user")) {
         userCalls++;
@@ -274,18 +276,67 @@ describe("API GitHub Copilot", () => {
         return json(200, { endpoints: { api: "https://api.business.githubcopilot.com" } });
       }
       return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "E" });
-    });
+    };
+    const client = api(reply);
     await assert.rejects(client.listModels());
     assert.equal(client.status.endpoint, null);
     assert.equal(client.status.lastTried?.url, "https://api.githubcopilot.com");
     assert.match(client.status.discoveryError ?? "", /injoignable/);
+    assert.equal(userCalls, 1);
+    // Échec gardé : aucune nouvelle lecture 31 s plus tard, au quart d'heure suivant (relecture de fond, « Recharger le catalogue »)
+    // ni juste avant l'heure, même quand GitHub répondrait de nouveau (proxy qui refuse api.github.com : un seul CONNECT par heure).
     down = false;
-    client.resetDiscovery();
+    for (const step of [31_000, 15 * 60_000, DISCOVERY_FAILURE_TTL_MS - 31_000 - 15 * 60_000 - 1]) {
+      t.mock.timers.tick(step);
+      await assert.rejects(client.listModels());
+      assert.equal(userCalls, 1);
+    }
+    // Une heure après l'échec : nouvelle lecture, adresse de l'abonnement retenue.
+    t.mock.timers.tick(1);
     const result = await client.listModels();
     assert.equal(result?.endpoint.url, "https://api.business.githubcopilot.com");
     const recovered = client.status;
     assert.equal(recovered.endpoint?.url, "https://api.business.githubcopilot.com");
     assert.equal(userCalls, 2);
+
+    // resetDiscovery (plus aucune route ne l'appelle) : l'échec est oublié tout de suite.
+    down = true;
+    const other = api(reply);
+    await assert.rejects(other.listModels());
+    down = false;
+    other.resetDiscovery();
+    assert.equal((await other.listModels())?.endpoint.url, "https://api.business.githubcopilot.com");
+    assert.equal(userCalls, 4);
+  });
+
+  it("adresse imposée par .env (configuration d'une entreprise, A43) : aucune lecture de l'adresse de l'abonnement, en réussite comme en échec, relectures comprises", async () => {
+    const calls: string[] = [];
+    let blocked = false;
+    const reply: FetchLike = async (url) => {
+      calls.push(url);
+      if (url.endsWith("/copilot_internal/user")) return json(200, { copilot_plan: "business", endpoints: { api: "https://api.business.githubcopilot.com" } });
+      if (blocked) throw proxyRefusal();
+      return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "H" });
+    };
+    const imposed = api(reply, "https://api.business.githubcopilot.com");
+    const ok = await imposed.listModels();
+    assert.deepEqual(ok?.endpoint, {
+      url: "https://api.business.githubcopilot.com",
+      source: "env",
+      plan: null,
+      opencodeDefault: "https://api.githubcopilot.com",
+    });
+    blocked = true;
+    for (let i = 0; i < 5; i++) await assert.rejects(imposed.listModels(), /refusé par le proxy d'entreprise/);
+    blocked = false;
+    await imposed.listModels({ discovery: false });
+    await imposed.listModels();
+    assert.equal(calls.length, 8);
+    assert.ok(
+      calls.every((u) => u === "https://api.business.githubcopilot.com/models"),
+      calls.join(" "),
+    );
+    assert.equal(imposed.status.discoveryError, null);
   });
 
   it("non connecté : null ; refus de GitHub et pannes réseau : messages lisibles, sans jeton", async () => {
@@ -361,15 +412,13 @@ describe("API GitHub Copilot", () => {
       if (url.endsWith("/copilot_internal/user")) return json(200, { copilot_plan: "business", endpoints: { api: "https://api.business.githubcopilot.com" } });
       return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "G" });
     };
-    // Adresse imposée : /models de l'adresse imposée seul ; abonnement inconnu tant qu'il n'a pas été lu.
+    // Adresse imposée : /models de l'adresse imposée seul, test de connexion ou lecture ordinaire (A43) ; abonnement jamais lu.
     const imposed = api(reply, "https://api.business.githubcopilot.com");
     const first = await imposed.listModels({ discovery: false });
     assert.deepEqual(calls, ["https://api.business.githubcopilot.com/models"]);
     assert.equal(first?.endpoint.plan, null);
-    // Lecture ordinaire (tâche de fond) puis test de connexion : l'abonnement lu est repris, sans nouvelle demande.
-    await imposed.listModels();
     calls.length = 0;
-    assert.equal((await imposed.listModels({ discovery: false }))?.endpoint.plan, "business");
+    assert.equal((await imposed.listModels())?.endpoint.plan, null);
     assert.deepEqual(calls, ["https://api.business.githubcopilot.com/models"]);
 
     // Adresse automatique, adresse d'office bloquée, rien de lu : échec rapporté, aucune demande à GitHub.
@@ -729,6 +778,8 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
       control: { restarting: false },
       queue: new ConfigWriteQueue(),
       refreshes: 0,
+      /** Options de chaque relecture demandée par la synchro : toujours sans découverte (mesure réseau de la 1.1.0). */
+      refreshOptions: [] as Array<{ discovery?: boolean } | undefined>,
       /** Appelé à chaque relecture du catalogue demandée par la synchro (après une écriture). */
       onRefresh: (): void => undefined,
       events: [] as string[],
@@ -743,8 +794,9 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
         get loaded() {
           return h.loaded;
         },
-        refresh: async () => {
+        refresh: async (options?: { discovery?: boolean }) => {
           h.refreshes++;
+          h.refreshOptions.push(options);
           h.onRefresh();
         },
       } as unknown as ModelCatalog,
@@ -856,6 +908,8 @@ describe("adresse de l'API Copilot imposée à opencode", () => {
     assert.equal(h.queue.applying, false);
     assert.deepEqual(h.events, ["opencode.config.changed"]);
     assert.equal(h.refreshes, 1);
+    // Relecture après écriture sans rien demander à GitHub : elle suit aussi « Tester la connexion Copilot » du Diagnostic.
+    assert.deepEqual(h.refreshOptions, [{ discovery: false }]);
 
     assert.equal((await h.sync.sync()).state, "a-jour");
     assert.deepEqual(fake.patches, ["", BIZ]);
