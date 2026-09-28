@@ -545,8 +545,8 @@ describe("chat : carte d'une demande web et carte d'accueil d'un assistant (L51)
 
 // Relecture F2-vague-5 (sécurité, P3) : le 422 internet-ferme ne vise que les valeurs ÉCRITES (fiche MW §5.1, code inchangé).
 // Retirer la ligne « deny », ou tout ouvrir à « allow », n'introduit aucune ouverture : opencode permet alors ces outils sans rien
-// demander, sans effet sur le réseau (le relais n'ouvre que GitHub Copilot). Les cas sont figés ici, et les quatre textes qui
-// décrivent ce refus (README « Mettre à jour » et « Sécurité », NOTES-1.1.0, RECAPITULATIF) disent la limite au lieu de « toute ».
+// demander, sans effet sur le réseau (le relais n'ouvre que GitHub Copilot). Les cas sont figés ici, et les textes qui décrivent ce
+// refus (guide docs/GUIDE.md, fiche E-03 ; NOTES-1.1.0 ; RECAPITULATIF) disent la limite au lieu de « toute ».
 describe("limite du refus 422 internet-ferme : valeurs écrites seulement (relecture F2-vague-5)", () => {
   const prudent = PERMISSION_PRESETS.prudent.permission as Readonly<Record<string, unknown>>;
   const introduites = (apres: unknown) =>

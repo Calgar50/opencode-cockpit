@@ -49,11 +49,12 @@ function hintContent(id: LogProblemId, proxyConfigured: boolean): { title: strin
             </span>
             <ul>
               <li>
-                Derrière un proxy d'entreprise, lancez <code>.\install.ps1 -Proxy http://proxy:port</code> (et <code>-NoProxy</code> pour les
-                exceptions) : le choix est mémorisé et les conteneurs sont recréés.
+                Derrière un proxy d'entreprise, lancez <code>.\install.ps1 -Proxy http://proxy.domaine.tld:port</code>, avec le nom complet
+                du proxy ou son adresse IP (et <code>-NoProxy</code> pour les exceptions) : le choix est mémorisé et les conteneurs sont recréés.
               </li>
               <li>
-                Ou renseignez <code>HTTPS_PROXY</code> (et <code>HTTP_PROXY</code>, <code>NO_PROXY</code>) dans <code>.env</code>, puis redémarrez avec{" "}
+                Ou renseignez <code>HTTPS_PROXY</code> (et <code>HTTP_PROXY</code>, <code>NO_PROXY</code>) dans <code>.env</code>, avec le nom complet
+                du proxy ou son adresse IP, puis redémarrez avec{" "}
                 <code>.\cockpit.ps1 restart</code>.
               </li>
             </ul>
