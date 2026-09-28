@@ -171,6 +171,37 @@ describe("FirstRunRules.tsx : l'annonce de la 1.1.0 affichée une fois, dans le 
   });
 });
 
+// Relecture F2-vague-5 (justesse ; sécurité : avertissement de coût) : la notice de la 1.0 (« Passer en mode Avancé », liste des
+// agents qui imposent une IA) est remplacée par l'annonce de la 1.1.0. README et RECAPITULATIF ne la promettent plus à une
+// installation 0.1.x : ils renvoient à Assistants › « À compléter », qui liste ces agents avec leur IA (AssistantsPage.tsx).
+describe("documentation : mise à jour depuis la 0.1.0, notice de la 1.0 remplacée (relecture F2-vague-5)", () => {
+  const DOCS = [["README.md"], ["docs", "RECAPITULATIF.md"]] as const;
+  const compact = (texte: string): string => texte.replace(/\s+/g, " ");
+
+  it("README et RECAPITULATIF : plus de notice « Passer en mode Avancé » ni de liste des agents dans la notice ; annonce 1.1.0 et « À compléter »", () => {
+    for (const doc of DOCS) {
+      const texte = compact(lire(...doc));
+      const nom = doc.join("/");
+      assert.equal(/avec une notice \(« Passer en mode Avancé »/.test(texte), false, nom);
+      assert.equal(texte.includes("La notice liste ces agents"), false, nom);
+      assert.ok(
+        texte.includes(
+          "la notice de la 1.0 (« Passer en mode Avancé », liste des agents et de leur IA) est remplacée par l'annonce de la 1.1.0, avec [Voir la carte] et [Compris]",
+        ),
+        nom,
+      );
+      assert.ok(texte.includes("**Assistants**, section « À compléter », avec leur IA"), nom);
+    }
+  });
+
+  it("ce que les documents promettent reste vrai : « À compléter » montre l'IA de chaque agent ; l'annonce ne lit plus la liste des assistants", () => {
+    const page = code(lire("app", "web", "pages", "AssistantsPage.tsx"));
+    assert.match(page, /<Section title="À compléter" count=\{res\.toComplete\.length\}>/);
+    assert.match(page, /IA : \{item\.modelName \?\? item\.model \?\? "celle choisie dans le chat"\}/);
+    assert.doesNotMatch(code(lire("app", "web", "app", "FirstRunRules.tsx")), /api\.assistants\(/);
+  });
+});
+
 describe("version 1.1.0 (L51, D-5-16)", () => {
   it("VERSION, app/package.json et la racine du lockfile valent 1.1.0", () => {
     assert.equal(lire("VERSION"), "1.1.0\n");

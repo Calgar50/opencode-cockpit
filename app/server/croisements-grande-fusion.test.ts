@@ -38,7 +38,7 @@ import { OMO_MODULE_NAMES } from "./omo-contracts.ts";
 import { CONSTRUCTION_MODULE_ORDER } from "./wiring-construction.ts";
 import { parse as parseJsonc } from "jsonc-parser";
 import { planWebMigration } from "./oc-config-web.ts";
-import { effectiveAgentRules, PERMISSION_PRESETS, PERMISSION_PRESETS_1_0 } from "./shared/assistant-rules.ts";
+import { effectiveAgentRules, PERMISSION_PRESET_IDS, PERMISSION_PRESETS, PERMISSION_PRESETS_1_0 } from "./shared/assistant-rules.ts";
 import { usesInternet } from "./shared/flow.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
@@ -724,5 +724,33 @@ describe("croisement MW × contrôle « internet » des équipes (evaluate ≠ d
     // Une seule des deux clés à deny ne suffit pas : l'autre outil reste permis par défaut (evaluate ≠ deny sur chacun).
     assert.equal(usesInternet(regles({ ...sansCle, webfetch: "deny" })), true, "webfetch seul à deny : websearch reste permis, bloqué");
     assert.equal(usesInternet(regles({ ...sansCle, websearch: "deny" })), true, "websearch seul à deny : webfetch reste permis, bloqué");
+  });
+
+  // Relecture F2-vague-5 (justesse) : la limite dépend de la configuration GÉNÉRALE, pas des règles de l'assistant. Sous un profil de
+  // la 1.1, un assistant aux règles personnalisées qui ne touchent pas au web hérite du refus et passe ; sous une configuration
+  // générale personnalisée sans clé web, l'assistant doit refuser lui-même les deux outils. README et RECAPITULATIF le disent ainsi.
+  it("la limite vient de la configuration GÉNÉRALE : profil 1.1 → un assistant personnalisé sans clé web passe ; générale sans clé → l'assistant doit refuser lui-même les deux outils (relecture F2-vague-5)", () => {
+    const agent = { edit: "ask", bash: { "*": "ask" }, task: "deny" };
+    for (const id of PERMISSION_PRESET_IDS) {
+      assert.equal(usesInternet(effectiveAgentRules(PERMISSION_PRESETS[id].permission, agent)), false, `${id} (1.1) : l'assistant sans clé web hérite du refus`);
+    }
+    // Témoin : des règles d'assistant qui touchent au web (joker « * » à allow, placé après) l'emportent sur le refus général.
+    assert.equal(usesInternet(effectiveAgentRules(PERMISSION_PRESETS.prudent.permission, { ...agent, "*": "allow" })), true);
+    const sansCle = { edit: "ask", bash: { "*": "ask" }, task: "ask" };
+    assert.equal(usesInternet(effectiveAgentRules(sansCle, agent)), true, "générale sans clé web : l'assistant sans clé web est refusé");
+    assert.equal(usesInternet(effectiveAgentRules(sansCle, { ...agent, webfetch: "deny", websearch: "deny" })), false, "l'assistant qui refuse les deux outils passe");
+    assert.equal(usesInternet(effectiveAgentRules({ ...sansCle, webfetch: "deny", websearch: "deny" }, agent)), false, "ou la générale qui les refuse");
+    const limite =
+      "un assistant qui n'a pas lui-même ces deux outils à « deny » est refusé comme étape d'équipe par le contrôle « internet »";
+    for (const doc of [["README.md"], ["docs", "RECAPITULATIF.md"]]) {
+      const texte = compact(lire(...doc));
+      const nom = doc.join("/");
+      assert.equal(texte.includes("Un assistant aux règles personnalisées sans ligne pour le web ne peut pas être une étape"), false, nom);
+      assert.equal(texte.includes("Assistant aux règles personnalisées sans clé"), false, nom);
+      const phrase = `la configuration générale d'opencode est personnalisée sans clé \`webfetch\` (ou \`websearch\`), ${limite}`;
+      assert.ok(texte.includes(`Si ${phrase}`) || texte.includes(`si ${phrase}`), nom);
+      assert.ok(texte.includes("à la configuration générale (**Paramètres › opencode › Permissions globales**) ou à l'assistant"), nom);
+      assert.ok(texte.includes("un assistant dont les règles ne touchent pas au web hérite du refus et passe ce contrôle"), nom);
+    }
   });
 });

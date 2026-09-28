@@ -18,7 +18,7 @@ Version qui réunit les travaux du chantier 1.1 : voir qui travaille, borner et 
 - **L'assistant ne va plus sur Internet.**
   - Les profils Prudent, Équilibré et Sans confirmation refusent la consultation d'Internet.
   - L'assistant de création n'a plus de case « Consulter Internet » ; le Studio ne propose plus que « Refuser » pour ces outils.
-  - En mode Avancé, **Paramètres › opencode** refuse toute ouverture d'Internet que vous introduisez, « ask » comme « allow ».
+  - En mode Avancé, **Paramètres › opencode** refuse, quand vous l'introduisez, une valeur « ask » ou « allow » écrite pour `webfetch` ou `websearch`, un joker à « ask » qui s'applique à ces outils, ou une permission en texte à « ask ». Limite : retirer la ligne « deny », ou tout ouvrir à « allow » (joker `"*"` ou `"web*"`, `"permission": "allow"`), n'est pas refusé ; opencode permet alors ces outils sans rien demander, sans effet sur le réseau : le relais du cockpit n'ouvre que GitHub Copilot.
   - **Paramètres › Sécurité** signale un profil d'une version précédente et propose « Fermer l'accès à Internet » : votre profil est gardé, seul l'accès à Internet change. Il signale aussi les assistants qui peuvent encore demander Internet ; **Diagnostic** le résume.
 - **Liste des demandes d'autorisation** : quand opencode ne sait plus la rendre, le cockpit la reconstitue à partir des événements d'opencode ; quand il n'en est pas sûr, il le dit et conseille de refuser la demande en cause.
 - **Salle Oh My OpenAgent** : son code est dans la version, **livré coupé**. Elle ne s'ouvre qu'au terme d'une procédure de mise en service.

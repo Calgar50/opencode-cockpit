@@ -18,6 +18,7 @@ import {
   configWebOpenings,
   detectPermissionPreset,
   effectiveAgentRules,
+  evaluate,
   fermerWebStudio,
   isLegacyPermissionPreset,
   legacyPresetOf,
@@ -500,5 +501,61 @@ describe("chat : carte d'une demande web et carte d'accueil d'un assistant (L51)
     assert.equal(/Internet sur demande/.test(accueil), false);
     assert.match(accueil, /web \? ` · \$\{TEXTES_INTERNET\.partout\.carteAncien\}` : ""/);
     assert.equal(TEXTES.partout.carteAncien, "peut encore demander Internet, qui est fermé");
+  });
+});
+
+// Relecture F2-vague-5 (sécurité, P3) : le 422 internet-ferme ne vise que les valeurs ÉCRITES (fiche MW §5.1, code inchangé).
+// Retirer la ligne « deny », ou tout ouvrir à « allow », n'introduit aucune ouverture : opencode permet alors ces outils sans rien
+// demander, sans effet sur le réseau (le relais n'ouvre que GitHub Copilot). Les cas sont figés ici, et les quatre textes qui
+// décrivent ce refus (README « Mettre à jour » et « Sécurité », NOTES-1.1.0, RECAPITULATIF) disent la limite au lieu de « toute ».
+describe("limite du refus 422 internet-ferme : valeurs écrites seulement (relecture F2-vague-5)", () => {
+  const prudent = PERMISSION_PRESETS.prudent.permission as Readonly<Record<string, unknown>>;
+  const introduites = (apres: unknown) =>
+    webOpeningsIntroduced(configWebOpenings({ permission: prudent }), configWebOpenings({ permission: apres })).map(cheminOuverture);
+  const effectif = (permission: unknown, outil: "webfetch" | "websearch") => evaluate(effectiveAgentRules(permission, undefined), outil, "*");
+
+  it("depuis le Prudent 1.1 : retrait de « deny », « * » ou « web* » à allow placé après, permission « allow » → aucune ouverture introduite, et l'outil devient permis", () => {
+    const cas: ReadonlyArray<readonly [string, unknown]> = [
+      ["retrait de la ligne webfetch", Object.fromEntries(Object.entries(prudent).filter(([cle]) => cle !== "webfetch"))],
+      ["« * » : allow placé après", { ...prudent, "*": "allow" }],
+      ["« web* » : allow placé après", { ...prudent, "web*": "allow" }],
+      ["permission en texte « allow »", "allow"],
+    ];
+    assert.equal(effectif(prudent, "webfetch"), "deny", "témoin : le Prudent 1.1 refuse webfetch");
+    for (const [nom, apres] of cas) {
+      assert.deepEqual(introduites(apres), [], nom);
+      assert.equal(effectif(apres, "webfetch"), "allow", `${nom} : opencode permet webfetch sans rien demander`);
+    }
+    // Témoins : une valeur écrite, un joker à « ask » placé après et une permission en texte « ask » sont bien refusés.
+    assert.deepEqual(introduites({ ...prudent, webfetch: "allow" }), ["permission.webfetch"]);
+    assert.deepEqual(introduites({ ...prudent, websearch: "ask" }), ["permission.websearch"]);
+    assert.deepEqual(introduites({ ...prudent, "*": "ask" }), ["permission.*"]);
+    assert.deepEqual(introduites("ask"), ["permission"]);
+  });
+
+  it("README (Mettre à jour, Sécurité), NOTES-1.1.0 et RECAPITULATIF : plus de « toute ouverture », la limite est dite", () => {
+    const DEPOT = path.join(APP_DIR, "..");
+    const compact = (texte: string) => texte.replace(/\s+/g, " ");
+    const lireDoc = (...parts: string[]) => compact(fs.readFileSync(path.join(DEPOT, ...parts), "utf8"));
+    const readme = lireDoc("README.md");
+    const notes = lireDoc("docs", "NOTES-1.1.0.md");
+    const recap = lireDoc("docs", "RECAPITULATIF.md");
+    for (const [nom, texte] of [["README.md", readme], ["docs/NOTES-1.1.0.md", notes], ["docs/RECAPITULATIF.md", recap]] as const) {
+      assert.equal(/refuse (?:désormais )?toute ouverture/.test(texte), false, nom);
+      assert.equal(/refusent une ouverture web introduite \(« ask » comme « allow »/.test(texte), false, nom);
+    }
+    const valeurs =
+      "une valeur « ask » ou « allow » écrite pour `webfetch` ou `websearch`, un joker à « ask » qui s'applique à ces outils, ou une permission en texte à « ask »";
+    const limite = "ligne « deny », ou tout ouvrir à « allow » (joker `\"*\"` ou `\"web*\"`, `\"permission\": \"allow\"`), n'est pas refusé";
+    const reseau = "sans effet sur le réseau : le relais du cockpit n'ouvre que GitHub Copilot";
+    // Mettre à jour (README), Sécurité (README), NOTES et RECAPITULATIF : chacun dit ce qui est refusé, la limite et son effet.
+    assert.equal(readme.split(valeurs).length - 1, 2, "README : Mettre à jour et Sécurité");
+    assert.equal(readme.split(limite).length - 1, 2, "README : la limite, aux deux endroits");
+    assert.equal(readme.split(reseau).length - 1 >= 2, true, "README : l'effet réseau, aux deux endroits");
+    for (const [nom, texte] of [["docs/NOTES-1.1.0.md", notes], ["docs/RECAPITULATIF.md", recap]] as const) {
+      assert.ok(texte.includes(valeurs), nom);
+      assert.ok(texte.includes(limite), nom);
+      assert.ok(texte.includes(reseau), nom);
+    }
   });
 });
