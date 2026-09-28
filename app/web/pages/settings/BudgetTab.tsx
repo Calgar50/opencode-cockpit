@@ -32,14 +32,14 @@ function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
 
   useEvents((event) => {
     const updated = cockpitEvent(event, "quota.updated");
-    if (updated) quota.setData((q) => (q ? { ...q, latest: updated.data as QuotaSnapshot, lastError: null } : q));
+    if (updated) quota.setData((q) => (q ? { ...q, latest: updated.data as QuotaSnapshot, lastError: null, automaticRetryAt: null } : q));
   });
 
   const syncNow = async () => {
     setSyncing(true);
     try {
       const snapshot = await api.syncQuota();
-      quota.setData((q) => ({ enabled: q?.enabled ?? draft.enabled, latest: snapshot, lastError: null }));
+      quota.setData((q) => ({ enabled: q?.enabled ?? draft.enabled, latest: snapshot, lastError: null, automaticRetryAt: null }));
       toast.success("Solde synchronisé");
     } catch (err) {
       toast.error("Synchronisation impossible", err);
@@ -146,7 +146,16 @@ function QuotaSection({ onDirty }: { onDirty: (dirty: boolean) => void }) {
           {quota.data?.lastError ? (
             <div className="callout critical" role="alert">
               <Icon name="alert" size={18} />
-              <span>Dernière erreur : {quota.data.lastError}</span>
+              <span>
+                Dernière erreur : {quota.data.lastError}
+                {/* Échec gardé par le serveur (quota.ts) : l'essai automatique suivant attend au moins une heure, ou l'intervalle choisi. */}
+                {typeof quota.data.automaticRetryAt === "number" ? (
+                  <>
+                    <br />
+                    Prochain essai automatique : {formatDateTime(quota.data.automaticRetryAt)} au plus tôt.
+                  </>
+                ) : null}
+              </span>
             </div>
           ) : null}
           {!boot.copilotConnected ? <p className="small muted">GitHub Copilot doit être connecté pour relever le solde.</p> : null}

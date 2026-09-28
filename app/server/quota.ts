@@ -42,47 +42,104 @@ export function apiHostFor(enterpriseUrl: string | undefined, allowedDomain: str
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
+
+/** Période du minuteur de la synchronisation automatique : il ne fait que vérifier si un relevé est dû. */
+export const QUOTA_TICK_MS = 60_000;
+
+/**
+ * Délai minimal entre un ÉCHEC de synchronisation (automatique ou manuelle) et l'essai AUTOMATIQUE suivant, compté depuis le début
+ * de la tentative en échec ; l'intervalle choisi s'applique s'il est plus long. Banc réseau v2 de la 1.1.0 (A45) : sans lui, derrière
+ * un proxy qui refuse api.github.com (403, 407, délai), le minuteur relançait un essai toutes les 60 s, soit un CONNECT refusé par
+ * minute au proxy de l'entreprise. [Synchroniser maintenant] n'est jamais bloqué, et son échec repousse de même l'essai automatique.
+ */
+export const QUOTA_FAILURE_RETRY_MS = 60 * 60_000;
+
+/** Marge du relevé périodique après une réussite (inchangée depuis la 0.1.0) : un relevé dû dans 5 s part à ce tour-ci. */
+const DUE_MARGIN_MS = 5_000;
+
+export interface QuotaSyncDeps {
+  db: DatabaseSync;
+  settings: Pick<SettingsStore, "get">;
+  hub: Pick<EventHub, "cockpit">;
+  log: Logger;
+  opencodeDataDir: string;
+  githubEnterpriseDomain: string | null;
+  /** Horloge injectable (tests) ; défaut Date.now. */
+  now?: () => number;
+  fetch?: FetchLike;
+}
+
 export class QuotaSync {
   readonly #db: DatabaseSync;
-  readonly #settings: SettingsStore;
-  readonly #hub: EventHub;
+  readonly #settings: Pick<SettingsStore, "get">;
+  readonly #hub: Pick<EventHub, "cockpit">;
   readonly #log: Logger;
   readonly #authFile: string;
+  readonly #now: () => number;
+  readonly #fetch: FetchLike;
   #timer: NodeJS.Timeout | undefined;
   #lastError: string | null = null;
+  /** Dernière tentative terminée, automatique ou manuelle : début (ms) et issue. Rien après un redémarrage du cockpit. */
+  #lastAttempt: { at: number; ok: boolean } | null = null;
+  /** Tentative en cours, partagée : un clic pendant un essai (ou un double clic) ne fait pas de second appel. */
+  #inflight: Promise<QuotaSnapshot> | null = null;
 
   readonly #enterpriseDomain: string | null;
 
-  constructor(deps: {
-    db: DatabaseSync;
-    settings: SettingsStore;
-    hub: EventHub;
-    log: Logger;
-    opencodeDataDir: string;
-    githubEnterpriseDomain: string | null;
-  }) {
+  constructor(deps: QuotaSyncDeps) {
     this.#enterpriseDomain = deps.githubEnterpriseDomain;
     this.#db = deps.db;
     this.#settings = deps.settings;
     this.#hub = deps.hub;
     this.#log = deps.log;
     this.#authFile = path.join(deps.opencodeDataDir, "auth.json");
+    this.#now = deps.now ?? (() => Date.now());
+    this.#fetch = deps.fetch ?? ((input, init) => fetch(input, init));
   }
 
   get lastError(): string | null {
     return this.#lastError;
   }
 
+  /**
+   * Heure (ms) à partir de laquelle la synchronisation automatique réessaiera après un échec : début de la dernière tentative
+   * + max(QUOTA_FAILURE_RETRY_MS, intervalle choisi). null si la synchronisation automatique est coupée, ou si la dernière tentative
+   * a réussi ou n'a pas eu lieu depuis le démarrage.
+   */
+  automaticRetryAt(): number | null {
+    const { enabled, intervalMinutes } = this.#settings.get().quotaSync;
+    const last = this.#lastAttempt;
+    if (!enabled || last === null || last.ok) return null;
+    return last.at + Math.max(QUOTA_FAILURE_RETRY_MS, intervalMinutes * 60_000);
+  }
+
+  /** Relevé automatique dû maintenant : réglage actif, aucune tentative en cours, échec gardé, puis intervalle depuis le relevé. */
+  #automaticDue(): boolean {
+    const { enabled, intervalMinutes } = this.#settings.get().quotaSync;
+    if (!enabled || this.#inflight !== null) return false;
+    const now = this.#now();
+    const retryAt = this.automaticRetryAt();
+    if (retryAt !== null) return now >= retryAt;
+    const latest = this.latest();
+    return !latest || now - latest.takenAt >= intervalMinutes * 60_000 - DUE_MARGIN_MS;
+  }
+
+  /**
+   * Un tour du minuteur (au démarrage, puis toutes les QUOTA_TICK_MS) : lance un relevé s'il est dû et rend sa fin (erreur gardée
+   * dans lastError, jamais levée), sinon ne fait rien. Au démarrage, un seul essai au plus : son échec est gardé comme les autres.
+   */
+  automaticTick(): Promise<void> {
+    if (!this.#automaticDue()) return Promise.resolve();
+    return this.syncNow().then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+
   start(): void {
-    const tick = () => {
-      const { enabled, intervalMinutes } = this.#settings.get().quotaSync;
-      const latest = this.latest();
-      if (!enabled) return;
-      if (latest && Date.now() - latest.takenAt < intervalMinutes * 60_000 - 5_000) return;
-      void this.syncNow().catch(() => undefined);
-    };
-    tick();
-    this.#timer = setInterval(tick, 60_000);
+    void this.automaticTick();
+    this.#timer = setInterval(() => void this.automaticTick(), QUOTA_TICK_MS);
     this.#timer.unref();
   }
 
@@ -99,12 +156,35 @@ export class QuotaSync {
     }
   }
 
-  async syncNow(): Promise<QuotaSnapshot> {
+  /**
+   * Relevé du solde : [Synchroniser maintenant] (jamais bloqué par un échec précédent) et minuteur. Une tentative déjà en cours est
+   * partagée. Chaque tentative terminée est notée (début, issue) : un échec repousse l'essai automatique suivant (automaticRetryAt).
+   */
+  syncNow(): Promise<QuotaSnapshot> {
+    if (this.#inflight !== null) return this.#inflight;
+    const at = this.#now();
+    const run = this.#sync().then(
+      (snapshot) => {
+        this.#lastAttempt = { at, ok: true };
+        this.#inflight = null;
+        return snapshot;
+      },
+      (err: unknown) => {
+        this.#lastAttempt = { at, ok: false };
+        this.#inflight = null;
+        throw err;
+      },
+    );
+    this.#inflight = run;
+    return run;
+  }
+
+  async #sync(): Promise<QuotaSnapshot> {
     try {
       const auth = (JSON.parse(await fs.readFile(this.#authFile, "utf8")) as Record<string, CopilotAuth>)["github-copilot"];
       const token = auth?.refresh || auth?.access;
       if (!token) throw new Error("GitHub Copilot n'est pas connecté.");
-      const res = await fetch(`https://${apiHostFor(auth?.enterpriseUrl, this.#enterpriseDomain)}/copilot_internal/user`, {
+      const res = await this.#fetch(`https://${apiHostFor(auth?.enterpriseUrl, this.#enterpriseDomain)}/copilot_internal/user`, {
         headers: { authorization: `token ${token}`, accept: "application/json", "user-agent": "opencode-cockpit" },
         signal: AbortSignal.timeout(15_000),
         redirect: "error",
@@ -116,7 +196,7 @@ export class QuotaSync {
       };
       const premium = data.quota_snapshots?.premium_interactions ?? {};
       const snapshot: QuotaSnapshot = {
-        takenAt: Date.now(),
+        takenAt: this.#now(),
         plan: typeof data.copilot_plan === "string" ? data.copilot_plan : null,
         entitlement: num(premium.entitlement),
         remaining: num(premium.remaining),
@@ -138,7 +218,7 @@ export class QuotaSync {
           snapshot.unlimited ? 1 : 0,
           snapshot.overageCount,
         );
-      this.#db.prepare("DELETE FROM quota_snapshots WHERE taken_at < ?").run(Date.now() - 400 * 86_400_000);
+      this.#db.prepare("DELETE FROM quota_snapshots WHERE taken_at < ?").run(snapshot.takenAt - 400 * 86_400_000);
       this.#lastError = null;
       this.#hub.cockpit("quota.updated", snapshot);
       return snapshot;

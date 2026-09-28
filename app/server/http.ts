@@ -1195,8 +1195,9 @@ export function createApp(deps: AppDeps): Hono {
 
   app.post("/api/usage/recompute", (c) => c.json({ updated: ledger.recompute(monthParam(c)) }));
 
+  // automaticRetryAt : après un échec, heure du prochain essai automatique (au plus tôt une heure après, ou l'intervalle choisi).
   app.get("/api/quota", (c) =>
-    c.json({ latest: quota.latest(), lastError: quota.lastError, enabled: settings.get().quotaSync.enabled }),
+    c.json({ latest: quota.latest(), lastError: quota.lastError, enabled: settings.get().quotaSync.enabled, automaticRetryAt: quota.automaticRetryAt() }),
   );
 
   app.post("/api/quota/sync", async (c) => c.json(await quota.syncNow()));

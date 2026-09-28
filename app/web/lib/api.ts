@@ -173,7 +173,7 @@ export const api = {
     http.get<UsageEstimate>(`/api/usage/estimate${query({ provider, model, agent: options.agent, size: options.size })}`),
   sessionUsage: (rootId: string) => http.get<SessionUsage>(`/api/usage/session/${enc(rootId)}`),
   recompute: (month?: string) => http.post<{ updated: number }>(`/api/usage/recompute${query({ month })}`),
-  quota: () => http.get<{ latest: QuotaSnapshot | null; lastError: string | null; enabled: boolean }>("/api/quota"),
+  quota: () => http.get<{ latest: QuotaSnapshot | null; lastError: string | null; enabled: boolean; automaticRetryAt: number | null }>("/api/quota"),
   syncQuota: () => http.post<QuotaSnapshot>("/api/quota/sync"),
 
   archiveList: (params: ArchiveQuery) =>
