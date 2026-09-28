@@ -109,10 +109,12 @@ export const TEXTES = {
     /**
      * Annonce de la 1.1.0 (L51 ; fiche de la migration du web §7, décision A37) : phrase technique ajoutée, en mode Avancé
      * seulement, au paragraphe « Internet » de `partout.annonce.web`. Elle nomme les outils et la copie laissée par la migration
-     * (install.ps1, cockpit.ps1 restore : server/migrate-oc-config.ts), que le mode Simple ne nomme jamais.
+     * (install.ps1, cockpit.ps1 restore : server/migrate-oc-config.ts), que le mode Simple ne nomme jamais. Pré-publication 1.1.0 :
+     * l'annonce s'affiche aussi sur une installation neuve, déjà conforme ou dont la migration a échoué ; la phrase ne dit donc que ce
+     * que la migration fait QUAND elle le fait (mode.<nom> compris, NOMS_GLOBAUX), sans gabarit à remplir.
      */
     annonce: {
-      web: "Dans la configuration d'opencode, seules les règles Internet ont changé (profils de la 1.0, et valeurs « ask » de webfetch et websearch, y compris dans agent.<nom>.permission) ; copie : <fichier>.avant-1.1.0. Les assistants créés dans le cockpit ne sont pas modifiés.",
+      web: "Dans la configuration d'opencode, la mise à jour ne change que les règles Internet (profils de la 1.0, valeurs « ask » de webfetch et websearch, y compris dans agent.<nom> et mode.<nom>), et seulement quand elle a pu le faire : l'installateur a dit ce qu'il a fait. Quand elle change le fichier, l'ancien est gardé à côté avec le suffixe .avant-1.1.0 (opencode.jsonc.avant-1.1.0, le plus souvent). Les assistants créés dans le cockpit ne sont pas modifiés.",
     },
   },
   partout: {
@@ -523,7 +525,9 @@ export const TEXTES = {
       titreFermees: "Nouveau : voir qui travaille",
       debut: "Pendant une demande, « Qui travaille ? » montre chaque assistant au travail, son temps et son coût. La carte des assistants montre qui peut faire travailler qui.",
       equipe: "Vous pouvez aussi lancer une équipe prête à l'emploi.",
-      fin: "Rien n'a été modifié dans vos assistants.",
+      // Pré-publication 1.1.0 : la migration du web ferme les règles Internet des agents déclarés dans la configuration générale
+      // (agent.<nom>, mode.<nom>) ; seuls les assistants créés dans le cockpit (fichiers) ne sont jamais touchés.
+      fin: "Les assistants créés dans le cockpit n'ont pas été modifiés.",
       bientot: "Les équipes arrivent bientôt en mode Simple. En mode Avancé, vous pouvez déjà les essayer.",
       voirCarte: "Voir la carte",
       compris: "Compris",
@@ -532,7 +536,7 @@ export const TEXTES = {
        * le nom d'un outil, ni D11, ni « volume ». Vrai même quand la migration n'a pas pu se faire : depuis la 1.0.6, le relais du
        * cockpit n'ouvre que GitHub Copilot ; les assistants qui pouvaient demander Internet sont signalés par security.webIssues.
        */
-      web: "L'assistant ne va plus sur Internet. C'était déjà impossible au travail ; cela évite surtout qu'une demande restée sans réponse bloque vos autres autorisations. Vos assistants n'ont pas été modifiés ; ceux qui pouvaient demander Internet sont signalés dans Paramètres › Sécurité.",
+      web: "L'assistant ne va plus sur Internet. C'était déjà impossible au travail ; cela évite surtout qu'une demande restée sans réponse bloque vos autres autorisations. Les assistants qui pouvaient encore demander Internet sont signalés dans Paramètres › Sécurité.",
       /** Nom accessible de l'annonce (section « Nouveautés »). */
       region: "Nouveautés de la version 1.1.0",
     },

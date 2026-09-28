@@ -44,7 +44,9 @@ import {
   texteDiagnosticInternet,
   texteFermerMessage,
   texteFermerReussite,
+  texteMessagePrudent,
   texteProfilAncien,
+  texteProfilPrudent,
   texteRefusInternet,
   texteRegleGenerale,
   texteStudioInternet,
@@ -382,6 +384,22 @@ describe("textes de l'accès à Internet (§7, à la lettre)", () => {
       "Profil de droits : Prudent. L'assistant demande avant de modifier un fichier, lancer une commande ou déléguer. Il ne va jamais sur Internet.",
     );
     assert.equal(SECURITY_TEXTS.prudent, TEXTES.partout.prudent);
+    // Pré-publication 1.1.0 : en mode Simple, le travail délégué est refusé d'office (hors Autonome) : ni « déléguer » ni promesse
+    // de délégation dans le profil vert ni dans la confirmation.
+    assert.equal(texteProfilPrudent(true), TEXTES.partout.prudent);
+    assert.equal(
+      texteProfilPrudent(false),
+      "Profil de droits : Prudent. L'assistant demande avant de modifier un fichier ou de lancer une commande. Il ne va jamais sur Internet.",
+    );
+    assert.equal(texteMessagePrudent(true), TEXTES.partout.prudentMessage);
+    assert.equal(
+      texteMessagePrudent(false),
+      "Les règles globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier ou de lancer une commande, et n'ira jamais sur Internet. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
+    );
+    for (const texte of [texteProfilPrudent(false), texteMessagePrudent(false)]) assert.doesNotMatch(texte, /délégu|confi/, texte);
+    const securite = code(read("web", "pages", "settings", "SecuriteTab.tsx"));
+    assert.match(securite, /<span>\{texteProfilPrudent\(advanced\)\}<\/span>/);
+    assert.match(securite, /message: texteMessagePrudent\(advanced\),/);
     assert.equal(SECURITY_TEXTS.closeInternet, "Fermer l'accès à Internet");
     assert.equal(
       legacyProfileText("Équilibré"),

@@ -27,11 +27,15 @@ const TITRE_FERMEES = "Nouveau : voir qui travaille";
 const PHRASE_EQUIPE = "Vous pouvez aussi lancer une équipe prête à l'emploi.";
 /** Phrase de l'itération 4 (plan it4 §2.6), reprise à l'octet. */
 const PHRASE_IT4 = "Les équipes arrivent bientôt en mode Simple. En mode Avancé, vous pouvez déjà les essayer.";
-/** Fiche de la migration du web §7, « Annonce 1.1.0 », à la lettre. */
+/**
+ * Fiche de la migration du web §7, « Annonce 1.1.0 », corrigée à la revue de pré-publication : l'annonce s'affiche aussi quand rien n'a
+ * été migré (installation neuve, configuration conforme, échec), la migration touche agent.<nom> ET mode.<nom>, et elle ferme les
+ * règles Internet des agents de la configuration générale (seuls les assistants créés dans le cockpit ne sont jamais modifiés).
+ */
 const WEB_SIMPLE =
-  "L'assistant ne va plus sur Internet. C'était déjà impossible au travail ; cela évite surtout qu'une demande restée sans réponse bloque vos autres autorisations. Vos assistants n'ont pas été modifiés ; ceux qui pouvaient demander Internet sont signalés dans Paramètres › Sécurité.";
+  "L'assistant ne va plus sur Internet. C'était déjà impossible au travail ; cela évite surtout qu'une demande restée sans réponse bloque vos autres autorisations. Les assistants qui pouvaient encore demander Internet sont signalés dans Paramètres › Sécurité.";
 const WEB_AVANCE =
-  "Dans la configuration d'opencode, seules les règles Internet ont changé (profils de la 1.0, et valeurs « ask » de webfetch et websearch, y compris dans agent.<nom>.permission) ; copie : <fichier>.avant-1.1.0. Les assistants créés dans le cockpit ne sont pas modifiés.";
+  "Dans la configuration d'opencode, la mise à jour ne change que les règles Internet (profils de la 1.0, valeurs « ask » de webfetch et websearch, y compris dans agent.<nom> et mode.<nom>), et seulement quand elle a pu le faire : l'installateur a dit ce qu'il a fait. Quand elle change le fichier, l'ancien est gardé à côté avec le suffixe .avant-1.1.0 (opencode.jsonc.avant-1.1.0, le plus souvent). Les assistants créés dans le cockpit ne sont pas modifiés.";
 
 const LECTURES: ReadonlyArray<boolean | null> = [true, false, null];
 

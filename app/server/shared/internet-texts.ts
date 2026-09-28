@@ -31,6 +31,14 @@ export const TEXTES = {
       "1 assistant créé hors de l'assistant de création peut encore vous demander d'aller sur Internet. Pour lui fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
     sansTitres:
       "{n} assistants créés hors de l'assistant de création peuvent encore vous demander d'aller sur Internet. Pour leur fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
+    /**
+     * Profil Prudent en vert et confirmation de « Revenir au profil Prudent », en mode Simple (pré-publication 1.1.0) : sans
+     * « déléguer ». En mode Simple, le cockpit refuse d'office le travail que l'IA veut confier à un autre assistant (hors
+     * « Autonome avec contrôle », où un travail conforme part seul) : « demande avant de déléguer » y serait faux.
+     */
+    prudent: "Profil de droits : Prudent. L'assistant demande avant de modifier un fichier ou de lancer une commande. Il ne va jamais sur Internet.",
+    prudentMessage:
+      "Les règles globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier ou de lancer une commande, et n'ira jamais sur Internet. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
     /** Suite de partout.regleGenerale en mode Simple (pré-publication 1.1.0). */
     regleGenerale: "Pour garder vos autres règles, passez en mode Avancé : Paramètres › opencode.",
   },
@@ -65,7 +73,7 @@ export const TEXTES = {
       "Pour garder vos autres règles : Paramètres › opencode, mettez webfetch et websearch sur « deny », après toute règle « * » qui les demande.",
   },
   partout: {
-    /** Profil Prudent (1.1), en vert (SECURITY_TEXTS.prudent). */
+    /** Profil Prudent (1.1), en vert (SECURITY_TEXTS.prudent) : affiché en mode Avancé ; en mode Simple, simple.prudent (texteProfilPrudent). */
     prudent:
       "Profil de droits : Prudent. L'assistant demande avant de modifier un fichier, lancer une commande ou déléguer. Il ne va jamais sur Internet.",
     /** Profil d'une version précédente (legacyProfileText) ; {profil} : libellé du profil. */
@@ -86,7 +94,7 @@ export const TEXTES = {
     /** 409 « profil-inconnu » de POST /api/security/update-profile (réglage qui n'est pas un profil d'une version précédente). */
     profilInconnu:
       "Ce réglage n'est pas un profil d'une version précédente : rien n'a été changé. Pour revenir aux règles conseillées, utilisez « Revenir au profil Prudent ».",
-    /** Confirmation et réussite de « Revenir au profil Prudent ». */
+    /** Confirmation (mode Avancé ; en mode Simple, simple.prudentMessage : texteMessagePrudent) et réussite de « Revenir au profil Prudent ». */
     prudentMessage:
       "Les règles globales d'opencode seront remplacées : l'assistant demandera avant de modifier un fichier, lancer une commande ou déléguer, et n'ira jamais sur Internet. opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
     prudentReussite: "L'assistant demande de nouveau avant chaque action sensible. Internet est fermé.",
@@ -129,6 +137,16 @@ function remplir(gabarit: string, valeurs: Readonly<Record<string, string | numb
 /** Profil d'une version précédente (écran Sécurité, mode Simple et Avancé). */
 export function texteProfilAncien(profil: string): string {
   return remplir(TEXTES.partout.ancien, { profil });
+}
+
+/** Profil Prudent en vert de l'écran Sécurité, selon le mode (pré-publication 1.1.0 : sans « déléguer » en mode Simple). */
+export function texteProfilPrudent(avance: boolean): string {
+  return avance ? TEXTES.partout.prudent : TEXTES.simple.prudent;
+}
+
+/** Confirmation de « Revenir au profil Prudent », selon le mode. */
+export function texteMessagePrudent(avance: boolean): string {
+  return avance ? TEXTES.partout.prudentMessage : TEXTES.simple.prudentMessage;
 }
 
 /** Confirmation de « Fermer l'accès à Internet ». */

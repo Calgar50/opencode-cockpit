@@ -19,6 +19,8 @@ import {
   texteAssistantsSignales,
   texteFermerMessage,
   texteFermerReussite,
+  texteMessagePrudent,
+  texteProfilPrudent,
   texteRegleGenerale,
 } from "../../../server/shared/internet-texts.ts";
 import { useApp } from "../../app/AppContext.tsx";
@@ -67,7 +69,7 @@ export function SecuriteTab() {
   const restore = async () => {
     const ok = await confirm({
       title: "Revenir au profil Prudent ?",
-      message: TEXTES_INTERNET.partout.prudentMessage,
+      message: texteMessagePrudent(advanced),
       confirmLabel: SECURITY_TEXTS.restorePrudent,
     });
     if (!ok) return;
@@ -142,7 +144,7 @@ export function SecuriteTab() {
         ) : (
           <div className="callout good">
             <Icon name="shield" size={18} />
-            <span>{SECURITY_TEXTS.prudent}</span>
+            <span>{texteProfilPrudent(advanced)}</span>
           </div>
         )}
         {config.data && regleGenerale !== null ? (

@@ -656,6 +656,7 @@ try {
     Assert-Test 'D7 c : image de la salle sur une base 1.0.6, aucun avertissement de base' (-not $result.Host.Contains('base anterieure a la 1.0.6')) (Get-Extract $result.Host)
     Assert-Test 'D7 c : ENV de l image de la salle lu une fois' (@(Get-DockerCalls $journalOk | Where-Object { (@($_.args) -join ' ') -cmatch ('^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} ' + [regex]::Escape($Etiquette) + '\z') }).Count -eq 1)
     Assert-Test 'archive conforme : la salle reste coupee' ((Get-TestEnvValue $envPlein 'COCKPIT_OMO') -ceq 'off')
+    Assert-Test 'archive conforme (pre-publication 1.1.0) : message vrai, cette version n ouvre pas la salle' ($result.Host.Contains('La salle reste coupee : cette version ne l ouvre pas') -and -not $result.Host.Contains('activez-la depuis l interface')) (Get-Extract $result.Host)
     $motDePasse = Get-TestEnvValue $envPlein 'OPENCODE_OMO_PASSWORD'
     Assert-Test 'archive conforme : mot de passe tire au hasard, 64 caracteres hexadecimaux' ($motDePasse -cmatch '^[0-9a-f]{64}\z')
     Assert-Test 'archive conforme : mot de passe jamais affiche' (-not $result.Host.Contains($motDePasse) -and $result.Host.Contains('jamais affiche'))

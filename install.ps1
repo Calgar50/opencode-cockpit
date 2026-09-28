@@ -1191,7 +1191,7 @@ try {
             Write-Good 'Mot de passe de la salle genere (jamais affiche, conserve dans .env)'
         }
         Write-Good ('Image de la salle : {0} (identifiant conforme au fichier .sha256)' -f $omoChecksum.Image)
-        Write-Info 'La salle reste coupee (COCKPIT_OMO=off) : activez-la depuis l interface, en mode Avance.'
+        Write-Info 'La salle reste coupee : cette version ne l ouvre pas ; sa mise en service demandera une version dediee (voir le README).'
     }
     if (-not $modeInferred) { $config['COCKPIT_INSTALL_MODE'] = $Mode }
     # Version de production affichee dans l'interface pour les images construites sur le poste.

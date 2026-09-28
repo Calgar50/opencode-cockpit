@@ -12,7 +12,7 @@
     .\cockpit.ps1 tls [-Renew]          Certificat HTTPS local (-Renew : nouveau certificat, confirmation demandee)
     .\cockpit.ps1 certs                 Reexporte les certificats Windows puis recree les conteneurs
     .\cockpit.ps1 update                git pull puis relance install.ps1 (meme mode d'installation et d'acces)
-    .\cockpit.ps1 rollback              Revient a la version precedente (confirmation demandee)
+    .\cockpit.ps1 rollback              Revient a la version memorisee avant la 1.0.5, jamais a la 1.0.6 (confirmation demandee)
     .\cockpit.ps1 backup                Sauvegarde reglages, couts, archives et configuration opencode
     .\cockpit.ps1 restore <fichier>     Restaure une sauvegarde (remplace les donnees actuelles)
     .\cockpit.ps1 uninstall [-Purge [-PurgeOmo]]
@@ -454,6 +454,11 @@ function Invoke-CockpitRollback {
     if ($target -lt [version]'1.0.5') {
         $plan += @(('    [!] La version {0} est servie en HTTP, en clair, sans bandeau, et son .\cockpit.ps1 open envoie le jeton' -f $target),
             ('        sans verification ; la prochaine mise a jour vers la {0} remplacera ce jeton.' -f $Version))
+    }
+    if ($target -lt [version]'1.0.6') {
+        # Pre-publication 1.1.0 : la cible n'a pas le relais de sortie de la 1.0.6 (seule sortie : GitHub Copilot).
+        $plan += @(('    [!] La version {0} n a pas le relais de la 1.0.6 : les appels vers d autres sites que GitHub Copilot' -f $target),
+            '        repartiront vers le proxy de l entreprise (alertes possibles).')
     }
     $plan += '    Conserves : volume cockpit-tls, donnees, archives, sauvegardes, certs\.'
     Write-CockpitLines $plan
