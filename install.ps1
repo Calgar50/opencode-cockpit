@@ -1054,6 +1054,13 @@ if ($detectedProxy) {
     if ($detectedProxy -match '^([A-Za-z][A-Za-z0-9+.-]*)://' -and $Matches[1] -ne 'http') {
         Write-Attention ("Proxy en {0}:// : le relais d'opencode ne sait passer que par un proxy http:// ; les demandes d'IA d'opencode echoueront. Indiquez l'adresse http:// du proxy : .\install.ps1 -Proxy http://<proxy>:<port>" -f $Matches[1].ToLowerInvariant())
     }
+    # 1.1.0 (mesure reseau, D1) : le cockpit ne transmet plus aucun nom sans point au DNS de l'entreprise (docker-compose.yml,
+    # dns_opt et dns_search). Un proxy donne par un nom court ne s'y resout donc plus : ses appels a GitHub Copilot echoueraient.
+    $proxyHost = ($detectedProxy -replace '^[A-Za-z][A-Za-z0-9+.-]*://', '').Split('/')[0]
+    $proxyHost = $proxyHost.Substring($proxyHost.LastIndexOf('@') + 1) -replace ':\d*$', ''
+    if ($proxyHost -and $proxyHost -notmatch '[.:\[]' -and $proxyHost -ne 'localhost') {
+        Write-Attention ("Proxy '{0}' donne par un nom court : le cockpit ne transmet aucun nom sans point au DNS de l'entreprise (protection de la 1.1.0), ses appels a GitHub Copilot echoueront. Donnez le nom complet du proxy ou son adresse IP : .\install.ps1 -Proxy http://{0}.<domaine>:<port>" -f $proxyHost)
+    }
 } elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') {
     $config['HTTP_PROXY'] = ''
     $config['HTTPS_PROXY'] = ''

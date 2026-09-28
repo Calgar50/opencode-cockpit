@@ -53,6 +53,22 @@ describe("déploiement 1.0.6 : opencode ne sort que par le relais du cockpit", (
     assert.match(String(cockpit.HTTPS_PROXY), /\$\{HTTPS_PROXY/);
   });
 
+  // Mesure réseau de la 1.1.0 (D1) : opencode absent, le DNS intégré de Docker transmettait « opencode. » au DNS de
+  // l'entreprise. `ndots` posé : plus aucun nom sans point transmis ; « . » : aucun domaine de recherche du poste ajouté.
+  it("docker-compose.yml : le cockpit ne transmet aucun nom court au DNS de l'entreprise (D1), sans adresse fixe", () => {
+    const cockpit = compose.services.cockpit as ComposeService & Record<string, unknown>;
+    assert.deepEqual(cockpit.dns_opt, ["ndots:1"]);
+    assert.deepEqual(cockpit.dns_search, ["."]);
+    // Résolution des services laissée au DNS de Docker : ni serveur imposé, ni table d'hôtes, ni sous-réseau épinglé (qui
+    // pourrait heurter un réseau de l'entreprise).
+    for (const [nom, service] of Object.entries(compose.services)) {
+      const s = service as Record<string, unknown>;
+      assert.equal(s.dns, undefined, `${nom} : dns`);
+      assert.equal(s.extra_hosts, undefined, `${nom} : extra_hosts`);
+    }
+    for (const [nom, reseau] of Object.entries(compose.networks)) assert.equal((reseau as Record<string, unknown> | null)?.ipam, undefined, nom);
+  });
+
   it("image opencode : drapeaux posés après les étapes npm, préinstallation par npm ci sans script", () => {
     const dockerfile = read("docker", "opencode", "Dockerfile");
     for (const flag of [

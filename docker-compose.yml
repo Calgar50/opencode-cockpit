@@ -103,6 +103,14 @@ services:
     # « default » : ses appels et le relais vers le proxy de l'entreprise ; « interne » : opencode et le relais ; « omo-internal » :
     # la salle et egress, fermé (internal: true : le rejoindre n'ouvre rien vers l'extérieur, et c'est le seul chemin vers la salle).
     networks: [default, interne, omo-internal]
+    # 1.1.0 (mesure réseau, D1) : aucun nom court ne part vers le DNS de l'entreprise. Sans ces deux lignes, quand opencode
+    # est absent (arrêté, recréé, en panne) pendant que le cockpit tourne, le DNS intégré de Docker transmet « opencode. » au
+    # résolveur de l'hôte, donc au DNS de l'entreprise. Avec `ndots` posé, il ne transmet plus aucun nom sans point : ces noms
+    # restent ceux des services Docker, résolus sur place. « . » retire tout domaine de recherche recopié du poste (sinon
+    # « opencode.<domaine> » partirait). Conséquence : le proxy de l'entreprise se donne par son nom complet
+    # (proxy.domaine.tld) ou son adresse IP, jamais par un nom court (install.ps1 le signale).
+    dns_opt: ["ndots:1"]
+    dns_search: ["."]
     environment:
       <<: *network-env
       # Les deux services de la salle rejoignent le trafic interne : le cockpit les appelle en direct, jamais par le proxy.

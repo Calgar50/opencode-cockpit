@@ -638,7 +638,12 @@ try {
         @{ Proxy = 'SOCKS5://proxy.example:1080'; Scheme = 'socks5' },
         @{ Proxy = 'http://agent:MOTDEPASSE-PROXY@proxy.example:8080'; Scheme = '' },
         @{ Proxy = 'HTTP://proxy.example:8080'; Scheme = '' },
-        @{ Proxy = 'proxy.example:8080'; Scheme = '' })
+        @{ Proxy = 'proxy.example:8080'; Scheme = '' },
+        # 1.1.0 (D1) : nom court signale (le cockpit ne le resout plus) ; nom complet, IPv4 et IPv6 jamais.
+        @{ Proxy = 'http://proxy:8080'; Scheme = ''; Court = 'proxy' },
+        @{ Proxy = 'http://agent:MOTDEPASSE-PROXY@proxycourt:3128/'; Scheme = ''; Court = 'proxycourt' },
+        @{ Proxy = 'http://10.20.30.40:8080'; Scheme = '' },
+        @{ Proxy = 'http://[fd00::1]:8080'; Scheme = '' })
     foreach ($case in $proxyCases) {
         Reset-Root $proxyEnv
         $journal = Set-InstallDockerScenario $Work 'proxy-schema' (New-InstallDockerRules $CertFile $JsonFile)
@@ -649,6 +654,12 @@ try {
             Assert-Test ('proxy {0} : avertissement du relais, schema cite' -f $label) ($null -eq $result.Error -and $warned -and $result.Host.Contains(('Proxy en {0}://' -f $case.Scheme))) ([string]$result.Error)
         } else {
             Assert-Test ('proxy {0} : aucun avertissement du relais' -f $label) ($null -eq $result.Error -and -not $warned) ([string]$result.Error)
+        }
+        $court = $result.Host.Contains('donne par un nom court')
+        if ($case.ContainsKey('Court')) {
+            Assert-Test ('proxy {0} : nom court signale, nom cite sans identifiants' -f $label) ($null -eq $result.Error -and $court -and $result.Host.Contains(("Proxy '{0}' donne par un nom court" -f $case.Court))) ([string]$result.Error)
+        } else {
+            Assert-Test ('proxy {0} : aucun signalement de nom court' -f $label) ($null -eq $result.Error -and -not $court) ([string]$result.Error)
         }
         Assert-Test ('proxy {0} : identifiants jamais affiches' -f $label) (-not $result.Host.Contains('MOTDEPASSE-PROXY'))
     }
