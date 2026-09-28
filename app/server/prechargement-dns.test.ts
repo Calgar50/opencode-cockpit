@@ -9,6 +9,9 @@
 // - Liens externes : tout <a> de l'interface qui vise une adresse hors du cockpit s'ouvre dans un nouvel onglet avec
 //   rel="noopener noreferrer" (jetons dans n'importe quel ordre) ; le Markdown assaini (réponses de l'IA) pose ces deux attributs
 //   sur chaque lien, <a> comme <area>. Contrôle de source : DOMPurify exige un DOM que la suite Node n'a pas.
+// - Code de l'interface (web/**/*.ts et *.tsx) : aucun appel aux API de ressources de React DOM (prefetchDNS, preconnect,
+//   preload, preinit), aucune balise <link>, <meta> ou <base> en JSX, aucun HTML écrit dans le DOM hors du Markdown assaini,
+//   aucune fenêtre ouverte par le code (contre-vérification de la finalisation : l'index HTML seul ne couvre pas ces chemins).
 // Aucun réseau, aucun conteneur, aucun appel facturé.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -19,14 +22,17 @@ import { startCockpit } from "./test-support/cockpit-harness.ts";
 const WEB = path.join(import.meta.dirname, "..", "web");
 const lire = (relatif: string): string => fs.readFileSync(path.join(WEB, relatif), "utf8");
 
-/** Fichiers .tsx de l'interface, chemins relatifs POSIX, tests exclus. */
-function composants(): string[] {
+/** Fichiers de l'interface d'une extension donnée, chemins relatifs POSIX, tests exclus. */
+function sources(...extensions: string[]): string[] {
   return fs
     .readdirSync(WEB, { recursive: true, encoding: "utf8" })
     .map((relatif) => relatif.replaceAll("\\", "/"))
-    .filter((relatif) => relatif.endsWith(".tsx") && !relatif.includes(".test."))
+    .filter((relatif) => extensions.some((ext) => relatif.endsWith(ext)) && !relatif.includes(".test."))
     .sort();
 }
+
+/** Fichiers .tsx de l'interface, chemins relatifs POSIX, tests exclus. */
+const composants = (): string[] => sources(".tsx");
 
 /** Source sans commentaires : lignes « // … » entières et blocs « /* … *\/ » (une adresse « https:// » d'une chaîne reste). */
 const sansCommentaires = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -177,5 +183,37 @@ describe("liens externes de l'interface : nouvel onglet, rel=\"noopener noreferr
       "pages/settings/ConnectionTab.tsx {flow.url}",
       "pages/settings/PricingTab.tsx {p.sourceUrl}",
     ]);
+  });
+});
+
+describe("code de l'interface : aucune résolution ni connexion anticipée hors de l'index HTML", () => {
+  // Le contrôle de l'index HTML ne voit pas ce que le code ajoute à la page : React DOM 19 fournit prefetchDNS, preconnect,
+  // preload et preinit, et remonte dans la tête de la page une balise <link> ou <meta> écrite en JSX. Aucun de ces chemins ne
+  // doit exister dans web/ ; le HTML brut n'entre que par le Markdown assaini.
+  const INTERDITS: readonly (readonly [string, RegExp])[] = [
+    ["API de ressources de React DOM", /\b(?:prefetchDNS|preconnect|preloadModule|preload|preinitModule|preinit)\s*\(/],
+    ["balise de tête ou de contenu externe en JSX", /<(?:link|meta|base|script|iframe|object|embed)(?=[\s/>])/],
+    ["HTML écrit dans le DOM", /\b(?:innerHTML|outerHTML|insertAdjacentHTML)\b|\bdocument\.write(?:ln)?\s*\(/],
+    ["élément de lien ou de ressource créé par le DOM", /\bcreateElement\(\s*["'`](?:a|area|link|meta|base|script|iframe|img)["'`]/],
+    ["nouvelle fenêtre ouverte par le code", /\bwindow\.open\s*\(/],
+  ];
+
+  it("ni prefetchDNS, preconnect, preload ou preinit, ni <link>, <meta> ou <base> en JSX, ni HTML écrit dans le DOM, ni window.open", () => {
+    const fichiers = sources(".ts", ".tsx");
+    assert.ok(fichiers.length >= 100, `${fichiers.length} fichiers de l'interface lus`);
+    const trouves: string[] = [];
+    for (const relatif of fichiers) {
+      const source = sansCommentaires(lire(relatif));
+      for (const [nature, motif] of INTERDITS) {
+        const m = motif.exec(source);
+        if (m) trouves.push(`${relatif} : ${nature} (${m[0]})`);
+      }
+    }
+    assert.deepEqual(trouves, []);
+  });
+
+  it("dangerouslySetInnerHTML n'apparaît que dans le Markdown assaini", () => {
+    const porteurs = sources(".ts", ".tsx").filter((relatif) => /\bdangerouslySetInnerHTML\b/.test(sansCommentaires(lire(relatif))));
+    assert.deepEqual(porteurs, ["components/Markdown.tsx"]);
   });
 });
