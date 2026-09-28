@@ -73,6 +73,9 @@ export function securityHeaders(): MiddlewareHandler {
     h.set("X-Content-Type-Options", "nosniff");
     h.set("X-Frame-Options", "DENY");
     h.set("Referrer-Policy", "no-referrer");
+    // 1.1.0 (A47) : aucune résolution anticipée du nom d'un lien affiché (réponse d'IA, fichier, source d'une méthode), que
+    // Chromium fait d'office sur une page servie en HTTP (mode -Http). Sur toutes les réponses ; l'index HTML porte la méta.
+    h.set("X-DNS-Prefetch-Control", "off");
     h.set("Cross-Origin-Opener-Policy", "same-origin");
     h.set("Cross-Origin-Resource-Policy", "same-origin");
     h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");

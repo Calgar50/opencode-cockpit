@@ -17,6 +17,7 @@
 // - L34 × le modèle néon : les deux démonstrations se régénèrent à l'octet près sur le faux opencode, la démonstration p1 en
 //   Simple montre au moins deux assistants, et DemoPlayer n'atteint ni API, ni proxy, ni fetch.
 // - Constantes à garder (règles de train) : three@0.186.0 exact en devDependencies, chunkSizeWarningLimit jamais relevé.
+// - 1.1.0 (A47), sur le même build : le HTML construit garde la méta x-dns-prefetch-control « off » et ne lie aucun autre hôte.
 // Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -208,6 +209,31 @@ describe("croisements 3D V2 : three sort en morceau paresseux (garde de L32, M24
     assert.equal(paquet.dependencies?.three, undefined, "three reste en devDependencies");
     const limite = Number(/chunkSizeWarningLimit:\s*(\d+)/.exec(lire(APP_DIR, "vite.config.ts"))?.[1]);
     assert.ok(limite <= 1500, `chunkSizeWarningLimit = ${limite} : jamais relevé pour masquer l'avertissement de taille`);
+  });
+});
+
+// --- 1.1.0 (A47) : le HTML construit garde la méta qui coupe la résolution anticipée des noms (prechargement-dns.test.ts) --------
+
+describe("HTML construit (1.1.0, A47) : résolution anticipée des noms coupée, aucun lien vers un autre hôte", () => {
+  it("index.html construit : méta x-dns-prefetch-control « off » dans la tête, avant tout <link> et tout script", () => {
+    const html = fs.readFileSync(path.join(BUILD.sortie, "index.html"), "utf8");
+    const tete = /<head>([\s\S]*?)<\/head>/.exec(html)?.[1] ?? "";
+    const meta = tete.search(/<meta\s+http-equiv="x-dns-prefetch-control"\s+content="off"\s*\/?>/);
+    assert.ok(meta >= 0, "méta x-dns-prefetch-control absente du HTML construit");
+    for (const balise of ["<link", "<script"]) {
+      const premiere = tete.indexOf(balise);
+      if (premiere >= 0) assert.ok(meta < premiere, `la méta précède le premier ${balise}`);
+    }
+  });
+
+  it("index.html construit : chaque <link> vise la même origine, aucune préconnexion ni résolution anticipée", () => {
+    const html = fs.readFileSync(path.join(BUILD.sortie, "index.html"), "utf8");
+    const liens = html.match(/<link\b[^>]*>/g) ?? [];
+    assert.ok(liens.length > 0, "au moins l'icône et la feuille de style");
+    for (const lien of liens) {
+      assert.doesNotMatch(lien, /\brel="[^"]*\b(?:preconnect|dns-prefetch|prerender)\b/, lien);
+      assert.match(/\bhref="([^"]*)"/.exec(lien)?.[1] ?? "", /^\/(?!\/)/, `lien vers la même origine seulement : ${lien}`);
+    }
   });
 });
 

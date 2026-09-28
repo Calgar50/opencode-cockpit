@@ -63,8 +63,10 @@ const marked = new Marked({
   },
 });
 
+// Tout lien d'une réponse s'ouvre dans un nouvel onglet, sans accès à la page du cockpit ni adresse d'origine : <a>, et <area>
+// d'une image à zones cliquables, que la liste blanche de DOMPurify garde aussi.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-  if (node.tagName === "A") {
+  if (node.tagName === "A" || node.tagName === "AREA") {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
   }
