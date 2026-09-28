@@ -17,7 +17,8 @@
 //   cause reste AFFICHÉE après un rechargement tant que la table des attentes la connaît (le 503 de la liste la porte : demandesDeLecture,
 //   croisements-v106 « reconnexion du flux avec une demande en cause ») ;
 // - « Si elle n'est pas affichée, arrêtez les réponses en cours, puis Diagnostic › Redémarrer opencode » : après un redémarrage du
-//   cockpit, la table ne connaît plus la demande (aucun événement rejoué) et la liste d'opencode reste en 400 tant qu'elle attend ; un
+//   cockpit, ou pour une demande arrivée pendant une coupure du flux (événement perdu), la table ne connaît pas la demande (aucun
+//   événement rejoué) et la liste d'opencode reste en 400 tant qu'elle attend ; un
 //   redémarrage d'opencode vide ses demandes en attente (en mémoire), et « Redémarrer opencode » est refusé pendant une réponse,
 //   d'où l'arrêt d'abord (« Arrêter » arrête la réponse même quand la liste est illisible, sans refuser la demande) ;
 // - « rechargez dans un instant » (cause inconnue seulement) : la table redevient fiable à la première lecture RÉUSSIE après une
