@@ -284,7 +284,7 @@ try {
 
     Set-DockerScenario (New-CockpitDockerRules -Served 'http' -Extra @((New-Rule '^compose -f \S.* stop' '' 0 $null '' -Fail), (New-Rule '^compose -f \S.* up' '' 0 $null '' -Fail)))
     $renewHttp = Invoke-CockpitScript $HttpDir @('tls') -Parameters @{ Renew = $true } { Add-SpyReadHostAnswer 'RENOUVELER' }
-    Assert-Test 'A17 : tls -Renew en HTTP, suppression sans arret ni redemarrage' ((Test-DockerCall '^run --rm --network none') -and @(Get-DockerJournal | Where-Object { $_.forbidden }).Count -eq 0 -and $renewHttp.Host.Contains('Certificat local efface (volume cockpit-tls).')) (Get-Extract $renewHttp.Host)
+    Assert-Test 'A17 : tls -Renew en HTTP, suppression sans arret ni redemarrage' ((Test-DockerCall '^run --rm --pull never --network none') -and @(Get-DockerJournal | Where-Object { $_.forbidden }).Count -eq 0 -and $renewHttp.Host.Contains('Certificat local efface (volume cockpit-tls).')) (Get-Extract $renewHttp.Host)
     Assert-Test 'RG5 tls -Renew HTTP : meme suppression, cockpit-tls.json garde' ((Test-DockerCall '-f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt\z') -and -not (Test-DockerCall '^run .*cockpit-tls\.json'))
 
     # --- update -----------------------------------------------------------------------------------------------------

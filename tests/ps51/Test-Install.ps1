@@ -671,8 +671,10 @@ try {
     foreach ($case in @(@{ V = '2.7.1'; Ok = $false }, @{ V = 'v2.8.0'; Ok = $true }, @{ V = '2.29.1-desktop.1'; Ok = $true })) {
         Reset-Root $proxyEnv
         $before = Get-EnvFingerprint $Root
-        # Premiere regle qui correspond = celle-ci : elle remplace la version rendue par le banc.
-        $rules = @(New-DockerRule '^compose version' ($case.V + "`n")) + @(New-InstallDockerRules $CertFile $JsonFile)
+        # Premiere regle qui correspond = celle-ci : elle remplace la version rendue par le banc. Pas de @() autour de
+        # New-InstallDockerRules : son tableau (return , @(...)) y serait enveloppe dans un tableau d'un element (piege PS 5.1).
+        $base = New-InstallDockerRules $CertFile $JsonFile
+        $rules = @(New-DockerRule '^compose version' ($case.V + "`n")) + $base
         $journal = Set-InstallDockerScenario $Work 'compose-version' $rules
         $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
         if ($case.Ok) {
