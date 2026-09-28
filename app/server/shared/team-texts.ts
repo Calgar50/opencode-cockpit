@@ -309,7 +309,10 @@ export const TEXTES = {
       "etape-consultable": CONSULTABLE,
       "etat-incompatible": "Cette action n'est plus possible dans l'état actuel de l'équipe.",
       // <c5:choix-invalide>
-      "choix-invalide": "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau.",
+      // L51 (décision A20) : le refus 409 « choix-invalide » est rendu AVANT toute écriture et toute requête (team-runner.ts,
+      // repondreAuChoix ; tests de L42b), d'où la fin de la phrase, affichée par la carte de choix (message de la route).
+      "choix-invalide":
+        "Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau. Rien n'a été envoyé ni facturé.",
       // </c5:choix-invalide>
       // <c5:reprise-redemarrage>
       // Clôture 5b (D-5b-1) : le refus arrive avant toute écriture et toute requête, d'où la fin de la phrase. Elle ne dit pas
@@ -342,7 +345,7 @@ export const TEXTES = {
       "assistant-interne": "Cet assistant est réservé au cockpit ou caché dans le chat : choisissez-en un autre.",
       "assistant-non-proposable": "Cet assistant travaille seulement quand un autre lui confie du travail : il ne peut pas être une étape.",
       delegue: "Cet assistant peut confier du travail à d'autres : il ne peut pas être une étape.",
-      internet: "Cet assistant consulte Internet : il ne peut pas être une étape.",
+      internet: "Les règles de cet assistant ne refusent pas Internet : il ne peut pas être une étape.",
       "autorise-sans-demander": "Cet assistant modifie des fichiers, lance des commandes ou sort du dossier sans vous demander : il ne peut pas être une étape.",
       "propose-reporte": "Un assistant qui propose des modifications ne peut pas encore être une étape : les étapes lisent seulement.",
       personnalise: "Assistant Personnalisé : réservé au mode Avancé.",
@@ -472,7 +475,7 @@ export const TEXTES = {
       /** Raisons d'un assistant désactivé dans la liste (codes de FlowProblemCode). */
       indisponibles: {
         delegue: "confie du travail à d'autres",
-        internet: "consulte Internet",
+        internet: "ne refuse pas Internet",
         "autorise-sans-demander": "agit sans vous demander",
         "propose-reporte": "propose des modifications : pas encore dans une équipe",
         personnalise: "Personnalisé : mode Avancé",

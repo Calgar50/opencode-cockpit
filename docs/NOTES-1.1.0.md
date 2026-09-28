@@ -1,0 +1,48 @@
+# opencode cockpit 1.1.0 : notes de version
+
+Version qui réunit les travaux du chantier 1.1 : voir qui travaille, borner et arrêter ce travail, l'autonomie à la demande, les équipes d'assistants, la construction et les méthodes, la salle de contrôle et « Revoir », et l'onglet Fichiers. Elle garde tout ce que la 1.0.6 a apporté au travail : plus aucun appel vers un site autre que GitHub Copilot ne part vers le proxy de l'entreprise. Et l'assistant ne va plus sur Internet.
+
+## Pourquoi cette version
+
+- **Voir et borner le travail des assistants.** Une demande peut faire travailler plusieurs assistants à la fois. La 1.1.0 montre qui travaille, pour combien, et arrête tout d'un seul geste ; elle permet aussi de laisser l'IA enchaîner le travail, dans des limites que le cockpit applique lui-même.
+- **Fermer Internet pour de bon.** Depuis la 1.0.6, le cockpit ne laisse sortir que GitHub Copilot : une consultation d'Internet échouait donc toujours au travail. Mais la demande d'autorisation qu'elle posait restait possible, et opencode 1.18.30 ne sait plus lister ses demandes quand l'une d'elles, restée sans réponse, omet un réglage facultatif (mesuré) : « Autoriser une fois » ne passait plus pour les autres demandes du même dossier, jusqu'au refus de la demande en cause. La 1.1.0 refuse la consultation d'Internet dans les profils de droits, ferme ces règles dans une installation existante à la mise à jour, et le cockpit tient sa propre liste des demandes en attente.
+
+## Ce qui change
+
+- **« Qui travaille ? », Déroulé et carte du travail en direct** : chaque assistant au travail pour votre demande, son état, sa durée et son coût. **Arrêter** arrête toute la conversation, travail délégué compris. **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier.
+- **Autonomie à la demande** : quatre choix par conversation (« Demander à chaque fois », « Modifications automatiques », « Plan d'abord », « Autonome avec contrôle »), des plafonds qui arrêtent le travail, et un Journal du contrôle qui dit qui a décidé quoi.
+- **Salle de contrôle et « Revoir »** : une vue d'ensemble du travail en cours, en 3D si le poste la dessine bien, en 2D sinon, et le rejeu d'une demande passée, sans rien relancer ni facturer.
+- **Équipes et carte des assistants** : plusieurs assistants sur une même demande, dans un ordre fixé, et une carte qui montre qui peut faire travailler qui. Les équipes sont complètes en mode Avancé et **fermées en mode Simple**, jusqu'aux recettes d'accessibilité.
+- **Construction, méthodes et Seconde lecture** : rédaction et relecture, aiguillage, schéma modifiable (mode Avancé), méthodes attachées aux assistants, Seconde lecture par un autre assistant, chronologie d'une demande (mode Avancé), coûts et archives par équipe.
+- **Onglet Fichiers** : relire en lecture seule les fichiers de vos projets, sans rien modifier et sans rien envoyer à une IA. Les fichiers protégés (clés, mots de passe, historique git) ne sont ni listés ni lus.
+- **L'assistant ne va plus sur Internet.**
+  - Les profils Prudent, Équilibré et Sans confirmation refusent la consultation d'Internet.
+  - L'assistant de création n'a plus de case « Consulter Internet » ; le Studio ne propose plus que « Refuser » pour ces outils.
+  - En mode Avancé, **Paramètres › opencode** refuse toute ouverture d'Internet que vous introduisez, « ask » comme « allow ».
+  - **Paramètres › Sécurité** signale un profil d'une version précédente et propose « Fermer l'accès à Internet » : votre profil est gardé, seul l'accès à Internet change. Il signale aussi les assistants qui peuvent encore demander Internet ; **Diagnostic** le résume.
+- **Liste des demandes d'autorisation** : quand opencode ne sait plus la rendre, le cockpit la reconstitue à partir des événements d'opencode ; quand il n'en est pas sûr, il le dit et conseille de refuser la demande en cause.
+- **Salle Oh My OpenAgent** : son code est dans la version, **livré coupé**. Elle ne s'ouvre qu'au terme d'une procédure de mise en service.
+- **Une annonce, une fois**, dans le chat et dans Assistants, résume ces nouveautés. En mode Simple, elle ne propose aucune équipe tant qu'elles y sont fermées.
+- **Aucune dépendance nouvelle**, sauf three.js 0.186.0 pour la 3D, sous licence MIT.
+
+Plusieurs vérifications sur GitHub Copilot réel restent à faire : elles sont listées dans `docs/RECAPITULATIF.md`, section « Limites et points à vérifier ».
+
+## Mettre à jour
+
+1. `.\cockpit.ps1 update`, comme d'habitude.
+   - Le mode d'accès ne change pas : HTTP local reste en HTTP, HTTPS reste en HTTPS.
+   - Aucune reconnexion n'est demandée. Le mot de passe interne d'opencode n'est renouvelé que si vous venez d'une version antérieure à la 1.0.6.
+2. **Internet est fermé tout seul pendant la mise à jour.**
+   - Les profils Prudent, Équilibré et Sans confirmation gardent leur nom ; seul l'accès à Internet passe à « refusé ».
+   - Pour des règles personnalisées, seules les valeurs « ask » de `webfetch` et `websearch` deviennent « deny ».
+   - Ce passage est **rejoué à chaque mise à jour et à chaque restauration** (`install.ps1`, `.\cockpit.ps1 restore`) : un « ask » remis à la main repassera à « deny ».
+   - L'ancien fichier est gardé à côté (`opencode.jsonc.avant-1.1.0`, dans le volume de configuration d'opencode, compris dans `.\cockpit.ps1 backup`).
+   - Les cas laissés tels quels sont annoncés par l'installateur ; **Paramètres › Sécurité** propose « Fermer l'accès à Internet ».
+   - Avec `.\install.ps1 -NoStart`, les règles ne sont mises à jour que si opencode est arrêté ; sinon l'installateur le dit : relancez `.\install.ps1` sans `-NoStart`.
+3. **Les assistants ne sont pas modifiés** : ceux qui avaient « Consulter Internet » sont signalés dans **Paramètres › Sécurité**, et les ouvrir puis **Enregistrer** ferme Internet pour eux.
+4. **Mode Load :** l'archive `opencode-cockpit-images-1.1.0.tar.gz` est obligatoire. Lancez `.\install.ps1 -Mode Load -ImagesArchive <archive>`. Avec les images 1.0.6, le script s'arrête avant toute modification.
+5. **Retour arrière :** voir ci-dessous.
+
+## Retour arrière
+
+`cockpit.ps1 rollback` ne ramène pas à la 1.0.6 : il vise la version mémorisée, s'il y en a une. Un retour manuel aux images 1.0.6 garde vos réglages et ne casse rien. Paramètres › Sécurité y affiche « Profil de droits : Personnalisé » : c'est normal, seules les règles Internet diffèrent, et elles sont plus sûres. Ne cliquez pas sur « Revenir au profil Prudent » : il remettrait les demandes d'accès à Internet, qui peuvent bloquer vos autorisations. La mise à jour suivante remet tout en ordre.

@@ -1227,7 +1227,8 @@ describe("droits effectifs", () => {
     const propose = rightLines(effectiveAgentRules(PRUDENT, assistantPermission("propose", true, [])));
     assert.deepEqual(
       propose.slice(1, 4).map((l) => l.text),
-      ["Demande avant de modifier un fichier", "Demande avant de lancer une commande", "Demande avant de consulter Internet"],
+      // L51 (A31 c, A32 (2)) : ligne web au conditionnel, Internet fermé (changement nommé : « Demande avant de consulter Internet »).
+      ["Demande avant de modifier un fichier", "Demande avant de lancer une commande", "Demanderait avant de consulter Internet ; Internet est fermé"],
     );
     // Une fiche listée mais refusée par les règles est signalée.
     assert.equal(rightLines(rules, ["checklist-cab"]).at(-1)?.text, "Ne peut pas ouvrir la fiche « checklist-cab »");

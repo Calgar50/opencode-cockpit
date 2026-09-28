@@ -7,6 +7,8 @@ import type { PermissionRequest, QuestionRequest } from "../../lib/types.ts";
 import { DecisionStatus } from "./autonomy/DecisionStatus.tsx";
 import { DelegationDetails } from "./delegation/DelegationDetails.tsx";
 import type { PermissionPromptSlots } from "./slots.ts";
+// L51 (A31 c, A32 (2)) : une demande web n'arrive plus qu'avec des règles d'une version précédente ; la carte dit vrai.
+import { TEXTES as TEXTES_INTERNET } from "../../../server/shared/internet-texts.ts";
 
 const PERMISSION_LABELS: Record<string, string> = {
   edit: "modifier un fichier",
@@ -20,6 +22,9 @@ const PERMISSION_LABELS: Record<string, string> = {
   task: "déléguer le travail à un autre assistant",
   skill: "consulter une fiche",
 };
+
+/** Demandes web : Internet est fermé (relais de la 1.0.6), la carte le dit et conseille de refuser. */
+const WEB_PERMISSIONS: ReadonlySet<string> = new Set(["webfetch", "websearch"]);
 
 const str = (value: unknown) => (typeof value === "string" ? value : null);
 
@@ -83,6 +88,7 @@ export function PermissionPrompt({
         {sessionTitle ? <span className="small muted ellipsis">{sessionTitle}</span> : null}
       </div>
       {examining || decision ? <DecisionStatus examining={examining} decision={decision ?? null} /> : null}
+      {WEB_PERMISSIONS.has(request.permission) ? <p className="small">{TEXTES_INTERNET.partout.demandeWeb}</p> : null}
       {command ? (
         <pre className="terminal">
           <span className="prompt">$ </span>

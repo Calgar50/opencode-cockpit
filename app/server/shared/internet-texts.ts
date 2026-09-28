@@ -15,7 +15,10 @@
 // - « peuvent encore le demander » : webAskAgents sur les règles EFFECTIVES de GET /agent (web-rules.test.ts) ; rien n'est affiché
 //   quand opencode ne répond pas (security.webIssues null) ;
 // - « Ouvrez chacun (Assistants › Modifier) » : seulement pour les assistants titrés, les seuls qui ont ce bouton ; un signalé sans
-//   titre est renvoyé au mode Avancé, Studio ou Paramètres › opencode (web-rules.test.ts, relecture F2-vague-2).
+//   titre est renvoyé au mode Avancé, Studio ou Paramètres › opencode (web-rules.test.ts, relecture F2-vague-2) ;
+// - « Internet est fermé : seul GitHub Copilot est joignable » (L51, carte d'une demande web) : le relais de sortie de la 1.0.6
+//   n'ouvre qu'une liste fermée d'hôtes Copilot et refuse tout le reste sur place (egress-policy.ts ; egress-relay.test.ts « hôte
+//   refusé : 403 sans AUCUNE connexion sortante »), quel que soit le réglage de l'assistant.
 
 export const TEXTES = {
   simple: {
@@ -90,6 +93,13 @@ export const TEXTES = {
     diagnosticAssistant: "Accès à Internet : 1 assistant peut encore le demander. Voir Paramètres › Sécurité.",
     diagnosticAssistants: "Accès à Internet : {n} assistants peuvent encore le demander. Voir Paramètres › Sécurité.",
     diagnosticGlobal: "Accès à Internet : la règle générale le demande encore. Voir Paramètres › Sécurité.",
+    /**
+     * L51 (décisions A31 c, A32 (2)) : carte d'une demande d'autorisation web dans le chat (Interactions.tsx). Elle n'arrive plus
+     * qu'avec des règles d'une version précédente ; l'accorder n'ouvrirait pas Internet (relais de la 1.0.6, egress-policy.ts).
+     */
+    demandeWeb: "Internet est fermé : seul GitHub Copilot est joignable. Refusez cette demande.",
+    /** L51 : carte d'accueil d'un assistant d'une version précédente dont les règles demandent encore Internet (WelcomeCards.tsx). */
+    carteAncien: "peut encore demander Internet, qui est fermé",
   },
 };
 

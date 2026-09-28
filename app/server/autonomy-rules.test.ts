@@ -673,6 +673,39 @@ function leaves(value: unknown, out: string[] = []): string[] {
   return out;
 }
 
+// L51 (décisions A31 c, A32 (2), A37) : Internet est fermé (profils de la 1.1.0 à « deny », relais de la 1.0.6 qui n'ouvre que
+// GitHub Copilot). Une demande web n'arrive plus qu'avec des règles d'une version précédente : elle attend toujours votre accord
+// (R-web), mais aucune phrase ne propose plus le web, et la règle le dit.
+describe("droits web dits vrais (L51) : règle R-web, confirmations et description de « Demander à chaque fois »", () => {
+  it("webfetch et websearch attendent toujours votre accord (R-web), et la règle dit qu'Internet est fermé, seul GitHub Copilot joignable", () => {
+    for (const permission of ["webfetch", "websearch"]) {
+      for (const choix of ["modifications", "autonome"] as const) {
+        assert.deepEqual(routePermission(choix, permission), { route: "attente", regle: "R-web" }, `${permission} ${choix}`);
+      }
+      assert.deepEqual(routePermission("demander", permission), { route: "hors-autonomie" }, "Demander : votre accord, comme toujours");
+    }
+    for (const mode of MODES) {
+      assert.equal(phraseRegle("R-web", { mode, controleIa: true }), "Accès à Internet (fermé : seul GitHub Copilot est joignable)");
+      assert.equal(regleCarte("R-web", { mode, controleIa: false }), "Règle : Accès à Internet (fermé : seul GitHub Copilot est joignable)");
+    }
+  });
+
+  it("aucune confirmation ne range plus le web parmi « Toujours avec votre accord » ; chacune dit « Internet reste fermé. »", () => {
+    const lignes = [
+      ...MODES.map((mode) => confirmationModifications({ mode, dossier: "/workspace/p" }).lignes.join("\n")),
+      ...[true, false].map((controleIa) => confirmationAutonome({ dossier: "/workspace/p", plafondUsd: 1, controleIa }).lignes.join("\n")),
+    ];
+    for (const texte of lignes) {
+      const accord = texte.split("\n").find((l) => l.startsWith("Toujours avec votre accord")) ?? "";
+      assert.ok(accord.endsWith("Internet reste fermé."), accord);
+      assert.doesNotMatch(accord, /\bweb\b/, accord);
+    }
+    const description = CHOIX_TEXTES.partout.choix.demander.description;
+    assert.equal(description, "L'IA lit, puis vous demande avant chaque modification, commande ou travail délégué. Internet reste fermé.");
+    assert.doesNotMatch(description, /accès web/);
+  });
+});
+
 describe("phrases des règles (« Règle : {phrase} », Journal)", () => {
   it("chaque code rendu par les règles a sa phrase, dans les deux modes et les deux variantes, gabarits remplis", () => {
     const codes = ruleCodes();
@@ -901,7 +934,7 @@ describe("phrases des décisions, du bandeau, des plafonds et des fins", () => {
 describe("confirmations et descriptions : deux variantes de l'IA de contrôle (§4.13, repli §7.4)", () => {
   const values = { dossier: "/workspace/projet", plafondUsd: 1 };
   const common = [
-    "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, web, commandes qui exécutent du code ou touchent au réseau, à la production ou à git.",
+    "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, commandes qui exécutent du code ou touchent au réseau, à la production ou à git. Internet reste fermé.",
     "Jamais : ce que l'assistant refuse.",
     "Arrêt automatique à 1,00 $ : l'appel en cours de chaque assistant au travail peut le dépasser un peu ; l'appel qui donne son titre à une nouvelle conversation n'est pas compté.",
     "Certaines actions d'opencode ne passent par aucune demande : le cockpit les repère après coup et arrête la demande.",
@@ -953,7 +986,8 @@ describe("confirmations et descriptions : deux variantes de l'IA de contrôle (�
     const avance = confirmationModifications({ mode: "avance", dossier: DIR });
     assert.equal(simple.lignes[0], `Sans vous demander : modifier les fichiers de ${DIR} sauf fichiers protégés.`);
     assert.doesNotMatch(simple.lignes.join(" "), /délégu/u);
-    assert.match(avance.lignes[1] ?? "", /travail délégué\.$/u);
+    // L51 (A31 c, A32 (2)) : « Internet reste fermé. » suit la liste (changement nommé : la ligne finissait par « travail délégué. »).
+    assert.match(avance.lignes[1] ?? "", /travail délégué\. Internet reste fermé\.$/u);
     assert.deepEqual([simple.activer, simple.annuler, simple.lignes[2]], ["Activer", "Annuler", "Jamais : ce que l'assistant refuse."]);
   });
 

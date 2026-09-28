@@ -18,7 +18,7 @@ export const TEXTES = {
     choix: {
       demander: {
         libelle: "Demander à chaque fois",
-        description: "L'IA lit, puis vous demande avant chaque modification, commande, accès web ou travail délégué.",
+        description: "L'IA lit, puis vous demande avant chaque modification, commande ou travail délégué. Internet reste fermé.",
       },
       modifications: {
         libelle: "Modifications automatiques",

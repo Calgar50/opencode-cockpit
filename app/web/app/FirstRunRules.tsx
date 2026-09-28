@@ -1,23 +1,25 @@
-// Règles d'utilisation (fenêtre bloquante versionnée) et notice unique de la version 0.2.0.
+// Règles d'utilisation (fenêtre bloquante versionnée) et annonce unique de la version (1.1.0 : L51, annonce-110.ts).
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import {
   GOLDEN_RULES,
-  perRequestText,
   RULES_BUTTON,
   RULES_CHECKBOX,
   RULES_TITLE_CHANGED,
   RULES_TITLE_FIRST,
 } from "../../server/shared/assistant-rules.ts";
+import { annonce110 } from "../../server/shared/annonce-110.ts";
 import type { LocalAccessNotice } from "../../server/shared/local-access-notice.ts";
 import { Icon } from "../components/Icon.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button } from "../components/ui.tsx";
-import { api, errorText } from "../lib/api.ts";
+import { errorText } from "../lib/api.ts";
+import { openAssistants, useRoute } from "../lib/router.ts";
+import { useOuvertesEnSimple } from "../pages/chat/activity/useOuvertesEnSimple.ts";
 import { useApp } from "./AppContext.tsx";
 import { LocalHttpBanner, LocalHttpDetails } from "./LocalHttpNotice.tsx";
 
-/** Version dont la notice « Nouveau » est enregistrée dans ui.noticeSeen. */
-export const UPGRADE_NOTICE_VERSION = "1.0.0";
+/** Version dont l'annonce « Nouveau » est enregistrée dans ui.noticeSeen (L51 : annonce de la 1.1.0, une fois). */
+export const UPGRADE_NOTICE_VERSION = "1.1.0";
 
 /** true tant que les règles de cette version n'ont pas été acceptées (serveur antérieur à 0.2.0 : jamais). */
 export function needsRules(acceptedVersion: number, rulesVersion: number | undefined): boolean {
@@ -120,49 +122,33 @@ export function FirstRunRules({ accessNotice = null }: { accessNotice?: LocalAcc
   );
 }
 
-interface AgentWithModel {
-  name: string;
-  modelName: string;
-  cost: string | null;
-}
+
+/** Pages où l'annonce de la version est montrée (conception C §9.14 : « chat and Assistants, once »). */
+const NOTICE_SECTIONS: ReadonlySet<string> = new Set(["chat", "assistants"]);
 
 /**
- * Notice unique (§8, §13) : mode Simple par défaut et IA des assistants réellement utilisée, avec la liste des agents
- * créés avant 1.0 qui imposent une IA. [Passer en mode Avancé] [Compris] enregistrent ui.noticeSeen.
+ * Annonce de la 1.1.0 (L51 ; plan it5 §4.3, D-5-24 ; décisions U1 et A37), une seule fois, dans le chat et dans Assistants :
+ * [Voir la carte] ou [Compris] l'enregistrent dans ui.noticeSeen. Le texte vient d'annonce110 (shared/annonce-110.ts) :
+ * phrase d'équipe seulement si les équipes sont ouvertes dans le mode courant, `ouvertesEnSimple` étant lu par GET /api/teams
+ * (client api-teams.ts, par useOuvertesEnSimple) en mode Simple seulement, et `null` (lecture en cours ou en échec) fermant ;
+ * paragraphe « Internet » dans les deux modes, phrase technique en mode Avancé seulement.
  */
 export function UpgradeNotice() {
-  const { advanced, saveUi, modelByKey } = useApp();
+  const { advanced, saveUi } = useApp();
   const toast = useToast();
-  const [busy, setBusy] = useState<"compris" | "avance" | null>(null);
-  const [agents, setAgents] = useState<AgentWithModel[]>([]);
+  const route = useRoute();
+  const visible = NOTICE_SECTIONS.has(route[0] ?? "chat");
+  const ouvertesEnSimple = useOuvertesEnSimple(visible && !advanced);
+  const [busy, setBusy] = useState<"compris" | "carte" | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    api.assistants().then(
-      (data) => {
-        if (cancelled) return;
-        setAgents(
-          data.toComplete.flatMap((item) => {
-            if (!item.model) return [];
-            const cost = modelByKey(item.model)?.taskCost?.M;
-            return [{ name: item.name, modelName: item.modelName ?? item.model, cost: cost === undefined ? null : perRequestText(cost) }];
-          }),
-        );
-      },
-      () => undefined, // Liste facultative : la notice reste utile sans elle.
-    );
-    return () => {
-      cancelled = true;
-    };
-    // Chargée une seule fois à l'affichage de la notice.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  if (!visible) return null;
+  const annonce = annonce110(advanced ? "avance" : "simple", ouvertesEnSimple);
 
-  const dismiss = async (switchToAdvanced: boolean) => {
-    setBusy(switchToAdvanced ? "avance" : "compris");
+  const dismiss = async (voirCarte: boolean) => {
+    setBusy(voirCarte ? "carte" : "compris");
     try {
-      await saveUi(switchToAdvanced ? { mode: "avance", noticeSeen: UPGRADE_NOTICE_VERSION } : { noticeSeen: UPGRADE_NOTICE_VERSION });
-      if (switchToAdvanced) toast.success("Mode Avancé activé", "Le Studio et les réglages avancés sont visibles.");
+      await saveUi({ noticeSeen: UPGRADE_NOTICE_VERSION });
+      if (voirCarte) openAssistants({ mode: "carte", element: null });
     } catch (err) {
       toast.error("Enregistrement impossible", err);
     } finally {
@@ -170,28 +156,23 @@ export function UpgradeNotice() {
     }
   };
 
-  const list = agents.map((a) => `${a.name} → ${a.modelName}${a.cost ? ` (${a.cost})` : ""}`).join(", ");
-
   return (
-    <section className="notice-panel" aria-label="Nouveautés de la version 1.0">
+    <section className="notice-panel" aria-label={annonce.region}>
       <Icon name="sparkle" size={18} />
       <div className="stack tight spacer">
-        <strong>Nouveau : le cockpit s'ouvre en mode Simple. Vos réglages, agents et conversations sont intacts.</strong>
-        <div className="stack tight">
-          <strong>Nouveau en 1.0 : l'IA d'un assistant est vraiment utilisée</strong>
-          <p className="secondary">
-            Jusqu'ici, le chat utilisait l'IA choisie en bas de l'écran, même pour un agent réglé sur une autre IA. C'est corrigé.
-            {list ? ` Vérifiez ces agents : ${list}.` : ""} La réflexion des raccourcis non délégués est aussi appliquée désormais.
+        <strong>{annonce.titre}</strong>
+        <p className="secondary">{annonce.texte}</p>
+        {annonce.internet.map((phrase) => (
+          <p key={phrase} className="secondary">
+            {phrase}
           </p>
-        </div>
+        ))}
         <div className="row wrap">
-          {!advanced ? (
-            <Button size="sm" loading={busy === "avance"} disabled={busy !== null} onClick={() => void dismiss(true)}>
-              Passer en mode Avancé
-            </Button>
-          ) : null}
+          <Button size="sm" loading={busy === "carte"} disabled={busy !== null} onClick={() => void dismiss(true)}>
+            {annonce.voirCarte}
+          </Button>
           <Button size="sm" variant="primary" loading={busy === "compris"} disabled={busy !== null} onClick={() => void dismiss(false)}>
-            Compris
+            {annonce.compris}
           </Button>
         </div>
       </div>

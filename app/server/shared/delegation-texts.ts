@@ -128,8 +128,8 @@ export const TEXTES = {
         read: "Lire un fichier",
         edit: "Modifier un fichier",
         bash: "Lancer une commande",
-        webfetch: "Consulter une page web",
-        websearch: "Chercher sur Internet",
+        webfetch: "Consulter une page web (Internet fermé)",
+        websearch: "Chercher sur Internet (Internet fermé)",
         task: "Déléguer du travail",
         external_directory: "Sortir du dossier de travail",
       },
@@ -139,7 +139,8 @@ export const TEXTES = {
         deny: "refusé",
       },
       actionInconnue: "inconnu",
-      droitsNote: "Règles des assistants, sans les refus que le cockpit ajoute à la conversation.",
+      droitsNote:
+        "Règles des assistants, sans les refus que le cockpit ajoute à la conversation. Internet est fermé quelle que soit la règle : seul GitHub Copilot est joignable.",
       arobase:
         "Tout @fichier cité dans la consigne est lu sans vous demander : le cockpit refuse « Autoriser une fois » pour une consigne qui cite un fichier existant avec « @ ».",
       refusPrevu: "« Autoriser une fois » sera refusé par le cockpit : {raison}",

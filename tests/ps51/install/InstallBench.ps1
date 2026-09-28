@@ -83,7 +83,9 @@ function New-MigrationDockerRules([string]$Stdout = ($MigrationAbsent + "`n"), [
 # Migration du web (A37) : -Migration (ligne rendue par le script), -MigrationCode, -MigrationStderr ; arret d'opencode en
 # echec (-StopFails), opencode encore en marche (-OpencodeRunning), volume oc-config present (-VolumeExists, pour -NoStart).
 function New-InstallDockerRules {
-    param([string]$CertFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.0.6', [string]$ContainerHealth = 'healthy',
+    # Images de la version installee par defaut (1.1.0, D13 : $RequiredImageVersion d'install.ps1) ; une ancienne version se passe
+    # explicitement (-ImageVersion '1.0.6' ou '1.0.5').
+    param([string]$CertFile = '', [string]$JsonFile = '', [string]$ImageVersion = '1.1.0', [string]$ContainerHealth = 'healthy',
         [switch]$ImagesMissing, [switch]$FailPull, [string]$Logs = '', [string]$Migration = $MigrationAbsent, [int]$MigrationCode = 0,
         [string]$MigrationStderr = '', [switch]$StopFails, [switch]$OpencodeRunning, [switch]$VolumeExists)
     $rules = New-Object System.Collections.Generic.List[object]

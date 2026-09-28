@@ -484,3 +484,21 @@ describe("textes de l'accès à Internet (§7, à la lettre)", () => {
     for (const mot of ["webfetch", "websearch", "D11", "volume", "permission", "agent"]) assert.equal(simples.toLowerCase().includes(mot.toLowerCase()), false, mot);
   });
 });
+
+// L51 (décisions A31 c, A32 (2) ; « vérifier l'ensemble des textes de MW-b ») : les deux endroits du chat qui proposaient encore
+// le web disent vrai. Une demande web n'arrive plus qu'avec des règles d'une version précédente, et Internet reste fermé.
+describe("chat : carte d'une demande web et carte d'accueil d'un assistant (L51)", () => {
+  it("carte d'une demande webfetch ou websearch : « Internet est fermé : seul GitHub Copilot est joignable. Refusez cette demande. »", () => {
+    assert.equal(TEXTES.partout.demandeWeb, "Internet est fermé : seul GitHub Copilot est joignable. Refusez cette demande.");
+    const carte = code(read("web", "pages", "chat", "Interactions.tsx"));
+    assert.match(carte, /const WEB_PERMISSIONS: ReadonlySet<string> = new Set\(\["webfetch", "websearch"\]\);/);
+    assert.match(carte, /WEB_PERMISSIONS\.has\(request\.permission\) \? <p className="small">\{TEXTES_INTERNET\.partout\.demandeWeb\}<\/p> : null/);
+  });
+
+  it("carte d'accueil : plus « Internet sur demande » ; un assistant d'une version précédente « peut encore demander Internet, qui est fermé »", () => {
+    const accueil = code(read("web", "pages", "chat", "WelcomeCards.tsx"));
+    assert.equal(/Internet sur demande/.test(accueil), false);
+    assert.match(accueil, /web \? ` · \$\{TEXTES_INTERNET\.partout\.carteAncien\}` : ""/);
+    assert.equal(TEXTES.partout.carteAncien, "peut encore demander Internet, qui est fermé");
+  });
+});

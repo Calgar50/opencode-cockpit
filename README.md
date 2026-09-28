@@ -5,14 +5,14 @@ Poste de pilotage web pour [opencode](https://opencode.ai), conçu pour travaill
 - **Assistants** : un assistant par tâche (analyser un incident, relire un script avant mise en production, préparer une demande de changement pour le CAB…), avec des droits limités et une IA fixée. Catalogue prêt à l'emploi et création guidée en 5 écrans, sans jamais manipuler « agent », « skill » ni « modèle ».
 - **Niveaux d'IA** : Rapide, Équilibré, Expert, reliés aux IA disponibles sur votre compte Copilot, avec le coût estimé d'une demande affiché avant l'envoi.
 - **Chat** : réponses en direct, appels d'outils lisibles (commandes, diffs, travail délégué), autorisations à valider en un clic, `@fichier`, `/raccourci`, images. L'IA qui va répondre est affichée avant l'envoi.
-- **Travail en direct** (1.1, en préparation) : « Qui travaille ? » montre chaque assistant au travail pour votre demande, avec son état, sa durée et son coût ; **Arrêter** arrête toute la conversation, travail délégué compris ; **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier.
-- **Autonomie à la demande** (1.1, en préparation) : un sélecteur à quatre choix par conversation (demander à chaque fois, modifications automatiques, plan d'abord, autonome avec contrôle), des plafonds qui arrêtent le travail, et un **Journal du contrôle** qui dit, ligne par ligne, qui a décidé quoi et selon quelle règle.
-- **Salle Oh My OpenAgent** (1.1, en préparation, **livrée coupée**) : une demande confiée à l'extension Oh My OpenAgent, dans un conteneur à part, sur un réseau fermé sauf GitHub Copilot, bornée et arrêtée par le cockpit. Elle ne s'ouvre qu'au terme d'une procédure de mise en service (voir [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée)).
+- **Travail en direct** (1.1) : « Qui travaille ? » montre chaque assistant au travail pour votre demande, avec son état, sa durée et son coût ; **Arrêter** arrête toute la conversation, travail délégué compris ; **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier.
+- **Autonomie à la demande** (1.1) : un sélecteur à quatre choix par conversation (demander à chaque fois, modifications automatiques, plan d'abord, autonome avec contrôle), des plafonds qui arrêtent le travail, et un **Journal du contrôle** qui dit, ligne par ligne, qui a décidé quoi et selon quelle règle.
+- **Salle Oh My OpenAgent** (1.1, **livrée coupée**) : une demande confiée à l'extension Oh My OpenAgent, dans un conteneur à part, sur un réseau fermé sauf GitHub Copilot, bornée et arrêtée par le cockpit. Elle ne s'ouvre qu'au terme d'une procédure de mise en service (voir [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée)).
 - **Studio** (mode Avancé) : créer et régler les agents, skills, commandes et instructions (`AGENTS.md`), avec validation et retour arrière automatique.
 - **Archives** : chaque conversation est résumée, **classée automatiquement** (débogage, fonctionnalité, SQL, sécurité…), indexée en plein texte et exportée en Markdown dans un dossier rangé par catégorie.
 - **Coûts** : suivi en temps réel de la facturation Copilot au token face à votre budget mensuel, projection de fin de mois, alertes et garde-fou sur les modèles coûteux.
 
-Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles. Depuis la 1.0.6, opencode n'a plus aucun accès direct au réseau : sa seule sortie est le cockpit, qui ne laisse passer que GitHub Copilot et bloque tout le reste sur le poste (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)). La [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée), si elle est activée, sort par son propre proxy, `egress` : sa propre liste fermée, l'API Copilot seule, jamais `github.com`.
+Tout tourne en local dans Docker Desktop. Seul GitHub Copilot est contacté pour les modèles. Depuis la 1.0.6, opencode n'a plus aucun accès direct au réseau : sa seule sortie est le cockpit, qui ne laisse passer que GitHub Copilot et bloque tout le reste sur le poste (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)). La [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée), si elle est activée, sort par son propre proxy, `egress` : sa propre liste fermée, l'API Copilot seule, jamais `github.com`. Depuis la 1.1.0, l'assistant ne va plus sur Internet : les profils de droits refusent la consultation d'Internet, et la mise à jour ferme ces règles dans une installation existante (voir [Mettre à jour](#mettre-à-jour)).
 
 L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers de l'IA : règles d'utilisation à accepter au premier lancement, réglages risqués masqués. Le **mode Avancé** (Paramètres › Affichage) donne accès au Studio et aux réglages fins.
 
@@ -20,26 +20,47 @@ L'interface s'ouvre en **mode Simple**, pensé pour des collègues peu familiers
 
 ## Sommaire
 
-1. [Prérequis](#prérequis)
-2. [Installation](#installation)
-3. [Réseau d'entreprise : proxy et certificats](#réseau-dentreprise--proxy-et-certificats)
-4. [Connecter GitHub Copilot](#connecter-github-copilot)
-5. [Assistants et niveaux d'IA](#assistants-et-niveaux-dia)
-6. [Modes Simple et Avancé](#modes-simple-et-avancé)
-7. [Travail en direct, arrêt et Plan d'abord (1.1)](#travail-en-direct-arrêt-et-plan-dabord-11)
-8. [Autonomie : quatre choix, plafonds et Journal (1.1)](#autonomie--quatre-choix-plafonds-et-journal-11)
-9. [Ce qui échappe au contrôle : limites propres à opencode](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)
-10. [Salle Oh My OpenAgent (1.1, livrée coupée)](#salle-oh-my-openagent-11-livrée-coupée)
-11. [Salle de contrôle et « Revoir » (1.1)](#salle-de-contrôle-et--revoir--11)
-12. [Suivi des coûts](#suivi-des-coûts)
-13. [Classement et archives](#classement-et-archives)
-14. [Studio](#studio)
-15. [Commandes du quotidien](#commandes-du-quotidien)
-16. [Sécurité](#sécurité)
-17. [Dépannage](#dépannage)
-18. [Développement](#développement)
+1. [Nouveautés de la 1.1.0](#nouveautés-de-la-110)
+2. [Prérequis](#prérequis)
+3. [Installation](#installation)
+4. [Réseau d'entreprise : proxy et certificats](#réseau-dentreprise--proxy-et-certificats)
+5. [Connecter GitHub Copilot](#connecter-github-copilot)
+6. [Assistants et niveaux d'IA](#assistants-et-niveaux-dia)
+7. [Modes Simple et Avancé](#modes-simple-et-avancé)
+8. [Travail en direct, arrêt et Plan d'abord (1.1)](#travail-en-direct-arrêt-et-plan-dabord-11)
+9. [Autonomie : quatre choix, plafonds et Journal (1.1)](#autonomie--quatre-choix-plafonds-et-journal-11)
+10. [Fichiers (lecture seule) (1.1)](#fichiers-lecture-seule-11)
+11. [Ce qui échappe au contrôle : limites propres à opencode](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)
+12. [Salle Oh My OpenAgent (1.1, livrée coupée)](#salle-oh-my-openagent-11-livrée-coupée)
+13. [Salle de contrôle et « Revoir » (1.1)](#salle-de-contrôle-et--revoir--11)
+14. [Équipes et carte des assistants](#équipes-et-carte-des-assistants)
+15. [Construction, méthodes et Seconde lecture (1.1)](#construction-méthodes-et-seconde-lecture-11)
+16. [Suivi des coûts](#suivi-des-coûts)
+17. [Classement et archives](#classement-et-archives)
+18. [Studio](#studio)
+19. [Commandes du quotidien](#commandes-du-quotidien)
+20. [Sécurité](#sécurité)
+21. [Dépannage](#dépannage)
+22. [Développement](#développement)
+23. [Licence](#licence)
 
 ---
+
+## Nouveautés de la 1.1.0
+
+La 1.1.0 réunit les travaux du chantier 1.1. Chaque point renvoie à la section qui le décrit. Ce qui reste à vérifier sur GitHub Copilot réel est listé dans le récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
+
+- **Nouveau : voir qui travaille.** « Qui travaille ? », le Déroulé et la carte du travail en direct montrent chaque assistant au travail pour votre demande ; **Arrêter** arrête toute la conversation, travail délégué compris ; **Plan d'abord** fait écrire un plan dans une conversation qui ne peut rien modifier. Voir [Travail en direct, arrêt et Plan d'abord](#travail-en-direct-arrêt-et-plan-dabord-11).
+- **Autonomie à la demande** : quatre choix par conversation, des plafonds qui arrêtent le travail, et un Journal du contrôle qui dit qui a décidé quoi. Voir [Autonomie](#autonomie--quatre-choix-plafonds-et-journal-11) et [Ce qui échappe au contrôle](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode).
+- **Salle de contrôle et « Revoir »** : une vue d'ensemble du travail en cours, en 3D si le poste la dessine bien, en 2D sinon, et le rejeu d'une demande passée, sans rien relancer ni facturer. Voir [Salle de contrôle et « Revoir »](#salle-de-contrôle-et--revoir--11).
+- **Équipes et carte des assistants** : faire travailler plusieurs assistants sur une même demande, et voir qui peut faire travailler qui. Les équipes sont complètes en mode Avancé et **fermées en mode Simple**, jusqu'aux recettes d'accessibilité. Voir [Équipes et carte des assistants](#équipes-et-carte-des-assistants).
+- **Construction, méthodes et Seconde lecture** : rédaction et relecture, aiguillage, schéma modifiable (mode Avancé), méthodes attachées aux assistants, Seconde lecture par un autre assistant, chronologie d'une demande (mode Avancé), coûts et archives par équipe. Voir [Construction, méthodes et Seconde lecture](#construction-méthodes-et-seconde-lecture-11).
+- **Nouveau : l'onglet Fichiers, pour relire en lecture seule les fichiers de vos projets.** Rien n'y est modifié, rien n'y est envoyé à une IA. Voir [Fichiers (lecture seule)](#fichiers-lecture-seule-11).
+- **L'assistant ne va plus sur Internet.** Les profils de droits refusent la consultation d'Internet, la mise à jour ferme ces règles dans une installation existante, et **Paramètres › Sécurité** propose « Fermer l'accès à Internet » pour un profil d'une version précédente. Voir [Mettre à jour](#mettre-à-jour), paragraphe « Mise à jour vers la 1.1.0 ».
+- **Liste des demandes d'autorisation qui ne se bloque plus sur une demande web.** opencode 1.18.30 ne sait plus lister ses demandes quand l'une d'elles omet un réglage facultatif (une demande web, le plus souvent). Le cockpit tient alors sa propre liste à partir des événements d'opencode ; quand il n'en est pas sûr, il le dit et conseille de refuser la demande en cause.
+- **Salle Oh My OpenAgent, livrée coupée** : son code est dans la version, mais elle ne s'ouvre qu'au terme d'une procédure de mise en service. Voir [Salle Oh My OpenAgent](#salle-oh-my-openagent-11-livrée-coupée).
+- **Une annonce, une fois** : au premier affichage, dans le chat et dans **Assistants**, une annonce résume ces nouveautés, avec [Voir la carte] et [Compris]. En mode Simple, elle ne propose aucune équipe tant qu'elles y sont fermées.
+- **Rien d'autre ne change de nature** : mode Simple par défaut, GitHub Copilot seul, aucune dépendance nouvelle sauf la bibliothèque 3D, épinglée (voir [Licence](#licence)).
 
 ## Prérequis
 
@@ -174,6 +195,16 @@ Pour vérifier l'archive avant de la charger : `(Get-FileHash .\opencode-cockpit
 
 Dossier obtenu par ZIP : `update` affiche seulement un avertissement. Remplacez les fichiers par ceux de la nouvelle version, sans toucher à `.env`, `certs\`, `archives\` ni `backups\`, puis lancez `Unblock-File .\install.ps1, .\cockpit.ps1, .\CockpitTls.ps1` et relancez `.\install.ps1`.
 
+**Mise à jour vers la 1.1.0 :** l'assistant ne va plus sur Internet (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)).
+
+1. `.\cockpit.ps1 update`, comme d'habitude. Le mode d'accès ne change pas : une installation en HTTP local reste en HTTP, une installation en HTTPS reste en HTTPS, sans reconnexion. Le mot de passe interne d'opencode n'est renouvelé que si vous venez d'une version antérieure à la 1.0.6.
+2. **Internet est fermé tout seul pendant la mise à jour.** Les profils Prudent, Équilibré et Sans confirmation gardent leur nom ; seul l'accès à Internet passe à « refusé ». Pour des règles personnalisées, seules les valeurs « ask » de `webfetch` et `websearch` deviennent « deny ». Ce passage est **rejoué à chaque mise à jour et à chaque restauration** (`install.ps1`, `.\cockpit.ps1 restore`) : un « ask » remis à la main repassera à « deny ». L'ancien fichier est gardé à côté (`opencode.jsonc.avant-1.1.0`, dans le volume de configuration d'opencode, compris dans `.\cockpit.ps1 backup`). Les cas laissés tels quels sont annoncés par l'installateur ; **Paramètres › Sécurité** propose « Fermer l'accès à Internet ». Avec `-NoStart`, les règles ne sont mises à jour que si opencode est arrêté ; sinon l'installateur le dit : relancez `.\install.ps1` sans `-NoStart`.
+3. **Les assistants ne sont pas modifiés** : ceux qui avaient « Consulter Internet » sont signalés dans **Paramètres › Sécurité**, et les ouvrir puis **Enregistrer** ferme Internet pour eux.
+4. **Mode Load :** l'archive d'images de la 1.1.0 est obligatoire (`-Mode Load -ImagesArchive <archive>`). Avec les images 1.0.6, le script s'arrête avant toute modification.
+5. **Retour arrière :** voir `docs/NOTES-1.1.0.md`.
+
+En mode Avancé, **Paramètres › opencode** refuse désormais toute ouverture d'Internet que vous **introduisez** dans la configuration d'opencode, « ask » comme « allow », pour `webfetch` et `websearch`. Un « ask » déjà présent n'empêche pas d'enregistrer un autre réglage.
+
 **Mise à jour vers la 1.0.6 :** plus aucun appel vers un site autre que GitHub Copilot ne part vers le proxy de l'entreprise (voir [Ce qui sort, ce qui est bloqué](#ce-qui-sort-ce-qui-est-bloqué)).
 
 1. `.\cockpit.ps1 update`, comme d'habitude. Le mode d'accès ne change pas : une installation en HTTP local reste en HTTP, une installation en HTTPS reste en HTTPS. Aucune reconnexion n'est demandée.
@@ -200,7 +231,7 @@ Dossier obtenu par ZIP : `update` affiche seulement un avertissement. Remplacez 
 
 **Mise à jour depuis la 0.1.0, réglages à reprendre :**
 
-- **Permissions :** la configuration d'opencode n'est posée qu'au premier démarrage ; une mise à jour garde les anciennes règles, qui autorisaient d'office `git status`, `git diff`, `git log`, `git show`, `git branch` et `ls`. Ces commandes peuvent être détournées pour exécuter du code sans confirmation (voir [Sécurité](#sécurité)). Après la mise à jour : **Paramètres › Sécurité › Revenir au profil Prudent** (en mode Avancé : **Paramètres › opencode › Permissions globales › Prudent › Appliquer**). Les agents créés depuis les anciens modèles « relecteur sécurité » ou « architecte » gardent aussi leurs règles : passez leur shell à « demander » ou « refuser » dans le Studio (mode Avancé).
+- **Permissions :** la configuration d'opencode n'est posée qu'au premier démarrage ; une mise à jour garde les anciennes règles (exception : depuis la 1.1.0, les règles Internet sont mises à jour par `install.ps1` et `cockpit.ps1 restore`), qui autorisaient d'office `git status`, `git diff`, `git log`, `git show`, `git branch` et `ls`. Ces commandes peuvent être détournées pour exécuter du code sans confirmation (voir [Sécurité](#sécurité)). Après la mise à jour : **Paramètres › Sécurité › Revenir au profil Prudent** (en mode Avancé : **Paramètres › opencode › Permissions globales › Prudent › Appliquer**). Les agents créés depuis les anciens modèles « relecteur sécurité » ou « architecte » gardent aussi leurs règles : passez leur shell à « demander » ou « refuser » dans le Studio (mode Avancé).
 - **Mode d'installation :** il n'était pas mémorisé. Si `.env` désigne des images publiées, la mise à jour réutilise les images 0.1.0 déjà présentes et le signale. Lancez une fois `.\install.ps1 -Mode Pull`, ou `.\install.ps1 -Mode Load -ImagesArchive <archive de la dernière version>`.
 
 ## Réseau d'entreprise : proxy et certificats
@@ -315,7 +346,7 @@ L'interface parle de tâches, pas de technique :
   | Modifier un fichier | jamais | sur confirmation |
   | Lancer une commande | jamais | sur confirmation |
   | Déléguer à un autre assistant | jamais | jamais |
-  | Consulter Internet | jamais, ou sur confirmation si la case est cochée | idem |
+  | Consulter Internet | jamais : Internet est fermé (la case « Consulter Internet » n'existe plus depuis la 1.1.0) | idem |
   | Ouvrir une fiche | seulement les siennes | idem |
   | Lire un fichier de clés (`.pfx`, `.p12`, `.key`, `.jks`, `id_rsa`, kubeconfig…) | jamais ; `.env` sur confirmation | idem |
 
@@ -365,7 +396,7 @@ Chaque installation, mise à jour comprise, s'ouvre en **mode Simple**. On chang
 
 ## Travail en direct, arrêt et Plan d'abord (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà : voir qui travaille, arrêter tout le travail d'une conversation, faire écrire un plan qui ne peut rien modifier. Le sélecteur **Autonomie** propose aussi « Modifications automatiques » et « Autonome avec contrôle » : voir [Autonomie : quatre choix, plafonds et Journal](#autonomie--quatre-choix-plafonds-et-journal-11).
+> **Nouveau en 1.1.0.** Cette section décrit ce que son code contient déjà : voir qui travaille, arrêter tout le travail d'une conversation, faire écrire un plan qui ne peut rien modifier. Le sélecteur **Autonomie** propose aussi « Modifications automatiques » et « Autonome avec contrôle » : voir [Autonomie : quatre choix, plafonds et Journal](#autonomie--quatre-choix-plafonds-et-journal-11).
 
 ### Qui travaille ?
 
@@ -434,16 +465,18 @@ Le cockpit installe aussi ses propres outils dans opencode (classement des archi
 
 ## Autonomie : quatre choix, plafonds et Journal (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà. Plusieurs recettes sur une IA Copilot réelle restent à faire avant publication : elles sont listées dans `docs/RECAPITULATIF.md`, section « Limites et points à vérifier ».
+> **Nouveau en 1.1.0.** Cette section décrit ce que son code contient déjà. Plusieurs recettes sur une IA Copilot réelle restent à faire avant publication : elles sont listées dans `docs/RECAPITULATIF.md`, section « Limites et points à vérifier ».
 
 Le sélecteur **Autonomie** (à côté de « Envoyer », et dans l'en-tête) porte quatre choix. Le choix vaut pour **une conversation et tout son travail délégué**, jamais pour le cockpit entier, et il ne lève jamais un refus de l'assistant : ce que l'assistant refuse reste refusé.
 
 | Choix | Ce qui passe sans vous demander | Ce qui attend toujours votre accord |
 |---|---|---|
-| **Demander à chaque fois** (défaut) | rien | chaque modification, commande, accès web et travail délégué |
-| **Modifications automatiques** | modifier un fichier du dossier de la conversation, hors fichiers protégés | fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes, web (et travail délégué en mode Avancé) |
-| **Plan d'abord** | rien : les outils de modification et de commande sont retirés | web et travail délégué |
-| **Autonome avec contrôle** | modifications comme ci-dessus ; commandes de consultation ; commandes simples inconnues du cockpit, jugées par l'IA de contrôle ; travail délégué conforme, dans les plafonds | fichiers protégés, suppressions, fichiers hors du dossier, web, et toute commande qui exécute du code ou touche au réseau, à la production ou à git |
+| **Demander à chaque fois** (défaut) | rien | chaque modification, commande et travail délégué |
+| **Modifications automatiques** | modifier un fichier du dossier de la conversation, hors fichiers protégés | fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes (et travail délégué en mode Avancé) |
+| **Plan d'abord** | rien : les outils de modification et de commande sont retirés | travail délégué |
+| **Autonome avec contrôle** | modifications comme ci-dessus ; commandes de consultation ; commandes simples inconnues du cockpit, jugées par l'IA de contrôle ; travail délégué conforme, dans les plafonds | fichiers protégés, suppressions, fichiers hors du dossier, et toute commande qui exécute du code ou touche au réseau, à la production ou à git |
+
+- **Internet reste fermé dans les quatre choix** (1.1.0) : les profils de droits refusent `webfetch` et `websearch`, et le relais du cockpit n'ouvre que GitHub Copilot. Une demande d'accès à Internet n'arrive plus qu'avec des règles d'une version précédente : elle attend votre accord (dans un choix automatique, avec la règle « Accès à Internet (fermé : seul GitHub Copilot est joignable) »), et sa carte dit « Internet est fermé : seul GitHub Copilot est joignable. Refusez cette demande. ». Refusez-la.
 
 - **Les deux modes ont les mêmes quatre choix.** Seul change le sort d'un travail délégué que le cockpit ne peut pas laisser passer : refusé automatiquement en mode Simple, votre accord en mode Avancé.
 - **Confirmation avant de relâcher.** Resserrer le choix est immédiat. Les deux choix automatiques demandent une confirmation à **chaque fois qu'on relâche le choix** — choix plus permissif, ou plafond relevé —, « Modifications automatiques » comme « Autonome avec contrôle » : le cockpit ne garde pas de trace d'une confirmation déjà donnée. La fenêtre dit ce qui passera sans vous demander, ce qui attendra toujours votre accord, ce qui reste refusé, le montant de l'arrêt automatique, et que certaines actions d'opencode ne passent par aucune demande (voir [Ce qui échappe au contrôle](#ce-qui-échappe-au-contrôle--limites-propres-à-opencode)). Les plafonds y sont modifiables.
@@ -506,7 +539,7 @@ Le plafond de coût est une borne appliquée par un arrêt, pas une garantie de 
 <!-- nav:fichiers -->
 ## Fichiers (lecture seule) (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit l'onglet **Fichiers**, tel que son code le contient déjà.
+> **Nouveau en 1.1.0.** Cette section décrit l'onglet **Fichiers**, tel que son code le contient déjà.
 
 L'onglet **Fichiers** sert à relire les fichiers de vos projets sans quitter le cockpit : le script que l'IA vient d'écrire, un journal, un fichier de configuration. **Rien n'y est modifié, rien n'y est envoyé à une IA, et rien n'y est facturé.**
 
@@ -571,7 +604,7 @@ Ces limites viennent d'opencode 1.18.30, pas du cockpit, et la configuration ne 
 <!-- [salle] début : Salle Oh My OpenAgent (DOC-OMO, itération 2 ter) -->
 ## Salle Oh My OpenAgent (1.1, livrée coupée)
 
-> **Version 1.1 en préparation, non publiée. La salle y est livrée coupée, et aucun réglage de `.env` ne l'ouvre.** Cette section dit ce que son code contient, comment elle s'installe et ce qu'elle ne protège pas. Elle ne servira qu'au terme de la [procédure de mise en service](docs/RECAPITULATIF.md#mettre-la-salle-oh-my-openagent-en-service-11-non-publiée). Les phrases de l'interface citées ici entre « » sont celles de `app/server/shared/omo-room-texts.ts`, à la lettre. L'état des portes, ce qui est prouvé sur le banc ou seulement par les tests, les recettes en attente et les écarts avec la spécification sont dans le récapitulatif : [portes et preuves](docs/RECAPITULATIF.md#chantier-11-salle-oh-my-openagent--portes-et-preuves-non-publiée), [recettes, errata et limites](docs/RECAPITULATIF.md#salle-oh-my-openagent--recettes-en-attente-errata-et-limites-non-publiée).
+> **Nouveau en 1.1.0. La salle y est livrée coupée, et aucun réglage de `.env` ne l'ouvre.** Cette section dit ce que son code contient, comment elle s'installe et ce qu'elle ne protège pas. Elle ne servira qu'au terme de la [procédure de mise en service](docs/RECAPITULATIF.md#mettre-la-salle-oh-my-openagent-en-service-11-non-publiée). Les phrases de l'interface citées ici entre « » sont celles de `app/server/shared/omo-room-texts.ts`, à la lettre. L'état des portes, ce qui est prouvé sur le banc ou seulement par les tests, les recettes en attente et les écarts avec la spécification sont dans le récapitulatif : [portes et preuves](docs/RECAPITULATIF.md#chantier-11-salle-oh-my-openagent--portes-et-preuves-non-publiée), [recettes, errata et limites](docs/RECAPITULATIF.md#salle-oh-my-openagent--recettes-en-attente-errata-et-limites-non-publiée).
 
 La **Salle OMO** confie une demande à l'extension **Oh My OpenAgent 4.19.4**, qui enchaîne le travail seule : elle est faite pour déléguer, relancer et résumer sans vous demander (au banc, sa délégation échoue encore dans la salle : voir les [limites](#limites-dites-franchement)). Elle tourne dans une seconde instance d'opencode, le conteneur `opencode-omo`, sur un réseau fermé dont la seule sortie mène à GitHub Copilot. Elle est réservée au mode Avancé ; en mode Simple, le cockpit répond « La Salle OMO est réservée au mode Avancé. ». L'instance principale n'en dépend pas : une salle absente, coupée ou arrêtée ne change rien au reste du cockpit.
 
@@ -681,7 +714,7 @@ Après une entrée de premier niveau supprimée, renommée ou remplacée par un 
 
 ## Salle de contrôle et « Revoir » (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que son code contient déjà. Ces deux vues ne font que **lire** ce que le cockpit a déjà enregistré : aucune IA n'est appelée, aucune conversation n'est modifiée, et le bandeau de « Revoir » le rappelle en permanence : « Revoir : rien n'est relancé ni facturé ».
+> **Nouveau en 1.1.0.** Cette section décrit ce que son code contient déjà. Ces deux vues ne font que **lire** ce que le cockpit a déjà enregistré : aucune IA n'est appelée, aucune conversation n'est modifiée, et le bandeau de « Revoir » le rappelle en permanence : « Revoir : rien n'est relancé ni facturé ».
 
 ### La salle de contrôle
 
@@ -756,7 +789,7 @@ La 3D est dessinée par **three.js 0.186.0** (licence MIT), la seule bibliothèq
 
 ## Équipes et carte des assistants
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que le code du chantier contient déjà : faire travailler plusieurs assistants sur une même demande (**une équipe**), et voir sur une **carte** qui peut faire travailler qui. Les équipes s'utilisent aujourd'hui en **mode Avancé** ; en mode Simple, elles ne sont pas encore proposées : voir « Équipes en mode Simple » plus bas. La carte des assistants, elle, est ouverte dans les deux modes.
+> **Nouveau en 1.1.0.** Cette section décrit ce que le code du chantier contient déjà : faire travailler plusieurs assistants sur une même demande (**une équipe**), et voir sur une **carte** qui peut faire travailler qui. Les équipes s'utilisent aujourd'hui en **mode Avancé** ; en mode Simple, elles ne sont pas encore proposées : voir « Équipes en mode Simple » plus bas. La carte des assistants, elle, est ouverte dans les deux modes.
 
 Les phrases entre guillemets de cette section sont celles de l'interface. Elles sont écrites dans `app/server/shared/team-texts.ts` (équipes) et dans `app/server/shared/agent-map-texts.ts` (carte des assistants) ; l'avis affiché quand l'IA veut déléguer est dans `app/server/shared/delegation-texts.ts`.
 
@@ -777,7 +810,7 @@ Les phrases entre guillemets de cette section sont celles de l'interface. Elles 
 
 Bornes d'une équipe : 5 blocs de travail au maximum, 12 étapes, 2 à 5 avis par bloc d'avis, 4 000 caractères de consigne par étape, 20 fichiers joints par lancement (`app/server/shared/team-limits.ts`).
 
-Deux formes prévues par la conception, la rédaction suivie d'une relecture en deux tours, et l'aiguillage, **ne sont pas dans cette version** : elles arrivent à l'itération suivante du chantier.
+Deux formes prévues par la conception, la rédaction suivie d'une relecture en deux tours, et l'aiguillage, sont arrivées avec la construction : voir [Construction, méthodes et Seconde lecture](#construction-méthodes-et-seconde-lecture-11).
 
 ### Ce qu'une étape peut faire : lire, rien d'autre
 
@@ -855,13 +888,14 @@ L'ouverture tient en **une ligne** du code (`app/server/wiring-eq.ts`), posée a
 - **Une recherche peut afficher une ligne d'un fichier de clés.** Une étape ne peut pas ouvrir ces fichiers, mais un `grep` dans le projet peut en montrer une ligne : c'est dit tel quel dans l'interface.
 - **L'estimation est faite par profils de taille**, pas sur votre demande réelle, jusqu'à ce que le cockpit ait assez de lancements pour prendre votre moyenne. Seul le plafond d'arrêt est une borne.
 - **Une étape ne relit pas une sortie trop longue : demandez-lui de chercher plus précisément.** Mesuré hors ligne sur opencode 1.18.30 : une recherche s'arrête d'elle-même à 100 correspondances, un fichier se lit par morceaux d'environ 50 Ko, et les sorties complètes qu'opencode enregistre pour les conversations sont **refusées** à une étape. Des recherches précises donnent de meilleurs avis que des recherches larges.
+- **Un assistant aux règles personnalisées sans ligne pour le web ne peut pas être une étape.** Une configuration personnalisée sans clé `webfetch` (ou `websearch`) reste refusée comme étape d'équipe par le contrôle « internet » : opencode autorise ces outils par défaut, et la mise à jour vers la 1.1.0 n'ajoute aucune clé. Ajoutez `"webfetch": "deny"` et `"websearch": "deny"` pour qu'un assistant passe.
 - Le comportement sur GitHub Copilot réel (messages ajoutés sans réponse, limites de débit, facturation d'un appel interrompu) reste à vérifier : voir les recettes en attente du récapitulatif ([Limites et points à vérifier](docs/RECAPITULATIF.md#11-limites-et-points-à-vérifier)).
 <!-- équipes (it4) : fin -->
 
 <!-- c5:construction -->
 ## Construction, méthodes et Seconde lecture (1.1)
 
-> **Version 1.1 en préparation, non publiée.** Cette section décrit ce que le code du chantier contient déjà : les **méthodes** (des façons de répondre, attachées à un assistant, à un message ou à une étape d'équipe), la **Seconde lecture** d'une réponse par un autre assistant, deux formes d'équipe de plus (**rédaction et relecture**, **aiguillage**), le **schéma modifiable**, la **chronologie** d'une demande, les **coûts et les archives par équipe**, la **vue d'ensemble** de la carte des assistants et une **démonstration** d'équipe. Les méthodes et la Seconde lecture sont ouvertes dans les deux modes ; ce qui touche aux équipes suit la règle de la section précédente et s'utilise en **mode Avancé**.
+> **Nouveau en 1.1.0.** Cette section décrit ce que le code du chantier contient déjà : les **méthodes** (des façons de répondre, attachées à un assistant, à un message ou à une étape d'équipe), la **Seconde lecture** d'une réponse par un autre assistant, deux formes d'équipe de plus (**rédaction et relecture**, **aiguillage**), le **schéma modifiable**, la **chronologie** d'une demande, les **coûts et les archives par équipe**, la **vue d'ensemble** de la carte des assistants et une **démonstration** d'équipe. Les méthodes et la Seconde lecture sont ouvertes dans les deux modes ; ce qui touche aux équipes suit la règle de la section précédente et s'utilise en **mode Avancé**.
 
 Les phrases entre guillemets de cette section sont celles de l'interface. Elles sont écrites dans `app/server/shared/construction-texts.ts` ; celles des équipes elles-mêmes restent dans `app/server/shared/team-texts.ts` (voir [Équipes et carte des assistants](#équipes-et-carte-des-assistants)), et les titres des méthodes et des assistants viennent de leurs catalogues (`app/server/methods-catalogue.ts`, `app/server/assistants-catalogue.ts`).
 
@@ -1056,9 +1090,11 @@ flowchart LR
   - dans une `/commande`, un texte contenant à la fois « ! » et un accent grave (syntaxe ``!`commande` ``) et les références `@fichier` qui sortiraient du workspace (résolues comme le fait opencode) sont refusés, car opencode les exécuterait ou les lirait sans demander d'autorisation.
 - **Conteneurs :** utilisateurs non-root, `cap_drop: ALL`, `no-new-privileges`, cockpit en système de fichiers en lecture seule, **aucun accès au socket Docker** (le redémarrage d'opencode passe par un fichier de contrôle).
 - **Configuration opencode par défaut (profil « Prudent », installations neuves ; après une mise à jour depuis la 0.1.0, voir [Mettre à jour](#mettre-à-jour)) :**
-  - confirmation avant chaque modification de fichier par les outils d'édition, chaque commande shell de l'agent, chaque lancement de sous-agent par l'agent (avec sa consigne affichée) et chaque accès web ;
+  - confirmation avant chaque modification de fichier par les outils d'édition, chaque commande shell de l'agent et chaque lancement de sous-agent par l'agent (avec sa consigne affichée) ;
+  - **aucun accès web** : `webfetch` et `websearch` sont refusés (1.1.0) ;
   - aucune commande shell autorisée d'office, à part `pwd` ;
   - partage désactivé, mises à jour automatiques désactivées, téléchargements de serveurs de langage désactivés.
+- **Internet fermé (1.1.0) :** les trois profils de droits refusent `webfetch` et `websearch` ; l'assistant de création n'a plus de case « Consulter Internet » ; le Studio ne propose plus que « Refuser » pour ces deux outils (« Hérité » seulement quand la règle générale les refuse) ; **Paramètres › opencode** refuse toute ouverture web introduite, « ask » comme « allow », sans jamais refuser « Revenir au profil Prudent », « Fermer l'accès à Internet » ni la mise à jour de l'IA des assistants. La mise à jour et la restauration ferment les règles Internet d'une installation existante ([Mettre à jour](#mettre-à-jour)) ; ce qui reste est signalé dans **Paramètres › Sécurité** et dans **Diagnostic**. Depuis la 1.0.6, le relais du cockpit n'ouvre de toute façon que GitHub Copilot.
 - **Limites propres à opencode**, que la configuration ne peut pas corriger :
   - le contrôle des commandes shell ne voit ni les affectations de variables (`export GIT_CONFIG_...; git status` suffit à faire exécuter du code), ni une redirection seule (`> fichier` vide ou crée un fichier sans confirmation) ;
   - les lignes ``!`commande` `` écrites dans une commande du Studio s'exécutent à chaque lancement sans confirmation (les modèles `commit`, `revue` et `description-pr` lancent ainsi `git diff` ou `git log`) ;
@@ -1138,6 +1174,9 @@ flowchart LR
 | « Action réservée au mode Avancé (Paramètres › Affichage). » | Normal en mode Simple. Passez en mode Avancé dans **Paramètres › Affichage** si vous en avez besoin. |
 | L'IA d'un assistant n'est plus disponible, rien n'a été envoyé | L'IA enregistrée dans l'assistant a disparu de votre compte Copilot : **Paramètres › Niveaux d'IA › Mettre à jour**, ou modifiez l'assistant dans la page **Assistants**. |
 | « Seules les IA GitHub Copilot sont autorisées dans ce cockpit. » | La demande visait un autre fournisseur : choisissez une IA Copilot. |
+| « Internet est fermé : « ask » et « allow » ne sont plus acceptés pour webfetch et websearch (…) » (1.1.0, mode Avancé) | Vous avez introduit une ouverture d'Internet dans la configuration d'opencode : mettez « deny ». Un « ask » déjà présent n'empêche pas d'enregistrer un autre réglage. |
+| Une demande « consulter une page web » ou « faire une recherche sur le web » attend votre accord (1.1.0) | « Internet est fermé : seul GitHub Copilot est joignable. Refusez cette demande. » Pour qu'elle ne revienne pas : **Paramètres › Sécurité › Fermer l'accès à Internet**, ou ouvrez l'assistant signalé, puis **Enregistrer**. |
+| « Liste des demandes d'autorisation illisible… » ou « … une demande web en attente l'en empêche. Refusez-la, puis rechargez. » (1.1.0) | opencode 1.18.30 ne sait plus lister ses demandes à cause d'une demande en attente : refusez la demande désignée, puis rechargez la page. |
 | Bandeau rouge « Mode test » | `COCKPIT_ALLOWED_PROVIDERS` autorise un autre fournisseur que Copilot : retirez la ligne de `.env`, puis `.\cockpit.ps1 restart`. |
 
 ### Message affiché par un script → commande à lancer
@@ -1154,6 +1193,8 @@ Les scripts s'arrêtent ou avertissent en affichant toujours la marche à suivre
 | « Le jeton de .env n'a pas le format genere par install.ps1 » | Le jeton a été remplacé à la main : la vérification est impossible. | `.\install.ps1` (nouveau jeton, reconnexion nécessaire). |
 | « Voie de secours : petite classe .NET compilee par PowerShell » | `curl.exe` est absent ou trop ancien ; l'antivirus peut le signaler. | Rien de particulier. Pour l'éviter : installer le `curl.exe` de Windows (7.60 ou plus récent). |
 | « Aucune voie de verification utilisable » | Le script ne peut pas vérifier le cockpit : il n'ouvre donc aucune page. | En HTTPS : ouvrir l'adresse à la main et comparer l'empreinte affichée. En HTTP local : `.\cockpit.ps1 diag`. |
+| « Passage a la 1.1.0 : l'assistant ne va plus sur Internet », puis « [!] Regles Internet laissees telles quelles (…) » | La mise à jour n'a pas pu fermer les règles Internet de la configuration d'opencode ; la raison est entre parenthèses, et rien n'a été écrit. | Suivre le conseil affiché : **Paramètres › Sécurité › Fermer l'accès à Internet**, ou, en mode Avancé, **Paramètres › opencode** (`webfetch` et `websearch` à `deny`). |
+| « [!] Regles Internet non mises a jour : opencode est en marche » (`-NoStart`) | opencode tournait pendant `install.ps1 -NoStart` : les règles Internet n'ont pas été mises à jour. | Relancer `.\install.ps1` sans `-NoStart` ; en attendant, **Paramètres › Sécurité**. |
 | « Mise a jour inachevee » | Les scripts sont dans la nouvelle version, les conteneurs dans l'ancienne, **qui fonctionne toujours**. | Ouvrir le cockpit avec votre ancien favori, puis terminer : `.\install.ps1` (ou `.\install.ps1 -Http`). Pour revenir : `.\cockpit.ps1 rollback`. |
 | « Le cockpit en marche ne sert pas le mode inscrit dans .env » | Une variable de votre shell ou un fichier `docker-compose.override.yml` a pris le dessus lors d'un démarrage lancé à la main. | `.\cockpit.ps1 restart`. Le message nomme la variable ou le fichier en cause : supprimez-le pour vos propres commandes docker. |
 | « Retour impossible : … » | `rollback` refuse d'agir, et n'a rien modifié. | Faire ce que le message indique (enregistrer vos fichiers, récupérer l'étiquette, charger l'archive…), puis relancer. |
@@ -1189,7 +1230,7 @@ Publier une version : mettre à jour `VERSION`, puis pousser le tag `vX.Y.Z`. La
 - `--reel-hors-ligne` : vrai opencode 1.18.30 et faux fournisseur d'IA, aucun appel facturé ;
 - `--reel` : IA réelle, appels facturés, jamais lancé automatiquement.
 
-Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'itération 1 (`--scenarios 'it1-api-*'`) vérifient par l'API le refus des fichiers de clés, sa transmission au travail délégué, « Arrêter », le titre et l'archive, et « Plan d'abord » ; ceux de l'itération 2 (`--scenarios 'it2-*'`) jouent l'autonomie : modification automatique dans le dossier, attente sur un fichier protégé, `grep` automatique, `git status` sur un dépôt piégé, travail délégué automatique sous plafond, arrêt au plafond, plan exécuté en autonome, onglet fermé pendant une demande, et `COCKPIT_AUTONOMY=off`. Le banc sert le cockpit **en HTTP** tant que la 1.0.5 n'est pas intégrée dans la 1.1 ; il passera alors en HTTPS épinglé. Mode d'emploi : [`e2e/README.md`](e2e/README.md).
+Le code de sortie est le nombre de scénarios en échec. Les scénarios de l'itération 1 (`--scenarios 'it1-api-*'`) vérifient par l'API le refus des fichiers de clés, sa transmission au travail délégué, « Arrêter », le titre et l'archive, et « Plan d'abord » ; ceux de l'itération 2 (`--scenarios 'it2-*'`) jouent l'autonomie : modification automatique dans le dossier, attente sur un fichier protégé, `grep` automatique, `git status` sur un dépôt piégé, travail délégué automatique sous plafond, arrêt au plafond, plan exécuté en autonome, onglet fermé pendant une demande, et `COCKPIT_AUTONOMY=off`. Le banc sert le cockpit en **HTTPS épinglé**, comme une installation réelle (`--http` garde le mode HTTP explicite). Mode d'emploi : [`e2e/README.md`](e2e/README.md).
 
 ## Licence
 

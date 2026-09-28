@@ -656,6 +656,25 @@ describe("textes des équipes : reprise d'une pause après un redémarrage du co
 });
 // </c5:reprise-redemarrage>
 
+// L51 (décision A20 ; plan it5 §13.2, ligne « Rien n'a été envoyé ni facturé » (choix invalide)) : la phrase n'est écrite que
+// parce qu'elle est vraie, le 409 étant rendu avant toute écriture et toute requête (team-runner-relecture-aiguillage.test.ts et
+// croisements-c5b-v2.test.ts : aucune requête au faux opencode pendant le refus). La carte de choix affiche le message de la route.
+describe("textes des équipes : choix invalide et assistant qui ne refuse pas Internet (L51)", () => {
+  it("choix-invalide : dit quoi faire, puis « Rien n'a été envoyé ni facturé. », une seule fois (A20)", () => {
+    const phrase = equipes.phraseErreur("choix-invalide");
+    assert.ok(phrase.startsWith("Ce choix de spécialistes ne correspond plus à la liste proposée : rouvrez la carte et choisissez de nouveau."), phrase);
+    assert.ok(phrase.endsWith(E.honnetete.rienEnvoye), phrase);
+    assert.equal(phrase.split(E.honnetete.rienEnvoye).length, 2, "phrase répétée");
+    assert.equal(equipes.refusLancement("choix-invalide"), phrase, "le refus ne l'ajoute pas une seconde fois");
+  });
+
+  it("assistant dont les règles ne refusent pas le web : la raison ne dit plus qu'il « consulte Internet » (Internet est fermé)", () => {
+    assert.equal(E.problemes.internet, "Les règles de cet assistant ne refusent pas Internet : il ne peut pas être une étape.");
+    assert.equal(E.editeur.indisponibles.internet, "ne refuse pas Internet");
+    for (const texte of [E.problemes.internet, E.editeur.indisponibles.internet]) assert.doesNotMatch(texte, /consulte Internet/, texte);
+  });
+});
+
 describe("textes des équipes et de la carte : modules", () => {
   it("imports de types seulement, rien d'autre exporté que TEXTES et des fonctions", async () => {
     for (const fichier of ["team-texts.ts", "agent-map-texts.ts"]) {

@@ -935,6 +935,9 @@ describe("exécution 5b : aiguillage, votre choix seul (spéc. §4.11 l.772)", (
     // Le code sort EN CLAIR depuis le train de la vague 2 (demande de contrat de ce paquet, plan it5 §2.4).
     assert.equal(refus.json<{ error: string }>().error, "choix-invalide");
     assert.equal(h.fake.requests.length, avant, "rien n'a été envoyé ni facturé");
+    // L51 (A20) : la phrase que la carte affiche le dit, et c'est vrai (aucune requête ci-dessus).
+    assert.equal(refus.json<{ message: string }>().message, TEXTES.partout.erreurs["choix-invalide"]);
+    assert.ok(refus.json<{ message: string }>().message.endsWith(TEXTES.partout.honnetete.rienEnvoye));
     assert.equal(ctx.view(runId).state, "attente-choix", "la pause tient");
 
     // Trop de choix pour ce bloc : refusé par la route sur la borne générale (400), sans atteindre le runner.

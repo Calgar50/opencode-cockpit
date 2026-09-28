@@ -1263,7 +1263,13 @@ export function rightLines(rules: readonly Rule[], fiches: readonly string[] = [
       id: "internet",
       permission: "webfetch",
       action: web,
-      texts: { allow: "Consulte Internet sans demander", ask: "Demande avant de consulter Internet", deny: "N'accède pas à Internet" },
+      // L51 (A31 c, A32 (2)) : une règle « ask » ou « allow » du web ne vient plus que d'une version précédente ; Internet reste
+      // fermé (relais de la 1.0.6, egress-policy.ts), la ligne le dit au conditionnel.
+      texts: {
+        allow: "Consulterait Internet sans demander ; Internet est fermé",
+        ask: "Demanderait avant de consulter Internet ; Internet est fermé",
+        deny: "N'accède pas à Internet",
+      },
       dangerOnAllow: true,
     },
     {
