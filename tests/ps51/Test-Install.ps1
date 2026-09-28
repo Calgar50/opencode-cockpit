@@ -647,7 +647,11 @@ try {
         # 1.1.0 (D1) : nom complet, IPv4 (y compris ecrite en un seul nombre) et IPv6 : gardes tels quels, aucune question au DNS.
         @{ Proxy = 'http://10.20.30.40:8080'; Scheme = '' },
         @{ Proxy = 'http://2130706433:8080'; Scheme = '' },
-        @{ Proxy = 'http://[fd00::1]:8080'; Scheme = '' })
+        @{ Proxy = 'http://[fd00::1]:8080'; Scheme = '' },
+        # localhost (toute casse) et IPv4 ecrite en hexadecimal : ni point ni nom court, aucune question au DNS.
+        @{ Proxy = 'http://localhost:3128'; Scheme = '' },
+        @{ Proxy = 'http://LocalHost:3128'; Scheme = '' },
+        @{ Proxy = 'http://0x7f000001:8080'; Scheme = '' })
     foreach ($case in $proxyCases) {
         Reset-Root $proxyEnv
         $journal = Set-InstallDockerScenario $Work 'proxy-schema' (New-InstallDockerRules $CertFile $JsonFile)
@@ -769,6 +773,35 @@ try {
     Assert-Test 'mise a jour 1.0.6 a nom court non developpable : cockpit actuel en marche, commande, ni start ni restart d ici la' ($result.Host.Contains('votre cockpit actuel continue de tourner') -and
         $result.Host.Contains($CommandeNomComplet) -and $result.Host.Contains(('Apres .\cockpit.ps1 update (scripts deja en {0}), cette commande termine la mise a jour.' -f $Version)) -and
         $result.Host.Contains('ni restart : le cockpit, recree avec la protection de la 1.1.0, ne resoudrait plus ce nom et GitHub Copilot tomberait.')) $result.Host
+    Assert-Test 'mise a jour 1.0.6 a nom court non developpable, mode Build : aucune ligne du mode Load' (-not $result.Host.Contains('Mode Load')) $result.Host
+
+    # Mode Load : la relance doit redonner l'archive des images ; le message d'arret le dit, groupe avec celui du mode Load.
+    $LigneLoad = ('    Mode Load : ajoutez -Mode Load -ImagesArchive <opencode-cockpit-images-{0}.tar.gz>' -f $Version)
+    $env106CourtLoad = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) '1.0.6' 'Load'
+    $env106CourtLoad['HTTP_PROXY'] = 'http://proxy:8080'
+    $env106CourtLoad['HTTPS_PROXY'] = 'http://proxy:8080'
+    $env106CourtLoad['COCKPIT_PROXY_MODE'] = 'manual'
+    Reset-Root $env106CourtLoad
+    $before = Get-EnvFingerprint $Root
+    $journal = Set-InstallDockerScenario $Work 'maj-106-court-load' (New-InstallDockerRules $CertFile $JsonFile '1.0.6')
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    $calls = @(Get-DockerCalls $journal)
+    Assert-Test 'mise a jour 1.0.6 Load a nom court non developpable : un seul arret A19, message du mode Load et du proxy' ($result.Error -ceq $CockpitA19 -and
+        $result.Host.Contains('Mode Load : image opencode-cockpit/app:local en version 1.0.6, version 1.1.0 requise') -and $result.Host.Contains("[!] Proxy 'proxy' donne par un nom court") -and
+        $result.Host.Contains($CommandeNomComplet) -and $result.Host.Contains($LigneLoad)) $result.Host
+    Assert-Test 'mise a jour 1.0.6 Load a nom court non developpable : .env identique, aucune question, aucune ecriture docker' ((Get-EnvFingerprint $Root) -ceq $before -and $result.ReadHostCalls.Count -eq 0 -and
+        @($calls | Where-Object { (@($_.args) -join ' ') -cmatch '^(compose .* (up|stop)|run|load) ' }).Count -eq 0) (@($calls | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ')
+
+    Reset-Root $env106CourtLoad
+    $before = Get-EnvFingerprint $Root
+    $archive110 = Join-Path $Work ('opencode-cockpit-images-{0}.tar.gz' -f $Version)
+    [System.IO.File]::WriteAllText($archive110, 'archive factice')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-court-load-archive' (New-InstallDockerRules $CertFile $JsonFile '1.0.6')
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Mode = 'Load'; ImagesArchive = $archive110 }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    $calls = @(Get-DockerCalls $journal)
+    Assert-Test 'mode Load avec archive, nom court non developpable : arret A19 avant le chargement, archive a redonner' ($result.Error -ceq $CockpitA19 -and
+        $result.Host.Contains($CommandeNomComplet) -and $result.Host.Contains($LigneLoad) -and (Get-EnvFingerprint $Root) -ceq $before -and
+        @($calls | Where-Object { @($_.args)[0] -ceq 'load' }).Count -eq 0) (@($calls | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ')
 
     Write-Section '1.1.0 : Docker Compose 2.8 ou plus recent (up --pull never --no-build)'
     foreach ($case in @(@{ V = '2.7.1'; Ok = $false }, @{ V = 'v2.8.0'; Ok = $true }, @{ V = '2.29.1-desktop.1'; Ok = $true })) {

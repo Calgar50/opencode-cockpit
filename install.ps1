@@ -1007,6 +1007,8 @@ if ($detectedProxy) {
             else { $proxyLines += "    Rien n'a ete modifie : .env, images et conteneurs sont inchanges ; votre cockpit actuel continue de tourner." }
             $proxyLines += @("    Relancez avec le nom complet du proxy (a demander a l'informatique) ou son adresse IP :",
                 '        .\install.ps1 -Proxy http://<nom.complet>:<port>')
+            # Mode Load : l'archive des images est a redonner a la relance (images absentes ou trop anciennes, ou archive donnee ici).
+            if ($Mode -ceq 'Load' -and ($ImagesArchive -or $loadProblem)) { $proxyLines += ('    Mode Load : ajoutez -Mode Load -ImagesArchive <opencode-cockpit-images-{0}.tar.gz>' -f $Version) }
             if (-not $isNew) {
                 $proxyLines += @(("    Apres .\cockpit.ps1 update (scripts deja en {0}), cette commande termine la mise a jour. D'ici la, ni .\cockpit.ps1 start" -f $Version),
                     '    ni restart : le cockpit, recree avec la protection de la 1.1.0, ne resoudrait plus ce nom et GitHub Copilot tomberait.')
