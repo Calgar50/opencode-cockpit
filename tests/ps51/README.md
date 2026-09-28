@@ -115,6 +115,7 @@ Charger par dot-sourcing dans la portée qui appelle le script testé (par exemp
 - `Start-Process` : consigné dans `$SpyState.StartProcessCalls` (`FilePath`, `ArgumentList`), jamais affiché.
 - `Get-ItemProperty`, `Test-Path` : clés `HKLM|HKCU:\SOFTWARE\Policies\...` simulées par `Set-SpyPolicy -Hive HKLM -Browser Edge|Chrome -Name <valeur> -Value <v> [-Origins @(...)]` ; lectures dans `$SpyState.PolicyReads` ; tout autre chemin est délégué à `Microsoft.PowerShell.Management\...`.
 - `Hide-SpyPath <fichier>` : `Test-Path` rend `$false` pour ce fichier (par exemple `curl.exe` de `System32`, pour faire passer les scripts par la voie sans curl sans toucher au poste).
+- `Resolve-DnsName` (1.1.0, nom court du proxy développé par `install.ps1`) : réponses prévues par `Set-SpyDnsAnswer 'proxy' @('proxy.banque.example')`, rendues en section `Answer` dans l'ordre (`'Authority:<nom>'` pour la section `Authority`) ; appels dans `$SpyState.DnsCalls` (`Name`, `DnsOnly`) ; un nom sans réponse prévue lève l'erreur d'un nom inexistant. Le banc ne fait jamais de vraie requête DNS.
 - `Reset-SpyState` vide l'état.
 - Vérifié par `Test-CockpitTls.ps1` : les espions restent actifs dans un script appelé par `&` qui a son propre `param` et `Set-StrictMode`, et disparaissent à la sortie de la fonction qui les a chargés.
 

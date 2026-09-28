@@ -264,6 +264,51 @@ function Get-SystemProxy {
     return $null
 }
 
+# Adresse du proxy decoupee sans jamais lire les identifiants : debut (schema et identifiants@), hote, fin (port et chemin).
+function Split-ProxyUrl([string]$Url) {
+    $scheme = ''
+    if ($Url -match '^[A-Za-z][A-Za-z0-9+.-]*://') { $scheme = $Matches[0] }
+    $rest = $Url.Substring($scheme.Length)
+    $authority = $rest.Split('/')[0]
+    $at = $authority.LastIndexOf('@')
+    $hostPort = $authority.Substring($at + 1)
+    $hostName = $hostPort -replace ':\d*$', ''
+    return [pscustomobject]@{ Prefix = $scheme + $authority.Substring(0, $at + 1); Host = $hostName
+        Suffix = $hostPort.Substring($hostName.Length) + $rest.Substring($authority.Length) }
+}
+
+# Nom court : ni point, ni adresse IP (v6 entre crochets, v4 ecrite en un seul nombre decimal ou hexadecimal), ni localhost.
+function Test-ProxyShortName([string]$HostName) {
+    return ([bool]$HostName -and $HostName -notmatch '[.:\[]' -and $HostName -ne 'localhost' -and $HostName -notmatch '^(0x[0-9A-Fa-f]*|[0-9]+)\z')
+}
+
+# 1.1.0 (mesure reseau, D1) : nom complet d'un proxy donne par un nom court, par le DNS de Windows, qui applique le suffixe DNS du
+# poste. Resolve-DnsName -DnsOnly quand il existe (DNS seul : ni LLMNR ni NetBIOS), sinon [System.Net.Dns]::GetHostEntry. Seule
+# sortie reseau : la resolution de ce nom. Reponse venue du reseau, donc bornee : seul un nom <nom court>.<domaine> est retenu (jamais
+# la cible d'un alias CNAME). Rend { Name ; Reason } : Name vide et la raison si le nom n'est pas developpe.
+function Resolve-ProxyShortName([string]$ShortName) {
+    if ($ShortName -notmatch '^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?\z') { return [pscustomobject]@{ Name = ''; Reason = 'nom hors format' } }
+    $names = @()
+    try {
+        if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+            $names = @(Resolve-DnsName -Name $ShortName -DnsOnly -ErrorAction Stop | ForEach-Object {
+                    if ($null -ne $_.PSObject.Properties['Section'] -and $null -ne $_.PSObject.Properties['Name'] -and [string]$_.Section -eq 'Answer') { [string]$_.Name }
+                })
+        } else {
+            $names = @([string][System.Net.Dns]::GetHostEntry($ShortName).HostName)
+        }
+    } catch { return [pscustomobject]@{ Name = ''; Reason = 'nom inconnu du DNS de Windows' } }
+    $prefix = $ShortName.ToLowerInvariant() + '.'
+    $label = '[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?'
+    foreach ($candidate in $names) {
+        $name = ([string]$candidate).TrimEnd('.').ToLowerInvariant()
+        if ($name.Length -le 253 -and $name.StartsWith($prefix, [System.StringComparison]::Ordinal) -and $name -cmatch ('^{0}(\.{0})+\z' -f $label)) {
+            return [pscustomobject]@{ Name = $name; Reason = '' }
+        }
+    }
+    return [pscustomobject]@{ Name = ''; Reason = 'aucun nom complet dans la reponse' }
+}
+
 function Export-WindowsCertificates([string]$Destination) {
     $builder = New-Object System.Text.StringBuilder
     $seen = @{}
@@ -927,11 +972,57 @@ if ($Mode -ceq 'Load' -and -not $ImagesArchive) {
     }
 }
 
+# Proxy d'entreprise. -Proxy '' est memorise (COCKPIT_PROXY_MODE=direct) : plus de detection aux relances.
+if ($PSBoundParameters.ContainsKey('Proxy')) {
+    if ($Proxy) { $config['COCKPIT_PROXY_MODE'] = 'manual' } else { $config['COCKPIT_PROXY_MODE'] = 'direct' }
+    $detectedProxy = $Proxy
+}
+elseif ($config.Contains('HTTPS_PROXY') -and $config['HTTPS_PROXY']) {
+    $detectedProxy = $config['HTTPS_PROXY']
+    # Proxy saisi dans .env apres un -Proxy '' : il l'emporte sur la connexion directe memorisee.
+    if ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $config['COCKPIT_PROXY_MODE'] = 'manual' }
+}
+elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $detectedProxy = '' }
+elseif ($env:HTTPS_PROXY) { $detectedProxy = $env:HTTPS_PROXY }
+else { $detectedProxy = Get-SystemProxy }
+# 1.1.0 (mesure reseau, D1) : le cockpit ne transmet aucun nom sans point au DNS de l'entreprise (docker-compose.yml, dns_opt et
+# dns_search). Un proxy donne par un nom court ne s'y resoudrait plus, et GitHub Copilot tomberait apres la mise a jour : le nom est
+# developpe ici par le DNS de Windows, puis ecrit en entier dans .env. Sans nom complet, l'installation s'arrete avec les autres
+# pre-controles, avant toute question et toute modification (conteneurs, volumes, images, .env).
+$proxyExpansion = $null
+$proxyProblem = $null
+if ($detectedProxy) {
+    $proxyParts = Split-ProxyUrl $detectedProxy
+    if (Test-ProxyShortName $proxyParts.Host) {
+        $expanded = Resolve-ProxyShortName $proxyParts.Host
+        if ($expanded.Name) {
+            $proxyExpansion = [pscustomobject]@{ Short = $proxyParts.Host; Full = $expanded.Name }
+            $detectedProxy = $proxyParts.Prefix + $expanded.Name + $proxyParts.Suffix
+        } else {
+            $shownShort = $proxyParts.Host -replace '[^A-Za-z0-9_-]', '?'
+            $proxyLines = @(("    [!] Proxy '{0}' donne par un nom court : le DNS de Windows ne le developpe pas en nom complet ({1})." -f $shownShort, $expanded.Reason),
+                "    [!] Le cockpit ne transmet aucun nom sans point au DNS de l'entreprise (protection de la 1.1.0) : avec ce nom,",
+                '        ses appels a GitHub Copilot echoueraient.')
+            if ($isNew) { $proxyLines += "    Rien n'a ete modifie." }
+            else { $proxyLines += "    Rien n'a ete modifie : .env, images et conteneurs sont inchanges ; votre cockpit actuel continue de tourner." }
+            $proxyLines += @("    Relancez avec le nom complet du proxy (a demander a l'informatique) ou son adresse IP :",
+                '        .\install.ps1 -Proxy http://<nom.complet>:<port>')
+            if (-not $isNew) {
+                $proxyLines += @(("    Apres .\cockpit.ps1 update (scripts deja en {0}), cette commande termine la mise a jour. D'ici la, ni .\cockpit.ps1 start" -f $Version),
+                    '    ni restart : le cockpit, recree avec la protection de la 1.1.0, ne resoudrait plus ce nom et GitHub Copilot tomberait.')
+            }
+            $proxyProblem = New-CockpitLines 'Proxy-NomCourt' $proxyLines
+        }
+    }
+}
+
 $precheck = Get-CockpitPrecheckProblems -Transition $transition -Mode $modeRead -Policy $policy -AcceptBrowserBlock ([bool]$AcceptBrowserBlock) `
     -IsMigration $isMigration -LoadProblem $loadProblem -Port $guardPort -Version $Version -PreviousVersion $previousVersion
-if ($precheck.Problems.Count -gt 0) {
+$problems = @($precheck.Problems)
+if ($null -ne $proxyProblem) { $problems += $proxyProblem }
+if ($problems.Count -gt 0) {
     Write-Host ''
-    foreach ($problem in $precheck.Problems) { Write-CockpitLines $problem.Lines }
+    foreach ($problem in $problems) { Write-CockpitLines $problem.Lines }
     throw $CockpitA19
 }
 foreach ($warning in $precheck.Warnings) { Write-CockpitLines $warning.Lines }
@@ -1033,22 +1124,11 @@ if ($rotateServerPassword) {
 }
 Write-Good 'Secrets presents (generes aleatoirement si absents)'
 
-# Proxy d'entreprise. -Proxy '' est memorise (COCKPIT_PROXY_MODE=direct) : plus de detection aux relances.
-if ($PSBoundParameters.ContainsKey('Proxy')) {
-    if ($Proxy) { $config['COCKPIT_PROXY_MODE'] = 'manual' } else { $config['COCKPIT_PROXY_MODE'] = 'direct' }
-    $detectedProxy = $Proxy
-}
-elseif ($config.Contains('HTTPS_PROXY') -and $config['HTTPS_PROXY']) {
-    $detectedProxy = $config['HTTPS_PROXY']
-    # Proxy saisi dans .env apres un -Proxy '' : il l'emporte sur la connexion directe memorisee.
-    if ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $config['COCKPIT_PROXY_MODE'] = 'manual' }
-}
-elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') { $detectedProxy = '' }
-elseif ($env:HTTPS_PROXY) { $detectedProxy = $env:HTTPS_PROXY }
-else { $detectedProxy = Get-SystemProxy }
+# Proxy d'entreprise : choisi aux pre-controles (etape 2 bis), nom court deja developpe en nom complet.
 if ($detectedProxy) {
     $config['HTTP_PROXY'] = $detectedProxy
     $config['HTTPS_PROXY'] = $detectedProxy
+    if ($null -ne $proxyExpansion) { Write-Good ("Proxy donne par le nom court '{0}' : developpe par le DNS de Windows en {1}" -f $proxyExpansion.Short, $proxyExpansion.Full) }
     # Identifiants jamais affiches : la console peut etre journalisee (transcription PowerShell) ou copiee dans un ticket.
     $shownProxy = $detectedProxy -replace '^((?:[A-Za-z][A-Za-z0-9+.-]*://)?)[^/]*@', '$1****@'
     Write-Good "Proxy : $shownProxy"
@@ -1057,13 +1137,6 @@ if ($detectedProxy) {
     # un autre schema, il refuse tout sur place (rien ne part en direct) : les demandes d'IA d'opencode echoueraient.
     if ($detectedProxy -match '^([A-Za-z][A-Za-z0-9+.-]*)://' -and $Matches[1] -ne 'http') {
         Write-Attention ("Proxy en {0}:// : le relais d'opencode ne sait passer que par un proxy http:// ; les demandes d'IA d'opencode echoueront. Indiquez l'adresse http:// du proxy : .\install.ps1 -Proxy http://<proxy>:<port>" -f $Matches[1].ToLowerInvariant())
-    }
-    # 1.1.0 (mesure reseau, D1) : le cockpit ne transmet plus aucun nom sans point au DNS de l'entreprise (docker-compose.yml,
-    # dns_opt et dns_search). Un proxy donne par un nom court ne s'y resout donc plus : ses appels a GitHub Copilot echoueraient.
-    $proxyHost = ($detectedProxy -replace '^[A-Za-z][A-Za-z0-9+.-]*://', '').Split('/')[0]
-    $proxyHost = $proxyHost.Substring($proxyHost.LastIndexOf('@') + 1) -replace ':\d*$', ''
-    if ($proxyHost -and $proxyHost -notmatch '[.:\[]' -and $proxyHost -ne 'localhost') {
-        Write-Attention ("Proxy '{0}' donne par un nom court : le cockpit ne transmet aucun nom sans point au DNS de l'entreprise (protection de la 1.1.0), ses appels a GitHub Copilot echoueront. Donnez le nom complet du proxy ou son adresse IP : .\install.ps1 -Proxy http://{0}.<domaine>:<port>" -f $proxyHost)
     }
 } elseif ($config.Contains('COCKPIT_PROXY_MODE') -and $config['COCKPIT_PROXY_MODE'] -eq 'direct') {
     $config['HTTP_PROXY'] = ''
@@ -1218,6 +1291,7 @@ try {
     }
     Write-EnvFile $EnvFile $config
     if ($isNew) { Write-Good 'Fichier .env cree' } else { Write-Good 'Fichier .env mis a jour (secrets conserves)' }
+    if ($null -ne $proxyExpansion) { Write-Good ("Nom complet du proxy ({0}) ecrit dans .env a la place du nom court '{1}'" -f $proxyExpansion.Full, $proxyExpansion.Short) }
 
     try {
         if ($Mode -eq 'Build') {

@@ -52,9 +52,10 @@ function Start-TestServer([hashtable]$Config) {
 # Les parametres passent par une table de hachage : un tableau serait pris pour des arguments de position.
 # Rend la sortie Write-Host, le message d'exception, le code de sortie et les appels aux espions ; jamais l'URL ouverte.
 function Invoke-Install {
-    param([string]$Root, [hashtable]$Parameters, [object]$Answers, [object]$Policies)
+    param([string]$Root, [hashtable]$Parameters, [object]$Answers, [object]$Policies, [hashtable]$Dns)
     . (Join-Path $Here 'Spies.ps1')
     Reset-SpyState
+    if ($null -ne $Dns) { foreach ($dnsName in @($Dns.Keys)) { Set-SpyDnsAnswer $dnsName @($Dns[$dnsName]) } }
     if ($null -ne $Answers) {
         foreach ($answer in @($Answers)) {
             if ([string]$answer -ceq $AnswerEmpty) { Add-SpyReadHostAnswer $null }
@@ -76,6 +77,7 @@ function Invoke-Install {
     } catch { $message = $_.Exception.Message }
     return [pscustomobject]@{ Host = ($hostLines -join "`n"); Error = $message; ExitCode = $LASTEXITCODE
         ReadHostCalls = @($SpyState.ReadHostCalls | ForEach-Object { [string]$_ })
+        DnsCalls = @($SpyState.DnsCalls | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; DnsOnly = [bool]$_.DnsOnly } })
         StartProcessCalls = @($SpyState.StartProcessCalls | ForEach-Object { [pscustomobject]@{ FilePath = $_.FilePath } }) }
 }
 
@@ -642,10 +644,9 @@ try {
         @{ Proxy = 'http://agent:MOTDEPASSE-PROXY@proxy.example:8080'; Scheme = '' },
         @{ Proxy = 'HTTP://proxy.example:8080'; Scheme = '' },
         @{ Proxy = 'proxy.example:8080'; Scheme = '' },
-        # 1.1.0 (D1) : nom court signale (le cockpit ne le resout plus) ; nom complet, IPv4 et IPv6 jamais.
-        @{ Proxy = 'http://proxy:8080'; Scheme = ''; Court = 'proxy' },
-        @{ Proxy = 'http://agent:MOTDEPASSE-PROXY@proxycourt:3128/'; Scheme = ''; Court = 'proxycourt' },
+        # 1.1.0 (D1) : nom complet, IPv4 (y compris ecrite en un seul nombre) et IPv6 : gardes tels quels, aucune question au DNS.
         @{ Proxy = 'http://10.20.30.40:8080'; Scheme = '' },
+        @{ Proxy = 'http://2130706433:8080'; Scheme = '' },
         @{ Proxy = 'http://[fd00::1]:8080'; Scheme = '' })
     foreach ($case in $proxyCases) {
         Reset-Root $proxyEnv
@@ -658,14 +659,116 @@ try {
         } else {
             Assert-Test ('proxy {0} : aucun avertissement du relais' -f $label) ($null -eq $result.Error -and -not $warned) ([string]$result.Error)
         }
-        $court = $result.Host.Contains('donne par un nom court')
-        if ($case.ContainsKey('Court')) {
-            Assert-Test ('proxy {0} : nom court signale, nom cite sans identifiants' -f $label) ($null -eq $result.Error -and $court -and $result.Host.Contains(("Proxy '{0}' donne par un nom court" -f $case.Court))) ([string]$result.Error)
-        } else {
-            Assert-Test ('proxy {0} : aucun signalement de nom court' -f $label) ($null -eq $result.Error -and -not $court) ([string]$result.Error)
-        }
+        $envAfter = Read-TestEnvFile $Root
+        Assert-Test ('proxy {0} : garde tel quel dans .env, aucune question au DNS, aucun nom court annonce' -f $label) ($null -eq $result.Error -and
+            (Get-TestEnvValue $envAfter 'HTTPS_PROXY') -ceq $case.Proxy -and (Get-TestEnvValue $envAfter 'HTTP_PROXY') -ceq $case.Proxy -and
+            $result.DnsCalls.Count -eq 0 -and -not $result.Host.Contains('nom court')) ([string]$result.DnsCalls.Count)
         Assert-Test ('proxy {0} : identifiants jamais affiches' -f $label) (-not $result.Host.Contains('MOTDEPASSE-PROXY'))
     }
+
+    # --- 1.1.0 (D1) : proxy donne par un nom court. Le cockpit ne le resoudrait plus (dns_opt ndots:1, dns_search ".") : install.ps1
+    # le developpe par le DNS de Windows (espion Resolve-DnsName, jamais de vraie requete) et ecrit le nom complet dans .env ; sinon il
+    # s'arrete avec les pre-controles, avant toute question et toute modification (conteneurs, volumes, images, .env).
+    Write-Section '1.1.0 : proxy donne par un nom court (developpe par le DNS de Windows, sinon arret avant toute modification)'
+    $CommandeNomComplet = '        .\install.ps1 -Proxy http://<nom.complet>:<port>'
+    $courtEnv = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) $Version
+    $courtEnv['NO_PROXY'] = 'proxy,intranet'
+    $expandCases = @(
+        @{ Name = 'nom court'; Proxy = 'http://proxy:8080'; Dns = @{ proxy = @('proxy.banque.example') }; Expected = 'http://proxy.banque.example:8080'; Short = 'proxy'; Full = 'proxy.banque.example' },
+        @{ Name = 'identifiants, chemin, casse et point final'; Proxy = 'http://agent:MOTDEPASSE-PROXY@ProxyCourt:3128/'; Dns = @{ proxycourt = @('ProxyCourt.Banque.Example.') }
+            Expected = 'http://agent:MOTDEPASSE-PROXY@proxycourt.banque.example:3128/'; Short = 'ProxyCourt'; Full = 'proxycourt.banque.example' },
+        @{ Name = 'alias CNAME, nom demande retenu et jamais sa cible'; Proxy = 'http://proxy:8080'; Dns = @{ proxy = @('proxy.banque.example', 'lb07.dc.fournisseur.example') }
+            Expected = 'http://proxy.banque.example:8080'; Short = 'proxy'; Full = 'proxy.banque.example' },
+        @{ Name = 'sans schema'; Proxy = 'proxy:8080'; Dns = @{ proxy = @('proxy.banque.example') }; Expected = 'proxy.banque.example:8080'; Short = 'proxy'; Full = 'proxy.banque.example' })
+    foreach ($case in $expandCases) {
+        Reset-Root $courtEnv
+        $journal = Set-InstallDockerScenario $Work 'proxy-court' (New-InstallDockerRules $CertFile $JsonFile)
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Proxy = $case.Proxy }) -Policies (Get-PolicySet 'Autorise' $Ports.A) -Dns $case.Dns
+        $envAfter = Read-TestEnvFile $Root
+        Assert-Test ('nom court ({0}) : installation menee a bien' -f $case.Name) ($null -eq $result.Error -and $result.Host.Contains('Cockpit disponible sur ' + $HttpsUrl)) ([string]$result.Error)
+        Assert-Test ('nom court ({0}) : nom complet ecrit dans .env (HTTP_PROXY et HTTPS_PROXY), le reste de l adresse garde' -f $case.Name) ((Get-TestEnvValue $envAfter 'HTTPS_PROXY') -ceq $case.Expected -and (Get-TestEnvValue $envAfter 'HTTP_PROXY') -ceq $case.Expected) ((Get-TestEnvValue $envAfter 'HTTPS_PROXY') -replace 'MOTDEPASSE-PROXY', '****')
+        Assert-Test ('nom court ({0}) : NO_PROXY inchange' -f $case.Name) ((Get-TestEnvValue $envAfter 'NO_PROXY') -ceq 'proxy,intranet')
+        Assert-Test ('nom court ({0}) : lignes [OK] du developpement et de l ecriture dans .env' -f $case.Name) ($result.Host.Contains(("[OK] Proxy donne par le nom court '{0}' : developpe par le DNS de Windows en {1}" -f $case.Short, $case.Full)) -and
+            $result.Host.Contains(("[OK] Nom complet du proxy ({0}) ecrit dans .env a la place du nom court '{1}'" -f $case.Full, $case.Short))) $result.Host
+        Assert-Test ('nom court ({0}) : une seule question, au DNS seul (-DnsOnly), pour le nom du proxy' -f $case.Name) ($result.DnsCalls.Count -eq 1 -and $result.DnsCalls[0].Name -ceq $case.Short -and $result.DnsCalls[0].DnsOnly) (@($result.DnsCalls | ForEach-Object { $_.Name }) -join ',')
+        Assert-Test ('nom court ({0}) : identifiants jamais affiches, cible de l alias jamais retenue' -f $case.Name) (-not $result.Host.Contains('MOTDEPASSE-PROXY') -and -not $result.Host.Contains('lb07') -and -not (Get-TestEnvValue $envAfter 'HTTPS_PROXY').Contains('lb07'))
+    }
+
+    # Nom court donne par la variable HTTPS_PROXY du poste (.env sans proxy) : meme developpement.
+    Reset-Root $courtEnv
+    Set-Env 'HTTPS_PROXY' 'http://proxyvar:3128'
+    try {
+        $journal = Set-InstallDockerScenario $Work 'proxy-court-variable' (New-InstallDockerRules $CertFile $JsonFile)
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A) -Dns @{ proxyvar = @('proxyvar.banque.example') }
+    } finally { Set-Env 'HTTPS_PROXY' $SavedEnv['HTTPS_PROXY'] }
+    Assert-Test 'nom court de la variable HTTPS_PROXY : developpe et ecrit dans .env' ($null -eq $result.Error -and (Get-TestEnvValue (Read-TestEnvFile $Root) 'HTTPS_PROXY') -ceq 'http://proxyvar.banque.example:3128') ([string]$result.Error)
+
+    $stopCases = @(
+        @{ Name = 'nom inconnu du DNS'; Dns = @{}; Reason = 'nom inconnu du DNS de Windows' },
+        @{ Name = 'reponse encore sans point (fichier hosts)'; Dns = @{ proxy = @('proxy') }; Reason = 'aucun nom complet dans la reponse' },
+        @{ Name = 'seulement la cible d un alias'; Dns = @{ proxy = @('lb07.dc.fournisseur.example') }; Reason = 'aucun nom complet dans la reponse' },
+        @{ Name = 'seulement la section Authority'; Dns = @{ proxy = @('Authority:proxy.banque.example') }; Reason = 'aucun nom complet dans la reponse' },
+        @{ Name = 'nom rendu hors format'; Dns = @{ proxy = @('proxy.banque exemple.example') }; Reason = 'aucun nom complet dans la reponse' })
+    $stopNo = 0
+    foreach ($case in $stopCases) {
+        Reset-Root $courtEnv
+        $before = Get-EnvFingerprint $Root
+        $stopNo++
+        $journal = Set-InstallDockerScenario $Work ('proxy-court-arret-' + $stopNo) (New-InstallDockerRules $CertFile $JsonFile)
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Proxy = 'http://proxy:8080' }) -Policies (Get-PolicySet 'Autorise' $Ports.A) -Dns $case.Dns
+        $calls = @(Get-DockerCalls $journal)
+        Assert-Test ('nom court non developpe ({0}) : arret A19, raison et commande exacte' -f $case.Name) ($result.Error -ceq $CockpitA19 -and
+            $result.Host.Contains(("[!] Proxy 'proxy' donne par un nom court : le DNS de Windows ne le developpe pas en nom complet ({0})." -f $case.Reason)) -and
+            $result.Host.Contains($CommandeNomComplet)) ([string]$result.Error + ' || ' + $result.Host)
+        Assert-Test ('nom court non developpe ({0}) : .env identique, aucune question, aucun dossier cree' -f $case.Name) ((Get-EnvFingerprint $Root) -ceq $before -and $result.ReadHostCalls.Count -eq 0 -and
+            -not (Test-Path -LiteralPath (Join-Path $Root 'certs')) -and -not (Test-Path -LiteralPath (Join-Path $Root 'archives')))
+        Assert-Test ('nom court non developpe ({0}) : seulement version et compose version (ni image, ni volume, ni conteneur)' -f $case.Name) ((@($calls | ForEach-Object { @($_.args)[0] }) -join ',') -ceq 'version,compose') (@($calls | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ')
+        Assert-Test ('nom court non developpe ({0}) : aucun lien ouvert' -f $case.Name) ($result.StartProcessCalls.Count -eq 0)
+    }
+
+    # Installation neuve : aucun .env, aucune question (pas meme le dossier des projets), aucun dossier.
+    Reset-Root $null
+    $journal = Set-InstallDockerScenario $Work 'proxy-court-neuve' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ Port = $Ports.A; Proxy = 'http://proxy:8080' }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    Assert-Test 'nom court non developpe, installation neuve : arret sans .env, sans question ni dossier' ($result.Error -ceq $CockpitA19 -and (Get-EnvFingerprint $Root) -ceq 'absent' -and
+        $result.ReadHostCalls.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $Root 'certs')) -and -not (Test-Path -LiteralPath (Join-Path $Root 'archives'))) ([string]$result.Error)
+    Assert-Test 'nom court non developpe, installation neuve : message propre (rien de modifie, pas de cockpit en marche)' ($result.Host.Contains("    Rien n'a ete modifie.") -and $result.Host.Contains($CommandeNomComplet) -and
+        -not $result.Host.Contains('votre cockpit actuel') -and -not $result.Host.Contains('Apres .\cockpit.ps1 update')) $result.Host
+
+    # Arret groupe avec les autres pre-controles : un seul message, un seul arret.
+    $groupEnv = New-BaseEnv $Ports.plain 'http' '' (New-CockpitChallenge) $Version
+    Reset-Root $groupEnv
+    $before = Get-EnvFingerprint $Root
+    $journal = Set-InstallDockerScenario $Work 'proxy-court-groupe' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Proxy = 'http://proxy:8080' }) -Policies (Get-PolicySet 'Autorise' $Ports.plain)
+    Assert-Test 'nom court non developpe + mode d acces invalide : les deux messages, un seul arret A19' ($result.Error -ceq $CockpitA19 -and $result.Host.Contains("[!] Mode d'acces invalide dans .env") -and
+        $result.Host.Contains("[!] Proxy 'proxy' donne par un nom court") -and (Get-EnvFingerprint $Root) -ceq $before) $result.Host
+
+    # Mise a jour depuis un .env 1.0.6 a nom court (chemin de .\cockpit.ps1 update, qui relance install.ps1 -NoBrowser).
+    $env106Court = New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) '1.0.6'
+    $env106Court['HTTP_PROXY'] = 'http://proxy:8080'
+    $env106Court['HTTPS_PROXY'] = 'http://proxy:8080'
+    $env106Court['COCKPIT_PROXY_MODE'] = 'manual'
+    Reset-Root $env106Court
+    $tokenBefore = Get-TextDigest (Get-TestEnvValue (Read-TestEnvFile $Root) 'COCKPIT_TOKEN')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-court' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A) -Dns @{ proxy = @('proxy.banque.example') }
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test 'mise a jour 1.0.6 a nom court : terminee, nom complet dans .env' ($null -eq $result.Error -and $result.Host.Contains('Cockpit disponible sur ' + $HttpsUrl) -and
+        (Get-TestEnvValue $envAfter 'HTTPS_PROXY') -ceq 'http://proxy.banque.example:8080' -and (Get-TestEnvValue $envAfter 'HTTP_PROXY') -ceq 'http://proxy.banque.example:8080') ([string]$result.Error)
+    Assert-Test 'mise a jour 1.0.6 a nom court : version 1.1.0, jeton et choix du proxy gardes' ((Get-TestEnvValue $envAfter 'COCKPIT_VERSION') -ceq $Version -and
+        (Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore -and (Get-TestEnvValue $envAfter 'COCKPIT_PROXY_MODE') -ceq 'manual')
+
+    Reset-Root $env106Court
+    $before = Get-EnvFingerprint $Root
+    $journal = Set-InstallDockerScenario $Work 'maj-106-court-arret' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    $calls = @(Get-DockerCalls $journal)
+    Assert-Test 'mise a jour 1.0.6 a nom court non developpable : arret avant toute modification' ($result.Error -ceq $CockpitA19 -and (Get-EnvFingerprint $Root) -ceq $before -and $result.ReadHostCalls.Count -eq 0) ([string]$result.Error)
+    Assert-Test 'mise a jour 1.0.6 a nom court non developpable : ni image, ni volume, ni conteneur touches' ((@($calls | ForEach-Object { @($_.args)[0] }) -join ',') -ceq 'version,compose') (@($calls | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ')
+    Assert-Test 'mise a jour 1.0.6 a nom court non developpable : cockpit actuel en marche, commande, ni start ni restart d ici la' ($result.Host.Contains('votre cockpit actuel continue de tourner') -and
+        $result.Host.Contains($CommandeNomComplet) -and $result.Host.Contains(('Apres .\cockpit.ps1 update (scripts deja en {0}), cette commande termine la mise a jour.' -f $Version)) -and
+        $result.Host.Contains('ni restart : le cockpit, recree avec la protection de la 1.1.0, ne resoudrait plus ce nom et GitHub Copilot tomberait.')) $result.Host
 
     Write-Section '1.1.0 : Docker Compose 2.8 ou plus recent (up --pull never --no-build)'
     foreach ($case in @(@{ V = '2.7.1'; Ok = $false }, @{ V = 'v2.8.0'; Ok = $true }, @{ V = '2.29.1-desktop.1'; Ok = $true })) {

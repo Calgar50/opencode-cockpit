@@ -1,5 +1,5 @@
 ﻿# Spies.ps1 - espions du banc PowerShell 5.1 (contrat : tests/ps51/README.md). A charger par dot-sourcing dans la portee du test.
-# Fonctions homonymes des cmdlets (P6) : elles masquent Read-Host, Start-Process, Get-ItemProperty et Test-Path, y compris dans un
+# Fonctions homonymes des cmdlets (P6) : elles masquent Read-Host, Start-Process, Get-ItemProperty, Test-Path et Resolve-DnsName, y compris dans un
 # script appele par &. Etat partage par l'objet $SpyState, lu par une variable NON qualifiee (un $script: y vaudrait $null).
 # Aucun crochet dans les scripts livres. Seules les cles SOFTWARE\Policies de HKLM et HKCU sont simulees ; le reste est delegue.
 Set-StrictMode -Version 2.0
@@ -11,6 +11,8 @@ $SpyState = @{
     Policies = @{}
     PolicyReads = New-Object System.Collections.ArrayList
     HiddenPaths = New-Object System.Collections.ArrayList
+    DnsAnswers = @{}
+    DnsCalls = New-Object System.Collections.ArrayList
 }
 # Reponse speciale : Read-Host leve l'exception de powershell.exe -NonInteractive.
 $SpyNonInteractive = '<<espion:NonInteractive>>'
@@ -22,6 +24,29 @@ function Reset-SpyState {
     $SpyState.Policies.Clear()
     $SpyState.PolicyReads.Clear()
     $SpyState.HiddenPaths.Clear()
+    $SpyState.DnsAnswers.Clear()
+    $SpyState.DnsCalls.Clear()
+}
+
+# Set-SpyDnsAnswer 'proxy' @('proxy.banque.example') : Resolve-DnsName rend ces noms, dans l'ordre, en section Answer ;
+# 'Authority:<nom>' rend un enregistrement de la section Authority. Un nom sans reponse prevue leve l'erreur d'un nom inexistant :
+# le banc ne fait jamais de vraie requete DNS.
+function Set-SpyDnsAnswer([string]$Name, [string[]]$Answers) { $SpyState.DnsAnswers[$Name.ToLowerInvariant()] = @($Answers) }
+
+function Resolve-DnsName {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string]$Name, [Parameter(Position = 1)][string]$Type, [string[]]$Server, [switch]$DnsOnly,
+        [switch]$NoHostsFile, [switch]$QuickTimeout, [switch]$CacheOnly, [switch]$TcpOnly, [switch]$NoRecursion, [switch]$LlmnrOnly,
+        [switch]$LlmnrNetbiosOnly)
+    [void]$SpyState.DnsCalls.Add([pscustomobject]@{ Name = $Name; DnsOnly = [bool]$DnsOnly })
+    $key = ([string]$Name).ToLowerInvariant()
+    if (-not $SpyState.DnsAnswers.ContainsKey($key)) { throw ('{0} : nom DNS inexistant (espion)' -f $Name) }
+    foreach ($answer in @($SpyState.DnsAnswers[$key])) {
+        $section = 'Answer'
+        $owner = [string]$answer
+        if ($owner.StartsWith('Authority:')) { $section = 'Authority'; $owner = $owner.Substring(10) }
+        [pscustomobject]@{ Name = $owner; Type = 'A'; Section = $section; IPAddress = '192.0.2.10' }
+    }
 }
 
 # Hide-SpyPath (Join-Path ([Environment]::GetFolderPath('System')) 'curl.exe') : Test-Path rend $false pour ce fichier.
