@@ -521,6 +521,8 @@ try {
     Assert-Test 'uninstall -Purge : images du cockpit supprimees' ($imageArgs.Contains('opencode-cockpit/app:rg105-l7') -and $imageArgs.Contains('opencode-cockpit/opencode:rg105-l7')) (Get-Extract $imageArgs)
     Assert-Test 'uninstall -Purge : image de la salle gardee' (-not $imageArgs.Contains($ImageSalle)) (Get-Extract $imageArgs)
     Assert-Test 'uninstall -Purge : la conservation de la salle est annoncee' ($purgeResult.Host.Contains('Conserves : l image de la salle')) (Get-Extract $purgeResult.Host)
+    # 1.1.0 : l avertissement dit ce que les volumes portent (oc-data : conversations ; oc-config : assistants).
+    Assert-Test 'uninstall -Purge : conversations et assistants annonces effaces' ($purgeResult.Host.Contains('des volumes du cockpit et d opencode (conversations, assistants, reglages, couts, index des archives, connexion GitHub Copilot, certificat HTTPS local)')) (Get-Extract $purgeResult.Host)
 
     Set-SalleScenario
     $purgeOmoResult = Invoke-CockpitScript $SalleDir @('uninstall') { Add-SpyReadHostAnswer 'SUPPRIMER' } @{ Purge = $true; PurgeOmo = $true }
@@ -568,6 +570,7 @@ try {
     Assert-Test 'restore : extraction (--pull never), puis migration, puis up -d --force-recreate' ($null -eq $restore.Error -and $extractAt -ge 0 -and $migrationAt -gt $extractAt -and $upAt -gt $migrationAt) ('{0},{1},{2} {3} {4}' -f $extractAt, $migrationAt, $upAt, $restore.Error, (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600))
     Assert-Test 'restore : verification de l archive avec --pull never' ((Get-JournalIndex '^run --rm --pull never --entrypoint tar -v \S.*:/backup:ro opencode-cockpit/app:rg105-l7 tzf /backup/cockpit-20260927-101500\.tar\.gz\z') -ge 0) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
     Assert-Test 'restore : sauvegarde 1.1 (conforme) -> rien d affiche sur les regles Internet' (-not $restore.Host.Contains($RestoreHeader) -and $restore.Host.Contains('Restauration terminee.')) (Get-Extract $restore.Host)
+    Assert-Test 'restore : conversations et assistants annonces remplaces' ($restore.Host.Contains('La restauration REMPLACE les conversations (celles de la salle comprises), les assistants, les reglages, les couts, les archives indexees et la configuration opencode actuels par ceux de la sauvegarde')) (Get-Extract $restore.Host)
 
     Set-RestoreScenario 'migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-'
     $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }

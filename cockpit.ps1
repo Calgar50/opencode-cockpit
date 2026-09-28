@@ -13,10 +13,11 @@
     .\cockpit.ps1 certs                 Reexporte les certificats Windows puis recree les conteneurs
     .\cockpit.ps1 update                git pull puis relance install.ps1 (meme mode d'installation et d'acces)
     .\cockpit.ps1 rollback              Revient a la version memorisee avant la 1.0.5, jamais a la 1.0.6 (confirmation demandee)
-    .\cockpit.ps1 backup                Sauvegarde reglages, couts, archives et configuration opencode
-    .\cockpit.ps1 restore <fichier>     Restaure une sauvegarde (remplace les donnees actuelles)
+    .\cockpit.ps1 backup                Sauvegarde conversations, assistants, reglages, couts, archives et configuration opencode
+    .\cockpit.ps1 restore <fichier>     Restaure une sauvegarde (remplace conversations, assistants, reglages et couts actuels)
     .\cockpit.ps1 uninstall [-Purge [-PurgeOmo]]
-                                        Supprime les conteneurs (-Purge : donnees et images du cockpit ;
+                                        Supprime les conteneurs (-Purge : conversations, assistants, reglages, couts
+                                        et images du cockpit ;
                                         -PurgeOmo en plus : image, volumes et configuration de la salle)
 #>
 [CmdletBinding()]
@@ -902,7 +903,8 @@ try {
             # Verification AVANT tout arret : une archive illisible ne coupe pas le cockpit.
             Write-Step "Verification de $($backup.Name)"
             Invoke-Docker run --rm --pull never --entrypoint tar -v "$($backup.DirectoryName):/backup:ro" $image tzf "/backup/$($backup.Name)" | Out-Null
-            Write-Attention 'La restauration REMPLACE les reglages, couts, archives indexees et la configuration opencode actuels.'
+            # Volumes vides puis remplis par l archive : cockpit-data, oc-config (assistants), oc-data et celui de la salle (conversations).
+            Write-Attention 'La restauration REMPLACE les conversations (celles de la salle comprises), les assistants, les reglages, les couts, les archives indexees et la configuration opencode actuels par ceux de la sauvegarde : tout ce qui a ete fait depuis est perdu.'
             Write-Attention 'Le dossier archives\ est complete : les fichiers absents de la sauvegarde restent, ceux de meme nom sont remplaces. La connexion GitHub Copilot est conservee.'
             $answer = Read-Host 'Tapez RESTAURER pour confirmer'
             if ($answer -cne 'RESTAURER') { Write-Host 'Annule.'; return }
@@ -936,7 +938,8 @@ try {
         'uninstall' {
             if ($PurgeOmo -and -not $Purge) { throw '-PurgeOmo ne s utilise qu avec -Purge : .\cockpit.ps1 uninstall -Purge -PurgeOmo' }
             if ($Purge) {
-                Write-Attention 'Suppression DEFINITIVE des conteneurs, des volumes du cockpit (reglages, couts, connexion Copilot, certificat HTTPS local) et des images du cockpit designees dans .env.'
+                # $CockpitVolumes : oc-data (conversations, connexion Copilot), oc-config (assistants), cockpit-data, cockpit-tls, oc-cache, control.
+                Write-Attention 'Suppression DEFINITIVE des conteneurs, des volumes du cockpit et d opencode (conversations, assistants, reglages, couts, index des archives, connexion GitHub Copilot, certificat HTTPS local) et des images du cockpit designees dans .env.'
                 if ($PurgeOmo) {
                     Write-Attention 'ET DE LA SALLE : son image, ses volumes (conversations comprises) et sa configuration figee. Cette image ne se retelecharge pas : il faut la reconstruire sur le PC personnel, puis la recopier avec son fichier .sha256.'
                 } else {
