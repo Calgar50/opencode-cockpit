@@ -338,7 +338,7 @@ Cette procédure vaut pour une installation 1.0.4 ou plus ancienne, 0.1.x compri
 
 **Avant de commencer**
 
-- Prérequis : connaître le type d'abonnement (Business ou Enterprise). Au travail, c'est nécessaire : sans adresse imposée, le cockpit essaie l'adresse générale `api.githubcopilot.com` au démarrage puis environ toutes les heures, et ces essais passent par le proxy de l'entreprise, qui les refuse s'il n'ouvre que l'adresse de l'abonnement.
+- Prérequis : connaître le type d'abonnement (Business ou Enterprise). Au travail, c'est nécessaire : sans adresse imposée, le cockpit essaie l'adresse générale `api.githubcopilot.com` au démarrage puis environ toutes les heures, et, quand elle est bloquée, lit l'adresse de l'abonnement sur `api.github.com` ; ces essais passent par le proxy de l'entreprise, qui les refuse s'il n'ouvre que l'adresse de l'abonnement.
 - À ouvrir : PowerShell dans le dossier du cockpit ; le cockpit.
 - Durée : 5 à 10 minutes.
 - Ce qui change : `COCKPIT_COPILOT_API_URL` dans `.env`. Valeurs acceptées : `https://api.githubcopilot.com`, `https://api.business.githubcopilot.com`, `https://api.enterprise.githubcopilot.com`, `https://api.individual.githubcopilot.com`, ou `copilot-api.<domaine>` pour le domaine GitHub Enterprise déclaré. `install.ps1` refuse toute autre valeur.
@@ -353,7 +353,7 @@ Cette procédure vaut pour une installation 1.0.4 ou plus ancienne, 0.1.x compri
 
 **À la fin**
 
-- État final : opencode et le cockpit n'utilisent que l'adresse de votre abonnement.
+- État final : opencode et le cockpit n'utilisent que l'adresse de votre abonnement ; le cockpit ne lit plus rien sur `api.github.com`, sauf le solde réel si vous le synchronisez ([R-26](#r-26-onglet-budget-des-paramètres)).
 - Limites (IA Anthropic, jeton) : [E-02](#e-02-comment-le-cockpit-choisit-ladresse-de-lapi-copilot).
 - Reprendre : [Tester la connexion Copilot].
 
@@ -1620,7 +1620,7 @@ Depuis la 1.0.6, tout est bloqué sauf ce dont le cockpit a besoin pour GitHub C
 
 | Adresse | Quand | Pourquoi |
 |---|---|---|
-| L'adresse de l'API Copilot réellement utilisée : celle de `-CopilotApiUrl`, sinon celle que le cockpit a vérifiée, sinon `api.githubcopilot.com` (ou `copilot-api.<domaine>` pour GitHub Enterprise) | toujours | liste des IA du compte et demandes d'IA |
+| L'adresse de l'API Copilot réellement utilisée : celle de `-CopilotApiUrl`, sinon celle que le cockpit a vérifiée, sinon `api.githubcopilot.com` (et `copilot-api.<domaine>` quand un GitHub Enterprise est déclaré) | toujours | liste des IA du compte et demandes d'IA |
 | `github.com` | seulement pendant une connexion à Copilot lancée depuis le cockpit, 20 minutes au plus ; un tunnel encore ouvert à la fin est coupé | code de connexion, puis attente de votre accord |
 | le domaine déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN` | seulement pendant une connexion, s'il est déclaré | même connexion, pour GitHub Enterprise |
 
@@ -1628,8 +1628,11 @@ Depuis la 1.0.6, tout est bloqué sauf ce dont le cockpit a besoin pour GitHub C
 - Journal : chaque refus est noté au plus une fois par hôte et par heure, avec l'hôte, le port et la raison, jamais une adresse complète ni un secret. Lecture : `.\cockpit.ps1 diag` (résumé des 24 dernières heures) ou `.\cockpit.ps1 logs cockpit`.
 - Sources coupées dans opencode : plus de téléchargement du catalogue des modèles (`models.opencode.ai`) ; extension `@opencode-ai/plugin` préinstallée dans l'image ; npm hors ligne. La liste des IA vient de l'API Copilot ; le catalogue embarqué d'opencode ne fournit que les descriptions.
 - Les appels d'opencode à son propre serveur restent dans le conteneur ; le mot de passe de ce serveur a été remplacé à la 1.0.6.
-- Le cockpit lui-même passe par le proxy pour `api.github.com` (adresse de l'abonnement, solde facultatif) et pour l'adresse de l'API Copilot (liste des IA). [Tester la connexion Copilot], dans **Diagnostic**, n'essaie que l'adresse de l'API Copilot réellement utilisée, celle de la première ligne du tableau : jamais `api.github.com` ni `github.com`.
-- Noms internes : le cockpit ne transmet aucun nom sans point au DNS de l'entreprise. Le nom « opencode » reste dans Docker, même quand opencode est arrêté ou redémarre ; le proxy se donne donc par son nom complet ou son adresse IP ([R-08](#r-08-proxy-et-certificats-dentreprise)).
+- Le cockpit lui-même passe par le proxy pour l'adresse de l'API Copilot (liste des IA) et pour `api.github.com` :
+  - le solde facultatif ([R-26](#r-26-onglet-budget-des-paramètres)) ;
+  - sans adresse imposée seulement, la lecture de l'adresse de l'abonnement, quand l'adresse générale est bloquée : au plus une fois par heure, même après un échec. Avec l'adresse imposée ([P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement)), le cockpit ne la lit jamais.
+- [Tester la connexion Copilot], dans **Diagnostic**, n'essaie que les adresses de la première ligne du tableau : une seule quand l'adresse est imposée ou vérifiée ; sinon `api.githubcopilot.com`, et `copilot-api.<domaine>` quand un GitHub Enterprise est déclaré. La liste des IA est ensuite relue sans rien demander à `api.github.com`. Jamais `api.github.com` ni `github.com`.
+- Noms internes : le cockpit ne transmet aucun nom sans point au DNS de l'entreprise, ni ce nom complété par le domaine de recherche DNS du poste. Le nom « opencode » reste dans Docker, même quand opencode est arrêté ou redémarre ; le proxy se donne donc par son nom complet ou son adresse IP ([R-08](#r-08-proxy-et-certificats-dentreprise)).
 - Aucune image n'est téléchargée ni construite au démarrage : `.\cockpit.ps1 start`, `restart`, `restore`, `certs`, `tls -Renew` et le démarrage d'`install.ps1` s'arrêtent sur une image absente ([X-07](#x-07-images-absentes-ou-trop-anciennes)). Seuls les modes Build et Pull téléchargent, à l'installation ou à la mise à jour ([R-04](#r-04-trois-façons-dobtenir-les-images)).
 - Le TLS reste vérifié de bout en bout entre opencode et Copilot : le relais ne voit qu'un tunnel chiffré. Si le proxy inspecte le TLS, son autorité doit toujours être dans `certs\` ([R-08](#r-08-proxy-et-certificats-dentreprise)).
 - Limite du nom annoncé dans un tunnel : [E-01](#e-01-pourquoi-tout-est-bloqué-sauf-github-copilot).
@@ -1640,7 +1643,7 @@ Depuis la 1.0.6, tout est bloqué sauf ce dont le cockpit a besoin pour GitHub C
 - Où : le poste de travail ; Docker Desktop.
 - Qui : la personne qui installe ; l'informatique.
 
-- Imposer l'adresse Copilot de l'abonnement : c'est nécessaire pour ne laisser aucune trace au proxy de l'entreprise ([P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement)).
+- Imposer l'adresse Copilot de l'abonnement ([P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement)) : c'est nécessaire pour que le proxy de l'entreprise ne voie ni les essais de l'adresse générale, ni les lectures de l'adresse de l'abonnement sur `api.github.com`. Laisser le solde réel en synchronisation manuelle, son réglage par défaut ([R-26](#r-26-onglet-budget-des-paramètres)) : sinon, le cockpit interroge `api.github.com` à chaque intervalle.
 - Faire les mises à jour en mode Load, avec l'archive de la release : les modes Build et Pull téléchargent depuis Docker Hub, Debian, npm et GHCR ([R-04](#r-04-trois-façons-dobtenir-les-images)).
 - Si Kubernetes est activé dans Docker Desktop (**Settings › Kubernetes**) et que vous ne vous en servez pas, désactivez-le. Ses services sont visibles depuis le réseau interne d'opencode ; sans identifiants, ils ne permettent aucune sortie, mais mieux vaut les fermer.
 - Ne laisser aucun fichier de clés, ni aucun `.env` avec de vrais secrets, dans le dossier des projets ([E-08](#e-08-ce-que-le-cockpit-ne-peut-pas-empêcher)).
@@ -2763,7 +2766,7 @@ Chaque panne dit ce que vous voyez, l'état du cockpit, puis quoi faire. Les pan
 
 - Ce que vous voyez : chaque demande échoue avec `AI_APICallError` (par exemple `Unable to connect`, `Forbidden`, ou 503) ; parfois, des IA désactivées par votre organisation apparaissent comme utilisables.
 - État du système : le pare-feu de l'entreprise n'ouvre que l'adresse de votre abonnement (`*.business.githubcopilot.com` ou `*.enterprise.githubcopilot.com`), alors que l'adresse utilisée est l'adresse générale `api.githubcopilot.com` ([E-02](#e-02-comment-le-cockpit-choisit-ladresse-de-lapi-copilot)).
-- Que faire : **Diagnostic**, carte « GitHub Copilot et modèles », lire « Adresse de l'API Copilot », puis [Tester la connexion Copilot] → le test dit si l'adresse utilisée répond ; il n'essaie qu'elle. Si l'adresse générale est refusée, ou si « Adresse de l'API Copilot » montre déjà l'adresse de votre abonnement (Business ou Enterprise) : [P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement).
+- Que faire : **Diagnostic**, carte « GitHub Copilot et modèles », lire « Adresse de l'API Copilot », puis [Tester la connexion Copilot] → le test dit si l'adresse utilisée répond ; il n'essaie que des adresses de l'API Copilot, jamais `api.github.com` ([R-09](#r-09-ce-qui-sort-ce-qui-est-bloqué)). Si l'adresse générale est refusée, ou si « Adresse de l'API Copilot » montre déjà l'adresse de votre abonnement (Business ou Enterprise) : [P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement).
 - Si cela continue : `.\cockpit.ps1 diag`, puis [X-24](#x-24-diagnostic-en-ligne-de-commande-adresse-bloquée-sur-place) ou [X-25](#x-25-diagnostic-en-ligne-de-commande-adresse-refusée-en-amont).
 
 ### X-43 Les demandes échouent après 5 tentatives
@@ -3227,12 +3230,12 @@ GitHub propose aux entreprises de n'ouvrir que l'adresse de leur abonnement (`*.
 
 Depuis la 1.0.1, le cockpit :
 
-- prend l'adresse imposée par `-CopilotApiUrl`, si vous en avez donné une ([P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement)) ; sinon il garde l'adresse générale quand elle est joignable, et prend celle que GitHub annonce pour votre abonnement quand le réseau la bloque (gardée une heure) ;
+- prend l'adresse imposée par `-CopilotApiUrl`, si vous en avez donné une ([P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement)), sans rien demander à GitHub ; sinon il garde l'adresse générale quand elle est joignable, et prend celle que GitHub annonce pour votre abonnement quand le réseau la bloque (gardée une heure) ;
 - l'écrit dans la configuration d'opencode (`provider.github-copilot.options.baseURL`), quand aucune conversation ne travaille, puis vérifie l'adresse réellement utilisée par opencode dans chaque dossier, et la revérifie après chaque redémarrage d'opencode ;
 - refuse les nouvelles demandes tant que l'adresse n'est pas vérifiée : quelques secondes au démarrage du cockpit ou après un redémarrage d'opencode, jusqu'à la fin de la réponse en cours quand la correction doit l'attendre ([X-46](#x-46-refus-adresse-corrigée-à-la-fin-de-la-réponse-en-cours)), et tant qu'opencode est injoignable ([X-45](#x-45-refus-reconnexion-en-cours-qui-dure)) ;
 - lit lui-même, à cette adresse, la liste des IA de votre compte, chacune marquée disponible ou non ([R-17](#r-17-niveaux-dia)).
 
-Sans adresse imposée, le cockpit essaie l'adresse générale au démarrage, puis environ toutes les heures ; ces essais passent par le proxy de l'entreprise. C'est pourquoi [P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement) est nécessaire au travail.
+Sans adresse imposée, le cockpit essaie l'adresse générale au démarrage, puis environ toutes les heures ; quand elle est bloquée, il lit l'adresse de l'abonnement sur `api.github.com`, au plus une fois par heure, même après un échec. Ces essais passent par le proxy de l'entreprise. C'est pourquoi [P-12](#p-12-imposer-ladresse-copilot-de-votre-abonnement) est nécessaire au travail. Après un échec de cette lecture, la liste des IA peut rester indisponible jusqu'à l'heure suivante : `.cockpit.ps1 restart` refait la lecture tout de suite.
 
 Limites :
 
@@ -3263,7 +3266,7 @@ Pour aller plus loin : [NOTES-1.1.0.md](NOTES-1.1.0.md) et [RECAPITULATIF.md, s
 - Le verrou est double : le cockpit refuse aussi toute demande dont un appel facturé (IA d'un assistant, d'un raccourci ou d'un travail délégué comprise) viendrait d'un autre fournisseur, avant qu'elle atteigne opencode : « Seules les IA GitHub Copilot sont autorisées dans ce cockpit. » ([X-48](#x-48-seules-les-ia-github-copilot-sont-autorisées)).
 - Dans la configuration d'opencode, le cockpit refuse, pour le fournisseur Copilot, toute autre adresse (`options.baseURL`, `api`, `models.<id>.provider.api`) et tout remplacement de son module d'accès (`npm`).
 - La liste se règle avec `COCKPIT_ALLOWED_PROVIDERS`, pour des essais seulement ; toute autre valeur que `github-copilot` affiche en permanence le bandeau rouge « Mode test : un fournisseur autre que GitHub Copilot est autorisé. » ([X-39](#x-39-bandeau-rouge-mode-test)).
-- **Jeton confiné.** Le cockpit n'envoie le jeton GitHub Copilot qu'à `api.github.com` (adresse de l'abonnement, solde facultatif, y compris par [Synchroniser maintenant]) et aux adresses officielles de l'API Copilot (`api.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com`, `api.individual.githubcopilot.com`), ou au seul domaine GitHub Enterprise déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN`. Une adresse annoncée hors de cette liste est ignorée. La connexion GitHub Enterprise n'est acceptée que vers ce domaine.
+- **Jeton confiné.** Le cockpit n'envoie le jeton GitHub Copilot qu'à `api.github.com` (adresse de l'abonnement, sans adresse imposée seulement ; solde facultatif, y compris par [Synchroniser maintenant]) et aux adresses officielles de l'API Copilot (`api.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com`, `api.individual.githubcopilot.com`), ou au seul domaine GitHub Enterprise déclaré dans `COCKPIT_GITHUB_ENTERPRISE_DOMAIN`. Une adresse annoncée hors de cette liste est ignorée. La connexion GitHub Enterprise n'est acceptée que vers ce domaine.
 - Aucune télémétrie, pas de partage public.
 
 **Chat, IA et autonomie**

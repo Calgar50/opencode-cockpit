@@ -235,11 +235,11 @@ Cette procédure vaut pour une installation 1.0.5 ou plus récente, dans un doss
   - le domaine GitHub Enterprise déclaré, seulement pendant une connexion.
 - Tout le reste est refusé sur place : `models.opencode.ai`, `registry.npmjs.org`, `api.github.com`, les pages web, les commandes de l'IA (`curl`, `git push`, `npm`, `pip`…).
 - L'assistant ne va pas sur Internet ([E-03](docs/GUIDE.md#e-03-pourquoi-internet-est-fermé-depuis-la-110)).
-- Le cockpit lui-même passe par le proxy de l'entreprise, s'il y en a un, pour `api.github.com` et pour l'API Copilot. Il n'envoie aucune télémétrie et ne partage rien publiquement. Le bouton [Tester la connexion Copilot] de **Diagnostic** n'essaie que l'adresse de l'API Copilot utilisée.
-- Aucun nom interne ne part vers le DNS de l'entreprise : le nom « opencode », comme tout nom sans point, reste dans Docker, même quand opencode est arrêté ([R-09](docs/GUIDE.md#r-09-ce-qui-sort-ce-qui-est-bloqué)).
+- Le cockpit lui-même passe par le proxy de l'entreprise, s'il y en a un, pour l'API Copilot. Il ne contacte `api.github.com` que pour le solde facultatif et, sans adresse imposée, pour lire l'adresse de votre abonnement quand l'adresse générale est bloquée (au plus une fois par heure). Il n'envoie aucune télémétrie et ne partage rien publiquement. Le bouton [Tester la connexion Copilot] de **Diagnostic** n'essaie que l'adresse de l'API Copilot utilisée, jamais `api.github.com` ni `github.com` ([R-09](docs/GUIDE.md#r-09-ce-qui-sort-ce-qui-est-bloqué)).
+- Aucun nom interne ne part vers le DNS de l'entreprise : le nom « opencode », comme tout nom sans point, reste dans Docker, même quand opencode est arrêté, et même quand le poste a un domaine de recherche DNS ([R-09](docs/GUIDE.md#r-09-ce-qui-sort-ce-qui-est-bloqué)).
 - Le démarrage ne télécharge ni ne construit aucune image. Seules l'installation et la mise à jour en mode Build ou Pull téléchargent ([R-04](docs/GUIDE.md#r-04-trois-façons-dobtenir-les-images)).
 - Au travail, trois réglages :
-  - imposer l'adresse Copilot de votre abonnement ([P-12](docs/GUIDE.md#p-12-imposer-ladresse-copilot-de-votre-abonnement)) ;
+  - imposer l'adresse Copilot de votre abonnement : le cockpit ne lit alors plus rien sur `api.github.com`, hors solde facultatif ([P-12](docs/GUIDE.md#p-12-imposer-ladresse-copilot-de-votre-abonnement)) ;
   - faire les mises à jour avec l'archive hors ligne ([P-03](docs/GUIDE.md#p-03-vérifier-et-charger-larchive-dimages-hors-ligne)) ;
   - couper Kubernetes dans Docker Desktop s'il ne sert pas ([R-10](docs/GUIDE.md#r-10-poste-de-travail-réglages-conseillés)).
 - L'accès au cockpit se fait par `127.0.0.1` seulement, en HTTPS local (ou en HTTP local s'il a été choisi, [P-04](docs/GUIDE.md#p-04-passer-en-mode-http-local)), avec un jeton de 256 bits. Le lien de connexion est à usage unique et valable 10 minutes ([E-12](docs/GUIDE.md#e-12-comment-laccès-au-cockpit-est-protégé)).
