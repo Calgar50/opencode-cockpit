@@ -715,8 +715,8 @@ function Get-OmoHooksPathNotice([string]$Workspace) {
     return ("core.hooksPath global de git pointe dans le dossier de travail ({0}) : un depot ouvert dans la salle pourrait y deposer un script execute par vos commandes git. Retirez ce reglage (git config --global --unset core.hooksPath) ou deplacez ce dossier hors du dossier des projets." -f $resolved)
 }
 
-# Frictions de l'ecriture par exception (L16c, decision A16 point 6), dites a chaque generation ; le README et la
-# documentation de la salle les reprennent. Rien n'est modifie sur le poste pour cela : ni droit administrateur, ni
+# Frictions de l'ecriture par exception (L16c, decision A16 point 6), dites a chaque generation ; le guide
+# docs/GUIDE.md (E-18) les reprend. Rien n'est modifie sur le poste pour cela : ni droit administrateur, ni
 # attribut de fichier, ni dossier ajoute dans les projets.
 function Write-OmoFrictionNotice {
     Write-Info 'Salle : le dossier de travail y est en LECTURE SEULE ; seules les entrees de premier niveau des projets prepares y sont ouvertes en ecriture, une par une.'

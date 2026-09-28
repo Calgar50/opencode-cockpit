@@ -65,9 +65,10 @@
 // l'application ait changé », et dit « le même compte à chaque passage complet ». Il consigne aussi qu'un fichier de test
 // peut tomber en bloc au démarrage quand la machine est chargée, sans sous-test rouge : fragilité du poste, pas du code.
 // Ce qui EST gardé ici reste le verdict du banc et les comptes datés (constats 14 et 15).
-// Les liens internes et les ancres des deux documents sont déjà contrôlés, pour tout le dépôt, par
-// `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md ») : ce fichier
-// ne les refait pas. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
+// Les liens internes et les ancres des documents sont déjà contrôlés, pour tout le dépôt, par
+// `croisements-it1-v5.test.ts` (« liens internes et ancres de README.md, docs/GUIDE.md, docs/DEVELOPPEMENT.md, docs/NOTES-1.1.0.md, docs/RECAPITULATIF.md et e2e/README.md ») :
+// ce fichier ne les refait pas. Refonte du README (1.1.0) : la documentation de l'utilisateur est README.md et docs/GUIDE.md,
+// lus ensemble par l'aide commune (test-support/documentation.ts) ; E08 (version de three) lit toujours le README seul. Aucun conteneur Docker, aucun vrai opencode, aucun appel facturé : tout se joue en Node. Le banc
 // (`scripts/run-e2e.sh --faux --scenarios it3-captures --project-prefix 3d11-e2e --image-tag 3d11`) est joué par l'intégrateur,
 // hors de `npm test` (décision D-06).
 import assert from "node:assert/strict";
@@ -82,6 +83,7 @@ import { PLAN3D } from "./shared/neon-plan3d.ts";
 import { RACCOURCI, VITESSES } from "./shared/revoir.ts";
 import { revoirAcces } from "./shared/revoir-access.ts";
 import { messageFluidite, TEXTES as SALLE } from "./shared/salle3d-texts.ts";
+import * as docu from "./test-support/documentation.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const DEPOT = path.join(APP_DIR, "..");
@@ -482,10 +484,11 @@ describe("croisements it3 V4 : couleurs forcées (L33 × L30 × L31b)", () => {
 describe("croisements it3 V4 : documentation (DOC-3D × le code)", () => {
   const recap = lire(RECAP);
   const readme = lire(README);
+  const documentation = docu.lireDocumentation();
   /** Vrai si `cherche` est écrit dans une section balisée [3d] du document `document` (D-3d-24). */
   const dansLes3d = (cherche: string, document: string): boolean => sections3d(document).some((section) => section.contenu.includes(cherche));
 
-  it("les chiffres et la clé cités par le README sont ceux des constantes du code", () => {
+  it("les chiffres et la clé cités par la documentation sont ceux des constantes du code", () => {
     const attendus: [string, string][] = [
       [`\`${PREFERENCE_CLE}\``, "clé de la préférence du poste"],
       [`${CONSIGNES.maxCaracteres.toLocaleString("fr-FR").replace(/ | /g, " ")} caractères`, "borne de la copie d'une consigne"],
@@ -496,20 +499,20 @@ describe("croisements it3 V4 : documentation (DOC-3D × le code)", () => {
       [VITESSES.map((v) => `×${String(v).replace(".", ",")}`).join(", "), "vitesses du lecteur"],
     ];
     for (const [texte, quoi] of attendus) {
-      assert.ok(readme.includes(texte), `${quoi} : « ${texte} » absent du README`);
-      assert.ok(dansLes3d(texte, readme), `${quoi} : « ${texte} » écrit hors d'une section [3d]`);
+      assert.ok(documentation.includes(texte), `${quoi} : « ${texte} » absent de la documentation`);
+      assert.ok(dansLes3d(texte, documentation), `${quoi} : « ${texte} » écrit hors d'une section [3d]`);
     }
   });
 
-  it("le tableau des replis du README dit, mot pour mot, les phrases de salle3d-texts.ts", () => {
+  it("le tableau des replis de la documentation dit, mot pour mot, les phrases de salle3d-texts.ts", () => {
     // Les cinq lignes du tableau des raisons : la phrase est LUE par `messageFluidite`, jamais recopiée ici.
     for (const raison of ["accessibilite", "rendu-logiciel", "webgl-absent", "saccades", "preference-2d"] as const) {
       const phrase = messageFluidite(raison);
-      assert.ok(readme.includes(phrase), `phrase de repli absente du README : « ${phrase} »`);
+      assert.ok(documentation.includes(phrase), `phrase de repli absente de la documentation : « ${phrase} »`);
     }
     assert.equal(messageFluidite("saccades"), SALLE.partout.fluidite.sondeLente, "la phrase de la spéc. l.1007 doit rester celle de la bascule");
     for (const phrase of [SALLE.partout.fluidite.saccades, SALLE.partout.fluidite.basculeProche, SALLE.partout.contexte.perdu, SALLE.partout.fluidite.reessayer]) {
-      assert.ok(readme.includes(phrase), `phrase absente du README : « ${phrase} »`);
+      assert.ok(documentation.includes(phrase), `phrase absente de la documentation : « ${phrase} »`);
     }
   });
 
@@ -534,7 +537,7 @@ describe("croisements it3 V4 : documentation (DOC-3D × le code)", () => {
 
     // 2. Les documents. La phrase des entrées de la salle ne cite que la commande de la bande et l'adresse.
     for (const [doc, texte, debut] of [
-      ["README.md", readme, "Il n'y a pas d'entrée de menu"],
+      ["documentation", documentation, "Il n'y a pas d'entrée de menu"],
       ["docs/RECAPITULATIF.md", recap, "Aucune entrée de menu"],
     ] as const) {
       const phrase = phraseDe(texte, debut);
@@ -545,7 +548,7 @@ describe("croisements it3 V4 : documentation (DOC-3D × le code)", () => {
     }
     // La ligne « Revoir », elle, cite les Archives à bon droit : `RevoirEntree` y est monté.
     for (const [doc, phrase] of [
-      ["README.md", phraseDe(readme, "**Revoir cette demande** s'ouvre depuis")],
+      ["documentation", phraseDe(documentation, "[Revoir cette demande] est proposé dans")],
       ["docs/RECAPITULATIF.md", phraseDe(recap, "[Revoir cette demande] : ")],
     ] as const) {
       assert.ok(phrase.includes("Archives"), `${doc} : la ligne « Revoir » doit garder les Archives, qui sont une de ses entrées : « ${phrase} »`);
@@ -851,7 +854,12 @@ describe("croisements it3 V4 : grille de la vague (DOC-3D)", () => {
   });
 
   it("les sections [3d] sont équilibrées et séparées du texte voisin par une ligne vide (D-3d-24)", () => {
-    for (const [doc, fichier] of [["README.md", README], ["docs/RECAPITULATIF.md", RECAP]] as const) {
+    for (const [doc, fichier] of [
+      ["README.md", README],
+      ["docs/GUIDE.md", path.join(DEPOT, "docs", "GUIDE.md")],
+      ["docs/DEVELOPPEMENT.md", path.join(DEPOT, "docs", "DEVELOPPEMENT.md")],
+      ["docs/RECAPITULATIF.md", RECAP],
+    ] as const) {
       const texte = lire(fichier);
       const lignes = texte.split(/\r?\n/);
       const sections = sections3d(texte);
@@ -866,7 +874,12 @@ describe("croisements it3 V4 : grille de la vague (DOC-3D)", () => {
   });
 
   it("tout ce que la 1.1 dit de la salle, de « Revoir » et de three tient dans une section [3d]", () => {
-    for (const [doc, fichier] of [["README.md", README], ["docs/RECAPITULATIF.md", RECAP]] as const) {
+    for (const [doc, fichier] of [
+      ["README.md", README],
+      ["docs/GUIDE.md", path.join(DEPOT, "docs", "GUIDE.md")],
+      ["docs/DEVELOPPEMENT.md", path.join(DEPOT, "docs", "DEVELOPPEMENT.md")],
+      ["docs/RECAPITULATIF.md", RECAP],
+    ] as const) {
       const texte = lire(fichier);
       const sections = sections3d(texte);
       // Les lignes de balise elles-mêmes appartiennent à la section : elles nomment ce qu'elle contient.

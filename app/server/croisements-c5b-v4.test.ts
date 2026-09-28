@@ -19,7 +19,8 @@
 //      L50b, RECAPITULATIF de DOC5) tient en UNE ligne du code réel ;
 //   5. les six recettes réelles du §3.2 sont consignées « en attente » par DOC5, aucune n'est dite faite ;
 // et les corrections de la relecture de la vague (5b-vague-4) :
-//   6. la section « Démonstration d'équipe » du README ne cite que des libellés qu'un écran LIT (pas seulement définis) et
+//   6. la section « Démonstration d'équipe » de la documentation (guide, R-45, depuis la refonte du README) ne cite que des
+//      libellés qu'un écran LIT (pas seulement définis) et
 //      dit ce que fait le mouvement réduit ; la ligne « Contrôle de mutation » du RECAPITULATIF compte le train de V4 ; les
 //      scénarios `c5b-*` exigent les deux notes et le dernier jet (relecture), lisent le CSV cellule par cellule (coûts) et
 //      n'attendent la fin d'un lancement que sur des états réels (`FINIS`). Les fonctions des scénarios sont chargées telles
@@ -39,6 +40,7 @@ import { TEXTES as NEON } from "./shared/neon-texts.ts";
 import { TEAM_RUN_TRANSITIONS, TEAM_STEP_TRANSITIONS } from "./shared/team-limits.ts";
 import { TEXTES as EQ } from "./shared/team-texts.ts";
 import { EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
+import * as docu from "./test-support/documentation.ts";
 import { assistantsTabOf, assistantsViewOf, parseRoute, parseRouteQuery } from "../web/lib/router.ts";
 
 const DEPOT = path.resolve(import.meta.dirname, "..", "..");
@@ -285,15 +287,6 @@ describe("grille V4 : les recettes réelles du §3.2 sont consignées « en atte
 
 // --- 6. Corrections de la relecture de la vague 4 (5b-vague-4) --------------------------------------------------------------
 
-/** Sous-section « ### {titre} » d'un texte Markdown, jusqu'au titre suivant de niveau 1 à 3. */
-function sousSection(texte: string, titre: string): string {
-  const lignes = lignesDe(texte);
-  const debut = lignes.findIndex((ligne) => ligne.trim() === `### ${titre}`);
-  assert.ok(debut >= 0, `sous-section « ${titre} » introuvable`);
-  const fin = lignes.findIndex((ligne, i) => i > debut && /^#{1,3} /.test(ligne));
-  return lignes.slice(debut, fin < 0 ? undefined : fin).join("\n");
-}
-
 /** Feuilles d'un module de textes : [chemin pointé depuis TEXTES, valeur]. */
 function feuilles(valeur: unknown, prefixe: string): Array<[string, string]> {
   if (typeof valeur === "string") return [[prefixe, valeur]];
@@ -331,15 +324,17 @@ const sourcesWeb = (): Array<readonly [string, string]> => sourcesDeProduction("
 /** Charge un module de scénario du banc tel quel (il n'est pas dans `tsconfig`, d'où l'import par URL). */
 const chargerScenario = (nom: string): Promise<unknown> => import(pathToFileURL(path.join(DEPOT, SCENARIOS, nom)).href);
 
-const demonstrationDuReadme = (): string => sousSection(sectionMarkdown(lire("README.md"), "construction"), "Démonstration d'équipe");
+/** Refonte du README (1.1.0) : la démonstration d'équipe est décrite dans le guide (R-45), dans la section balisée « construction ». */
+const demonstrationDuGuide = (): string => docu.sousSection(docu.sectionBalisee(docu.lireDocumentation(), "construction"), "Démonstration d'équipe");
 
 describe("relecture de la vague 4 : la documentation de DOC5 dit ce que le code fait", () => {
-  it("README, « Démonstration d'équipe » : chaque libellé de la démonstration qu'il cite est LU par un écran, pas seulement défini", () => {
-    const section = demonstrationDuReadme();
-    const cites = new Set([...section.matchAll(/«\s*([^«»]+?)\s*»/g)].map((m) => m[1] ?? ""));
+  it("documentation, « Démonstration d'équipe » : chaque libellé de la démonstration qu'elle cite est LU par un écran, pas seulement défini", () => {
+    const section = demonstrationDuGuide();
+    // Libellés cités entre guillemets, et boutons écrits entre crochets par le guide ([Voir la démonstration]).
+    const cites = new Set([...section.matchAll(/«\s*([^«»]+?)\s*»|\[([^\]\n]+)\]/g)].map((m) => m[1] ?? m[2] ?? ""));
     const retenus = feuilles(C5.partout.demonstration, "partout.demonstration").filter(([, valeur]) => cites.has(valeur));
     // Le titre, l'étiquette, la phrase et l'entrée au moins : le contrôle ne tourne pas à vide.
-    assert.ok(retenus.length >= 4, `libellés de la démonstration cités par le README : ${JSON.stringify(retenus)}`);
+    assert.ok(retenus.length >= 4, `libellés de la démonstration cités par la documentation : ${JSON.stringify(retenus)}`);
     const sources = sourcesWeb();
     for (const [chemin, valeur] of retenus) {
       // Une même phrase peut être lue par un autre module de textes, à l'octet : l'étiquette de la construction est celle du
@@ -349,7 +344,7 @@ describe("relecture de la vague 4 : la documentation de DOC5 dit ce que le code 
         ...feuilles(NEON, "").filter(([, v]) => v === valeur).map(([c]): [string, string] => ["neon-texts", c]),
       ];
       const lus = jumeaux.flatMap(([module, c]) => lecteurs(sources, module, c));
-      assert.ok(lus.length > 0, `« ${valeur} » (${chemin}) est cité par le README, mais aucun écran ne le lit : l'utilisateur le cherchera en vain`);
+      assert.ok(lus.length > 0, `« ${valeur} » (${chemin}) est cité par la documentation, mais aucun écran ne le lit : l'utilisateur le cherchera en vain`);
     }
 
     // Contrôles discriminants du lecteur d'accès : alias local et import renommé reconnus ; une feuille définie, jamais lue, rien.
@@ -361,7 +356,7 @@ describe("relecture de la vague 4 : la documentation de DOC5 dit ce que le code 
     assert.deepEqual(lecteurs([["essai.tsx", "T.titre;"]], "construction-texts", "partout.demonstration.titre"), []);
   });
 
-  it("README, « Démonstration d'équipe » : la bande qu'elle dessine a des transitions, que le mouvement réduit coupe ; le README le dit", () => {
+  it("documentation, « Démonstration d'équipe » : la bande qu'elle dessine a des transitions, que le mouvement réduit coupe ; la documentation le dit", () => {
     // Faits du code : la démonstration dessine NeonCarte, qui joue une transition WAAPI à chaque signe qui apparaît ou change,
     // et seulement quand le système ne demande pas de mouvement réduit.
     const lecteur = lire("app/web/pages/chat/activity/DemoPlayer.tsx");
@@ -372,7 +367,7 @@ describe("relecture de la vague 4 : la documentation de DOC5 dit ce que le code 
     assert.match(bande, /matchMedia\("\(prefers-reduced-motion: no-preference\)"\)/);
     assert.match(bande, /signe\.animate\(/);
 
-    const section = demonstrationDuReadme();
+    const section = demonstrationDuGuide();
     assert.doesNotMatch(section, /rien n'y est animé/);
     assert.doesNotMatch(section, /mouvement réduit[^.\n]*n'y change/);
     assert.match(section, /Elle ne se lance \*\*jamais toute seule\*\*/);

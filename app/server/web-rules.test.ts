@@ -51,6 +51,7 @@ import {
   texteRegleGenerale,
   texteStudioInternet,
 } from "./shared/internet-texts.ts";
+import * as docu from "./test-support/documentation.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const read = (...parts: string[]) => fs.readFileSync(path.join(APP_DIR, ...parts), "utf8");
@@ -571,29 +572,32 @@ describe("limite du refus 422 internet-ferme : valeurs écrites seulement (relec
     assert.deepEqual(introduites("ask"), ["permission"]);
   });
 
-  it("README (Mettre à jour, Sécurité), NOTES-1.1.0 et RECAPITULATIF : plus de « toute ouverture », la limite est dite", () => {
-    const DEPOT = path.join(APP_DIR, "..");
-    const compact = (texte: string) => texte.replace(/\s+/g, " ");
-    const lireDoc = (...parts: string[]) => compact(fs.readFileSync(path.join(DEPOT, ...parts), "utf8"));
-    const readme = lireDoc("README.md");
-    const notes = lireDoc("docs", "NOTES-1.1.0.md");
-    const recap = lireDoc("docs", "RECAPITULATIF.md");
-    for (const [nom, texte] of [["README.md", readme], ["docs/NOTES-1.1.0.md", notes], ["docs/RECAPITULATIF.md", recap]] as const) {
-      assert.equal(/refuse (?:désormais )?toute ouverture/.test(texte), false, nom);
-      assert.equal(/refusent une ouverture web introduite \(« ask » comme « allow »/.test(texte), false, nom);
+  it("documentation de l'utilisateur, NOTES-1.1.0 et RECAPITULATIF : plus de « toute ouverture », la limite est dite là où le refus l'est", () => {
+    // Refonte du README (1.1.0) : README et guide sont lus par l'aide commune ; le doublon qu'exigeait « exactement 2 » n'existe plus.
+    for (const doc of ["README.md", "docs/GUIDE.md", "docs/NOTES-1.1.0.md", "docs/RECAPITULATIF.md"]) {
+      const texte = docu.compact(docu.lireDoc(doc));
+      assert.equal(/refuse (?:désormais )?toute ouverture/.test(texte), false, doc);
+      assert.equal(/refusent une ouverture web introduite \(« ask » comme « allow »/.test(texte), false, doc);
     }
     const valeurs =
       "une valeur « ask » ou « allow » écrite pour `webfetch` ou `websearch`, un joker à « ask » qui s'applique à ces outils, ou une permission en texte à « ask »";
     const limite = "ligne « deny », ou tout ouvrir à « allow » (joker `\"*\"` ou `\"web*\"`, `\"permission\": \"allow\"`), n'est pas refusé";
     const reseau = "sans effet sur le réseau : le relais du cockpit n'ouvre que GitHub Copilot";
-    // Mettre à jour (README), Sécurité (README), NOTES et RECAPITULATIF : chacun dit ce qui est refusé, la limite et son effet.
-    assert.equal(readme.split(valeurs).length - 1, 2, "README : Mettre à jour et Sécurité");
-    assert.equal(readme.split(limite).length - 1, 2, "README : la limite, aux deux endroits");
-    assert.equal(readme.split(reseau).length - 1 >= 2, true, "README : l'effet réseau, aux deux endroits");
-    for (const [nom, texte] of [["docs/NOTES-1.1.0.md", notes], ["docs/RECAPITULATIF.md", recap]] as const) {
-      assert.ok(texte.includes(valeurs), nom);
-      assert.ok(texte.includes(limite), nom);
-      assert.ok(texte.includes(reseau), nom);
+    assert.ok(docu.occurrences(docu.compact(docu.lireDocumentation()), valeurs) >= 1, "documentation de l'utilisateur : ce qui est refusé");
+    // README et guide : chaque section qui dit ce qui est refusé dit aussi la limite et son effet sur le réseau.
+    for (const doc of ["README.md", "docs/GUIDE.md"]) {
+      for (const morceau of docu.lireDoc(doc).split(/\n(?=#{1,3} )/)) {
+        const texte = docu.compact(morceau);
+        if (!texte.includes(valeurs)) continue;
+        assert.ok(texte.includes(limite), `${doc} : la limite manque là où le refus est dit (${texte.slice(0, 80)})`);
+        assert.ok(texte.includes(reseau), `${doc} : l'effet réseau manque là où le refus est dit (${texte.slice(0, 80)})`);
+      }
+    }
+    for (const doc of ["docs/NOTES-1.1.0.md", "docs/RECAPITULATIF.md"]) {
+      const texte = docu.compact(docu.lireDoc(doc));
+      assert.ok(texte.includes(valeurs), doc);
+      assert.ok(texte.includes(limite), doc);
+      assert.ok(texte.includes(reseau), doc);
     }
   });
 });

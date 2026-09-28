@@ -45,8 +45,8 @@
 // même temps les appels d'outil d'une étape) accordée par l'utilisateur ou par l'IA de contrôle. C'est inhérent au mécanisme
 // « once » (opencode ne rapporte pas le chemin qu'il ouvre) et rien ne le ferme ici. Ce qui le borne : un lien qui existe AVANT
 // la demande est vu ; la porte shell n'accorde d'elle-même aucune commande qui crée un lien (`ln` est en S4, une commande non
-// listée ne passe qu'après l'IA de contrôle, en Autonome) ; la réponse est relayée aussitôt. La limite est à écrire dans le README
-// et dans la grille de R1 (découpage, risque n° 10).
+// listée ne passe qu'après l'IA de contrôle, en Autonome) ; la réponse est relayée aussitôt. La limite est écrite dans le guide
+// (docs/GUIDE.md, E-08) et dans la grille de R1 (découpage, risque n° 10).
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isInside } from "./fsutil.ts";

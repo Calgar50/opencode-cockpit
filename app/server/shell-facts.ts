@@ -22,7 +22,7 @@
 //   clairsemé (extension obligatoire « link » ou « sdir »), forme inattendue ou trop grand : illisible, donc attente.
 // Jamais d'exécution de git ni d'aucun programme : M10 a mesuré que certaines sous-commandes ne lancent pas un `core.fsmonitor`
 // piégé, mais la porte n'en a pas besoin. M11 : la configuration git GLOBALE du conteneur opencode (~/.gitconfig) est hors de tout
-// volume du cockpit, illisible ici ; G04 ne vaut que pour le dépôt (« G04 limité au dépôt », README et Diagnostic).
+// volume du cockpit, illisible ici ; G04 ne vaut que pour le dépôt (« G04 limité au dépôt », guide E-08 et Diagnostic).
 // Quels faits relever ? Une première lecture de la commande par la porte elle-même, sur des faits favorables, énumère les questions
 // qu'elle posera ; sur les faits réels, elle n'en pose jamais d'autre, puisque la première étape qui échoue arrête tout. Une question
 // imprévue reçoit null : attente, jamais une consultation automatique.

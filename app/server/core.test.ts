@@ -107,6 +107,7 @@ import { METHODS } from "./methods-catalogue.ts";
 import { renderMessageMethodBlock } from "./shared/methods.ts";
 // </c5:methodes-import>
 import { agentFrontmatterSchema, commandFrontmatterSchema, skillFrontmatterSchema } from "./studio-schema.ts";
+import * as docu from "./test-support/documentation.ts";
 
 const usage = (input = 0, output = 0, reasoning = 0, cacheRead = 0, cacheWrite = 0) => ({ input, output, reasoning, cacheRead, cacheWrite });
 const noCatalog = { overrides: {}, catalog: new Map(), preferTable: false };
@@ -697,8 +698,8 @@ describe("sécurité et utilitaires", () => {
       for (const value of ["openssl", "bin/openssl"]) assert.throws(() => loadEnv({ ...base, COCKPIT_OPENSSL: value }), EnvError, value);
     });
 
-    it("README : réglages du serveur de développement HTTPS acceptés tels qu'écrits (chemins absolus)", () => {
-      const readme = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "README.md"), "utf8");
+    it("documentation : réglages du serveur de développement HTTPS acceptés tels qu'écrits (chemins absolus)", () => {
+      const readme = docu.lireDocumentation(["README.md", "docs/GUIDE.md", "docs/DEVELOPPEMENT.md"]);
       const settings = [...readme.matchAll(/`(COCKPIT_TLS_DIR|COCKPIT_OPENSSL)=([^`]*)`/g)].map((m) => ({ key: m[1] ?? "", value: m[2] ?? "" }));
       assert.deepEqual([...new Set(settings.map((s) => s.key))].sort(), ["COCKPIT_OPENSSL", "COCKPIT_TLS_DIR"]);
       for (const { key, value } of settings) {

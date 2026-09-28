@@ -15,6 +15,7 @@ import { annonce110 } from "./shared/annonce-110.ts";
 import { annonceMiseAJour, TEXTES } from "./shared/construction-texts.ts";
 import { phraseErreur } from "./shared/team-texts.ts";
 import { EQUIPES_SIMPLE_OUVERTES } from "./wiring-eq.ts";
+import * as docu from "./test-support/documentation.ts";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const DEPOT = path.join(APP_DIR, "..");
@@ -179,15 +180,20 @@ describe("FirstRunRules.tsx : l'annonce de la 1.1.0 affichée une fois, dans le 
 // agents qui imposent une IA) est remplacée par l'annonce de la 1.1.0. README et RECAPITULATIF ne la promettent plus à une
 // installation 0.1.x : ils renvoient à Assistants › « À compléter », qui liste ces agents avec leur IA (AssistantsPage.tsx).
 describe("documentation : mise à jour depuis la 0.1.0, notice de la 1.0 remplacée (relecture F2-vague-5)", () => {
-  const DOCS = [["README.md"], ["docs", "RECAPITULATIF.md"]] as const;
-  const compact = (texte: string): string => texte.replace(/\s+/g, " ");
+  // Refonte du README (1.1.0) : la documentation de l'utilisateur est README.md et docs/GUIDE.md, lus par l'aide commune.
+  const NEGATIFS = ["README.md", "docs/GUIDE.md", "docs/RECAPITULATIF.md"] as const;
 
-  it("README et RECAPITULATIF : plus de notice « Passer en mode Avancé » ni de liste des agents dans la notice ; annonce 1.1.0 et « À compléter »", () => {
-    for (const doc of DOCS) {
-      const texte = compact(lire(...doc));
-      const nom = doc.join("/");
-      assert.equal(/avec une notice \(« Passer en mode Avancé »/.test(texte), false, nom);
-      assert.equal(texte.includes("La notice liste ces agents"), false, nom);
+  it("documentation de l'utilisateur et RECAPITULATIF : plus de notice « Passer en mode Avancé » ni de liste des agents dans la notice ; annonce 1.1.0 et « À compléter »", () => {
+    for (const doc of NEGATIFS) {
+      const texte = docu.compact(docu.lireDoc(doc));
+      assert.equal(/avec une notice \(« Passer en mode Avancé »/.test(texte), false, doc);
+      assert.equal(texte.includes("La notice liste ces agents"), false, doc);
+    }
+    const positifs: Array<[string, string]> = [
+      ["documentation de l'utilisateur", docu.compact(docu.lireDocumentation())],
+      ["docs/RECAPITULATIF.md", docu.compact(docu.lireDoc("docs/RECAPITULATIF.md"))],
+    ];
+    for (const [nom, texte] of positifs) {
       assert.ok(
         texte.includes(
           "la notice de la 1.0 (« Passer en mode Avancé », liste des agents et de leur IA) est remplacée par l'annonce de la 1.1.0, avec [Voir la carte] et [Compris]",

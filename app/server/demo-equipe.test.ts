@@ -15,7 +15,8 @@
 // - en mode Simple, [Voir une démonstration] ne paraît pas tant que `ouvertesEnSimple` est faux : le bouton n'est rendu que dans
 //   l'état vide et dans la galerie, que le modèle pur de l'itération 4 laisse nuls (U1, D-5-24). AUCUNE constante propre ;
 // - mouvement réduit : aucune lecture automatique, aucune minuterie, aucune animation PROPRE au lecteur ni à la démonstration
-//   (les transitions de la bande sont celles de NeonCarte, que le mouvement réduit coupe ; croisements-c5b-v4 le relie au README) ;
+//   (les transitions de la bande sont celles de NeonCarte, que le mouvement réduit coupe ; croisements-c5b-v4 le relie à la
+//   documentation, guide R-45 depuis la refonte du README) ;
 // - textes : ceux de `construction-texts.ts`, à l'octet ; les moments se disent « n / N », jamais « étape ».
 // Chaque garde a son contrôle discriminant (fixture modifiée, secret planté, import réseau ajouté, bouton déplacé).
 import assert from "node:assert/strict";
@@ -43,6 +44,7 @@ import {
   jalonDe,
   renommerIdentifiants,
 } from "./test-support/gen-demo-equipe.ts";
+import * as docu from "./test-support/documentation.ts";
 import { leaks, localUsername } from "./test-support/helpers.ts";
 import { buildTeamsTab } from "../web/pages/assistants/teams/teams-tab-model.ts";
 
@@ -519,14 +521,6 @@ describe("démonstration d'équipe : le lecteur réel, et la documentation qui l
   const R = TEXTES_REVOIR.partout;
   const DEPOT = path.join(APP_DIR, "..");
   const document = (...relatif: string[]) => lire(path.join(DEPOT, ...relatif)).replaceAll("\r\n", "\n");
-  /** Sous-section « ### {titre} » d'un document Markdown, jusqu'au titre suivant de niveau 1 à 3. */
-  const sousSection = (texte: string, titre: string): string => {
-    const debut = texte.indexOf(`\n### ${titre}\n`);
-    assert.ok(debut >= 0, `sous-section « ${titre} » introuvable`);
-    const suite = texte.slice(debut + 1);
-    const fin = suite.slice(1).search(/\n#{1,3} /);
-    return fin === -1 ? suite : suite.slice(0, fin + 1);
-  };
 
   it("le lecteur de la démonstration passée lit les libellés de « Revoir » (« {n} / {total} », [Moment précédent], [Moment suivant]), jamais le mot « étape »", () => {
     assert.equal(R.moments, "{n} / {total}");
@@ -540,8 +534,9 @@ describe("démonstration d'équipe : le lecteur réel, et la documentation qui l
     assert.doesNotMatch(passee, /\blecteur\.(?:moment|recommencer)\b/, "aucun libellé du lecteur de l'itération 1");
   });
 
-  it("README, « Démonstration d'équipe » : le lecteur réel est décrit, jamais « le lecteur de l'itération 1 » ni « Moment {n} / {total} »", () => {
-    const section = sousSection(document("README.md"), "Démonstration d'équipe");
+  it("documentation, « Démonstration d'équipe » : le lecteur réel est décrit, jamais « le lecteur de l'itération 1 » ni « Moment {n} / {total} »", () => {
+    // Refonte du README (1.1.0) : la sous-section est dans le guide (R-45), lue par l'aide commune (une seule occurrence exigée).
+    const section = docu.sousSection(docu.lireDocumentation(), "Démonstration d'équipe");
     assert.match(section, /Elle ne se lance \*\*jamais toute seule\*\*/, "la bonne sous-section est lue");
     assert.ok(section.includes(`« ${R.moments} »`), "compteur des moments de « Revoir » cité");
     assert.ok(section.includes(`[${R.precedent}]`) && section.includes(`[${R.suivant}]`), "commandes du lecteur citées");

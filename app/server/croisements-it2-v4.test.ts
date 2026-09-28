@@ -6,7 +6,7 @@
 //   2. témoin P6 et P4 : chaque scénario `it2-*` qui agit sur opencode tourne sous `avecTemoinP6`, sauf une liste FIGÉE de trois
 //      exemptés qui n'ont que le journal des requêtes du faux (`exigerP6SurRequetes`, muet hors « --faux ») ; `e2e/README.md` les
 //      nomme et dit ce qu'ils ne vérifient pas ;
-//   3. confirmation d'un choix automatique : le README et le §10 disent ce que fait `guardAutomatic`, à savoir une confirmation à
+//   3. confirmation d'un choix automatique : la documentation (guide, R-22) et le §10 disent ce que fait `guardAutomatic`, à savoir une confirmation à
 //      CHAQUE relâchement pour les deux choix automatiques — la ligne `conversation_autonomy` ne garde aucune trace d'une
 //      confirmation déjà donnée, et l'écart avec le §4.11 de la spécification est porté au §11 comme un reste.
 // Le banc e2e lui-même (run-e2e.sh) est joué par l'intégrateur, hors de npm test (décision D-06) : ce fichier ne lit que ses
@@ -21,6 +21,7 @@ import type { Cockpit11Module, ModuleName } from "./contracts-11.ts";
 import type { ConversationAutonomyView } from "./shared/autonomy-types.ts";
 import { type CockpitHarness, type CockpitHarnessOptions, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeSession } from "./test-support/fake-opencode.ts";
+import * as docu from "./test-support/documentation.ts";
 import { until, within } from "./test-support/helpers.ts";
 import { MODULE_ORDER } from "./wiring-11.ts";
 
@@ -34,7 +35,6 @@ const SCENARIOS_DIR = path.join(REPO_DIR, "e2e", "scenarios");
 const BANC_FILE = path.join(REPO_DIR, "e2e", "lib", "docker-e2e.mjs");
 const E2E_README = path.join(REPO_DIR, "e2e", "README.md");
 const RECAP = path.join(REPO_DIR, "docs", "RECAPITULATIF.md");
-const README = path.join(REPO_DIR, "README.md");
 
 const lire = (file: string) => fs.readFileSync(file, "utf8");
 /** Le document sur une seule ligne : les phrases des documents sont coupées à 140 colonnes. */
@@ -236,9 +236,10 @@ describe("croisements it2 V4 : confirmation d'un choix automatique, code et docu
     assert.deepEqual(colonnes.filter((name) => /confirm/i.test(name)), [], "une colonne retient la confirmation : le README peut la citer");
   });
 
-  it("README et RECAPITULATIF : les deux choix automatiques demandent une confirmation à chaque relâchement, jamais « la première fois »", () => {
-    const puce = entree(README, "- **Confirmation avant de relâcher.**");
-    assert.doesNotMatch(puce, /la première fois/, "README : « Modifications automatiques » annoncé confirmé une seule fois");
+  it("documentation et RECAPITULATIF : les deux choix automatiques demandent une confirmation à chaque relâchement, jamais « la première fois »", () => {
+    // Refonte du README (1.1.0) : la puce est dans le guide (R-22), lue par l'aide commune (une seule occurrence exigée).
+    const puce = docu.entree(docu.lireDocumentation(), "- **Confirmation avant de relâcher.**");
+    assert.doesNotMatch(puce, /la première fois/, "documentation : « Modifications automatiques » annoncé confirmé une seule fois");
     assert.match(puce, /Resserrer le choix est immédiat\./);
     assert.match(puce, /chaque fois qu'on relâche le choix/);
 

@@ -32,8 +32,10 @@ Ces fonctions n'ont pas été éprouvées sur GitHub Copilot réel : les recette
 
 1. `.\cockpit.ps1 update`, comme d'habitude.
    - Depuis la 1.0.5 ou la 1.0.6 : le mode d'accès ne change pas (HTTP local reste en HTTP, HTTPS reste en HTTPS) et aucune reconnexion n'est demandée.
-   - Depuis une version antérieure à la 1.0.5 : lisez d'abord « Mise à jour vers la 1.0.5 » dans le README (passage en HTTPS, nouveau jeton, une reconnexion).
+   - Depuis une version antérieure à la 1.0.5 : lisez d'abord « Mettre à jour depuis une version antérieure à la 1.0.5 » dans le guide, `docs/GUIDE.md`, procédure P-07 (passage en HTTPS, nouveau jeton, une reconnexion).
    - Le mot de passe interne d'opencode n'est renouvelé que si vous venez d'une version antérieure à la 1.0.6.
+   - Docker Compose 2.8 ou plus récent est exigé : sinon, le script s'arrête avant toute modification (mettez Docker Desktop à jour).
+   - Un proxy donné par un nom court (`http://proxy:8080`) est signalé : donnez son nom complet ou son adresse IP (`.\install.ps1 -Proxy http://proxy.domaine.tld:8080`), le cockpit ne résout plus les noms courts.
 2. **Internet est fermé tout seul pendant la mise à jour.**
    - Les profils Prudent, Équilibré et Sans confirmation gardent leur nom ; seul l'accès à Internet passe à « refusé ».
    - Pour des règles personnalisées, seules les valeurs « ask » de `webfetch` et `websearch` deviennent « deny ».

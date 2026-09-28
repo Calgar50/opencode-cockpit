@@ -10,7 +10,7 @@
 //      rempli elle-même `command` et qui a posé une demande, accordée « once », ne la dit jamais, ni le nom du raccourci, et le
 //      Déroulé le dit « décidé par l'IA » (relecture 1-vague-5) ;
 //   2. documentation (DOC1, L7a, L7b-1, L7b-2) : liens internes et ancres (calculées comme GitHub) de README.md,
-//      docs/RECAPITULATIF.md et e2e/README.md ; chaque scénario du banc est cité dans e2e/README.md et chaque scénario cité dans la
+//      docs/GUIDE.md, docs/DEVELOPPEMENT.md, docs/NOTES-1.1.0.md, docs/RECAPITULATIF.md et e2e/README.md (refonte du README) ; chaque scénario du banc est cité dans e2e/README.md et chaque scénario cité dans la
 //      documentation existe ; chaque scénario it1 qui agit sur opencode tourne sous le témoin P6 ; chaque endroit du banc qui
 //      aucun scénario ne suppose plus le HTTP ni ne parle au cockpit hors du transport du banc (écart D-05 levé par R105b), et les
 //      deux documents le disent ; le RECAPITULATIF ne garde pas en
@@ -43,7 +43,14 @@ const APP_DIR = path.join(import.meta.dirname, "..");
 const REPO_DIR = path.join(APP_DIR, "..");
 const ACTOR_LIST_FILE = path.join(APP_DIR, "web", "pages", "chat", "activity", "ActorList.tsx");
 const SCENARIOS_DIR = path.join(REPO_DIR, "e2e", "scenarios");
-const DOCS = ["README.md", path.join("docs", "RECAPITULATIF.md"), path.join("e2e", "README.md")] as const;
+const DOCS = [
+  "README.md",
+  path.join("docs", "GUIDE.md"),
+  path.join("docs", "DEVELOPPEMENT.md"),
+  path.join("docs", "NOTES-1.1.0.md"),
+  path.join("docs", "RECAPITULATIF.md"),
+  path.join("e2e", "README.md"),
+] as const;
 
 async function getJson<T>(h: CockpitHarness, pathname: string): Promise<T> {
   const res = await h.call("GET", pathname, { headers: h.headers.authed });
@@ -294,7 +301,7 @@ function anchorsOf(file: string): Set<string> {
 }
 
 describe("croisements it1 V5 : documentation (DOC1, L7a, L7b-1, L7b-2)", () => {
-  it("liens internes et ancres de README.md, docs/RECAPITULATIF.md et e2e/README.md", () => {
+  it("liens internes et ancres de README.md, docs/GUIDE.md, docs/DEVELOPPEMENT.md, docs/NOTES-1.1.0.md, docs/RECAPITULATIF.md et e2e/README.md", () => {
     const broken: string[] = [];
     let seen = 0;
     for (const doc of DOCS) {

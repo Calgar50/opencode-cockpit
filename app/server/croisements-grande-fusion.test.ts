@@ -31,6 +31,7 @@ import { createTeamRunnerModule, type TeamRunner } from "./team-runner.ts";
 import { createTeamStore } from "./team-store.ts";
 import { type CockpitHarness, startCockpit } from "./test-support/cockpit-harness.ts";
 import type { FakeAgent } from "./test-support/fake-opencode.ts";
+import * as docu from "./test-support/documentation.ts";
 import { until } from "./test-support/helpers.ts";
 import { EQUIPES_SIMPLE_OUVERTES, EQ_MODULE_ORDER } from "./wiring-eq.ts";
 import { MODULE_ORDER, SALLE_OUVERTE, STEP_ORDER } from "./wiring-11.ts";
@@ -742,11 +743,17 @@ describe("croisement MW × contrôle « internet » des équipes (evaluate ≠ d
     assert.equal(usesInternet(effectiveAgentRules({ ...sansCle, webfetch: "deny", websearch: "deny" }, agent)), false, "ou la générale qui les refuse");
     const limite =
       "un assistant qui n'a pas lui-même ces deux outils à « deny » est refusé comme étape d'équipe par le contrôle « internet »";
-    for (const doc of [["README.md"], ["docs", "RECAPITULATIF.md"]]) {
-      const texte = compact(lire(...doc));
-      const nom = doc.join("/");
-      assert.equal(texte.includes("Un assistant aux règles personnalisées sans ligne pour le web ne peut pas être une étape"), false, nom);
-      assert.equal(texte.includes("Assistant aux règles personnalisées sans clé"), false, nom);
+    // Refonte du README (1.1.0) : phrases interdites document par document ; phrases attendues dans la documentation de
+    // l'utilisateur (README et guide, lus ensemble par l'aide commune), puis dans le RECAPITULATIF.
+    for (const doc of ["README.md", "docs/GUIDE.md", "docs/RECAPITULATIF.md"]) {
+      const texte = docu.compact(docu.lireDoc(doc));
+      assert.equal(texte.includes("Un assistant aux règles personnalisées sans ligne pour le web ne peut pas être une étape"), false, doc);
+      assert.equal(texte.includes("Assistant aux règles personnalisées sans clé"), false, doc);
+    }
+    for (const [nom, texte] of [
+      ["documentation de l'utilisateur", docu.compact(docu.lireDocumentation())],
+      ["docs/RECAPITULATIF.md", docu.compact(docu.lireDoc("docs/RECAPITULATIF.md"))],
+    ] as const) {
       const phrase = `la configuration générale d'opencode est personnalisée sans clé \`webfetch\` (ou \`websearch\`), ${limite}`;
       assert.ok(texte.includes(`Si ${phrase}`) || texte.includes(`si ${phrase}`), nom);
       assert.ok(texte.includes("à la configuration générale (**Paramètres › opencode › Permissions globales**) ou à l'assistant"), nom);
