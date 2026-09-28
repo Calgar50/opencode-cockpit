@@ -90,9 +90,13 @@ export type OnceVerdict =
 // <gf5:d11>
 /**
  * Repli de la liste des demandes (GF5, D11) : sur la signature EXACTE du défaut d'opencode 1.18.30, la table des attentes si elle est
- * prouvée complète et cohérente avec l'erreur (« table »), sinon « bloquee » (rien n'est deviné) ; null : autre erreur.
+ * prouvée complète et cohérente avec l'erreur (« table »), sinon « bloquee » (rien n'est deviné) ; null : autre erreur. `enCause`
+ * (pré-publication 1.1.0, reste D11) : demandes illisibles que la table connaît, servies à la page pour être REFUSÉES (demandesEnCause).
  */
-export type RepliListe = { repli: "table"; demandes: DemandeEnAttente[] } | { repli: "bloquee"; outil: OutilBloquant } | null;
+export type RepliListe =
+  | { repli: "table"; demandes: DemandeEnAttente[] }
+  | { repli: "bloquee"; outil: OutilBloquant; enCause: DemandeEnAttente[] }
+  | null;
 // </gf5:d11>
 
 /** Réponse inscrite au registre AVANT son envoi à opencode. */

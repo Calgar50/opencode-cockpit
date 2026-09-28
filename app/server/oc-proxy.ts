@@ -603,6 +603,8 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
       // <gf5:d11>
       // Liste des demandes (GET /permission) refusée par opencode avec la signature EXACTE du défaut (D11) : la table des attentes au
       // format d'opencode si elle est fiable et cohérente avec l'erreur ; sinon 503 et sa phrase, rien n'est deviné. Autre 400 : relayé.
+      // Pré-publication 1.1.0 (reste D11) : le 503 porte aussi les demandes en cause que la table connaît (« demandes », au format
+      // d'opencode), pour que la page les garde affichées et REFUSABLES après un rechargement ; « once » reste en 503 sur elles.
       if (method === "GET" && sub === "/permission" && upstream.status === 400 && gate.repliListe !== undefined) {
         const texte = await upstream.text();
         let corps: unknown = null;
@@ -613,7 +615,10 @@ export function createOcProxy(instanceDeps: OcProxyDeps): (c: Context) => Promis
         }
         const repli = gate.repliListe(directory, upstream.status, corps);
         if (repli === null) return new Response(texte, { status: upstream.status, headers });
-        if (repli.repli === "bloquee") return fail(c, 503, "liste-bloquee", phraseListeIllisible(repli.outil), { outil: repli.outil });
+        if (repli.repli === "bloquee") {
+          const enCause = repli.enCause.length > 0 ? { demandes: repli.enCause.map(auFormatOpencode) } : {};
+          return fail(c, 503, "liste-bloquee", phraseListeIllisible(repli.outil), { outil: repli.outil, ...enCause });
+        }
         return c.json(repli.demandes.map(auFormatOpencode), 200);
       }
       // </gf5:d11>

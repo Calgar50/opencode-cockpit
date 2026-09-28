@@ -109,6 +109,19 @@ export function premiereIllisible(demandes: readonly Pick<DemandeEnAttente, "per
   return null;
 }
 
+/** Demandes en cause servies au plus avec une liste bloquée (demandesEnCause). */
+export const EN_CAUSE_MAX = 20;
+
+/**
+ * Demandes que la table connaît et qu'opencode ne saurait pas lister (premiereIllisible, demande par demande), dans l'ordre, au plus
+ * EN_CAUSE_MAX. Servies à la page quand la liste est bloquée ET que la table n'est pas prouvée complète (reste D11 : après une
+ * reconnexion du flux) : elles restent affichées et REFUSABLES par leur identifiant. Rien n'est accordé sur elles : « once » relit
+ * toujours la liste d'opencode (ListeBloqueeError, 503) ; un refus est relayé sans la liste.
+ */
+export function demandesEnCause(demandes: readonly DemandeEnAttente[]): DemandeEnAttente[] {
+  return demandes.filter((demande) => premiereIllisible([demande]) !== null).slice(0, EN_CAUSE_MAX);
+}
+
 /** Liste de motifs bornée ; null si elle ne l'est pas (jamais tronquée en silence). */
 function motifs(valeur: unknown): string[] | null {
   if (valeur === undefined) return [];

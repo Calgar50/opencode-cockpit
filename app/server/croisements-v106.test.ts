@@ -650,6 +650,57 @@ describe("croisements v106 : GET /permission rejeté par opencode (option permis
     assert.equal(guerie.status, 200, guerie.body);
   });
 
+  it("reconnexion du flux avec une demande en cause (reste D11, pré-publication 1.1.0) : la liste reste bloquée, mais la demande est servie avec le 503 à chaque rechargement, refusable par son identifiant ; « once » en 503 ; le refus guérit", async (t) => {
+    const { h } = await start(t, { modules: ["pending"] });
+    const dir = dirOf("proj");
+    const web = await waitingFor(h, dir, "Web", webfetch);
+    await h.attentesAuRepos();
+    h.fake.disconnectStreams();
+    await until(() => h.processor.status.connected === false || h.cockpitEvents().some((e) => e.type === "opencode.connection" && (e.data as { connected?: boolean }).connected === false));
+    await until(() => h.processor.status.connected, 10_000);
+    await h.attentesAuRepos();
+    // Sonde de la revue F2 : la relecture proactive retombe sur le 400, la table ne redevient jamais fiable ; chaque rechargement
+    // de la page (GET /api/oc/permission) répond 503. Correction : la demande en cause, connue du flux, est servie avec le 503.
+    for (let i = 0; i < 5; i++) {
+      const liste = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+      assert.equal(liste.status, 503, `rechargement ${i + 1} : ${liste.body}`);
+      const corps = liste.json<{ error: string; outil: string; message: string; demandes?: Array<{ id: string; sessionID: string; permission: string }> }>();
+      assert.deepEqual([corps.error, corps.outil, corps.message], ["liste-bloquee", "web", phraseListeIllisible("web")]);
+      assert.deepEqual(
+        (corps.demandes ?? []).map((d) => [d.id, d.sessionID, d.permission]),
+        [[web.asked.id, web.session.id, "webfetch"]],
+        `rechargement ${i + 1} : la demande en cause reste affichable`,
+      );
+    }
+    // Une demande NOUVELLE et saine du même dossier ne peut pas être accordée tant que la liste est bloquée (rien n'est deviné).
+    const autre = await waitingFor(h, dir, "Commande", bash("ls -la"));
+    const onceBash = await h.call("POST", `/api/oc/permission/${autre.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
+    assert.equal(onceBash.status, 503, onceBash.body);
+    assert.equal(onceBash.json<{ error: string }>().error, "liste-bloquee");
+    const onceWeb = await h.call("POST", `/api/oc/permission/${web.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
+    assert.equal(onceWeb.status, 503, "« Autoriser une fois » sur la demande servie depuis la table : 503, jamais relayé");
+    assert.deepEqual(replies(h), [], "rien relayé");
+    const bloquee = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.deepEqual(
+      (bloquee.json<{ demandes?: Array<{ id: string }> }>().demandes ?? []).map((d) => d.id),
+      [web.asked.id],
+      "seule la demande en cause est servie (la demande saine attend dans la liste d'opencode)",
+    );
+    // Refus par l'identifiant servi : relayé sans la liste ; la liste guérit, les deux demandes restantes ou nouvelles y reviennent.
+    const reject = await h.call("POST", `/api/oc/permission/${web.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "reject" } });
+    assert.equal(reject.status, 200, reject.body);
+    await within(h.fake.settled(web.session.id), "réponse close par le refus");
+    const guerie = await h.call("GET", `/api/oc/permission?directory=${q(dir)}`, { headers: h.headers.authed });
+    assert.equal(guerie.status, 200, guerie.body);
+    assert.deepEqual(
+      guerie.json<Array<{ id: string }>>().map((d) => d.id),
+      [autre.asked.id],
+    );
+    const onceApres = await h.call("POST", `/api/oc/permission/${autre.asked.id}/reply?directory=${q(dir)}`, { headers: h.headers.mutating, body: { reply: "once" } });
+    assert.equal(onceApres.status, 200, onceApres.body);
+    await within(h.fake.settled(autre.session.id), "commande exécutée");
+  });
+
   it("autonomie : décision automatique (grep) RELAYÉE malgré un webfetch sans délai en attente dans le même dossier (journal « auto », relais « ok »)", async (t) => {
     const choices = new Map<string, AutonomyChoice>();
     const { h } = await start(t, {

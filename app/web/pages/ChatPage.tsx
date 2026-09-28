@@ -17,7 +17,7 @@ import {
 } from "../../server/shared/assistant-rules.ts";
 import { pickRestorableAgent } from "../../server/shared/agent-choice.ts";
 // <gf5:d11>
-import { avertissementDeLecture } from "../../server/shared/attentes-texts.ts";
+import { avertissementDeLecture, demandesDeLecture } from "../../server/shared/attentes-texts.ts";
 // </gf5:d11>
 import { isClassifierRoot } from "../../server/shared/session-purpose.ts";
 import { useApp } from "../app/AppContext.tsx";
@@ -252,11 +252,15 @@ export function ChatPage() {
     if (status.status === "fulfilled") setStatuses(status.value);
     // <gf5:d11>
     // Échec de la liste : avertissement (outil en cause pour le 503 « liste-bloquee »), les demandes déjà connues restent affichées.
+    // Pré-publication 1.1.0 (reste D11) : les demandes en cause que le cockpit connaît, servies avec le 503, sont ajoutées pour
+    // rester refusables après un rechargement.
     if (perms.status === "fulfilled") {
       setPermissions(perms.value);
       setListeIllisible(null);
     } else {
       setListeIllisible(avertissementDeLecture(perms.reason));
+      const enCause = demandesDeLecture(perms.reason) as unknown as PermissionRequest[];
+      if (enCause.length > 0) setPermissions((list) => enCause.reduce(upsertById, list));
     }
     // </gf5:d11>
     if (qs.status === "fulfilled") setQuestions(qs.value);

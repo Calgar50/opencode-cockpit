@@ -14,7 +14,9 @@ import {
   cleDossier,
   createPendingTable,
   defautDansCorps,
+  demandesEnCause,
   DOSSIERS_MAX,
+  EN_CAUSE_MAX,
   lireDemande,
   METADONNEES_FACULTATIVES,
   METADONNEES_MAX,
@@ -25,7 +27,7 @@ import {
   TABLE_MAX_PAR_INSTANCE,
   type TableDesAttentes,
 } from "./pending-table.ts";
-import { avertissementDeLecture, outilDeCle, phraseListeBloquee, TEXTES } from "./shared/attentes-texts.ts";
+import { avertissementDeLecture, demandesDeLecture, outilDeCle, phraseListeBloquee, phraseListeIllisible, TEXTES } from "./shared/attentes-texts.ts";
 import { verificationImpossible } from "./shared/delegation-texts.ts";
 import { METADONNEES_FACULTATIVES as METADONNEES_DU_FAUX } from "./test-support/fake-opencode.ts";
 
@@ -418,7 +420,7 @@ describe("page de chat et phrases : avertissement au lieu d'une liste vide (D11 
     const bloquee = (outil: unknown) => ({ status: 503, code: "liste-bloquee", data: { error: "liste-bloquee", outil } });
     assert.equal(
       avertissementDeLecture(bloquee("web")),
-      "Liste des demandes d'autorisation illisible : rechargez dans un instant ; si cela dure, refusez la demande web en attente.",
+      "Liste des demandes d'autorisation illisible : une demande web en attente l'en empêche. Refusez-la si elle est affichée ; sinon, arrêtez les réponses en cours, puis Diagnostic › Redémarrer opencode.",
     );
     assert.equal(avertissementDeLecture(bloquee("fichiers")), TEXTES.partout.avertissement.fichiers);
     assert.equal(avertissementDeLecture(bloquee("autre")), TEXTES.partout.avertissement.autre);
@@ -431,7 +433,7 @@ describe("page de chat et phrases : avertissement au lieu d'une liste vide (D11 
     assert.equal(outilDeCle("autreCle"), "autre");
     assert.equal(
       phraseListeBloquee("web"),
-      "Une demande web en attente empêche opencode de lister ses demandes : refusez-la, puis réessayez. Rien n'a été envoyé.",
+      "Une demande web en attente empêche opencode de lister ses demandes : refusez-la, puis réessayez. Si elle n'est pas affichée, arrêtez les réponses en cours, puis Diagnostic › Redémarrer opencode. Rien n'a été envoyé.",
     );
     for (const phrase of [PERMISSION_MESSAGES.listeBloquee, phraseListeBloquee("fichiers"), phraseListeBloquee("autre")]) {
       assert.notEqual(phrase, PERMISSION_MESSAGES.verificationImpossible);
@@ -440,14 +442,69 @@ describe("page de chat et phrases : avertissement au lieu d'une liste vide (D11 
     }
   });
 
+  it("reste D11 (pré-publication 1.1.0) : demandesEnCause garde les seules demandes illisibles connues, dans l'ordre, bornées ; bash jamais", () => {
+    const lues = [demande("per_b1"), webSansDelai("per_w1"), demande("per_g1", { permission: "glob", patterns: ["*"], metadata: { pattern: "*" } }), webSansDelai("per_w2")]
+      .map((brut) => lireDemande(brut))
+      .filter((d) => d !== null);
+    assert.deepEqual(
+      demandesEnCause(lues).map((d) => d.id),
+      ["per_w1", "per_g1", "per_w2"],
+    );
+    const complet = lireDemande(demande("per_w3", { permission: "webfetch", metadata: { url: "https://exemple.test", format: "markdown", timeout: 30 } }));
+    assert.ok(complet);
+    assert.deepEqual(demandesEnCause([complet]), [], "webfetch avec délai : encodable, jamais « en cause »");
+    const beaucoup = Array.from({ length: EN_CAUSE_MAX + 5 }, (_, i) => lireDemande(webSansDelai(`per_w${i}`))).filter((d) => d !== null);
+    assert.equal(demandesEnCause(beaucoup).length, EN_CAUSE_MAX);
+  });
+
+  it("reste D11 : demandesDeLecture ne lit que le 503 « liste-bloquee » et ses entrées bien formées (bornées, copiées) ; toute autre erreur : rien", () => {
+    const servie = auFormatOpencode(lireDemande(webSansDelai("per_w1")) as NonNullable<ReturnType<typeof lireDemande>>);
+    const erreur = (demandes: unknown, over: Record<string, unknown> = {}) => ({
+      status: 503,
+      code: "liste-bloquee",
+      data: { error: "liste-bloquee", outil: "web", message: phraseListeIllisible("web"), demandes },
+      ...over,
+    });
+    assert.deepEqual(demandesDeLecture(erreur([servie])), [servie]);
+    const lue = demandesDeLecture(erreur([servie]))[0];
+    assert.notEqual(lue?.metadata, servie.metadata, "copie : aucune référence gardée");
+    for (const autre of [erreur([servie], { status: 502 }), erreur([servie], { code: "http" }), erreur("x"), erreur(undefined), null, "texte", new Error("x")]) {
+      assert.deepEqual(demandesDeLecture(autre), [], JSON.stringify(autre));
+    }
+    const malFormees = [
+      { ...servie, id: "../x" },
+      { ...servie, sessionID: 5 },
+      { ...servie, permission: "Web Fetch" },
+      { ...servie, patterns: [1] },
+      { ...servie, always: "*" },
+      null,
+      "per_x",
+    ];
+    assert.deepEqual(demandesDeLecture(erreur([...malFormees, servie])), [servie], "entrée mal formée ignorée, jamais inventée");
+    const sansOutil = demandesDeLecture(erreur([{ ...servie, tool: { messageID: "msg a", callID: "" } }]))[0];
+    assert.equal(sansOutil !== undefined && "tool" in sansOutil, false, "appel d'outil illisible : champ absent");
+    assert.equal(demandesDeLecture(erreur(Array.from({ length: 50 }, () => servie))).length, EN_CAUSE_MAX);
+  });
+
+  it("reste D11 : chaque phrase qui nomme la demande en cause dit le recours quand elle n'est pas affichée (Arrêter, puis Redémarrer opencode)", () => {
+    const recours = "arrêtez les réponses en cours, puis Diagnostic › Redémarrer opencode";
+    for (const outil of ["web", "fichiers", "autre"] as const) {
+      for (const phrase of [TEXTES.partout.bloquee[outil], TEXTES.partout.listeIllisible[outil], TEXTES.partout.avertissement[outil]]) {
+        assert.ok(phrase.includes(recours), phrase);
+        assert.doesNotMatch(phrase, /rechargez dans un instant/, "tant que la demande attend, aucune lecture ne réussit");
+      }
+    }
+    assert.equal(TEXTES.partout.avertissement.inconnue, "Liste des demandes d'autorisation illisible : rechargez dans un instant.");
+  });
+
   it("ChatPage.tsx : un échec de la liste n'est plus ignoré en silence — avertissement non bloquant affiché, liste gardée", () => {
     const source = fs.readFileSync(path.join(import.meta.dirname, "..", "web", "pages", "ChatPage.tsx"), "utf8");
     const compact = source.replace(/\s+/g, " ");
     assert.ok(
       compact.includes(
-        'if (perms.status === "fulfilled") { setPermissions(perms.value); setListeIllisible(null); } else { setListeIllisible(avertissementDeLecture(perms.reason)); }',
+        'if (perms.status === "fulfilled") { setPermissions(perms.value); setListeIllisible(null); } else { setListeIllisible(avertissementDeLecture(perms.reason)); const enCause = demandesDeLecture(perms.reason) as unknown as PermissionRequest[]; if (enCause.length > 0) setPermissions((list) => enCause.reduce(upsertById, list)); }',
       ),
-      "échec de la liste : avertissement posé ; réussite : levé",
+      "échec de la liste : avertissement posé et demandes en cause AJOUTÉES à celles déjà affichées (jamais la liste remplacée) ; réussite : levé",
     );
     assert.ok(compact.includes('listeIllisible !== null ? ( <div className="callout warning small" role="status" data-liste-illisible="">'), "avertissement rendu");
     assert.ok(compact.includes("|| listeIllisible !== null ? ("), "affiché même sans demande connue");

@@ -39,6 +39,7 @@ import {
   createPendingTable,
   type DemandeEnAttente,
   defautDansCorps,
+  demandesEnCause,
   ListeBloqueeError,
   METADONNEES_FACULTATIVES,
   premiereIllisible,
@@ -174,13 +175,15 @@ export function createPermissionGate(deps: PermissionGateInstanceDeps): Permissi
   /**
    * Repli sur la table (D11 §6.2, réserves du sceptique) : seulement sur la signature EXACTE du défaut ; table FIABLE ; indice cité
    * présent dans la table ; CONTRÔLE FORT de l'entrée citée (permission de METADONNEES_FACULTATIVES, sans la clé citée) ; aucune
-   * entrée précédente qu'opencode aurait citée avant elle. Sinon « bloquee » : rien n'est deviné. Autre erreur : null.
+   * entrée précédente qu'opencode aurait citée avant elle. Sinon « bloquee » : rien n'est deviné, mais les demandes en cause que la
+   * table connaît (demandesEnCause) sont rendues pour être refusées depuis la page (reste D11 : après une reconnexion du flux, la table
+   * n'est plus prouvée complète tant que la demande en cause attend). Autre erreur : null.
    */
   const repliListe = (directory: string | null, status: number, corps: unknown): RepliListe => {
     const defaut = defautDansCorps(status, corps);
     if (defaut === null) return null;
-    const bloquee = { repli: "bloquee", outil: outilDeCle(defaut.cle) } as const;
     const etat = table.etat(directory);
+    const bloquee = { repli: "bloquee", outil: outilDeCle(defaut.cle), enCause: demandesEnCause(etat.demandes) } as const;
     if (!etat.fiable) return bloquee;
     // Indice hors de la table : la demande qu'opencode cite n'y est pas, la table est incomplète.
     if (defaut.indice >= etat.demandes.length) return bloquee;
