@@ -16,6 +16,11 @@ export interface OcAgentInfo extends AgentLite {
   steps?: number;
   /** Règles effectives (défauts, configuration globale, agent), toujours présentes. */
   permission: Rule[];
+  /**
+   * Pré-publication 1.1.0 : `permission` de GET /agent n'a pas pu être lu en entier (valeur qui n'est pas un tableau, entrée mal
+   * formée ou liste coupée). La délégation en Autonome le traite comme des règles illisibles (D1, fermé en cas de doute).
+   */
+  permissionIncomplete?: true;
 }
 
 export interface OcCommandInfo extends CommandLite {
@@ -56,17 +61,24 @@ function isAction(v: unknown): v is Action {
   return v === "allow" || v === "ask" || v === "deny";
 }
 
-function toRules(raw: unknown): Rule[] {
-  if (!Array.isArray(raw)) return [];
+/** Règles lues au plus dans `permission` d'un agent. */
+const MAX_RULES = 5_000;
+
+/** Règles de GET /agent ; `complete` faux quand la valeur n'est pas un tableau, qu'une entrée est écartée ou que la liste est coupée. */
+function toRules(raw: unknown): { rules: Rule[]; complete: boolean } {
+  if (!Array.isArray(raw)) return { rules: [], complete: false };
   const rules: Rule[] = [];
-  for (const item of raw.slice(0, 5_000)) {
-    if (!isRecord(item)) continue;
-    const permission = text(item.permission, 200);
-    const pattern = typeof item.pattern === "string" && item.pattern.length <= 1_000 ? item.pattern : undefined;
-    if (permission === undefined || pattern === undefined || !isAction(item.action)) continue;
+  let complete = raw.length <= MAX_RULES;
+  for (const item of raw.slice(0, MAX_RULES)) {
+    const permission = isRecord(item) ? text(item.permission, 200) : undefined;
+    const pattern = isRecord(item) && typeof item.pattern === "string" && item.pattern.length <= 1_000 ? item.pattern : undefined;
+    if (!isRecord(item) || permission === undefined || pattern === undefined || !isAction(item.action)) {
+      complete = false;
+      continue;
+    }
     rules.push({ permission, pattern, action: item.action });
   }
-  return rules;
+  return { rules, complete };
 }
 
 /** Réponse de GET /agent (Agent.Info d'opencode 1.18.30) réduite et vérifiée : c'est une entrée externe. */
@@ -75,7 +87,9 @@ export function toAgentInfo(raw: unknown): OcAgentInfo | null {
   const name = text(raw.name, 200);
   if (name === undefined) return null;
   const mode = raw.mode === "primary" || raw.mode === "subagent" || raw.mode === "all" ? raw.mode : "all";
-  const agent: OcAgentInfo = { name, mode, permission: toRules(raw.permission) };
+  const { rules, complete } = toRules(raw.permission);
+  const agent: OcAgentInfo = { name, mode, permission: rules };
+  if (!complete) agent.permissionIncomplete = true;
   if (isRecord(raw.model)) {
     const providerID = text(raw.model.providerID, 100);
     const modelID = text(raw.model.modelID, 200);

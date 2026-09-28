@@ -126,6 +126,8 @@ export const TEXTES = {
       colonneCible: "Assistant demandé",
       droitsNoms: {
         read: "Lire un fichier",
+        /** Ligne ENV_READ_ROW de task-once-guard.ts (pré-publication 1.1.0) : lecture d'un .env, que « Lire un fichier » ne montre pas. */
+        "read-env": "Lire un .env",
         edit: "Modifier un fichier",
         bash: "Lancer une commande",
         webfetch: "Consulter une page web (Internet fermé)",

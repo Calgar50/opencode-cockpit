@@ -349,7 +349,8 @@ export const ENV_READ_SAMPLES = Object.freeze([".env", "app/.env", ".env.local",
  * Droits effectifs d'une cible de délégation (règles de GET /agent, dans l'ordre ; pré-publication 1.1.0, D1) :
  * - actsWithoutAsking : elle modifie, lance une commande, délègue ou va sur le web sans demander (même lecture que l'activation) ;
  * - readsEnvWithoutAsking : `read` d'un .env vaut « allow » (evaluate, la dernière règle l'emporte).
- * Règles illisibles : les deux à vrai (fermé en cas de doute). Le plancher de la conversation n'y est pas ajouté : il ne pose que
+ * Règles illisibles : les deux à vrai (fermé en cas de doute) ; task-once-guard.ts passe null quand oc-lookup.ts n'a lu les règles
+ * qu'en partie (permissionIncomplete). Le plancher de la conversation n'y est pas ajouté : il ne pose que
  * des refus, donc cette lecture peut refuser plus que nécessaire, jamais moins.
  */
 export function targetRightsFacts(rules: readonly Rule[] | null): { actsWithoutAsking: boolean; readsEnvWithoutAsking: boolean } {

@@ -69,7 +69,7 @@ import {
   type TaskSize,
   type UiMode,
 } from "./shared/assistant-rules.ts";
-import { targetRightsFacts } from "./shared/autonomy-rules.ts";
+import { ENV_READ_SAMPLES, targetRightsFacts } from "./shared/autonomy-rules.ts";
 import type { AutonomyChoice, DelegationFacts } from "./shared/autonomy-types.ts";
 import { avisSimple, avisSimpleEnAttente, messageRefusSimple, refusDelegation, verificationImpossible } from "./shared/delegation-texts.ts";
 import { ID_RE, SESSION_ID_RE } from "./shared/ids.ts";
@@ -204,6 +204,18 @@ export function delegationAccord(callerRules: readonly Rule[], target: string): 
 export const COMPARED_PERMISSIONS: readonly string[] = ["read", "edit", "bash", "webfetch", "websearch", "task", "external_directory"];
 
 /**
+ * Ligne de la carte placée après « read » (pré-publication 1.1.0) : lecture d'un .env, évaluée sur les chemins d'ENV_READ_SAMPLES
+ * (« sans demander » dès que l'un d'eux se lit sans demande, comme la règle D1). « read » est évalué sur « * » et ne montre pas
+ * l'écart : `explore` lit un .env sans demander alors que l'assistant qui délègue le demande.
+ */
+export const ENV_READ_ROW = "read-env";
+
+function envReadAction(rules: readonly Rule[]): RuleActionLite {
+  if (ENV_READ_SAMPLES.some((file) => evaluate(rules, "read", file) === "allow")) return "allow";
+  return evaluate(rules, "read", ".env") as RuleActionLite;
+}
+
+/**
  * Droits comparés de l'appelant et de la cible (règles effectives de GET /agent, sans le plancher de la conversation, qui ne pose que
  * des refus) : pour `task`, l'appelant est évalué sur le nom de la cible (delegationAccord) ; la cible reçoit les refus d'un enfant
  * (F-f : todowrite et task refusés, sauf règle propre de l'assistant).
@@ -222,11 +234,20 @@ export function comparedRights(
             .filter((permission) => !targetRules.some((rule) => rule.permission === permission))
             .map((permission): Rule => ({ permission, pattern: "*", action: "deny" })),
         ];
-  return COMPARED_PERMISSIONS.map((permission) => ({
-    permission,
-    appelant: callerRules === null ? null : (evaluate(callerRules, permission, permission === "task" && targetName !== null ? targetName : "*") as RuleActionLite),
-    cible: childRules === null ? null : (evaluate(childRules, permission, "*") as RuleActionLite),
-  }));
+  return COMPARED_PERMISSIONS.flatMap((permission) => {
+    const row = {
+      permission,
+      appelant: callerRules === null ? null : (evaluate(callerRules, permission, permission === "task" && targetName !== null ? targetName : "*") as RuleActionLite),
+      cible: childRules === null ? null : (evaluate(childRules, permission, "*") as RuleActionLite),
+    };
+    if (permission !== "read") return [row];
+    const env = {
+      permission: ENV_READ_ROW,
+      appelant: callerRules === null ? null : envReadAction(callerRules),
+      cible: childRules === null ? null : envReadAction(childRules),
+    };
+    return [row, env];
+  });
 }
 
 // --- Lectures (entrées externes, vérifiées) ---------------------------------------------------------------------------------------
@@ -490,7 +511,15 @@ export async function inspectDelegation(c11: Cockpit11, ref: DelegationRequestRe
     caps: { delegationsMax: maxPerRequest, plafondUsd: maxUsdPerRequest },
     facts: {
       target:
-        target === null ? null : { name: target.name, mode: target.mode, internal: isInternalTarget(target.name), ...targetRightsFacts(target.permission) },
+        target === null
+          ? null
+          : {
+              name: target.name,
+              mode: target.mode,
+              internal: isInternalTarget(target.name),
+              // Règles lues en partie seulement (oc-lookup) : illisibles, donc les deux droits à vrai (D1, fermé en cas de doute).
+              ...targetRightsFacts(target.permissionIncomplete === true ? null : target.permission),
+            },
       taskIdInTree,
       promptRisk,
       modelAllowed,
@@ -549,6 +578,9 @@ export function simpleRefusalApplies(mode: UiMode, choice: AutonomyChoice, repli
 
 const roundUsd = (usd: number) => Math.round(usd * 10_000) / 10_000;
 
+/** Règles d'un agent pour la carte : null (« inconnu ») si l'agent manque ou si ses règles n'ont été lues qu'en partie. */
+const readableRules = (agent: OcAgentInfo | null): readonly Rule[] | null => (agent === null || agent.permissionIncomplete === true ? null : agent.permission);
+
 /** Carte détaillée du mode Avancé (DelegationDetailsView). */
 export function detailsView(c11: Pick<Cockpit11, "db">, inspection: DelegationInspection): DelegationDetailsView {
   const { ref, target, facts } = inspection;
@@ -560,7 +592,7 @@ export function detailsView(c11: Pick<Cockpit11, "db">, inspection: DelegationIn
     cible: target === null ? null : { nom: target.name, titre: title ?? target.name, mode: target.mode, interne: isInternalTarget(target.name) },
     ia: { model: inspection.model, disponible: facts.modelAllowed },
     estimationUsd: Number.isFinite(facts.estimateUsd) ? roundUsd(facts.estimateUsd) : null,
-    droits: comparedRights(inspection.caller?.permission ?? null, target?.permission ?? null, inspection.targetName),
+    droits: comparedRights(readableRules(inspection.caller), readableRules(target), inspection.targetName),
     compteurs: {
       delegations: facts.delegationsSoFar,
       delegationsMax: inspection.caps.delegationsMax,

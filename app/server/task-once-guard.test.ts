@@ -18,7 +18,8 @@ import type { OcGlobalEvent, OpencodeClient } from "./opencode.ts";
 import { createPermissionGate } from "./permission-gate.ts";
 import { SessionTracker } from "./sessions.ts";
 import type { ActivityFact, DelegationDetailsView, DelegationRefusalCode } from "./shared/activity-types.ts";
-import type { Rule, UiMode } from "./shared/assistant-rules.ts";
+import { toAgentInfo } from "./oc-lookup.ts";
+import { opencodeDefaultPermission, PERMISSION_PRESETS, type Rule, rulesFromConfig, type UiMode } from "./shared/assistant-rules.ts";
 import type { AutonomyChoice, AutonomyRequestView, DelegationFacts } from "./shared/autonomy-types.ts";
 import { avisSimple, avisSimpleEnAttente, erreurDetails, messageRefusSimple, refusDelegation, TEXTES, verificationImpossible } from "./shared/delegation-texts.ts";
 import {
@@ -27,6 +28,7 @@ import {
   createTaskGuard,
   DelegationGoneError,
   delegationAccord,
+  ENV_READ_ROW,
   FILE_REFERENCE,
   GUARD_PROMPT_RISKS,
   guardRefusal,
@@ -361,7 +363,8 @@ describe("L1d : consigne, cibles, refus et parité (fonctions pures)", () => {
     const rights = comparedRights(caller, target, "general");
     assert.deepEqual(
       rights.map((r) => r.permission),
-      [...COMPARED_PERMISSIONS],
+      ["read", ENV_READ_ROW, ...COMPARED_PERMISSIONS.filter((p) => p !== "read")],
+      "la ligne « Lire un .env » suit « Lire un fichier »",
     );
     const of = (permission: string) => rights.find((r) => r.permission === permission);
     assert.deepEqual(of("task"), { permission: "task", appelant: "allow", cible: "deny" });
@@ -373,8 +376,38 @@ describe("L1d : consigne, cibles, refus et parité (fonctions pures)", () => {
     assert.equal(own.find((r) => r.permission === "task")?.cible, "allow");
     assert.deepEqual(
       comparedRights(null, null, null).map((r) => [r.appelant, r.cible]),
-      COMPARED_PERMISSIONS.map(() => [null, null]),
+      [ENV_READ_ROW, ...COMPARED_PERMISSIONS].map(() => [null, null]),
     );
+  });
+
+  it("droits comparés, ligne « Lire un .env » (pré-publication 1.1.0) : explore la lit sans demander, l'assistant qui délègue la demande ; « Lire un fichier » ne le montre pas", () => {
+    // Même ordre qu'opencode 1.18.30 : défauts, règles propres de l'agent (agent/agent.ts), configuration globale (profil Prudent 1.1).
+    const prudent = PERMISSION_PRESETS.prudent.permission;
+    const integre = (propres: unknown): Rule[] => [...rulesFromConfig(opencodeDefaultPermission()), ...rulesFromConfig(propres), ...rulesFromConfig(prudent)];
+    const build = integre({ question: "allow", plan_enter: "allow" });
+    const explore = integre({ "*": "deny", grep: "allow", glob: "allow", list: "allow", bash: "allow", webfetch: "allow", websearch: "allow", read: "allow" });
+    const general = integre({ todowrite: "deny" });
+    const rows = comparedRights(build, explore, "explore");
+    assert.deepEqual(rows.find((r) => r.permission === "read"), { permission: "read", appelant: "allow", cible: "allow" }, "« * » : aucun écart visible");
+    assert.deepEqual(rows.find((r) => r.permission === ENV_READ_ROW), { permission: ENV_READ_ROW, appelant: "ask", cible: "allow" });
+    assert.deepEqual(comparedRights(build, general, "general").find((r) => r.permission === ENV_READ_ROW), { permission: ENV_READ_ROW, appelant: "ask", cible: "ask" });
+    // Un .env d'un sous-dossier lu sans demande suffit ; un refus reste un refus.
+    const sousDossier: Rule[] = [...general, { permission: "read", pattern: "app/*", action: "allow" }];
+    assert.equal(comparedRights(build, sousDossier, "general").find((r) => r.permission === ENV_READ_ROW)?.cible, "allow");
+    const refuse: Rule[] = [...general, { permission: "read", pattern: "*.env", action: "deny" }];
+    assert.equal(comparedRights(build, refuse, "general").find((r) => r.permission === ENV_READ_ROW)?.cible, "deny");
+    assert.equal(TEXTES.avance.carte.droitsNoms[ENV_READ_ROW], "Lire un .env");
+  });
+
+  it("règles d'un agent lues en partie dans GET /agent (pré-publication 1.1.0) : marquées incomplètes, jamais prises pour des règles conformes", () => {
+    const regle = { permission: "read", pattern: "*", action: "allow" };
+    assert.equal(toAgentInfo({ name: "explore", mode: "subagent", permission: [regle] })?.permissionIncomplete, undefined, "liste lue en entier");
+    assert.equal(toAgentInfo({ name: "explore", mode: "subagent", permission: [] })?.permissionIncomplete, undefined, "liste vide, lue en entier");
+    for (const permission of [undefined, "allow", { read: "allow" }, [regle, { permission: "read", pattern: "*.env" }], [regle, "read"], [regle, { ...regle, action: "oui" }]]) {
+      const agent = toAgentInfo({ name: "explore", mode: "subagent", permission });
+      assert.equal(agent?.permissionIncomplete, true, JSON.stringify(permission));
+    }
+    assert.equal(toAgentInfo({ name: "explore", mode: "subagent", permission: Array.from({ length: 5_001 }, () => regle) })?.permissionIncomplete, true, "liste coupée");
   });
 
   it("textes (Q5, décision n° 4) : avis Simple exact sans équipes, message à l'IA exact, refus par code, chiffres jamais inventés", () => {
@@ -1197,7 +1230,12 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     const generalRules: PermissionRule[] = h.fake.agents().find((a) => a.name === "general")?.permission ?? [];
     assert.ok(generalRules.length > 0);
     const childRules: PermissionRule[] = [...generalRules, ...deriveChildRules([], generalRules)];
-    for (const right of view.droits) assert.equal(right.cible, evaluateRules(right.permission, "*", childRules).action, `cible ${right.permission}`);
+    for (const right of view.droits.filter((d) => d.permission !== ENV_READ_ROW)) {
+      assert.equal(right.cible, evaluateRules(right.permission, "*", childRules).action, `cible ${right.permission}`);
+    }
+    // Ligne « Lire un .env » : general la demande, comme l'appelant (défauts d'opencode : *.env à « ask »).
+    assert.equal(evaluateRules("read", ".env", childRules).action, "ask");
+    assert.deepEqual(view.droits.find((d) => d.permission === ENV_READ_ROW), { permission: ENV_READ_ROW, appelant: "ask", cible: "ask" });
 
     const bad = await h.call("GET", `/api/conversations/ses.x/delegations/${taskAsk.id}`, { headers: h.headers.authed });
     assert.equal(bad.status, 400, bad.body);
@@ -1321,6 +1359,27 @@ describe("L1d : détails d'une délégation et faits pour L10e", () => {
     await assert.rejects(port.collectDelegationFacts({ ...ref, permissionId: bashAsk.id }), DelegationGoneError, "autre permission qu'une délégation");
     // D3 seul : le « once » d'un humain passe la garde (§3.14 ne liste que @fichier, !` et adresse).
     await assertRelayed(h, request, "risque D3 seul");
+  });
+
+  it("D1 fermé en cas de doute (pré-publication 1.1.0) : règles de la cible lues en partie dans GET /agent → droits à vrai ; carte « inconnu »", async (t) => {
+    const h = await startCockpit(t, { modules: ["facts", "taskGuard"], settings: AVANCE });
+    // general : une entrée mal formée parmi ses règles (opencode 1.18.30 n'en sert pas ; une autre version pourrait).
+    h.fake.setAgents(
+      h.fake.agents().map((agent) =>
+        agent.name === "general" ? { ...agent, permission: [...agent.permission, { permission: "read", pattern: "*.env" }] as unknown as PermissionRule[] } : agent,
+      ),
+    );
+    const session = await conversation(h, "Règles illisibles");
+    await send(h, session, [task("general")]);
+    const [request] = await pending(h, session, 1);
+    assert.ok(request);
+    const ref = { rootId: session.id, sessionId: session.id, permissionId: request.id, directory: null };
+    const facts = await h.cockpit.c11.ports.taskGuard.collectDelegationFacts(ref);
+    assert.deepEqual(facts.target, { name: "general", mode: "subagent", internal: false, actsWithoutAsking: true, readsEnvWithoutAsking: true });
+    const view = await details(h, session.id, request.id);
+    assert.ok(view.droits.length > 0);
+    for (const right of view.droits) assert.equal(right.cible, null, `cible ${right.permission} : inconnue`);
+    assert.ok(view.droits.some((right) => right.appelant !== null), "l'appelant, lu en entier, reste affiché");
   });
 
   it("parité « après votre accord » sur le faux (l.1048) : allow → lancée sans demande, deny → refusée sans demande, ask → demande d'autorisation", async (t) => {
