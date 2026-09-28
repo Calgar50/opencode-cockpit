@@ -154,7 +154,7 @@ try {
 
     Set-DockerScenario (New-CockpitDockerRules -ImageVersion '1.0.4')
     $startOld = Invoke-CockpitScript $HttpsDir @('start')
-    Assert-Test 'etat intermediaire : start avertit (A10-court) puis demarre' ($startOld.Host.Contains('Mise a jour inachevee (scripts 1.0.5, cockpit 1.0.4)') -and (Test-DockerCall '^compose -f \S.* up -d\z')) (Get-Extract $startOld.Host)
+    Assert-Test 'etat intermediaire : start avertit (A10-court) puis demarre' ($startOld.Host.Contains('Mise a jour inachevee (scripts 1.0.5, cockpit 1.0.4)') -and (Test-DockerCall '^compose -f \S.* up -d --pull never --no-build\z')) (Get-Extract $startOld.Host)
 
     # Conteneur recree par le compose 1.0.5 : printenv rend https, mais l'image 1.0.4 ignore la variable et sert en HTTP.
     Set-DockerScenario ((New-CockpitDockerRules -ImageVersion '1.0.4' -Served 'https') + @((New-Rule '.*' '' 0)))
@@ -278,7 +278,7 @@ try {
         (New-Rule '^compose -f \S.* exec -T cockpit cat /tls/public/cockpit-tls\.json$' '' 0 1 $JsonA))
     Set-DockerScenario (New-CockpitDockerRules -CrtFile $CrtB -JsonFile $JsonB -Extra $PinRenewRules)
     $renew = Invoke-CockpitScript $PinDir @('tls') -Parameters @{ Renew = $true } { Add-SpyReadHostAnswer 'RENOUVELER' }
-    Assert-Test 'tls -Renew HTTPS : arret, suppression de la cle et des certificats, redemarrage' ((Test-DockerCall '^compose -f \S.* stop cockpit\z') -and (Test-DockerCall '^compose -f \S.* up -d cockpit\z') -and (Test-DockerCall 'run --rm --network none --user 1000:1000 --entrypoint rm -v rg105-l7_cockpit-tls:/tls \S+ -f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt\z')) (Get-Extract $renew.Host)
+    Assert-Test 'tls -Renew HTTPS : arret, suppression de la cle et des certificats, redemarrage' ((Test-DockerCall '^compose -f \S.* stop cockpit\z') -and (Test-DockerCall '^compose -f \S.* up -d --pull never --no-build cockpit\z') -and (Test-DockerCall '^run --rm --pull never --network none --user 1000:1000 --entrypoint rm -v rg105-l7_cockpit-tls:/tls \S+ -f /tls/private/cockpit\.key /tls/private/cockpit\.crt /tls/public/cockpit\.crt\z')) (Get-Extract $renew.Host)
     Assert-Test 'RG5 tls -Renew HTTPS : cockpit-tls.json garde (le serveur y lit previousSha256)' (-not (Test-DockerCall '^run .*cockpit-tls\.json')) (Get-Extract $renew.Host)
     Assert-Test 'tls -Renew HTTPS : ancienne puis nouvelle empreinte' ($renew.Host.Contains(('ancienne empreinte {0} -> nouvelle {1}' -f $StateA.Sha256, $StateB.Sha256))) (Get-Extract $renew.Host)
 
@@ -564,7 +564,7 @@ try {
     $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
     $extractAt = Get-JournalIndex $ExtractPattern
     $migrationAt = Get-JournalIndex $MigrationPattern
-    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z'
+    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate --pull never --no-build\z'
     Assert-Test 'restore : extraction (--pull never), puis migration, puis up -d --force-recreate' ($null -eq $restore.Error -and $extractAt -ge 0 -and $migrationAt -gt $extractAt -and $upAt -gt $migrationAt) ('{0},{1},{2} {3} {4}' -f $extractAt, $migrationAt, $upAt, $restore.Error, (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600))
     Assert-Test 'restore : verification de l archive avec --pull never' ((Get-JournalIndex '^run --rm --pull never --entrypoint tar -v \S.*:/backup:ro opencode-cockpit/app:rg105-l7 tzf /backup/cockpit-20260927-101500\.tar\.gz\z') -ge 0) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
     Assert-Test 'restore : sauvegarde 1.1 (conforme) -> rien d affiche sur les regles Internet' (-not $restore.Host.Contains($RestoreHeader) -and $restore.Host.Contains('Restauration terminee.')) (Get-Extract $restore.Host)
@@ -579,12 +579,12 @@ try {
     Set-RestoreScenario 'sortie sans rapport'
     $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
     $rmAt = Get-JournalIndex '^rm -f rg105-l7-migration-web-[0-9a-f]{8}\z'
-    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z'
+    $upAt = Get-JournalIndex '^compose -f \S.* up -d --force-recreate --pull never --no-build\z'
     Assert-Test 'restore : sortie inattendue -> [!], conteneur retire avant le redemarrage, restauration terminee' ($null -eq $restore.Error -and $restore.Host.Contains('[!] Regles Internet laissees telles quelles (verification impossible).') -and $rmAt -ge 0 -and $upAt -gt $rmAt) (Get-Extract $restore.Host 600)
 
     Set-RestoreScenario 'migration-web etat=migre profil=prudent fichier=opencode.jsonc blocs=1 restes=0 sauvegarde=opencode.jsonc.avant-1.1.0 raison=-' @((New-Rule $ExtractPattern '' 1))
     $restore = Invoke-CockpitScript $RestoreDir @('restore', $BackupFile) { Add-SpyReadHostAnswer 'RESTAURER' }
-    Assert-Test 'restore : extraction en echec -> aucune migration, redemarrage quand meme' ($null -ne $restore.Error -and (Get-JournalIndex '^run --rm --pull never --name ') -lt 0 -and (Get-JournalIndex '^compose -f \S.* up -d --force-recreate\z') -ge 0 -and -not $restore.Host.Contains($RestoreHeader)) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
+    Assert-Test 'restore : extraction en echec -> aucune migration, redemarrage quand meme' ($null -ne $restore.Error -and (Get-JournalIndex '^run --rm --pull never --name ') -lt 0 -and (Get-JournalIndex '^compose -f \S.* up -d --force-recreate --pull never --no-build\z') -ge 0 -and -not $restore.Host.Contains($RestoreHeader)) (Get-Extract (@(Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ') 600)
 
     # --- Relecture 2ter-vague-3 : une entree de premier niveau supprimee apres install.ps1 ne fait jamais demarrer la salle ----
     # Docker recreerait la source absente en DOSSIER vide sur le poste (un fichier devient un dossier) : cockpit.ps1 ne passe pas le
@@ -599,16 +599,16 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $SourcesDir $CockpitOmoOverlay), $surcharge, (New-Object System.Text.UTF8Encoding $false))
     Set-DockerScenario (New-CockpitDockerRules)
     $temoinSources = Invoke-CockpitScript $SourcesDir @('start')
-    Assert-Test 'start, sources presentes : la salle demarre avec son profil (temoin)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo up -d\z') -and -not $temoinSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'start, sources presentes : la salle demarre avec son profil (temoin)' ((Test-DockerCall '^compose -f \S+ -f \S+ --profile omo up -d --pull never --no-build\z') -and -not $temoinSources.Host.Contains('Salle non demarree')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
     Remove-Item -LiteralPath (Join-Path $WsSources 'app\README.md') -Force
     Set-DockerScenario (New-CockpitDockerRules)
     $sansSource = Invoke-CockpitScript $SourcesDir @('start')
-    Assert-Test 'start, fichier supprime : up sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'start, fichier supprime : up sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d --pull never --no-build\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
     Assert-Test 'start, fichier supprime : message qui nomme l entree et demande la relance d install.ps1' ($sansSource.Host.Contains('Salle non demarree') -and $sansSource.Host.Contains('app/README.md') -and $sansSource.Host.Contains('Relancez install.ps1')) (Get-Extract $sansSource.Host)
     Assert-Test 'start, fichier supprime : rien n est recree sur le poste' (-not (Test-Path -LiteralPath (Join-Path $WsSources 'app\README.md')))
     Set-DockerScenario (New-CockpitDockerRules)
     $recree = Invoke-CockpitScript $SourcesDir @('restart')
-    Assert-Test 'restart, fichier supprime : recreation sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d --force-recreate\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
+    Assert-Test 'restart, fichier supprime : recreation sans le profil de la salle' ((Test-DockerCall '^compose -f \S+ -f \S+ up -d --force-recreate --pull never --no-build\z') -and -not (Test-DockerCall '--profile omo up')) (Get-Extract ((Get-DockerJournal | ForEach-Object { (@($_.args) -join ' ') }) -join ' | '))
     Assert-Test 'restart, fichier supprime : message' ($recree.Host.Contains('Salle non demarree')) (Get-Extract $recree.Host)
     Set-DockerScenario (New-CockpitDockerRules)
     $arretSources = Invoke-CockpitScript $SourcesDir @('stop')

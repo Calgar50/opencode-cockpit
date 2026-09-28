@@ -865,6 +865,10 @@ if ($server.ExitCode -ne 0) {
 }
 $compose = Get-DockerOutput compose version --short
 if ($compose.ExitCode -ne 0) { throw 'Docker Compose v2 est requis (inclus dans Docker Desktop).' }
+# 1.1.0 : chaque demarrage passe 'up --pull never --no-build' (aucun telechargement ni construction), option de Compose 2.8.
+if ($compose.Output -match '^v?(\d+)\.(\d+)\.' -and ([int]$Matches[1] -lt 2 -or ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -lt 8))) {
+    throw ("Docker Compose {0} est trop ancien : la version 2.8 ou plus recente est requise (demarrage sans aucun telechargement). Mettez Docker Desktop a jour, puis relancez ce script." -f $compose.Output)
+}
 Write-Good ("Docker {0}, Compose {1}" -f $server.Output, $compose.Output)
 
 # --- 2. Configuration (.env) -----------------------------------------------------------
@@ -1270,7 +1274,9 @@ try {
     # quel que soit le conteneur qui les a initialises en premier (sinon opencode redemarre en boucle).
     Write-Step 'Preparation des volumes'
     $Project = Get-CockpitComposeProjectName $Root
-    Invoke-Docker compose up --no-start --remove-orphans
+    # --pull never --no-build (1.1.0) : une image absente est une erreur, jamais un telechargement ni une construction ; seuls les
+    # modes Pull et Build, plus haut, tirent ou construisent, et explicitement.
+    Invoke-Docker compose up --no-start --remove-orphans --pull never --no-build
     $volumeArgs = @()
     foreach ($volume in @('oc-config', 'oc-data', 'oc-cache', 'cockpit-data', 'control')) {
         $volumeArgs += @('-v', ('{0}_{1}:/volumes/{1}' -f $Project, $volume))
@@ -1291,7 +1297,7 @@ try {
     if ($webLines.Count -gt 0) { Write-Host ''; Write-CockpitLines $webLines }
 
     Write-Step 'Demarrage des conteneurs'
-    Invoke-Docker compose up -d --remove-orphans
+    Invoke-Docker compose up -d --remove-orphans --pull never --no-build
     Write-Info 'Attente de la disponibilite du cockpit...'
     $health = Wait-CockpitHealth -Root $Root -Port $Port -Mode $finalScheme -Token $config['COCKPIT_TOKEN'] -TimeoutSec 240
 } finally {

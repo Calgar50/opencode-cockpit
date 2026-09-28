@@ -215,6 +215,9 @@ try {
     Assert-Test 'neuve HTTPS : droits 0700 du volume cockpit-tls' (@($joined | Where-Object { $_ -cmatch '^run --rm --pull never --network none --user 0 --entrypoint chmod -v opencode-cockpit_cockpit-tls:/tls opencode-cockpit/app:local 0700 /tls\z' }).Count -eq 1)
     Assert-Test 'neuve HTTPS : volumes partages sans reseau' (@($joined | Where-Object { $_ -cmatch '^run --rm --pull never --network none --user 0 --entrypoint chown -v opencode-cockpit_oc-config' }).Count -eq 1)
     Assert-Test 'neuve HTTPS : aucun run sans --pull never (image jamais tiree d un registre)' (@($joined | Where-Object { $_ -cmatch '^run ' -and $_ -cnotmatch '^run --rm --pull never ' }).Count -eq 0) ($joined -join ' | ')
+    # 1.1.0 (mesure reseau) : aucun demarrage ne tire ni ne construit une image absente.
+    $ups = @($joined | Where-Object { $_ -cmatch '^compose .* up ' })
+    Assert-Test 'neuve HTTPS : chaque compose up avec --pull never --no-build' ($ups.Count -ge 2 -and @($ups | Where-Object { $_ -cnotmatch ' --pull never --no-build' }).Count -eq 0) ($joined -join ' | ')
     Assert-Test 'neuve HTTPS : volume neuf, migration du web sans rien afficher' (-not $result.Host.Contains('Passage a la 1.1.0') -and @($joined | Where-Object { $_ -cmatch ('^run --rm --pull never --name ' + $MigrationNamePattern + ' ') }).Count -eq 1) ($joined -join ' | ')
     Assert-Test 'neuve HTTPS : -f docker-compose.yml sur chaque commande compose' (Test-ComposeFileAlways $calls $Root)
 
@@ -664,6 +667,21 @@ try {
         Assert-Test ('proxy {0} : identifiants jamais affiches' -f $label) (-not $result.Host.Contains('MOTDEPASSE-PROXY'))
     }
 
+    Write-Section '1.1.0 : Docker Compose 2.8 ou plus recent (up --pull never --no-build)'
+    foreach ($case in @(@{ V = '2.7.1'; Ok = $false }, @{ V = 'v2.8.0'; Ok = $true }, @{ V = '2.29.1-desktop.1'; Ok = $true })) {
+        Reset-Root $proxyEnv
+        $before = Get-EnvFingerprint $Root
+        # Premiere regle qui correspond = celle-ci : elle remplace la version rendue par le banc.
+        $rules = @(New-DockerRule '^compose version' ($case.V + "`n")) + @(New-InstallDockerRules $CertFile $JsonFile)
+        $journal = Set-InstallDockerScenario $Work 'compose-version' $rules
+        $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+        if ($case.Ok) {
+            Assert-Test ('Compose {0} : accepte' -f $case.V) ($null -eq $result.Error) ([string]$result.Error)
+        } else {
+            Assert-Test ('Compose {0} : refuse avant toute modification' -f $case.V) ($null -ne $result.Error -and $result.Error.Contains('Docker Compose 2.7.1 est trop ancien') -and (Get-EnvFingerprint $Root) -ceq $before) ([string]$result.Error)
+        }
+    }
+
     # --- Migration du web 1.0.x -> 1.1.0 (decision A37, fiche MW : T6) ---------------------------------------------------------------
     Write-Section 'Migration du web (A37) : conteneur jetable, verdict sur stdout seul, jamais bloquante'
     $MigrationNo = 0
@@ -806,12 +824,12 @@ try {
     }
 
     $run = Invoke-MigrationInstall 'ordre' @{}
-    $order = @((Get-CallIndex $run.Calls '^compose -f \S+ up --no-start --remove-orphans\z'),
+    $order = @((Get-CallIndex $run.Calls '^compose -f \S+ up --no-start --remove-orphans --pull never --no-build\z'),
         (Get-CallIndex $run.Calls '^run --rm --pull never --network none --user 0 --entrypoint chown -v opencode-cockpit_oc-config'),
         (Get-CallIndex $run.Calls '^compose -f \S+ stop opencode\z'),
         (Get-CallIndex $run.Calls '^compose -f \S+ ps -q --status running opencode\z'),
         (Get-CallIndex $run.Calls $ExactRun),
-        (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z'))
+        (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans --pull never --no-build\z'))
     $ordered = @($order | Where-Object { $_ -lt 0 }).Count -eq 0
     for ($i = 1; $i -lt $order.Count; $i++) { if ($order[$i] -le $order[$i - 1]) { $ordered = $false } }
     Assert-Test 'etape 4 : up --no-start, chown, stop opencode, controle, migration, up -d, dans cet ordre' $ordered (($order -join ',') + ' : ' + ($run.Calls -join ' | '))
@@ -826,14 +844,14 @@ try {
 
     $run = Invoke-MigrationInstall 'inattendue' @{ Migration = 'sortie sans rapport' }
     $rmAt = Get-CallIndex $run.Calls ('^rm -f ' + $MigrationNamePattern + '$')
-    $upAt = Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z'
+    $upAt = Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans --pull never --no-build\z'
     Assert-Test 'etape 4 : sortie inattendue -> [!] verification impossible, installation terminee' ($null -eq $run.Result.Error -and $run.Result.Host.Contains((($H, ($Laissees -f 'verification impossible'), $ConseilPerso) -join "`n")) -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
     Assert-Test 'etape 4 : sortie inattendue -> docker rm -f AVANT up -d' ($rmAt -ge 0 -and $upAt -gt $rmAt) ($run.Calls -join ' | ')
 
     foreach ($case in @(@{ Name = 'stop-echec'; Params = @{ StopFails = $true } }, @{ Name = 'toujours-en-marche'; Params = @{ OpencodeRunning = $true } })) {
         $run = Invoke-MigrationInstall $case.Name $case.Params
         Assert-Test ('etape 4 ({0}) : aucune migration' -f $case.Name) ((Get-CallIndex $run.Calls ('^run --rm --pull never --name ' + $MigrationNamePattern)) -lt 0) ($run.Calls -join ' | ')
-        Assert-Test ('etape 4 ({0}) : [!] opencode non arrete, up -d joue, installation terminee' -f $case.Name) ($null -eq $run.Result.Error -and $run.Result.Host.Contains(($Laissees -f "opencode n'a pas pu etre arrete")) -and (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans\z') -ge 0 -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
+        Assert-Test ('etape 4 ({0}) : [!] opencode non arrete, up -d joue, installation terminee' -f $case.Name) ($null -eq $run.Result.Error -and $run.Result.Host.Contains(($Laissees -f "opencode n'a pas pu etre arrete")) -and (Get-CallIndex $run.Calls '^compose -f \S+ up -d --remove-orphans --pull never --no-build\z') -ge 0 -and $run.Result.Host.Contains('Cockpit disponible sur')) $run.Result.Host
     }
 
     # -NoStart : migration seulement si le volume existe ET si opencode ne tourne pas ; jamais de demarrage.

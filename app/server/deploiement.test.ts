@@ -118,6 +118,42 @@ describe("déploiement 1.0.6 : opencode ne sort que par le relais du cockpit", (
   });
 });
 
+// Mesure réseau de la 1.1.0 : aucun démarrage ne télécharge ni ne construit une image. Sans --pull never, `compose up` tire une
+// image absente ; sans --no-build, il la construit (docker.io, deb.debian.org, registry.npmjs.org), mesuré. Seuls les modes Pull
+// et Build d'install.ps1 tirent ou construisent, par leurs commandes explicites.
+describe("scripts de l'hôte : aucun démarrage ne tire ni ne construit une image (1.1.0)", () => {
+  const scripts = ["install.ps1", "cockpit.ps1", "CockpitTls.ps1"].map((nom) => [nom, read(nom)] as const);
+
+  it("chaque « compose up » porte --pull never --no-build, chaque « docker run » --pull never", () => {
+    let ups = 0;
+    let runs = 0;
+    for (const [nom, texte] of scripts) {
+      for (const ligne of texte.split(/\r?\n/)) {
+        if (/^\s*#/.test(ligne)) continue;
+        if (/Invoke-Docker(?:Timeout\s+\d+)?\s+compose\s+(?:\S+\s+)*up\b/.test(ligne)) {
+          ups++;
+          assert.match(ligne, /\bup\b.*--pull never --no-build/, `${nom} : ${ligne.trim()}`);
+        }
+        if (/Invoke-Docker(?:Timeout\s+\d+)?\s+run\b/.test(ligne)) {
+          runs++;
+          assert.match(ligne, /\brun --rm --pull never\b/, `${nom} : ${ligne.trim()}`);
+        }
+        if (/@\(\s*'run'/.test(ligne)) {
+          runs++;
+          assert.match(ligne, /@\(\s*'run', '--rm', '--pull', 'never'/, `${nom} : ${ligne.trim()}`);
+        }
+        // Aucun autre démarrage par compose (create, restart, run) : ils échapperaient à la règle ci-dessus.
+        assert.doesNotMatch(ligne, /Invoke-Docker\S*\s+compose\s+(?:create|restart|run)\b/, `${nom} : ${ligne.trim()}`);
+      }
+    }
+    // install.ps1 : 2 ; cockpit.ps1 : start, restart, certs, restore (2), tls -Renew.
+    assert.equal(ups, 8);
+    assert.ok(runs >= 8, `docker run vus : ${runs}`);
+    const install = read("install.ps1");
+    assert.equal((install.match(/Invoke-Docker compose (?:pull|build)\b/g) ?? []).length, 2, "seuls les modes Pull et Build tirent ou construisent");
+  });
+});
+
 describe("amorce de @opencode-ai/plugin (docker/opencode/plugin-seed.mjs)", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-amorce-"));
   const script = path.join(ROOT, "docker", "opencode", "plugin-seed.mjs");

@@ -321,14 +321,15 @@ function Invoke-CockpitTlsRenew($Mode, [int]$Port) {
     Write-Step 'Suppression du certificat local (volume cockpit-tls)'
     # Cle et certificats seulement : cockpit-tls.json (sans secret) reste, le serveur y lit l'empreinte precedente
     # (previousSha256, affichee par tls et par la page Diagnostic) quand il cree la nouvelle paire.
-    Invoke-Docker run --rm --network none --user 1000:1000 --entrypoint rm -v ('{0}_cockpit-tls:/tls' -f $project) $image `
+    # --pull never (1.1.0) : une image absente est une erreur, jamais un telechargement.
+    Invoke-Docker run --rm --pull never --network none --user 1000:1000 --entrypoint rm -v ('{0}_cockpit-tls:/tls' -f $project) $image `
         -f /tls/private/cockpit.key /tls/private/cockpit.crt /tls/public/cockpit.crt
     if ($Mode.Scheme -cne 'https') {
         Write-CockpitLines @('Certificat local efface (volume cockpit-tls). Un nouveau certificat sera cree au retour en HTTPS (.\install.ps1 -Https).')
         return
     }
     Write-Step 'Redemarrage du cockpit'
-    Invoke-Docker compose up -d cockpit
+    Invoke-Docker compose up -d --pull never --no-build cockpit
     Write-Step 'Attente du nouveau certificat'
     $health = Get-CockpitHealth $Mode $Port 120
     if ($health.Reason -cne 'Ok') { Write-CockpitHealthProblem $health $Mode $Port; return }
@@ -575,7 +576,7 @@ try {
             $running = Get-RunningImageVersion
             if (Test-CockpitUnfinishedUpdate $running) { Write-CockpitA10Short $running }
             Write-Step 'Demarrage'
-            Invoke-Docker compose up -d
+            Invoke-Docker compose up -d --pull never --no-build
         }
         'stop' {
             Write-Step 'Arret'
@@ -591,7 +592,7 @@ try {
             if (Test-CockpitUnfinishedUpdate $running) { Write-CockpitA10Short $running }
             # 'compose restart' garderait l'ancienne configuration : on recree les conteneurs pour relire .env.
             Write-Step 'Redemarrage (configuration .env relue)'
-            Invoke-Docker compose up -d --force-recreate
+            Invoke-Docker compose up -d --force-recreate --pull never --no-build
         }
         'status' {
             Invoke-Docker compose ps
@@ -841,7 +842,7 @@ try {
             [System.IO.File]::WriteAllText((Join-Path $certsDir 'windows-trust.pem'), $builder.ToString(), (New-Object System.Text.UTF8Encoding $false))
             Write-Host ("{0} certificats exportes." -f $seen.Count)
             Write-Step 'Recreation des conteneurs pour prise en compte'
-            Invoke-Docker compose up -d --force-recreate
+            Invoke-Docker compose up -d --force-recreate --pull never --no-build
         }
         'update' {
             Assert-CockpitOutsideWorkspace
@@ -905,7 +906,7 @@ try {
             Write-Attention 'Le dossier archives\ est complete : les fichiers absents de la sauvegarde restent, ceux de meme nom sont remplaces. La connexion GitHub Copilot est conservee.'
             $answer = Read-Host 'Tapez RESTAURER pour confirmer'
             if ($answer -cne 'RESTAURER') { Write-Host 'Annule.'; return }
-            Invoke-Docker compose up --no-start
+            Invoke-Docker compose up --no-start --pull never --no-build
             Invoke-Docker compose stop
             try {
                 Write-Step "Restauration de $($backup.Name)"
@@ -928,7 +929,7 @@ try {
             } finally {
                 # Redemarrage dans tous les cas, meme si la restauration a echoue.
                 Write-Step 'Redemarrage des conteneurs'
-                Invoke-Docker compose up -d --force-recreate
+                Invoke-Docker compose up -d --force-recreate --pull never --no-build
             }
             Write-Host 'Restauration terminee.' -ForegroundColor Green
         }
