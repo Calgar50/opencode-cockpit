@@ -46,6 +46,7 @@ import {
   texteFermerReussite,
   texteProfilAncien,
   texteRefusInternet,
+  texteRegleGenerale,
   texteStudioInternet,
 } from "./shared/internet-texts.ts";
 
@@ -331,6 +332,8 @@ describe("écran Sécurité (T5, §5.2) : securiteProfil", () => {
     assert.match(securite, /securiteProfil\(/);
     assert.match(securite, /api\.updateProfile\(\)/);
     assert.match(securite, /texteAssistantsSignales\(/);
+    assert.match(securite, /const regleGenerale = texteRegleGenerale\(webIssues, profil\?\.etat \?\? null, advanced\);/);
+    assert.match(securite, /config\.data && regleGenerale !== null \? \(/, "règle générale personnalisée signalée dans l'écran Sécurité");
     assert.equal(/detectPermissionPreset\(/.test(securite), false, "SecuriteTab ne doit plus juger le profil sans legacyPresetOf");
     const opencode = code(read("web", "pages", "settings", "OpencodeTab.tsx"));
     // Le profil « actif » (carte en surbrillance, « Appliquer » désactivé) est celui d'activePermissionPreset, et lui seul.
@@ -416,6 +419,23 @@ describe("textes de l'accès à Internet (§7, à la lettre)", () => {
       texte: "Accès à Internet : la règle générale le demande encore. Voir Paramètres › Sécurité.",
     });
     assert.equal(texteDiagnosticInternet(null), null);
+  });
+
+  it("règle générale personnalisée qui demande encore Internet (pré-publication 1.1.0) : l'écran Sécurité le dit, avec ses deux recours ; rien pour un profil d'une version précédente", () => {
+    const global = { global: true, assistants: [] };
+    const simple = texteRegleGenerale(global, "modifie", false) ?? "";
+    assert.equal(
+      simple,
+      "Votre réglage personnalisé peut encore vous demander d'aller sur Internet. C'est impossible au travail, et une telle demande restée sans réponse peut bloquer les autres demandes d'autorisation. « Revenir au profil Prudent » ferme Internet, mais remplace aussi vos autres règles. Pour garder vos autres règles, passez en mode Avancé : Paramètres › opencode.",
+    );
+    assert.doesNotMatch(simple, /webfetch|websearch|permission/i, "mode Simple : jamais le nom d'un outil");
+    assert.match(texteRegleGenerale(global, "modifie", true) ?? "", /Paramètres › opencode, mettez webfetch et websearch sur « deny »/);
+    assert.equal(texteRegleGenerale(global, null, false), simple, "profil illisible : même encadré « modifie »");
+    assert.equal(texteRegleGenerale(global, "ancien", false), null, "profil d'une version précédente : son encadré propose « Fermer l'accès à Internet »");
+    assert.equal(texteRegleGenerale({ global: false, assistants: [{ name: "a", title: "A" }] }, "modifie", false), null);
+    assert.equal(texteRegleGenerale(null, "modifie", false), null, "opencode muet : rien d'inventé");
+    // Le Diagnostic et l'installateur renvoient à l'écran Sécurité : il dit désormais quelque chose de ce cas.
+    assert.match(texteDiagnosticInternet(global)?.texte ?? "", /Voir Paramètres › Sécurité\./);
   });
 
   it("assistants signalés : titres en mode Simple (jamais le nom technique), rien quand la règle générale demande encore", () => {

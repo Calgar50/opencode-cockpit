@@ -31,6 +31,8 @@ export const TEXTES = {
       "1 assistant créé hors de l'assistant de création peut encore vous demander d'aller sur Internet. Pour lui fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
     sansTitres:
       "{n} assistants créés hors de l'assistant de création peuvent encore vous demander d'aller sur Internet. Pour leur fermer Internet, passez en mode Avancé : Studio, ou Paramètres › opencode.",
+    /** Suite de partout.regleGenerale en mode Simple (pré-publication 1.1.0). */
+    regleGenerale: "Pour garder vos autres règles, passez en mode Avancé : Paramètres › opencode.",
   },
   avance: {
     /**
@@ -58,6 +60,9 @@ export const TEXTES = {
     heriteAide: "Utilise la règle de la configuration globale, qui refuse Internet.",
     /** Studio : outil absent du fichier alors que la règle globale ne le refuse pas (« Hérité » n'est pas proposé). */
     heriteOuvert: "La règle globale ne refuse pas cet outil : choisissez « Refuser ».",
+    /** Suite de partout.regleGenerale en mode Avancé (pré-publication 1.1.0). */
+    regleGenerale:
+      "Pour garder vos autres règles : Paramètres › opencode, mettez webfetch et websearch sur « deny », après toute règle « * » qui les demande.",
   },
   partout: {
     /** Profil Prudent (1.1), en vert (SECURITY_TEXTS.prudent). */
@@ -71,6 +76,13 @@ export const TEXTES = {
     fermerMessage:
       "Votre profil {profil} est gardé ; seul l'accès à Internet passe à « refusé ». opencode redémarre quelques secondes pour appliquer ces règles, jamais pendant une réponse.",
     fermerReussite: "Internet est fermé. Votre profil {profil} est inchangé.",
+    /**
+     * Pré-publication 1.1.0 : règle générale PERSONNALISÉE qui demande encore Internet (security.webIssues.global hors d'un profil
+     * d'une version précédente : joker « * » à « ask », permission en texte, migration refusée). « Fermer l'accès à Internet » ne
+     * vaut que pour un profil d'une version précédente (409 profil-inconnu sinon) : l'écran le dit, avec les deux recours.
+     */
+    regleGenerale:
+      "Votre réglage personnalisé peut encore vous demander d'aller sur Internet. C'est impossible au travail, et une telle demande restée sans réponse peut bloquer les autres demandes d'autorisation. « Revenir au profil Prudent » ferme Internet, mais remplace aussi vos autres règles.",
     /** 409 « profil-inconnu » de POST /api/security/update-profile (réglage qui n'est pas un profil d'une version précédente). */
     profilInconnu:
       "Ce réglage n'est pas un profil d'une version précédente : rien n'a été changé. Pour revenir aux règles conseillées, utilisez « Revenir au profil Prudent ».",
@@ -156,6 +168,15 @@ export function texteAssistantsSignales(issues: WebIssuesLite | null, avance: bo
     else phrases.push(sansTitre.length === 1 ? TEXTES.simple.sansTitre : remplir(TEXTES.simple.sansTitres, { n: sansTitre.length }));
   }
   return phrases.join(" ");
+}
+
+/**
+ * Règle générale personnalisée qui demande encore Internet (écran Sécurité, pré-publication 1.1.0) ; null : rien à dire, état inconnu,
+ * ou profil d'une version précédente (son encadré et « Fermer l'accès à Internet » suffisent).
+ */
+export function texteRegleGenerale(issues: WebIssuesLite | null, etat: "prudent" | "ancien" | "modifie" | null, avance: boolean): string | null {
+  if (issues === null || !issues.global || etat === "ancien") return null;
+  return `${TEXTES.partout.regleGenerale} ${avance ? TEXTES.avance.regleGenerale : TEXTES.simple.regleGenerale}`;
 }
 
 /** Ligne du Diagnostic ; null : opencode n'a pas répondu (aucun état inventé). */

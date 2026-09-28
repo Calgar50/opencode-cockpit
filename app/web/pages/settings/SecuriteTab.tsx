@@ -1,7 +1,8 @@
 // Paramètres › Sécurité (§8) : profil de droits global d'opencode, retour au profil Prudent, fournisseur d'IA autorisé.
 // 1.1.0 (A37, fiche de la migration du web §5.2 et §5.3) : un profil d'une version précédente (Internet encore ouvert) n'est plus vert
 // et propose « Fermer l'accès à Internet » (même profil, seul le web change) ; les assistants qui peuvent encore demander Internet
-// sont signalés par leur titre (security.webIssues), jamais par leur nom technique en mode Simple.
+// sont signalés par leur titre (security.webIssues), jamais par leur nom technique en mode Simple. Pré-publication : une règle générale
+// personnalisée qui demande encore Internet est signalée aussi (texteRegleGenerale), avec « Revenir au profil Prudent ».
 import { useEffect, useRef, useState } from "react";
 import {
   configProviderIssues,
@@ -13,7 +14,13 @@ import {
   SECURITY_TEXTS,
   securiteProfil,
 } from "../../../server/shared/assistant-rules.ts";
-import { TEXTES as TEXTES_INTERNET, texteAssistantsSignales, texteFermerMessage, texteFermerReussite } from "../../../server/shared/internet-texts.ts";
+import {
+  TEXTES as TEXTES_INTERNET,
+  texteAssistantsSignales,
+  texteFermerMessage,
+  texteFermerReussite,
+  texteRegleGenerale,
+} from "../../../server/shared/internet-texts.ts";
 import { useApp } from "../../app/AppContext.tsx";
 import { Icon } from "../../components/Icon.tsx";
 import { useToast } from "../../components/Toast.tsx";
@@ -48,6 +55,8 @@ export function SecuriteTab() {
   const profil = config.data ? securiteProfil(config.data.permission) : null;
   const webIssues = status.data ? status.data.security.webIssues : (boot.security.webIssues ?? null);
   const signales = texteAssistantsSignales(webIssues, advanced);
+  // Règle générale personnalisée qui demande encore Internet (pré-publication 1.1.0) : l'installateur et le Diagnostic renvoient ici.
+  const regleGenerale = texteRegleGenerale(webIssues, profil?.etat ?? null, advanced);
   const providers = boot.allowedProviders ?? ["github-copilot"];
   // Verrou réellement appliqué par opencode (enabled_providers, IA par défaut), pas seulement COCKPIT_ALLOWED_PROVIDERS.
   const lockIssues = config.data
@@ -136,6 +145,12 @@ export function SecuriteTab() {
             <span>{SECURITY_TEXTS.prudent}</span>
           </div>
         )}
+        {config.data && regleGenerale !== null ? (
+          <div className="callout warning" role="status" style={{ marginTop: 12 }} data-regle-generale-internet="">
+            <Icon name="alert" size={18} />
+            <span>{regleGenerale}</span>
+          </div>
+        ) : null}
         {config.data && signales !== null ? (
           <div className="callout warning" role="status" style={{ marginTop: 12 }}>
             <Icon name="alert" size={18} />
