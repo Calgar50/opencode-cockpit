@@ -709,7 +709,7 @@ describe("textes des choix d'autonomie", () => {
     assert.deepEqual(
       choices.map((choix) => [libelleChoix(choix), descriptionChoix(choix)]),
       [
-        ["Demander à chaque fois", "L'IA lit, puis vous demande avant chaque modification, commande, accès web ou travail délégué."],
+        ["Demander à chaque fois", "L'IA lit, puis vous demande avant chaque modification, commande ou travail délégué. Internet reste fermé."],
         ["Modifications automatiques", "L'IA modifie les fichiers de ce dossier sans vous demander, sauf les fichiers protégés. Elle demande pour tout le reste."],
         ["Plan d'abord", "L'IA propose un plan dans une nouvelle conversation qui ne peut rien modifier."],
         [

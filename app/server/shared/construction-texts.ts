@@ -106,6 +106,14 @@ export const TEXTES = {
       liens: "Liens",
       // </c5:vue-ensemble-groupes>
     },
+    /**
+     * Annonce de la 1.1.0 (L51 ; fiche de la migration du web §7, décision A37) : phrase technique ajoutée, en mode Avancé
+     * seulement, au paragraphe « Internet » de `partout.annonce.web`. Elle nomme les outils et la copie laissée par la migration
+     * (install.ps1, cockpit.ps1 restore : server/migrate-oc-config.ts), que le mode Simple ne nomme jamais.
+     */
+    annonce: {
+      web: "Dans la configuration d'opencode, seules les règles Internet ont changé (profils de la 1.0, et valeurs « ask » de webfetch et websearch, y compris dans agent.<nom>.permission) ; copie : <fichier>.avant-1.1.0. Les assistants créés dans le cockpit ne sont pas modifiés.",
+    },
   },
   partout: {
     /** Méthodes (C §5.4, RM §5.2, D-5-07, D-5-08). */
@@ -519,6 +527,14 @@ export const TEXTES = {
       bientot: "Les équipes arrivent bientôt en mode Simple. En mode Avancé, vous pouvez déjà les essayer.",
       voirCarte: "Voir la carte",
       compris: "Compris",
+      /**
+       * Paragraphe « Internet » de l'annonce (L51 ; fiche de la migration du web §7, décision A37), dans les deux modes : jamais
+       * le nom d'un outil, ni D11, ni « volume ». Vrai même quand la migration n'a pas pu se faire : depuis la 1.0.6, le relais du
+       * cockpit n'ouvre que GitHub Copilot ; les assistants qui pouvaient demander Internet sont signalés par security.webIssues.
+       */
+      web: "L'assistant ne va plus sur Internet. C'était déjà impossible au travail ; cela évite surtout qu'une demande restée sans réponse bloque vos autres autorisations. Vos assistants n'ont pas été modifiés ; ceux qui pouvaient demander Internet sont signalés dans Paramètres › Sécurité.",
+      /** Nom accessible de l'annonce (section « Nouveautés »). */
+      region: "Nouveautés de la version 1.1.0",
     },
     /** Une phrase par ConstructionErrorCode (§4.5) : un code ajouté sans sa phrase fait échouer le typecheck. */
     erreurs: {

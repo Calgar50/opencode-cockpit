@@ -5,6 +5,8 @@ import { BUILTIN_ASSISTANTS, RIGHTS_INFO, TIER_LABELS, USE_CASE_INFO } from "../
 import { Icon, type IconName } from "../../components/Icon.tsx";
 import { Badge, Button, Spinner } from "../../components/ui.tsx";
 import type { AssistantView, CatalogueItem, RightsLabel } from "../../lib/types.ts";
+// L51 (A31 c, A32 (2)) : un assistant d'une version précédente peut encore demander Internet, qui est fermé.
+import { TEXTES as TEXTES_INTERNET } from "../../../server/shared/internet-texts.ts";
 
 /** Profil de droits global : null = inconnu (configuration illisible). */
 export interface ProfileInfo {
@@ -13,7 +15,7 @@ export interface ProfileInfo {
 }
 
 function rightsText(rights: RightsLabel, web: boolean): string {
-  return `${RIGHTS_INFO[rights].label}${web ? " · Internet sur demande" : ""}`;
+  return `${RIGHTS_INFO[rights].label}${web ? ` · ${TEXTES_INTERNET.partout.carteAncien}` : ""}`;
 }
 
 function CardHead({ icon, color, title }: { icon: IconName; color: string; title: string }) {

@@ -519,8 +519,9 @@ try {
     Assert-Test '-NoStart HTTP : message propre au mode' ($result.Host.Contains('.\cockpit.ps1 open (verification : preuve du jeton)') -and -not $result.Host.Contains('verification HTTPS')) $result.Host
     Assert-Test '-NoStart HTTP : A6 affiche' ($result.Host.Contains('MODE HTTP LOCAL (confirme le'))
 
-    # --- 1.0.6 : mise a jour depuis la 1.0.5 (chemin de cockpit.ps1 update), contrat ResteHttp ------------------------------------
-    Write-Section '1.0.6 : mise a jour depuis la 1.0.5 en HTTP (ResteHttp) et en HTTPS'
+    # --- 1.0.5 -> 1.1.0 (chemin de cockpit.ps1 update), contrat ResteHttp : le mot de passe interne est renouvele une fois ----------
+    # D13 (L51) : le seuil du renouvellement est la 1.0.6 ($PasswordRotationVersion), plus la version requise des images.
+    Write-Section '1.1.0 : mise a jour depuis la 1.0.5 en HTTP (ResteHttp) et en HTTPS'
     $env105Http = New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.5'
     Assert-Test '1.0.6 ResteHttp : transition calculee pour une 1.0.5 en HTTP sans -Http' ((Get-CockpitTransition -Mode (Get-CockpitLocalMode $env105Http) -IsNew $false -IsMigration $false) -ceq 'ResteHttp')
     Reset-Root $env105Http
@@ -536,9 +537,10 @@ try {
     Assert-Test '1.0.6 ResteHttp : jeton de connexion inchange (aucune reconnexion)' ((Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore)
     Assert-Test '1.0.6 ResteHttp : cockpit annonce en http, sans migration' ($result.Host.Contains('Cockpit disponible sur ' + $HttpUrl + ' (mode HTTP local') -and -not $result.Host.Contains('Passage a la ') -and -not $result.Host.Contains('Empreinte SHA-256')) $result.Host
     Assert-Test '1.0.6 ResteHttp : aucune cle COCKPIT_PREVIOUS_* ecrite' (-not (@($envAfter.Keys) -join ',').Contains('COCKPIT_PREVIOUS_'))
-    Assert-Test '1.0.6 : version 1.0.6 inscrite' ((Get-TestEnvValue $envAfter 'COCKPIT_VERSION') -ceq $Version -and $Version -ceq '1.0.6') $Version
+    Assert-Test '1.1.0 : version 1.1.0 inscrite' ((Get-TestEnvValue $envAfter 'COCKPIT_VERSION') -ceq $Version -and $Version -ceq '1.1.0') $Version
     Assert-Test '1.0.6 : mot de passe interne d opencode renouvele une fois' ((Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')) -cne $passwordBefore -and (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD') -cmatch '^[0-9a-f]{64}\z')
     Assert-Test '1.0.6 : renouvellement annonce sans la valeur' ($result.Host.Contains("Mot de passe interne d'opencode renouvele") -and -not $result.Host.Contains((Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')))
+    Assert-Test 'D13 : 1.0.5 -> 1.1.0, le message nomme le seuil 1.0.6 (installation anterieure a la 1.0.6)' ($result.Host.Contains("Mot de passe interne d'opencode renouvele (installation anterieure a la 1.0.6 : il a pu circuler en clair vers le proxy).")) $result.Host
 
     $passwordKept = Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')
     $journal = Set-InstallDockerScenario $Work 'maj-106-relance' (New-InstallDockerRules $CertFile $JsonFile)
@@ -554,6 +556,54 @@ try {
     $envAfter = Read-TestEnvFile $Root
     Assert-Test '1.0.6 ResteHttps : aucune exception, adresse https annoncee' ($null -eq $result.Error -and $result.Host.Contains('Cockpit disponible sur ' + $HttpsUrl)) ([string]$result.Error)
     Assert-Test '1.0.6 ResteHttps : mode et jeton inchanges, sans migration' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'https' -and (Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore -and -not $result.Host.Contains('Passage a la '))
+
+    # --- D13 (L51) : mise a jour 1.0.6 -> 1.1.0. ResteHttp (I11) et AUCUN renouvellement du mot de passe interne (I12) --------------
+    Write-Section 'D13 : mise a jour depuis la 1.0.6 en HTTP et en HTTPS (mode garde, mot de passe interne garde)'
+    $env106Http = New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.6'
+    Assert-Test 'D13 ResteHttp : transition calculee pour une 1.0.6 en HTTP sans -Http' ((Get-CockpitTransition -Mode (Get-CockpitLocalMode $env106Http) -IsNew $false -IsMigration $false) -ceq 'ResteHttp')
+    Reset-Root $env106Http
+    $envBefore = Read-TestEnvFile $Root
+    $tokenBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'COCKPIT_TOKEN')
+    $passwordBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'OPENCODE_SERVER_PASSWORD')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-http' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test 'D13 ResteHttp : aucune exception, aucune question' ($null -eq $result.Error -and $result.ReadHostCalls.Count -eq 0) ([string]$result.Error)
+    Assert-Test 'D13 ResteHttp (I11) : mode http et date de confirmation conserves' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'http' -and (Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_HTTP_CONFIRMED') -ceq $ConfirmedAt)
+    Assert-Test 'D13 ResteHttp : jeton de connexion inchange, cockpit annonce en http, sans migration' ((Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore -and $result.Host.Contains('Cockpit disponible sur ' + $HttpUrl + ' (mode HTTP local') -and -not $result.Host.Contains('Passage a la ')) $result.Host
+    Assert-Test 'D13 (I12) : AUCUN renouvellement du mot de passe interne de 1.0.6 a 1.1.0' ((Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')) -ceq $passwordBefore -and -not $result.Host.Contains("Mot de passe interne d'opencode renouvele")) $result.Host
+    Assert-Test 'D13 : version 1.1.0 inscrite' ((Get-TestEnvValue $envAfter 'COCKPIT_VERSION') -ceq '1.1.0')
+    Assert-Test 'D13 : aucune cle COCKPIT_PREVIOUS_* ecrite (pas une migration)' (-not (@($envAfter.Keys) -join ',').Contains('COCKPIT_PREVIOUS_'))
+
+    Reset-Root (New-BaseEnv $Ports.A 'https' '' (New-CockpitChallenge) '1.0.6')
+    $envBefore = Read-TestEnvFile $Root
+    $tokenBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'COCKPIT_TOKEN')
+    $passwordBefore = Get-TextDigest (Get-TestEnvValue $envBefore 'OPENCODE_SERVER_PASSWORD')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-https' (New-InstallDockerRules $CertFile $JsonFile)
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Autorise' $Ports.A)
+    $envAfter = Read-TestEnvFile $Root
+    Assert-Test 'D13 ResteHttps : aucune exception, adresse https annoncee' ($null -eq $result.Error -and $result.Host.Contains('Cockpit disponible sur ' + $HttpsUrl)) ([string]$result.Error)
+    Assert-Test 'D13 ResteHttps : mode, jeton et mot de passe interne inchanges' ((Get-TestEnvValue $envAfter 'COCKPIT_LOCAL_SCHEME') -ceq 'https' -and (Get-TextDigest (Get-TestEnvValue $envAfter 'COCKPIT_TOKEN')) -ceq $tokenBefore -and (Get-TextDigest (Get-TestEnvValue $envAfter 'OPENCODE_SERVER_PASSWORD')) -ceq $passwordBefore)
+
+    Write-Section 'D13 : mode Load sans archive avec des images 1.0.6 (archive 1.1.0 exigee)'
+    Reset-Root (New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.6' 'Load')
+    $before = Get-EnvFingerprint $Root
+    $journal = Set-InstallDockerScenario $Work 'maj-106-load' (New-InstallDockerRules $CertFile $JsonFile '1.0.6')
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    Assert-Test 'D13 Load : arret avant toute modification, archive 1.1.0 demandee' ($result.Error -ceq $CockpitA19 -and $result.Host.Contains('Mode Load : image opencode-cockpit/app:local en version 1.0.6, version 1.1.0 requise') -and $result.Host.Contains('opencode-cockpit-images-1.1.0.tar.gz')) $result.Host
+    Assert-Test 'D13 Load : .env identique, aucune question' ((Get-EnvFingerprint $Root) -ceq $before -and $result.ReadHostCalls.Count -eq 0)
+    $calls = @(Get-DockerCalls $journal)
+    Assert-Test 'D13 Load : aucune ecriture docker (ni up, ni stop, ni run, ni load)' (@($calls | Where-Object { (@($_.args) -join ' ') -cmatch '^(compose .* (up|stop)|run|load) ' }).Count -eq 0) (@($calls | ForEach-Object { (@($_.args) -join ' ') }) -join ' | ')
+
+    Write-Section 'D13 : archive 1.0.6 chargee en mode Load (refusee avant toute ecriture de .env)'
+    Reset-Root (New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.6' 'Load')
+    $before = Get-EnvFingerprint $Root
+    $archive106 = Join-Path $Work 'opencode-cockpit-images-1.0.6.tar.gz'
+    [System.IO.File]::WriteAllText($archive106, 'archive factice')
+    $journal = Set-InstallDockerScenario $Work 'maj-106-load-archive' (New-InstallDockerRules $CertFile $JsonFile '1.0.6')
+    $result = Invoke-Install -Root $Root -Parameters (New-Params @{ NoBrowser = $true; Mode = 'Load'; ImagesArchive = $archive106 }) -Policies (Get-PolicySet 'Bloque' $Ports.plain)
+    Assert-Test 'D13 Load archive 1.0.6 : refusee, version 1.1.0 requise' ($null -ne $result.Error -and ([string]$result.Error).Contains('version 1.1.0 requise') -and ([string]$result.Error).Contains('Aucun fichier modifie')) ([string]$result.Error)
+    Assert-Test 'D13 Load archive 1.0.6 : .env identique, aucun demarrage' ((Get-EnvFingerprint $Root) -ceq $before -and @(Get-DockerCalls $journal | Where-Object { (@($_.args) -join ' ') -cmatch ' up ' }).Count -eq 0)
 
     Write-Section '1.0.6 : mode Load sans archive avec des images 1.0.5 (relais absent)'
     $loadHttp = New-BaseEnv $Ports.plain 'http' $ConfirmedAt (New-CockpitChallenge) '1.0.5' 'Load'

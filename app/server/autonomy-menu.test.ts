@@ -792,7 +792,7 @@ describe("autonomy-menu : confirmation d'« Autonome avec contrôle » (§4.13),
       // Lignes 2, 3 et 5 : phrases du §4.13, les mêmes dans les deux variantes.
       assert.equal(
         modele.lignes[1]?.texte,
-        "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, web, commandes qui exécutent du code ou touchent au réseau, à la production ou à git.",
+        "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, commandes qui exécutent du code ou touchent au réseau, à la production ou à git. Internet reste fermé.",
       );
       assert.equal(modele.lignes[2]?.texte, "Jamais : ce que l'assistant refuse.");
       assert.equal(
@@ -1019,7 +1019,7 @@ describe("autonomy-menu : descriptions des quatre choix (§4.13), variante de l'
     const disponibles = OPEN_DISPONIBLES;
     const avec = build({ rootId: "ses_v", view: viewOf("ses_v", "demander", disponibles), controleIa: true });
     const sans = build({ rootId: "ses_v", view: viewOf("ses_v", "demander", disponibles), controleIa: false });
-    assert.equal(avec.items[0]?.description, "L'IA lit, puis vous demande avant chaque modification, commande, accès web ou travail délégué.");
+    assert.equal(avec.items[0]?.description, "L'IA lit, puis vous demande avant chaque modification, commande ou travail délégué. Internet reste fermé.");
     assert.equal(
       avec.items[1]?.description,
       "L'IA modifie les fichiers de ce dossier sans vous demander, sauf les fichiers protégés. Elle demande pour tout le reste.",

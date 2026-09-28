@@ -126,8 +126,14 @@ if (Test-Path -LiteralPath $VersionFile) { $Version = (Get-Content -LiteralPath 
 # Version minimale d'image capable de servir le mode choisi et la preuve du jeton : une installation plus ancienne est une
 # migration (passage au HTTPS local). Ne change pas avec les versions suivantes : une installation 1.0.5 garde son mode d'acces.
 $MinimumImageVersion = [version]'1.0.5'
-# Version minimale des images pour ce docker-compose.yml (1.0.6) : opencode n'y a plus d'autre sortie que le relais du cockpit.
-$RequiredImageVersion = [version]'1.0.6'
+# Version minimale des images pour ce docker-compose.yml (1.1.0, decision D13) : opencode n'y a plus d'autre sortie que le relais du
+# cockpit (1.0.6), le compose 1.1 lance egress depuis l'image du cockpit (server/egress-proxy.ts, absent des images 1.0.6), et
+# l'image app porte le script de la migration du web (A37). Le mode Load sans archive 1.1.0 est refuse avant toute ecriture.
+$RequiredImageVersion = [version]'1.1.0'
+# Seuil du renouvellement du mot de passe interne d'opencode (decision D13), decouple de $RequiredImageVersion : ce mot de passe
+# n'a pu circuler en clair vers le proxy d'entreprise que jusqu'a la 1.0.5. Il est renouvele une seule fois, en passant a la
+# 1.0.6 ou au-dela ; le passage 1.0.6 -> 1.1.0 le garde.
+$PasswordRotationVersion = [version]'1.0.6'
 
 # Mode de langage restreint (AppLocker, WDAC) : le chargement de CockpitTls.ps1 et les appels .NET echoueraient
 # plus loin, avec un message incomprehensible. Meme texte que Assert-CockpitFullLanguage, avant tout chargement.
@@ -1016,10 +1022,10 @@ if (-not $config.Contains('OPENCODE_SERVER_PASSWORD') -or $config['OPENCODE_SERV
 }
 # 1.0.6 : avant cette version, opencode envoyait au proxy d'entreprise, en clair, des appels a son propre serveur portant ce mot
 # de passe (http://0.0.0.0:4096). Il est donc remplace une fois, a la mise a jour. Secret interne : aucune reconnexion.
-$rotateServerPassword = (-not $isNew) -and (($null -eq $previousVersionValue) -or ($previousVersionValue -lt $RequiredImageVersion))
+$rotateServerPassword = (-not $isNew) -and (($null -eq $previousVersionValue) -or ($previousVersionValue -lt $PasswordRotationVersion))
 if ($rotateServerPassword) {
     $config['OPENCODE_SERVER_PASSWORD'] = New-Secret 32
-    Write-Info ("Mot de passe interne d'opencode renouvele (passage a la {0} : il a pu circuler en clair vers le proxy)." -f $Version)
+    Write-Info ("Mot de passe interne d'opencode renouvele (installation anterieure a la {0} : il a pu circuler en clair vers le proxy)." -f $PasswordRotationVersion)
 }
 Write-Good 'Secrets presents (generes aleatoirement si absents)'
 

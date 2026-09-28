@@ -618,7 +618,8 @@ describe("croisements grande fusion (7, 8) : gardes du dépôt, P13, P8, migrati
 
   it("package.json = v1.0.6 + three@0.186.0 SEUL ajout (fiche v106 §4 : « v1.0.6 + three », et non v1.0.5) ; aucune autre dépendance", () => {
     const paquet = JSON.parse(lire("app", "package.json")) as { version: string; dependencies: Record<string, string>; devDependencies: Record<string, string> };
-    assert.equal(paquet.version, "1.0.6", "le champ version passe à 1.1.0 avec L51 seulement");
+    // L51 (D-5-16) : le champ version est passé à 1.1.0 (changement nommé ; seul le champ version a bougé, annonce-110.test.ts).
+    assert.equal(paquet.version, "1.1.0", "le champ version passe à 1.1.0 avec L51 seulement");
     assert.deepEqual(Object.keys(paquet.dependencies).sort(), ["@hono/node-server", "hono", "jsonc-parser", "yaml", "zod"]);
     assert.equal(paquet.devDependencies.three, "0.186.0");
     const verrou = JSON.parse(lire("app", "package-lock.json")) as { packages: Record<string, { version?: string }> };

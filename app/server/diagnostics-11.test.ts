@@ -682,6 +682,16 @@ describe("Interface du portillon : textes (delegation-texts.ts)", () => {
     assert.match(c.arobase, /@fichier/);
     assert.match(c.arobase, /lu sans vous demander/);
   });
+
+  // L51 (décisions A31 c, A32 (2)) : « Droits comparés » lit les règles des assistants ; une règle web « sans demander » ou « demande
+  // votre accord » ne vient plus que d'une version précédente, et Internet reste fermé (relais de la 1.0.6) : les libellés le disent.
+  it("droits comparés : webfetch et websearch disent « Internet fermé », la note dit que seul GitHub Copilot est joignable (L51)", () => {
+    const c = TEXTES.avance.carte;
+    assert.equal(libelleDroit("webfetch"), "Consulter une page web (Internet fermé)");
+    assert.equal(libelleDroit("websearch"), "Chercher sur Internet (Internet fermé)");
+    assert.match(c.droitsNote, /Internet est fermé quelle que soit la règle : seul GitHub Copilot est joignable\.$/);
+    assert.match(c.droitsNote, /^Règles des assistants, sans les refus que le cockpit ajoute à la conversation\./, "la note d'origine est gardée");
+  });
 });
 
 // --- Garde-fous de l'interface (sources) ------------------------------------------------------------------------------------------

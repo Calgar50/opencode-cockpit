@@ -15,6 +15,11 @@
 // - M5 (MX2 §2) : la partie bash est publiée 3 à 4 ms avant son effet, mais un arrêt n'empêche pas l'effet : « le cockpit les
 //   repère après coup et arrête la demande » est gardée telle quelle ;
 // - « au plus » seulement avec un plafond d'arrêt, dépassement annoncé (§6 l.1049) ;
+// - « Internet reste fermé » et la règle R-web (L51 ; décisions A31 c, A32 (2), A37) : webfetch et websearch sont refusés par les
+//   profils de la 1.1.0 (PERMISSION_PRESETS) et, quel que soit le réglage, par le relais de sortie de la 1.0.6, qui n'ouvre que
+//   GitHub Copilot (egress-policy.ts). Une demande web n'arrive plus qu'avec des règles d'une version précédente : elle attend
+//   toujours votre accord (R-web), et l'accorder n'ouvrirait pas Internet. Aucune phrase ne range plus le web parmi ce qui passe
+//   « avec votre accord » ;
 // - E1, P02, P03 et G04 attendent aussi quand le cockpit n'a pas pu vérifier les faits (lien en boucle, alias de nom, fichier à
 //   deux noms, dossier trop grand ou illisible, historique ou index git) : leur phrase le dit (relecture 2-vague-1) ;
 // - {raison} d'une décision de l'IA de contrôle et {dossier} sont des données : l'interface les échappe à l'affichage.
@@ -46,7 +51,7 @@ export const TEXTES = {
       delegations: "Plafond de délégations atteint ({n}) : les suivantes sont refusées et l'IA continue seule.",
     },
     confirmationModifications: {
-      accord: "Toujours avec votre accord : fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes et web.",
+      accord: "Toujours avec votre accord : fichiers protégés, suppressions et vidages, fichiers hors du dossier et commandes. Internet reste fermé.",
     },
   },
   avance: {
@@ -60,7 +65,7 @@ export const TEXTES = {
     },
     confirmationModifications: {
       accord:
-        "Toujours avec votre accord : fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes, web et travail délégué.",
+        "Toujours avec votre accord : fichiers protégés, suppressions et vidages, fichiers hors du dossier, commandes et travail délégué. Internet reste fermé.",
     },
   },
   partout: {
@@ -114,7 +119,7 @@ export const TEXTES = {
       // « Passé sans contrôle » (§4.10) : famille des formes qu'opencode lance sans rien demander, vues après coup par L10c.
       "F-l": "Commande qu'opencode a lancée sans demande d'autorisation (affectation, déclaration ou redirection seule)",
       // Routes (§4.3 étape 4, §4.1).
-      "R-web": "Accès au web",
+      "R-web": "Accès à Internet (fermé : seul GitHub Copilot est joignable)",
       "R-hors-projet": "Dossier hors du projet",
       "R-lecture": "Lecture que l'assistant ne fait qu'avec votre accord (un .env, par exemple)",
       "R-modifications": "En « {modifications} », seules les modifications de fichiers passent sans vous demander",
@@ -264,7 +269,7 @@ export const TEXTES = {
     confirmationAutonome: {
       titre: "Laisser l'IA travailler seule dans cette conversation ?",
       accord:
-        "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, web, commandes qui exécutent du code ou touchent au réseau, à la production ou à git.",
+        "Toujours avec votre accord : fichiers protégés, suppressions, hors projet, commandes qui exécutent du code ou touchent au réseau, à la production ou à git. Internet reste fermé.",
       jamais: JAMAIS,
       arret: "Arrêt automatique à {plafond} : {depassement} ; l'appel qui donne son titre à une nouvelle conversation n'est pas compté.",
       horsDemande: "Certaines actions d'opencode ne passent par aucune demande : le cockpit les repère après coup et arrête la demande.",
