@@ -4,11 +4,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { CatalogModel } from "./catalog.ts";
+import { egressAllowedHosts } from "./egress-policy.ts";
 import { errorMessage } from "./log.ts";
 import { priceFromCatalog } from "./pricing.ts";
 import { apiHostFor } from "./quota.ts";
 import { redactSecrets } from "./redact.ts";
-import { COPILOT_API_HOSTS, DEFAULT_COPILOT_API_URL, normalizeCopilotApiUrl } from "./shared/assistant-rules.ts";
+import { DEFAULT_COPILOT_API_URL, normalizeCopilotApiUrl } from "./shared/assistant-rules.ts";
 
 /** Version d'API envoyée par opencode 1.18.30 (plugin/github-copilot/copilot.ts) : même contrat de réponse. */
 export const COPILOT_API_VERSION = "2026-06-01";
@@ -216,7 +217,8 @@ export class CopilotApi {
     return this.#status;
   }
 
-  /** Oublie l'adresse annoncée et l'adresse retenue : la lecture suivante repart de l'adresse d'office (test de connexion). */
+  /** Oublie l'adresse annoncée et l'adresse retenue : la lecture suivante repart de l'adresse d'office. Le test de connexion du
+   * Diagnostic ne s'en sert plus (1.1.0) : il ne doit rien demander à GitHub. */
   resetDiscovery(): void {
     this.#discovered = null;
     this.#preferred = null;
@@ -241,6 +243,13 @@ export class CopilotApi {
   /** Même adresse qu'opencode (copilot.ts base()) : domaine GitHub Enterprise accepté seulement s'il est déclaré dans .env. */
   #opencodeDefault(auth: CopilotAuth): string {
     return auth.enterpriseUrl ? `https://copilot-${apiHostFor(auth.enterpriseUrl, this.#d.githubEnterpriseDomain)}` : DEFAULT_COPILOT_API_URL;
+  }
+
+  /** Adresse de l'abonnement déjà lue et encore valable pour ce jeton, sans rien demander à GitHub ; sinon rien. */
+  #cachedDiscovery(token: string): { url: string | null; plan: string | null } {
+    const print = fingerprint(token);
+    if (this.#discovered && this.#discovered.token === print && Date.now() < this.#discovered.until) return this.#discovered;
+    return { url: null, plan: null };
   }
 
   /** Adresse de l'abonnement annoncée par GitHub (copilot_internal/user), relue au plus toutes les heures. */
@@ -305,8 +314,11 @@ export class CopilotApi {
    * IA proposées à ce compte ; null si GitHub Copilot n'est pas connecté. Adresse : celle de COCKPIT_COPILOT_API_URL, sinon
    * celle qu'opencode utilise d'office, sinon (adresse d'office bloquée par le réseau) l'adresse de l'abonnement annoncée
    * par GitHub, retenue une heure. Échec : erreur au message lisible, sans jeton.
+   * `discovery: false` (test de connexion du Diagnostic, 1.1.0) : rien n'est demandé à GitHub (api.github.com) ; l'adresse de
+   * l'abonnement et l'abonnement ne viennent que d'une lecture précédente encore valable.
    */
-  async listModels(): Promise<{ models: CopilotModel[]; endpoint: CopilotEndpoint } | null> {
+  async listModels(options: { discovery?: boolean } = {}): Promise<{ models: CopilotModel[]; endpoint: CopilotEndpoint } | null> {
+    const discover = (auth: CopilotAuth, token: string) => (options.discovery === false ? Promise.resolve(this.#cachedDiscovery(token)) : this.#discover(auth, token));
     const auth = await this.auth();
     if (!auth) {
       this.#status = { connected: false, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null };
@@ -322,7 +334,7 @@ export class CopilotApi {
     try {
       const opencodeDefault = this.#opencodeDefault(auth);
       if (this.#d.copilotApiUrl) {
-        const { plan } = await this.#discover(auth, token);
+        const { plan } = await discover(auth, token);
         endpoint = { url: this.#d.copilotApiUrl, source: "env", plan, opencodeDefault };
         const attempt = await this.#tryModels(endpoint.url, token);
         if ("models" in attempt) return done(attempt.models, endpoint);
@@ -342,7 +354,7 @@ export class CopilotApi {
       if ("models" in first) return done(first.models, endpoint);
 
       // Adresse d'office bloquée par le réseau : adresse de l'abonnement annoncée par GitHub, si elle est différente.
-      const discovered = await this.#discover(auth, token);
+      const discovered = await discover(auth, token);
       if (!discovered.url || discovered.url === opencodeDefault) throw new Error(first.blocked);
       endpoint = { url: discovered.url, source: "github", plan: discovered.plan, opencodeDefault };
       const second = await this.#tryModels(discovered.url, token);
@@ -358,28 +370,30 @@ export class CopilotApi {
   }
 
   /**
-   * Adresses d'API Copilot que le cockpit utilise (1.0.6) : celle de COCKPIT_COPILOT_API_URL si elle est imposée ; sinon l'adresse
-   * d'office, la dernière adresse vérifiée et celle de l'abonnement annoncée par GitHub. Jamais les autres adresses de la liste
-   * officielle : un pare-feu qui les bloque en ferait autant d'alertes, sans rien apprendre de plus.
+   * Adresse d'API Copilot réellement utilisée (1.1.0), la même que celle que le relais laisse sortir hors de la fenêtre de
+   * connexion (egressAllowedHosts) : celle de COCKPIT_COPILOT_API_URL si elle est imposée ; sinon la dernière adresse vérifiée ;
+   * sinon l'adresse d'office (et copilot-api.<domaine> d'un GitHub Enterprise déclaré). Jamais api.github.com ni github.com,
+   * jamais les autres adresses de la liste officielle : un pare-feu qui les bloque en ferait autant d'alertes.
    */
   probeApiHosts(): string[] {
-    const hostOf = (url: string | null | undefined) => (url ? new URL(url).hostname : null);
-    const domain = this.#d.githubEnterpriseDomain;
-    const candidates = this.#d.copilotApiUrl
-      ? [this.#d.copilotApiUrl]
-      : [DEFAULT_COPILOT_API_URL, domain ? `https://copilot-api.${domain}` : null, this.#status.endpoint?.url, this.#discovered?.url];
-    const known = (host: string) => COPILOT_API_HOSTS.includes(host) || (domain !== null && host === `copilot-api.${domain}`);
-    return [...new Set(candidates.map(hostOf).filter((host): host is string => host !== null && known(host)))];
+    return [
+      ...egressAllowedHosts({
+        copilotApiUrl: this.#d.copilotApiUrl,
+        endpointUrl: this.#status.endpoint?.url ?? null,
+        enterpriseDomain: this.#d.githubEnterpriseDomain,
+        loginOpen: false,
+      }),
+    ];
   }
 
   /**
-   * Joignabilité des adresses GitHub et Copilot à travers le proxy du cockpit, SANS jeton. Une réponse portant l'en-tête
-   * x-github-request-id vient de GitHub ; toute autre réponse est probablement une page de blocage du proxy. Seules les adresses
-   * que le cockpit utilise sont testées (probeApiHosts), plus api.github.com, github.com et le domaine GitHub Enterprise déclaré.
+   * Joignabilité de l'adresse d'API Copilot réellement utilisée (probeApiHosts) à travers le proxy du cockpit, SANS jeton. Une
+   * réponse portant l'en-tête x-github-request-id vient de GitHub ; toute autre réponse est probablement une page de blocage du
+   * proxy. Mesure réseau de la 1.1.0 : plus aucun essai vers api.github.com ni github.com (hors de la fenêtre de connexion,
+   * github.com n'est jamais contacté).
    */
   async probeHosts(): Promise<Reachability[]> {
-    const domain = this.#d.githubEnterpriseDomain;
-    const hosts = [...this.probeApiHosts(), "api.github.com", "github.com", ...(domain ? [`api.${domain}`, domain] : [])];
+    const hosts = this.probeApiHosts();
     return Promise.all(
       hosts.map(async (host): Promise<Reachability> => {
         try {

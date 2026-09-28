@@ -263,7 +263,7 @@ describe("API GitHub Copilot", () => {
     );
   });
 
-  it("adresse de l'abonnement illisible : échec jamais présenté comme l'adresse utilisée ; « Tester la connexion » repart de zéro", async () => {
+  it("adresse de l'abonnement illisible : échec jamais présenté comme l'adresse utilisée ; resetDiscovery repart de zéro", async () => {
     let userCalls = 0;
     let down = true;
     const client = api(async (url) => {
@@ -301,29 +301,91 @@ describe("API GitHub Copilot", () => {
     await assert.rejects(intercepted.listModels(), (err: Error) => /certificat non reconnu/.test(err.message) && !err.message.includes(TOKEN));
   });
 
-  it("joignabilité sans jeton : seule une réponse marquée par GitHub compte", async () => {
-    const seen: Array<Record<string, string>> = [];
-    const client = api(async (url, init) => {
-      seen.push(init.headers as Record<string, string>);
-      if (url === "https://api.githubcopilot.com/") throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
-      if (url === "https://api.business.githubcopilot.com/") return json(404, {}, { "x-github-request-id": "D" });
-      return new Response("Accès bloqué par la politique de sécurité", { status: 403 });
-    });
-    const byHost = Object.fromEntries((await client.probeHosts()).map((h) => [h.host, h]));
-    assert.equal(byHost["api.githubcopilot.com"]?.reachable, false);
-    assert.match(byHost["api.githubcopilot.com"]?.detail ?? "", /injoignable/);
-    assert.equal(byHost["api.github.com"]?.reachable, false);
-    assert.match(byHost["api.github.com"]?.detail ?? "", /page de blocage/);
+  it("joignabilité sans jeton : seule une réponse marquée par GitHub compte ; seule l'adresse Copilot réellement utilisée est essayée", async () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const spy = (reply: FetchLike): FetchLike => async (url, init) => {
+      seen.push({ url, headers: init.headers as Record<string, string> });
+      return reply(url, init);
+    };
+    const hostsOf = async (client: CopilotApi) => Object.fromEntries((await client.probeHosts()).map((h) => [h.host, h]));
+
+    // Rien de vérifié, adresse automatique : l'adresse d'office seule.
+    const reset = await hostsOf(api(spy(async () => Promise.reject(new TypeError("fetch failed", { cause: { code: "ECONNRESET" } })))));
+    assert.deepEqual(Object.keys(reset), ["api.githubcopilot.com"]);
+    assert.equal(reset["api.githubcopilot.com"]?.reachable, false);
+    assert.match(reset["api.githubcopilot.com"]?.detail ?? "", /injoignable/);
+    // Page de blocage du proxy (réponse sans marque GitHub).
+    const page = await hostsOf(api(spy(async () => new Response("Accès bloqué par la politique de sécurité", { status: 403 }))));
+    assert.equal(page["api.githubcopilot.com"]?.reachable, false);
+    assert.match(page["api.githubcopilot.com"]?.detail ?? "", /page de blocage/);
+
+    // Adresse imposée (cas de la banque) : elle seule.
+    const imposed = await hostsOf(api(spy(async () => json(404, {}, { "x-github-request-id": "D" })), "https://api.business.githubcopilot.com"));
+    assert.deepEqual(Object.keys(imposed), ["api.business.githubcopilot.com"]);
+    assert.equal(imposed["api.business.githubcopilot.com"]?.reachable, true);
+
+    // Adresse de l'abonnement vérifiée (adresse d'office bloquée) : elle seule.
+    const verified = api(
+      spy(async (url) => {
+        if (url === "https://api.githubcopilot.com/models") throw proxyRefusal();
+        if (url.endsWith("/copilot_internal/user")) return json(200, { endpoints: { api: "https://api.business.githubcopilot.com" } });
+        if (url.endsWith("/models")) return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "E" });
+        return json(404, {}, { "x-github-request-id": "F" });
+      }),
+    );
+    await verified.listModels();
+    seen.length = 0;
+    assert.deepEqual(Object.keys(await hostsOf(verified)), ["api.business.githubcopilot.com"]);
+
+    // GitHub Enterprise déclaré, rien de vérifié : les deux adresses d'office, jamais le domaine ni api.<domaine>.
+    const ghe = new CopilotApi({ opencodeDataDir: connected(), githubEnterpriseDomain: "acme.ghe.com", copilotApiUrl: null, version: "test", fetch: spy(async () => json(404, {})) });
+    assert.deepEqual(Object.keys(await hostsOf(ghe)).sort(), ["api.githubcopilot.com", "copilot-api.acme.ghe.com"]);
+
+    // Mesure réseau de la 1.1.0 : aucun essai vers api.github.com, github.com ni le domaine d'entreprise, et jamais de jeton.
     assert.equal(
-      seen.some((h) => "authorization" in h),
+      seen.some((c) => /^https:\/\/(api\.github\.com|github\.com|acme\.ghe\.com|api\.acme\.ghe\.com)\//.test(c.url)),
+      false,
+      seen.map((c) => c.url).join(" "),
+    );
+    assert.equal(
+      seen.some((c) => "authorization" in c.headers),
       false,
     );
-    // 1.0.6 : seules les adresses que le cockpit utilise sont testées ; les autres adresses Copilot ne font aucune alerte au proxy.
-    assert.deepEqual(Object.keys(byHost).sort(), ["api.github.com", "api.githubcopilot.com", "github.com"]);
-    const imposed = api(async (url) => (url === "https://api.business.githubcopilot.com/" ? json(404, {}, { "x-github-request-id": "D" }) : json(404, {})), "https://api.business.githubcopilot.com");
-    const imposedHosts = Object.fromEntries((await imposed.probeHosts()).map((h) => [h.host, h]));
-    assert.deepEqual(Object.keys(imposedHosts).sort(), ["api.business.githubcopilot.com", "api.github.com", "github.com"]);
-    assert.equal(imposedHosts["api.business.githubcopilot.com"]?.reachable, true);
+  });
+
+  it("test de connexion (discovery: false) : rien n'est demandé à GitHub, l'adresse de l'abonnement ne vient que d'une lecture valable", async () => {
+    const calls: string[] = [];
+    const reply: FetchLike = async (url) => {
+      calls.push(url);
+      if (url === "https://api.githubcopilot.com/models") throw proxyRefusal();
+      if (url.endsWith("/copilot_internal/user")) return json(200, { copilot_plan: "business", endpoints: { api: "https://api.business.githubcopilot.com" } });
+      return json(200, { data: [remote("gpt-5.4-mini")] }, { "x-github-request-id": "G" });
+    };
+    // Adresse imposée : /models de l'adresse imposée seul ; abonnement inconnu tant qu'il n'a pas été lu.
+    const imposed = api(reply, "https://api.business.githubcopilot.com");
+    const first = await imposed.listModels({ discovery: false });
+    assert.deepEqual(calls, ["https://api.business.githubcopilot.com/models"]);
+    assert.equal(first?.endpoint.plan, null);
+    // Lecture ordinaire (tâche de fond) puis test de connexion : l'abonnement lu est repris, sans nouvelle demande.
+    await imposed.listModels();
+    calls.length = 0;
+    assert.equal((await imposed.listModels({ discovery: false }))?.endpoint.plan, "business");
+    assert.deepEqual(calls, ["https://api.business.githubcopilot.com/models"]);
+
+    // Adresse automatique, adresse d'office bloquée, rien de lu : échec rapporté, aucune demande à GitHub.
+    calls.length = 0;
+    const auto = api(reply);
+    await assert.rejects(auto.listModels({ discovery: false }), /api\.githubcopilot\.com : refusé par le proxy d'entreprise/);
+    assert.deepEqual(calls, ["https://api.githubcopilot.com/models"]);
+    // Après une lecture ordinaire : l'adresse de l'abonnement retenue sert directement.
+    await auto.listModels();
+    calls.length = 0;
+    assert.equal((await auto.listModels({ discovery: false }))?.endpoint.url, "https://api.business.githubcopilot.com");
+    assert.deepEqual(calls, ["https://api.business.githubcopilot.com/models"]);
+    assert.equal(
+      calls.some((u) => u.includes("api.github.com")),
+      false,
+    );
   });
 });
 

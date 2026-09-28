@@ -341,7 +341,6 @@ export async function startCockpit(t: TestContext, options: CockpitHarnessOption
     copilot: {
       status: { connected: false, endpoint: null, lastTried: null, modelsAt: 0, models: 0, error: null, discoveryError: null },
       probeHosts: async () => [],
-      resetDiscovery: () => undefined,
     },
     copilotConfig: {
       status: { state: "inactif", message: null, at: 0, details: { checked: [] } },

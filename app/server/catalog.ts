@@ -182,12 +182,12 @@ export class ModelCatalog {
    * Lit opencode et GitHub Copilot en parallèle. opencode fait foi pour ce qu'il sait appeler (réflexions, prix de son
    * catalogue) ; la liste Copilot fait foi pour la présence et la disponibilité des IA Copilot : sans elle, opencode affiche
    * tout son catalogue embarqué dès que sa propre lecture de l'API Copilot échoue (pare-feu). Échec des deux : erreur,
-   * liste précédente gardée.
+   * liste précédente gardée. `discovery: false` : aucune lecture de l'adresse de l'abonnement chez GitHub (CopilotApi.listModels).
    */
-  async refresh(): Promise<void> {
+  async refresh(options: { discovery?: boolean } = {}): Promise<void> {
     const [oc, cp] = await Promise.allSettled([
       this.#client.request<{ providers: RawProvider[]; default: Record<string, string> }>("GET", "/config/providers", { timeoutMs: 20_000 }),
-      this.#copilot ? this.#copilot.listModels() : Promise.resolve(null),
+      this.#copilot ? this.#copilot.listModels(options) : Promise.resolve(null),
     ]);
     const copilot = cp.status === "fulfilled" ? cp.value : null;
     if (oc.status === "rejected" && !copilot) {

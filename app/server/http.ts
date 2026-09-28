@@ -182,7 +182,7 @@ export interface AppDeps {
   /** Titres, tailles et liaisons de niveau des assistants (AssistantService). */
   assistants: AssistantsPort;
   /** Accès direct à GitHub Copilot : adresse de l'API, état de la liste des IA, joignabilité à travers le proxy. */
-  copilot: Pick<CopilotApi, "status" | "probeHosts" | "resetDiscovery">;
+  copilot: Pick<CopilotApi, "status" | "probeHosts">;
   /** Adresse de l'API Copilot imposée à opencode ; « synchro due » posée par chaque écriture ou redémarrage, lue par le proxy avec sa raison. */
   copilotConfig: Pick<CopilotConfigSync, "status" | "sync" | "syncDue" | "dueReason" | "markDue">;
   /** File d'écriture de la configuration d'opencode, partagée avec CopilotConfigSync (une instance propre si absente). */
@@ -1904,12 +1904,13 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
-  // Test de la connexion Copilot (page Diagnostic) : joignabilité des adresses GitHub et Copilot à travers le proxy, sans
-  // jeton, puis nouvelle lecture de la liste des IA (jeton envoyé seulement aux adresses officielles) et réalignement d'opencode.
+  // Test de la connexion Copilot (page Diagnostic) : joignabilité de l'adresse d'API Copilot réellement utilisée à travers le
+  // proxy, sans jeton, puis nouvelle lecture de la liste des IA (jeton envoyé seulement aux adresses officielles) et réalignement
+  // d'opencode. Mesure réseau de la 1.1.0 : rien vers api.github.com ni github.com (ni essai, ni lecture de l'adresse de
+  // l'abonnement : celle-ci ne vient que d'une lecture précédente encore valable).
   app.post("/api/system/copilot-check", bodyLimit({ maxSize: 4_096 }), async (c) => {
-    deps.copilot.resetDiscovery();
     const hosts = await deps.copilot.probeHosts();
-    const catalogError = await catalog.refresh().then(
+    const catalogError = await catalog.refresh({ discovery: false }).then(
       () => null,
       (err: unknown) => errorMessage(err),
     );
