@@ -13,7 +13,8 @@ $ForbiddenWords = @('Invoke-WebRequest', 'Invoke-RestMethod', 'ServicePointManag
 $ForbiddenCommands = @('iwr', 'irm', 'iex', 'curl', 'curl.exe', 'git', 'git.exe', 'wget')
 # Lecteurs de l'ENV d'une IMAGE admis, un par script (en plus de Get-CockpitImageVersion) : jamais l'ENV d'un conteneur.
 $ImageEnvReaders = @{ 'install.ps1' = 'Test-OmoImageEnvFlags'; ('build-' + 'omo' + '-image.ps1') = 'Assert-OmoBaseFlags' }
-$DockerFunctions = @('Invoke-Docker', 'Get-DockerOutput', 'Invoke-DockerTimeout', 'Get-ArchiveDir', 'Invoke-CockpitDocker')
+# Get-ArchiveDir n'y est plus (repetition generale F2) : elle lit la configuration par Read-CockpitComposeConfig, sans docker direct.
+$DockerFunctions = @('Invoke-Docker', 'Get-DockerOutput', 'Invoke-DockerTimeout', 'Invoke-CockpitDocker')
 $ReadHostPrompts = @{
     'install.ps1' = @('Dossier de vos projets', "Le dossier '", 'Continuer quand meme ?')
     'cockpit.ps1' = @('Tapez RESTAURER pour confirmer', 'Tapez SUPPRIMER pour confirmer', 'Tapez RENOUVELER pour confirmer', 'Tapez REVENIR pour confirmer')

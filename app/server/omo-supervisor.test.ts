@@ -800,10 +800,24 @@ describe("superviseur : balayage git du dossier de travail", () => {
   // écriture par `/workspace/projet/.GIT/hooks/pre-commit` ou par `GIT~1` réussit et le crochet s'exécute ensuite sur le poste.
   // `readdir` ne montre pourtant que « .git » : ni le bind ni le balayage ne voyaient ce détour.
 
-  /** Pose les alias du `.git` d'un projet. Sur un système insensible à la casse ils existent déjà : `mkdir` ne fait alors rien. */
+  /**
+   * Pose les alias du `.git` d'un projet (ou d'un dépôt nu). Sur un système insensible à la casse ils existent déjà : `mkdir` ne fait
+   * alors rien. Sur un système sensible à la casse (ext4, tmpfs de la CI Linux), l'alias n'existe pas tant qu'on ne le crée pas, et
+   * `aliasInscriptible` le saute à juste titre : un test qui le supposerait présent serait rouge hors de Windows.
+   */
   function poserAlias(dir: string, projet: string, ...alias: string[]): string[] {
     for (const nom of alias) fs.mkdirSync(path.join(dir, projet, nom), { recursive: true });
     return alias.map((nom) => `${dir.replaceAll("\\", "/")}/${projet}/${nom}`);
+  }
+
+  /**
+   * Même chose pour le `.git` FICHIER d'un sous-module : sur un système sensible à la casse, l'alias est une copie du pointeur (jamais
+   * par-dessus un fichier existant : COPYFILE_EXCL) ; ailleurs il existe déjà et n'est pas touché.
+   */
+  function poserAliasFichier(dir: string, projet: string, alias: string): string {
+    const cible = path.join(dir, projet, alias);
+    if (!fs.existsSync(cible)) fs.copyFileSync(path.join(dir, projet, ".git"), cible, fs.constants.COPYFILE_EXCL);
+    return `${dir.replaceAll("\\", "/")}/${projet}/${alias}`;
   }
 
   /** `access(W_OK)` d'un partage où le bind `:ro` ne couvre que le nom exact : les chemins donnés restent inscriptibles. */
@@ -836,7 +850,7 @@ describe("superviseur : balayage git du dossier de travail", () => {
     const [court] = poserAlias(dir, "protege", "GIT~1");
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(court ?? ""), montages: tousMontes(dir) })), ["protege/.git"]);
     // Le `.git` FICHIER d'un sous-module s'ouvre aussi par « .Git » : le pointeur réécrit désigne alors n'importe quel gitdir.
-    const alias = `${dir.replaceAll("\\", "/")}/sous-module/.Git`;
+    const alias = poserAliasFichier(dir, "sous-module", ".Git");
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias), montages: tousMontes(dir) })), ["sous-module/.git"]);
   });
 
@@ -845,8 +859,8 @@ describe("superviseur : balayage git du dossier de travail", () => {
     depotNu(dir, "remotes/outil.git");
     const monte = tousMontes(dir);
     assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: () => false, montages: monte })), []);
-    const alias = `${dir.replaceAll("\\", "/")}/remotes/OUTIL.GIT`;
-    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias), montages: monte })), ["remotes/outil.git"]);
+    const [alias] = poserAlias(dir, "remotes", "OUTIL.GIT");
+    assert.deepEqual(nonProtegesDe(salle.balayerGit(dir, { accesEcriture: ouvertPar(alias ?? ""), montages: monte })), ["remotes/outil.git"]);
   });
 
   it("un projet préparé dont le .git s'ouvre par un alias n'est pas « en lecture seule »", (t) => {

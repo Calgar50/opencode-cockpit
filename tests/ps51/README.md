@@ -22,6 +22,7 @@ Ce banc est un **contrat** : les lots 6 et 7 l'utilisent tel quel, sans le modif
 - Jamais le port 7777 ni les conteneurs, volumes et images de l'utilisateur.
 - **Piège P5** : sous `$ErrorActionPreference = 'Stop'`, une ligne stderr d'un appel natif par `&` lève `NativeCommandError`. curl et git passent toujours par `Invoke-CockpitProcess`.
 - **Piège PS 5.1** : `ConvertFrom-Json` rend un tableau JSON de premier niveau comme **un seul** objet ; `return , $tableau` suivi de `@(...)` l'enveloppe dans un tableau d'un élément.
+- **Piège PS 5.1** : `ConvertFrom-Json` refuse deux clés qui ne diffèrent que par la casse (`DuplicateKeysInJsonString`). La sortie de `docker compose config --format json` en porte depuis la 1.0.6 (`HTTP_PROXY` et `http_proxy` du service opencode) : elle se lit par `Read-CockpitComposeConfig`, jamais par `ConvertFrom-Json` directement. Un faux docker rend toujours cette forme (`ComposeConfig.ps1`), jamais un JSON simplifié qui cacherait le défaut (répétition générale de F2).
 
 ## `Validate-Scripts.ps1`
 
@@ -37,7 +38,7 @@ Règles statiques du plan (§3.7.8), par l'arbre syntaxique (`Parser::ParseFile`
 | `interdit` | `Invoke-WebRequest`, `Invoke-RestMethod`, `ServicePointManager`, `DefaultWebProxy`, `SecurityProtocol`, `SkipCertificateCheck`, `-k`, `--insecure`, `Import-Certificate`, `certutil`, `X509Store`, `Invoke-Expression` ; `Cert:\` et `.Thumbprint` seulement dans la fonction `Export-WindowsCertificates` ou le cas `'certs'` du `switch` de `cockpit.ps1` |
 | `add-type` | seulement dans `Initialize-CockpitPinnedHttp` (`CockpitTls.ps1`) |
 | `read-host` | liste fermée d'invites (début du texte) : `install.ps1` « Dossier de vos projets », « Le dossier ' », « Continuer quand meme ? » ; `cockpit.ps1` « Tapez RESTAURER / SUPPRIMER / RENOUVELER / REVENIR pour confirmer » ; `CockpitTls.ps1` « Tapez HTTP EN CLAIR pour confirmer » dans `Confirm-CockpitHttpMode` |
-| `appel-natif` | `curl`, `git`, `iex`, `iwr`, `irm` jamais appelés directement (ni `& $curl`, ni `& "<dossier>\curl.exe"`) ; `docker` seulement dans `Invoke-Docker`, `Get-DockerOutput`, `Invoke-DockerTimeout`, `Get-ArchiveDir`, `Invoke-CockpitDocker` ; `ProcessStartInfo` et `[System.Diagnostics.Process]` seulement dans `Invoke-CockpitProcess` et ces fonctions |
+| `appel-natif` | `curl`, `git`, `iex`, `iwr`, `irm` jamais appelés directement (ni `& $curl`, ni `& "<dossier>\curl.exe"`) ; `docker` seulement dans `Invoke-Docker`, `Get-DockerOutput`, `Invoke-DockerTimeout`, `Invoke-CockpitDocker` (`Get-ArchiveDir` lit la configuration par `Read-CockpitComposeConfig`, sans docker direct) ; `ProcessStartInfo` et `[System.Diagnostics.Process]` seulement dans `Invoke-CockpitProcess` et ces fonctions |
 
 Un nom de commande qualifié compte comme le nom seul : `Microsoft.PowerShell.Utility\Read-Host`, `C:\Windows\System32\curl.exe`.
 | `docker-isolation` | ces fonctions appellent `Invoke-CockpitDocker`, ou `ConvertTo-CockpitDockerArgs` avec `Clear-CockpitComposeEnv` (ou `$CockpitComposeEnvNames`) |
@@ -60,7 +61,7 @@ L'en-tête du fichier fait foi. `$Mode` vaut `'https'`, `'http'` ou l'objet rend
 - `Get-CockpitOpenDecision -Health -Mode -Policy` → `{ Decision = Open | NotOk ; Lines }` (A2-Open).
 - `Get-CockpitBrowserTlsPolicy -Port [-RegistryRoots <[ordered]@{ HKLM = '<chemin>'; HKCU = '<chemin>' }>]` → `{ Verdict ; Source ; Value ; Origins ; Origin ; Port ; Chrome ; HttpsOnly }`.
 - Messages : `Write-CockpitModeNotice -Mode -Policy [-OneLine]` (A6, A6-1, A6b), `Confirm-CockpitHttpMode -Port -Policy` (A5 + saisie), `Write-CockpitLines`.
-- Docker : `Invoke-CockpitDocker -Root -DockerArgs -TimeoutSec`, `ConvertTo-CockpitDockerArgs`, `Clear-CockpitComposeEnv` / `Restore-CockpitComposeEnv` (appels par `&`), `Get-CockpitComposeProjectName`, `Get-CockpitComposeDivergence`, `Get-CockpitImageVersion` (`[version]` ou `$null`), `Get-CockpitServedScheme` (`https`, `http`, `inconnu` pour une valeur hors liste jamais recopiée, `$null` si illisible), `Get-CockpitContainerHealth`, `Read-CockpitTlsPublic`.
+- Docker : `Invoke-CockpitDocker -Root -DockerArgs -TimeoutSec`, `ConvertTo-CockpitDockerArgs`, `Clear-CockpitComposeEnv` / `Restore-CockpitComposeEnv` (appels par `&`), `Read-CockpitComposeConfig` (configuration de compose en mémoire, exception si illisible), `Get-CockpitComposeProjectName` (exception si illisible ou hors format, jamais un nom par défaut), `Get-CockpitComposeDivergence`, `Get-CockpitImageVersion` (`[version]` ou `$null`), `Get-CockpitServedScheme` (`https`, `http`, `inconnu` pour une valeur hors liste jamais recopiée, `$null` si illisible), `Get-CockpitContainerHealth`, `Read-CockpitTlsPublic`.
 - Valeurs venues du réseau : `Version` de la santé ne garde que `[0-9A-Za-z.+-]`, 32 caractères au plus ; `Detail` passe par `Hide-Secrets`.
 - Divers : `Invoke-CockpitProcess -FilePath <absolu> -Arguments -TimeoutSec -RemoveEnv`, `Hide-Secrets`, `Assert-CockpitFullLanguage`, `Get-CockpitBaseUrl`, `Get-CockpitHmacHex` (usages `health-proof`, `auth-ticket-request`, `auth-ticket`), `Test-CockpitGeneratedToken`, `Get-CockpitPortOwner`, `Format-CockpitFingerprint`, `Format-CockpitEdgePolicyValue` (valeur lue ou `absente`), `Get-CockpitCertWarnings`, `Get-CockpitCurl`.
 
@@ -96,7 +97,7 @@ Motifs types pour les commandes des scripts (chaînes PowerShell entre apostroph
 | Commande | Motif |
 |---|---|
 | `docker version`, `docker compose version` | `'^version'`, `'^compose version'` |
-| `compose config --format json` | `'^compose -f \S.* config --format json$'` |
+| `compose config --format json` | `'^compose -f \S.* config --format json$'`, sortie `New-FakeComposeConfigJson <projet> [<dossier des archives>]` (`ComposeConfig.ps1` : forme réelle depuis la 1.0.6, `HTTP_PROXY` et `http_proxy` d'un même service) |
 | `compose ps -q cockpit` | `'^compose -f \S.* ps -q cockpit$'` |
 | `compose up`, `pull`, `build`, `stop`, `logs` | `'^compose -f \S.* up\b'`, `'^compose -f \S.* pull\b'`, de même pour `build`, `stop` et `logs` |
 | `compose exec` (valeur demandée seule, fichiers publics) | `'^compose -f \S.* exec -T cockpit printenv COCKPIT_LOCAL_SCHEME$'`, `'^compose -f \S.* exec -T cockpit cat /tls/public/cockpit\.crt$'` avec `stdoutFile` |

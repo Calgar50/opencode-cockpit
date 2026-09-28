@@ -157,10 +157,9 @@ function Get-Port {
 
 function Get-ArchiveDir {
     # Dossier reellement monte sur /archives, tel que compose le resout (guillemets, ~, chemin relatif).
-    # La configuration contient des secrets : elle reste en memoire et n'est jamais affichee.
-    $result = Invoke-CockpitDocker $Root @('compose', 'config', '--format', 'json') 60
-    if ($result.ExitCode -ne 0 -or -not $result.StdOut) { throw 'Lecture de la configuration impossible (docker compose config).' }
-    $mount = @((ConvertFrom-Json $result.StdOut).services.cockpit.volumes | Where-Object { $_.target -eq '/archives' }) | Select-Object -First 1
+    # La configuration contient des secrets : elle reste en memoire et n'est jamais affichee. Lue par Read-CockpitComposeConfig,
+    # qui tient les cles HTTP_PROXY et http_proxy d'un meme service (PS 5.1, repetition generale F2) et leve si elle est illisible.
+    $mount = @((Read-CockpitComposeConfig $Root).services.cockpit.volumes | Where-Object { $_.target -eq '/archives' }) | Select-Object -First 1
     if ($null -eq $mount) { throw 'Montage /archives introuvable dans docker-compose.yml.' }
     New-Item -ItemType Directory -Path $mount.source -Force | Out-Null
     return (Resolve-Path -LiteralPath $mount.source).Path

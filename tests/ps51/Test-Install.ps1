@@ -834,6 +834,25 @@ try {
     $run = Invoke-MigrationInstall 'nostart-arrete' @{ VolumeExists = $true; Migration = $LineMigre } @{ NoStart = $true }
     Assert-Test '-NoStart, volume present et pile arretee : migration, textes, aucun up' ((Get-CallIndex $run.Calls $ExactRun) -ge 0 -and (Get-CallIndex $run.Calls ' up ') -lt 0 -and $run.Result.Host.Contains((($H, "    [OK] Profil de droits Prudent conserve : seul l'acces a Internet est desormais refuse.", $Deja, ($Copie -f 'opencode.jsonc'), $NoStartFait) -join "`n"))) ($run.Result.Host + ' || ' + ($run.Calls -join ' | '))
     Assert-Test '-NoStart, volume present et pile arretee : aucun arret demande' ((Get-CallIndex $run.Calls '^compose -f \S+ stop') -lt 0) ($run.Calls -join ' | ')
+
+    # --- Repetition generale F2 : nom du projet lu malgre HTTP_PROXY et http_proxy (PS 5.1), jamais un nom fixe ------------------------
+    # Avant : ConvertFrom-Json refusait la sortie de compose config depuis la 1.0.6, et le nom retombait sur opencode-cockpit ; avec un
+    # projet renomme, chown -R et la migration du web visaient les volumes d'une AUTRE installation.
+    Write-Section 'Projet docker compose : nom lu, ferme en cas de doute (repetition generale F2)'
+    $run = Invoke-MigrationInstall 'projet-renomme' @{ Project = 'gf-renomme'; Migration = $LineMigre }
+    $autre = @($run.Calls | Where-Object { $_.Contains('opencode-cockpit_') -or $_.Contains('opencode-cockpit-migration-web-') })
+    Assert-Test 'projet renomme : chown et migration sur SES volumes, installation terminee' ($null -eq $run.Result.Error -and
+        (Get-CallIndex $run.Calls '^run --rm --pull never --network none --user 0 --entrypoint chown -v gf-renomme_oc-config:/volumes/oc-config ') -ge 0 -and
+        (Get-CallIndex $run.Calls '^run --rm --pull never --name gf-renomme-migration-web-[0-9a-f]{8} .* -v gf-renomme_oc-config:/oc-config ') -ge 0 -and
+        $run.Result.Host.Contains('Cockpit disponible sur')) (([string]$run.Result.Error) + ' || ' + ($run.Calls -join ' | '))
+    Assert-Test 'projet renomme : aucun appel sur les volumes ni sous le nom d une autre installation (opencode-cockpit)' ($autre.Count -eq 0) ($autre -join ' | ')
+    $run = Invoke-MigrationInstall 'projet-illisible' @{ ComposeConfigCode = 1 }
+    Assert-Test 'compose config en echec : installation arretee avec le message, aucun run (ni chown, ni migration), aucun up' ($null -ne $run.Result.Error -and
+        ([string]$run.Result.Error).Contains('Lecture de la configuration impossible') -and (Get-CallIndex $run.Calls '^run ') -lt 0 -and (Get-CallIndex $run.Calls ' up ') -lt 0) (([string]$run.Result.Error) + ' || ' + ($run.Calls -join ' | '))
+    $run = Invoke-MigrationInstall 'projet-illisible-nostart' @{ ComposeConfigCode = 1; VolumeExists = $true; Migration = $LineMigre } @{ NoStart = $true }
+    Assert-Test '-NoStart, compose config en echec : aucun volume sonde, aucune migration, [!] verification impossible' ($null -eq $run.Result.Error -and
+        (Get-CallIndex $run.Calls '^volume inspect ') -lt 0 -and (Get-CallIndex $run.Calls '^run ') -lt 0 -and
+        $run.Result.Host.Contains((($H, ($Laissees -f 'verification impossible'), $ConseilPerso) -join "`n"))) ($run.Result.Host + ' || ' + ($run.Calls -join ' | '))
 } finally {
     foreach ($server in $Servers) {
         try { $server.StandardInput.Close(); [void]$server.WaitForExit(5000) } catch { }

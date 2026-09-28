@@ -1489,22 +1489,27 @@ describe("détections en service : gardes propres au service", () => {
   });
 
   it("références incomplètes, relevé courant complet : la liste de fin de demande dit toujours qu'elle est incomplète", async (t) => {
-    const a = monter(t, {
-      bornes: { signalesMaxFichiers: 1 },
-      preparer: (ws) => {
-        ecrire(ws, "proj/scripts/a.ps1", "Write-Output 'a'\n");
-        ecrire(ws, "proj/scripts/b.ps1", "Write-Output 'b'\n");
-      },
-    });
-    await a.demarrer();
-    a.ouvrirDemande();
-    fs.rmSync(path.join(a.workspace, "proj/scripts/b.ps1"));
-    a.repos();
-    await a.stable();
-    a.fermerDemande();
-    await a.avancer(OMO_DETECTIONS_VEILLE_MS);
-    assertRien(a);
-    assert.deepEqual(a.listes(), [{ rootId: ROOT, signales: [], incomplet: true }]);
+    // La référence ne garde qu'un fichier signalé (borne 1) : le premier dans l'ordre des chemins, a.ps1, quel que soit l'ordre de
+    // readdir du disque (NTFS, ext4, tmpfs ; répétition générale de F2). Joué dans les deux ordres de création : tmpfs rend les
+    // entrées de la plus récente à la plus ancienne, et une coupe faite AVANT le tri gardait alors b.ps1, puis signalait comme
+    // ajouté le a.ps1 qui était là depuis le début.
+    for (const ordre of [["a", "b"], ["b", "a"]]) {
+      const a = monter(t, {
+        bornes: { signalesMaxFichiers: 1 },
+        preparer: (ws) => {
+          for (const nom of ordre) ecrire(ws, `proj/scripts/${nom}.ps1`, `Write-Output '${nom}'\n`);
+        },
+      });
+      await a.demarrer();
+      a.ouvrirDemande();
+      fs.rmSync(path.join(a.workspace, "proj/scripts/b.ps1"));
+      a.repos();
+      await a.stable();
+      a.fermerDemande();
+      await a.avancer(OMO_DETECTIONS_VEILLE_MS);
+      assertRien(a);
+      assert.deepEqual(a.listes(), [{ rootId: ROOT, signales: [], incomplet: true }], `création ${ordre.join(" puis ")}`);
+    }
   });
 
   it("références complètes, relevé courant incomplet (fichiers signalés ajoutés au-delà de la borne) : la liste le dit", async (t) => {

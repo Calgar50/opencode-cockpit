@@ -225,14 +225,30 @@ function Get-CockpitWebMigrationLines($Result, [string]$Contexte) {
     return $lines
 }
 
-# Nom du projet tel que compose le resout (P3). La configuration contient des secrets : jamais affichee.
+# Configuration resolue par compose (P3), en memoire seulement : elle contient des secrets, jamais affichee ni citee. Illisible :
+# exception, jamais de valeur par defaut (repetition generale F2). PS 5.1 : ConvertFrom-Json refuse deux cles qui ne different
+# que par la casse (HTTP_PROXY et http_proxy d'un service depuis la 1.0.6). Les chaines sont lues de gauche a droite ; dans une
+# cle sans echappement, '^' devient '^^' et une majuscule ASCII '^' + minuscule : des cles distinctes le restent sans la casse,
+# et les cles lues (name, services, volumes, target, source), en minuscules, ne changent pas.
+function Read-CockpitComposeConfig([string]$Root) {
+    $result = Invoke-CockpitDocker $Root @('compose', 'config', '--format', 'json') 60
+    if ($result.TimedOut) { throw 'docker compose config ne repond pas en 60 s : Docker Desktop est bloque ? Redemarrez-le (wsl --shutdown, puis relancez Docker Desktop).' }
+    if ($result.ExitCode -ne 0 -or -not $result.StdOut) { throw ('Lecture de la configuration impossible (docker compose config, code {0}).' -f $result.ExitCode) }
+    $lettre = [System.Text.RegularExpressions.MatchEvaluator]{ param($m) if ($m.Value -ceq '^') { '^^' } else { '^' + $m.Value.ToLowerInvariant() } }
+    $chaine = [System.Text.RegularExpressions.MatchEvaluator]{ param($m) if (-not $m.Groups[1].Success -or $m.Value.Contains('\')) { $m.Value } else { [regex]::Replace($m.Value, '[\^A-Z]', $lettre) } }
+    $texte = [regex]::Replace([string]$result.StdOut, '"(?:[^"\\]|\\.)*"(\s*:)?', $chaine)
+    try { $config = ConvertFrom-Json $texte } catch { $config = $null }
+    # Un objet JSON, rien d'autre (un tableau serait deroule par return, et son premier element lu comme la configuration).
+    if ($config -isnot [System.Management.Automation.PSCustomObject]) { throw 'Configuration docker compose illisible (docker compose config --format json).' }
+    return $config
+}
+
+# Nom du projet tel que compose le resout. Illisible ou hors format : exception, JAMAIS un nom fixe, qui designerait les volumes
+# d'une autre installation (chown -R, migration du web, sauvegarde, restauration, -Purge).
 function Get-CockpitComposeProjectName([string]$Root) {
+    $config = Read-CockpitComposeConfig $Root
     $name = $null
-    try {
-        $result = Invoke-CockpitDocker $Root @('compose', 'config', '--format', 'json') 60
-        if ($result.ExitCode -eq 0 -and $result.StdOut) { $name = [string](ConvertFrom-Json $result.StdOut).name }
-    } catch { $name = $null }
-    if (-not $name) { return 'opencode-cockpit' }
+    if ($null -ne $config -and $null -ne $config.PSObject.Properties['name']) { $name = [string]$config.name }
     if ($name -cnotmatch '^[a-z0-9][a-z0-9_-]*\z') { throw 'Nom de projet docker compose inattendu.' }
     return $name
 }

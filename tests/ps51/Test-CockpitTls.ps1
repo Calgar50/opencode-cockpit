@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $Here = $PSScriptRoot
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $Here '..\..'))
 . (Join-Path $RepoRoot 'CockpitTls.ps1')
+. (Join-Path $Here 'ComposeConfig.ps1')
 
 $Results = @{ Pass = 0; Fail = 0; Failures = (New-Object System.Collections.Generic.List[string]) }
 function Assert-Test([string]$Name, [bool]$Condition, [string]$Detail = '') {
@@ -279,7 +280,7 @@ try {
 
     # --- Fonctions docker avec le faux docker (M-FAKEDOCKER) ---------------------------------------------------------
     Write-Section 'Fonctions docker (faux docker)'
-    Set-DockerScenario @((New-Rule '^compose -f \S.* config --format json$' '{"name":"rg105-l5","services":{}}'),
+    Set-DockerScenario @((New-Rule '^compose -f \S.* config --format json$' (New-FakeComposeConfigJson 'rg105-l5')),
         (New-Rule '^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} app:105$' "PATH=/usr/bin`nCOCKPIT_VERSION=1.0.5`n"),
         (New-Rule '^image inspect .* app:dev$' "COCKPIT_VERSION=dev`n"), (New-Rule '^image inspect .* absente$' '' 1),
         (New-Rule '^compose -f \S.* exec -T cockpit printenv COCKPIT_LOCAL_SCHEME$' "http`n" 0 1), (New-Rule '^compose -f \S.* exec -T cockpit printenv COCKPIT_LOCAL_SCHEME$' '' 1 1),
@@ -300,8 +301,39 @@ try {
     Set-Env 'WORKSPACE_DIR' 'C:\ailleurs'
     Set-DockerScenario @((New-Rule '.*' '{"name":"Nom Invalide"}'))
     Assert-Test 'nom de projet invalide refuse' ($null -ne (Invoke-Captured { Get-CockpitComposeProjectName $Work }).Error)
-    Set-DockerScenario @((New-Rule '.*' '' 1))
-    Assert-Test 'compose config en echec : repli opencode-cockpit' ((Get-CockpitComposeProjectName $Work) -ceq 'opencode-cockpit')
+
+    # Repetition generale F2 : depuis la 1.0.6, la vraie sortie porte HTTP_PROXY ET http_proxy d'un meme service. PS 5.1 la
+    # refusait (DuplicateKeysInJsonString) : backup et restore tombaient toujours, et le nom du projet retombait sur
+    # opencode-cockpit, celui d'une AUTRE installation (chown -R, migration du web). Temoin : le banc rend bien cette forme.
+    $temoin = 'lu'
+    try { $null = ConvertFrom-Json (New-FakeComposeConfigJson 'rg105-l5') } catch { $temoin = [string]$_.FullyQualifiedErrorId }
+    Assert-Test 'banc : la sortie type de compose config porte HTTP_PROXY et http_proxy (illisible telle quelle pour ConvertFrom-Json)' ($temoin -clike 'DuplicateKeysInJsonString*') $temoin
+    Set-DockerScenario @((New-Rule '.*' (New-FakeComposeConfigJson 'projet-renomme' 'C:\archives\du banc')))
+    $lue = $null
+    try { $lue = Read-CockpitComposeConfig $Work } catch { $lue = $null }
+    Assert-Test 'configuration lue malgre HTTP_PROXY et http_proxy : nom, montage /archives, six cles du relais gardees' ($null -ne $lue -and [string]$lue.name -ceq 'projet-renomme' -and
+        [string]@($lue.services.cockpit.volumes)[0].source -ceq 'C:/archives/du banc' -and @($lue.services.opencode.environment.PSObject.Properties).Count -eq 6)
+    Assert-Test 'projet renomme : son nom, jamais opencode-cockpit' ((Get-CockpitComposeProjectName $Work) -ceq 'projet-renomme')
+    # Cles distinctes gardees distinctes ('^' double, majuscule en '^' + minuscule) ; valeurs jamais touchees, meme quand elles
+    # contiennent le texte d'une cle entre guillemets echappes.
+    Set-DockerScenario @((New-Rule '.*' '{"name":"cles","services":{"a":{"environment":{"A^B":"1","a^b":"2","a^^b":"3","A_B":"4","a_b":"5","v":"x \"HTTP_PROXY\": y","V":"z"}}}}'))
+    $lue = $null
+    try { $lue = Read-CockpitComposeConfig $Work } catch { $lue = $null }
+    Assert-Test 'cles de casse differente : sept proprietes distinctes, valeur a guillemets echappes intacte' ($null -ne $lue -and @($lue.services.a.environment.PSObject.Properties).Count -eq 7 -and
+        @($lue.services.a.environment.PSObject.Properties | Where-Object { [string]$_.Value -ceq 'x "HTTP_PROXY": y' }).Count -eq 1)
+    # Ferme en cas de doute : exception, jamais un nom fixe (il designerait les volumes d'une autre installation).
+    $doutes = @(@{ Name = 'compose config en echec'; Stdout = ''; Code = 1; Error = 'Lecture de la configuration impossible' },
+        @{ Name = 'texte libre'; Stdout = 'pas du json'; Code = 0; Error = 'Configuration docker compose illisible' },
+        @{ Name = 'cle echappee en collision de casse'; Stdout = '{"name":"x","\u0041B":"1","ab":"2"}'; Code = 0; Error = 'Configuration docker compose illisible' },
+        @{ Name = 'tableau'; Stdout = '[{"name":"x"}]'; Code = 0; Error = 'Configuration docker compose illisible' },
+        @{ Name = 'name absent'; Stdout = '{"services":{}}'; Code = 0; Error = 'Nom de projet docker compose inattendu' },
+        @{ Name = 'name vide'; Stdout = (New-FakeComposeConfigJson ''); Code = 0; Error = 'Nom de projet docker compose inattendu' })
+    foreach ($case in $doutes) {
+        Set-DockerScenario @((New-Rule '.*' $case.Stdout $case.Code))
+        $echec = Invoke-Captured { Get-CockpitComposeProjectName $Work }
+        # Values est une List : .Count directement (sous PS 5.1, @() sur cette liste vide leve "Argument types do not match").
+        Assert-Test ('{0} : exception, jamais le nom fixe opencode-cockpit' -f $case.Name) ($null -ne $echec.Error -and $echec.Error.Contains($case.Error) -and $echec.Values.Count -eq 0) ([string]$echec.Error)
+    }
     $journal = @(Get-DockerJournal)
     Assert-Test 'K1-1 : variables du shell absentes chez docker' ($journal.Count -gt 0 -and @($journal | Where-Object { @($_.env).Count -gt 0 }).Count -eq 0)
     Assert-Test 'K1-1 : -f explicite dans l appel compose' (@($journal | Where-Object { $_.args[0] -ceq 'compose' -and $_.args[1] -cne '-f' }).Count -eq 0)

@@ -1111,8 +1111,13 @@ describe("journal des refus", () => {
     const lectureSeule = path.join(dossier, "lecture-seule");
     fs.mkdirSync(lectureSeule, { mode: 0o555 });
     fs.chmodSync(lectureSeule, 0o555);
-    t.after(() => fs.chmodSync(lectureSeule, 0o755));
-    await assert.rejects(JournalRefus.verifierDossier(lectureSeule));
+    // Droits rendus dans le test lui-même, jamais par un t.after : les crochets s'exécutent dans l'ordre où ils sont posés, et celui
+    // de dossierTemporaire (suppression récursive) passerait d'abord, d'où un chmod sur un chemin disparu (ENOENT, CI Linux rouge).
+    try {
+      await assert.rejects(JournalRefus.verifierDossier(lectureSeule));
+    } finally {
+      fs.chmodSync(lectureSeule, 0o755);
+    }
   });
 
   it("lireSortiesRefusees : agrégat par hôte sur 24 h (fichier précédent compris), plus refusés d'abord, plus anciens écartés", async (t) => {

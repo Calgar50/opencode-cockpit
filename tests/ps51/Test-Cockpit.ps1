@@ -486,7 +486,8 @@ try {
     $SalleDir = New-TestInstallation $Work 'salle' (New-TestEnvValues $Ports.plain 'https' '' '1.0.5' 'Pull' $SalleKeys)
     $ArchivesDir = Join-Path $Work 'salle-archives'
     New-Item -ItemType Directory -Path $ArchivesDir -Force | Out-Null
-    $ConfigJson = '{"name":"rg105-l7","services":{"cockpit":{"volumes":[{"target":"/archives","source":"' + ($ArchivesDir -replace '\\', '/') + '"}]}}}'
+    # Forme reelle depuis la 1.0.6 (HTTP_PROXY et http_proxy d'un meme service) : backup et restore la lisent (repetition generale F2).
+    $ConfigJson = New-FakeComposeConfigJson 'rg105-l7' $ArchivesDir
     function Set-SalleScenario {
         Set-DockerScenario (New-CockpitDockerRules -Extra @((New-Rule '^compose -f \S.* config --format json$' $ConfigJson),
                 (New-Rule '^volume rm -f ' "supprimes`n"), (New-Rule '^image rm -f ' "supprimees`n"), (New-Rule '^compose -f \S.* down\b' '')))

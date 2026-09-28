@@ -348,6 +348,12 @@ function estFichierSignale(nom: string): boolean {
  * `node_modules` et `.git` exclus, dossiers d'IDE et de CI de la racine laissés à `collecter`. Rien de ce qu'elle rencontre ne
  * passe dans `liens`, `illisibles` ni `impossible` : un dépôt ordinaire (liens hors des dossiers d'IDE, dossier très peuplé) ne
  * doit pas être refusé au pré-contrôle pour un fichier qui n'arrête rien. Tout manque rend `signalesIncomplet`.
+ *
+ * Indépendante de l'ordre de `readdir`, qui change d'un système de fichiers à l'autre (NTFS, ext4, tmpfs ; répétition générale de
+ * F2) : chaque dossier est parcouru par noms triés, et les fichiers trouvés sont triés AVANT d'être coupés à `signalesMaxFichiers`.
+ * Deux relevés du même arbre gardent donc les mêmes fichiers (les premiers dans l'ordre des chemins), et une référence tronquée ne
+ * fait jamais passer, selon le disque, un fichier déjà présent pour un ajout. Mémoire bornée par `signalesEntreesMax` : un fichier
+ * trouvé est une entrée lue.
  */
 async function collecterSignales(
   dossier: string,
@@ -356,13 +362,16 @@ async function collecterSignales(
   signales: string[],
   bornes: Readonly<PrecheckBornes>,
 ): Promise<void> {
+  const parNom = (a: Dirent, b: Dirent): number => comparerChemins(a.name, b.name);
   const pile: { relatif: string; profondeur: number }[] = [];
-  for (const entree of entreesRacine) {
+  // Empilés à l'envers : le dossier au plus petit nom est dépilé le premier.
+  for (const entree of [...entreesRacine].sort(parNom).reverse()) {
     if (!entree.isDirectory() || nomDansListe(entree.name, DOSSIERS_IDE_CI) || nomDansListe(entree.name, EXCLUS_DES_SIGNALES)) continue;
     pile.push({ relatif: entree.name, profondeur: 1 });
   }
+  const trouves: string[] = [];
   let entreesLues = 0;
-  while (pile.length > 0) {
+  parcours: while (pile.length > 0) {
     const { relatif, profondeur } = pile.pop() ?? { relatif: "", profondeur: 0 };
     if (profondeur > bornes.profondeurRelevesMax) {
       releve.signalesIncomplet = true;
@@ -370,11 +379,12 @@ async function collecterSignales(
     }
     const lecture = await lireEntreesBornees(path.join(dossier, relatif), bornes);
     if (lecture === null || lecture.tronque) releve.signalesIncomplet = true;
-    for (const entree of lecture?.entrees ?? []) {
+    const sousDossiers: { relatif: string; profondeur: number }[] = [];
+    for (const entree of [...(lecture?.entrees ?? [])].sort(parNom)) {
       entreesLues++;
       if (entreesLues > bornes.signalesEntreesMax) {
         releve.signalesIncomplet = true;
-        return;
+        break parcours;
       }
       const chemin = `${relatif}/${entree.name}`;
       if (entree.isSymbolicLink()) {
@@ -383,17 +393,17 @@ async function collecterSignales(
         continue;
       }
       if (entree.isDirectory()) {
-        if (!nomDansListe(entree.name, EXCLUS_DES_SIGNALES)) pile.push({ relatif: chemin, profondeur: profondeur + 1 });
+        if (!nomDansListe(entree.name, EXCLUS_DES_SIGNALES)) sousDossiers.push({ relatif: chemin, profondeur: profondeur + 1 });
         continue;
       }
-      if (!entree.isFile() || !estFichierSignale(entree.name)) continue;
-      if (signales.length >= bornes.signalesMaxFichiers) {
-        releve.signalesIncomplet = true;
-        return;
-      }
-      signales.push(chemin);
+      if (entree.isFile() && estFichierSignale(entree.name)) trouves.push(chemin);
     }
+    for (const sous of sousDossiers.reverse()) pile.push(sous);
   }
+  // Trier, PUIS couper : jamais « les premiers que le disque a rendus ».
+  trouves.sort(comparerChemins);
+  if (trouves.length > bornes.signalesMaxFichiers) releve.signalesIncomplet = true;
+  for (const chemin of trouves.slice(0, bornes.signalesMaxFichiers)) signales.push(chemin);
 }
 
 // --- Cibles de la configuration git dans l'arbre de travail (S6/G04, §4.5 ; hooks hors de .git) ---------------------------------

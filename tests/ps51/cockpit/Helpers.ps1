@@ -9,6 +9,8 @@ $CockpitTestsDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $CockpitRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $CockpitDockerState = @{ Index = 0; Journal = ''; Work = '' }
 $CockpitGitExe = $null
+# Sortie type de compose config (HTTP_PROXY et http_proxy d'un meme service, comme depuis la 1.0.6) : repetition generale F2.
+. (Join-Path $CockpitTestsDir 'ComposeConfig.ps1')
 
 # Execute un bloc : valeurs rendues, texte ecrit par Write-Host (flux 6) et message d'exception.
 function Invoke-Captured([scriptblock]$Block) {
@@ -74,7 +76,7 @@ function New-CockpitDockerRules {
         $rules += (New-Rule '^image inspect --format \{\{range \.Config\.Env\}\}\{\{println \.\}\}\{\{end\}\} sha256:image-cockpit\z' '' 1)
     }
     $rules += @((New-Rule ('^inspect --format \{\{\.State\.Health\.Status\}\} ' + $id + '\z') ($Health + "`n")),
-        (New-Rule '^compose -f \S.* config --format json$' ('{"name":"' + $Project + '","services":{}}')),
+        (New-Rule '^compose -f \S.* config --format json$' (New-FakeComposeConfigJson $Project)),
         (New-Rule '^compose -f \S.* exec -T cockpit printenv COCKPIT_LOCAL_SCHEME$' ($Served + "`n")),
         (New-Rule '^compose -f \S.* ps$' "NAME  STATUS`ncockpit  Up`n"),
         (New-Rule '^compose -f \S.* (up|stop|start)\b' ''),

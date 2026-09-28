@@ -810,6 +810,37 @@ describe("pré-contrôle : fichiers signalés relevés à toute profondeur", () 
     }
   });
 
+  it("borne des fichiers signalés : les PREMIERS dans l'ordre des chemins sont gardés, quel que soit l'ordre de readdir du disque", async (t) => {
+    // Répétition générale de F2 : la coupe suivait l'ordre du système de fichiers (NTFS trié, ext4 haché, tmpfs du plus récent au
+    // plus ancien), et deux relevés du même arbre pouvaient garder des fichiers différents. Deux projets identiques, créés dans des
+    // ordres différents, fichiers à deux niveaux. « modules/zz.ps1 » est lu AVANT les sous-dossiers mais classé APRÈS eux : seule une
+    // coupe faite après le tri le laisse de côté.
+    const workspace = atelier(t);
+    const cas = [
+      // Borne des fichiers : les trois premiers chemins, jamais les trois premiers lus.
+      { bornes: { signalesMaxFichiers: 3 }, gardes: ["modules/Makefile", "modules/m0/package.json", "modules/m1/package.json"] },
+      // Borne des entrées (7 dans modules, puis une par sous-dossier) : lues par noms triés, donc m0 et m1, jamais m4 et m3.
+      { bornes: { signalesEntreesMax: 9 }, gardes: ["modules/Makefile", "modules/m0/package.json", "modules/m1/package.json", "modules/zz.ps1"] },
+    ];
+    const releves = new Map<string, unknown[]>();
+    for (const [nom, ordre] of [["projet", ["m3", "m0", "m4", "m1", "m2"]], ["inverse", ["m2", "m1", "m4", "m0", "m3"]]] as const) {
+      fabriquerProjet(workspace, nom);
+      if (nom === "inverse") poser(workspace, `${nom}/modules/zz.ps1`, "# [synthétique]\n");
+      for (const dossier of ordre) poser(workspace, `${nom}/modules/${dossier}/package.json`, `{"name": "${dossier}"}`);
+      poser(workspace, `${nom}/modules/Makefile`, "# [synthétique]\n");
+      if (nom === "projet") poser(workspace, `${nom}/modules/zz.ps1`, "# [synthétique]\n");
+      for (const [rang, { bornes, gardes }] of cas.entries()) {
+        const releve = await releverEmpreintes(path.join(workspace, nom), nom, { ...PRECHECK_BORNES, ...bornes });
+        assert.deepEqual(releve.fichiers.map((fichier) => fichier.chemin), gardes, `${nom} ${JSON.stringify(bornes)}`);
+        assert.equal(releve.signalesIncomplet, true, `${nom} ${JSON.stringify(bornes)}`);
+        releves.set(`${nom} ${rang}`, releve.fichiers);
+      }
+    }
+    for (const rang of cas.keys()) {
+      assert.deepEqual(releves.get(`projet ${rang}`), releves.get(`inverse ${rang}`), `même arbre, mêmes fichiers gardés, mêmes empreintes (cas ${rang})`);
+    }
+  });
+
   it("un lien rencontré en profondeur n'est pas suivi et ne refuse pas le projet ; un lien au nom d'un fichier signalé rend la liste incomplète", async (t) => {
     const workspace = atelier(t);
     const dehors = atelier(t, "omo-dehors-");
